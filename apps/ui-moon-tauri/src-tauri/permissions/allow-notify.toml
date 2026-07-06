@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-notify"
+description = "Allows raising a native OS notification (title + body) via the notify command"
+
+[permission.commands]
+allow = [
+  "notify"
+]

@@ -1,11 +1,16 @@
 /**
- * moon-native-titlebar.js — Antinote-style native macOS traffic lights on card
- * windows (chat / panel / widget).
+ * moon-native-titlebar.js — native macOS traffic lights on card windows
+ * (chat / panel / widget), ALWAYS VISIBLE — exactly like a native window.
  *
- * studio + aqua: native close / minimize / zoom stay hidden until the user
- * hovers the #title-bar; they hide again on leave (short grace so clicks land).
- * Position is synced from #title-bar geometry (not a static traffic_light_position)
- * so the cluster sits inside the opaque card header, not the transparent margin.
+ * studio + aqua: the native close / minimize / zoom cluster is revealed at
+ * boot and stays up. AppKit natively handles everything a real window does:
+ * hover glyphs, unfocused greying, the disabled (zoomless) green button.
+ * Position is synced from #title-bar geometry (not a static
+ * traffic_light_position) so the cluster sits inside the opaque card header,
+ * not the transparent margin — and re-synced on resize, weld repaint, skin
+ * change and window focus (AppKit re-pins + shrinks its container view on
+ * reveal/resize/zoom/focus; without the focus re-sync the lights keep
+ * painting but stop hit-testing — "click-dead").
  * classic: inert here — moon-appearance.js hides native lights and the CSS
  * .dock-lights cluster (or chat's faux close/min) takes over.
  *
@@ -16,19 +21,14 @@
   'use strict';
 
   var SKIN_KEY = 'luna_skin';
-  var LEAVE_MS = 180;
   /** macOS standard traffic-light diameter (logical px). */
   var LIGHT_H = 12;
-  /** Width of the 3-button cluster from the close-button left edge, plus slack.
-   * macOS spaces the buttons ~20px on-centre; 3 buttons + a diameter ≈ 52px,
-   * widened so a fast pointer that hands off a few px shy still counts. */
-  var CLUSTER_W = 78;
-  var leaveTimer = null;
-  var barHovered = false;
-  /** Tracks the last visibility we asked AppKit for, so the document-level
-   * mousemove watcher only does geometry work while the lights are actually up. */
-  var lightsVisible = false;
-  var docMoveWired = false;
+  /** Width of the 3-button cluster from the close-button left edge, plus a
+   * little slack. macOS spaces the buttons ~20px on-centre; 3 buttons + a
+   * diameter ≈ 52px. Kept TIGHT: everything beyond the cluster is normal
+   * title bar and must stay grabbable for the window drag (native windows
+   * have no dead zone around their lights). */
+  var CLUSTER_W = 60;
   var wired = false;
   var resizeWired = false;
   var bootTimer = null;
@@ -41,7 +41,9 @@
     return 'studio';
   }
 
-  function usesNativeHover() {
+  /** Are the NATIVE lights the active model (studio/aqua)? classic uses the
+   * CSS faux cluster instead. */
+  function usesNativeLights() {
     return readSkin() !== 'classic';
   }
 
@@ -73,11 +75,11 @@
   }
 
   function syncPosition() {
-    if (!usesNativeHover()) return Promise.resolve();
+    if (!usesNativeLights()) return Promise.resolve();
     // During a native window resize the shell fires the ResizeObserver every
-    // frame; syncing the (usually hidden) traffic lights per-frame floods the
-    // main thread with IPC + objc2 work that competes with the resize's own
-    // setFrame:. Skip while resizing — moon-resize.js fires one sync on release.
+    // frame; syncing the traffic lights per-frame floods the main thread with
+    // IPC + objc2 work that competes with the resize's own setFrame:. Skip
+    // while resizing — moon-resize.js fires one sync on release.
     if (g.__LUNA_NATIVE_RESIZING__) return Promise.resolve();
     var pos = measurePosition();
     if (!pos) return Promise.resolve();
@@ -90,14 +92,13 @@
   }
 
   function show() {
-    if (!usesNativeHover()) return;
-    lightsVisible = true;
+    if (!usesNativeLights()) return;
     // Reveal FIRST, then position. Un-hiding makes AppKit re-lay-out the
     // standard buttons to their default top-left CORNER (in the transparent
     // card-inset margin) — so a sync done before the reveal gets clobbered and
     // the lights strand in the buffer. Repositioning AFTER the reveal, plus a
-    // next-frame re-sync to beat AppKit's deferred relayout, lands them flush in
-    // the card header.
+    // next-frame re-sync to beat AppKit's deferred relayout, lands them flush
+    // in the card header.
     invokeVisible(true);
     syncPosition();
     g.requestAnimationFrame(function () { syncPosition(); });
@@ -105,75 +106,26 @@
   }
 
   function hide() {
-    lightsVisible = false;
     invokeVisible(false);
   }
 
   /**
-   * Is the client point (cx, cy) in the title-bar's top-left region where the
-   * native lights live? The lights are AppKit views overlaying the webview: when
-   * the pointer crosses onto them WebKit fires `#title-bar` mouseleave (it lost
-   * the pointer), and hiding there is what makes them "vanish on approach".
-   *
-   * AppKit may render the cluster at the window's default top-left CORNER (in the
-   * transparent card margin, y can be slightly negative) or — when the position
-   * sync holds — a little lower in the header. Both are top-left, so we guard the
-   * whole top-left band by geometry rather than the exact (and unreliable) synced
-   * coordinates: anything at/above the title-bar bottom and within its left edge
-   * counts as "reaching for a light".
+   * Is the client point (cx, cy) over the native light cluster in the
+   * title-bar's top-left? The lights are AppKit views overlaying the webview;
+   * a mousedown there must not arm a window drag (moon-dock.js consults this
+   * as its drag guard). Kept to the CLUSTER's own footprint — the rest of the
+   * bar stays grabbable, same as a native title bar.
    */
   function overLights(cx, cy) {
-    // Only meaningful when the native hover-lights are the active model; on
-    // classic the corner is faux DOM buttons (no native views to protect), so
-    // report false there — this keeps the moon-dock drag guard from carving a
-    // dead zone out of the classic title bar.
-    if (!usesNativeHover()) return false;
+    // Only meaningful when the native lights are the active model; on classic
+    // the corner is faux DOM buttons (no native views to protect), so report
+    // false there — this keeps the moon-dock drag guard from carving a dead
+    // zone out of the classic title bar.
+    if (!usesNativeLights()) return false;
     var bar = g.document && g.document.getElementById('title-bar');
     if (!bar) return false;
     var br = bar.getBoundingClientRect();
     return cy <= br.bottom + 2 && cx <= br.left + CLUSTER_W;
-  }
-
-  function scheduleHide() {
-    if (leaveTimer) g.clearTimeout(leaveTimer);
-    leaveTimer = g.setTimeout(function () {
-      leaveTimer = null;
-      if (!barHovered) hide();
-    }, LEAVE_MS);
-  }
-
-  function onEnter() {
-    barHovered = true;
-    if (leaveTimer) {
-      g.clearTimeout(leaveTimer);
-      leaveTimer = null;
-    }
-    show();
-  }
-
-  function onLeave(e) {
-    barHovered = false;
-    // The pointer is heading onto the native lights (which overlay the webview),
-    // not away — keep them up so the click lands. The document mousemove watcher
-    // re-tucks them once the pointer is genuinely back in the content area.
-    if (e && overLights(e.clientX, e.clientY)) return;
-    scheduleHide();
-  }
-
-  /**
-   * Re-tuck the lights once the pointer is back in the page content, clear of
-   * the title bar and the cluster. While the pointer sits on a native light the
-   * webview gets no events at all, so this never fires there — the lights simply
-   * stay up (and clickable) until the user moves on.
-   */
-  function onDocMove(e) {
-    if (!lightsVisible || barHovered) return;
-    var bar = g.document && g.document.getElementById('title-bar');
-    if (!bar) return;
-    var br = bar.getBoundingClientRect();
-    if (e.clientY >= br.top && e.clientY <= br.bottom) return; // still on the bar
-    if (overLights(e.clientX, e.clientY)) return;
-    scheduleHide();
   }
 
   function wireResize() {
@@ -192,38 +144,43 @@
     var bar = g.document && g.document.getElementById('title-bar');
     if (!bar || wired) return;
     wired = true;
-    bar.addEventListener('mouseenter', onEnter);
-    bar.addEventListener('mouseleave', onLeave);
-    if (!docMoveWired && g.document) {
-      docMoveWired = true;
-      // Capture so we still see moves that land on inner widgets/iframes.
-      g.document.addEventListener('mousemove', onDocMove, true);
-      // Lost key status (another window/app, or a native-minimize) — tuck away.
-      g.addEventListener('blur', function () { if (lightsVisible) hide(); });
-    }
+    // AppKit re-pins + shrinks the NSTitlebarContainerView when the window
+    // becomes key; without re-running the layout the buttons paint but stop
+    // hit-testing (clicks fall through to the webview). One sync per focus
+    // gain keeps them clickable.
+    g.addEventListener('focus', function () {
+      if (usesNativeLights()) syncPosition();
+    });
     wireResize();
   }
 
   function sync() {
     wire();
-    hide();
-    syncPosition();
+    if (usesNativeLights()) show();
+    else hide();
   }
 
   function boot() {
-    sync();
-    if (!usesNativeHover()) return;
-    if (invokeVisible(false)) return;
+    wire();
+    if (!usesNativeLights()) {
+      invokeVisible(false);
+      return;
+    }
+    // __TAURI__ injects slightly after the first-paint script run; reveal as
+    // soon as it is live (show() re-syncs after the reveal because un-hiding
+    // relays the buttons out to the default corner).
+    if (g.__TAURI__ && g.__TAURI__.core) { show(); return; }
     try {
       if (/jsdom/i.test((g.navigator && g.navigator.userAgent) || '')) return;
     } catch (_) { /* ignore */ }
     if (bootTimer) g.clearInterval(bootTimer);
     var tries = 0;
     bootTimer = g.setInterval(function () {
-      if (invokeVisible(false) || ++tries > 100) {
+      var live = g.__TAURI__ && g.__TAURI__.core;
+      if (live || ++tries > 100) {
         g.clearInterval(bootTimer);
         bootTimer = null;
-        syncPosition();
+        if (live) show();
       }
     }, 50);
   }

@@ -64,6 +64,38 @@ export class ChannelService extends Effect.Tag("luna/ChannelService")<
   ChannelServiceApi
 >() {}
 
+const metadataString = (msg: ChannelMessage, key: string): string | undefined => {
+  const value = msg.metadata?.[key]
+  if (value === null || value === undefined) return undefined
+  const text = String(value).trim()
+  return text.length > 0 ? text : undefined
+}
+
+const telegramGroupChatTypes = new Set(["group", "supergroup", "channel"])
+
+const formatChannelSender = (msg: ChannelMessage): string => {
+  const username = metadataString(msg, "username")
+  const firstName = metadataString(msg, "firstName")
+  const userId = metadataString(msg, "userId") ?? msg.senderId
+
+  if (username !== undefined && userId.length > 0) return `@${username} (id: ${userId})`
+  if (username !== undefined) return `@${username}`
+  if (firstName !== undefined && userId.length > 0) return `${firstName} (id: ${userId})`
+  if (firstName !== undefined) return firstName
+  return `id: ${userId}`
+}
+
+const buildChannelUserText = (msg: ChannelMessage): string => {
+  const chatType = metadataString(msg, "chatType")
+  const isTelegramGroup =
+    msg.transport === "telegram" &&
+    chatType !== undefined &&
+    telegramGroupChatTypes.has(chatType)
+
+  if (!isTelegramGroup) return msg.text
+  return `[telegram user: ${formatChannelSender(msg)}]\n${msg.text}`
+}
+
 /* -------------------------------------------------------------------------- */
 /* Layer                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -118,7 +150,7 @@ export const ChannelServiceLayer: Layer.Layer<
         )
 
         // 3. Send the user message to the thread
-        yield* chat.send(threadId, msg.text)
+        yield* chat.send(threadId, buildChannelUserText(msg))
 
         // 4. Spawn a delivery fiber per (threadId, adapter) — idempotent
         const adapterList = yield* Ref.get(adapters)

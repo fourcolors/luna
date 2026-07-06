@@ -159,7 +159,7 @@ const bootShadowedEnvKeys = new Set<string>()
   // thread. Self-heals all start paths (autodeploy, manual restart, rebuild).
   applyClaudeExecutablePreflight()
 }
-import { Context, Effect, Layer, ManagedRuntime, Option, Runtime, Stream } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Option, Redacted, Runtime, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
@@ -265,6 +265,13 @@ import {
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import { composeInterceptors, defaultSafetyInterceptors } from "@luna/tools"
+import {
+  ChannelService,
+  ChannelServiceLayer,
+  ChannelSessionStore,
+  InboundDedupStore,
+  makeTelegramAdapter,
+} from "@luna/channels"
 import {
   createJobInputBridge,
   createLocalShellBridge,
@@ -772,7 +779,9 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             systemContent, // SYSTEM.md: runtime mechanics (workspaces, paths)
             workspacesContent, // active workspaces' workspace.md inlined at boot
             mainMemoryContent, // Luna main thread observational memory
-            sessionMetadata,
+            opts.channelMeta
+              ? buildSessionMetadata({ channelContext: opts.channelMeta })
+              : sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
             opts.systemPrompt,
@@ -1653,6 +1662,7 @@ export const buildBaseLayer = (
   | AccountBroker
   | SDKAdapter
   | ChatService
+  | ChannelService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   | any // TelemetryPlatform sinks + NoopTracerLayer + AgentNotesService are side-effect Layers
 > => {
@@ -2242,6 +2252,25 @@ export const buildBaseLayer = (
   const beliefWriterL = BeliefWriter.Default.pipe(Layer.provide(memoryRouterL), Layer.provide(clockL))
   const surveyL = buildSurveyLayer({ alignmentStoreL, beliefWriterL, memoryRouterL, clockL })
 
+  // ── Communication channels (Telegram, …) ────────────────────────────────
+  // @luna/channels bridges external chat platforms to ChatService as a pure
+  // downstream consumer (subscribe → deliver), exactly like ui-ws. The two
+  // durable stores reuse luna.db; LunaSqliteBootstrap is satisfied at the
+  // bottom of buildServerLayer like every other SQLite-backed layer here.
+  // ChannelServiceLayer is provided ChatService (chatL) by reference, so it
+  // shares the SAME ChatService instance the WS server uses (Effect memoizes
+  // layers by reference) — no second SDK runtime. Adapters are registered and
+  // started in buildMain once the runtime is live.
+  const channelSessionStoreL = ChannelSessionStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const channelDedupStoreL = InboundDedupStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const channelServiceL = ChannelServiceLayer.pipe(
+    Layer.provide(Layer.mergeAll(channelSessionStoreL, channelDedupStoreL, chatL, clockL)),
+  )
+
   return Layer.mergeAll(
     uiL,
     obsL,
@@ -2266,6 +2295,7 @@ export const buildBaseLayer = (
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
     vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
     threadRegistryWithMigrationL, // Phase 1: durable thread index (luna.db threads table)
+    channelServiceL, // Communication channels (Telegram, …): adapters registered + started in buildMain
   )
 }
 
@@ -3388,7 +3418,7 @@ const SEED_HINT =
 
 const buildMain = (
   opLabelsRegistered: ReadonlyArray<string>,
-): Effect.Effect<never, Error, AccountBroker | ServerHandle> =>
+): Effect.Effect<never, Error, AccountBroker | ServerHandle | ChannelService> =>
   Effect.gen(function* () {
     // Operator-visible boot log: how many accounts hydrated, by kind.
     // Resolves nothing; just inspects the in-memory broker pool.
@@ -3427,6 +3457,28 @@ const buildMain = (
     console.log(`💡 web UI: bun run --filter '@luna/ui-web' dev`)
     console.log(`   token auto-fills via .env.development — start a thread`)
     console.log(`💤 idle until a client connects — Ctrl-C to exit`)
+
+    // ── Communication channels: register + start adapters ────────────────────
+    // Telegram is wired unconditionally; the bot token is the only requirement.
+    // The token is read from TELEGRAM_BOT_TOKEN and passed as a Redacted value
+    // so it never appears in logs/traces. With no token we skip registration
+    // (an unstartable bot would just back off forever) and log a one-liner so
+    // operators know how to enable it. startAdapters() forks each adapter into
+    // the ChannelService's own (long-lived) scope, so it runs for the life of
+    // the server; the trailing Effect.scoped only discharges the unused ambient
+    // Scope requirement on the API signature.
+    const channels = yield* ChannelService
+    const tgToken = process.env["TELEGRAM_BOT_TOKEN"]?.trim()
+    if (tgToken !== undefined && tgToken.length > 0) {
+      yield* channels.registerAdapter(
+        makeTelegramAdapter({ id: "telegram-main", token: Redacted.make(tgToken) }),
+      )
+      yield* channels.startAdapters().pipe(Effect.scoped)
+      console.log(`📨 telegram channel: started (telegram-main)`)
+    } else {
+      console.log(`📨 telegram channel: idle — set TELEGRAM_BOT_TOKEN to enable`)
+    }
+
     // Park forever so the server scope stays open.
     yield* Effect.never
   })

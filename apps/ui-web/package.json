@@ -25,6 +25,7 @@
     "@luna/adapter-sdk": "workspace:*",
     "@luna/capabilities": "workspace:*",
     "@luna/control-server": "workspace:*",
+    "@luna/channels": "workspace:*",
     "@luna/chat-service": "workspace:*",
     "@luna/connectors": "workspace:*",
     "@luna/core": "workspace:*",

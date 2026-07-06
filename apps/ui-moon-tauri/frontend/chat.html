@@ -493,8 +493,8 @@
        .chat-panel header-action buttons stay exactly as they were. */
     #title-bar { position: relative; }
 
-    /* Faux close/min — classic skin only (studio/aqua use native traffic lights
-       hover-revealed via moon-native-titlebar.js). Handlers stay wired for classic. */
+    /* Faux close/min — classic skin only (studio/aqua use native traffic lights,
+       always visible via moon-native-titlebar.js). Handlers stay wired for classic. */
     #title-bar #close-btn {
       position: absolute;
       top: 5px;
@@ -2737,6 +2737,80 @@
       error(message, ...args) {
         console.error('%c[Luna Error]', 'color: #ef4444; font-weight: bold;', message, ...args);
       }
+    };
+
+    /**
+     * Notifier — raises a native OS notification via the Rust `notify` command.
+     *
+     * Today's single trigger is a background/scheduled JOB result delivered to
+     * the chat (an `assistant-done` frame carrying `message.delivery`): work the
+     * user didn't just ask for, arriving when they're likely not watching. Live
+     * replies are deliberately NOT notified — the user is already here.
+     *
+     * Fail-soft everywhere: no Tauri (jsdom / browser preview) → no-op; the
+     * command rejecting (e.g. the user disabled notifications in System
+     * Settings) → logged, never thrown. Opt out with
+     * localStorage 'luna_notifications_enabled' = 'false' (default on).
+     */
+    const Notifier = {
+      enabled() {
+        try {
+          return localStorage.getItem('luna_notifications_enabled') !== 'false';
+        } catch (_e) {
+          return true;
+        }
+      },
+      notify(title, body) {
+        if (!this.enabled()) return;
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        try {
+          Promise.resolve(core.invoke('notify', { title: title || 'Luna', body: body || '' }))
+            .catch((e) => Logger.warn('notify command failed:', e));
+        } catch (e) {
+          Logger.warn('notify invoke threw:', e);
+        }
+      },
+      /**
+       * Cross-window dedupe. Parallel chat panels (panel-chat-*) on the same
+       * thread each receive the same delivery frame; localStorage is shared
+       * across the app's windows, so the first UNFOCUSED window to claim a
+       * delivery's signature notifies and the rest skip. Best-effort (a
+       * cross-process race can in theory double-claim) — acceptable for a
+       * notification banner. Fails open: a storage error never suppresses.
+       */
+      claimed(sig) {
+        try {
+          const KEY = 'luna_notify_last_delivery';
+          if (localStorage.getItem(KEY) === sig) return true;
+          localStorage.setItem(KEY, sig);
+          return false;
+        } catch (_e) {
+          return false;
+        }
+      },
+      /**
+       * Notify for a background-delivered assistant message. Title names the
+       * delivering task when known ("Luna · <label>"); body is the reply text
+       * (the Rust side truncates to a banner-sized preview).
+       */
+      notifyDelivered(message) {
+        if (!message || typeof message !== 'object') return;
+        // The user is watching THIS window: the chat bubble + #124 result
+        // toast already surface the delivery — an OS banner would be noise.
+        // Each window checks its OWN focus, so a focused panel stays quiet
+        // while an unfocused sibling (checked before any dedupe claim) can
+        // still raise the banner.
+        if (document.hasFocus()) return;
+        const body = typeof message.text === 'string' && message.text.trim()
+          ? message.text.trim()
+          : 'A background task finished.';
+        const sig = (message.ts || 0) + ':' + body.length + ':' + body.slice(0, 40);
+        if (this.claimed(sig)) return;
+        const label = message.delivery && message.delivery.label;
+        const title = label ? 'Luna · ' + label : 'Luna';
+        this.notify(title, body);
+      },
     };
 
     /**
@@ -6090,6 +6164,9 @@
         State.activeTurnId = null;
         ChatState.appendDelivered(frame.message);
         ChatLoop.flush();
+        // Raise an OS notification: this result arrived from a background/
+        // scheduled task, so the user is likely not watching the window.
+        Notifier.notifyDelivered(frame.message);
         return;
       }
       const doneTurnId = frame.turnId || State.activeTurnId;
@@ -9007,6 +9084,11 @@
       // route through the native opener (https + mailto only, enforced in Rust).
       // Outside Tauri (dev-in-a-browser) window.open is still the right fallback.
       const url = a.href;
+      // Match the Rust open_external_url allowlist (https + mailto only): any
+      // other scheme (http:, file:, javascript:, custom) is already prevented
+      // from navigating above and is dropped here, so we never waste an IPC
+      // round-trip or log a warn on a link Rust would refuse.
+      if (!/^(https:|mailto:)/i.test(url)) return;
       if (window.__TAURI__ && window.__TAURI__.core) {
         window.__TAURI__.core.invoke('open_external_url', { url })
           .catch((err) => Logger.warn('open link failed:', err));
@@ -9314,6 +9396,7 @@
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.ResultToasts = ResultToasts;   // #124 toast harness
+      window.__MoonInternals.Notifier = Notifier;           // OS-notification harness
       window.__MoonInternals.UpdateBanner = UpdateBanner;   // staged-update nudge harness
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;

@@ -275,6 +275,18 @@ export interface CreateThreadOptions {
    * by a restart.
    */
   readonly resumeFromSessionId?: string
+  /**
+   * When this thread was created by a channel adapter (Telegram, Discord, …),
+   * carries the channel context used to render per-thread session metadata.
+   * Absent for WebSocket / UI-originated threads.
+   */
+  readonly channelMeta?: {
+    readonly interface: string
+    readonly chatId?: string
+    readonly userId?: string
+    readonly username?: string
+    readonly firstName?: string
+  }
 }
 
 /**

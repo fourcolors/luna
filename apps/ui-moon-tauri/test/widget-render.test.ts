@@ -151,4 +151,70 @@ describe('widget.html — kind-aware render', () => {
     expect((window as unknown as Record<string, unknown>).__xss2).toBeUndefined()
     expect(contentArea().querySelector('iframe')).toBeNull()
   })
+
+  // ── External-link handling (bugfix: links in artifact windows never opened) ──
+  // A kind=markdown artifact emits real <a href> tags. Without a delegated
+  // handler a click would navigate THIS widget webview away from its content;
+  // with it, the click is intercepted and handed to the native open_external_url
+  // command (now granted to widget-* in capabilities/widgets.json).
+  const invokeMock = () =>
+    (window as unknown as { __TAURI__: { core: { invoke: ReturnType<typeof vi.fn> } } })
+      .__TAURI__.core.invoke
+  const clickAnchor = (a: HTMLAnchorElement) => {
+    const ev = new window.MouseEvent('click', { bubbles: true, cancelable: true })
+    a.dispatchEvent(ev)
+    return ev
+  }
+
+  it('markdown external https link → routed to open_external_url; webview NOT navigated', () => {
+    render({ id: ART_ID, kind: 'markdown', title: 'L', version: 1, content: '[docs](https://example.com/x)' })
+    const a = contentArea().querySelector('a[href]') as HTMLAnchorElement
+    expect(a).toBeTruthy()
+    expect(a.getAttribute('href')).toBe('https://example.com/x')
+    const invoke = invokeMock()
+    invoke.mockClear()
+    const ev = clickAnchor(a)
+    expect(ev.defaultPrevented).toBe(true) // the webview does not follow the link
+    expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://example.com/x' })
+  })
+
+  it('markdown mailto link → routed to open_external_url', () => {
+    render({ id: ART_ID, kind: 'markdown', title: 'M', version: 1, content: '[mail](mailto:a@b.com)' })
+    const a = contentArea().querySelector('a[href]') as HTMLAnchorElement
+    expect(a).toBeTruthy()
+    const invoke = invokeMock()
+    invoke.mockClear()
+    const ev = clickAnchor(a)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'mailto:a@b.com' })
+  })
+
+  it('non-external scheme is not handed to the opener (but is still prevented from navigating)', () => {
+    // luna:// links have no handler in a widget window; they must neither reach
+    // the system opener nor navigate the webview.
+    render({ id: ART_ID, kind: 'markdown', title: 'N', version: 1, content: '[panel](luna://widget/x)' })
+    const a = contentArea().querySelector('a[href]') as HTMLAnchorElement | null
+    expect(a).toBeTruthy()
+    const invoke = invokeMock()
+    invoke.mockClear()
+    const ev = clickAnchor(a!)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(invoke).not.toHaveBeenCalledWith('open_external_url', expect.anything())
+  })
+
+  it('http:// (non-https) link → prevented from navigating but NOT handed to the opener', () => {
+    // The JS scheme gate mirrors the Rust open_external_url allowlist (https +
+    // mailto only). http:// is deliberately refused by Rust, so routing it there
+    // would only waste an IPC round-trip and log a warn; instead it is dropped in
+    // JS after preventDefault — the webview never navigates, and no invoke fires.
+    render({ id: ART_ID, kind: 'markdown', title: 'H', version: 1, content: '[insecure](http://example.com/x)' })
+    const a = contentArea().querySelector('a[href]') as HTMLAnchorElement | null
+    expect(a).toBeTruthy()
+    expect(a!.getAttribute('href')).toBe('http://example.com/x')
+    const invoke = invokeMock()
+    invoke.mockClear()
+    const ev = clickAnchor(a!)
+    expect(ev.defaultPrevented).toBe(true) // anti-navigation preserved for every scheme
+    expect(invoke).not.toHaveBeenCalled() // http:// dropped in JS: zero wasted IPC, no warn
+  })
 })

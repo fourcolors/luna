@@ -230,7 +230,6 @@ describe('storage event — specific key', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_theme',
       newValue: 'light',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-theme')).toBe('light')
   })
@@ -241,7 +240,6 @@ describe('storage event — specific key', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_palette',
       newValue: 'dawn',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-palette')).toBe('dawn')
   })
@@ -252,7 +250,6 @@ describe('storage event — specific key', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_chrome',
       newValue: 'ink',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-chrome')).toBe('ink')
   })
@@ -263,7 +260,6 @@ describe('storage event — specific key', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_grain',
       newValue: 'true',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-grain')).toBe('on')
   })
@@ -279,7 +275,6 @@ describe('storage event — specific key', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'some_other_key',
       newValue: 'anything',
-      storageArea: window.localStorage,
     }))
     // apply() was NOT called — attribute reflects the load-time value
     expect(el().getAttribute('data-theme')).toBe('light')
@@ -305,7 +300,6 @@ describe('storage event — key null (clear)', () => {
     window.localStorage.clear()
     window.dispatchEvent(new StorageEvent('storage', {
       key: null,
-      storageArea: window.localStorage,
     }))
 
     expect(el().getAttribute('data-palette')).toBe('tide')
@@ -363,7 +357,6 @@ describe('font + fontSize', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_font',
       newValue: 'mono',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-font')).toBe('mono')
   })
@@ -374,7 +367,6 @@ describe('font + fontSize', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_fontsize',
       newValue: 'small',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-fontsize')).toBe('small')
   })
@@ -422,7 +414,6 @@ describe('skin', () => {
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'luna_skin',
       newValue: 'aqua',
-      storageArea: window.localStorage,
     }))
     expect(el().getAttribute('data-skin')).toBe('aqua')
   })

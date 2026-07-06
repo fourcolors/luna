@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "cd ../.. && vitest run packages/channels/test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

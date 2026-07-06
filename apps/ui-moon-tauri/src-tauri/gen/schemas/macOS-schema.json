@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows the begin_cluster_drag command",
+          "type": "string",
+          "const": "allow-begin-cluster-drag",
+          "markdownDescription": "Allows the begin_cluster_drag command"
+        },
+        {
           "description": "Allows the begin_native_resize command",
           "type": "string",
           "const": "allow-begin-native-resize",
@@ -373,6 +379,12 @@
           "type": "string",
           "const": "allow-dock-self",
           "markdownDescription": "Allows the dock_self command"
+        },
+        {
+          "description": "Allows the end_cluster_drag command",
+          "type": "string",
+          "const": "allow-end-cluster-drag",
+          "markdownDescription": "Allows the end_cluster_drag command"
         },
         {
           "description": "Allows the expand_from_moon command",
@@ -451,6 +463,18 @@
           "type": "string",
           "const": "allow-migrate-legacy-connection",
           "markdownDescription": "Allows migrating moon-connection.json to client.toml (idempotent boot-time migration)"
+        },
+        {
+          "description": "Allows the monitor_work_areas command",
+          "type": "string",
+          "const": "allow-monitor-work-areas",
+          "markdownDescription": "Allows the monitor_work_areas command"
+        },
+        {
+          "description": "Allows raising a native OS notification (title + body) via the notify command",
+          "type": "string",
+          "const": "allow-notify",
+          "markdownDescription": "Allows raising a native OS notification (title + body) via the notify command"
         },
         {
           "description": "Allows the oauth_loopback_cancel command",

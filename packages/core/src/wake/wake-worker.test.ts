@@ -46,6 +46,7 @@ import {
 } from "../jobs/worker-registry.js"
 import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { FakeWakeReasoner } from "./reasoner.js"
+import { installWakeSchema } from "./workspace-schema.js"
 import { WakeLogStore } from "./wake-log-store.js"
 import type { WakeDigest } from "./types.js"
 import { WakeWorkerLayer, WAKE_WORKER_KIND } from "./wake-worker.js"
@@ -204,19 +205,7 @@ async function makeTempWorkspace(opts: {
     "# luna\nTest workspace for wake worker unit test.",
   )
   const db = new bunSqlite.Database(join(wsDir, "workspace.db"))
-  db.run(`CREATE TABLE goals (
-    slug TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active', priority INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
-  db.run(`CREATE TABLE next_actions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, goal_slug TEXT NOT NULL,
-    action TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
-    priority INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL, completed_at INTEGER, notes TEXT)`)
-  db.run(`CREATE TABLE wake_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, woke_at INTEGER NOT NULL,
-    goal_slug TEXT, summary TEXT NOT NULL, outcome TEXT NOT NULL,
-    artifacts TEXT)`)
+  installWakeSchema(db)
   if (opts.withGoals) {
     db.run(
       "INSERT INTO goals VALUES ('g1','First goal','desc','active',3,100,100)",
