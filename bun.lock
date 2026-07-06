@@ -37,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.50",
+      "version": "0.0.53",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -111,6 +111,7 @@
       "name": "@luna/channels",
       "version": "0.0.1",
       "dependencies": {
+        "@luna/capabilities": "workspace:*",
         "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
         "effect": "^3.21.0",

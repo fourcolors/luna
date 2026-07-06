@@ -13,6 +13,7 @@
   "dependencies": {
     "@luna/core": "workspace:*",
     "@luna/chat-service": "workspace:*",
+    "@luna/capabilities": "workspace:*",
     "effect": "^3.21.0"
   },
   "devDependencies": {

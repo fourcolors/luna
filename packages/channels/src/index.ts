@@ -37,10 +37,31 @@ export {
 export type { InboundDedupStoreApi } from "./dedup.js"
 export { InboundDedupStore } from "./dedup.js"
 
-export { splitToChunks, subscribeAndDeliver, streamEditThrottleMs, buildStatusLine } from "./delivery.js"
+export type { ToolStep } from "./delivery.js"
+export {
+  splitToChunks,
+  subscribeAndDeliver,
+  streamEditThrottleMs,
+  buildStatusLine,
+  buildTurnSummary,
+  toolStepDetail,
+  repairSplitFences,
+} from "./delivery.js"
+
+export type { ChannelCommandSpec, ChannelCommandResult } from "./commands.js"
+export { channelCommands, handleChannelCommand } from "./commands.js"
 
 export type { ChannelServiceApi } from "./service.js"
 export { ChannelService, ChannelServiceLayer } from "./service.js"
 
 export type { TelegramAdapterConfig, TelegramHttpTransport } from "./adapters/telegram.js"
-export { makeTelegramAdapter, makeRealTransport } from "./adapters/telegram.js"
+export {
+  makeTelegramAdapter,
+  makeRealTransport,
+  normalizeCommandMention,
+} from "./adapters/telegram.js"
+export {
+  markdownToTelegramHtml,
+  toPlainTextFallback,
+  escapeTelegramHtml,
+} from "./adapters/telegram-format.js"

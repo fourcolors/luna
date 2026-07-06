@@ -34,6 +34,7 @@ import type {
   DeliverOptions,
   DeliveryTarget,
 } from "../src/types.js"
+import type { ToolStep } from "../src/index.js"
 import {
   ChannelSessionStore,
   InboundDedupStore,
@@ -41,6 +42,8 @@ import {
   ChannelServiceLayer,
   splitToChunks,
   buildStatusLine,
+  buildTurnSummary,
+  repairSplitFences,
   streamEditThrottleMs,
 } from "../src/index.js"
 import type { ChatFrame, CreateThreadOptions } from "@luna/chat-service"
@@ -935,34 +938,115 @@ describe("delivery via Effect.runFork (production adapter path)", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("buildStatusLine", () => {
-  it("returns empty string when no active and no completed tools", () => {
-    expect(buildStatusLine(new Map(), [])).toBe("")
+  const step = (over: Partial<ToolStep> & { toolCallId: string; name: string }): ToolStep => ({
+    nested: false,
+    status: "active",
+    ...over,
+  })
+
+  it("returns empty string when there are no steps", () => {
+    expect(buildStatusLine([])).toBe("")
   })
 
   it("shows active tools as spinning indicator", () => {
-    const active = new Map([["id1", "Read"], ["id2", "Grep"]])
-    const result = buildStatusLine(active, [])
+    const result = buildStatusLine([
+      step({ toolCallId: "id1", name: "Read" }),
+      step({ toolCallId: "id2", name: "Grep" }),
+    ])
     expect(result).toContain("⚙ Read…")
     expect(result).toContain("⚙ Grep…")
   })
 
-  it("shows completed tools with check/cross marks", () => {
-    const completed = [
-      { name: "Read", ok: true },
-      { name: "Write", ok: false },
-    ]
-    const result = buildStatusLine(new Map(), completed)
+  it("shows settled tools with check/cross marks", () => {
+    const result = buildStatusLine([
+      step({ toolCallId: "id1", name: "Read", status: "ok" }),
+      step({ toolCallId: "id2", name: "Write", status: "error" }),
+    ])
     expect(result).toContain("✓ Read")
     expect(result).toContain("✗ Write")
   })
 
-  it("completed tools appear before active tools", () => {
-    const active = new Map([["id1", "Grep"]])
-    const completed = [{ name: "Read", ok: true }]
-    const result = buildStatusLine(active, completed)
+  it("keeps steps in invocation order (settled and active interleave)", () => {
+    const result = buildStatusLine([
+      step({ toolCallId: "id1", name: "Read", status: "ok" }),
+      step({ toolCallId: "id2", name: "Grep" }),
+      step({ toolCallId: "id3", name: "Write", status: "ok" }),
+    ])
     const readIdx = result.indexOf("✓ Read")
     const grepIdx = result.indexOf("⚙ Grep…")
+    const writeIdx = result.indexOf("✓ Write")
     expect(readIdx).toBeLessThan(grepIdx)
+    expect(grepIdx).toBeLessThan(writeIdx)
+  })
+
+  it("labels Agent steps with their description and nests subagent calls", () => {
+    const result = buildStatusLine([
+      step({ toolCallId: "id1", name: "Agent", detail: "Research lunar cycles" }),
+      step({ toolCallId: "id2", name: "Read", nested: true, status: "ok" }),
+    ])
+    expect(result).toContain("⚙ Agent - Research lunar cycles…")
+    expect(result).toContain("✓ ↳ Read")
+  })
+
+  it("collapses older steps beyond the visible cap", () => {
+    const steps = Array.from({ length: 11 }, (_, i) =>
+      step({ toolCallId: `id${i}`, name: `Tool${i}`, status: "ok" }),
+    )
+    const result = buildStatusLine(steps)
+    expect(result).toContain("… +3 earlier steps")
+    expect(result).not.toContain("Tool0")
+    expect(result).toContain("Tool10")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* buildTurnSummary                                                            */
+/* -------------------------------------------------------------------------- */
+
+describe("buildTurnSummary", () => {
+  const okStep = (name: string, i: number): ToolStep => ({
+    toolCallId: `id${i}`,
+    name,
+    nested: false,
+    status: "ok",
+  })
+
+  it("returns empty string for a turn with no tool steps", () => {
+    expect(buildTurnSummary([])).toBe("")
+  })
+
+  it("renders the Worked-for pill plus each step as expandable-quote lines", () => {
+    const result = buildTurnSummary([okStep("Read", 1), okStep("Bash", 2)])
+    const lines = result.split("\n")
+    expect(lines[0]).toBe(">! ⚙ Worked for 2 steps")
+    expect(lines[1]).toBe(">! ✓ Read")
+    expect(lines[2]).toBe(">! ✓ Bash")
+  })
+
+  it("uses singular wording for a single step", () => {
+    expect(buildTurnSummary([okStep("Read", 1)])).toContain("Worked for 1 step\n")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* repairSplitFences                                                           */
+/* -------------------------------------------------------------------------- */
+
+describe("repairSplitFences", () => {
+  it("leaves chunks without fences untouched", () => {
+    expect(repairSplitFences(["hello", "world"])).toEqual(["hello", "world"])
+  })
+
+  it("closes an open fence at a chunk boundary and reopens it in the next", () => {
+    const chunks = ["intro\n```ts\nconst a = 1", "const b = 2\n```\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n```ts\nconst a = 1\n```")
+    expect(repaired[1]).toBe("```\nconst b = 2\n```\ndone")
+  })
+
+  it("keeps balanced chunks balanced", () => {
+    const chunks = ["```\ncode\n```", "plain"]
+    expect(repairSplitFences(chunks)).toEqual(["```\ncode\n```", "plain"])
   })
 })
 
@@ -1233,5 +1317,350 @@ describe("delivery — stream-edit tool step indicators", () => {
     expect(fakeCtx.deliveries[0]?.content).toContain("Something went wrong")
     expect(fakeCtx.deliveries[0]?.opts.isPartial).toBe(false)
     expect(fakeCtx.deliveries[0]?.opts.isFinal).toBe(true)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Built-in channel commands                                                   */
+/* -------------------------------------------------------------------------- */
+
+describe("channel commands", () => {
+  it("/help replies with the command list and never reaches the LLM", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    let sendCount = 0
+    let createCount = 0
+    const tracked = {
+      ...chatService,
+      send: (threadId: string, text: string) => {
+        sendCount++
+        return chatService.send(threadId, text)
+      },
+      createThread: (opts: CreateThreadOptions) => {
+        createCount++
+        return chatService.createThread(opts)
+      },
+    }
+    const fakeCtx = makeFakeAdapterClean("cmd-help", "stream-edit")
+
+    await run(tracked as unknown as ReturnType<typeof makeStubChatService>["service"], Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      const accepted = yield* svc.handleMessage(makeMessage({ text: "/help" }))
+      expect(accepted).toBe(true)
+    }))
+
+    expect(sendCount).toBe(0)
+    expect(createCount).toBe(0)
+    expect(fakeCtx.deliveries).toHaveLength(1)
+    const reply = fakeCtx.deliveries[0]
+    expect(reply?.opts.isFinal).toBe(true)
+    expect(reply?.content).toContain("/new")
+    expect(reply?.content).toContain("/stop")
+    // Double-asterisk = bold through the Telegram converter (single would
+    // render italic — regression guard for the greeting's emphasis).
+    expect(reply?.content).toContain("**Hi, I'm Luna.**")
+  })
+
+  it("/start behaves exactly like /help (Telegram first contact)", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("cmd-start", "stream-edit")
+
+    await run(chatService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      yield* svc.handleMessage(makeMessage({ text: "/start" }))
+    }))
+
+    expect(fakeCtx.deliveries).toHaveLength(1)
+    expect(fakeCtx.deliveries[0]?.content).toContain("/new")
+  })
+
+  it("/new resets the mapping so the next message starts a fresh thread", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    let createCount = 0
+    const tracked = {
+      ...chatService,
+      createThread: (opts: CreateThreadOptions) => {
+        createCount++
+        return chatService.createThread(opts)
+      },
+    }
+    const fakeCtx = makeFakeAdapterClean("cmd-new", "stream-edit")
+    const base = { channelId: "cmd-ch-1", threadingKey: "cmd-ch-1" }
+
+    await run(tracked as unknown as ReturnType<typeof makeStubChatService>["service"], Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      yield* svc.handleMessage(makeMessage({ ...base, platformMessageId: "n-1", text: "hi" }))
+      yield* svc.handleMessage(makeMessage({ ...base, platformMessageId: "n-2", text: "again" }))
+      expect(createCount).toBe(1) // same thread reused
+
+      yield* svc.handleMessage(makeMessage({ ...base, platformMessageId: "n-3", text: "/new" }))
+      expect(createCount).toBe(1) // command itself creates nothing
+
+      yield* svc.handleMessage(makeMessage({ ...base, platformMessageId: "n-4", text: "fresh" }))
+      expect(createCount).toBe(2) // mapping was dropped → fresh thread
+    }))
+
+    const newReply = fakeCtx.deliveries.find((d) => d.content.includes("Fresh conversation"))
+    expect(newReply).toBeDefined()
+  })
+
+  it("/stop interrupts the mapped thread and confirms", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    const interrupted: string[] = []
+    const tracked = {
+      ...chatService,
+      interrupt: (threadId: string) => {
+        interrupted.push(threadId)
+        return Effect.void
+      },
+    }
+    const fakeCtx = makeFakeAdapterClean("cmd-stop", "stream-edit")
+    const base = { channelId: "cmd-ch-2", threadingKey: "cmd-ch-2" }
+
+    await run(tracked as unknown as ReturnType<typeof makeStubChatService>["service"], Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      yield* svc.handleMessage(makeMessage({ ...base, platformMessageId: "s-1", text: "long task" }))
+      yield* svc.handleMessage(makeMessage({ ...base, platformMessageId: "s-2", text: "/stop" }))
+    }))
+
+    expect(interrupted).toHaveLength(1)
+    const reply = fakeCtx.deliveries.find((d) => d.content.includes("⏹ Stopped."))
+    expect(reply).toBeDefined()
+  })
+
+  it("/stop without a mapped thread reports nothing to stop", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    const interrupted: string[] = []
+    const tracked = {
+      ...chatService,
+      interrupt: (threadId: string) => {
+        interrupted.push(threadId)
+        return Effect.void
+      },
+    }
+    const fakeCtx = makeFakeAdapterClean("cmd-stop-idle", "stream-edit")
+
+    await run(tracked as unknown as ReturnType<typeof makeStubChatService>["service"], Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      yield* svc.handleMessage(makeMessage({ channelId: "cmd-ch-3", text: "/stop" }))
+    }))
+
+    expect(interrupted).toHaveLength(0)
+    expect(fakeCtx.deliveries[0]?.content).toContain("Nothing is running")
+  })
+
+  it("unknown slash commands fall through to the LLM (skills path)", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    const sent: string[] = []
+    const tracked = {
+      ...chatService,
+      send: (threadId: string, text: string) => {
+        sent.push(text)
+        return chatService.send(threadId, text)
+      },
+    }
+    const fakeCtx = makeFakeAdapterClean("cmd-unknown", "stream-edit")
+
+    await run(tracked as unknown as ReturnType<typeof makeStubChatService>["service"], Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      yield* svc.handleMessage(makeMessage({ text: "/remind me in an hour" }))
+    }))
+
+    expect(sent).toEqual(["/remind me in an hour"])
+    expect(fakeCtx.deliveries).toHaveLength(0) // no command reply
+  })
+
+  it("command replies go only to adapters of the same transport", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("cmd-same", "stream-edit")
+    const otherCtx = makeFakeAdapterClean("cmd-other", "stream-edit")
+    const otherAdapter: ChannelAdapter = { ...otherCtx.adapter, transport: "other" }
+
+    await run(chatService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(fakeCtx.adapter)
+      yield* svc.registerAdapter(otherAdapter)
+      yield* svc.handleMessage(makeMessage({ text: "/help" })) // transport "fake"
+    }))
+
+    expect(fakeCtx.deliveries).toHaveLength(1)
+    expect(otherCtx.deliveries).toHaveLength(0)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Stream-edit finalization: turn summary, interrupts, long answers            */
+/* -------------------------------------------------------------------------- */
+
+describe("delivery — stream-edit finalization", () => {
+  it("prepends the collapsed step summary to the final text after tool steps", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fin-summary", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: "fin-pm-1" }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, {
+            type: "tool-call",
+            threadId,
+            turnId: "t1",
+            toolCallId: "tc-fin-1",
+            name: "Read",
+            input: {},
+          } satisfies ChatFrame)
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, {
+            type: "tool-result",
+            threadId,
+            toolCallId: "tc-fin-1",
+            status: "ok",
+            output: "content",
+            truncated: false,
+          } satisfies ChatFrame)
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "The answer."))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const last = fakeCtx.deliveries[fakeCtx.deliveries.length - 1]
+    expect(last?.opts.isFinal).toBe(true)
+    expect(last?.content).toBe(">! ⚙ Worked for 1 step\n>! ✓ Read\n\nThe answer.")
+  })
+
+  it("labels Agent steps with their description in the live status", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fin-agent", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: "fin-pm-2" }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, {
+            type: "tool-call",
+            threadId,
+            turnId: "t1",
+            toolCallId: "tc-agent-1",
+            name: "Agent",
+            input: { description: "Research lunar cycles", subagent_type: "Explore" },
+          } satisfies ChatFrame)
+          yield* Effect.sleep("60 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const status = fakeCtx.deliveries.find((d) =>
+      d.content.includes("⚙ Agent - Research lunar cycles…"),
+    )
+    expect(status).toBeDefined()
+    expect(status?.content).toContain("⏳ Working on it…")
+  })
+
+  it("finalizes an interrupted turn as Stopped, preserving partial text", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fin-stop", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: "fin-pm-3" }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "Halfway there"))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, {
+            type: "assistant-error",
+            threadId,
+            turnId: "t1",
+            error: { kind: "interrupted", message: "user interrupted" },
+          } satisfies ChatFrame)
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const last = fakeCtx.deliveries[fakeCtx.deliveries.length - 1]
+    expect(last?.opts.isFinal).toBe(true)
+    expect(last?.content).toBe("Halfway there\n\n⏹ Stopped.")
+  })
+
+  it("splits a long final answer into follow-up chunks instead of truncating", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    // Tiny limit so the final text needs three chunks.
+    const fakeCtx = makeFakeAdapterClean("fin-long", "stream-edit", 40)
+
+    const longText = [
+      "First paragraph with some words.",
+      "Second paragraph, also present.",
+      "Third paragraph closes it out.",
+    ].join("\n\n")
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: "fin-pm-4" }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, longText))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const finals = fakeCtx.deliveries.filter((d) => !d.opts.isPartial)
+    expect(finals.length).toBeGreaterThanOrEqual(3)
+    // Every chunk respects the limit; only the last is isFinal.
+    for (const f of finals) expect(f.content.length).toBeLessThanOrEqual(40)
+    expect(finals[finals.length - 1]?.opts.isFinal).toBe(true)
+    expect(finals.slice(0, -1).every((f) => !f.opts.isFinal)).toBe(true)
+    // The full text survives across chunks.
+    expect(finals.map((f) => f.content).join(" ")).toContain("Third paragraph")
   })
 })
