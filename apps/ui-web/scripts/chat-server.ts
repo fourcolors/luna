@@ -779,7 +779,9 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             systemContent, // SYSTEM.md: runtime mechanics (workspaces, paths)
             workspacesContent, // active workspaces' workspace.md inlined at boot
             mainMemoryContent, // Luna main thread observational memory
-            sessionMetadata,
+            opts.channelMeta
+              ? buildSessionMetadata({ channelContext: opts.channelMeta })
+              : sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
             opts.systemPrompt,
