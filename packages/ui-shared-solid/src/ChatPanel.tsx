@@ -60,6 +60,12 @@ export interface AvailableModel {
   readonly id: string
   readonly label: string
   readonly efforts?: ReadonlyArray<EffortOption>
+  /**
+   * Effort a fresh thread should default to for this model when the client has
+   * no persisted selection — server-advertised via the hello frame. Undefined
+   * ⇒ no opinion; the dropdown then falls back to the weakest supported level.
+   */
+  readonly defaultEffort?: EffortOption
 }
 
 /**
@@ -98,10 +104,16 @@ export const buildNewThreadFrame = (params: {
   readonly accountId?: string | null | undefined
   readonly availableModels?: ReadonlyArray<AvailableModel> | null | undefined
 }): NewThreadFrame => {
+  // With no persisted effort, fall back to the model's server-advertised
+  // default (e.g. Sonnet 5 → "high") so a brand-new thread starts at the
+  // intended level instead of being omitted (which lands on the SDK default).
+  const modelDefaultEffort = params.availableModels?.find(
+    (m) => m.id === params.model,
+  )?.defaultEffort
   const effort = clampEffortToModel(
     params.availableModels,
     params.model,
-    params.effort,
+    params.effort ?? modelDefaultEffort,
   )
   return {
     type: "new-thread",
@@ -595,7 +607,11 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                           <span class="muted small">Effort</span>
                           <select
                             class="composer-config-select"
-                            value={props.effort ?? modelEfforts()[0]}
+                            value={
+                              props.effort ??
+                              selectedModel().defaultEffort ??
+                              modelEfforts()[0]
+                            }
                             onChange={(e) => {
                               props.onEffortChange?.(
                                 thread().summary.id,

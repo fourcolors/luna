@@ -200,7 +200,7 @@ describe("resolveOverflowConfig", () => {
 describe("resolveRoleModel", () => {
   it("returns default when store is null", () => {
     expect(resolveRoleModel("advisor", null)).toBe("claude-opus-4-8")
-    expect(resolveRoleModel("daily-driver", null)).toBe("claude-sonnet-4-6")
+    expect(resolveRoleModel("daily-driver", null)).toBe("claude-sonnet-5")
     expect(resolveRoleModel("wake", null)).toBe("claude-sonnet-4-6")
     expect(resolveRoleModel("dream", null)).toBe("claude-haiku-4-5")
   })

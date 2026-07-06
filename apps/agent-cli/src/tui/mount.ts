@@ -44,7 +44,7 @@ import {
 import { parseChatArgs } from "../chat/args.js"
 import type { SurveyVerdict } from "@luna/core"
 
-const DEFAULT_MODEL = "claude-sonnet-4-5"
+const DEFAULT_MODEL = "claude-sonnet-5"
 
 const USAGE = [
   "Usage: luna chat [options]",

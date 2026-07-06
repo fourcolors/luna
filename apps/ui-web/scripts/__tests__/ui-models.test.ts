@@ -162,12 +162,14 @@ describe("clampEffort", () => {
 describe("buildAvailableModels", () => {
   it("returns the built-in base list when LUNA_UI_MODELS is absent", () => {
     const result = buildAvailableModels({})
-    // Base list has exactly 4 entries; order is: Sonnet, Fable, Opus, Haiku.
+    // Base list has 5 entries; order is: Sonnet 5 (default), Fable, Opus,
+    // Sonnet 4.6, Haiku. Sonnet 5 carries defaultEffort "high".
     expect(result).toEqual([
-      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced",    efforts: ["low", "medium", "high", "max"] },
-      { id: "claude-fable-5",    label: "Fable 5 (1M context)",             efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
-      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",  efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
-      { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest",      efforts: [] },
+      { id: "claude-sonnet-5",   label: "Claude Sonnet 5 — balanced default", efforts: ["low", "medium", "high", "max"], defaultEffort: "high" },
+      { id: "claude-fable-5",    label: "Fable 5 (1M context)",               efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
+      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",     efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — prior gen",      efforts: ["low", "medium", "high", "max"] },
+      { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest",         efforts: [] },
     ])
   })
 
@@ -177,7 +179,7 @@ describe("buildAvailableModels", () => {
     })
     // Extra is first (recommended default), base models follow.
     expect(result[0]).toEqual({ id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", efforts: [] })
-    expect(result[1]).toEqual({ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced", efforts: ["low", "medium", "high", "max"] })
+    expect(result[1]).toEqual({ id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced default", efforts: ["low", "medium", "high", "max"], defaultEffort: "high" })
   })
 
   it("dedupes by id — extra overrides base model of same id (keeps extra's position and label)", () => {
@@ -203,7 +205,7 @@ describe("buildAvailableModels", () => {
     const result = buildAvailableModels({ LUNA_UI_MODELS: "   " })
     // Falls back to the base list.
     expect(result.length).toBeGreaterThan(0)
-    expect(result[0]?.id).toBe("claude-sonnet-4-6")
+    expect(result[0]?.id).toBe("claude-sonnet-5")
   })
 
   it("preserves multiple extras in declaration order before base models", () => {
@@ -213,7 +215,7 @@ describe("buildAvailableModels", () => {
     expect(result[0]?.id).toBe("extra-a")
     expect(result[1]?.id).toBe("extra-b")
     // Base models follow after the extras.
-    expect(result[2]?.id).toBe("claude-sonnet-4-6")
+    expect(result[2]?.id).toBe("claude-sonnet-5")
   })
 
   it("attaches effort matrix to extras via effortsForModel", () => {
@@ -223,5 +225,15 @@ describe("buildAvailableModels", () => {
     })
     const entry = result.find((m) => m.id === "claude-opus-4-8")
     expect(entry?.efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"])
+  })
+
+  it("advertises defaultEffort 'high' for Sonnet 5 and omits it for other models", () => {
+    const result = buildAvailableModels({})
+    const sonnet5 = result.find((m) => m.id === "claude-sonnet-5")
+    expect(sonnet5?.defaultEffort).toBe("high")
+    // Every other base model has no default-effort opinion → key omitted.
+    for (const m of result.filter((x) => x.id !== "claude-sonnet-5")) {
+      expect(m.defaultEffort).toBeUndefined()
+    }
   })
 })
