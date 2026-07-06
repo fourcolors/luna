@@ -8,7 +8,8 @@
     "dev:server": "bun run scripts/dev-server.ts",
     "server:chat": "bun run scripts/chat-server.ts",
     "dev:preview": "vite build --mode development && vite preview",
-    "build": "vite build",
+    "build": "[ -z \"$VITE_UI_WS_TOKEN\" ] || { echo 'refusing prod build: VITE_UI_WS_TOKEN is set (would bake the shared secret into dist/)'; exit 1; }; vite build",
+    "serve:static": "bun run scripts/serve-static.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
