@@ -18,12 +18,13 @@ function FbGlyph({ kind }) {
 const FB_CLIP = <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"></path></svg>;
 const FB_THREAD_IC = <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.9A8 8 0 1 1 21 12Z"></path></svg>;
 
-// which inbox items belong to a thread
+// which inbox items belong to a thread (mock-data demo links only — a real
+// projected item's `thread` field, if any, would come from the agent).
 const FB_THREAD_LINKS = { i3: "lisbon", i9: "residency" };
 const FB_PRIO_ORD = { act: 0, soon: 1 };
-function fbSeed() {
-  return INBOX_SEED
-    .map((x) => ({ ...x, thread: FB_THREAD_LINKS[x.id] }))
+function fbSeed(list) {
+  return list
+    .map((x) => ({ ...x, thread: x.thread ?? FB_THREAD_LINKS[x.id] }))
     .sort((a, b) => (FB_PRIO_ORD[a.prio] ?? 2) - (FB_PRIO_ORD[b.prio] ?? 2));
 }
 
@@ -66,9 +67,14 @@ function FbChoiceCards({ options, onPick }) {
   );
 }
 
-export function FinalInbox({ onDelegate, onToast, onOpenThread }) {
+// `itemsProp` is the P3 real-data seam (useLunaInbox): the agent-mediated
+// connector projection, shaped exactly like INBOX_SEED. `undefined`/`null`/`[]`
+// (no connectors connected, or a projection turn that came back empty/
+// unparsable) all fall back to the INBOX_SEED demo so the panel is never
+// empty. Block renderers below are unchanged either way.
+export function FinalInbox({ items: itemsProp, onDelegate, onToast, onOpenThread }) {
   const { useState, useRef, useEffect } = FbReact;
-  const [items, setItems] = useState(fbSeed);
+  const [items, setItems] = useState(() => fbSeed(itemsProp && itemsProp.length ? itemsProp : INBOX_SEED));
   const [draft, setDraft] = useState("");
   const [focus, setFocus] = useState(false);
   const [done, setDone] = useState(false);
@@ -76,6 +82,20 @@ export function FinalInbox({ onDelegate, onToast, onOpenThread }) {
   const [clearing, setClearing] = useState(null);
   const totalRef = useRef(0);
   const nextId = useRef(1);
+
+  // Real projection arriving/refreshing (useLunaInbox): replace the working
+  // list once per new non-empty batch. Only re-seeds on an actual new array
+  // (not every parent re-render), so in-flight local triage (done/snooze/
+  // capture) isn't clobbered by an unrelated re-render.
+  const lastItemsPropRef = useRef(itemsProp);
+  useEffect(() => {
+    if (itemsProp && itemsProp !== lastItemsPropRef.current && itemsProp.length) {
+      lastItemsPropRef.current = itemsProp;
+      setItems(fbSeed(itemsProp));
+    } else {
+      lastItemsPropRef.current = itemsProp;
+    }
+  }, [itemsProp]);
 
   // captures from elsewhere (e.g. the map's "add to Today")
   useEffect(() => {

@@ -1,11 +1,12 @@
 // final-app.jsx — Luna Studio (final): Home space with inbox + threads,
 // City and Build spaces, keyboard jumping, and threads woven through chat.
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, TweakToggle, TweakSelect, TweakSlider } from "./tweaks-panel.jsx";
 import { LUNA_PALETTES, PipApp, TimerApp, WeatherApp, MusicApp, HabitApp, StickyApp, SecureApp } from "./luna-mini-apps.jsx";
 import { TASK_DEFS, BRAINS } from "./studio-data.jsx";
 import { BrainBadge } from "./studio-brain.jsx";
 import { GeneratedWidget } from "./studio-widget.jsx";
+import { WidgetFrame } from "./WidgetFrame.jsx";
 import { TaskRunner } from "./studio-task.jsx";
 import { MapApp } from "./studio-map.jsx";
 import { makeTaskDef } from "./studio-chat.jsx";
@@ -14,6 +15,7 @@ import { ThreadsApp } from "./final-threads.jsx";
 import { ThreadChat } from "./final-chat.jsx";
 import { FinalInbox } from "./final-inbox.jsx";
 import { useLunaData } from "../data/useLunaData";
+import { useLunaInbox } from "../data/useLunaInbox";
 
 const TWEAK_DEFAULTS = { theme: "light", palette: "tide", chrome: "wash", grain: false, motion: "lively", ambient: true, defaultBrain: "luna", snap: 28, guides: true };
 
@@ -86,12 +88,24 @@ function buildPanels(vw, vh) {
 }
 
 const DEFS = {
-  chat:    { title: "luna", render: (ctx) => <ThreadChat threads={ctx.threads} activeId={ctx.activeThread} onSwitch={ctx.openThread} onNew={ctx.newThread} onAppend={ctx.appendMsg} onThreadNote={ctx.threadNote} onSpawn={ctx.spawn} onVoice={ctx.openVoice} onFocus={ctx.focusInbox} brain={ctx.chatBrain} setBrain={ctx.setChatBrain} /> },
+  chat:    { title: "luna", render: (ctx) => <ThreadChat threads={ctx.threads} activeId={ctx.activeThread} onSwitch={ctx.openThread} onNew={ctx.newThread} onAppend={ctx.appendMsg} onThreadNote={ctx.threadNote} onSpawn={ctx.spawn} onVoice={ctx.openVoice} onFocus={ctx.focusInbox} brain={ctx.chatBrain} setBrain={ctx.setChatBrain} suggestedActions={ctx.suggestedActions} onAcceptAction={ctx.acceptAction} onDismissAction={ctx.dismissAction} /> },
   threads: { title: "threads", render: (ctx) => <ThreadsApp threads={ctx.threads} activeId={ctx.activeThread} onOpen={ctx.openThread} /> },
-  inbox:   { title: "inbox", render: (ctx) => <FinalInbox onDelegate={ctx.delegate} onToast={ctx.toast} onOpenThread={ctx.openThread} /> },
+  inbox:   { title: "inbox", render: (ctx) => <FinalInbox items={ctx.inboxItems} onDelegate={ctx.delegate} onToast={ctx.toast} onOpenThread={ctx.openThread} /> },
   map:     { title: "the city", render: (ctx) => <MapApp onToast={ctx.toast} /> },
   task:    { title: "task", render: (ctx, p) => <TaskRunner def={p.def} startedAt={p.startedAt} /> },
-  widget:  { title: "widget", render: (ctx, p) => <GeneratedWidget spec={p.spec} fresh={p.fresh} /> },
+  widget:  { title: "widget", render: (ctx, p) => {
+    // Real vibe-coded widget: p.artifactId names a pinned widget/mcp-app
+    // artifact the agent authored (widget_write/mcp_app_write) -> render it
+    // in the real sandboxed cage. Fall back to the mock GeneratedWidget for
+    // the Build/VoiceScene demo path, which spawns a local spec, not a
+    // server artifact.
+    if (!p.artifactId) return <GeneratedWidget spec={p.spec} fresh={p.fresh} />;
+    const artifact = ctx.widgetArtifacts.get(p.artifactId);
+    if (!artifact) {
+      return <div className="gw-wrap widget-frame-host"><div className="gw-stat-note">this widget isn't pinned anymore.</div></div>;
+    }
+    return <WidgetFrame artifact={artifact} mcp={ctx.mcp} obsEvents={ctx.obsEvents} fresh={p.fresh} />;
+  } },
   pip:     { title: "pip", render: () => <PipApp /> },
   timer:   { title: "focus timer", w: 240, h: 200, render: () => <TimerApp /> },
   weather: { title: "weather", w: 260, h: 250, render: () => <WeatherApp /> },
@@ -121,6 +135,21 @@ export function StudioApp() {
   const luna = useLunaData();
   const threads = luna.threads;
   const activeThread = luna.activeThread;
+  // P4 vibe-coded widgets: pinned widget/mcp-app artifacts, keyed by id so
+  // DEFS.widget's render can look one up in O(1) per panel.
+  const widgetArtifacts = useMemo(
+    () => new Map(luna.pinnedArtifacts.map((a) => [a.id, a])),
+    [luna.pinnedArtifacts],
+  );
+  // P3 inbox seam: agent-mediated connector projection, rides luna's single
+  // transport (state/send/onServerFrame) — see data/useLunaInbox.ts.
+  const inbox = useLunaInbox({
+    state: luna.state,
+    send: luna.send,
+    onServerFrame: luna.onServerFrame,
+    connected: luna.connected,
+    model: luna.model,
+  });
   const [guides, setGuides] = useState([]);
   const [snappedId, setSnappedId] = useState(null);
   const [dragId, setDragId] = useState(null);
@@ -261,6 +290,52 @@ export function StudioApp() {
     return () => window.removeEventListener("studio:openThread", h);
   }, []);
 
+  /* ---------- vibe-coded widgets (P4): persist + agent-driven open ---------- */
+  // Pinned widget/mcp-app artifacts are durable server-side (luna.db) and
+  // resent after every hello — reconstructing a board panel for each one we
+  // don't already have (every time the pinned list changes) is what makes a
+  // summoned widget survive a reload with zero client-side caching.
+  useEffect(() => {
+    for (const a of luna.pinnedArtifacts) {
+      if (a.kind === "widget" || a.kind === "mcp-app") {
+        ensureWidgetPanel(a.id, { title: a.title, fresh: false });
+      }
+    }
+  }, [luna.pinnedArtifacts]);
+
+  // An open-artifact-widget frame: widget_write/mcp_app_write just created
+  // one (auto-open), or the user asked Luna to reopen a closed one. Focus an
+  // existing panel, or spawn fresh if the pinned-artifacts effect above
+  // hasn't caught up to it yet.
+  useEffect(() => {
+    const f = luna.focusArtifact;
+    if (!f) return;
+    const artifact = widgetArtifacts.get(f.id);
+    if (!artifact || (artifact.kind !== "widget" && artifact.kind !== "mcp-app")) return;
+    const existing = panelsRef.current.find((p) => p.type === "widget" && p.artifactId === f.id);
+    if (existing) {
+      if (existing.closed) restore(existing.id);
+      if (existing.ws !== ws) switchWs(existing.ws);
+      bringToFront(existing.id);
+    } else {
+      ensureWidgetPanel(f.id, { title: artifact.title, fresh: true });
+    }
+  }, [luna.focusArtifact, widgetArtifacts]);
+
+  // A widget-open frame naming one of useLunaData's WIDGET_DIRECTORY kinds
+  // (chat/threads/inbox) — focus that panel, switching workspace if needed.
+  useEffect(() => {
+    const w = luna.widgetOpen;
+    if (!w) return;
+    const target =
+      panelsRef.current.find((p) => p.type === w.kind && p.ws === ws) ||
+      panelsRef.current.find((p) => p.type === w.kind);
+    if (!target) return;
+    if (target.closed) restore(target.id);
+    if (target.ws !== ws) switchWs(target.ws);
+    bringToFront(target.id);
+  }, [luna.widgetOpen]);
+
   /* ---------- magnetic snap ---------- */
   function computeSnap(id, rx, ry, w, h, wsId) {
     const thresh = t.snap;
@@ -320,13 +395,32 @@ export function StudioApp() {
 
   /* ---------- spawn / close / restore / tidy ---------- */
   const spawnN = useRef(0);
+  // Vibe-coded widgets (P4): dedup guard so the pinned-artifact restore
+  // effect and the agent's live open-artifact-widget signal can't both spawn
+  // a second panel for the same artifact — checked+claimed synchronously (a
+  // plain Set, not React state) so it's race-safe within one render's effects.
+  const widgetPanelRef = useRef(new Set());
+  function ensureWidgetPanel(artifactId, opts) {
+    if (widgetPanelRef.current.has(artifactId)) return false;
+    if (panelsRef.current.some((p) => p.type === "widget" && p.artifactId === artifactId)) {
+      widgetPanelRef.current.add(artifactId);
+      return false;
+    }
+    widgetPanelRef.current.add(artifactId);
+    spawn({ type: "widget", artifactId, title: opts && opts.title, fresh: !!(opts && opts.fresh) });
+    return true;
+  }
   function spawn(req) {
     const def = DEFS[req.type]; if (!def) return;
     const n = spawnN.current++;
     const vw = window.innerWidth;
     const sz = DEFAULT_SIZE[req.type] || { w: def.w || 264, h: def.h || 230 };
     const w = req.w || sz.w, h = req.h || sz.h;
-    const id = req.type + "-" + Date.now();
+    // Widgets get a DETERMINISTIC id keyed on the pinned artifact (not
+    // Date.now()) — the restore effect can spawn several in one tick and
+    // Date.now() collides at millisecond resolution; this also makes the
+    // same artifact resolve to the same panel id every reload.
+    const id = req.type === "widget" && req.artifactId ? "widget-" + req.artifactId : req.type + "-" + Date.now();
     const rawX = Math.min(vw - w - EDGE_MARGIN, vw * 0.4 + (n % 4) * 30);
     const rawY = TOP_MIN + 36 + (n % 5) * 34;
     const pos = computeSnap(id, rawX, rawY, w, h, ws);
@@ -335,6 +429,7 @@ export function StudioApp() {
       id, ws, type: req.type, brain: req.brain, title: req.title,
       def: req.def, startedAt: req.def ? Date.now() : undefined,
       spec: req.spec, fresh: req.fresh, request: req.request, kind: req.kind,
+      artifactId: req.artifactId,
       x: pos.x, y: pos.y, w, h, z: zTop.current, entering: true,
     }]);
     setTimeout(() => setPanels((ps) => ps.map((p) => (p.id === id ? { ...p, entering: false, fresh: false } : p))), 760);
@@ -387,7 +482,14 @@ export function StudioApp() {
     chatBrain, setChatBrain,
     focusInbox, toast: showToast, delegate,
     threads, activeThread, openThread, newThread, appendMsg, threadNote,
+    inboxItems: inbox.items,
+    suggestedActions: luna.suggestedActions,
+    acceptAction: (id) => luna.respondToAction(id, "accept"),
+    dismissAction: (id) => luna.respondToAction(id, "dismiss"),
     submitSecure: (id, pl) => { close(id); showToast("sent securely ✦", "luna"); },
+    // P4 vibe-coded widgets: real artifact lookup + the MCP relay + the obs
+    // event stream, handed to DEFS.widget's WidgetFrame.
+    widgetArtifacts, mcp: luna.mcp, obsEvents: luna.obsEvents,
   };
 
   const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });

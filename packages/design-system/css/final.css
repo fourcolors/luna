@@ -279,6 +279,50 @@
 .tc-main .chat-stream { padding-left: 28px; }
 .tc-main .chip-row { padding-left: 28px; }
 
+/* ---- suggested-action chip (server-pushed, distinct from the canned
+   prompt chips above): title + accept/dismiss, settling to a quiet
+   "queued"/"running" badge once no longer proposed. ---- */
+.tc-main .sa-chip-row { padding-left: 28px; padding-top: 2px; }
+.sa-chip-row { display: flex; padding: 2px 0 6px; }
+.sa-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 1.3px solid var(--ink-faint);
+  background: color-mix(in oklab, var(--panel-tint, var(--accent)) 12%, transparent);
+  border-radius: 999px;
+  padding: 5px 6px 5px 13px;
+  font-size: 12.5px;
+}
+.sa-chip.settled { background: transparent; }
+.sa-chip-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.sa-chip-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.sa-chip-btn {
+  border: none;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink);
+  background: transparent;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sa-chip-btn.accept { background: color-mix(in oklab, var(--accent) 22%, transparent); }
+.sa-chip-btn.accept:hover { background: color-mix(in oklab, var(--accent) 34%, transparent); }
+.sa-chip-btn.dismiss { color: var(--ink-soft); }
+.sa-chip-btn.dismiss:hover { background: color-mix(in oklab, var(--ink-faint) 70%, transparent); }
+.sa-chip-btn:disabled { opacity: 0.5; cursor: default; }
+.sa-chip-badge { flex: 0 0 auto; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
+
 /* ============ inbox additions ============ */
 .ib-prio {
   width: 7px; height: 7px;

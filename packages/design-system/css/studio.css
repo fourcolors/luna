@@ -684,6 +684,17 @@
 }
 @keyframes paintSweep { from { background-position: 160% 0; opacity: 1; } to { background-position: -120% 0; opacity: 0; } }
 
+/* real vibe-coded widget: agent-authored artifact in the sandboxed iframe
+   cage (widget-sandbox.ts buildSrcdoc / mcp-app-host.ts), not the mock. */
+.widget-frame-host { position: relative; }
+.widget-frame-iframe { flex: 1; width: 100%; height: 100%; border: none; background: transparent; border-radius: inherit; }
+.widget-frame-source {
+  flex: 1; margin: 0; overflow: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px; line-height: 1.5; color: var(--ink-soft);
+  white-space: pre-wrap; word-break: break-word;
+}
+
 /* counter */
 .gw-counter { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
 .gw-num { font-size: 46px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }

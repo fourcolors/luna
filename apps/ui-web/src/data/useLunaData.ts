@@ -14,13 +14,17 @@
  * Impedance match: reducer ThreadView { summary, messages[], inFlight } ->
  * design thread { id, name, tint, brain, status, note, msgs[{who,text}] }.
  */
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   type ChatMessage,
   type ClientFrame,
   type ConnectionStatus,
+  type ObsEvent,
+  type PinnedArtifactItem,
   type ServerFrame,
   type SessionSummary,
+  type SuggestedActionStatus,
+  type SuggestedActionWire,
   type ThreadView,
   type TransportHandle,
   type UIState,
@@ -98,6 +102,64 @@ function mapThread(
 
 const CLIENT_INFO = { name: "luna-web", version: "0.0.1", platform: "browser" } as const
 
+/**
+ * Threads carrying this tag are hub-internal (e.g. useLunaInbox's inbox-sync
+ * thread) — never a user conversation. Filtered out of the design's thread
+ * list/sidebar and never auto-selected as the "first" thread on a fresh boot.
+ * Keep in sync with data/useLunaInbox.ts's SYSTEM_THREAD_TAG.
+ */
+const SYSTEM_THREAD_TAG = "system"
+const isSystemThread = (s: SessionSummary): boolean => s.tags.includes(SYSTEM_THREAD_TAG)
+
+/**
+ * P4 vibe-coded widgets — the board panels this web client can summon by
+ * `kind` (the agent's open_widget tool). Scoped to the seams that are
+ * actually real today — chat/threads/inbox are wired to live server data;
+ * the rest of final-app.jsx's DEFS (map/task/timer/…) stays summonable only
+ * from inside the app until it carries real state. Mirrors
+ * apps/ui-web/src/App.tsx's WEB_WIDGET_DIRECTORY (Solid).
+ */
+const WIDGET_DIRECTORY: ReadonlyArray<{
+  readonly kind: string
+  readonly title: string
+  readonly description: string
+}> = [
+  { kind: "chat", title: "Chat", description: "The active conversation with Luna" },
+  { kind: "threads", title: "Threads", description: "The conversation/thread list" },
+  { kind: "inbox", title: "Inbox", description: "Delegated items awaiting a brain" },
+]
+
+/** requestId-keyed pending MCP relay promise, settled by the matching
+ *  mcp-resource-result / mcp-tool-result frame (or a local timeout). */
+type McpPendingResolver = (r: {
+  ok: boolean
+  mimeType?: string
+  text?: string
+  result?: unknown
+  message?: string
+}) => void
+
+/** The web client's MCP relay, handed to a kind="mcp-app" WidgetFrame.
+ *  Present only once the server advertises `capabilities.mcpApps`. */
+export interface WebMcpRelay {
+  readonly readResource: (
+    uri: string,
+  ) => Promise<{ ok: boolean; mimeType?: string; text?: string; message?: string }>
+  readonly callTool: (
+    appUri: string,
+    tool: string,
+    args: unknown,
+  ) => Promise<{ ok: boolean; result?: unknown; message?: string }>
+}
+
+/** An agent-driven "open this artifact as a widget" signal (open-artifact-
+ *  widget frame — fired on widget_write/mcp_app_write create, or a reopen
+ *  ask). The nonce forces re-focus even when the same id is opened twice. */
+export interface FocusArtifactSignal {
+  readonly id: string
+  readonly nonce: number
+}
+
 export interface LunaData {
   readonly status: ConnectionStatus
   readonly connected: boolean
@@ -107,6 +169,56 @@ export interface LunaData {
   readonly newThread: () => void
   readonly appendMsg: (threadId: string, msg: StudioMsg) => void
   readonly threadNote: (id: string, patch: unknown) => void
+  /**
+   * The active thread's suggested actions (Luna proposes an action inline;
+   * PRD "Suggested Actions"), with optimistic status overrides applied so an
+   * Accept/Dismiss click flips the chip immediately rather than waiting on
+   * the server's suggested-action-update round-trip. Empty on older servers
+   * (no `suggestedActions` hello capability) — the reducer's map is simply
+   * never populated, so this stays `[]`.
+   */
+  readonly suggestedActions: ReadonlyArray<SuggestedActionWire>
+  /** Accept (auto-executes server-side) or dismiss one suggested action. */
+  readonly respondToAction: (actionId: string, decision: "accept" | "dismiss") => void
+  /**
+   * Escape hatch for seams that need the raw reducer state or to send a
+   * frame type this hub doesn't wrap (e.g. useLunaInbox minting its own
+   * system thread + turn). Prefer the narrow handlers above where they exist.
+   */
+  readonly state: UIState
+  readonly send: (frame: ClientFrame) => void
+  /** Subscribe to every raw ServerFrame as it arrives, in addition to the
+   *  reducer dispatch. For frame types the reducer intentionally no-ops
+   *  (e.g. `turn-complete`, the only true end-of-agentic-turn signal) this is
+   *  the only way to observe them without a second socket. Returns unsubscribe. */
+  readonly onServerFrame: (listener: (frame: ServerFrame) => void) => () => void
+  /** The default model new threads are created with (persisted config). */
+  readonly model: string
+
+  /**
+   * P4 vibe-coded widgets — durable pinned artifacts (agent-authored `widget`/
+   * `mcp-app` kinds are the ones final-app renders as board panels; `code`/
+   * `html`/`markdown` kinds are content previews it doesn't summon here). The
+   * server resends this after every hello, so rebuilding a widget panel from
+   * it on each connect is what makes a summoned widget survive a reload —
+   * nothing is cached client-side; the server's artifact store IS the
+   * persistence.
+   */
+  readonly pinnedArtifacts: ReadonlyArray<PinnedArtifactItem>
+  /** The MCP Apps relay for kind="mcp-app" widgets — undefined until the
+   *  server advertises `capabilities.mcpApps` (WidgetFrame then falls back to
+   *  a static source view instead of a dead iframe). */
+  readonly mcp: WebMcpRelay | undefined
+  /** Live obs-event stream, forwarded (cap-gated) into a kind="widget"
+   *  iframe's luna.subscribe() callers. */
+  readonly obsEvents: ReadonlyArray<ObsEvent>
+  /** An `open-artifact-widget` frame landed (widget_write/mcp_app_write just
+   *  created one, or the user asked to reopen one) — final-app spawns/focuses
+   *  a widget panel for it. Nonce forces re-focus on a repeat open. */
+  readonly focusArtifact: FocusArtifactSignal | null
+  /** A `widget-open` frame named one of WIDGET_DIRECTORY's kinds — final-app
+   *  switches workspace and brings that panel to front. */
+  readonly widgetOpen: { readonly kind: string; readonly nonce: number } | null
 }
 
 export function useLunaData(): LunaData {
@@ -116,9 +228,90 @@ export function useLunaData(): LunaData {
   // Latest send in a ref so onFrame (stable) can request a fresh list-threads.
   const sendRef = useRef<(f: ClientFrame) => void>(() => {})
 
+  // Raw-frame side-channel (see LunaData.onServerFrame doc comment above).
+  const frameListenersRef = useRef<Set<(frame: ServerFrame) => void>>(new Set())
+  const onServerFrame = useCallback(
+    (listener: (frame: ServerFrame) => void): (() => void) => {
+      frameListenersRef.current.add(listener)
+      return () => frameListenersRef.current.delete(listener)
+    },
+    [],
+  )
+
+  // ── P4 vibe-coded widgets ──────────────────────────────────────────────
+  // Agent-driven focus/open signals (open-artifact-widget / widget-open) are
+  // side-effect only — the reducer's default arm no-ops both (no store state
+  // backs them; see reducer.ts's "widget-open"/"open-artifact-widget" case).
+  // Surfaced as plain state via the onServerFrame side-channel above (rather
+  // than editing onFrame) so final-app.jsx can react to them in a useEffect.
+  const focusNonceRef = useRef(0)
+  const [focusArtifact, setFocusArtifact] = useState<FocusArtifactSignal | null>(null)
+  const widgetOpenNonceRef = useRef(0)
+  const [widgetOpen, setWidgetOpen] = useState<{ kind: string; nonce: number } | null>(null)
+
+  // MCP Apps relay: a kind="mcp-app" WidgetFrame asks for resources/tools;
+  // stamp a requestId, send the WS frame, and resolve when the matching
+  // mcp-resource-result / mcp-tool-result frame arrives (settled below via
+  // onServerFrame). Bounded by a timeout so a dropped result can't leak a
+  // pending promise forever.
+  const mcpReqSeqRef = useRef(0)
+  const mcpPendingRef = useRef<Map<string, McpPendingResolver>>(new Map())
+
+  function mcpRequest<T>(requestId: string, frame: ClientFrame, timeoutMs = 30000): Promise<T> {
+    return new Promise((resolve) => {
+      const done: McpPendingResolver = (r) => {
+        if (!mcpPendingRef.current.has(requestId)) return
+        mcpPendingRef.current.delete(requestId)
+        clearTimeout(timer)
+        resolve(r as T)
+      }
+      const timer = setTimeout(
+        () => done({ ok: false, message: "MCP request timed out" }),
+        timeoutMs,
+      )
+      mcpPendingRef.current.set(requestId, done)
+      sendRef.current(frame)
+    })
+  }
+
+  const mcpReadResource = useCallback(
+    (uri: string): Promise<{ ok: boolean; mimeType?: string; text?: string; message?: string }> => {
+      const requestId = `mr${++mcpReqSeqRef.current}`
+      return mcpRequest(requestId, { type: "mcp-resource-read", requestId, uri })
+    },
+    [],
+  )
+
+  const mcpCallTool = useCallback(
+    (appUri: string, tool: string, args: unknown): Promise<{ ok: boolean; result?: unknown; message?: string }> => {
+      const requestId = `mt${++mcpReqSeqRef.current}`
+      return mcpRequest(requestId, { type: "mcp-tool-call", requestId, appUri, tool, args })
+    },
+    [],
+  )
+
+  // Settle the widget/mcp side-effect frames via the onServerFrame side-
+  // channel above, instead of editing onFrame.
+  useEffect(
+    () =>
+      onServerFrame((frame) => {
+        if (frame.type === "open-artifact-widget") {
+          setFocusArtifact({ id: frame.artifactId, nonce: ++focusNonceRef.current })
+        } else if (frame.type === "widget-open") {
+          if (WIDGET_DIRECTORY.some((w) => w.kind === frame.kind)) {
+            setWidgetOpen({ kind: frame.kind, nonce: ++widgetOpenNonceRef.current })
+          }
+        } else if (frame.type === "mcp-resource-result" || frame.type === "mcp-tool-result") {
+          mcpPendingRef.current.get(frame.requestId)?.(frame)
+        }
+      }),
+    [onServerFrame],
+  )
+
   const onFrame = useCallback(
     (frame: ServerFrame): void => {
       dispatch(frame)
+      frameListenersRef.current.forEach((listener) => listener(frame))
       // Sidebar freshness: server orders threads by lastMessageAt, so re-list
       // after any frame that mutates a thread's last-message metadata.
       if (
@@ -139,6 +332,21 @@ export function useLunaData(): LunaData {
   const { status, connect, send } = useTransport({ onFrame, onOpen })
   sendRef.current = send
 
+  // Announce this client as a widget host once per connection (the server
+  // "replaces any previously announced directory for this connection") — a
+  // separate effect on status.kind rather than folding into onOpen, so a
+  // reconnect re-announces without touching the hello handshake above.
+  const widgetDirSentRef = useRef(false)
+  useEffect(() => {
+    if (status.kind !== "open") {
+      widgetDirSentRef.current = false
+      return
+    }
+    if (widgetDirSentRef.current) return
+    widgetDirSentRef.current = true
+    send({ type: "widget-directory", widgets: WIDGET_DIRECTORY })
+  }, [status.kind, send])
+
   // Auto-connect on mount when a usable token is present.
   useEffect(() => {
     const cfg = cfgRef.current
@@ -152,7 +360,9 @@ export function useLunaData(): LunaData {
   useEffect(() => {
     if (status.kind !== "open") return
     if (state.selectedThreadId) return
-    const first = state.threadList[0]
+    // Skip hub-internal threads (e.g. useLunaInbox's inbox-sync thread) —
+    // they must never become the auto-selected "active" conversation.
+    const first = state.threadList.find((s) => !isSystemThread(s))
     if (first) {
       dispatch({ tag: "select-thread", threadId: first.id })
       send({ type: "subscribe", threadId: first.id })
@@ -175,9 +385,9 @@ export function useLunaData(): LunaData {
 
   const threads = useMemo<StudioThread[]>(
     () =>
-      state.threadList.map((s: SessionSummary) =>
-        mapThread(s, state.threads.get(s.id), state.selectedThreadId),
-      ),
+      state.threadList
+        .filter((s: SessionSummary) => !isSystemThread(s))
+        .map((s: SessionSummary) => mapThread(s, state.threads.get(s.id), state.selectedThreadId)),
     [state.threadList, state.threads, state.selectedThreadId],
   )
 
@@ -206,6 +416,75 @@ export function useLunaData(): LunaData {
     // Status/notes are derived from server state; local notes are a no-op.
   }, [])
 
+  // ── Suggested actions: optimistic Accept/Dismiss ──────────────────────
+  // Mirrors apps/ui-web (Solid)'s optimisticStatuses pattern: clicking Accept
+  // or Dismiss flips the chip's status immediately; the authoritative
+  // suggested-action-update reconciles (clears the override) once the server
+  // answers. A timeout rollback guards against a lost-race respond() (cross-
+  // thread/unknown actionId, dropped frame) so the chip never sticks forever.
+  const OPTIMISTIC_ROLLBACK_MS = 8000
+  const [optimisticActions, setOptimisticActions] = useState<
+    ReadonlyMap<string, SuggestedActionStatus>
+  >(new Map())
+
+  useEffect(() => {
+    setOptimisticActions((overrides) => {
+      if (overrides.size === 0) return overrides
+      const next = new Map(overrides)
+      let changed = false
+      for (const [id] of overrides) {
+        let found = false
+        for (const actions of state.suggestedActions.values()) {
+          const action = actions.find((a) => a.id === id)
+          if (action) {
+            found = true
+            if (action.status !== "proposed") next.delete(id)
+            break
+          }
+        }
+        if (!found) next.delete(id)
+        if (!next.has(id)) changed = true
+      }
+      return changed ? next : overrides
+    })
+  }, [state.suggestedActions])
+
+  const suggestedActions = useMemo<ReadonlyArray<SuggestedActionWire>>(() => {
+    const threadId = state.selectedThreadId
+    if (!threadId) return []
+    const actions = state.suggestedActions.get(threadId) ?? []
+    if (optimisticActions.size === 0) return actions
+    return actions.map((a) => {
+      const override = optimisticActions.get(a.id)
+      return override !== undefined ? { ...a, status: override } : a
+    })
+  }, [state.selectedThreadId, state.suggestedActions, optimisticActions])
+
+  const respondToAction = useCallback(
+    (actionId: string, decision: "accept" | "dismiss"): void => {
+      const threadId = state.selectedThreadId
+      if (!threadId) return
+      const optimistic: SuggestedActionStatus = decision === "accept" ? "accepted" : "dismissed"
+      setOptimisticActions((prev) => new Map(prev).set(actionId, optimistic))
+      send({ type: "suggested-action-respond", threadId, actionId, decision })
+      setTimeout(() => {
+        setOptimisticActions((prev) => {
+          if (!prev.has(actionId)) return prev // already reconciled
+          const next = new Map(prev)
+          next.delete(actionId)
+          return next
+        })
+      }, OPTIMISTIC_ROLLBACK_MS)
+    },
+    [state.selectedThreadId, send],
+  )
+
+  const mcpCapable = state.capabilities.mcpApps === true
+  const mcp = useMemo<WebMcpRelay | undefined>(
+    () => (mcpCapable ? { readResource: mcpReadResource, callTool: mcpCallTool } : undefined),
+    [mcpCapable, mcpReadResource, mcpCallTool],
+  )
+
   return {
     status,
     connected: status.kind === "open",
@@ -215,6 +494,17 @@ export function useLunaData(): LunaData {
     newThread,
     appendMsg,
     threadNote,
+    suggestedActions,
+    respondToAction,
+    state,
+    send,
+    onServerFrame,
+    model: cfgRef.current.model,
+    pinnedArtifacts: state.pinnedArtifacts,
+    mcp,
+    obsEvents: state.events,
+    focusArtifact,
+    widgetOpen,
   }
 }
 

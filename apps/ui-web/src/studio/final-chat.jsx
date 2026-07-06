@@ -5,9 +5,10 @@ import React from "react";
 import { THREAD_SECTIONS, THREAD_STATUS_LABEL } from "./final-threads.jsx";
 import { BRAINS } from "./studio-data.jsx";
 import { BrainPicker } from "./studio-brain.jsx";
+import { SuggestedActionChips } from "./SuggestedActionChips.jsx";
 const TcReact = React;
 
-export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThreadNote, onSpawn, onVoice, onFocus, brain, setBrain }) {
+export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThreadNote, onSpawn, onVoice, onFocus, brain, setBrain, suggestedActions, onAcceptAction, onDismissAction }) {
   const { useState, useRef, useEffect } = TcReact;
   const [railOpen, setRailOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -105,6 +106,8 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
             </div>
           )}
         </div>
+
+        <SuggestedActionChips actions={suggestedActions} onAccept={onAcceptAction} onDismiss={onDismissAction} />
 
         <div className="chip-row">
           {chips.map((c) => <button className="chip" key={c} onClick={() => send(c)}>{c}</button>)}
