@@ -94,6 +94,12 @@ describe("syncMcpMounts", () => {
     expect(
       (config as { headers: Record<string, string> }).headers["Authorization"],
     ).toBe("Bearer good-token")
+
+    // Slice C: policy entry must be present with fail-closed defaults.
+    expect(result.report.policy["good-server"]).toEqual({
+      allowAll: false,
+      allowedTools: [],
+    })
   })
 
   // (b) server with unresolvable header → skipped, not in registry
@@ -215,5 +221,84 @@ describe("syncMcpMounts", () => {
       headers: Record<string, string>
     }
     expect(config.headers["Authorization"]).toBe("Bearer good-token")
+  })
+
+  // (f) Slice C: policy entry reflects fail-closed default for a freshly-registered server.
+  it("(f) policy entry for a registered server with no allowedTools and allowAll=false is {allowAll:false, allowedTools:[]}", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+
+        yield* store.add({
+          slug: "fresh-server",
+          url: "https://mcp.example.com/sse",
+        })
+        yield* store.acceptTrust("fresh-server", 1_000_000)
+
+        return yield* syncMcpMounts()
+      }),
+    )
+
+    expect(result.registered).toContain("fresh-server")
+    expect(result.policy["fresh-server"]).toEqual({
+      allowAll: false,
+      allowedTools: [],
+    })
+  })
+
+  // (g) Slice C: after allowTool a re-sync reflects the tool in policy.
+  it("(g) policy entry reflects allowedTools after allowTool + re-sync", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+
+        yield* store.add({
+          slug: "policy-server",
+          url: "https://mcp.example.com/sse",
+        })
+        yield* store.acceptTrust("policy-server", 1_000_000)
+
+        // First sync — empty allowedTools.
+        const first = yield* syncMcpMounts()
+
+        // Operator grants a tool.
+        yield* store.allowTool("policy-server", "do_something")
+
+        // Second sync — should reflect the updated allowedTools.
+        const second = yield* syncMcpMounts()
+
+        return { first, second }
+      }),
+    )
+
+    expect(result.first.policy["policy-server"]).toEqual({
+      allowAll: false,
+      allowedTools: [],
+    })
+    expect(result.second.policy["policy-server"]).toEqual({
+      allowAll: false,
+      allowedTools: ["do_something"],
+    })
+  })
+
+  // (h) Slice C: skipped servers have NO policy entry.
+  it("(h) skipped servers (unresolvable header) have no policy entry", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+
+        yield* store.add({
+          slug: "bad-policy",
+          url: "https://mcp.example.com/sse",
+          headers: { Authorization: "env:MISSING" },
+        })
+        yield* store.acceptTrust("bad-policy", 1_000_000)
+
+        return yield* syncMcpMounts()
+      }),
+    )
+
+    expect(result.skipped.map((s) => s.slug)).toContain("bad-policy")
+    expect("bad-policy" in result.policy).toBe(false)
   })
 })

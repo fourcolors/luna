@@ -285,7 +285,7 @@ import {
   type EffortOption,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
-import { composeInterceptors, defaultSafetyInterceptors } from "@luna/tools"
+import { composeInterceptors, defaultSafetyInterceptors, mcpToolGate, type McpServerPolicy } from "@luna/tools"
 import {
   ChannelService,
   ChannelServiceLayer,
@@ -606,6 +606,23 @@ let notifyThreadsArchived: ((threadIds: ReadonlyArray<string>) => void) | null =
 // a pass that changed registry rows, and ui-ws re-broadcasts the (wire-safe)
 // list to every client. Null until a WS server registers.
 let notifyVaultListChanged: (() => void) | null = null
+
+// Slice C — MCP tool gate policy holder.
+// Populated at boot (and on re-sync) from syncMcpMounts().policy.
+// mcpToolGate reads it on EVERY tool call so allowTool / allowAllTools changes
+// take effect without recomposing the boot-global permission callback.
+const mcpToolPolicyHolder = new Map<string, McpServerPolicy>()
+const replaceMcpToolPolicy = (
+  p: Record<string, { allowAll: boolean; allowedTools: string[] }>,
+): void => {
+  mcpToolPolicyHolder.clear()
+  for (const [slug, v] of Object.entries(p)) {
+    mcpToolPolicyHolder.set(slug, {
+      allowAll: v.allowAll,
+      allowedTools: new Set(v.allowedTools),
+    })
+  }
+}
 const reattachSandbox = (threadId: string): void => {
   const reattach = sandboxReattachers.get(threadId)
   if (reattach !== undefined) reattach()
@@ -675,6 +692,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             : "",
         )
       }
+      // Slice C — seed the fail-closed MCP tool gate with boot-time policy.
+      replaceMcpToolPolicy(mcpMountReport.policy)
 
       const bootSkills = yield* skillRegistry.catalog()
       console.log(
@@ -3769,7 +3788,10 @@ const bootstrap = async (): Promise<void> => {
       Effect.gen(function* () {
         const adapter = yield* SDKAdapter
         yield* adapter.setPermissionCallback(
-          composeInterceptors(defaultSafetyInterceptors()),
+          composeInterceptors([
+            ...defaultSafetyInterceptors(),
+            mcpToolGate((slug) => mcpToolPolicyHolder.get(slug)),
+          ]),
         )
       }),
     )

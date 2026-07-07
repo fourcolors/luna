@@ -24,6 +24,19 @@ export interface SyncMcpMountsResult {
   readonly registered: string[]
   /** Servers that were skipped with the reason for each skip. */
   readonly skipped: Array<{ slug: string; reason: string }>
+  /**
+   * Live tool-access policy for every REGISTERED server (one entry per
+   * successfully mounted slug).  Skipped servers have NO entry — their tools
+   * are unknown to the gate, but they are also not mounted, so no tools exist.
+   *
+   * A registered server with `allowAll: false` and `allowedTools: []` gets an
+   * entry with those exact values — its tools are DENIED (fail-closed).
+   *
+   * Feed this map into `mcpToolGate`'s `policyLookup` by replacing the
+   * contents of a mutable holder; the gate reads it on every call so policy
+   * changes take effect without recomposing the boot-global callback.
+   */
+  readonly policy: Record<string, { allowAll: boolean; allowedTools: string[] }>
 }
 
 // ---------------------------------------------------------------------------
@@ -55,9 +68,12 @@ export const syncMcpMounts = (): Effect.Effect<
 
     const registered: string[] = []
     const skipped: Array<{ slug: string; reason: string }> = []
+    const policy: Record<string, { allowAll: boolean; allowedTools: string[] }> = {}
 
     // 2. Resolve headers and build desired configs, collecting skips.
     const desired = new Map<string, McpServerConfigLike>()
+    // Parallel map carrying the tool-access policy for each desired slug.
+    const desiredPolicy = new Map<string, { allowAll: boolean; allowedTools: string[] }>()
 
     for (const row of rows) {
       const entries = Object.entries(row.headers)
@@ -87,6 +103,10 @@ export const syncMcpMounts = (): Effect.Effect<
         headers: resolvedHeaders,
       }
       desired.set(row.slug, config)
+      desiredPolicy.set(row.slug, {
+        allowAll: row.allowAll,
+        allowedTools: row.allowedTools,
+      })
     }
 
     // 3. Reconcile: get current registry names, unregister stale entries.
@@ -109,7 +129,14 @@ export const syncMcpMounts = (): Effect.Effect<
         Effect.catchAll(() => Effect.void),
       )
       registered.push(slug)
+      // Populate the policy map for every successfully registered server.
+      // Skipped servers have no entry — fail-closed: if a server couldn't be
+      // mounted its tools don't exist anyway.
+      const p = desiredPolicy.get(slug)
+      if (p !== undefined) {
+        policy[slug] = p
+      }
     }
 
-    return { registered, skipped }
+    return { registered, skipped, policy }
   })
