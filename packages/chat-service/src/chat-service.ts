@@ -98,6 +98,9 @@ import {
   readProviderEnv,
 } from "@luna/core"
 
+// Mirrors DEFAULT_ROLE_MODELS["daily-driver"] in packages/core/src/provider-settings/resolver.ts.
+const DEFAULT_CHAT_MODEL = "claude-sonnet-5"
+
 /* -------------------------------------------------------------------------- */
 /* Internal per-thread state                                                  */
 /* -------------------------------------------------------------------------- */
@@ -715,16 +718,16 @@ export class ChatService extends Effect.Service<ChatService>()(
           // (defaultEffortForModel returns a real EffortLevel or undefined), so
           // the ultracode demux is unaffected. Only rebuilds the options object
           // when a default is actually injected (opts.effort was absent).
+          const resolvedModel = opts.model ?? DEFAULT_CHAT_MODEL
           const resolvedEffort: EffortOption | undefined =
-            opts.effort ?? defaultEffortForModel(opts.model ?? "")
-          // Rebuild the options object only when a default was actually injected
-          // (opts.effort was absent and the model has one). The `!== undefined`
-          // clause also narrows resolvedEffort so the `effort` key is never
-          // assigned `undefined` under exactOptionalPropertyTypes.
-          const effectiveOpts: CreateThreadOptions =
-            resolvedEffort !== undefined && resolvedEffort !== opts.effort
-              ? { ...decorated, effort: resolvedEffort }
-              : decorated
+            opts.effort ?? defaultEffortForModel(resolvedModel)
+          const effectiveOpts: CreateThreadOptions = {
+            ...decorated,
+            ...(resolvedModel !== opts.model ? { model: resolvedModel } : {}),
+            ...(resolvedEffort !== undefined && resolvedEffort !== opts.effort
+              ? { effort: resolvedEffort }
+              : {}),
+          }
           const sessionOptions = buildSessionOptions(effectiveOpts)
 
           // Per-model clamp result for logging + eager persistence below.
@@ -735,9 +738,9 @@ export class ChatService extends Effect.Service<ChatService>()(
           // matches what the SDK actually ran on.
           const createClamp = isUltracode(effectiveOpts.effort)
             ? { effort: undefined as EffortLevel | undefined, dropped: false }
-            : clampEffort(opts.model, effectiveOpts.effort)
+            : clampEffort(effectiveOpts.model, effectiveOpts.effort)
           if (isUltracode(opts.effort)) {
-            if (!modelSupportsUltracode(opts.model ?? "")) {
+            if (!modelSupportsUltracode(effectiveOpts.model ?? "")) {
               // Distinguish "no model selected (default lane)" from a model
               // that is definitively not xhigh-capable — same `opts.model ?? ""`
               // but very different root causes for an operator.
@@ -749,14 +752,14 @@ export class ChatService extends Effect.Service<ChatService>()(
             }
           } else if (opts.effort !== undefined && createClamp.dropped) {
             yield* Effect.logWarning(
-              `[chat] createThread: effort '${opts.effort}' dropped — model '${opts.model ?? "(default)"}' takes no effort parameter`,
+              `[chat] createThread: effort '${opts.effort}' dropped — model '${effectiveOpts.model ?? "(default)"}' takes no effort parameter`,
             )
           } else if (
             opts.effort !== undefined &&
             createClamp.effort !== opts.effort
           ) {
             yield* Effect.logWarning(
-              `[chat] createThread: effort '${opts.effort}' clamped to '${createClamp.effort}' for model '${opts.model ?? "(default)"}'`,
+              `[chat] createThread: effort '${opts.effort}' clamped to '${createClamp.effort}' for model '${effectiveOpts.model ?? "(default)"}'`,
             )
           }
 
@@ -826,13 +829,13 @@ export class ChatService extends Effect.Service<ChatService>()(
             ts: new Date().toISOString(),
             level: "info",
             sessionId: id,
-            model: opts.model ?? "unknown",
+            model: effectiveOpts.model ?? "unknown",
             ...(opts.parentSessionId !== undefined ? { parentId: opts.parentSessionId } : {}),
             ...(opts.tags !== undefined && opts.tags.length > 0 ? { tags: [...opts.tags] } : {}),
             ...(opts.title !== undefined ? { title: opts.title } : {}),
           })
           yield* inc("luna.chat.threads.created", {
-            model: opts.model ?? "unknown",
+            model: effectiveOpts.model ?? "unknown",
           })
 
           const inbox = yield* Queue.unbounded<SDKUserMessage>()
@@ -866,7 +869,7 @@ export class ChatService extends Effect.Service<ChatService>()(
 
           // Persist the ultracode TOKEN when the mode is on; else the clamped effort.
           const persistEffort: EffortOption | undefined =
-            isUltracode(opts.effort) && modelSupportsUltracode(opts.model ?? "")
+            isUltracode(effectiveOpts.effort) && modelSupportsUltracode(effectiveOpts.model ?? "")
               ? ULTRACODE
               : createClamp.effort
 
@@ -882,7 +885,9 @@ export class ChatService extends Effect.Service<ChatService>()(
                     (opts as { cwd?: string }).cwd ??
                     process.env["LUNA_REPO_ROOT"] ??
                     process.cwd(),
-                  ...(opts.model !== undefined ? { model: opts.model } : {}),
+                  ...(effectiveOpts.model !== undefined
+                    ? { model: effectiveOpts.model }
+                    : {}),
                   ...(persistEffort !== undefined
                     ? { effort: persistEffort }
                     : {}),
@@ -892,10 +897,12 @@ export class ChatService extends Effect.Service<ChatService>()(
 
           // Legacy fallback: when no ThreadRegistry, write the JSON map.
           if (Option.isNone(threadRegistry) && lunaHome !== undefined) {
-            if (opts.model !== undefined || persistEffort !== undefined) {
+            if (effectiveOpts.model !== undefined || persistEffort !== undefined) {
               try {
                 appendThreadConfigEntry(lunaHome, id, {
-                  ...(opts.model !== undefined ? { model: opts.model } : {}),
+                  ...(effectiveOpts.model !== undefined
+                    ? { model: effectiveOpts.model }
+                    : {}),
                   ...(persistEffort !== undefined
                     ? { effort: persistEffort }
                     : {}),

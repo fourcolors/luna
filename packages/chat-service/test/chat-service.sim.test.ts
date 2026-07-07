@@ -1861,6 +1861,78 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
       Effect.scoped(eff).pipe(Effect.provide(fullLayerWithRegistry(fakeLayer))),
     )
 
+  it(
+    "createThread defaults omitted model threads to Sonnet 5 with high effort",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      const { row, storedOptions } = await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const reg = yield* ThreadRegistryService
+          const summary = yield* chat.createThread({ title: "default-model" })
+          return {
+            row: yield* reg.get(summary.id),
+            storedOptions: yield* store.getOptions(summary.id),
+          }
+        }),
+        fakeLayer,
+      )
+
+      expect(capturedOptions?.["model"]).toBe("claude-sonnet-5")
+      expect(capturedOptions?.["effort"]).toBe("high")
+      expect(row?.model).toBe("claude-sonnet-5")
+      expect(row?.effort).toBe("high")
+      const sdkOpts = storedOptions?.sdkOptions as Record<string, unknown> | undefined
+      expect(sdkOpts?.["model"]).toBe("claude-sonnet-5")
+      expect(sdkOpts?.["effort"]).toBe("high")
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "createThread keeps an explicit model instead of applying the chat default",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      const row = await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const summary = yield* chat.createThread({
+            model: "claude-haiku-4-5",
+            title: "explicit-model",
+          })
+          return yield* reg.get(summary.id)
+        }),
+        fakeLayer,
+      )
+
+      expect(capturedOptions?.["model"]).toBe("claude-haiku-4-5")
+      expect(capturedOptions?.["effort"]).toBeUndefined()
+      expect(row?.model).toBe("claude-haiku-4-5")
+      expect(row?.effort).toBeNull()
+    },
+    { timeout: 10_000 },
+  )
+
   // PING (fix #3): subscribe() on a sid-less KNOWN thread must take the Case-B
   // (re-create live) path when ThreadRegistry is wired — NOT fall through to the
   // empty/unknown stream. Verifies chat-service.ts:1789-1804 is exercised.
