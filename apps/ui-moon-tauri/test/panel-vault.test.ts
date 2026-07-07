@@ -117,8 +117,13 @@ const setVal = (id: string, v: string) => {
   i.value = v
   i.dispatchEvent(new Event('input', { bubbles: true }))
 }
-const listFrame = (items: any[], sync?: any) =>
-  JSON.stringify({ type: 'vault-list', items, ...(sync !== undefined ? { sync } : {}) })
+const listFrame = (items: any[], sync?: any, storage?: any) =>
+  JSON.stringify({
+    type: 'vault-list',
+    items,
+    ...(sync !== undefined ? { sync } : {}),
+    ...(storage !== undefined ? { storage } : {}),
+  })
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -412,5 +417,117 @@ describe('settings.vault panel', () => {
     sock.fire('close', {})   // the save restarts the server — this drop is expected
     expect(byId('vault-status-line').textContent).toBe('Verifying… the server will restart briefly.')
     expect(byId<HTMLInputElement>('vault-value-input').value).toBe('')
+  })
+
+  describe('storage status line (slice W3)', () => {
+    it('renders exact text for keychain + 1Password active + residue (plural)', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'keychain', onePassword: 'active',
+          osKeychain: true, lunaVault: false, envResidue: 3,
+        }),
+      })
+      const line = byId('vault-storage-line')
+      expect(line.hidden).toBe(false)
+      expect(line.textContent).toBe(
+        'New secrets → macOS Keychain · 1Password: connected · 3 secrets still in plaintext .env - run the migration script to secure them',
+      )
+    })
+
+    it('renders exact text for luna-vault tier with no 1Password and no residue', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'luna-vault', onePassword: 'absent',
+          osKeychain: false, lunaVault: true, envResidue: 0,
+        }),
+      })
+      const line = byId('vault-storage-line')
+      expect(line.hidden).toBe(false)
+      expect(line.textContent).toBe('New secrets → Luna encrypted vault')
+    })
+
+    it('renders the env write-tier phrasing (plaintext escape hatch)', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'env', writeTier: 'env', onePassword: 'absent',
+          osKeychain: false, lunaVault: false, envResidue: 0,
+        }),
+      })
+      expect(byId('vault-storage-line').textContent).toBe('New secrets → plaintext .env (LUNA_VAULT_STORAGE=env)')
+    })
+
+    it('shows the 1Password detected nudge distinctly from active', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'keychain', onePassword: 'detected',
+          osKeychain: true, lunaVault: false, envResidue: 0,
+        }),
+      })
+      expect(byId('vault-storage-line').textContent).toBe(
+        'New secrets → macOS Keychain · 1Password: CLI detected - connect a service account to use it',
+      )
+    })
+
+    it('singular residue phrasing for exactly 1 secret', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'keychain', onePassword: 'absent',
+          osKeychain: true, lunaVault: false, envResidue: 1,
+        }),
+      })
+      expect(byId('vault-storage-line').textContent).toBe(
+        'New secrets → macOS Keychain · 1 secret still in plaintext .env - run the migration script to secure them',
+      )
+    })
+
+    it('omits the residue clause when envResidue is 0', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'keychain', onePassword: 'absent',
+          osKeychain: true, lunaVault: false, envResidue: 0,
+        }),
+      })
+      expect(byId('vault-storage-line').textContent).not.toContain('still in plaintext')
+    })
+
+    it('hides the line entirely when the frame lacks storage (old server)', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', { data: listFrame([]) })   // no storage key at all
+      const line = byId('vault-storage-line')
+      expect(line.hidden).toBe(true)
+      expect(line.textContent).toBe('')
+    })
+
+    it('re-hides the line when a later broadcast omits storage (channel switch to an older server)', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'keychain', onePassword: 'active',
+          osKeychain: true, lunaVault: false, envResidue: 0,
+        }),
+      })
+      expect(byId('vault-storage-line').hidden).toBe(false)
+      sock.fire('message', { data: listFrame([]) })
+      expect(byId('vault-storage-line').hidden).toBe(true)
+    })
+
+    it('never uses innerHTML — the line has no element children', async () => {
+      const { sock } = await bootVault()
+      sock.fire('message', {
+        data: listFrame([], undefined, {
+          mode: 'auto', writeTier: 'keychain', onePassword: 'active',
+          osKeychain: true, lunaVault: false, envResidue: 2,
+        }),
+      })
+      const line = byId('vault-storage-line')
+      expect(line.children.length).toBe(0)
+      expect(line.textContent).toContain('2 secrets')
+    })
   })
 })

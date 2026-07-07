@@ -19,7 +19,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { render } from "solid-js/web"
 import { createSignal } from "solid-js"
-import type { VaultWireItem } from "@luna/ui-shared"
+import type { VaultWireItem, VaultStorageWire } from "@luna/ui-shared"
 import { VaultPanel, type VaultStatusAck } from "../src/VaultPanel.jsx"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -99,6 +99,43 @@ const mount = (
     },
   }
 }
+
+/** Minimal mount for the storage-status-line tests — only `storage` varies. */
+const mountWithStorage = (storage: VaultStorageWire | null | undefined) => {
+  const container = document.createElement("div")
+  document.body.appendChild(container)
+  const dispose = render(
+    () => (
+      <VaultPanel
+        items={[]}
+        sync={null}
+        storage={storage}
+        lastStatus={null}
+        disabled={false}
+        onPut={(() => {}) as PanelOnPut}
+        onDelete={(() => {}) as PanelOnDelete}
+      />
+    ),
+    container,
+  )
+  return {
+    container,
+    dispose: () => {
+      dispose()
+      container.remove()
+    },
+  }
+}
+
+const makeStorage = (overrides: Partial<VaultStorageWire> = {}): VaultStorageWire => ({
+  mode: "auto",
+  writeTier: "keychain",
+  onePassword: "absent",
+  osKeychain: true,
+  lunaVault: false,
+  envResidue: 0,
+  ...overrides,
+})
 
 const openAddForm = (container: HTMLElement) => {
   const addBtn = [...container.querySelectorAll("button")].find(
@@ -674,6 +711,110 @@ describe("VaultPanel — finding 7: value input wiped on disconnect", () => {
       rig.setDisabled(true)
       // Value must be wiped immediately.
       expect(valueInput!.value).toBe("")
+    } finally {
+      rig.dispose()
+    }
+  })
+})
+
+// ── Slice W3: storage status line ─────────────────────────────────────────────
+describe("VaultPanel — storage status line", () => {
+  it("renders exact text for keychain + 1Password active + residue (plural)", () => {
+    const rig = mountWithStorage(
+      makeStorage({ writeTier: "keychain", onePassword: "active", envResidue: 3 }),
+    )
+    try {
+      const line = rig.container.querySelector(".vault-storage-line")
+      expect(line).not.toBeNull()
+      expect(line!.textContent).toBe(
+        "New secrets → macOS Keychain · 1Password: connected · 3 secrets still in plaintext .env - run the migration script to secure them",
+      )
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("renders exact text for luna-vault tier with no 1Password and no residue", () => {
+    const rig = mountWithStorage(
+      makeStorage({ writeTier: "luna-vault", onePassword: "absent", envResidue: 0 }),
+    )
+    try {
+      const line = rig.container.querySelector(".vault-storage-line")
+      expect(line).not.toBeNull()
+      expect(line!.textContent).toBe("New secrets → Luna encrypted vault")
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("renders the env write-tier phrasing with the escape-hatch env var name", () => {
+    const rig = mountWithStorage(makeStorage({ writeTier: "env" }))
+    try {
+      const line = rig.container.querySelector(".vault-storage-line")
+      expect(line!.textContent).toBe("New secrets → plaintext .env (LUNA_VAULT_STORAGE=env)")
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("shows the 1Password detected nudge distinctly from active", () => {
+    const rig = mountWithStorage(makeStorage({ onePassword: "detected" }))
+    try {
+      const line = rig.container.querySelector(".vault-storage-line")
+      expect(line!.textContent).toBe(
+        "New secrets → macOS Keychain · 1Password: CLI detected - connect a service account to use it",
+      )
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("singular residue phrasing for exactly 1 secret", () => {
+    const rig = mountWithStorage(makeStorage({ envResidue: 1 }))
+    try {
+      const line = rig.container.querySelector(".vault-storage-line")
+      expect(line!.textContent).toBe(
+        "New secrets → macOS Keychain · 1 secret still in plaintext .env - run the migration script to secure them",
+      )
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("omits the residue clause when envResidue is 0", () => {
+    const rig = mountWithStorage(makeStorage({ envResidue: 0 }))
+    try {
+      expect(rig.container.textContent).not.toContain("still in plaintext")
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("hides the line entirely when storage is null (server predates the field)", () => {
+    const rig = mountWithStorage(null)
+    try {
+      expect(rig.container.querySelector(".vault-storage-line")).toBeNull()
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("hides the line entirely when storage is undefined (no frame yet)", () => {
+    const rig = mountWithStorage(undefined)
+    try {
+      expect(rig.container.querySelector(".vault-storage-line")).toBeNull()
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("never renders via innerHTML — the line is a plain text node", () => {
+    const rig = mountWithStorage(makeStorage({ onePassword: "active", envResidue: 2 }))
+    try {
+      const line = rig.container.querySelector(".vault-storage-line")!
+      // A textContent-only render has exactly one text child, no element children.
+      expect(line.children.length).toBe(0)
+      expect(line.textContent).toContain("2 secrets")
     } finally {
       rig.dispose()
     }

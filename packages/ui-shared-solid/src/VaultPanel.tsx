@@ -37,7 +37,7 @@ import {
   untrack,
   type Component,
 } from "solid-js"
-import type { VaultWireItem, VaultSyncWire } from "@luna/ui-shared"
+import type { VaultWireItem, VaultSyncWire, VaultStorageWire } from "@luna/ui-shared"
 
 export interface VaultStatusAck {
   readonly requestId: string
@@ -50,6 +50,8 @@ export interface VaultPanelProps {
   readonly items: ReadonlyArray<VaultWireItem>
   /** 1Password sync state (slice V3); null = not yet received. */
   readonly sync: VaultSyncWire | null
+  /** Storage snapshot (slice W3); null = server predates the field or no frame yet — render nothing. */
+  readonly storage?: VaultStorageWire | null
   /** Called with a vault-put frame payload to send to the server. */
   readonly onPut: (params: {
     requestId: string
@@ -135,6 +137,33 @@ export const humanizeRelTime = (ts: number, nowMs = Date.now()): string => {
   if (diffHour < 24) return `${diffHour} hour${diffHour === 1 ? "" : "s"} ago`
   const diffDay = Math.floor(diffHour / 24)
   return `${diffDay} day${diffDay === 1 ? "" : "s"} ago`
+}
+
+/**
+ * writeTierLabel — human phrasing for where a new secret will land.
+ */
+const writeTierLabel = (tier: VaultStorageWire["writeTier"]): string => {
+  if (tier === "keychain") return "New secrets → macOS Keychain"
+  if (tier === "luna-vault") return "New secrets → Luna encrypted vault"
+  return "New secrets → plaintext .env (LUNA_VAULT_STORAGE=env)"
+}
+
+/**
+ * storageStatusText — build the compact status line for a storage snapshot.
+ * Returns null when there is nothing to show (graceful degradation for a
+ * server that predates the field, handled by the caller passing null/undefined).
+ */
+export const storageStatusText = (storage: VaultStorageWire): string => {
+  let text = writeTierLabel(storage.writeTier)
+  if (storage.onePassword === "active") {
+    text += " · 1Password: connected"
+  } else if (storage.onePassword === "detected") {
+    text += " · 1Password: CLI detected - connect a service account to use it"
+  }
+  if (storage.envResidue > 0) {
+    text += ` · ${storage.envResidue} secret${storage.envResidue === 1 ? "" : "s"} still in plaintext .env - run the migration script to secure them`
+  }
+  return text
 }
 
 // ── RFC-4180 CSV parser ────────────────────────────────────────────────────
@@ -682,6 +711,12 @@ export const VaultPanel: Component<VaultPanelProps> = (props) => {
           </button>
         </Show>
       </div>
+
+      <Show when={props.storage}>
+        {(storage) => (
+          <div class="vault-storage-line">{storageStatusText(storage())}</div>
+        )}
+      </Show>
 
       <Show when={statusMsg()}>
         {(msg) => (
