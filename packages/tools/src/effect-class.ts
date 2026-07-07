@@ -24,7 +24,7 @@ const EGRESS_TOOLS = new Set(["WebFetch", "WebSearch"])
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "NotebookRead"])
 
 /** All tool names that map to "write". */
-const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit"])
+const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 
 /** All tool names that map to "exec". */
 const EXEC_TOOLS = new Set(["Bash", "mcp__local_shell__local_shell_run"])

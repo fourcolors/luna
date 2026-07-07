@@ -172,6 +172,10 @@ export const egressAllowlist = (
           rawDomains.length > 0 &&
           rawDomains.every((d): d is string => typeof d === "string")
 
+        const requestedTarget: string | null = isValidDomainArray
+          ? (rawDomains as ReadonlyArray<string>).join(",")
+          : null
+
         if (
           isValidDomainArray &&
           (rawDomains as ReadonlyArray<string>).every((d) =>
@@ -186,7 +190,7 @@ export const egressAllowlist = (
 
         return deny(
           "search-domains-not-allowlisted",
-          null,
+          requestedTarget,
           "egress denied: WebSearch requires a non-empty allowed_domains array " +
             "where every entry is an allow-listed host (tool-acl)",
         )

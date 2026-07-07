@@ -67,6 +67,7 @@ describe("classifyTool", () => {
   it("classifies write tools", () => {
     expect(classifyTool("Edit")).toBe("write")
     expect(classifyTool("Write")).toBe("write")
+    expect(classifyTool("MultiEdit")).toBe("write")
     expect(classifyTool("NotebookEdit")).toBe("write")
   })
 
@@ -319,13 +320,26 @@ describe("egressAllowlist: WebSearch", () => {
     expect(only(records).decision).toBe("deny")
   })
 
-  it("denies when there are no allowed_domains (fail-closed, unscoped search)", () => {
-    const { verdict } = runWithRecords(
+  it("records the joined requested domains as target when not all are allow-listed (rule search-domains-not-allowlisted)", () => {
+    const { verdict, records } = runWithRecords(
+      { allowedHosts: ["github.com"] },
+      "WebSearch",
+      { query: "x", allowed_domains: ["evil.com", "github.com"] },
+    )
+    expect(verdict).toMatchObject({ behavior: "deny" })
+    expect(only(records).decision).toBe("deny")
+    expect(only(records).rule).toBe("search-domains-not-allowlisted")
+    expect(only(records).target).toBe("evil.com,github.com")
+  })
+
+  it("denies when there are no allowed_domains (fail-closed, unscoped search) with a null target", () => {
+    const { verdict, records } = runWithRecords(
       { allowedHosts: ["anthropic.com"] },
       "WebSearch",
       { query: "x" },
     )
     expect(verdict).toMatchObject({ behavior: "deny" })
+    expect(only(records).target).toBeNull()
   })
 
   it("denies WebSearch for a non-main subject regardless of domains", () => {
