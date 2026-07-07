@@ -40,6 +40,42 @@ const runScript = (
   })
 }
 
+// A fully permissive fake incus + systemctl in `bin`: the entire non-dry-run
+// container orchestration succeeds (info no-arg = daemon reachable; info
+// <instance> = new; config set drains the cloud-init heredoc off stdin; every
+// exec/probe returns 0) so the script reaches the host-side timer install.
+const writePermissiveIncus = (bin: string) => {
+  writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
+set -uo pipefail
+cmd="\${1:-}"
+if [[ "$#" -gt 0 ]]; then shift; fi
+case "$cmd" in
+  info)
+    [[ "$#" -eq 0 ]] && exit 0
+    exit 1
+    ;;
+  storage) exit 0 ;;
+  network) exit 0 ;;
+  profile)
+    case "$*" in
+      "device get default root pool") printf 'default\\n'; exit 0 ;;
+      "device get default root path") printf '/\\n'; exit 0 ;;
+      "device get default eth0 network") printf 'incusbr0\\n'; exit 0 ;;
+    esac
+    exit 0
+    ;;
+  config)
+    [[ "\${1:-}" == "set" ]] && cat >/dev/null
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+`)
+  expect(spawnSync("chmod", ["+x", join(bin, "incus")]).status).toBe(0)
+  writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
+  expect(spawnSync("chmod", ["+x", join(bin, "systemctl")]).status).toBe(0)
+}
+
 describe("deployment scripts", () => {
   it("container creation is a no-op when the Incus instance already exists", () => {
     const temp = makeTempDir()
@@ -696,6 +732,130 @@ esac
       "OnUnitActiveSec=3min",
     )
     expect(result.stdout).toContain("Auto-update timer enabled for 'dev'")
+  })
+
+  it("installs the timer when an existing registry's stanza already points at --repo-path", () => {
+    const temp = makeTempDir()
+    const bin = join(temp, "bin")
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const token = "test-container-token-sentinel-77777777"
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    writePermissiveIncus(bin)
+
+    const unitDir = join(temp, "units")
+    mkdirSync(unitDir)
+
+    // Operator-owned registry already present (e.g. a prior profile on this
+    // host) whose dev stanza already names THIS container's repo path.
+    const registry = join(temp, "etc-luna", "servers.toml")
+    mkdirSync(join(temp, "etc-luna"))
+    writeFileSync(registry, `kind          = "registry"
+schemaVersion = 1
+host          = "jax-box"
+
+[[server]]
+name        = "dev"
+enabled     = true
+update.params.hostRepoDir         = "${repo}"
+update.params.ref                 = "origin/dev"
+runtime.target.incus.container    = "luna-dev"
+ports.proxy = 4753
+deploy.timer         = true
+deploy.timerInterval = "3min"
+deploy.autoUpdate    = true
+`)
+    spawnSync("chmod", ["600", registry])
+
+    const result = runScript("scripts/luna-container-create", [
+      "--profile", "dev",
+      "--name", "luna-dev",
+      "--repo-path", repo,
+      "--state-path", state,
+      "--token", token,
+      "--skip-clone",
+    ], {
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_SYSTEMD_DIR: unitDir,
+      },
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    // The existing registry is never rewritten.
+    expect(readFileSync(registry, "utf8")).toContain(
+      `update.params.hostRepoDir         = "${repo}"`,
+    )
+    // The timer installs against the matching path.
+    expect(result.stdout).toContain("Auto-update timer enabled for 'dev'")
+    const service = readFileSync(join(unitDir, "luna-autodeploy-dev.service"), "utf8")
+    expect(service).toMatch(/^ExecStart=.* dev --from-timer$/m)
+  })
+
+  it("warns and skips the timer when an existing registry's stanza points elsewhere than --repo-path", () => {
+    const temp = makeTempDir()
+    const bin = join(temp, "bin")
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const token = "test-container-token-sentinel-66666666"
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    writePermissiveIncus(bin)
+
+    const unitDir = join(temp, "units")
+    mkdirSync(unitDir)
+
+    // Existing registry whose dev stanza points at the template default, NOT at
+    // this container's custom --repo-path.
+    const staleRepo = "/root/luna/dev/repo"
+    const registry = join(temp, "etc-luna", "servers.toml")
+    mkdirSync(join(temp, "etc-luna"))
+    writeFileSync(registry, `kind          = "registry"
+schemaVersion = 1
+host          = "jax-box"
+
+[[server]]
+name        = "dev"
+enabled     = true
+update.params.hostRepoDir         = "${staleRepo}"
+update.params.ref                 = "origin/dev"
+runtime.target.incus.container    = "luna-dev"
+ports.proxy = 4753
+deploy.timer         = true
+deploy.timerInterval = "3min"
+deploy.autoUpdate    = true
+`)
+    spawnSync("chmod", ["600", registry])
+
+    const result = runScript("scripts/luna-container-create", [
+      "--profile", "dev",
+      "--name", "luna-dev",
+      "--repo-path", repo,
+      "--state-path", state,
+      "--token", token,
+      "--skip-clone",
+    ], {
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_SYSTEMD_DIR: unitDir,
+      },
+    })
+
+    // The container itself is fine; only the timer is withheld.
+    expect(result.status, result.stderr).toBe(0)
+    // The warning names both the stale path and the actual --repo-path.
+    expect(result.stderr).toContain(staleRepo)
+    expect(result.stderr).toContain(repo)
+    expect(result.stderr).toContain("install-timer dev")
+    // No timer installed, and the operator registry is left untouched.
+    expect(result.stdout).not.toContain("Auto-update timer enabled for 'dev'")
+    expect(existsSync(join(unitDir, "luna-autodeploy-dev.service"))).toBe(false)
+    expect(readFileSync(registry, "utf8")).toContain(
+      `update.params.hostRepoDir         = "${staleRepo}"`,
+    )
   })
 
   it("container --no-auto-update skips the timer install and says how to enable it later", () => {

@@ -588,6 +588,32 @@ render_seed_registry() {
   ' "$seed"
 }
 
+# Read this profile's update.params.hostRepoDir out of an EXISTING registry so
+# we can compare it to the actual --repo-path before installing a timer. Prints
+# the stored path, or nothing when the stanza (or the key) is absent. Parsing
+# mirrors render_seed_registry (name-before-key within a stanza).
+read_stanza_repo_dir() {
+  local registry="$1" profile="$2"
+  awk -v target="$profile" '
+    /^\[\[server\]\]/ { in_stanza = 1; is_target = 0 }
+    in_stanza && /^[[:space:]]*name[[:space:]]*=/ {
+      val = $0
+      sub(/#.*$/, "", val)
+      sub(/^[^=]*=[[:space:]]*/, "", val)
+      gsub(/[" ]/, "", val)
+      if (val == target) is_target = 1
+    }
+    is_target && /^[[:space:]]*update\.params\.hostRepoDir[[:space:]]*=/ {
+      val = $0
+      sub(/#.*$/, "", val)
+      sub(/^[^=]*=[[:space:]]*/, "", val)
+      gsub(/[" ]/, "", val)
+      print val
+      exit
+    }
+  ' "$registry"
+}
+
 install_autoupdate_timer() {
   local registry_file="${LUNA_SERVERS_CONFIG:-/etc/luna/servers.toml}"
   local seed_src="$SCRIPT_DIR/seeds/servers.toml"
@@ -616,6 +642,23 @@ install_autoupdate_timer() {
         luna_warn "could not seed $registry_file — auto-update timer not installed. Seed it (see scripts/seeds/servers.toml) and run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
         return 0
       fi
+    fi
+  else
+    # An operator-owned registry already exists (e.g. a second profile on this
+    # host). We must NOT rewrite it, but install-timer would read this profile's
+    # stanza and bake its hostRepoDir into the unit. If that path disagrees with
+    # this container's --repo-path (or the stanza is missing), the timer would
+    # target a nonexistent repo and fail every tick — so warn and skip instead
+    # of installing a knowingly-broken unit.
+    local existing_repo
+    existing_repo="$(read_stanza_repo_dir "$registry_file" "$PROFILE")"
+    if [[ "$existing_repo" != "$REPO_PATH" ]]; then
+      if [[ -z "$existing_repo" ]]; then
+        luna_warn "registry $registry_file has no update.params.hostRepoDir for profile '$PROFILE' — auto-update timer not installed. Add a [[server]] stanza for '$PROFILE' with update.params.hostRepoDir = \"$REPO_PATH\", then run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+      else
+        luna_warn "registry $registry_file points profile '$PROFILE' at hostRepoDir=$existing_repo but this container uses $REPO_PATH — auto-update timer not installed (would target a nonexistent repo). Update the stanza's update.params.hostRepoDir to \"$REPO_PATH\", then run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+      fi
+      return 0
     fi
   fi
 
