@@ -185,8 +185,15 @@ candidate ports to production ports and keep rollback available.
 The script prepares host paths, writes container `.env`, creates an Ubuntu
 24.04 cloud container, mounts the selected repo and state paths into the
 container, proxies the selected host ports to container ports `4753` and
-`4754`, starts the container, waits for cloud-init, and checks the systemd
-service.
+`4754`, starts the container, waits for cloud-init, checks the systemd
+service, and installs the host-side auto-update timer for the channel.
+
+The auto-update timer is **on by default**: it seeds `/etc/luna/servers.toml`
+from `scripts/seeds/servers.toml` when absent and enables
+`luna-autodeploy install-timer <profile>`, so the channel tracks its branch and
+redeploys while idle. Pass `--no-auto-update` to skip it (enable later with
+`scripts/luna-autodeploy install-timer <profile>`). See
+[`docs/autodeploy.md`](./autodeploy.md) for cadence and opt-out.
 
 If the Incus instance already exists, the script exits successfully without
 changing repo files, state files, cloud-init, devices, or services. Use

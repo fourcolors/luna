@@ -353,7 +353,9 @@ bun run scripts/bump-moon.ts <x.y.z> --tag --push
 See [RELEASES.md](RELEASES.md) for the full release conventions (the "Latest"
 invariant and the `chat-v*` / other tag-only releases).
 
-Then update the stable runtime:
+Stable **auto-updates by default** - a host-side timer redeploys it while idle
+(see [autodeploy](docs/autodeploy.md)). To force a deploy now, or when
+auto-update is opted out, update the stable runtime by hand:
 
 ```bash
 ssh root@jax-box

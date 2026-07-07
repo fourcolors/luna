@@ -7,8 +7,11 @@ Branch policy:
 - `master` is the only long-lived branch. The main Luna agent runs it.
 - The dev container is a staging runtime, not a branch — point it at whatever
   ref you want to stage (a feature branch or a `moon-v*` tag).
-- Land work on `master` via a PR (squash-merge), then restart the stable
-  runtime. There is no `dev`→`master` promotion.
+- Land work on `master` via a PR (squash-merge). Stable **auto-updates by
+  default** - a host-side timer redeploys it while idle (see
+  [autodeploy](./autodeploy.md)); the manual promotion below is the override
+  for forcing a deploy or when auto-update is opted out. There is no
+  `dev`→`master` promotion.
 
 ## Local Client
 
@@ -189,7 +192,9 @@ PR and squash-merging it. There is no `dev`→`master` promotion:
 gh pr create --base master --fill   # review, then squash-merge
 ```
 
-Promote stable on jax-box:
+Promote stable on jax-box. Stable auto-updates on a timer by default, so this
+is only needed to force a deploy now or when auto-update is opted out (see
+[autodeploy](./autodeploy.md)):
 
 ```bash
 ssh root@jax-box
