@@ -31,7 +31,8 @@
  *                               Lazily created on first write.
  *   <baseDir>/vault/vault.key.new  crash-safe staging slot during rotateKey.
  *   <baseDir>/vault/secrets.enc Envelope v1 JSON (see below).
- *   <baseDir>/vault/.lock       cross-process advisory lock (pid+timestamp).
+ *   <baseDir>/vault/.lock       cross-process advisory lock (pid+timestamp+
+ *                               nonce).
  *
  * ── Envelope v1 ────────────────────────────────────────────────────────────
  *   { v: 1, alg: "aes-256-gcm", iv: <b64>, tag: <b64>, data: <b64> }
@@ -55,14 +56,17 @@
  *   - IN-PROCESS: a simple promise-chain mutex so concurrent writeSecret calls
  *     on the same instance never interleave (last writer would otherwise clobber
  *     the other's addition).
- *   - CROSS-PROCESS: an O_EXCL lockfile (.lock) holding pid+timestamp. A lock
- *     older than STALE_LOCK_MS is taken over (a crashed writer left it behind);
- *     acquisition retries for ~LOCK_ACQUIRE_TIMEOUT_MS before giving up. The
- *     lock is always released in a finally.
+ *   - CROSS-PROCESS: an O_EXCL lockfile (.lock) holding pid+timestamp+nonce.
+ *     A lock older than STALE_LOCK_MS is taken over only after the recorded pid
+ *     is no longer alive (a crashed writer left it behind); acquisition retries
+ *     for ~LOCK_ACQUIRE_TIMEOUT_MS before giving up. Release only removes the
+ *     nonce this process wrote, so a later holder's lock is never unlinked by a
+ *     stale finally.
  *
  * ── Atomicity ──────────────────────────────────────────────────────────────
  * Writes go to a tmp file (0600) in the same directory, are fsync'd, then
- * renamed over the target (atomic on the same filesystem). A crash mid-write
+ * renamed over the target (atomic on the same filesystem), then the containing
+ * directory is fsync'd so the rename itself survives a crash. A crash mid-write
  * leaves the previous store intact; a successful write leaves no tmp file.
  *
  * ── Hard rules ─────────────────────────────────────────────────────────────
@@ -181,6 +185,19 @@ const isEnoent = (e: unknown): boolean =>
   e !== null &&
   (e as NodeJS.ErrnoException).code === "ENOENT"
 
+const isIgnorableDirectoryFsyncError = (e: unknown): boolean => {
+  if (typeof e !== "object" || e === null) return false
+  const code = (e as NodeJS.ErrnoException).code
+  return (
+    code === "EPERM" ||
+    code === "EISDIR" ||
+    code === "EINVAL" ||
+    code === "ENOTSUP" ||
+    code === "EOPNOTSUPP" ||
+    code === "ENOSYS"
+  )
+}
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -199,6 +216,7 @@ export class LunaVaultFile {
 
   /** In-process mutex: every mutation appends to this promise chain. */
   private mutex: Promise<unknown> = Promise.resolve()
+  private lockNonce: string | undefined
 
   constructor(internals: LunaVaultFileInternals = {}) {
     const baseDir = internals._baseDir ?? path.join(os.homedir(), ".luna")
@@ -237,9 +255,10 @@ export class LunaVaultFile {
 
   /**
    * Non-throwing health probe.
-   *   - store missing or empty       → { ok: true, count: 0 }
+   *   - store missing                → { ok: true, count: 0 }
    *   - store decrypts               → { ok: true, count: N }
-   *   - key missing / tag failure / corrupt → { ok: false, reason }
+   *   - store empty / key missing / tag failure / corrupt
+   *                                  → { ok: false, reason }
    *
    * ROTATE-CRASH RECOVERY: checkIntegrity decrypts through the SAME
    * `decryptStore` path as `readSecret`, so it inherits the interrupted-rotate
@@ -251,8 +270,8 @@ export class LunaVaultFile {
   async checkIntegrity(): Promise<IntegrityResult> {
     const rawStore = await this.readStoreRaw()
     if (rawStore === undefined) return { ok: true, count: 0 }
-    if (rawStore.trim().length === 0) return { ok: true, count: 0 }
     try {
+      this.assertStoreNotEmpty(rawStore)
       const secrets = await this.decryptStore(rawStore)
       return { ok: true, count: Object.keys(secrets).length }
     } catch (e) {
@@ -318,7 +337,7 @@ export class LunaVaultFile {
             this.keyPath,
             newKey.toString("base64"),
           )
-          await this.removeIfPresent(this.keyNewPath)
+          await this.removeIfPresent(this.keyNewPath, { fsyncDir: true })
           return
         }
 
@@ -340,7 +359,7 @@ export class LunaVaultFile {
 
   /**
    * Load the decrypted secrets map, or undefined for a CLEAN MISS (no store /
-   * empty store). Throws LunaVaultIntegrityError for a present-but-broken store.
+   * absent name). Throws LunaVaultIntegrityError for a present-but-broken store.
    * Recovers a partial rotateKey via vault.key.new.
    */
   private async loadSecretsOrMiss(): Promise<
@@ -348,8 +367,23 @@ export class LunaVaultFile {
   > {
     const rawStore = await this.readStoreRaw()
     if (rawStore === undefined) return undefined
-    if (rawStore.trim().length === 0) return undefined
+    this.assertStoreNotEmpty(rawStore)
     return this.decryptStore(rawStore)
+  }
+
+  /**
+   * A missing secrets.enc is the only empty-store clean miss. The atomic writer
+   * never produces a present-but-empty file: it writes a complete temp file,
+   * fsyncs it, then renames it over secrets.enc. If secrets.enc exists but has
+   * no envelope bytes, something outside this module truncated or corrupted it,
+   * so reads must fail closed instead of quietly acting like no secrets exist.
+   */
+  private assertStoreNotEmpty(rawStore: string): void {
+    if (rawStore.trim().length > 0) return
+    throw new LunaVaultIntegrityError(
+      "bad-envelope",
+      "luna vault store is empty but present (possible truncation)",
+    )
   }
 
   /**
@@ -572,6 +606,7 @@ export class LunaVaultFile {
 
   /** Read a key file into a 32-byte Buffer, or undefined if absent/invalid. */
   private async readKey(keyPath: string): Promise<Buffer | undefined> {
+    await this.validateKeyReadPath(keyPath)
     let raw: string
     try {
       raw = await fsp.readFile(keyPath, "utf8")
@@ -586,6 +621,69 @@ export class LunaVaultFile {
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * Validate the key path before following it. A symlinked key can be swapped
+   * out from under this process or point outside the vault trust boundary, so
+   * key reads only trust regular files inside an owner-only vault directory.
+   * If permissions drift wider than owner-only, tighten them before reading;
+   * if that repair fails, fail closed rather than decrypting with an exposed
+   * key file or a group/world-searchable vault directory.
+   */
+  private async validateKeyReadPath(keyPath: string): Promise<void> {
+    let keyLstat: fs.Stats
+    try {
+      keyLstat = await fsp.lstat(keyPath)
+    } catch (e) {
+      if (isEnoent(e)) return
+      throw e
+    }
+    if (keyLstat.isSymbolicLink()) {
+      throw new LunaVaultIntegrityError(
+        "key-invalid",
+        `luna vault key is a symlink and will not be followed: ${keyPath}`,
+      )
+    }
+
+    const keyStat = await fsp.stat(keyPath)
+    if (!keyStat.isFile()) {
+      throw new LunaVaultIntegrityError(
+        "key-invalid",
+        `luna vault key is not a regular file: ${keyPath}`,
+      )
+    }
+    const dirStat = await fsp.stat(this.vaultDir)
+    await this.tightenModeIfTooOpen(keyPath, keyStat, FILE_MODE, "key file")
+    await this.tightenModeIfTooOpen(
+      this.vaultDir,
+      dirStat,
+      DIR_MODE,
+      "vault directory",
+    )
+  }
+
+  private async tightenModeIfTooOpen(
+    p: string,
+    stat: fs.Stats,
+    mode: number,
+    label: string,
+  ): Promise<void> {
+    const currentMode = stat.mode & 0o777
+    if ((currentMode & 0o077) === 0) return
+    try {
+      await fsp.chmod(p, mode)
+    } catch (e) {
+      throw new LunaVaultIntegrityError(
+        "key-invalid",
+        `luna vault ${label} permissions are too open and could not be tightened: ${p}`,
+      )
+    }
+    console.warn(
+      `luna vault ${label} permissions were too open (${currentMode.toString(
+        8,
+      )}); tightened to ${mode.toString(8)}: ${p}`,
+    )
   }
 
   /**
@@ -612,6 +710,7 @@ export class LunaVaultFile {
       if (isEnoent(e)) return // already promoted / nothing staged
       throw e
     }
+    this.fsyncDirectoryBestEffort(this.vaultDir)
     await this.enforceMode(this.keyPath, FILE_MODE)
   }
 
@@ -653,8 +752,28 @@ export class LunaVaultFile {
       await this.removeIfPresent(tmpPath)
       throw e
     }
+    // A file fsync makes the file contents durable, but rename/unlink durability
+    // lives in the containing directory entry. POSIX filesystems can lose a
+    // just-renamed name across power loss unless the directory itself is
+    // fsync'd. That matters doubly for rotateKey: vault.key.new and secrets.enc
+    // must not land in opposite crash epochs, or a promoted/missing key can
+    // leave the vault undecryptable even though each individual file write was
+    // fsync'd.
+    this.fsyncDirectoryBestEffort(dir)
     // rename preserves the tmp file's 0600 mode; enforce defensively.
     await this.enforceMode(targetPath, FILE_MODE)
+  }
+
+  private fsyncDirectoryBestEffort(dir: string): void {
+    let fd: number | undefined
+    try {
+      fd = fs.openSync(dir, "r")
+      fs.fsyncSync(fd)
+    } catch (e) {
+      if (!isIgnorableDirectoryFsyncError(e)) throw e
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd)
+    }
   }
 
   /** chmod, swallowing ENOENT (best-effort hardening). */
@@ -666,9 +785,13 @@ export class LunaVaultFile {
     }
   }
 
-  private async removeIfPresent(p: string): Promise<void> {
+  private async removeIfPresent(
+    p: string,
+    opts: { readonly fsyncDir?: boolean } = {},
+  ): Promise<void> {
     try {
       await fsp.unlink(p)
+      if (opts.fsyncDir) this.fsyncDirectoryBestEffort(path.dirname(p))
     } catch (e) {
       if (!isEnoent(e)) throw e
     }
@@ -696,7 +819,7 @@ export class LunaVaultFile {
   /**
    * Acquire the cross-process lock, run `fn`, release in finally. Retries for
    * ~LOCK_ACQUIRE_TIMEOUT_MS; a lock older than STALE_LOCK_MS is taken over
-   * (its holder is assumed crashed).
+   * only if its recorded holder pid is no longer alive.
    */
   private async withLock<T>(fn: () => Promise<T>): Promise<T> {
     await this.ensureDir()
@@ -712,15 +835,26 @@ export class LunaVaultFile {
     const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS
     for (;;) {
       try {
+        const nonce = crypto.randomBytes(16).toString("hex")
         const fh = await fsp.open(this.lockPath, "wx", FILE_MODE)
         try {
           await fh.writeFile(
-            JSON.stringify({ pid: process.pid, ts: Date.now() }),
+            JSON.stringify({ pid: process.pid, ts: Date.now(), nonce }),
             "utf8",
           )
         } finally {
           await fh.close()
         }
+        if (!(await this.lockFileHasNonce(nonce))) {
+          if (Date.now() >= deadline) {
+            throw new Error(
+              "luna vault lock busy: another process holds the vault lock",
+            )
+          }
+          await sleep(LOCK_RETRY_INTERVAL_MS)
+          continue
+        }
+        this.lockNonce = nonce
         return
       } catch (e) {
         if (!isLockExists(e)) throw e
@@ -736,10 +870,21 @@ export class LunaVaultFile {
     }
   }
 
+  private async lockFileHasNonce(nonce: string): Promise<boolean> {
+    try {
+      const parsed = JSON.parse(await fsp.readFile(this.lockPath, "utf8")) as {
+        nonce?: unknown
+      }
+      return parsed.nonce === nonce
+    } catch {
+      return false
+    }
+  }
+
   /**
-   * If the current lock is older than STALE_LOCK_MS (or unparseable/empty),
-   * remove it so the next acquire attempt can take it. Returns true if it
-   * removed a stale lock.
+   * If the current lock is older than STALE_LOCK_MS and its recorded holder pid
+   * is not alive (or no usable pid was recorded), remove it so the next acquire
+   * attempt can take it. Returns true if it removed a stale lock.
    */
   private async tryTakeOverStaleLock(): Promise<boolean> {
     let raw: string
@@ -752,23 +897,69 @@ export class LunaVaultFile {
       return isEnoent(e)
     }
     let ts: number | undefined
+    let pid: number | undefined
     try {
-      const parsed = JSON.parse(raw) as { ts?: unknown }
+      const parsed = JSON.parse(raw) as { pid?: unknown; ts?: unknown }
       if (typeof parsed.ts === "number") ts = parsed.ts
+      if (
+        typeof parsed.pid === "number" &&
+        Number.isInteger(parsed.pid) &&
+        parsed.pid > 0
+      ) {
+        pid = parsed.pid
+      }
     } catch {
       ts = undefined
+      pid = undefined
     }
     // Fall back to mtime if the payload lacks a usable timestamp.
     const age = Date.now() - (ts ?? stat.mtimeMs)
     if (age > STALE_LOCK_MS) {
+      if (pid !== undefined && this.isPidAlive(pid)) return false
       await this.removeIfPresent(this.lockPath)
       return true
     }
     return false
   }
 
+  private isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (e) {
+      const code =
+        typeof e === "object" && e !== null
+          ? (e as NodeJS.ErrnoException).code
+          : undefined
+      if (code === "EPERM") return true
+      if (code === "ESRCH") return false
+      return false
+    }
+  }
+
   private async releaseLock(): Promise<void> {
-    await this.removeIfPresent(this.lockPath)
+    const nonce = this.lockNonce
+    this.lockNonce = undefined
+    if (nonce === undefined) return
+    let raw: string
+    try {
+      raw = await fsp.readFile(this.lockPath, "utf8")
+    } catch (e) {
+      if (isEnoent(e)) return
+      throw e
+    }
+    try {
+      const parsed = JSON.parse(raw) as { nonce?: unknown }
+      if (parsed.nonce === nonce) {
+        await this.removeIfPresent(this.lockPath)
+        return
+      }
+    } catch {
+      // A malformed replacement is not ours; leave it for the contender path.
+    }
+    console.warn(
+      "luna vault lock release skipped because the lock is now owned by another process",
+    )
   }
 }
 

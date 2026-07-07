@@ -10,7 +10,7 @@ import * as fs from "node:fs"
 import * as fsp from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   LunaVaultFile,
   LunaVaultIntegrityError,
@@ -20,15 +20,26 @@ let baseDir: string
 let vaultDir: string
 let keyPath: string
 let storePath: string
+let lockPath: string
 
 const makeVault = (): LunaVaultFile =>
   new LunaVaultFile({ _baseDir: baseDir })
+
+type LunaVaultFileLockInternals = {
+  acquireLock(): Promise<void>
+  releaseLock(): Promise<void>
+  tryTakeOverStaleLock(): Promise<boolean>
+}
+
+const lockInternals = (v: LunaVaultFile): LunaVaultFileLockInternals =>
+  v as unknown as LunaVaultFileLockInternals
 
 beforeEach(async () => {
   baseDir = await fsp.mkdtemp(path.join(os.tmpdir(), "luna-vault-test-"))
   vaultDir = path.join(baseDir, "vault")
   keyPath = path.join(vaultDir, "vault.key")
   storePath = path.join(vaultDir, "secrets.enc")
+  lockPath = path.join(vaultDir, ".lock")
 })
 
 afterEach(async () => {
@@ -104,6 +115,46 @@ describe("clean miss vs integrity failure", () => {
     expect(await v.readSecret("ANY")).toBeUndefined()
     expect(await v.listNames()).toEqual([])
     expect(await v.checkIntegrity()).toEqual({ ok: true, count: 0 })
+  })
+
+  it("present empty store → IntegrityError + checkIntegrity ok:false", async () => {
+    await fsp.mkdir(vaultDir, { recursive: true })
+    await fsp.writeFile(storePath, "")
+
+    const err = await makeVault()
+      .readSecret("ANY")
+      .then(
+        () => {
+          throw new Error("expected an integrity error")
+        },
+        (e: unknown) => e,
+      )
+    expect(err).toBeInstanceOf(LunaVaultIntegrityError)
+    expect((err as LunaVaultIntegrityError).reason).toBe("bad-envelope")
+
+    const check = await makeVault().checkIntegrity()
+    expect(check.ok).toBe(false)
+    if (!check.ok) expect(check.reason).toBe("bad-envelope")
+  })
+
+  it("present whitespace-only store → IntegrityError + checkIntegrity ok:false", async () => {
+    await fsp.mkdir(vaultDir, { recursive: true })
+    await fsp.writeFile(storePath, "   \n")
+
+    const err = await makeVault()
+      .readSecret("ANY")
+      .then(
+        () => {
+          throw new Error("expected an integrity error")
+        },
+        (e: unknown) => e,
+      )
+    expect(err).toBeInstanceOf(LunaVaultIntegrityError)
+    expect((err as LunaVaultIntegrityError).reason).toBe("bad-envelope")
+
+    const check = await makeVault().checkIntegrity()
+    expect(check.ok).toBe(false)
+    if (!check.ok) expect(check.reason).toBe("bad-envelope")
   })
 
   it("store present but name absent → undefined (not an error)", async () => {
@@ -197,6 +248,38 @@ describe("permissions", () => {
     // Mask to permission bits.
     expect(keyStat.mode & 0o777).toBe(0o600)
     expect(dirStat.mode & 0o777).toBe(0o700)
+  })
+
+  it("tightens widened key and vault-dir permissions on read", async () => {
+    if (process.platform === "win32") return
+    const v = makeVault()
+    await v.writeSecret("K", "v")
+    await fsp.chmod(keyPath, 0o644)
+    await fsp.chmod(vaultDir, 0o755)
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      expect(await makeVault().readSecret("K")).toBe("v")
+      expect(warnSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      warnSpy.mockRestore()
+    }
+
+    expect((await fsp.stat(keyPath)).mode & 0o777).toBe(0o600)
+    expect((await fsp.stat(vaultDir)).mode & 0o777).toBe(0o700)
+  })
+
+  it("rejects a symlinked key file instead of reading through it", async () => {
+    if (process.platform === "win32") return
+    const v = makeVault()
+    await v.writeSecret("K", "v")
+    const realKeyPath = path.join(vaultDir, "vault.key.real")
+    await fsp.rename(keyPath, realKeyPath)
+    await fsp.symlink(realKeyPath, keyPath)
+
+    await expect(makeVault().readSecret("K")).rejects.toBeInstanceOf(
+      LunaVaultIntegrityError,
+    )
   })
 })
 
@@ -415,6 +498,56 @@ describe("lockfile lifecycle", () => {
   it("no .lock remains after a completed write", async () => {
     const v = makeVault()
     await v.writeSecret("K", "v")
-    expect(fs.existsSync(path.join(vaultDir, ".lock"))).toBe(false)
+    expect(fs.existsSync(lockPath)).toBe(false)
+  })
+
+  it("acquire → release removes this instance's own lock", async () => {
+    await fsp.mkdir(vaultDir, { recursive: true })
+    const v = makeVault()
+    await lockInternals(v).acquireLock()
+    expect(fs.existsSync(lockPath)).toBe(true)
+
+    await lockInternals(v).releaseLock()
+
+    expect(fs.existsSync(lockPath)).toBe(false)
+  })
+
+  it("releaseLock does not unlink a foreign lock that replaced our lock", async () => {
+    await fsp.mkdir(vaultDir, { recursive: true })
+    const v = makeVault()
+    await lockInternals(v).acquireLock()
+    await fsp.writeFile(
+      lockPath,
+      JSON.stringify({ pid: process.pid, ts: Date.now(), nonce: "foreign" }),
+    )
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      await lockInternals(v).releaseLock()
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      warnSpy.mockRestore()
+    }
+
+    expect(fs.existsSync(lockPath)).toBe(true)
+    const raw = await fsp.readFile(lockPath, "utf8")
+    expect(JSON.parse(raw)).toMatchObject({ nonce: "foreign" })
+  })
+
+  it("stale takeover is skipped when the recorded holder pid is still alive", async () => {
+    await fsp.mkdir(vaultDir, { recursive: true })
+    await fsp.writeFile(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        ts: Date.now() - 31_000,
+        nonce: "alive-holder",
+      }),
+    )
+
+    expect(await lockInternals(makeVault()).tryTakeOverStaleLock()).toBe(false)
+
+    const raw = await fsp.readFile(lockPath, "utf8")
+    expect(JSON.parse(raw)).toMatchObject({ nonce: "alive-holder" })
   })
 })

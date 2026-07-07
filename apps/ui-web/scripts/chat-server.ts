@@ -128,6 +128,14 @@ import {
 } from "./runtime-paths.js"
 import { applyClaudeExecutablePreflight } from "./claude-executable.js"
 
+/**
+ * Absolute path to the macOS keychain CLI. Pinned rather than bare "security"
+ * so PATH manipulation can never redirect us to an attacker-planted binary
+ * while adding/deleting op-token material. Mirrors keychain-helper.ts, whose
+ * shared helpers already pin the same SIP-protected system binary.
+ */
+const SECURITY_BIN = "/usr/bin/security"
+
 // Load Luna's runtime .env before anything else so CLAUDE_CONFIG_DIR (and any
 // other Luna env vars) are in process.env when the SDK initialises. LUNA_HOME
 // makes the runtime portable; the default remains ~/.luna.
@@ -1028,7 +1036,7 @@ const persistOpToken = (label: string, token: string): Promise<void> => {
   if (process.platform === "darwin") {
     return new Promise((resolve, reject) => {
       const child = spawn(
-        "security",
+        SECURITY_BIN,
         ["add-generic-password", "-U", "-s", `luna.op.${label}`, "-a", label, "-w", token],
         { stdio: ["ignore", "ignore", "ignore"] },
       )
@@ -1050,7 +1058,7 @@ const persistOpToken = (label: string, token: string): Promise<void> => {
 const deleteKeychainOpToken = (label: string): Promise<void> =>
   new Promise((resolve, reject) => {
     const child = spawn(
-      "security",
+      SECURITY_BIN,
       ["delete-generic-password", "-s", `luna.op.${label}`, "-a", label],
       { stdio: ["ignore", "ignore", "ignore"] },
     )

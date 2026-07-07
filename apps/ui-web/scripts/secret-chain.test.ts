@@ -8,7 +8,7 @@
  * legacy modes (env / keychain-*) must resolve byte-identically to today; auto
  * inserts the lunaVault tier between keychain and env.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Effect, Exit, Layer, Redacted } from "effect"
 import {
   ConfigError,
@@ -328,20 +328,28 @@ describe("discoverOpTokens: precedence keychain → env → vault → legacy fil
     expect(found).toEqual([{ label: "primary", token: "kc" }])
   })
 
-  it("an integrity error in the vault during discover is treated as a MISS (boot gate owns integrity)", async () => {
+  it("vault integrity failure skips the legacy file for that label and logs without token values", async () => {
     const { LunaVaultIntegrityError } = await import("@luna/core")
-    const found = await discoverOpTokens({
-      accounts: [acct("primary")],
-      keychainRead: async () => undefined,
-      vaultRead: async () => {
-        throw new LunaVaultIntegrityError("key-missing", "locked out")
-      },
-      env: {},
-      readFile: () => "file-token",
-    })
-    // Not thrown - the integrity error becomes a vault miss, so discovery falls
-    // through to the legacy file.
-    expect(found).toEqual([{ label: "primary", token: "file-token" }])
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const found = await discoverOpTokens({
+        accounts: [acct("primary")],
+        keychainRead: async () => undefined,
+        vaultRead: async () => {
+          throw new LunaVaultIntegrityError("key-missing", "locked out")
+        },
+        env: {},
+        readFile: () => "file-token",
+      })
+      expect(found).toEqual([])
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+      const logged = errorSpy.mock.calls.flat().join(" ")
+      expect(logged).toContain("primary")
+      expect(logged).toContain("key-missing")
+      expect(logged).not.toContain("file-token")
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 
   it("blank/whitespace vault value is a miss (falls through)", async () => {

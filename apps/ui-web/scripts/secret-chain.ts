@@ -205,25 +205,37 @@ export const buildSecretChainLayer = (
  * env-var name (`LUNA_OP_TOKEN_<LABEL>`) - the SAME name the operator would set
  * as an env var, so the two tiers are interchangeable and never drift.
  *
- * An INTEGRITY failure during boot discovery is treated as a MISS here (returns
- * undefined) rather than propagated: the dedicated boot gate
- * (`assertVaultBootIntegrity`) is the one place that refuses to boot on a
- * locked-out vault. If discovery also threw, the operator would face two
- * failure paths for one root cause; funnel it through the gate instead.
+ * The boot gate (`assertVaultBootIntegrity`) remains the authority on whether a
+ * locked-out vault refuses BOOT. Discovery still must not turn a known-corrupt
+ * vault into permission to trust an older plaintext token file for the same
+ * label, though: an integrity failure logs loudly and blocks the legacy-file
+ * tier for that label. A plain vault MISS is different and keeps falling
+ * through for backward compatibility.
  */
+type VaultOpTokenResult =
+  | { readonly _tag: "hit"; readonly token: string }
+  | { readonly _tag: "miss" }
+  | { readonly _tag: "integrity-failure" }
+
 const vaultOpTokenFor = async (
   acct: OpAccountConfig,
   vaultRead: (name: string) => Promise<string | undefined>,
-): Promise<string | undefined> => {
+): Promise<VaultOpTokenResult> => {
   try {
     const value = await vaultRead(acct.tokenEnvVar)
-    if (value === undefined) return undefined
+    if (value === undefined) return { _tag: "miss" }
     const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : undefined
+    return trimmed.length > 0
+      ? { _tag: "hit", token: trimmed }
+      : { _tag: "miss" }
   } catch (e) {
-    // Integrity failure (or any read error): the boot gate owns that decision.
-    if (e instanceof LunaVaultIntegrityError) return undefined
-    return undefined
+    if (e instanceof LunaVaultIntegrityError) {
+      console.error(
+        `luna vault integrity failure while discovering op token for label "${acct.label}" (${e.reason}): ${e.message}; skipping legacy file fallback for this label`,
+      )
+      return { _tag: "integrity-failure" }
+    }
+    return { _tag: "miss" }
   }
 }
 
@@ -255,6 +267,9 @@ export interface DiscoverOpTokensOpts {
  *     never the winner when a vault copy exists).
  *   - the legacy file is LAST so a runtime-set token never shadows an
  *     operator-provisioned keychain/env token.
+ *   - a vault INTEGRITY failure is not a miss: it is logged with label/reason
+ *     and skips the legacy-file tier for that label, so discovery never
+ *     fail-opens from a known-corrupt vault into an older plaintext token.
  *
  * Missing on all four → the account is skipped (non-fatal): the SecretProvider
  * chain simply has no op backend for that label.
@@ -270,12 +285,26 @@ export const discoverOpTokens = async (
   const found: Array<DiscoveredOpToken> = []
   for (const acct of opts.accounts) {
     const keychain = await opts.keychainRead(acct)
-    const token =
-      keychain ??
-      envTokenFor(acct, opts.env) ??
-      (await vaultOpTokenFor(acct, opts.vaultRead)) ??
-      fileTokenFor(acct, opts.readFile)
-    if (token !== undefined) found.push({ label: acct.label, token })
+    if (keychain !== undefined) {
+      found.push({ label: acct.label, token: keychain })
+      continue
+    }
+
+    const env = envTokenFor(acct, opts.env)
+    if (env !== undefined) {
+      found.push({ label: acct.label, token: env })
+      continue
+    }
+
+    const vault = await vaultOpTokenFor(acct, opts.vaultRead)
+    if (vault._tag === "hit") {
+      found.push({ label: acct.label, token: vault.token })
+      continue
+    }
+    if (vault._tag === "integrity-failure") continue
+
+    const file = fileTokenFor(acct, opts.readFile)
+    if (file !== undefined) found.push({ label: acct.label, token: file })
   }
   return found
 }
