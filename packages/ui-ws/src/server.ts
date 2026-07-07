@@ -1010,7 +1010,7 @@ const MIME_MAP: Record<string, string> = {
 }
 
 function mimeFor(filePath: string): string {
-  const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase()
+  const ext = path.extname(filePath).toLowerCase()
   return MIME_MAP[ext] ?? "application/octet-stream"
 }
 
@@ -1020,6 +1020,11 @@ function serveStatic(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
+  // Normalise the root to an absolute, separator-trimmed path. Operator-supplied
+  // env vars (LUNA_UI_WEB_STATIC_ROOT) may be relative or carry a trailing slash;
+  // without this the `startsWith(root + path.sep)` prefix-assert below would reject
+  // every request when the root ends in a separator.
+  const root = path.resolve(staticRoot)
   // Parse just the pathname (strip query string / fragment).
   // Note: node:http already normalises path traversal sequences (/../../../ → /)
   // before our handler sees req.url, so /../../../etc/passwd arrives as /etc/passwd.
@@ -1043,16 +1048,16 @@ function serveStatic(
     res.end()
     return
   }
-  if (decodedPathname.includes(" ")) {
+  if (decodedPathname.includes("\0")) {
     res.writeHead(400)
     res.end()
     return
   }
 
-  // Security: resolve to absolute path and assert it stays within staticRoot.
+  // Security: resolve to absolute path and assert it stays within the root.
   // path.resolve collapses ../ sequences; the prefix-assert rejects traversals.
-  const resolved = path.resolve(staticRoot, "." + decodedPathname)
-  if (resolved !== staticRoot && !resolved.startsWith(staticRoot + path.sep)) {
+  const resolved = path.resolve(root, "." + decodedPathname)
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     // Path traversal attempt — respond 404 (not 403, to avoid revealing root existence).
     res.writeHead(404)
     res.end()
@@ -1085,7 +1090,7 @@ function serveStatic(
     filePath = resolved
   } else if (!hasDot) {
     // No extension → SPA navigation route → fall back to index.html.
-    filePath = path.join(staticRoot, "index.html")
+    filePath = path.join(root, "index.html")
   } else {
     // Extension present but file missing → 404 (do NOT serve index.html as a fake asset).
     res.writeHead(404)
@@ -1109,9 +1114,13 @@ function serveStatic(
     return
   }
 
-  // Cache-Control: assets under /assets/ are content-hashed by Vite → immutable.
-  // Everything else (including index.html) must always revalidate.
-  const cacheControl = decodedPathname.startsWith("/assets/")
+  // Cache-Control: content-hashed assets under <root>/assets/ are immutable.
+  // Everything else — including the index.html SPA fallback (which a dotless
+  // request like `/assets/` would otherwise hit) — must always revalidate.
+  // Keyed off the file actually served, NOT the request path, so a fallback to
+  // index.html never inherits an immutable header.
+  const assetsPrefix = path.join(root, "assets") + path.sep
+  const cacheControl = filePath.startsWith(assetsPrefix)
     ? "public, max-age=31536000, immutable"
     : "no-cache"
 
@@ -1122,25 +1131,30 @@ function serveStatic(
     "content-length": fileStat.size,
   }
 
-  res.writeHead(200, headers)
-
   if (req.method === "HEAD") {
+    res.writeHead(200, headers)
     res.end()
     return
   }
 
-  // Stream the file. On stream error: if headers not yet flushed, send 500;
-  // otherwise destroy the connection (headers already sent — can't change status).
+  // Stream the file. Defer the 200 until the stream actually opens, so an open
+  // error (file raced away, permission) still yields a real status: ENOENT → 404,
+  // anything else → 500. A mid-stream error after the 200 is committed can only
+  // destroy the socket (status already sent).
   const stream = fs.createReadStream(filePath)
-  stream.on("error", (_err) => {
+  stream.on("error", (err) => {
     if (!res.headersSent) {
-      res.writeHead(500)
+      const code = (err as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500
+      res.writeHead(code)
       res.end()
     } else {
       res.destroy()
     }
   })
-  stream.pipe(res)
+  stream.on("open", () => {
+    res.writeHead(200, headers)
+    stream.pipe(res)
+  })
 }
 
 /**
@@ -1193,12 +1207,16 @@ export const startUIWebSocketServer = (
     const availableModels = config.availableModels
 
     const httpServer = http.createServer((req, res) => {
-      if (req.url === "/healthz") {
+      // Match on the pathname only — req.url includes the query string, so an
+      // exact `=== "/healthz"` would miss `/healthz?x` and (with staticRoot on)
+      // fall through to the SPA handler instead of the intended endpoint.
+      const reqPath = (req.url ?? "/").split("?")[0]
+      if (reqPath === "/healthz") {
         res.writeHead(200, { "content-type": "text/plain" })
         res.end("ok")
         return
       }
-      if (req.url === "/readyz") {
+      if (reqPath === "/readyz") {
         // Deeper-than-liveness readiness (#28): distinguishes a NORMAL chat server
         // from a SETUP-mode server (which also answers /healthz 200). The mode is
         // derived from the boot config — chat-server starts setup-mode with
@@ -1227,7 +1245,7 @@ export const startUIWebSocketServer = (
         )
         return
       }
-      if (req.url === path) {
+      if (reqPath === path) {
         // GET on the WS path without upgrade headers → 426.
         res.writeHead(426, { "content-type": "text/plain" })
         res.end("upgrade required")

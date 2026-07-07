@@ -98,16 +98,13 @@ short-lived testing; disable when done.
 
 ## Token security
 
-The chat-server uses a single bearer token (`LUNA_UI_WS_TOKEN`) for both the
-desktop Moon client and any browser session. For shared or public ingress, mint
-a **separate** browser token:
-
-```
-LUNA_UI_WS_TOKEN_WEB=<random-32-chars>
-```
-
-Then configure the web client to use it. This prevents a leaked browser token
-from compromising the desktop session.
+The chat-server authenticates every `ui-ws` connection — desktop Moon client and
+browser session alike — with a single bearer token read from `LUNA_UI_WS_TOKEN`.
+There is currently **no separate browser token**: a distinct per-surface token is
+not yet implemented, so do not rely on setting a second variable (e.g.
+`LUNA_UI_WS_TOKEN_WEB`) — the server does not read it, and doing so gives a false
+sense of isolation. For shared or public ingress today, terminate at a trusted
+reverse proxy and treat the single `LUNA_UI_WS_TOKEN` as sensitive.
 
 Keep the token:
 - **Inside TLS** (never send over plain HTTP on untrusted networks).

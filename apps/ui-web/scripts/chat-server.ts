@@ -2467,10 +2467,15 @@ export const buildSetupServerLayer = (
 //
 // Only set in NORMAL mode (see below). Never set in setup-mode.
 const __uiWebDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-const _computedStaticRoot = (() => {
+// Lazy: only evaluated at the normal-mode call site (buildServerLayer). As a
+// top-level IIFE this would also run — and log "dist/ not built" — in setup-mode,
+// where static serving must stay untouched. The env override is resolved to an
+// absolute path so a relative LUNA_UI_WEB_STATIC_ROOT works from any cwd.
+const computeStaticRoot = (): string | undefined => {
   if (process.env["LUNA_UI_WEB_STATIC_DISABLE"] === "1") return undefined
-  if (process.env["LUNA_UI_WEB_STATIC_ROOT"]) {
-    return process.env["LUNA_UI_WEB_STATIC_ROOT"]
+  const override = process.env["LUNA_UI_WEB_STATIC_ROOT"]
+  if (override) {
+    return resolve(override)
   }
   const candidate = resolve(__uiWebDir, "dist")
   if (existsSync(candidate)) return candidate
@@ -2478,7 +2483,7 @@ const _computedStaticRoot = (() => {
     "[luna/ui] dist/ not built — web client static serving disabled",
   )
   return undefined
-})()
+}
 
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
@@ -3426,7 +3431,7 @@ const buildServerLayer = (
         mcpAppHost,
         // PR 1: model-routing settings (config surface only; cap enforcement PR 2).
         modelRoutingService,
-        staticRoot: _computedStaticRoot,
+        staticRoot: computeStaticRoot(),
       })
     }),
   ).pipe(

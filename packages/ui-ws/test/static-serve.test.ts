@@ -84,6 +84,13 @@ let rigNoStatic: {
   runtime: ManagedRuntime.ManagedRuntime<ServerHandle | UIService | ObservabilityService | Clock.Clock, never>
 }
 
+// Runtime whose staticRoot carries a trailing separator (operator env var edge case)
+let rigTrailing: {
+  port: number
+  host: string
+  runtime: ManagedRuntime.ManagedRuntime<ServerHandle | UIService | ObservabilityService | Clock.Clock, never>
+}
+
 const startRig = async (staticRoot?: string) => {
   const baseLayer = makeFullLayer()
   const serverLayer = Layer.scoped(
@@ -122,11 +129,15 @@ beforeAll(async () => {
   // Start server WITHOUT staticRoot (regression rig)
   const noStatic = await startRig(undefined)
   rigNoStatic = noStatic
+
+  // Start server with a TRAILING-SEPARATOR staticRoot (env-var edge case)
+  rigTrailing = await startRig(fixtureDir + path.sep)
 }, 30000)
 
 afterAll(async () => {
   await runtime.dispose()
   await rigNoStatic.runtime.dispose()
+  await rigTrailing.runtime.dispose()
   // Clean up fixture dir
   try {
     fs.rmSync(fixtureDir, { recursive: true, force: true })
@@ -255,5 +266,69 @@ describe("regression: no staticRoot set", () => {
       path: "/ui",
     })
     expect(res.status).toBe(426)
+  })
+})
+
+// Regressions for the PR-review fixes (query-string endpoint match, cache header
+// keyed off the served file, trailing-separator staticRoot normalisation).
+describe("review-fix regressions", () => {
+  it("9a. /healthz?format=json still hits the health endpoint (not SPA fallback)", async () => {
+    // With staticRoot set, an exact `req.url === "/healthz"` match would miss the
+    // query string and fall through to serveStatic → index.html. Match on pathname.
+    const res = await httpReq({
+      host: serverHost,
+      port: serverPort,
+      method: "GET",
+      path: "/healthz?format=json",
+    })
+    expect(res.status).toBe(200)
+    expect(res.body).toBe("ok")
+    expect(res.body).not.toContain("SPA")
+  })
+
+  it("9b. GET /ui?x on the WS path (non-upgrade) still returns 426 despite the query string", async () => {
+    const res = await httpReq({
+      host: serverHost,
+      port: serverPort,
+      method: "GET",
+      path: "/ui?foo=bar",
+    })
+    expect(res.status).toBe(426)
+  })
+
+  it("9c. dotless /assets/ falls back to index.html with no-cache (never an immutable header)", async () => {
+    // A dotless request under /assets/ hits the SPA fallback. Cache-Control must be
+    // keyed off the served file (index.html → no-cache), not the request path.
+    const res = await httpReq({
+      host: serverHost,
+      port: serverPort,
+      method: "GET",
+      path: "/assets/",
+    })
+    expect(res.status).toBe(200)
+    expect(res.body).toContain("SPA")
+    expect(res.headers["cache-control"]).toBe("no-cache")
+  })
+
+  it("9d. trailing-separator staticRoot still serves index.html (not a blanket 404)", async () => {
+    const res = await httpReq({
+      host: rigTrailing.host,
+      port: rigTrailing.port,
+      method: "GET",
+      path: "/",
+    })
+    expect(res.status).toBe(200)
+    expect(res.body).toContain("SPA")
+  })
+
+  it("9e. trailing-separator staticRoot still serves immutable hashed assets", async () => {
+    const res = await httpReq({
+      host: rigTrailing.host,
+      port: rigTrailing.port,
+      method: "GET",
+      path: "/assets/app-abc123.js",
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers["cache-control"]).toMatch(/immutable/)
   })
 })
