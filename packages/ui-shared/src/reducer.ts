@@ -23,6 +23,7 @@ import type {
   SkillCatalogItem,
   SmartBarItem,
   SuggestedActionWire,
+  VaultStorageWire,
   VaultSyncWire,
   VaultWireItem,
   WorkflowGalleryItem,
@@ -148,6 +149,9 @@ export interface UIState {
   readonly vaultItems: ReadonlyArray<VaultWireItem>
   /** 1Password sync state (slice V3); null when not yet received. */
   readonly vaultSync: VaultSyncWire | null
+  /** Tiered-storage status snapshot (W2); null when not yet received or when a
+   *  pre-W2 server omits it from the vault-list frame. */
+  readonly vaultStorage: VaultStorageWire | null
   /**
    * Smart Bar (v1) — server-assembled context item list for the active thread.
    * Empty until the first `smart-bar` frame arrives; hidden when empty.
@@ -195,6 +199,7 @@ export const initialState: UIState = {
   suggestedActions: new Map(),
   vaultItems: [],
   vaultSync: null,
+  vaultStorage: null,
   smartBarItems: [],
   smartBarThreadId: null,
   serverDescriptor: null,
@@ -511,10 +516,13 @@ export const reduce = (state: UIState, action: Action): UIState => {
     case "vault-list":
       // Server-authoritative registry (metadata + pointers only; no values).
       // Sent after hello + after every successful mutation — replace wholesale.
+      // `storage` is additive (W2): a pre-W2 server omits it, so fall back to
+      // null and leave the rest of the frame handling unchanged.
       return {
         ...state,
         vaultItems: frame.items,
         vaultSync: frame.sync ?? null,
+        vaultStorage: frame.storage ?? null,
       }
     case "vault-status":
       // Mutation ack — consumed by the UI's pending-request tracker, not

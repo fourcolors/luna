@@ -705,13 +705,38 @@ export interface VaultSyncWire {
 }
 
 /**
+ * Tiered-storage status snapshot (W2 vault redesign) - a boot-time capability
+ * summary so the UI can render one "where secrets land" status line. METADATA
+ * ONLY: `envResidue` is a COUNT of non-reserved names still present in `.env`
+ * (never a name, never a value).
+ *   - `mode`        - resolved v2 storage mode ("auto" | "env" | "keychain-*").
+ *   - `writeTier`   - where a NEW secret lands ("keychain" | "luna-vault" | "env").
+ *   - `onePassword` - `op` CLI probe: "absent" | "detected" | "active".
+ *   - `osKeychain`  - whether the OS keychain is usable (darwin).
+ *   - `lunaVault`   - always true; the encrypted Luna vault tier is available.
+ *   - `envResidue`  - count of non-reserved plaintext names left in `.env`.
+ */
+export interface VaultStorageWire {
+  readonly mode: string
+  readonly writeTier: string
+  readonly onePassword: "absent" | "detected" | "active"
+  readonly osKeychain: boolean
+  readonly lunaVault: boolean
+  readonly envResidue: number
+}
+
+/**
  * Server→client: the current vault registry (metadata + pointers only; no
  * credential values). Sent after hello and after every successful mutation.
+ * `storage` is additive (W2): older servers omit it and clients must tolerate
+ * its absence.
  */
 export interface VaultListFrame {
   readonly type: "vault-list"
   readonly items: ReadonlyArray<VaultWireItem>
   readonly sync?: VaultSyncWire
+  /** Tiered-storage status snapshot (W2). Absent on pre-W2 servers. */
+  readonly storage?: VaultStorageWire
 }
 
 /**

@@ -37,8 +37,12 @@ const keychainServiceFor = (label: string): string => `luna.op.${label}`
  * Fallback env-var name for a label's service-account token. Env var
  * names cannot contain `-`, so hyphens collapse to underscores.
  * e.g. `primary` → `LUNA_OP_TOKEN_PRIMARY`, `ops-flow` → `LUNA_OP_TOKEN_OPS_FLOW`.
+ *
+ * Exported (W2) because it is ALSO the luna-vault ENTRY NAME for a runtime-
+ * written op token on non-darwin - persist/delete/discover must all agree on
+ * one name, so they share this single derivation.
  */
-const tokenEnvVarFor = (label: string): string =>
+export const tokenEnvVarFor = (label: string): string =>
   `LUNA_OP_TOKEN_${label.toUpperCase().replace(/-/g, "_")}`
 
 const parseLabel = (label: string): OpAccountConfig => {

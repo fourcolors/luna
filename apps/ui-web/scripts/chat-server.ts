@@ -182,11 +182,9 @@ import {
   DreamWorkerLayer,
   WakeLogStore,
   WakeWorkerLayer,
-  EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
   OnePasswordSecretProvider,
-  RoutedOpSecretProvider,
   scanUserSkills,
   SessionStore,
   makeSessionStoreSqlite,
@@ -204,8 +202,12 @@ import {
   writeKeychainSecret,
   deleteKeychainSecret,
   keychainVaultQueryForEnvName,
-  KeychainEnvSecretProvider,
-  secretProviderFirstOf,
+  LunaVaultFile,
+  resolveWriteTier,
+  probeOnePassword,
+  isReservedSecretName,
+  type WriteTier,
+  type OnePasswordProbe,
   JobsStoreService,
   validateAccountsTableLabels,
   openProviderSettingsStore,
@@ -235,10 +237,16 @@ import {
   attachSandboxLocalShell,
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
+import { makeVaultSecretStore } from "./vault-secret-store.js"
 import {
-  makeVaultSecretStore,
-  normalizeVaultStorageMode,
-} from "./vault-secret-store.js"
+  assertVaultBootIntegrity,
+  buildSecretChainLayer,
+  buildStorageStatus,
+  discoverOpTokens as discoverOpTokensChain,
+  normalizeVaultStorageModeV2,
+  type DiscoveredOpToken,
+  type RoutedOpAccountLayer,
+} from "./secret-chain.js"
 export { createDnaLoader, loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
 export { loadWorkspaces } from "./workspaces-loader.js"
@@ -335,9 +343,8 @@ import {
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
-  envTokenFor,
-  fileTokenFor,
   tokenFilePathFor,
+  tokenEnvVarFor,
 } from "./op-accounts.js"
 import {
   makeRegisterOpToken,
@@ -918,43 +925,47 @@ const buildChatServerRuntimeProbe = () => {
 //   LUNA_OP_TOKEN_<LABEL>=ops_xxxxxxxx                           (Linux/fallback)
 const OP_ACCOUNTS = resolveOpAccounts()
 
-interface DiscoveredOpToken {
-  readonly label: string
-  readonly token: string
-}
+// ── Luna vault file (tiered-storage W2) ─────────────────────────────────
+//
+// ONE LunaVaultFile instance for the whole process, rooted at LUNA_HOME (or
+// ~/.luna). It is the encrypted-at-rest tier consumed three ways: as a read
+// backend in the `auto` SecretProvider chain, as a write/delete target for the
+// Vault env-secret facade, and (standalone, no layer graph) as a source in
+// op-token discovery + the boot integrity gate. Framework-free by design, so
+// constructing it at module scope is safe (no Effect runtime needed).
+const LUNA_HOME = resolveRuntimePaths().lunaHome
+const lunaVaultFile = new LunaVaultFile({ _baseDir: LUNA_HOME })
+const lunaVaultRead = (name: string): Promise<string | undefined> =>
+  lunaVaultFile.readSecret(name)
 
 /**
- * Resolve every OP token we can find, in precedence order
- * keychain → env var → runtime file. Missing sources are non-fatal — an
- * account with no token in any source is simply skipped.
- *
- * macOS resolves via the Keychain and never consults the others. Linux
- * containers (no Keychain — `readKeychainToken` hard-fails on non-darwin)
- * fall through to `LUNA_OP_TOKEN_<LABEL>`, then to the runtime token file
- * `~/.luna/op-tokens/<label>` written by the Moon secure-entry form.
- *
- * Phase 25d dropped the single bare `OP_SERVICE_ACCOUNT_TOKEN` env
- * fallback (it collided with the reserved `env` label); per-account
- * sources keyed off the registered label avoid that collision and
- * preserve the multi-account model. The file is LAST so a runtime-set
- * token never shadows an operator-provisioned keychain/env token.
+ * Keychain read adapter for op-token discovery (darwin only). Wraps
+ * `readKeychainToken` (an Effect) as a Promise<string|undefined> so the moved
+ * `discoverOpTokens` (secret-chain.ts) stays framework-free: a miss / non-darwin
+ * hard-fail both resolve to undefined.
  */
-const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
-  Effect.gen(function* () {
-    const found: Array<DiscoveredOpToken> = []
-    for (const acct of OP_ACCOUNTS) {
-      const keychain = yield* readKeychainToken({
-        service: acct.keychainService,
-        account: acct.keychainAccount,
-      }).pipe(Effect.option)
-      const token = Option.isSome(keychain)
-        ? keychain.value
-        : envTokenFor(acct) ?? fileTokenFor(acct)
-      if (token !== undefined) {
-        found.push({ label: acct.label, token })
-      }
-    }
-    return found
+const keychainOpTokenRead = (
+  acct: import("./op-accounts.js").OpAccountConfig,
+): Promise<string | undefined> =>
+  Effect.runPromise(
+    readKeychainToken({
+      service: acct.keychainService,
+      account: acct.keychainAccount,
+    }).pipe(Effect.option),
+  ).then((opt) => (Option.isSome(opt) ? opt.value : undefined))
+
+/**
+ * Resolve every OP token we can find. The precedence logic (keychain → env var
+ * → luna vault → legacy file) lives in the moved `discoverOpTokens`
+ * (secret-chain.ts); here we inject the real keychain/vault readers. Missing on
+ * all sources → the account is skipped (non-fatal). The vault tier is new in
+ * W2 and sits between the env var and the legacy plaintext file.
+ */
+const discoverOpTokens = (): Promise<ReadonlyArray<DiscoveredOpToken>> =>
+  discoverOpTokensChain({
+    accounts: OP_ACCOUNTS,
+    keychainRead: keychainOpTokenRead,
+    vaultRead: lunaVaultRead,
   })
 
 // ── Moon secure-entry: register-op-token handler ────────────────────────
@@ -998,10 +1009,17 @@ const opWhoami = (token: string): Promise<TokenCheck> =>
     })
   })
 
-/** Persist to keychain (darwin) or an atomic 0600 file (linux/other). */
-const persistOpToken = (label: string, token: string): Promise<void> =>
-  new Promise((resolve, reject) => {
-    if (process.platform === "darwin") {
+/**
+ * Persist a runtime-written op token to keychain (darwin) or - W2 - the
+ * encrypted Luna vault (linux/other), under the entry name `LUNA_OP_TOKEN_<LABEL>`
+ * so op-token discovery finds it in its vault tier. This replaces the prior
+ * plaintext `~/.luna/op-tokens/<label>` file for WRITES: a runtime op token no
+ * longer lands in plaintext on a keychain-less host. Discovery still READS the
+ * legacy file (last precedence) so any pre-W2 file keeps working forever.
+ */
+const persistOpToken = (label: string, token: string): Promise<void> => {
+  if (process.platform === "darwin") {
+    return new Promise((resolve, reject) => {
       const child = spawn(
         "security",
         ["add-generic-password", "-U", "-s", `luna.op.${label}`, "-a", label, "-w", token],
@@ -1011,32 +1029,26 @@ const persistOpToken = (label: string, token: string): Promise<void> =>
       child.on("close", (code) =>
         code === 0 ? resolve() : reject(new Error(`security add-generic-password exited ${code}`)),
       )
-      return
-    }
-    try {
-      const path = tokenFilePathFor(label)
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-      const tmp = `${path}.tmp-${process.pid}`
-      writeFileSync(tmp, token, { mode: 0o600 })
-      renameSync(tmp, path)
-      chmodSync(path, 0o600) // writeFileSync mode is pre-umask; force 0600
-      resolve()
-    } catch (e) {
-      reject(e instanceof Error ? e : new Error(String(e)))
-    }
-  })
+    })
+  }
+  // Non-darwin: write into the encrypted Luna vault (was: plaintext file).
+  return lunaVaultFile.writeSecret(tokenEnvVarFor(label), token)
+}
 
 /**
  * Delete a stored op token (Vault remove). Mirrors `persistOpToken`'s platform
- * split: darwin keychain entry, linux/other the 0600 runtime file. Idempotent —
- * a missing entry/file is success (`security` exits 44 for item-not-found;
- * unlink swallows ENOENT). NOTE: a token defined via `LUNA_OP_TOKEN_<LABEL>`
- * cannot be deleted here (the supervisor owns that env) — discovery re-finds it
- * after restart and the Vault reconciler re-adopts the row, which is honest.
+ * split, and - like the env-secret DELETE contract - scrubs EVERY runtime tier
+ * on non-darwin so the token stays deleted: the W2 vault entry AND the legacy
+ * plaintext file. Idempotent: a missing keychain entry (`security` exit 44),
+ * a missing vault name (deleteSecret returns false), and a missing legacy file
+ * (unlink ENOENT) are all success. NOTE: a token defined via the ENV VAR
+ * `LUNA_OP_TOKEN_<LABEL>` cannot be deleted here (the supervisor owns that env)
+ * - discovery re-finds it after restart and the Vault reconciler re-adopts the
+ * row, which is honest.
  */
-const deleteOpToken = (label: string): Promise<void> =>
-  new Promise((resolve, reject) => {
-    if (process.platform === "darwin") {
+const deleteOpToken = (label: string): Promise<void> => {
+  if (process.platform === "darwin") {
+    return new Promise((resolve, reject) => {
       const child = spawn(
         "security",
         ["delete-generic-password", "-s", `luna.op.${label}`, "-a", label],
@@ -1048,17 +1060,19 @@ const deleteOpToken = (label: string): Promise<void> =>
           ? resolve()
           : reject(new Error(`security delete-generic-password exited ${code}`)),
       )
-      return
-    }
+    })
+  }
+  // Non-darwin: scrub both the vault entry and any legacy plaintext file.
+  return (async () => {
+    await lunaVaultFile.deleteSecret(tokenEnvVarFor(label))
     try {
       unlinkSync(tokenFilePathFor(label))
-      resolve()
     } catch (e) {
       const err = e as NodeJS.ErrnoException
-      if (err.code === "ENOENT") resolve()
-      else reject(err instanceof Error ? err : new Error(String(err)))
+      if (err.code !== "ENOENT") throw err
     }
-  })
+  })()
+}
 
 /**
  * Real `op` runner for makeVaultOpSync (Vault V3 — 1Password sync). Mirrors
@@ -1153,6 +1167,15 @@ const readEnvFileVarNames = (): ReadonlyArray<string> => {
   }
   return names
 }
+
+/**
+ * Count of NON-reserved names still present in ~/.luna/.env (the `envResidue`
+ * status field). Reserved names (UI_WS_TOKEN / LUNA_*) legitimately live in
+ * `.env` forever, so they are NOT residue; only operator/agent secrets that
+ * could have moved to a secure tier count. Names only - never a value.
+ */
+const computeEnvResidue = (): number =>
+  readEnvFileVarNames().filter((name) => !isReservedSecretName(name)).length
 
 const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
 
@@ -1410,29 +1433,56 @@ const deleteKeychainEnvSecret = (varName: string): Promise<void> =>
     deleteKeychainSecret(keychainVaultQueryForEnvName(varName)),
   )
 
-// LUNA_VAULT_STORAGE selects where env-secret VALUES land: `.env` (default),
-// or — on Darwin only — the macOS keychain. Resolved once at boot. The same
-// mode also drives the read-side provider chain in buildBaseLayer below, so
+// LUNA_VAULT_STORAGE selects the tiered-storage MODE (W2 v2 vocabulary):
+//   `auto` (NEW DEFAULT) - darwin -> macOS Keychain, else -> encrypted Luna vault
+//   `env`                - explicit plaintext `.env` escape hatch
+//   `keychain-preferred`/`keychain-only` - darwin migration states
+// The same mode drives the read-side provider chain in buildBaseLayer below, so
 // write target and read source stay in lockstep.
-const vaultStorageMode = normalizeVaultStorageMode(
+const vaultStorageMode = normalizeVaultStorageModeV2(
   process.env["LUNA_VAULT_STORAGE"],
   process.platform,
 )
 
+// The concrete WRITE tier is resolvable at module scope: resolveWriteTier only
+// depends on `mode` + `osKeychain` (1Password is a READ source, never a write
+// target - see storage-policy.ts), and `osKeychain` is a synchronous platform
+// check. The async `op` probe result is needed ONLY for the status snapshot
+// (computed at boot), not for the write decision, so we pass a placeholder
+// `onePassword` here.
+const osKeychainAvailable = process.platform === "darwin"
+const vaultWriteTier: WriteTier = resolveWriteTier(vaultStorageMode, {
+  platform: process.platform,
+  onePassword: "absent",
+  osKeychain: osKeychainAvailable,
+})
+
 // Single write/delete facade the Vault env-secret paths funnel through
 // (registerSecret + vault mutations). `writeEnv`/`removeEnv` retain the
 // reserved-name gate + atomic .env IO; `writeKeychain`/`deleteKeychain` hit
-// the keychain. process.env is mirrored either way so live resolution needs
-// no restart.
+// the keychain; `vaultFile` hits the encrypted Luna vault. WRITES route by
+// tier; DELETES scrub every tier (the DELETE contract). process.env is mirrored
+// on write either way so live resolution needs no restart.
 const vaultSecretStore = makeVaultSecretStore({
   platform: process.platform,
-  mode: vaultStorageMode,
+  writeTier: vaultWriteTier,
   env: process.env,
   writeEnv: persistEnvSecret,
   removeEnv: removeEnvSecret,
   writeKeychain: writeKeychainEnvSecret,
   deleteKeychain: deleteKeychainEnvSecret,
+  vaultFile: {
+    writeSecret: (name, value) => lunaVaultFile.writeSecret(name, value),
+    deleteSecret: (name) => lunaVaultFile.deleteSecret(name),
+  },
 })
+
+// Tiered-storage status snapshot for the vault-list wire frame (W2). Assigned
+// once in bootstrap() after the async `op` probe resolves (the probe result is
+// status-only - it does NOT affect the write tier). The vault-list handle's
+// `storage()` accessor returns this; null until boot computes it, so a pre-boot
+// list frame simply omits the field (additive, backward compatible).
+let vaultStorageStatus: ReturnType<typeof buildStorageStatus> | null = null
 
 // ── Moon agent-summoned secure secret entry ─────────────────────────────
 //
@@ -1688,41 +1738,29 @@ export const buildBaseLayer = (
   // onMirrorError hook and does NOT kill the live session.
   const storeL = makeSessionStoreSqlite(paths.lunaDbPath)
 
-  // Build one inner OP layer per discovered token, then wrap in the
-  // routed dispatcher. The routed wrapper owns the op://-vs-luna-op://
-  // grammar; the inner backends are pure 1Password readers.
-  const routedAccounts = opTokens.map((t) => ({
-    label: t.label,
-    layer: OnePasswordSecretProvider.make({
-      accountLabel: t.label,
-      token: t.token,
-    }).pipe(Layer.provide(clockL)),
-  }))
-  const routedOpL = RoutedOpSecretProvider.make({ accounts: routedAccounts })
-  const envProviderL = EnvSecretProvider.Default
-  // Vault keychain migration: on a Darwin keychain mode, resolve `env:*` from
-  // luna.vault.<NAME> keychain entries FIRST, then fall through to `.env`.
-  // Both keychain modes keep the `.env` reader as the final fallback — it is
-  // load-bearing for names that are NEVER migrated to the keychain: reserved
-  // refs (connector OAuth `env:LUNA_CONNECTOR_*`, `UI_WS_TOKEN`) live only in
-  // `.env` (the migration planner skips reserved names). Dropping the env
-  // reader would strand every connector (review finding).
-  //
-  // The difference between the two keychain modes is OPERATIONAL, not in the
-  // read chain: `keychain-preferred` is the pre-prune dual-read state where
-  // `.env` still holds the migrated values (so `LUNA_VAULT_STORAGE=env`
-  // rollback works); `keychain-only` is the post-prune state where the prune
-  // step has removed the MIGRATED (non-reserved) values from `.env`, so they
-  // resolve from the keychain only — the env tail then serves reserved refs
-  // alone and can never resurrect a migrated secret. Linux/non-Darwin never reaches a
-  // keychain mode (normalizeVaultStorageMode forces env), so the chain is
-  // unchanged there.
-  const keychainEnvProviderL = KeychainEnvSecretProvider.make()
-  const secretL =
-    vaultStorageMode === "keychain-preferred" ||
-    vaultStorageMode === "keychain-only"
-      ? secretProviderFirstOf([routedOpL, keychainEnvProviderL, envProviderL])
-      : secretProviderFirstOf([routedOpL, envProviderL])
+  // Build one inner OP layer per discovered token; the routed dispatcher (owned
+  // by buildSecretChainLayer) wraps them. The inner backends are pure 1Password
+  // readers; the routed wrapper owns the op://-vs-luna-op:// grammar.
+  const opAccountLayers: ReadonlyArray<RoutedOpAccountLayer> = opTokens.map(
+    (t) => ({
+      label: t.label,
+      layer: OnePasswordSecretProvider.make({
+        accountLabel: t.label,
+        token: t.token,
+      }).pipe(Layer.provide(clockL)),
+    }),
+  )
+  // Compose the read chain per mode (W2). Composition lives in secret-chain.ts;
+  // this only injects the platform, the discovered OP accounts, and the
+  // standalone luna-vault reader. The load-bearing env tail + the per-mode chain
+  // rationale (byte-compat for legacy modes, lunaVault inserted only in `auto`)
+  // all travel with buildSecretChainLayer.
+  const secretL = buildSecretChainLayer({
+    mode: vaultStorageMode,
+    platform: process.platform,
+    opAccounts: opAccountLayers,
+    lunaVaultRead,
+  })
 
   // AccountBroker hydrates the §5.1 `accounts` table from the default
   // ~/.luna/luna.db. Failures here surface as ConfigError at boot —
@@ -2656,7 +2694,7 @@ const buildServerLayer = (
       // V3 sync engine's tokenForLabel. The map living until restart is
       // correct: every op-token change schedules a supervised restart, so
       // discovery re-runs with the fresh token.
-      const discoveredOpTokens = yield* discoverOpTokens
+      const discoveredOpTokens = yield* Effect.promise(() => discoverOpTokens())
       const opTokenByLabel = new Map(discoveredOpTokens.map((t) => [t.label, t.token]))
 
       // Boot reconcile: adopt pre-Vault secrets (env var NAMES from
@@ -2811,6 +2849,11 @@ const buildServerLayer = (
       const vaultWsHandle = {
         list: () =>
           vaultStoreFacade.list().then((items) => items.map(wireItem)),
+        // W2 tiered-storage snapshot - attached to every vault-list frame so the
+        // UI can render one "where secrets land" status line. Boot-computed
+        // constant (metadata only, no names/values); null until bootstrap() sets
+        // it, in which case the frame omits the field (additive).
+        storage: () => vaultStorageStatus,
         syncState: async () => {
           const cfg = await Effect.runPromise(vaultStoreService.getSyncConfig())
           return cfg === null
@@ -3488,7 +3531,17 @@ const buildMain = (
 // providers up front. Keychain reads are <100ms and one-shot; we accept
 // the synchronous-feeling startup latency.
 const bootstrap = async (): Promise<void> => {
-  const opTokens = await Effect.runPromise(discoverOpTokens)
+  // W2 boot integrity gate: refuse to boot on a locked-out Luna vault (store
+  // present but the key is missing / wrong / tampered) BEFORE any layer graph
+  // or op-token discovery runs. A missing/empty store is fine (fresh install);
+  // a broken one logs the restore instruction and exits non-zero rather than
+  // silently treating every vaulted secret as "not set". Runs first because
+  // discovery itself now reads the vault.
+  await assertVaultBootIntegrity(lunaVaultFile, (msg) =>
+    writeSync(2, `❌ ${msg}\n`),
+  )
+
+  const opTokens = await discoverOpTokens()
   // Log the OP provider count + LABELS up front (never the tokens) so
   // operators see the chain composition even if downstream layers
   // (e.g. AccountBroker) fail later in boot.
@@ -3504,6 +3557,22 @@ const bootstrap = async (): Promise<void> => {
     )
   }
   const opLabelsRegistered = opTokens.map((t) => t.label)
+
+  // ── W2 tiered-storage status snapshot ────────────────────────────────────
+  // Probe 1Password ONCE (bounded, non-blocking; `accountsConfigured` short-
+  // circuits to "active" without shelling out when op accounts are wired) and
+  // assemble the vault-list `storage` object. `envResidue` is a COUNT of
+  // non-reserved `.env` names (never a name/value). The probe is status-only -
+  // the write tier was already resolved synchronously at module scope.
+  const onePasswordProbe: OnePasswordProbe = await probeOnePassword({
+    accountsConfigured: opTokens.length > 0,
+  })
+  vaultStorageStatus = buildStorageStatus({
+    mode: vaultStorageMode,
+    writeTier: vaultWriteTier,
+    probe: { onePassword: onePasswordProbe, osKeychain: osKeychainAvailable },
+    envResidue: computeEnvResidue(),
+  })
 
   // ── Boot-time credential gate ────────────────────────────────────────────
   // Probe credential readiness BEFORE building any chat layers. If the gate
