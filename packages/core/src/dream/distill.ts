@@ -31,8 +31,15 @@ export const DEFAULT_DISTILL_OPTIONS: DistillOptions = {
 /** Rough token ceiling for the whole dream prompt (chars/4 heuristic, see estimateTokens). */
 export const DREAM_PROMPT_TOKEN_BUDGET = 120_000
 
-/** Cheap token estimate: Math.ceil(text.length / 4). No tokenizer dependency. */
-export const estimateTokens = (text: string): number => Math.ceil(text.length / 4)
+/**
+ * Cheap token estimate: Math.ceil(text.length / 3). No tokenizer dependency.
+ * 3 chars/token is deliberately conservative: sandbox verification against the
+ * live #255 backlog showed distilled transcript content (role-prefixed lines,
+ * JSON-ish tool renders) tokenizes well below the naive 4 chars/token, and an
+ * optimistic estimate here defeats the pre-flight (the SDK rejects a prompt
+ * the gate approved).
+ */
+export const estimateTokens = (text: string): number => Math.ceil(text.length / 3)
 
 /** Kinds that never carry surfaceable turn text; dropped from every excerpt. */
 const NOISE_KINDS: ReadonlySet<StoredMessage["kind"]> = new Set([

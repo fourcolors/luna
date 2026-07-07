@@ -203,11 +203,17 @@ const getCalls = (callsRef: Ref.Ref<ReadonlyArray<RecordedCall>>) =>
 // ── constants ────────────────────────────────────────────────────────────────
 
 describe("chunking constants", () => {
-  it("DREAM_SESSION_TOKEN_BUDGET is derived from the prompt budget minus the memories reservation minus headroom", () => {
+  it("DREAM_SESSION_TOKEN_BUDGET is derived from the prompt budget minus the memories reservation minus the prompt-overhead reserve", () => {
+    // Sandbox re-spec (live #255 backlog verification): the original 2k
+    // headroom ignored the Claude Code CLI's own system prompt + tool schemas,
+    // and the /4 memories reservation disagreed with the corrected /3
+    // estimator — a chunk the pre-flight approved was rejected by the SDK.
     expect(DREAM_SESSION_TOKEN_BUDGET).toBe(
-      DREAM_PROMPT_TOKEN_BUDGET - Math.ceil(DEFAULT_DISTILL_OPTIONS.memoriesChars / 4) - 2_000,
+      DREAM_PROMPT_TOKEN_BUDGET -
+        Math.ceil(DEFAULT_DISTILL_OPTIONS.memoriesChars / 3) -
+        20_000,
     )
-    expect(DREAM_SESSION_TOKEN_BUDGET).toBe(108_000)
+    expect(DREAM_SESSION_TOKEN_BUDGET).toBe(86_666)
   })
 
   it("DREAM_DEADLINE_SAFETY_MS is 60 seconds", () => {

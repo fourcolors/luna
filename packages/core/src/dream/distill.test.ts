@@ -382,7 +382,14 @@ describe("estimateTokens", () => {
     expect(estimateTokens("")).toBe(0)
   })
 
-  it("given a 9-character string, when estimated, then returns 3 (ceil(9/4))", () => {
+  it("given a 9-character string, when estimated, then returns 3 (ceil(9/3))", () => {
     expect(estimateTokens("123456789")).toBe(3)
+  })
+
+  it("given an 8-character string, when estimated, then returns 3 — locking the conservative /3 divisor (a /4 estimator would return 2)", () => {
+    // Sandbox re-spec (live #255 backlog verification): distilled transcript
+    // content tokenizes denser than 4 chars/token; the estimator must be
+    // conservative or the pre-flight approves prompts the SDK rejects.
+    expect(estimateTokens("12345678")).toBe(3)
   })
 })

@@ -230,19 +230,30 @@ export const gatherInputs = (
   })
 
 /**
+ * Fixed headroom reserved for everything that rides on the prompt besides the
+ * session excerpts and memories block: the reasoner's own scaffolding
+ * (instructions, schema, framing) PLUS the Claude Code CLI's system prompt and
+ * tool schemas, which the SDK adds on top of our prompt and our estimate never
+ * sees. Sized from sandbox verification against the live #255 backlog, where
+ * the original 2k reserve left a chunk the pre-flight approved but the SDK
+ * rejected as too long.
+ */
+export const DREAM_PROMPT_OVERHEAD_TOKENS = 20_000
+
+/**
  * Per-dream token budget for the packed session excerpts alone: the whole
  * prompt budget MINUS the memories-block reservation (identical every chunk)
- * MINUS a fixed headroom for the reasoner's own scaffolding (instructions,
- * schema, framing). Keeps each chunk's session payload inside
- * DREAM_PROMPT_TOKEN_BUDGET for every DIVISIBLE window; the one deliberate
- * exception is an indivisible packing item — a single oversized session, or a
- * tie group of equal-lastMessageAt sessions (see packSessions) — which runs as
- * its own chunk even over budget rather than being dropped or split.
+ * MINUS DREAM_PROMPT_OVERHEAD_TOKENS. Keeps each chunk's session payload
+ * inside DREAM_PROMPT_TOKEN_BUDGET for every DIVISIBLE window; the one
+ * deliberate exception is an indivisible packing item — a single oversized
+ * session, or a tie group of equal-lastMessageAt sessions (see packSessions) —
+ * which runs as its own chunk even over budget rather than being dropped or
+ * split. The memories reservation divides by 3 to match estimateTokens.
  */
 export const DREAM_SESSION_TOKEN_BUDGET =
   DREAM_PROMPT_TOKEN_BUDGET -
-  Math.ceil(DEFAULT_DISTILL_OPTIONS.memoriesChars / 4) -
-  2_000
+  Math.ceil(DEFAULT_DISTILL_OPTIONS.memoriesChars / 3) -
+  DREAM_PROMPT_OVERHEAD_TOKENS
 
 /**
  * Per-session packing floor: every session charges at least this many tokens,
@@ -416,6 +427,21 @@ export const runDream = (now: number, opts: RunDreamOptions = {}) =>
       (a, b) => (a.summary.lastMessageAt ?? 0) - (b.summary.lastMessageAt ?? 0),
     )
     const chunks = packSessions(ordered, sessionTokenBudget)
+    // Chunk-plan observability: the packing decision is the load-bearing step
+    // (issue #255 was invisible without it), so log every chunk's estimated
+    // size up front — the live-verify rubric reads these lines.
+    yield* Effect.logInfo(
+      `[luna/dream] runDream: packed ${chunks.length} chunk(s) [budget=${sessionTokenBudget}]: ` +
+        chunks
+          .map(
+            (c, i) =>
+              `#${i + 1}{sessions=${c.length} estTokens=${c.reduce(
+                (t, s) => t + Math.max(estimateTokens(s.excerpt), SESSION_OVERHEAD_TOKENS),
+                0,
+              )}}`,
+          )
+          .join(" "),
+    )
 
     let chunksProcessed = 0
     let sessionsProcessed = 0
@@ -449,6 +475,9 @@ export const runDream = (now: number, opts: RunDreamOptions = {}) =>
           chunkStart,
         )
         const dreamId = deriveDreamId(chunkStart, cutoff)
+        yield* Effect.logInfo(
+          `[luna/dream] runDream: chunk ${chunksProcessed + 1}/${chunks.length} starting; dreamId=${dreamId}; sessions=${chunk.length}`,
+        )
 
         const ops = yield* reasoner.reason({ sessions: chunk, memories: inputs.memories })
         yield* applyOps(dreamId, ops)
