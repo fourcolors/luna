@@ -599,6 +599,9 @@ propagates to the `job_runs` row.
   "system_prompt": "You are Luna's morning brief generator. …",
   "user_prompt":   "Generate today's brief.",
   "model":         "claude-sonnet-4-5",
+  // `allowed_tools` only PRE-APPROVES tool names; it does not MOUNT them.
+  // See §5.3.5: background jobs do not receive Luna's in-process MCP servers,
+  // so mcp__* entries are inert unless the tool is otherwise reachable.
   "allowed_tools": ["mcp__memory__memory_search", "mcp__observability__obs_notes_recent"],
   "deliver_to": {
     "kind": "obs_note",         // 'obs_note' | 'chat_thread' | 'file' | …
@@ -620,7 +623,35 @@ propagates to the `job_runs` row.
 }
 ```
 
-#### 5.3.5 Dream + wake as V2 job rows
+#### 5.3.5 Tool reachability in background jobs
+
+A background job's agent turn is **not** an interactive chat thread, and the two
+have different tool surfaces. This is load-bearing and easy to get wrong (the
+`allowed_tools` example above lists `mcp__*` names that are, in fact, inert in a
+job).
+
+- **In-process MCP servers are interactive-only.** Luna's MCP tool servers —
+  `observability`, `memory`, `local_shell`, `scheduler`, `widget`, etc. — are
+  assembled per chat thread by the chat-server and mounted only into interactive
+  thread queries. `SDKClient.Default` is a pass-through that injects no base
+  `mcpServers`, and the prompt/workflow workers mount only the optional per-run
+  `request_input` binding. So a job's `query()` cannot call `mcp__observability__*`,
+  `mcp__memory__*`, etc., regardless of what `allowed_tools` lists.
+- **Built-in tools *are* available.** A job's turn can use the SDK's built-in
+  tools — `Bash`, `Read`, `Write`, `Grep`, `Glob`, `WebFetch` — which need no
+  MCP mount.
+- **`allowed_tools` is additive pre-approval, not a mount.** Listing a name only
+  pre-approves it; a tool whose server is not mounted still does not exist for the
+  turn. Naming an unmounted `mcp__*` tool tends to waste turns (the model tries to
+  call a tool that is not there) and can exhaust `max_turns`.
+
+**Implication for authoring jobs.** For tool-using scheduled work, prefer a
+`workflow` job: gather data in `shell` steps (e.g. `sqlite3` against the state
+DBs, `curl`) and/or have a `prompt` step use `Bash` directly; deliver results by
+writing to `agent_notes` from a shell/Bash step. Do not rely on `mcp__*` tools
+inside any background job.
+
+#### 5.3.6 Dream + wake as V2 job rows
 
 Dream and wake run as V2 job rows drained by the JobTicker, which is the **only**
 scheduler. The legacy fiber-per-cron path — `TriggerAgent` + `JobScheduler` +
@@ -660,7 +691,7 @@ are kept indefinitely as deprecated synonyms; new code never writes them.
 Legacy `kind="cron"` rows left in an existing DB are skipped by the ticker (no
 `cron` worker), so they stay inert rather than firing or erroring.
 
-#### 5.3.6 Non-goals (V1)
+#### 5.3.7 Non-goals (V1)
 
 - Retries with backoff. `attempt` column exists; retry loop is Phase 13.
 - Cross-fire uniqueness / debounce — Phase 13.
@@ -669,7 +700,7 @@ Legacy `kind="cron"` rows left in an existing DB are skipped by the ticker (no
 - Workflow DAG (branches/joins) — V1 workflows are linear step lists; DAG
   is Phase 13+.
 
-#### 5.3.7 Observability
+#### 5.3.8 Observability
 
 Every tick logs:
 - `[luna/sched] tick claimed=N submitted=N skipped=N` at INFO.
