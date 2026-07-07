@@ -86,6 +86,12 @@ export function selectEmbedderLayer(): Layer.Layer<
     const probeTimeoutMs = parsePositiveIntegerEnv(
       "LUNA_OLLAMA_PROBE_TIMEOUT_MS",
     )
+    // Clamped at 5: a high value could hide a persistently-flaky link and
+    // eat the ~60s boot readiness budget the deploy gate relies on.
+    const probeAttemptsRaw = parsePositiveIntegerEnv("LUNA_OLLAMA_PROBE_ATTEMPTS")
+    const maxProbeAttempts =
+      probeAttemptsRaw !== undefined ? Math.min(probeAttemptsRaw, 5) : undefined
+    const probeBackoffMs = parsePositiveIntegerEnv("LUNA_OLLAMA_PROBE_BACKOFF_MS")
     return makeOllamaEmbedderLayer({
       ...(process.env["LUNA_OLLAMA_EMBED_MODEL"] !== undefined
         ? { model: process.env["LUNA_OLLAMA_EMBED_MODEL"] }
@@ -97,6 +103,8 @@ export function selectEmbedderLayer(): Layer.Layer<
           : {}),
       ...(dimension !== undefined ? { dimension } : {}),
       ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
+      ...(maxProbeAttempts !== undefined ? { maxProbeAttempts } : {}),
+      ...(probeBackoffMs !== undefined ? { probeBackoffMs } : {}),
     })
   }
   return StubEmbedderLayer

@@ -9,6 +9,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Model routing: an omitted thread model means the broker's `"default"` LANE, never a concrete model id.
   The string `"default"` is a sentinel; lane/chain resolution lives in `packages/core/src/overflow-chain.ts` (`pickLaneTarget`) and the SDK adapter (`packages/adapter-sdk/src/adapter.ts`), provider kinds in `packages/core/src/provider-profile.ts`, role defaults in `packages/core/src/provider-settings/resolver.ts`.
   Never pre-stamp a default model in chat-service; default-model preferences belong in the adapter's default-lane resolution so configured overflow chains and non-Anthropic deployments keep working (PR #253).
+- Ollama embedder boot probe (`makeOllamaEmbedderLayer` in `packages/core/src/embedder/embedder.ts`): bounded retry (`maxProbeAttempts`, default 3) then a non-fatal degrade if the vector dimension is already known (`LUNA_OLLAMA_EMBED_DIMENSION` / `opts.dimension`), so a deploy-time bad-response window can't crash-loop boot.
+  Degrade requires a known dimension - an unknown dimension still fails boot fatally, since a guessed dimension would corrupt the `float32[dim]` vectorlite table sizing in `packages/memory/src/backends/sqlite-vector.ts`.
+  A declared-vs-probed dimension mismatch is a config error and is never retried or degraded.
 
 ## Maintaining this file
 

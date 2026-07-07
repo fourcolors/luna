@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { Effect } from "effect"
+import { Effect, Fiber, ManagedRuntime, TestClock, TestContext } from "effect"
 import {
   EmbedderService,
   makeOllamaEmbedderLayer,
 } from "../../src/embedder/index.js"
+import { EmbedderError } from "../../src/errors.js"
 
 const originalFetch = globalThis.fetch
 
@@ -151,5 +152,336 @@ describe("OllamaEmbedder", () => {
       "http://10.77.0.1:11434/api/embed",
       expect.any(Object),
     )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boot-probe hardening: bounded retry + non-fatal degrade.
+//
+// Root cause (jax-box, 2026-07-07): during a deploy, Ollama can return a
+// 200 with an empty/truncated body for ~60s while otherwise healthy. That
+// is longer than any in-boot retry budget can absorb, so the only robust
+// fix is to stop letting an exhausted probe be fatal to boot when the
+// vector dimension is already known.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A 200 whose body read fails, mirroring `Unexpected end of JSON input`.
+const emptyBodyOk = () =>
+  ({
+    ok: true,
+    status: 200,
+    json: () => Promise.reject(new SyntaxError("Unexpected end of JSON input")),
+    text: () => Promise.resolve(""),
+  }) as Response
+
+// Every probe attempt tries /api/embed first, regardless of whether it then
+// falls back to /api/embeddings on 404/405 — so counting only /api/embed
+// calls gives a true attempt count even when some attempts are two fetches.
+const probeAttemptCount = (mockFetch: ReturnType<typeof vi.fn>): number =>
+  mockFetch.mock.calls.filter(
+    (call) => typeof call[0] === "string" && call[0].endsWith("/api/embed"),
+  ).length
+
+describe("OllamaEmbedder boot-probe hardening", () => {
+  const mockFetch = vi.fn()
+  let errorSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    setFetch(mockFetch as unknown as typeof globalThis.fetch)
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    restoreFetch()
+    mockFetch.mockReset()
+    errorSpy.mockRestore()
+  })
+
+  it("boots non-fatally in degraded mode through a persistent empty-body window (known dimension)", async () => {
+    mockFetch.mockResolvedValue(emptyBodyOk())
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 768,
+      probeBackoffMs: 1,
+    })
+
+    const embedder = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* EmbedderService
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(embedder.provider).toBe("ollama")
+    expect(embedder.dimension).toBe(768)
+    // default maxProbeAttempts=3, and every attempt failed the same way.
+    expect(probeAttemptCount(mockFetch)).toBe(3)
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("DEGRADED MODE"),
+      ),
+    ).toBe(true)
+  })
+
+  it("stays fatal through the same persistent window when the dimension is unknown", async () => {
+    mockFetch.mockResolvedValue(emptyBodyOk())
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      probeBackoffMs: 1,
+      // no `dimension` — degrade must refuse to engage, to avoid sizing the
+      // vectorlite table from a guess.
+    })
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* EmbedderService
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toBeTruthy()
+    expect(probeAttemptCount(mockFetch)).toBe(3)
+  })
+
+  it("absorbs a short transient failure and constructs normally", async () => {
+    mockFetch
+      .mockResolvedValueOnce(emptyBodyOk())
+      .mockResolvedValueOnce(okJson({ embeddings: [[1, 0, 0]] }))
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      probeBackoffMs: 1,
+    })
+
+    const embedder = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* EmbedderService
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(embedder.dimension).toBe(3)
+    expect(probeAttemptCount(mockFetch)).toBe(2)
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("recovered after retry"),
+      ),
+    ).toBe(true)
+  })
+
+  it("genuine outage stays fatal with unknown dimension, degrades with known dimension, and never fabricates a vector", async () => {
+    mockFetch.mockRejectedValue(new TypeError("fetch failed"))
+
+    const fatalLayer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      probeBackoffMs: 1,
+    })
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* EmbedderService
+        }).pipe(Effect.provide(fatalLayer)),
+      ),
+    ).rejects.toBeTruthy()
+
+    mockFetch.mockReset()
+    mockFetch.mockRejectedValue(new TypeError("fetch failed"))
+
+    const degradedLayer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 768,
+      probeBackoffMs: 1,
+    })
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const embedder = yield* EmbedderService
+        const outcome = yield* Effect.either(embedder.embed("hello"))
+        return { embedder, outcome }
+      }).pipe(Effect.provide(degradedLayer)),
+    )
+
+    expect(result.embedder.provider).toBe("ollama")
+    expect(result.embedder.dimension).toBe(768)
+    expect(result.outcome._tag).toBe("Left")
+    if (result.outcome._tag === "Left") {
+      expect(result.outcome.left).toBeInstanceOf(EmbedderError)
+      expect(result.outcome.left.op).toBe("embed")
+    }
+  })
+
+  it("fails fast on a declared-vs-probed dimension mismatch, without retry or degrade", async () => {
+    mockFetch.mockResolvedValue(okJson({ embeddings: [[1, 0, 0]] })) // length 3
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 999,
+      probeBackoffMs: 1,
+    })
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* EmbedderService
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toBeTruthy()
+    // The probe itself succeeded on the very first try — the mismatch check
+    // fires immediately after, with no retry loop involved.
+    expect(probeAttemptCount(mockFetch)).toBe(1)
+  })
+
+  it("maxProbeAttempts=1 restores today's fail-fast-on-first-attempt behavior", async () => {
+    mockFetch.mockResolvedValue(emptyBodyOk())
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 768,
+      maxProbeAttempts: 1,
+      degradeOnProbeFailure: false,
+      probeBackoffMs: 1,
+    })
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* EmbedderService
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toBeTruthy()
+    expect(probeAttemptCount(mockFetch)).toBe(1)
+  })
+
+  it("happy path is unchanged: one fetch, zero backoff, no breadcrumbs", async () => {
+    mockFetch.mockResolvedValueOnce(okJson({ embeddings: [[1, 0, 0]] }))
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+    })
+
+    const embedder = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* EmbedderService
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(embedder.dimension).toBe(3)
+    expect(probeAttemptCount(mockFetch)).toBe(1)
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it("genuinely defers each retry by the configured backoff (Effect TestClock)", async () => {
+    mockFetch
+      .mockResolvedValueOnce(emptyBodyOk())
+      .mockResolvedValueOnce(okJson({ embeddings: [[1, 0, 0]] }))
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      probeBackoffMs: 5000,
+    })
+
+    const runtime = ManagedRuntime.make(TestContext.TestContext)
+    try {
+      // forkDaemon, not fork: a plain Effect.fork scopes the child to this
+      // runPromise call's own root fiber, which exits (and interrupts its
+      // children) the instant fork itself returns the Fiber handle.
+      const fiber = await runtime.runPromise(
+        Effect.forkDaemon(
+          Effect.gen(function* () {
+            return yield* EmbedderService
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+
+      // Let the first (failing) attempt's mocked fetch promise settle on the
+      // real microtask queue before the fiber reaches the backoff sleep.
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const stillPending = await runtime.runPromise(Fiber.poll(fiber))
+      expect(stillPending._tag).toBe("None")
+      // The backoff sleep must gate the retry — no second attempt yet.
+      expect(probeAttemptCount(mockFetch)).toBe(1)
+
+      await runtime.runPromise(TestClock.adjust("10 seconds"))
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const embedder = await runtime.runPromise(Fiber.join(fiber))
+      expect(embedder.dimension).toBe(3)
+      expect(probeAttemptCount(mockFetch)).toBe(2)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it("re-arms a fresh AbortController budget on each retry attempt (JS fake timers)", async () => {
+    vi.useFakeTimers()
+    try {
+      let firstCallSignal: AbortSignal | undefined
+      mockFetch
+        .mockImplementationOnce(
+          (_url: string, init: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              firstCallSignal = init.signal ?? undefined
+              init.signal?.addEventListener("abort", () => {
+                reject(new DOMException("aborted", "AbortError"))
+              })
+            }),
+        )
+        .mockResolvedValueOnce(okJson({ embeddings: [[1, 0, 0]] }))
+
+      const layer = makeOllamaEmbedderLayer({
+        baseUrl: "http://ollama.test:11434",
+        model: "embeddinggemma",
+        probeTimeoutMs: 3000,
+        probeBackoffMs: 0,
+      })
+
+      const resultPromise = Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* EmbedderService
+        }).pipe(Effect.provide(layer)),
+      )
+
+      // advanceTimersByTimeAsync isn't available under bun:test's vi shim,
+      // and Effect's own live Clock.sleep (used for the retry backoff) is
+      // itself backed by setTimeout, so it is ALSO faked here alongside the
+      // AbortController's timeout. Pump alternating timer-advances and
+      // microtask flushes so any timer registered as a *consequence* of an
+      // already-fired one (e.g. the backoff sleep registered only once the
+      // abort rejection has propagated through the retry schedule) still
+      // gets caught.
+      const pump = async (rounds: number) => {
+        for (let i = 0; i < rounds; i++) {
+          vi.advanceTimersByTime(0)
+          await Promise.resolve()
+        }
+      }
+
+      // Let the fiber actually start and invoke fetch (registering the
+      // AbortController's setTimeout) before advancing past it - the fetch
+      // call happens on a microtask after Effect.runPromise returns, not
+      // synchronously within this call frame.
+      await pump(5)
+      // Fire the AbortController's setTimeout for attempt 1.
+      vi.advanceTimersByTime(3000)
+      await pump(50)
+
+      const embedder = await resultPromise
+      expect(firstCallSignal?.aborted).toBe(true)
+      expect(embedder.dimension).toBe(3)
+      expect(probeAttemptCount(mockFetch)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

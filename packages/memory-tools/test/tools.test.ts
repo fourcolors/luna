@@ -357,6 +357,8 @@ describe("selectEmbedderLayer", () => {
     LUNA_OLLAMA_EMBED_MODEL: process.env["LUNA_OLLAMA_EMBED_MODEL"],
     LUNA_OLLAMA_EMBED_DIMENSION: process.env["LUNA_OLLAMA_EMBED_DIMENSION"],
     LUNA_OLLAMA_PROBE_TIMEOUT_MS: process.env["LUNA_OLLAMA_PROBE_TIMEOUT_MS"],
+    LUNA_OLLAMA_PROBE_ATTEMPTS: process.env["LUNA_OLLAMA_PROBE_ATTEMPTS"],
+    LUNA_OLLAMA_PROBE_BACKOFF_MS: process.env["LUNA_OLLAMA_PROBE_BACKOFF_MS"],
     OLLAMA_HOST: process.env["OLLAMA_HOST"],
   }
   afterEach(() => {
@@ -412,6 +414,54 @@ describe("selectEmbedderLayer", () => {
         }),
       }),
     )
+  })
+
+  it("clamps LUNA_OLLAMA_PROBE_ATTEMPTS at 5 even when env asks for more", async () => {
+    const mockFetch = vi.fn().mockRejectedValue(new Error("network down"))
+    setFetch(mockFetch as unknown as typeof globalThis.fetch)
+
+    process.env["LUNA_EMBEDDER"] = "ollama"
+    process.env["LUNA_OLLAMA_EMBED_DIMENSION"] = "3"
+    process.env["LUNA_OLLAMA_PROBE_ATTEMPTS"] = "10"
+    process.env["LUNA_OLLAMA_PROBE_BACKOFF_MS"] = "1"
+    const layer = selectEmbedderLayer()
+
+    // Known dimension + persistent failure -> degrades non-fatally, but the
+    // clamp must still cap real attempts at 5, not the requested 10.
+    const provider = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const e = yield* EmbedderService
+          return e.provider
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+    expect(provider).toBe("ollama")
+    expect(mockFetch).toHaveBeenCalledTimes(5)
+  })
+
+  it("rejects a junk LUNA_OLLAMA_PROBE_ATTEMPTS and falls back to the default of 3", async () => {
+    const mockFetch = vi.fn().mockRejectedValue(new Error("network down"))
+    setFetch(mockFetch as unknown as typeof globalThis.fetch)
+
+    process.env["LUNA_EMBEDDER"] = "ollama"
+    process.env["LUNA_OLLAMA_PROBE_ATTEMPTS"] = "not-a-number"
+    process.env["LUNA_OLLAMA_PROBE_BACKOFF_MS"] = "1"
+    // No declared dimension -> degrade path can't engage, so this proves
+    // the attempt count directly: exactly 3 fetch calls, then fatal.
+    const layer = selectEmbedderLayer()
+
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const e = yield* EmbedderService
+            return e.provider
+          }),
+        ).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toBeTruthy()
+    expect(mockFetch).toHaveBeenCalledTimes(3)
   })
 
   // Live Ollama path: opt-in only. A local daemon can be reachable while the
