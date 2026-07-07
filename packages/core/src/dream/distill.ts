@@ -173,18 +173,29 @@ export const distillSession = (
 /**
  * Join lines within perSessionChars. On overflow, drop the oldest lines first
  * and prepend a "[… N earlier messages truncated]" marker (S2i).
+ *
+ * Suffix lengths are tracked arithmetically (one subtraction per dropped
+ * line) and the surviving lines are joined exactly once — a shift/rejoin
+ * loop here is O(n²) over a session's line count, which a #255-scale
+ * backlog session (tens of thousands of messages) turns into real minutes.
  */
 const capExcerpt = (lines: ReadonlyArray<string>, perSessionChars: number): string => {
   const joined = lines.join("\n")
   if (joined.length <= perSessionChars) return joined
 
-  const kept = [...lines]
-  while (kept.length > 0) {
-    kept.shift()
-    const dropped = lines.length - kept.length
+  // Length of lines[dropped..] joined with "\n", maintained incrementally:
+  // dropping line i removes its chars plus one separator (none for the last).
+  let suffixLen = joined.length
+  for (let dropped = 1; dropped <= lines.length; dropped++) {
+    suffixLen -= lines[dropped - 1]!.length + (dropped < lines.length ? 1 : 0)
     const marker = `[… ${dropped} earlier messages truncated]`
-    const candidate = kept.length === 0 ? marker : `${marker}\n${kept.join("\n")}`
-    if (candidate.length <= perSessionChars) return candidate
+    const candidateLen =
+      dropped === lines.length ? marker.length : marker.length + 1 + suffixLen
+    if (candidateLen <= perSessionChars) {
+      return dropped === lines.length
+        ? marker
+        : `${marker}\n${lines.slice(dropped).join("\n")}`
+    }
   }
   return `[… ${lines.length} earlier messages truncated]`
 }
