@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # Create an Incus system container for a Luna runtime.
+#
+# Fence ACL (--fence / LUNA_FENCE):
+#   Off by default — zero behaviour change for existing callers. When enabled,
+#   creates a bridge-isolation ACL that allows the bridge gateway and rejects all
+#   other bridge peers. The reject destination is derived as a host range that
+#   EXCLUDES the gateway, so rule ordering in the firewall backend is irrelevant.
+#   See docs/runbooks/incus-fence-acl.md for the full rationale and diagnosis.
 
 set -euo pipefail
 
@@ -38,6 +45,13 @@ OLLAMA_BASE_URL="${LUNA_OLLAMA_BASE_URL:-}"
 OLLAMA_EMBED_MODEL="${LUNA_OLLAMA_EMBED_MODEL:-}"
 OLLAMA_EMBED_DIMENSION="${LUNA_OLLAMA_EMBED_DIMENSION:-}"
 OLLAMA_PROBE_TIMEOUT_MS="${LUNA_OLLAMA_PROBE_TIMEOUT_MS:-}"
+# Fence ACL — isolate container from bridge peers while preserving gateway access.
+# Default OFF: zero behaviour change for existing callers. Enable with --fence or
+# LUNA_FENCE=true. See docs/runbooks/incus-fence-acl.md for the full rationale.
+FENCE="${LUNA_FENCE:-false}"
+FENCE_ACL_NAME="${LUNA_FENCE_ACL_NAME:-}"
+FENCE_BRIDGE="${LUNA_FENCE_BRIDGE:-incusbr0}"
+FENCE_GATEWAY="${LUNA_FENCE_GATEWAY:-}"
 
 usage() {
   cat <<'EOF'
@@ -67,6 +81,13 @@ Options:
   --ollama-embed-dimension <n> Optional expected embedding dimension.
   --ollama-probe-timeout-ms <n>
                                Optional startup probe timeout.
+  --fence                      Create a bridge-isolation ACL for this container.
+                               Default OFF. Enable via LUNA_FENCE=true.
+                               See docs/runbooks/incus-fence-acl.md.
+  --fence-acl-name <name>      ACL name. Default: <container>-fence (LUNA_FENCE_ACL_NAME).
+  --fence-bridge <bridge>      Bridge network name. Default: incusbr0 (LUNA_FENCE_BRIDGE).
+  --fence-gateway <ip/prefix>  Gateway CIDR. Default: auto-detected from bridge config
+                               (LUNA_FENCE_GATEWAY).
   --init-incus                 Run `incus admin init --minimal` if Incus is uninitialized.
   --replace                    Delete an existing instance with this name before creating it.
   --skip-clone                 Require an existing repo path instead of cloning/updating it.
@@ -102,6 +123,10 @@ while [[ $# -gt 0 ]]; do
     --ollama-embed-model) OLLAMA_EMBED_MODEL="${2:?missing --ollama-embed-model value}"; shift 2 ;;
     --ollama-embed-dimension) OLLAMA_EMBED_DIMENSION="${2:?missing --ollama-embed-dimension value}"; shift 2 ;;
     --ollama-probe-timeout-ms) OLLAMA_PROBE_TIMEOUT_MS="${2:?missing --ollama-probe-timeout-ms value}"; shift 2 ;;
+    --fence) FENCE=true; shift ;;
+    --fence-acl-name) FENCE_ACL_NAME="${2:?missing --fence-acl-name value}"; shift 2 ;;
+    --fence-bridge) FENCE_BRIDGE="${2:?missing --fence-bridge value}"; shift 2 ;;
+    --fence-gateway) FENCE_GATEWAY="${2:?missing --fence-gateway value}"; shift 2 ;;
     --init-incus) INIT_INCUS=true; shift ;;
     --replace) REPLACE=true; shift ;;
     --skip-clone) SKIP_CLONE=true; shift ;;
@@ -184,6 +209,147 @@ if [[ -z "$TOKEN" ]]; then
   profile_token_var="LUNA_${PROFILE_ENV}_UI_WS_TOKEN"
   TOKEN="${!profile_token_var:-}"
 fi
+
+# apply_fence_acl — idempotent creation of a bridge-isolation ACL.
+#
+# Derives the peer-host reject range from the gateway CIDR, then emits the
+# allow-gateway egress rule FIRST and the reject-peers rule(s) after it,
+# so the allow wins regardless of firewall backend rule evaluation order.
+#
+# For a /24 with gateway at .1: reject range is .2-.254.
+# For other prefix lengths: arithmetic derivation handles /1-/30.
+# If the gateway is not the first usable host, two reject ranges are emitted
+# (one segment below the gateway, one above).
+# /31 and /32 are rejected with a clear error — no usable peer range exists.
+#
+# Idempotency: an ACL that already exists is reused verbatim (with a warning) —
+# it is a network-level resource shared across container recreations, so
+# --replace never rewrites it. Repairing a bad ACL requires detach + delete +
+# re-run; see docs/runbooks/incus-fence-acl.md.
+#
+# Test seam: set LUNA_TEST_FENCE_GATEWAY to override bridge auto-detection.
+apply_fence_acl() {
+  if [[ "$FENCE" != true ]]; then
+    return 0
+  fi
+
+  # Resolve ACL name default (requires $INSTANCE to be set by this point)
+  if [[ -z "$FENCE_ACL_NAME" ]]; then
+    FENCE_ACL_NAME="${INSTANCE}-fence"
+  fi
+
+  # Resolve gateway CIDR: explicit flag > test seam > live bridge query
+  local gw_cidr
+  if [[ -n "$FENCE_GATEWAY" ]]; then
+    gw_cidr="$FENCE_GATEWAY"
+  elif [[ "${LUNA_TEST_FENCE_GATEWAY+set}" == "set" ]]; then
+    gw_cidr="$LUNA_TEST_FENCE_GATEWAY"
+  else
+    gw_cidr="$(incus network get "$FENCE_BRIDGE" ipv4.address 2>/dev/null || true)"
+    if [[ -z "$gw_cidr" ]]; then
+      if [[ "${DRY_RUN:-false}" == true ]]; then
+        luna_warn "fence: could not auto-detect gateway (incus unavailable); using placeholder 10.77.0.1/24 for dry-run output"
+        gw_cidr="10.77.0.1/24"
+      else
+        luna_die "fence: could not read ipv4.address from bridge $FENCE_BRIDGE"
+      fi
+    fi
+  fi
+
+  local gw_ip prefix
+  gw_ip="${gw_cidr%%/*}"
+  prefix="${gw_cidr##*/}"
+
+  [[ "$prefix" =~ ^[0-9]+$ ]] || luna_die "fence: invalid prefix in gateway CIDR: $gw_cidr"
+  [[ "$prefix" -ge 1 && "$prefix" -le 30 ]] ||
+    luna_die "fence: prefix /$prefix has no usable peer host range; use a prefix /1-/30"
+
+  # Parse octets — each must be a decimal 0-255 or the integer arithmetic
+  # below silently derives a wrong subnet and reject range.
+  local o1 o2 o3 o4 oct
+  IFS='.' read -r o1 o2 o3 o4 <<< "$gw_ip"
+  for oct in "$o1" "$o2" "$o3" "$o4"; do
+    if ! [[ "$oct" =~ ^[0-9]{1,3}$ ]] || (( 10#$oct > 255 )); then
+      luna_die "fence: invalid gateway IP octet '${oct:-<empty>}' in: $gw_ip (each octet must be 0-255)"
+    fi
+  done
+
+  # Integer arithmetic to derive subnet bounds (10# forces decimal so a
+  # leading-zero octet like 010 cannot be read as octal)
+  local gw_int mask net_int bcast_int first_int last_int
+  gw_int=$(( (10#$o1 << 24) | (10#$o2 << 16) | (10#$o3 << 8) | 10#$o4 ))
+  mask=$(( ( 0xFFFFFFFF << (32 - prefix) ) & 0xFFFFFFFF ))
+  net_int=$(( gw_int & mask ))
+  bcast_int=$(( net_int | ( (~mask) & 0xFFFFFFFF ) ))
+  first_int=$(( net_int + 1 ))
+  last_int=$(( bcast_int - 1 ))
+
+  [[ $last_int -ge $first_int ]] ||
+    luna_die "fence: subnet /$prefix is too small for a usable peer host range"
+  [[ $gw_int -ge $first_int && $gw_int -le $last_int ]] ||
+    luna_die "fence: gateway $gw_ip is outside the usable host range of $gw_cidr"
+
+  # Convert a 32-bit integer back to dotted-decimal
+  _fence_int_to_ip() {
+    printf '%d.%d.%d.%d' \
+      $(( ($1 >> 24) & 0xFF )) $(( ($1 >> 16) & 0xFF )) \
+      $(( ($1 >>  8) & 0xFF )) $(( $1 & 0xFF ))
+  }
+
+  # Build reject ranges: all usable hosts in the subnet EXCEPT the gateway.
+  # If gateway == first_int: one range (gw+1)-last
+  # If gateway == last_int:  one range first-(gw-1)
+  # Otherwise:               two ranges first-(gw-1) and (gw+1)-last
+  local reject_ranges=()
+  if [[ $gw_int -gt $first_int ]]; then
+    reject_ranges+=("$(_fence_int_to_ip "$first_int")-$(_fence_int_to_ip "$(( gw_int - 1 ))")")
+  fi
+  if [[ $gw_int -lt $last_int ]]; then
+    reject_ranges+=("$(_fence_int_to_ip "$(( gw_int + 1 ))")-$(_fence_int_to_ip "$last_int")")
+  fi
+  [[ ${#reject_ranges[@]} -gt 0 ]] ||
+    luna_die "fence: gateway $gw_ip exhausts the subnet — no peer host range to reject"
+
+  luna_info "Fence ACL: bridge=$FENCE_BRIDGE gateway=${gw_ip}/${prefix} acl=$FENCE_ACL_NAME"
+  for r in "${reject_ranges[@]}"; do
+    luna_info "  reject peer range: $r"
+  done
+
+  # Idempotent: skip creation if the ACL already exists
+  local acl_exists=false
+  if [[ "${DRY_RUN:-false}" != true ]]; then
+    incus network acl show "$FENCE_ACL_NAME" >/dev/null 2>&1 && acl_exists=true || true
+  fi
+
+  if [[ "$acl_exists" == false ]]; then
+    # Create the ACL
+    luna_run incus network acl create "$FENCE_ACL_NAME"
+    # Allow the gateway FIRST — this rule must precede any reject rules so that
+    # even if the firewall backend reorders rules, the allow is clearly first in
+    # the ACL definition.
+    luna_run incus network acl rule add "$FENCE_ACL_NAME" egress \
+      action=allow "destination=${gw_ip}/32" state=enabled \
+      description="allow gateway"
+    # Reject all bridge peer hosts that are NOT the gateway
+    for r in "${reject_ranges[@]}"; do
+      luna_run incus network acl rule add "$FENCE_ACL_NAME" egress \
+        action=reject "destination=${r}" state=enabled \
+        description="reject bridge peers (not gateway)"
+    done
+  else
+    # The ACL is a network-level resource shared across container recreations
+    # (--replace deletes the instance, never the ACL), so an existing ACL is
+    # reused verbatim — including any stale or wrong rules it may carry.
+    luna_warn "fence: ACL '$FENCE_ACL_NAME' already exists — reusing it AS-IS (existing rules are NOT verified or updated)"
+    luna_warn "fence: if you changed --fence-gateway or suspect drift, detach, delete, and re-run:"
+    luna_warn "fence:   incus config device set $INSTANCE eth0 security.acls="
+    luna_warn "fence:   incus network acl delete $FENCE_ACL_NAME"
+    luna_warn "fence: verify with: bash seeds/harness-corpus/probes/060-incus-fence-acl-gateway-guard.sh"
+  fi
+
+  # Attach the ACL to the container NIC
+  luna_run incus config device set "$INSTANCE" eth0 "security.acls=${FENCE_ACL_NAME}"
+}
 
 preflight_incus_reachable() {
   command -v incus >/dev/null 2>&1 || luna_die "Incus CLI not found. Install and initialize Incus before creating Luna containers."
@@ -366,6 +532,8 @@ luna_run incus config device add "$INSTANCE" "ws${HOST_WS_PORT}" proxy \
   "listen=tcp:${LISTEN_ADDR}:${HOST_WS_PORT}" "connect=tcp:127.0.0.1:4753" bind=host
 luna_run incus config device add "$INSTANCE" "control${HOST_CONTROL_PORT}" proxy \
   "listen=tcp:${LISTEN_ADDR}:${HOST_CONTROL_PORT}" "connect=tcp:127.0.0.1:4754" bind=host
+
+apply_fence_acl
 
 luna_run incus start "$INSTANCE"
 luna_run incus exec "$INSTANCE" -- cloud-init status --wait

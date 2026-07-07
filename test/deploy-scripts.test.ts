@@ -316,6 +316,107 @@ exit 1
     expect(result.stdout).toContain("LUNA_OLLAMA_EMBED_MODEL=qwen3-embedding:0.6b")
   })
 
+  it("container dry-run --fence derives a reject range that excludes the gateway", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--fence",
+      "--fence-gateway",
+      "10.77.0.1/24",
+    ])
+
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0)
+    expect(result.stdout).toContain("incus network acl create luna-dev-fence")
+    // Allow-gateway rule is emitted first and pins the gateway /32...
+    expect(result.stdout).toContain("destination=10.77.0.1/32")
+    // ...and the reject destination is a range that EXCLUDES the gateway,
+    // never the full subnet CIDR (the root-cause bug this PR fixes).
+    expect(result.stdout).toContain("destination=10.77.0.2-10.77.0.254")
+    expect(result.stdout).not.toContain("destination=10.77.0.0/24")
+    expect(result.stdout).toContain("security.acls=luna-dev-fence")
+  })
+
+  it("container dry-run --fence emits two reject ranges for a mid-subnet gateway", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--fence",
+      "--fence-gateway",
+      "10.77.0.10/24",
+    ])
+
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0)
+    expect(result.stdout).toContain("destination=10.77.0.1-10.77.0.9")
+    expect(result.stdout).toContain("destination=10.77.0.11-10.77.0.254")
+  })
+
+  it("container --fence rejects a gateway with an out-of-range octet", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--fence",
+      "--fence-gateway",
+      "10.77.0.300/24",
+    ])
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("octet")
+    expect(result.stderr).toContain("300")
+  })
+
+  it("container --fence rejects a gateway CIDR with a missing octet", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--fence",
+      "--fence-gateway",
+      "10.77.0/24",
+    ])
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("octet")
+  })
+
   it("container dry-run writes dev runtime metadata for the dev chat server", () => {
     const temp = makeTempDir()
     const result = runScript("scripts/luna-container-create", [
