@@ -200,11 +200,19 @@ export interface UIWebSocketServerConfig {
     readonly id: string
     readonly label: string
     /**
-     * Effort levels valid for THIS model, server-computed via effortsForModel().
-     * Absent on older servers; empty array = model takes no effort param.
-     * Clients never compute this matrix — always defer to this field.
+     * Effort options valid for THIS model, server-computed. Absent on older
+     * servers; empty array = model takes no effort param. Clients never
+     * compute this matrix - always defer to this field. May include the
+     * "ultracode" pseudo-token for xhigh-capable models (see
+     * HelloFrame.availableModels in protocol.ts).
      */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
+    /**
+     * Effort a fresh thread should DEFAULT to for this model when the client
+     * persists none - server-computed via defaultEffortForModel(). Absent on
+     * models with no opinion; clients then fall back to the weakest level.
+     */
+    readonly defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   }>
   /**
    * Optional ChatService binding. When provided, the server:

@@ -1861,6 +1861,180 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
       Effect.scoped(eff).pipe(Effect.provide(fullLayerWithRegistry(fakeLayer))),
     )
 
+  // #253 routing hazard: an omitted model must STAY omitted at this layer —
+  // "omitted model = broker default lane". ChatService must never pre-stamp a
+  // concrete model, or the SDK adapter would acquire that model's lane instead
+  // of the broker's "default" lane, bypassing any configured default overflow
+  // chain and breaking deployments with no Anthropic account. The Sonnet 5
+  // preference lives in the adapter's default-lane resolution (see
+  // adapter-sdk provider-routing.sim.test.ts), gated on Anthropic actually
+  // being available.
+  it(
+    "createThread leaves an omitted model on the broker default lane (no pre-stamp)",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      const { row, storedOptions } = await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const reg = yield* ThreadRegistryService
+          const summary = yield* chat.createThread({ title: "default-model" })
+          return {
+            row: yield* reg.get(summary.id),
+            storedOptions: yield* store.getOptions(summary.id),
+          }
+        }),
+        fakeLayer,
+      )
+
+      // No model reaches the SDK options — the adapter resolves the default
+      // lane per session build (chain > Sonnet-5-on-Anthropic > provider).
+      expect(capturedOptions?.["model"]).toBeUndefined()
+      expect(capturedOptions?.["effort"]).toBeUndefined()
+      // Nothing persisted either: the thread keeps resolving through the
+      // default lane on every recovery instead of being pinned.
+      expect(row?.model ?? null).toBeNull()
+      expect(row?.effort ?? null).toBeNull()
+      const sdkOpts = storedOptions?.sdkOptions as Record<string, unknown> | undefined
+      expect(sdkOpts?.["model"]).toBeUndefined()
+      expect(sdkOpts?.["effort"]).toBeUndefined()
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "createThread injects the per-model default effort for an explicit Sonnet 5",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      const row = await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const summary = yield* chat.createThread({
+            model: "claude-sonnet-5",
+            title: "explicit-sonnet5",
+          })
+          return yield* reg.get(summary.id)
+        }),
+        fakeLayer,
+      )
+
+      expect(capturedOptions?.["model"]).toBe("claude-sonnet-5")
+      expect(capturedOptions?.["effort"]).toBe("high")
+      expect(row?.model).toBe("claude-sonnet-5")
+      expect(row?.effort).toBe("high")
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "createThread keeps an explicit model instead of applying the chat default",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      const row = await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const summary = yield* chat.createThread({
+            model: "claude-haiku-4-5",
+            title: "explicit-model",
+          })
+          return yield* reg.get(summary.id)
+        }),
+        fakeLayer,
+      )
+
+      expect(capturedOptions?.["model"]).toBe("claude-haiku-4-5")
+      expect(capturedOptions?.["effort"]).toBeUndefined()
+      expect(row?.model).toBe("claude-haiku-4-5")
+      expect(row?.effort).toBeNull()
+    },
+    { timeout: 10_000 },
+  )
+
+  // #253 invariant, recovery side: a legacy thread persisted WITHOUT a model
+  // (created before model persistence, or on the default lane) must recover
+  // through the broker default lane — recovery must not hard-stamp today's
+  // preferred default onto a conversation whose lane the operator may have
+  // rerouted (overflow chain / non-Anthropic deployment).
+  it(
+    "recovery of a legacy thread with no persisted model stays on the default lane",
+    async () => {
+      const THREAD_ID = "thr_test_legacy_nomodel"
+      let capturedOptions: Record<string, unknown> | undefined
+      let queryCallCount = 0
+
+      const fakeLayer = SDKClient.fake((p) => {
+        queryCallCount++
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: `sdk-legacy-${queryCallCount}`,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      const rowAfter = await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const reg = yield* ThreadRegistryService
+          // A pre-#253 row: known thread, no sid (Case B re-create), and — the
+          // point of this test — no persisted model.
+          yield* reg.upsert({
+            id: THREAD_ID,
+            sdkSessionId: null,
+            cwd: "/test/cwd",
+            model: null,
+          })
+
+          const chat = yield* ChatService
+          const fiber = yield* Effect.fork(
+            chat.subscribe(THREAD_ID).pipe(Stream.take(1), Stream.runCollect),
+          )
+          yield* Effect.sleep("100 millis")
+          yield* Fiber.join(fiber)
+          return yield* reg.get(THREAD_ID)
+        }),
+        fakeLayer,
+      )
+
+      // Recovery re-created the thread live…
+      expect(queryCallCount).toBeGreaterThan(0)
+      // …without stamping a model: the SDK options carry none, so the adapter
+      // acquires the broker's "default" lane (which prefers Sonnet 5 only when
+      // Anthropic is actually available), and the row stays model-less.
+      expect(capturedOptions?.["model"]).toBeUndefined()
+      expect(rowAfter?.model ?? null).toBeNull()
+    },
+    { timeout: 15_000 },
+  )
+
   // PING (fix #3): subscribe() on a sid-less KNOWN thread must take the Case-B
   // (re-create live) path when ThreadRegistry is wired — NOT fall through to the
   // empty/unknown stream. Verifies chat-service.ts:1789-1804 is exercised.

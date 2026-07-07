@@ -26,6 +26,9 @@ WebSockets without baking it into the core.
 
 `UI_WS_PROTOCOL_VERSION = 2`. The server emits a `hello` frame with
 `capabilities: { chat, streamingDeltas }` so older clients can degrade.
+When configured, `hello.availableModels` carries the server-owned model
+switcher list, each model's valid `efforts`, and an optional
+`defaultEffort` (currently Sonnet 5 defaults to `high`).
 
 **Server → client** (additive over v1):
 
@@ -48,7 +51,7 @@ WebSockets without baking it into the core.
 |------|--------|
 | `subscribe` / `unsubscribe` | toggle live forwarding for a `threadId` |
 | `list-threads` | request a fresh `thread-list` (sidebar refresh) |
-| `new-thread` | create + auto-subscribe (server emits `thread-created` then `thread-snapshot`) |
+| `new-thread` | create + auto-subscribe (server emits `thread-created` then `thread-snapshot`); omitted `model` routes through the broker default lane (prefers Sonnet 5 when Anthropic is available, else the configured default overflow chain) |
 | `user-message` | offer text into the chat queue |
 | `interrupt` | stop the current assistant turn |
 | `pong` / `bye` | liveness / clean shutdown |

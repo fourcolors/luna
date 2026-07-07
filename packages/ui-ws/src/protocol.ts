@@ -59,7 +59,7 @@ export interface HelloFrame {
    * Models the operator can pick for new threads. OPTIONAL and additive —
    * absent on older servers; the client falls back to its own hardcoded list
    * when this field is missing. The FIRST entry is the recommended default
-   * (highest capability or operator-preferred).
+   * (server/operator-preferred, not necessarily the highest-capability model).
    *
    * No protocol bump needed: additive field, same pattern as `buildSha`.
    * The server includes it when `availableModels` is threaded into
@@ -79,6 +79,14 @@ export interface HelloFrame {
      * of SDK effort levels.
      */
     readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
+    /**
+     * Effort a fresh thread should DEFAULT to for this model when the client
+     * persists none - server-computed via defaultEffortForModel(). OPTIONAL
+     * and additive: absent on older servers and on models with no opinion;
+     * clients then fall back to the weakest supported level. When present it
+     * is always a member of `efforts` and never the "ultracode" pseudo-token.
+     */
+    readonly defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
@@ -1492,7 +1500,8 @@ export interface ThreadArchiveErrorFrame {
 
 export interface NewThreadFrame {
   readonly type: "new-thread"
-  readonly model: string
+  /** Optional; omitted routes through the broker default lane (prefers Sonnet 5 when Anthropic is available, else the configured default overflow chain). */
+  readonly model?: string
   readonly accountId?: string    // pins this thread to a specific account
   readonly title?: string
   readonly tags?: ReadonlyArray<string>

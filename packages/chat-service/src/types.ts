@@ -205,15 +205,20 @@ export interface DeliveryNotification {
  *  (disableIdleTimeout: true, sdkOptions.includePartialMessages: true). */
 export interface CreateThreadOptions {
   /** Model for the thread's SDK session. Omitted ⇒ the broker's "default"
-   *  lane + the SDK's own default model (used by restart-recovery, where the
-   *  original model is unknown — a hardcoded one would silently switch the
-   *  resumed conversation's model/provider). */
-  readonly model?: string
+   *  lane, resolved per session build by the SDK adapter: a configured default
+   *  overflow chain wins; a native-Anthropic default lane prefers the
+   *  daily-driver default (`claude-sonnet-5`); a non-Anthropic default lane
+   *  leaves the model to the provider. ChatService never stamps a model, so
+   *  restart-recovery threads with no persisted model keep resolving through
+   *  the default lane instead of being pinned to whatever it prefers today. */
+  readonly model?: string | undefined
   /**
    * Effort level for this thread's SDK session. Controls how much reasoning
    * the model applies. Only valid for models that support effort (e.g.
    * Sonnet 4.6, Fable 5, Opus 4.8) — ignored silently on models that do not.
-   * Persisted in thread-session-map.json for cross-restart recovery.
+   * When omitted, ChatService injects the model-specific default when one
+   * exists (currently Sonnet 5 -> "high"). Persisted in thread-session-map.json
+   * for cross-restart recovery.
    *
    * `"ultracode"` is a pseudo-level: not a real SDK effort, but the dropdown
    * token for the SDK's ultracode mode (xhigh + standing workflow

@@ -100,6 +100,8 @@ export interface UIState {
     /** Effort options valid for this model, server-computed. Absent = no effort
      *  param. Includes the "ultracode" pseudo-token (not a real SDK effort). */
     readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
+    /** Optional server default for a new thread with no persisted effort. */
+    readonly defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   }> | null
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>
