@@ -28,7 +28,7 @@ export const DEFAULT_DISTILL_OPTIONS: DistillOptions = {
   memoriesChars: 40_000,
 }
 
-/** Rough token ceiling for the whole dream prompt (chars/4 heuristic, see estimateTokens). */
+/** Rough token ceiling for the whole dream prompt (chars/3 heuristic, see estimateTokens). */
 export const DREAM_PROMPT_TOKEN_BUDGET = 120_000
 
 /**

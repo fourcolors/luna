@@ -52,7 +52,7 @@ Four stages, independently shippable:
 - Per-message and per-session character caps with explicit truncation markers, so any single session distills to a bounded excerpt.
 - `DreamInputs.sessions` becomes distilled excerpts (`{summary, excerpt, messageCount, windowMessageCount}`) instead of raw `StoredMessage[]`.
 - Memories capped by a character budget with an explicit truncation note.
-- Token estimation is chars divided by 4; a pre-flight check fails fast with sizes in the error if a built prompt somehow exceeds the budget.
+- Token estimation is chars divided by 3 (deliberately conservative; sandbox verification against the live backlog showed distilled content tokenizes denser than 4 chars per token), plus an explicit prompt-overhead reserve for the CLI's own system prompt and tool schemas; a pre-flight check fails fast with sizes in the error if a built prompt somehow exceeds the budget.
 
 ### 5.2 Chunked dreaming with per-chunk watermark advance
 
