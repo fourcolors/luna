@@ -2251,3 +2251,407 @@ describe("ChatService — listThreads excludes archived threads", () => {
     { timeout: 15_000 },
   )
 })
+
+// ── send-after-reap recovery tests ───────────────────────────────────────────
+// These tests exercise ensureThreadLive via send(), wired through ThreadRegistry.
+// They drive reapIdleThreadsOnce() manually to control when the eviction fires.
+// LUNA_CHAT_THREAD_IDLE_MS=1 makes threads reapable after 1ms so we don't need
+// to advance the clock (the test clock is fixed; we use real elapsed time).
+
+describe("ChatService — send() resumes evicted threads (ensureThreadLive)", () => {
+  // Use a 1ms idle threshold so any real elapsed time qualifies for reaping.
+  // The real (wall-clock) Clock is used so that elapsed time > 1ms is guaranteed.
+  const reapClock = CoreClock.Default
+
+  const baseLayerWithRegistry = Layer.mergeAll(
+    SessionStore.Default,
+    reapClock,
+    obsLayer,
+    telemetryLayer,
+    Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+    ThreadRegistryService.Memory.pipe(Layer.provide(testClock)),
+  )
+
+  const fullLayerWithRegistry = (fakeLayer: Layer.Layer<SDKClient>) =>
+    Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(fakeLayer, baseLayerWithRegistry),
+      ),
+    )
+
+  const runScopedReg = <A, E>(
+    eff: Effect.Effect<
+      A, E,
+      ChatService | SessionStore | CoreClock | ObservabilityService | Scope.Scope
+      | TelemetryService | ThreadRegistryService
+    >,
+    fakeLayer: Layer.Layer<SDKClient>,
+  ) =>
+    Effect.runPromise(
+      Effect.scoped(eff).pipe(Effect.provide(fullLayerWithRegistry(fakeLayer))),
+    )
+
+  // Helper: advance real time enough that any thread's lastActivity is stale
+  // relative to LUNA_CHAT_THREAD_IDLE_MS=1.
+  const waitForIdleEligibility = () => Effect.sleep("5 millis")
+
+  it(
+    "send-after-reap Case A: resumes with resumeFromSessionId after idle reap evicts the thread",
+    async () => {
+      const SDK_SID = "sdk-case-a-resume-sid"
+      let createCallCount = 0
+      let capturedResume: string | undefined
+      const prevIdleMs = process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+      process.env["LUNA_CHAT_THREAD_IDLE_MS"] = "1"
+
+      const fakeLayer = SDKClient.fake((p) => {
+        createCallCount++
+        const opts = (p.options ?? {}) as Record<string, unknown>
+        if (opts["resume"] !== undefined) capturedResume = opts["resume"] as string
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: SDK_SID,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      try {
+        const result = await runScopedReg(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+
+            // 1. Create thread normally.
+            const t = yield* chat.createThread({ model: "claude-test", title: "reap-case-a" })
+
+            // 2. Seed ThreadRegistry with the persisted sdk session id (simulates
+            //    onSdkSessionId having fired in the real path).
+            const reg = yield* ThreadRegistryService
+            yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
+
+            // 3. Wait for thread to be idle-eligible (idleReapMs=1ms), then reap.
+            yield* waitForIdleEligibility()
+            yield* chat.reapIdleThreadsOnce()
+            // After reap the in-memory entry is gone but registry still has it.
+
+            // 4. send() must recover via ensureThreadLive → Case A (has sid).
+            const sendResult = yield* chat.send(t.id, "hello after reap")
+
+            // 5. Read persisted messages to confirm message was stored.
+            const store = yield* SessionStore
+            const msgs = yield* store.readMessages(t.id).pipe(
+              Stream.runCollect,
+              Effect.map(Chunk.toReadonlyArray),
+            )
+
+            return { sendResult, msgs, createCallCount, capturedResume }
+          }),
+          fakeLayer,
+        )
+
+        expect(Option.isSome(result.sendResult)).toBe(true)
+        // message was persisted
+        expect(result.msgs.some((m) => m.kind === "user")).toBe(true)
+        // createThread was called TWICE: once for initial create, once for resume
+        expect(result.createCallCount).toBeGreaterThanOrEqual(2)
+        // The resume call used the persisted SDK session id
+        expect(result.capturedResume).toBe(SDK_SID)
+      } finally {
+        if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+        else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
+      }
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "send-after-reap Case B: resumes with empty history when no sdk_session_id is stored",
+    async () => {
+      let createCallCount = 0
+      let capturedResume: string | undefined
+      // Track ChatUnknownThread events
+      const unknownThreadEvents: string[] = []
+      const prevIdleMs = process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+      process.env["LUNA_CHAT_THREAD_IDLE_MS"] = "1"
+
+      const fakeLayer = SDKClient.fake((p) => {
+        createCallCount++
+        const opts = (p.options ?? {}) as Record<string, unknown>
+        if (opts["resume"] !== undefined) capturedResume = opts["resume"] as string
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: `sdk-case-b-${createCallCount}`,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      try {
+        const result = await runScopedReg(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const obs = yield* ObservabilityService
+
+            // Subscribe to obs events to check ChatUnknownThread is NOT emitted.
+            const evStream = yield* obs.subscribeEvents
+            yield* Effect.fork(
+              evStream.pipe(
+                Stream.runForEach((e) =>
+                  Effect.sync(() => {
+                    if (
+                      e.kind === "Error" &&
+                      (e as Record<string, unknown>)["errorTag"] === "ChatUnknownThread"
+                    ) {
+                      unknownThreadEvents.push((e as Record<string, unknown>)["message"] as string)
+                    }
+                  }),
+                ),
+              ),
+            )
+
+            const t = yield* chat.createThread({ model: "claude-test", title: "reap-case-b" })
+
+            // Seed registry WITHOUT a sid (Case B — server restarted before first turn).
+            const reg = yield* ThreadRegistryService
+            yield* reg.upsert({ id: t.id, sdkSessionId: null, cwd: "/test", model: "claude-test" })
+
+            // Wait for idle-eligibility, then reap.
+            yield* waitForIdleEligibility()
+            yield* chat.reapIdleThreadsOnce()
+
+            // send() must recover via Case B (no sid → re-create live, empty history).
+            const sendResult = yield* chat.send(t.id, "hello case b")
+
+            yield* Effect.sleep("30 millis")
+
+            return { sendResult, createCallCount, capturedResume: capturedResume as string | undefined }
+          }),
+          fakeLayer,
+        )
+
+        // send() succeeded
+        expect(Option.isSome(result.sendResult)).toBe(true)
+        // No resume option — empty-history re-create
+        expect(result.capturedResume).toBeUndefined()
+        // No ChatUnknownThread event (Case B is "known but no sid", not unknown)
+        expect(unknownThreadEvents).toHaveLength(0)
+        // At least 2 SDK queries: initial create + Case B re-create
+        expect(result.createCallCount).toBeGreaterThanOrEqual(2)
+      } finally {
+        if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+        else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
+      }
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "send to genuinely-unknown thread (Case C): returns Option.none and emits ChatUnknownThread",
+    async () => {
+      const unknownThreadEvents: string[] = []
+
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: "sdk-case-c",
+          responseFor: (t) => `echo:${t}`,
+        }),
+      )
+
+      const result = await runScopedReg(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const obs = yield* ObservabilityService
+
+          const evStream = yield* obs.subscribeEvents
+          yield* Effect.fork(
+            evStream.pipe(
+              Stream.runForEach((e) =>
+                Effect.sync(() => {
+                  if (
+                    e.kind === "Error" &&
+                    (e as Record<string, unknown>)["errorTag"] === "ChatUnknownThread"
+                  ) {
+                    unknownThreadEvents.push((e as Record<string, unknown>)["message"] as string)
+                  }
+                }),
+              ),
+            ),
+          )
+
+          // No thread created, not in registry → genuinely unknown.
+          const sendResult = yield* chat.send("thr_truly_unknown_99", "hello")
+          yield* Effect.sleep("20 millis")
+          return { sendResult }
+        }),
+        fakeLayer,
+      )
+
+      expect(Option.isNone(result.sendResult)).toBe(true)
+      expect(unknownThreadEvents.length).toBeGreaterThan(0)
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "concurrent double-send after reap: exactly ONE SDK query spawned, BOTH messages persisted",
+    async () => {
+      const SDK_SID = "sdk-concurrent-resume"
+      let createCallCount = 0
+      const prevIdleMs = process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+      process.env["LUNA_CHAT_THREAD_IDLE_MS"] = "1"
+
+      const fakeLayer = SDKClient.fake((p) => {
+        createCallCount++
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: SDK_SID,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      // A ThreadRegistry wrapper whose `get` suspends for 5 ms before
+      // delegating to the Memory impl. This suspension is the key to making
+      // the double-create race observable: with the real withPermits(1) guard
+      // fiber-2 blocks on the semaphore until fiber-1 has finished createThread
+      // and written the thread into the in-memory map. When fiber-2 eventually
+      // runs its post-acquire re-check its delayed `get` sees the winner and
+      // skips createThread (total SDK calls = 2). Without the guard (mutation:
+      // withPermits(0)) both fibers enter simultaneously, both suspend in their
+      // delayed `get`, both wake with a miss, both call createThread (total = 3)
+      // and the assertion fails — proving the guard was load-bearing.
+      const slowGetRegistryLayer: Layer.Layer<ThreadRegistryService> = Layer.effect(
+        ThreadRegistryService,
+        Effect.gen(function* () {
+          const inner = yield* ThreadRegistryService
+          const api: typeof inner = {
+            ...inner,
+            get: (id: string) =>
+              Effect.sleep("5 millis").pipe(Effect.zipRight(inner.get(id))),
+          }
+          return api
+        }),
+      ).pipe(Layer.provide(ThreadRegistryService.Memory.pipe(Layer.provide(testClock))))
+
+      const baseLayerWithSlowRegistry = Layer.mergeAll(
+        SessionStore.Default,
+        reapClock,
+        obsLayer,
+        telemetryLayer,
+        Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+        slowGetRegistryLayer,
+      )
+
+      const fullLayerWithSlowRegistry = (sdkLayer: Layer.Layer<SDKClient>) =>
+        Layer.provideMerge(
+          ChatService.Default,
+          Layer.provideMerge(
+            SDKAdapter.Default,
+            Layer.mergeAll(sdkLayer, baseLayerWithSlowRegistry),
+          ),
+        )
+
+      try {
+        const result = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const chat = yield* ChatService
+
+              const t = yield* chat.createThread({ model: "claude-test", title: "concurrent-reap" })
+              const reg = yield* ThreadRegistryService
+              yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
+
+              // Wait for idle-eligibility, then reap.
+              yield* waitForIdleEligibility()
+              yield* chat.reapIdleThreadsOnce()
+
+              // Fire two sends concurrently — only one should spawn a new SDK query.
+              const [r1, r2] = yield* Effect.all(
+                [chat.send(t.id, "msg-a"), chat.send(t.id, "msg-b")],
+                { concurrency: "unbounded" },
+              )
+
+              yield* Effect.sleep("30 millis")
+
+              const store = yield* SessionStore
+              const msgs = yield* store.readMessages(t.id).pipe(
+                Stream.runCollect,
+                Effect.map((c) => Array.from(Chunk.toReadonlyArray(c)).filter((m) => m.kind === "user")),
+              )
+
+              return { r1, r2, msgs, createCallCount }
+            }),
+          ).pipe(Effect.provide(fullLayerWithSlowRegistry(fakeLayer))),
+        )
+
+        // Both sends succeeded
+        expect(Option.isSome(result.r1)).toBe(true)
+        expect(Option.isSome(result.r2)).toBe(true)
+        // Both messages were persisted
+        expect(result.msgs.length).toBeGreaterThanOrEqual(2)
+        // The semaphore ensures only ONE extra createThread call for the resume
+        // (initial create + exactly 1 resume = 2 total; never 3).
+        // Without the semaphore guard both fibers would race through the delayed
+        // registry.get simultaneously and both call createThread => count = 3.
+        expect(result.createCallCount).toBeLessThanOrEqual(2)
+      } finally {
+        if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+        else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
+      }
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "reap-then-resume-then-immediate-reap: resumed thread is NOT re-reaped in the same sweep",
+    async () => {
+      const SDK_SID = "sdk-reap-resume-noreap"
+      let createCallCount = 0
+      const prevIdleMs = process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+      process.env["LUNA_CHAT_THREAD_IDLE_MS"] = "1"
+
+      const fakeLayer = SDKClient.fake((p) => {
+        createCallCount++
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: SDK_SID,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      try {
+        const result = await runScopedReg(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+
+            const t = yield* chat.createThread({ model: "claude-test", title: "reap-resume-noreap" })
+            const reg = yield* ThreadRegistryService
+            yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
+
+            // Wait for idle-eligibility, then reap.
+            yield* waitForIdleEligibility()
+            yield* chat.reapIdleThreadsOnce()
+
+            // Resume via send() — this updates lastActivity.
+            const sendResult = yield* chat.send(t.id, "resuming now")
+
+            // Immediately reap again — the just-resumed thread must NOT be reaped
+            // because send() updated lastActivity to now (within the 1ms window).
+            const reapedCount = yield* chat.reapIdleThreadsOnce()
+
+            return { sendResult, reapedCount, createCallCount }
+          }),
+          fakeLayer,
+        )
+
+        expect(Option.isSome(result.sendResult)).toBe(true)
+        // The second reap sweep should not touch the resumed thread.
+        expect(result.reapedCount).toBe(0)
+      } finally {
+        if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+        else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
+      }
+    },
+    { timeout: 15_000 },
+  )
+})

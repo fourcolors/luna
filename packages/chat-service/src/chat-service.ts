@@ -431,6 +431,13 @@ export class ChatService extends Effect.Service<ChatService>()(
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
 
+      // Guard for the get→create critical section inside ensureThreadLive.
+      // Prevents two concurrent callers (e.g. two channel messages arriving
+      // simultaneously for the same reaped thread) from both running createThread
+      // and orphaning a subprocess. One permit, service-wide (threads are keyed
+      // by id so contention is brief and infrequent).
+      const resumeGate = yield* Effect.makeSemaphore(1)
+
       // Background-delivery notifications (#124). `deliverResult` publishes one
       // per delivered result; the WS layer runs `deliveries` once at boot and
       // broadcasts each to ALL connected clients as a "Luna finished X" toast —
@@ -1347,6 +1354,146 @@ export class ChatService extends Effect.Service<ChatService>()(
           )
 
       /**
+       * Ensure a thread is live in the in-memory map, recovering from the idle
+       * reaper evicting it. Mirrors the cache-miss recovery in subscribe() but
+       * is shared so BOTH send() and subscribe() benefit from one consistent
+       * implementation with a semaphore-guarded get→create critical section.
+       *
+       * Three cases (A/B/C as in subscribe's original comment):
+       *   (A) thread in ThreadRegistry with sdk_session_id → resume via SDK
+       *   (B) thread in ThreadRegistry without sdk_session_id → re-create live
+       *   (C) not in registry at all → Option.none (unknown thread)
+       *
+       * The semaphore (one permit, service-wide) closes the double-create race:
+       * after acquiring the permit, we re-check m.get(threadId) — if a concurrent
+       * caller already recreated it, we return that entry immediately without
+       * spawning a second SDK subprocess.
+       */
+      const ensureThreadLive = (
+        threadId: string,
+      ): Effect.Effect<Option.Option<ThreadEntry>, never> =>
+        Effect.gen(function* () {
+          // Fast path: thread already live.
+          const m0 = yield* Ref.get(threads)
+          const existing = m0.get(threadId)
+          if (existing) return Option.some(existing)
+
+          // Slow path: acquire permit, then re-check to guard against
+          // concurrent callers who raced here simultaneously.
+          return yield* resumeGate.withPermits(1)(
+            Effect.gen(function* () {
+              const m1 = yield* Ref.get(threads)
+              const raceWinner = m1.get(threadId)
+              if (raceWinner) return Option.some(raceWinner)
+
+              // Lookup in ThreadRegistry (or legacy JSON map).
+              let persistedSdkId: string | undefined
+              let savedModel: string | undefined
+              let savedEffort: string | undefined
+              let savedCwd: string | undefined
+              let knownButNoSid = false
+
+              if (Option.isSome(threadRegistry)) {
+                const row = yield* threadRegistry.value
+                  .get(threadId)
+                  .pipe(Effect.catchAllCause(() => Effect.succeed(null)))
+                if (row !== null) {
+                  savedCwd = row.cwd ?? undefined
+                  if (row.sdkSessionId !== null) {
+                    persistedSdkId = row.sdkSessionId
+                    savedModel = row.model ?? undefined
+                    savedEffort = row.effort ?? undefined
+                  } else {
+                    knownButNoSid = true
+                    savedModel = row.model ?? undefined
+                    savedEffort = row.effort ?? undefined
+                  }
+                }
+                // row === null → Case C, not known
+              } else {
+                // Legacy fallback: JSON map (read-only)
+                const lunaHome = process.env["LUNA_HOME"]
+                const persistedEntry =
+                  lunaHome !== undefined
+                    ? loadThreadSessionMap(lunaHome)[threadId]
+                    : undefined
+                if (persistedEntry !== undefined) {
+                  const sid =
+                    typeof persistedEntry === "string"
+                      ? persistedEntry
+                      : persistedEntry.sid
+                  if (sid !== undefined) {
+                    persistedSdkId = sid
+                    savedModel =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.model
+                        : undefined
+                    savedEffort =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.effort
+                        : undefined
+                  } else {
+                    knownButNoSid = true
+                    savedModel =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.model
+                        : undefined
+                    savedEffort =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.effort
+                        : undefined
+                  }
+                }
+              }
+
+              // Case B: known thread, no sdk_session_id → re-create live
+              if (knownButNoSid) {
+                yield* Effect.logWarning(
+                  `[chat] ensureThreadLive: thread ${threadId} is known but has no sdk_session_id — re-creating live with empty history`,
+                )
+                const validEffort =
+                  savedEffort !== undefined && isEffortOption(savedEffort)
+                    ? savedEffort
+                    : undefined
+                yield* createThread({
+                  threadIdOverride: threadId,
+                  ...(savedModel !== undefined ? { model: savedModel } : {}),
+                  ...(validEffort !== undefined ? { effort: validEffort } : {}),
+                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
+                })
+                const m2 = yield* Ref.get(threads)
+                return Option.fromNullable(m2.get(threadId) ?? null)
+              }
+
+              // Case A: known + has sdk_session_id → resume via SDK
+              if (persistedSdkId !== undefined) {
+                if (savedCwd === undefined) {
+                  yield* Effect.logWarning(
+                    `[chat] ensureThreadLive: thread ${threadId} has no persisted cwd — resuming with default cwd`,
+                  )
+                }
+                const validEffort =
+                  savedEffort !== undefined && isEffortOption(savedEffort)
+                    ? savedEffort
+                    : undefined
+                yield* createThread({
+                  threadIdOverride: threadId,
+                  resumeFromSessionId: persistedSdkId,
+                  ...(savedModel !== undefined ? { model: savedModel } : {}),
+                  ...(validEffort !== undefined ? { effort: validEffort } : {}),
+                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
+                })
+                const m2 = yield* Ref.get(threads)
+                return Option.fromNullable(m2.get(threadId) ?? null)
+              }
+
+              // Case C: not in registry or JSON map → unknown
+              return Option.none<ThreadEntry>()
+            }).pipe(Effect.catchAllCause(() => Effect.succeed(Option.none<ThreadEntry>()))),
+          )
+        })
+
+      /**
        * Send a user turn. Persists it (so the sidebar preview updates and
        * the snapshot includes it) THEN offers it to the inbox. Returns the
        * persisted ChatMessage so the caller can render the user bubble
@@ -1361,21 +1508,30 @@ export class ChatService extends Effect.Service<ChatService>()(
         client?: ClientHint,
       ): Effect.Effect<Option.Option<ChatMessage>, never> =>
         Effect.gen(function* () {
-          const m = yield* Ref.get(threads)
-          const entry = m.get(threadId)
+          // Fast path: thread already live.
+          let entry = (yield* Ref.get(threads)).get(threadId)
+
+          // Slow path: thread was evicted by the idle reaper — attempt recovery
+          // via ensureThreadLive (Case A/B/C, semaphore-guarded against races).
           if (!entry) {
-            yield* inc("luna.chat.user_messages.rejected", {
-              reason: "unknown_thread",
-            })
-            yield* obs.emit({
-              kind: "Error",
-              ts: new Date().toISOString(),
-              level: "warn",
-              errorTag: "ChatUnknownThread",
-              message: `unknown thread: ${threadId}`,
-              context: { threadId },
-            })
-            return Option.none<ChatMessage>()
+            const recovered = yield* ensureThreadLive(threadId)
+            if (Option.isNone(recovered)) {
+              // Case C: genuinely unknown thread — emit the warning event.
+              yield* inc("luna.chat.user_messages.rejected", {
+                reason: "unknown_thread",
+              })
+              yield* obs.emit({
+                kind: "Error",
+                ts: new Date().toISOString(),
+                level: "warn",
+                errorTag: "ChatUnknownThread",
+                message: `unknown thread: ${threadId}`,
+                context: { threadId },
+              })
+              console.warn(`[chat] ChatUnknownThread: ${threadId}`)
+              return Option.none<ChatMessage>()
+            }
+            entry = recovered.value
           }
 
           const ts = yield* clock.nowMs()
@@ -1924,134 +2080,13 @@ export class ChatService extends Effect.Service<ChatService>()(
       ): Stream.Stream<ChatFrame, never> =>
         Stream.unwrapScoped(
           Effect.gen(function* () {
-            const m = yield* Ref.get(threads)
-            let entry = m.get(threadId)
-            if (!entry) {
-              // Cache-miss recovery: the chat-server was restarted and wiped
-              // its in-memory threads map. Look up the thread in the durable
-              // ThreadRegistry first; fall back to the legacy JSON map when
-              // the registry is not wired.
-              //
-              // Three cases after lookup:
-              //   (A) thread found + has sdk_session_id → resume via SDK
-              //   (B) thread found + no sdk_session_id (first-turn not done yet,
-              //       or sid never captured) → re-create LIVE with empty history
-              //       + logged warning (never "unknown thread")
-              //   (C) thread not in registry + not in JSON → empty stream (unknown)
-
-              // ── Primary: ThreadRegistry ──────────────────────────────────
-              let persistedSdkId: string | undefined
-              let savedModel: string | undefined
-              let savedEffort: string | undefined
-              let savedCwd: string | undefined   // persisted working dir (load-bearing for SDK resume)
-              let knownButNoSid = false
-
-              if (Option.isSome(threadRegistry)) {
-                const row = yield* threadRegistry.value
-                  .get(threadId)
-                  .pipe(Effect.catchAllCause(() => Effect.succeed(null)))
-                if (row !== null) {
-                  savedCwd = row.cwd ?? undefined
-                  if (row.sdkSessionId !== null) {
-                    persistedSdkId = row.sdkSessionId
-                    savedModel = row.model ?? undefined
-                    savedEffort = row.effort ?? undefined
-                  } else {
-                    // Case B: known thread, no sid yet
-                    knownButNoSid = true
-                    savedModel = row.model ?? undefined
-                    savedEffort = row.effort ?? undefined
-                  }
-                }
-                // Case C: row === null → not known, fall through to empty stream
-              } else {
-                // ── Legacy fallback: JSON map (read-only) ─────────────────
-                const lunaHome = process.env["LUNA_HOME"]
-                const persistedEntry =
-                  lunaHome !== undefined
-                    ? loadThreadSessionMap(lunaHome)[threadId]
-                    : undefined
-                if (persistedEntry !== undefined) {
-                  const sid =
-                    typeof persistedEntry === "string"
-                      ? persistedEntry
-                      : persistedEntry.sid
-                  if (sid !== undefined) {
-                    persistedSdkId = sid
-                    savedModel =
-                      typeof persistedEntry === "object" && persistedEntry !== null
-                        ? persistedEntry.model
-                        : undefined
-                    savedEffort =
-                      typeof persistedEntry === "object" && persistedEntry !== null
-                        ? persistedEntry.effort
-                        : undefined
-                  } else {
-                    // Object entry with no sid: known but no sid
-                    knownButNoSid = true
-                    savedModel =
-                      typeof persistedEntry === "object" && persistedEntry !== null
-                        ? persistedEntry.model
-                        : undefined
-                    savedEffort =
-                      typeof persistedEntry === "object" && persistedEntry !== null
-                        ? persistedEntry.effort
-                        : undefined
-                  }
-                }
-                // Legacy JSON map has no cwd — savedCwd remains undefined;
-                // buildSessionOptions falls back to LUNA_REPO_ROOT ?? process.cwd().
-              }
-
-              // ── Case B: known thread, no sid → re-create live (empty history) ──
-              if (knownButNoSid) {
-                yield* Effect.logWarning(
-                  `[chat] subscribe: thread ${threadId} is known but has no sdk_session_id — re-creating live with empty history (first-turn data unavailable)`,
-                )
-                const validEffort =
-                  savedEffort !== undefined && isEffortOption(savedEffort)
-                    ? savedEffort
-                    : undefined
-                yield* createThread({
-                  threadIdOverride: threadId,
-                  ...(savedModel !== undefined ? { model: savedModel } : {}),
-                  ...(validEffort !== undefined ? { effort: validEffort } : {}),
-                  // Pass saved cwd if available — even on live re-create, the
-                  // cwd governs which SDK project dir is used (affects tool roots).
-                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
-                })
-                const m2 = yield* Ref.get(threads)
-                entry = m2.get(threadId)
-              } else if (persistedSdkId !== undefined) {
-                // ── Case A: known + has sid → resume via SDK ───────────────
-                // Rebuild createThread with the persisted model and effort AND
-                // the persisted cwd so the SDK resumes the correct encoded
-                // project dir. If cwd is NULL (deliverable #7 degradation: cwd
-                // was never stored, or the JSON-map fallback path), log a
-                // warning and fall back to LUNA_REPO_ROOT / process.cwd().
-                const validEffort =
-                  savedEffort !== undefined && isEffortOption(savedEffort)
-                    ? savedEffort
-                    : undefined
-                if (savedCwd === undefined) {
-                  yield* Effect.logWarning(
-                    `[chat] subscribe: thread ${threadId} has no persisted cwd — resuming with default cwd (LUNA_REPO_ROOT ?? process.cwd()); encoded project dir may differ from original session`,
-                  )
-                }
-                yield* createThread({
-                  threadIdOverride: threadId,
-                  resumeFromSessionId: persistedSdkId,
-                  ...(savedModel !== undefined ? { model: savedModel } : {}),
-                  ...(validEffort !== undefined ? { effort: validEffort } : {}),
-                  // Forward the persisted cwd. When null/undefined, buildSessionOptions
-                  // already falls back to LUNA_REPO_ROOT ?? process.cwd().
-                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
-                })
-                const m2 = yield* Ref.get(threads)
-                entry = m2.get(threadId)
-              }
-            }
-            if (!entry) return Stream.empty as Stream.Stream<ChatFrame, never>
+            // Cache-miss recovery: the chat-server was restarted (or the idle
+            // reaper evicted this thread). ensureThreadLive handles Cases A/B/C
+            // with a semaphore-guarded get→create so two concurrent subscribers
+            // on the same reaped thread cannot both spawn SDK subprocesses.
+            const recovered = yield* ensureThreadLive(threadId)
+            if (Option.isNone(recovered)) return Stream.empty as Stream.Stream<ChatFrame, never>
+            const entry = recovered.value
 
             // Subscribe FIRST (PubSub buffers from subscribe-time forward),
             // then read the snapshot, then concat in order. Client dedupes
