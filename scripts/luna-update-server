@@ -448,6 +448,11 @@ apply_ref() {
     luna_info "bun.lock unchanged -> skipping bun install"
   fi
 
+  # Build the web SPA on every apply (SPA source changes independent of bun.lock)
+  # so chat-server serves the current UI on :4753. The guarded build refuses to
+  # bake VITE_UI_WS_TOKEN (deploy env never sets it); failure routes to rollback.
+  run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build || return 1
+
   # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE (no-op in dry-run). Deps can move on
   # `bun install` and the override path goes stale — without re-pinning the
   # server boots but cannot spawn `claude` (a REAL incident this session).
@@ -652,6 +657,7 @@ if [[ "$DRY_RUN" == true ]]; then
   printf '1. record PREV = %s and bun.lock hash (host repo %s)\n' "$PREV" "$HOST_REPO_DIR"
   printf '2. (HOST git) fetch origin + reset --hard to %s\n' "$REF"
   printf '3. if bun.lock changed: %s install --cwd %s --frozen-lockfile (else skip)\n' "$BUN_BIN" "$CONTAINER_REPO_DIR"
+  printf '3b. %s run --cwd %s --filter @luna/ui-web build (always — builds the web SPA served on :4753)\n' "$BUN_BIN" "$CONTAINER_REPO_DIR"
   # In incus mode the re-pin runs INSIDE the container against the container .env
   # (/root/.luna/.env), NOT the host --luna-home .env; print the path that the
   # concrete command below actually touches so the plan does not contradict it.
@@ -688,6 +694,7 @@ if [[ "$DRY_RUN" == true ]]; then
   git_target fetch origin
   git_target reset --hard "$REF"
   run_target "$BUN_BIN" install --cwd "$CONTAINER_REPO_DIR" --frozen-lockfile
+  run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build
   if [[ -n "$INCUS_CONTAINER" ]]; then
     run_target bash -lc \
       "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna"
