@@ -13,7 +13,11 @@
  * Per-thread state lives in a `Ref<Map<threadId, ThreadEntry>>`. Each entry
  * carries:
  *   - inbox: Queue<SDKUserMessage>    — the prompt stream feeding adapter.query
- *   - pubsub: PubSub<ChatFrame>       — the wire-shape fan-out
+ *   - pubsub: PubSub<ChatFrame>       — the wire-shape fan-out; a borrowed
+ *                                       reference into the persistent
+ *                                       per-thread-id `pubsubs` map, so
+ *                                       subscriptions survive idle-reap →
+ *                                       resume (see `pubsubs` below)
  *   - scope: Scope.CloseableScope     — the per-thread sub-scope; closing it
  *                                       interrupts the SDK subprocess for
  *                                       that thread only (Operator's "stop"
@@ -104,6 +108,10 @@ import {
 
 interface ThreadEntry {
   readonly inbox: Queue.Queue<SDKUserMessage>
+  /** Wire-shape ChatFrame fan-out. NOT owned by this entry or its scope: it is
+   *  a borrowed reference into the persistent per-thread-id `pubsubs` map, so
+   *  subscriptions taken before an idle reap keep receiving frames after the
+   *  thread is re-created. Never shut it down when the entry dies. */
   readonly pubsub: PubSub.PubSub<ChatFrame>
   readonly scope: Scope.CloseableScope
   /** Stable turn id of the in-flight assistant turn, or null if idle. */
@@ -431,6 +439,41 @@ export class ChatService extends Effect.Service<ChatService>()(
       const runtime = yield* Effect.runtime<never>()
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
+
+      // Per-thread ChatFrame fan-outs, keyed by thread id and deliberately
+      // OUTSIDE ThreadEntry/threadScope. The idle reaper releases a thread's
+      // RUNTIME (subprocess, inbox, consumer fiber) but subscribers hold
+      // PubSub subscriptions taken BEFORE the reap; if resume minted a fresh
+      // PubSub, every pre-reap subscriber would be orphaned — frames from
+      // the recovered thread go to the new hub while the ui-ws forwarder
+      // still waits on the old one, so the client sees no reply (and no
+      // error) after an idle gap. get-or-create keyed by id keeps every
+      // subscriber attached across evict → resume cycles. Entries are never
+      // removed: a PubSub is a few hundred bytes and the map is bounded by
+      // the number of distinct threads touched in this process's lifetime,
+      // which the pre-existing design already accumulated (it leaked one
+      // orphaned PubSub per re-create; now re-creates reuse the original).
+      const pubsubs = yield* Ref.make(
+        new Map<string, PubSub.PubSub<ChatFrame>>(),
+      )
+      const getOrCreatePubSub = (
+        id: string,
+      ): Effect.Effect<PubSub.PubSub<ChatFrame>, never> =>
+        Effect.gen(function* () {
+          const existing = (yield* Ref.get(pubsubs)).get(id)
+          if (existing !== undefined) return existing
+          const fresh = yield* PubSub.unbounded<ChatFrame>()
+          return yield* Ref.modify(pubsubs, (m) => {
+            // Concurrent-create guard: first writer wins so both callers
+            // hand out the SAME hub (a second hub would re-introduce the
+            // orphaned-subscriber split this map exists to prevent).
+            const raced = m.get(id)
+            if (raced !== undefined) return [raced, m] as const
+            const next = new Map(m)
+            next.set(id, fresh)
+            return [fresh, next] as const
+          })
+        })
 
       // Guard for the get→create critical section inside ensureThreadLive.
       // Prevents two concurrent callers (e.g. two channel messages arriving
@@ -836,7 +879,10 @@ export class ChatService extends Effect.Service<ChatService>()(
           })
 
           const inbox = yield* Queue.unbounded<SDKUserMessage>()
-          const pubsub = yield* PubSub.unbounded<ChatFrame>()
+          // Persistent fan-out: resume/recovery MUST reuse the thread's
+          // original PubSub so subscriptions taken before an idle reap keep
+          // receiving frames after the thread is re-created (see `pubsubs`).
+          const pubsub = yield* getOrCreatePubSub(id)
           const inFlightTurnId = yield* Ref.make<string | null>(null)
           const inFlightText = yield* Ref.make<string>("")
           const lastActivity = yield* Ref.make<number>(yield* clock.nowMs())
@@ -1416,9 +1462,19 @@ export class ChatService extends Effect.Service<ChatService>()(
               let knownButNoSid = false
 
               if (Option.isSome(threadRegistry)) {
+                // A registry read failure must be visible: swallowing it
+                // silently made a DB glitch indistinguishable from a
+                // genuinely unknown thread ("unknown thread" to the user).
                 const row = yield* threadRegistry.value
                   .get(threadId)
-                  .pipe(Effect.catchAllCause(() => Effect.succeed(null)))
+                  .pipe(
+                    Effect.tapErrorCause((cause) =>
+                      Effect.logError(
+                        `[chat] ensureThreadLive: ThreadRegistry.get(${threadId}) failed — treating as unknown: ${Cause.pretty(cause)}`,
+                      ),
+                    ),
+                    Effect.catchAllCause(() => Effect.succeed(null)),
+                  )
                 if (row !== null) {
                   savedCwd = row.cwd ?? undefined
                   if (row.sdkSessionId !== null) {
@@ -1511,7 +1567,19 @@ export class ChatService extends Effect.Service<ChatService>()(
 
               // Case C: not in registry or JSON map → unknown
               return Option.none<ThreadEntry>()
-            }).pipe(Effect.catchAllCause(() => Effect.succeed(Option.none<ThreadEntry>()))),
+            }).pipe(
+              // A failure ANYWHERE in the recovery path (registry lookup,
+              // resume, re-create) must not crash the caller, but it also
+              // must not masquerade as Case C silently: callers report
+              // Option.none as "unknown thread", so without this log a
+              // resume failure is indistinguishable from a missing row.
+              Effect.tapErrorCause((cause) =>
+                Effect.logError(
+                  `[chat] ensureThreadLive: recovery for ${threadId} failed — reporting unknown thread: ${Cause.pretty(cause)}`,
+                ),
+              ),
+              Effect.catchAllCause(() => Effect.succeed(Option.none<ThreadEntry>())),
+            ),
           )
         })
 
@@ -1784,6 +1852,11 @@ export class ChatService extends Effect.Service<ChatService>()(
       /**
        * Live model + effort update for an existing thread.
        *
+       * Recovery contract matches send()/subscribe(): a thread evicted by the
+       * idle reaper is resumed via ensureThreadLive before anything else, so
+       * a switch on a quiet-but-real thread applies; only a genuinely unknown
+       * thread rejects both fields with reason "unknown thread".
+       *
        * - effort: clamped against the per-model matrix (effort.ts) FIRST —
        *   the reference model is the one this call switches to when
        *   provided, else the thread's current model. A model that takes no
@@ -1822,10 +1895,12 @@ export class ChatService extends Effect.Service<ChatService>()(
           const deferred: Array<"model" | "effort"> = []
           const rejected: Array<{ field: "model" | "effort"; reason: string }> = []
 
-          const m = yield* Ref.get(threads)
-          const entry = m.get(threadId)
-          if (!entry) {
-            // Unknown thread — reject everything gracefully
+          // Same recovery contract as send()/subscribe(): a thread evicted
+          // by the idle reaper is NOT unknown — resume it via
+          // ensureThreadLive so a model/effort switch on a quiet-but-real
+          // thread applies instead of rejecting with "unknown thread".
+          if (Option.isNone(yield* ensureThreadLive(threadId))) {
+            // Genuinely unknown thread — reject everything gracefully
             if (model !== undefined) rejected.push({ field: "model", reason: "unknown thread" })
             if (effort !== undefined) rejected.push({ field: "effort", reason: "unknown thread" })
             return { threadId, applied, deferred, ...(rejected.length > 0 ? { rejected } : {}) }
@@ -2240,6 +2315,9 @@ export class ChatService extends Effect.Service<ChatService>()(
        *  thread "closed" in the store. Unlike `closeThread`, the thread stays a
        *  normal, resumable session — `subscribe`'s cache-miss path (Case A)
        *  transparently re-creates it via `resumeFromSessionId` on the next open.
+       *  The thread's ChatFrame PubSub lives in the persistent `pubsubs` map,
+       *  not the scope, so subscribers attached before the release keep
+       *  receiving frames after the resume.
        *  This is what the idle reaper uses to reclaim leaked subprocesses. */
       const releaseThreadRuntime = (
         threadId: string,
