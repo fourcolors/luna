@@ -76,6 +76,40 @@ function sourceLabel(source) {
 }
 
 /**
+ * Human phrasing for where a NEW secret will land (vault-list.storage.writeTier,
+ * PR #241 tiered storage). Strings match the Moon settings-vault panel exactly
+ * so both surfaces describe the same install identically.
+ * @param {string} tier
+ * @returns {string}
+ */
+export function writeTierLabel(tier) {
+  if (tier === "keychain") return "New secrets → macOS Keychain";
+  if (tier === "luna-vault") return "New secrets → Luna encrypted vault";
+  return "New secrets → plaintext .env (LUNA_VAULT_STORAGE=env)";
+}
+
+/**
+ * The compact storage status line for a vault-list.storage snapshot: write
+ * tier, 1Password probe state, and the plaintext .env residue COUNT (never
+ * names or values). Callers hide the line entirely when storage is absent
+ * (a pre-tiered-storage server omits the field).
+ * @param {{ writeTier: string, onePassword: string, envResidue: number }} storage
+ * @returns {string}
+ */
+export function storageStatusText(storage) {
+  let text = writeTierLabel(storage.writeTier);
+  if (storage.onePassword === "active") {
+    text += " · 1Password: connected";
+  } else if (storage.onePassword === "detected") {
+    text += " · 1Password: CLI detected - connect a service account to use it";
+  }
+  if (storage.envResidue > 0) {
+    text += ` · ${storage.envResidue} secret${storage.envResidue === 1 ? "" : "s"} still in plaintext .env - run the migration script to secure them`;
+  }
+  return text;
+}
+
+/**
  * Safe UUID generation: crypto.randomUUID() is secure-context-only and
  * undefined over plain http from a non-localhost host. Fall back to a
  * Date+Math.random combination (not cryptographically strong, but fine
@@ -277,7 +311,7 @@ const LARGE_IMPORT_THRESHOLD = 80;
  *   onServerFrame: (listener: (frame: import("@luna/ui-shared/core").ServerFrame) => void) => (() => void),
  * }} props
  */
-export function VaultPanel({ items, sync, disabled, onPut, onDelete, onSyncConfig, onImport, onServerFrame }) {
+export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, onSyncConfig, onImport, onServerFrame }) {
   const rows = items || [];
 
   // ── vault-status ack interception (owned by this panel) ────────────────
@@ -670,6 +704,11 @@ export function VaultPanel({ items, sync, disabled, onPut, onDelete, onSyncConfi
           </button>
         )}
       </div>
+
+      {/* Tiered-storage status (PR #241): rendered as a text node only; count,
+          never names/values. Hidden entirely when the server predates the
+          vault-list.storage field. */}
+      {storage && <div className="vault-storage-line">{storageStatusText(storage)}</div>}
 
       {statusMsg && (
         <div className={statusMsg.ok ? "vault-status-ok" : "skills-error"} role={statusMsg.ok ? "status" : "alert"}>
