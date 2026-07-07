@@ -46,9 +46,16 @@ runtime.target.incus.containerRepoDir = "/root/luna"
 # Health / WS port
 ports.proxy = 4753
 
-# deploy guard: stable NEVER auto-deploys on a timer (security rail enforced in code)
-deploy.timer       = false
-deploy.trackBranch = "master"
+# Auto-update: ON BY DEFAULT (owner decision 2026-07). The timer only deploys
+# when origin/master moved AND no WebSocket sessions are active (connect-aware
+# deferral — it retries next tick, never restarts mid-conversation).
+# Opt out: set deploy.autoUpdate = false (timer no-ops) or remove the timer
+# with `luna-autodeploy uninstall-timer stable`. Manual `luna-autodeploy stable`
+# always works regardless.
+deploy.timer         = true
+deploy.timerInterval = "15min"
+deploy.autoUpdate    = true
+deploy.trackBranch   = "master"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # dev — auto-deployed on a timer via incus container luna-dev.
@@ -68,4 +75,5 @@ ports.proxy = 4753
 
 deploy.timer         = true
 deploy.timerInterval = "3min"
+deploy.autoUpdate    = true
 deploy.trackBranch   = "dev"

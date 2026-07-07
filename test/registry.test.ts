@@ -13,9 +13,12 @@
  *   - Discriminator: kind != "registry" → hard fail
  *   - Unknown profile → exit 2
  *   - F5: install-timer for timer-not-allowed profile → rejected
+ *   - Auto-update default-on: stable installs a 15min timer whose runs carry
+ *     --from-timer; the deploy.autoUpdate knob (absent = true) gates
+ *     timer-initiated runs only, and never bypasses the connect-aware deferral
  *   - F7: --validate checks existence via LUNA_TEST_* seams
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -70,6 +73,8 @@ const loadServer = (
     'echo "P_INCUS=$P_INCUS"',
     'echo "P_PORT=$P_PORT"',
     'echo "P_TIMER_ALLOWED=$P_TIMER_ALLOWED"',
+    'echo "P_AUTO_UPDATE=$P_AUTO_UPDATE"',
+    'echo "P_TIMER_INTERVAL=$P_TIMER_INTERVAL"',
     'echo "P_SERVICE_NAME=$P_SERVICE_NAME"',
     'echo "P_UPDATE_ARGS=${P_UPDATE_ARGS[*]}"',
   ].join("; ")
@@ -117,6 +122,7 @@ const runDryRun = (
     registryFile?: string
     statMode?: string
     extraEnv?: Record<string, string>
+    extraArgs?: string[]
     // Optional: reuse a shared temp dir so two runs get the same repo path
     sharedEnv?: { temp: string; fakeBin: string }
   } = {},
@@ -145,7 +151,7 @@ const runDryRun = (
 
   return spawnSync(
     "bash",
-    [LUNA_AUTODEPLOY, profile, "--dry-run"],
+    [LUNA_AUTODEPLOY, profile, "--dry-run", ...(options.extraArgs ?? [])],
     { cwd: repoRoot, env, encoding: "utf8" },
   )
 }
@@ -176,12 +182,63 @@ describe("luna_load_server — field extraction", () => {
     )
   })
 
-  it("stable: P_BRANCH=master, P_PORT=4753, P_TIMER_ALLOWED=false", () => {
+  it("stable: P_BRANCH=master, P_PORT=4753, timer allowed at 15min (auto-update default-on)", () => {
     const result = loadServer("stable")
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toMatch(/^P_BRANCH=master$/m)
     expect(result.stdout).toMatch(/^P_PORT=4753$/m)
-    expect(result.stdout).toMatch(/^P_TIMER_ALLOWED=false$/m)
+    expect(result.stdout).toMatch(/^P_TIMER_ALLOWED=true$/m)
+    expect(result.stdout).toMatch(/^P_TIMER_INTERVAL=15min$/m)
+  })
+
+  it("deploy.autoUpdate ABSENT → P_AUTO_UPDATE=true (auto-update is on by default)", () => {
+    // The fixture deliberately omits deploy.autoUpdate on both stanzas.
+    for (const profile of ["stable", "dev"]) {
+      const result = loadServer(profile)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toMatch(/^P_AUTO_UPDATE=true$/m)
+    }
+  })
+
+  it("deploy.autoUpdate = false → P_AUTO_UPDATE=false (explicit opt-out)", () => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `deploy.timer = true`,
+        `deploy.autoUpdate = false`,
+      ].join("\n") + "\n",
+    )
+    const result = loadServer("stable", { registryFile: reg })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^P_AUTO_UPDATE=false$/m)
+  })
+
+  it("deploy.timerInterval with unit-file metacharacters → refused, exit 2", () => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `deploy.timer = true`,
+        `deploy.timerInterval = "15min; touch /tmp/evil"`,
+      ].join("\n") + "\n",
+    )
+    const result = loadServer("stable", { registryFile: reg })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain("timerInterval")
   })
 
   it("stable: P_SERVICE_NAME=luna-chat-server.service", () => {
@@ -387,47 +444,173 @@ describe("security and discriminator", () => {
 // F5: timer install guard
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("F5: timer install guard", () => {
+describe("F5: timer install guard + timer unit rendering", () => {
+  /**
+   * Install the timer against a temp systemd unit dir (LUNA_TEST_SYSTEMD_DIR)
+   * with a stubbed systemctl so the full unit-rendering path runs on any OS.
+   */
   const runTimerInstall = (
     profile: string,
-    options: { disableRegistry?: boolean; statMode?: string } = {},
+    options: {
+      disableRegistry?: boolean
+      statMode?: string
+      registryFile?: string
+      extraArgs?: string[]
+    } = {},
   ) => {
+    const temp = makeTempDir()
+    const unitDir = join(temp, "units")
+    const bin = join(temp, "bin")
+    mkdirSync(unitDir)
+    mkdirSync(bin)
+    writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", join(bin, "systemctl")])
     const env: Record<string, string | undefined> = {
       ...process.env,
       LUNA_TEST_WS_COUNT: "0",
       LUNA_TAILSCALE_IP: "",
-      LUNA_SERVERS_CONFIG: FIXTURE,
+      LUNA_SERVERS_CONFIG: options.registryFile ?? FIXTURE,
       LUNA_TEST_STAT_MODE: options.statMode ?? "600",
+      LUNA_TEST_SYSTEMD_DIR: unitDir,
+      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
       ...(options.disableRegistry ? { LUNA_REGISTRY_DISABLE: "1" } : {}),
     }
-    return spawnSync(
+    const result = spawnSync(
       "bash",
-      [LUNA_AUTODEPLOY, "install-timer", profile],
+      [LUNA_AUTODEPLOY, "install-timer", profile, ...(options.extraArgs ?? [])],
       { cwd: repoRoot, env, encoding: "utf8" },
     )
+    return { result, unitDir }
   }
 
-  it("install-timer stable (registry: timer=false) → rejected, exit 2", () => {
-    const result = runTimerInstall("stable")
+  it("install-timer stable (default registry: timer=true) → installs a 15min timer with --from-timer", () => {
+    // Auto-update default-on: the stable timer install is now the sanctioned
+    // default, at the registry's deploy.timerInterval cadence (15min).
+    const { result, unitDir } = runTimerInstall("stable")
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stderr).not.toContain("timers are not allowed")
+    const timer = readFileSync(join(unitDir, "luna-autodeploy-stable.timer"), "utf8")
+    expect(timer).toContain("OnUnitActiveSec=15min")
+    const service = readFileSync(join(unitDir, "luna-autodeploy-stable.service"), "utf8")
+    // The timer unit marks its runs machine-initiated so the deploy.autoUpdate
+    // knob applies — and must NEVER bake in --allow-active (the connect-aware
+    // deferral is the safety mechanism for the daily driver).
+    expect(service).toMatch(/^ExecStart=.* stable --from-timer$/m)
+    expect(service).not.toContain("--allow-active")
+    expect(service).not.toContain("--force")
+  })
+
+  it("install-timer stable --interval override wins over the registry cadence", () => {
+    const { result, unitDir } = runTimerInstall("stable", {
+      extraArgs: ["--interval", "30min"],
+    })
+    expect(result.status, result.stderr).toBe(0)
+    const timer = readFileSync(join(unitDir, "luna-autodeploy-stable.timer"), "utf8")
+    expect(timer).toContain("OnUnitActiveSec=30min")
+  })
+
+  it("install-timer for an opted-out profile (timer=false) → rejected, exit 2", () => {
+    // The F5 rail still holds for any profile whose registry entry opted out.
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `deploy.timer = false`,
+      ].join("\n") + "\n",
+    )
+    const { result } = runTimerInstall("stable", { registryFile: reg })
     expect(result.status).toBe(2)
     expect(result.stderr).toContain("timers are not allowed")
     expect(result.stderr).toContain("stable")
   })
 
   it("install-timer stable (kill-switch DISABLE=1) → still rejected by hardcoded fallback", () => {
-    // The hardcoded fallback also sets P_TIMER_ALLOWED=false for stable,
-    // so the production safety rail holds even without the registry.
-    const result = runTimerInstall("stable", { disableRegistry: true })
+    // The hardcoded fallback keeps P_TIMER_ALLOWED=false for stable: it encodes
+    // the LEGACY bare-host topology where an unattended restart was never
+    // designed. Default-on auto-update is a registry-path policy.
+    const { result } = runTimerInstall("stable", { disableRegistry: true })
     expect(result.status).toBe(2)
     expect(result.stderr).toContain("timers are not allowed")
   })
 
-  it("install-timer dev (registry: timer=true) → passes the F5 guard (may fail on systemctl)", () => {
-    // We only care that the F5 guard passes — systemctl not being present is fine.
-    const result = runTimerInstall("dev")
-    // F5 guard must NOT fire
+  it("install-timer dev (registry: timer=true) → installs a 3min timer (fallback default)", () => {
+    // The dev fixture stanza has no deploy.timerInterval → install-timer's
+    // 3min fallback applies.
+    const { result, unitDir } = runTimerInstall("dev")
+    expect(result.status, result.stderr).toBe(0)
     expect(result.stderr).not.toContain("timers are not allowed")
-    // Either succeeds or fails for a non-F5 reason (no systemctl on macOS)
+    const timer = readFileSync(join(unitDir, "luna-autodeploy-dev.timer"), "utf8")
+    expect(timer).toContain("OnUnitActiveSec=3min")
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// deploy.autoUpdate knob: gates TIMER-initiated runs only
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("deploy.autoUpdate knob (--from-timer runs)", () => {
+  const makeKnobOffRegistry = () => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `ports.proxy = 4753`,
+        `deploy.timer = true`,
+        `deploy.autoUpdate = false`,
+      ].join("\n") + "\n",
+    )
+    return reg
+  }
+
+  it("knob ABSENT (default on): a --from-timer run deploys", () => {
+    const result = runDryRun("stable", { extraArgs: ["--from-timer"] })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain("DRY-RUN")
+    expect(result.stdout).not.toContain("auto-update is OFF")
+  })
+
+  it("knob OFF: a --from-timer run is a quiet no-op (exit 0, no deploy)", () => {
+    const result = runDryRun("stable", {
+      registryFile: makeKnobOffRegistry(),
+      extraArgs: ["--from-timer"],
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain("auto-update is OFF")
+    expect(result.stdout).not.toContain("DRY-RUN")
+  })
+
+  it("knob OFF: a MANUAL run still deploys (the knob gates the machine, not the operator)", () => {
+    const result = runDryRun("stable", { registryFile: makeKnobOffRegistry() })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain("DRY-RUN")
+    expect(result.stdout).not.toContain("auto-update is OFF")
+  })
+
+  it("timer run respects the connect-aware deferral: active sessions → DEFERRED, exit 0", () => {
+    // --from-timer must never behave like --allow-active: with live WebSocket
+    // sessions the run defers and retries next tick.
+    const result = runDryRun("stable", {
+      extraArgs: ["--from-timer"],
+      extraEnv: { LUNA_TEST_WS_COUNT: "2" },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain("DEFERRED")
+    expect(result.stdout).toContain("active session(s)")
+    expect(result.stdout).not.toContain("DRY-RUN")
   })
 })
 

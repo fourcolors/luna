@@ -645,6 +645,14 @@ esac
     const chmod = spawnSync("chmod", ["+x", join(bin, "incus")])
     expect(chmod.status).toBe(0)
 
+    // Hermetic auto-update seams: the post-create timer install must never
+    // touch the real /etc/luna or /etc/systemd/system, even when the suite
+    // runs as root on a Linux box.
+    const unitDir = join(temp, "units")
+    mkdirSync(unitDir)
+    writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+
     const result = runScript("scripts/luna-container-create", [
       "--profile",
       "dev",
@@ -660,6 +668,8 @@ esac
     ], {
       env: {
         PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_SERVERS_CONFIG: join(temp, "etc-luna", "servers.toml"),
+        LUNA_TEST_SYSTEMD_DIR: unitDir,
       },
     })
 
@@ -670,6 +680,69 @@ esac
     expect(readFileSync(join(state, ".env"), "utf8")).toContain(
       `UI_WS_TOKEN=${token}`,
     )
+    // Default-on auto-update: provisioning seeded the registry from the repo
+    // template and rendered + enabled the host-side autodeploy timer.
+    expect(readFileSync(join(temp, "etc-luna", "servers.toml"), "utf8")).toContain(
+      '"registry"',
+    )
+    const service = readFileSync(join(unitDir, "luna-autodeploy-dev.service"), "utf8")
+    expect(service).toMatch(/^ExecStart=.* dev --from-timer$/m)
+    expect(service).not.toContain("--allow-active")
+    expect(readFileSync(join(unitDir, "luna-autodeploy-dev.timer"), "utf8")).toContain(
+      "OnUnitActiveSec=3min",
+    )
+    expect(result.stdout).toContain("Auto-update timer enabled for 'dev'")
+  })
+
+  it("container --no-auto-update skips the timer install and says how to enable it later", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--name",
+      "luna-stable",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--no-auto-update",
+    ])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("Auto-update timer skipped (--no-auto-update)")
+    // No planned install-timer invocation (the `+ ...` luna_run plan line).
+    expect(result.stdout).not.toMatch(/^\+ .*install-timer stable$/m)
+  })
+
+  it("container dry-run plans the auto-update timer install by default", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--name",
+      "luna-stable",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+    ], {
+      // Pin the registry path so the plan is identical whether or not the
+      // machine running the suite has a real /etc/luna/servers.toml.
+      env: { LUNA_SERVERS_CONFIG: join(temp, "etc-luna", "servers.toml") },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toMatch(/^\+ .*install-timer stable$/m)
+    // Registry absent at the pinned path → the plan includes seeding it.
+    expect(result.stdout).toContain("seeds/servers.toml")
   })
 
   it("server install dry-run renders the systemd service and preserves token secrecy", () => {

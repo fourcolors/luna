@@ -24,7 +24,10 @@ runtime.target.incus.containerRepoDir  = "/root/luna"
 
 ports.proxy = 4753
 
-deploy.timer = false
+# Auto-update default-on: stable ships with a 15min timer; deploy.autoUpdate
+# is deliberately ABSENT here so tests exercise the absent-key → "true" default.
+deploy.timer         = true
+deploy.timerInterval = "15min"
 
 # dev: incus luna-dev → P_INCUS="luna-dev" → --incus flag
 [[server]]

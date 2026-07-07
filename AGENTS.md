@@ -5,6 +5,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Build/test: `bun run install:safe`, then `bun run test` (vitest), `bun run test:bun`, `bun run typecheck` - see root `package.json` scripts.
 - Run the chat server locally: `bun run --filter '@luna/ui-web' server:chat` (`apps/ui-web/scripts/chat-server.ts`).
 - Thread lifecycle: the idle reaper releases only a thread's RUNTIME; recovery on next touch goes through `ensureThreadLive` and the per-thread PubSub map in `packages/chat-service/src/chat-service.ts` (must stay outside the thread scope so pre-reap subscribers keep receiving frames).
+- Server auto-update: both channels auto-update via host-side systemd timers by default (stable 15min, dev 3min); the registry knob `deploy.autoUpdate` (absent = true) gates `--from-timer` runs only and never bypasses the connect-aware deferral - see `docs/autodeploy.md` and `scripts/luna-autodeploy`.
 - Model routing: an omitted thread model means the broker's `"default"` LANE, never a concrete model id.
   The string `"default"` is a sentinel; lane/chain resolution lives in `packages/core/src/overflow-chain.ts` (`pickLaneTarget`) and the SDK adapter (`packages/adapter-sdk/src/adapter.ts`), provider kinds in `packages/core/src/provider-profile.ts`, role defaults in `packages/core/src/provider-settings/resolver.ts`.
   Never pre-stamp a default model in chat-service; default-model preferences belong in the adapter's default-lane resolution so configured overflow chains and non-Anthropic deployments keep working (PR #253).
