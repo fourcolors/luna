@@ -116,6 +116,7 @@
       "name": "@luna/channels",
       "version": "0.0.1",
       "dependencies": {
+        "@luna/capabilities": "workspace:*",
         "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
         "effect": "^3.21.0",

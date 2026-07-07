@@ -90,6 +90,20 @@ export interface ChannelSessionStoreApi {
     threadId: string,
     createdAt: number,
   ) => Effect.Effect<void>
+
+  /**
+   * Forget the mapping for a (transport, channelId, threadingKey) triple.
+   * The next lookupOrCreate for that key creates a fresh Luna thread — this
+   * is the "/new conversation" primitive for channel commands. The old
+   * thread itself is left intact (history preserved in ChatService); only
+   * the routing row is dropped. Idempotent: removing an absent key is a
+   * no-op.
+   */
+  readonly remove: (
+    transport: string,
+    channelId: string,
+    threadingKey: string,
+  ) => Effect.Effect<void>
 }
 
 export class ChannelSessionStore extends Effect.Tag(
@@ -116,6 +130,14 @@ export class ChannelSessionStore extends Effect.Tag(
             if (m.has(k)) return m
             const next = new Map(m)
             next.set(k, threadId)
+            return next
+          }),
+        remove: (transport, channelId, threadingKey) =>
+          Ref.update(store, (m) => {
+            const k = key(transport, channelId, threadingKey)
+            if (!m.has(k)) return m
+            const next = new Map(m)
+            next.delete(k)
             return next
           }),
       } satisfies ChannelSessionStoreApi
@@ -174,6 +196,10 @@ export class ChannelSessionStore extends Effect.Tag(
              (transport, channel_id, threading_key, thread_id, created_at)
            VALUES (?, ?, ?, ?, ?)`,
         )
+        const removeStmt = db.query(
+          `DELETE FROM channel_sessions
+           WHERE transport = ? AND channel_id = ? AND threading_key = ?`,
+        )
 
         type Row = { thread_id: string }
 
@@ -186,6 +212,10 @@ export class ChannelSessionStore extends Effect.Tag(
           insert: (transport, channelId, threadingKey, threadId, createdAt) =>
             Effect.sync(() => {
               insertStmt.run(transport, channelId, threadingKey, threadId, createdAt)
+            }),
+          remove: (transport, channelId, threadingKey) =>
+            Effect.sync(() => {
+              removeStmt.run(transport, channelId, threadingKey)
             }),
         } satisfies ChannelSessionStoreApi
       }),

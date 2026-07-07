@@ -26,9 +26,11 @@ import { ChatService } from "@luna/chat-service"
 import {
   makeTelegramAdapter,
   makeRealTransport,
+  normalizeCommandMention,
   type TelegramHttpTransport,
   type TelegramAdapterConfig,
 } from "../src/adapters/telegram.js"
+import { channelCommands } from "../src/commands.js"
 import {
   ChannelService,
   ChannelServiceLayer,
@@ -62,7 +64,13 @@ interface FakeCall {
  * Once all scripted responses for a method are exhausted:
  *   - getUpdates: returns `{ ok: true, result: [] }` (empty poll)
  *   - sendMessage / editMessageText: returns a generic success message
+ *   - getMe: returns a stable bot identity (username "LunaTestBot")
  *   - anything else: returns `{ ok: true, result: null }`
+ *
+ * Startup lifecycle calls (getMe, setMyCommands) never consume the global
+ * `responses` queue — they are incidental to every start(), and stealing
+ * entries scripted for getUpdates would silently skew inbound tests. Script
+ * them via `perMethod` when a test needs specific behavior.
  */
 type FakeResponse = { ok: boolean; result?: unknown; description?: string; error_code?: number }
 
@@ -84,8 +92,14 @@ const makeFakeTransport = (
     if (method === "sendMessage" || method === "editMessageText") {
       return { ok: true, result: { message_id: 1, chat: { id: 1, type: "private" }, date: 0, from: { id: 1 } } }
     }
+    if (method === "getMe") {
+      return { ok: true, result: { id: 424242, username: "LunaTestBot", first_name: "Luna" } }
+    }
     return { ok: true, result: null }
   }
+
+  /** Lifecycle calls that must not steal globally-scripted responses. */
+  const lifecycleMethods = new Set(["getMe", "setMyCommands"])
 
   const transport: TelegramHttpTransport = (method, params) =>
     Effect.gen(function* () {
@@ -99,9 +113,11 @@ const makeFakeTransport = (
         const r = methodQueue.shift()
         if (r !== undefined) return r
       }
-      // Then global queue
-      const scripted = globalQueue.shift()
-      if (scripted !== undefined) return scripted
+      // Then global queue (startup lifecycle calls skip it — see doc above)
+      if (!lifecycleMethods.has(method)) {
+        const scripted = globalQueue.shift()
+        if (scripted !== undefined) return scripted
+      }
       // Default fallback
       return defaultFor(method)
     })
@@ -264,13 +280,15 @@ describe("inbound: getUpdates → ChannelMessage", () => {
       }),
     )
 
-    // First call: offset 0 (no prior updates)
-    expect(calls[0]?.method).toBe("getUpdates")
-    expect(calls[0]?.params["offset"]).toBe(0)
+    // start() issues lifecycle calls (getMe, setMyCommands) before polling;
+    // assert on the getUpdates sequence only.
+    const polls = calls.filter((c) => c.method === "getUpdates")
 
-    // Second call: offset should be 202 (last update_id + 1)
-    const secondCall = calls.find((c, i) => i > 0 && c.method === "getUpdates")
-    expect(secondCall?.params["offset"]).toBe(202)
+    // First poll: offset 0 (no prior updates)
+    expect(polls[0]?.params["offset"]).toBe(0)
+
+    // Second poll: offset should be 202 (last update_id + 1)
+    expect(polls[1]?.params["offset"]).toBe(202)
   })
 })
 
@@ -912,5 +930,390 @@ describe("buildChannelMessage: extended metadata", () => {
     expect(receivedMessages[0]!.metadata?.username).toBeUndefined()
     expect(receivedMessages[0]!.metadata?.userId).toBe(99999)
     expect(receivedMessages[0]!.metadata?.firstName).toBe("Bob")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* HTML formatting on deliver                                                  */
+/* -------------------------------------------------------------------------- */
+
+describe("deliver: markdown → Telegram HTML", () => {
+  it("sends converted HTML with parse_mode and link previews disabled", async () => {
+    const { transport, calls } = makeFakeTransport()
+    const adapter = makeTelegramAdapter({ id: "tg-html", httpTransport: transport })
+    const target = makeDeliveryTarget("101", "u-html-1")
+
+    await Effect.runPromise(adapter.deliver(target, "**bold** and `code`", makeDeliverOpts()))
+
+    const send = calls.find((c) => c.method === "sendMessage")
+    expect(send?.params["text"]).toBe("<b>bold</b> and <code>code</code>")
+    expect(send?.params["parse_mode"]).toBe("HTML")
+    expect(send?.params["link_preview_options"]).toEqual({ is_disabled: true })
+  })
+
+  it("falls back to plain text when Telegram rejects the HTML", async () => {
+    const { transport, calls } = makeFakeTransport([], {
+      sendMessage: [
+        {
+          ok: false,
+          error_code: 400,
+          description:
+            "Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 5",
+        },
+        { ok: true, result: { message_id: 7, chat: { id: 101, type: "private" }, date: 0 } },
+      ],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-fallback", httpTransport: transport })
+    const target = makeDeliveryTarget("101", "u-fallback-1")
+
+    await Effect.runPromise(adapter.deliver(target, ">! step\n**bold**", makeDeliverOpts()))
+
+    const sends = calls.filter((c) => c.method === "sendMessage")
+    expect(sends).toHaveLength(2)
+    // First attempt: HTML. Second: plain text with the internal marker downgraded.
+    expect(sends[0]?.params["parse_mode"]).toBe("HTML")
+    expect(sends[1]?.params["parse_mode"]).toBeUndefined()
+    expect(sends[1]?.params["text"]).toBe("> step\n**bold**")
+    // Preview suppression survives the fallback — only parse_mode is dropped.
+    expect(sends[1]?.params["link_preview_options"]).toEqual({ is_disabled: true })
+  })
+
+  it("edits with HTML formatting too", async () => {
+    const { transport, calls } = makeFakeTransport([], {
+      sendMessage: [
+        { ok: true, result: { message_id: 55, chat: { id: 101, type: "private" }, date: 0 } },
+      ],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-html-edit", httpTransport: transport })
+    const target = makeDeliveryTarget("101", "u-html-edit")
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false }))
+        yield* adapter.deliver(target, "# Done", makeDeliverOpts())
+      }),
+    )
+
+    const edit = calls.find((c) => c.method === "editMessageText")
+    expect(edit?.params["text"]).toBe("<b>Done</b>")
+    expect(edit?.params["parse_mode"]).toBe("HTML")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Continuation chunks (long final answers)                                    */
+/* -------------------------------------------------------------------------- */
+
+describe("deliver: continuation chunks", () => {
+  it("chunk 0 edits the placeholder; later chunks are fresh messages", async () => {
+    const { transport, calls } = makeFakeTransport([], {
+      sendMessage: [
+        { ok: true, result: { message_id: 91, chat: { id: 202, type: "private" }, date: 0 } },
+        { ok: true, result: { message_id: 92, chat: { id: 202, type: "private" }, date: 0 } },
+      ],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-chunks", httpTransport: transport })
+    const target = makeDeliveryTarget("202", "u-chunks-1")
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        // Placeholder (stream-edit turn in flight)
+        yield* adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false }))
+        // Finalization split across two chunks
+        yield* adapter.deliver(
+          target,
+          "part one",
+          makeDeliverOpts({ isFinal: false, chunkIndex: 0, totalChunks: 2 }),
+        )
+        yield* adapter.deliver(
+          target,
+          "part two",
+          makeDeliverOpts({ isFinal: true, chunkIndex: 1, totalChunks: 2 }),
+        )
+      }),
+    )
+
+    const edits = calls.filter((c) => c.method === "editMessageText")
+    const sends = calls.filter((c) => c.method === "sendMessage")
+    expect(edits).toHaveLength(1)
+    expect(edits[0]?.params["text"]).toBe("part one")
+    expect(sends).toHaveLength(2) // placeholder + continuation
+    expect(sends[1]?.params["text"]).toBe("part two")
+
+    // Turn state is cleaned up: a new turn starts fresh with sendMessage.
+    await Effect.runPromise(
+      adapter.deliver(makeDeliveryTarget("202", "u-chunks-2"), "next", makeDeliverOpts()),
+    )
+    const sendsAfter = calls.filter((c) => c.method === "sendMessage")
+    expect(sendsAfter).toHaveLength(3)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Group reply threading                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe("deliver: group reply threading", () => {
+  const makeGroupTarget = (platformMessageId: string): DeliveryTarget => ({
+    inReplyTo: {
+      transport: "telegram",
+      channelId: "-500",
+      senderId: "999",
+      threadingKey: "-500",
+      text: "hello",
+      platformMessageId,
+      ts: new Date().toISOString(),
+    },
+    address: {
+      transport: "telegram",
+      channelId: "-500",
+      senderId: "999",
+      threadingKey: "-500",
+      chatType: "group",
+      messageId: 42,
+    },
+  })
+
+  it("threads the first group reply onto the triggering message", async () => {
+    const { transport, calls } = makeFakeTransport()
+    const adapter = makeTelegramAdapter({ id: "tg-reply", httpTransport: transport })
+
+    await Effect.runPromise(adapter.deliver(makeGroupTarget("u-grp-1"), "hi", makeDeliverOpts()))
+
+    const send = calls.find((c) => c.method === "sendMessage")
+    expect(send?.params["reply_parameters"]).toEqual({ message_id: 42 })
+  })
+
+  it("does not add reply parameters in private chats", async () => {
+    const { transport, calls } = makeFakeTransport()
+    const adapter = makeTelegramAdapter({ id: "tg-noreply", httpTransport: transport })
+    // makeDeliveryTarget carries no chatType → treated as private/unknown
+    await Effect.runPromise(
+      adapter.deliver(makeDeliveryTarget("101", "u-dm-1"), "hi", makeDeliverOpts()),
+    )
+
+    const send = calls.find((c) => c.method === "sendMessage")
+    expect(send?.params["reply_parameters"]).toBeUndefined()
+  })
+
+  it("does not add reply parameters on continuation chunks", async () => {
+    const { transport, calls } = makeFakeTransport()
+    const adapter = makeTelegramAdapter({ id: "tg-reply-chunks", httpTransport: transport })
+    const target = makeGroupTarget("u-grp-2")
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* adapter.deliver(target, "a", makeDeliverOpts({ isFinal: false, totalChunks: 2 }))
+        yield* adapter.deliver(
+          target,
+          "b",
+          makeDeliverOpts({ isFinal: true, chunkIndex: 1, totalChunks: 2 }),
+        )
+      }),
+    )
+
+    const sends = calls.filter((c) => c.method === "sendMessage")
+    expect(sends[0]?.params["reply_parameters"]).toEqual({ message_id: 42 })
+    expect(sends[1]?.params["reply_parameters"]).toBeUndefined()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Loading indication: typing chat action                                      */
+/* -------------------------------------------------------------------------- */
+
+describe("typing indicator", () => {
+  it("sends a typing action when a message arrives and stops after the first deliver", async () => {
+    const update = makeTextUpdate({ chatId: 777, updateId: 9100, text: "work on this" })
+    const { transport, calls } = makeFakeTransport([{ ok: true, result: [update] }])
+    const adapter = makeTelegramAdapter({ id: "tg-typing", httpTransport: transport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("80 millis")
+
+        const typingCalls = calls.filter((c) => c.method === "sendChatAction")
+        expect(typingCalls.length).toBeGreaterThanOrEqual(1)
+        expect(typingCalls[0]?.params).toMatchObject({ chat_id: "777", action: "typing" })
+
+        // First deliver stops the loop; no typing call should follow it.
+        yield* adapter.deliver(
+          makeDeliveryTarget("777", "9100"),
+          "…",
+          makeDeliverOpts({ isPartial: true, isFinal: false }),
+        )
+        const countAtDeliver = calls.filter((c) => c.method === "sendChatAction").length
+        yield* Effect.sleep("100 millis")
+        const countAfter = calls.filter((c) => c.method === "sendChatAction").length
+        expect(countAfter).toBe(countAtDeliver)
+
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+  })
+
+  it("stop() sweeps any live typing fibers", async () => {
+    const update = makeTextUpdate({ chatId: 778, updateId: 9200 })
+    const { transport, calls } = makeFakeTransport([{ ok: true, result: [update] }])
+    const adapter = makeTelegramAdapter({ id: "tg-typing-stop", httpTransport: transport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+        yield* adapter.stop()
+        const countAtStop = calls.filter((c) => c.method === "sendChatAction").length
+        yield* Effect.sleep("80 millis")
+        const countAfter = calls.filter((c) => c.method === "sendChatAction").length
+        expect(countAfter).toBe(countAtStop)
+      }),
+    )
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Command registration + mention normalization                                */
+/* -------------------------------------------------------------------------- */
+
+describe("start(): command registration", () => {
+  it("registers the built-in commands via setMyCommands", async () => {
+    const { transport, calls } = makeFakeTransport()
+    const adapter = makeTelegramAdapter({ id: "tg-cmds", httpTransport: transport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("30 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    const reg = calls.find((c) => c.method === "setMyCommands")
+    expect(reg).toBeDefined()
+    expect(reg?.params["commands"]).toEqual(
+      channelCommands.map((c) => ({ command: c.id, description: c.description })),
+    )
+    // Telegram constraints: 1-32 chars, lowercase letters/digits/underscores.
+    for (const c of channelCommands) {
+      expect(c.id).toMatch(/^[a-z0-9_]{1,32}$/)
+      expect(c.description.length).toBeGreaterThanOrEqual(1)
+      expect(c.description.length).toBeLessThanOrEqual(256)
+    }
+  })
+
+  it("drops group commands addressed to another bot and strips our own mention", async () => {
+    const received: ChannelMessage[] = []
+    const forOther = makeTextUpdate({
+      chatId: -600,
+      chatType: "group",
+      updateId: 9300,
+      text: "/new@OtherBot",
+    })
+    const forUs = makeTextUpdate({
+      chatId: -600,
+      chatType: "group",
+      updateId: 9301,
+      text: "/new@LunaTestBot with args",
+    })
+    // getMe default resolves username LunaTestBot (see makeFakeTransport).
+    const { transport } = makeFakeTransport([{ ok: true, result: [forOther, forUs] }])
+    const adapter = makeTelegramAdapter({ id: "tg-mentions", httpTransport: transport })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("60 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(1)
+    expect(received[0]?.text).toBe("/new with args")
+  })
+})
+
+describe("normalizeCommandMention", () => {
+  it("passes non-command text through unchanged", () => {
+    expect(normalizeCommandMention("hello @LunaTestBot", "LunaTestBot")).toBe(
+      "hello @LunaTestBot",
+    )
+  })
+
+  it("strips our mention case-insensitively", () => {
+    expect(normalizeCommandMention("/stop@lunatestbot", "LunaTestBot")).toBe("/stop")
+  })
+
+  it("drops commands for other bots", () => {
+    expect(normalizeCommandMention("/stop@OtherBot", "LunaTestBot")).toBeNull()
+  })
+
+  it("leaves bare commands and unknown-username cases unchanged", () => {
+    expect(normalizeCommandMention("/stop now", "LunaTestBot")).toBe("/stop now")
+    expect(normalizeCommandMention("/stop@AnyBot", null)).toBe("/stop@AnyBot")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle-call resilience + final-send cleanup                              */
+/* -------------------------------------------------------------------------- */
+
+describe("start(): lifecycle-call resilience", () => {
+  it("polling starts even when getMe and setMyCommands die", async () => {
+    const { transport: base, calls } = makeFakeTransport()
+    const dyingTransport: TelegramHttpTransport = (method, params) =>
+      method === "getMe" || method === "setMyCommands"
+        ? Effect.die(new Error(`${method} exploded`))
+        : base(method, params)
+
+    const adapter = makeTelegramAdapter({ id: "tg-lifecycle-die", httpTransport: dyingTransport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    // The poll loop reached getUpdates despite both lifecycle calls dying.
+    expect(calls.some((c) => c.method === "getUpdates")).toBe(true)
+  })
+})
+
+describe("deliver: final cleanup is failure-proof", () => {
+  it("drops the turn key even when the final send dies", async () => {
+    const { transport: base, calls } = makeFakeTransport()
+    let dieOnSend = false
+    const flakyTransport: TelegramHttpTransport = (method, params) =>
+      method === "editMessageText" && dieOnSend
+        ? Effect.die(new Error("network exploded"))
+        : base(method, params)
+
+    const adapter = makeTelegramAdapter({ id: "tg-final-die", httpTransport: flakyTransport })
+    const target = makeDeliveryTarget("303", "u-die-1")
+
+    // Placeholder creates the edit-routing entry.
+    await Effect.runPromise(
+      adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false })),
+    )
+    // Final edit dies mid-flight (delivery.ts would swallow this).
+    dieOnSend = true
+    await Effect.runPromise(Effect.exit(adapter.deliver(target, "final", makeDeliverOpts())))
+    dieOnSend = false
+
+    // The entry must be gone: a retry on the SAME turn key sends a fresh
+    // message instead of editing a stale one. (The dying edit bypasses the
+    // recording fake entirely, so no editMessageText call is visible.)
+    await Effect.runPromise(adapter.deliver(target, "retry", makeDeliverOpts()))
+    const methods = calls.map((c) => c.method)
+    expect(methods.filter((m) => m === "sendMessage")).toHaveLength(2) // placeholder + retry
+    expect(methods.filter((m) => m === "editMessageText")).toHaveLength(0)
   })
 })

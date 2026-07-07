@@ -5,7 +5,8 @@
  *   1. Register ChannelAdapter instances (one per platform/bot-token).
  *   2. Call each adapter's start() lifecycle when the service starts.
  *   3. Route inbound ChannelMessages through the pipeline:
- *        dedup → session lookupOrCreate → chat.send → spawn delivery fiber
+ *        dedup → built-in slash commands → session lookupOrCreate →
+ *        chat.send → spawn delivery fiber
  *   4. Manage delivery fiber lifecycle: one fiber per (threadId, adapterId)
  *      pair; idempotent — a second inbound message on the same thread
  *      reuses the existing fiber (no double-fan-out).
@@ -24,6 +25,7 @@ import type { ChannelAdapter, ChannelMessage, DeliveryTarget } from "./types.js"
 import { ChannelSessionStore, lookupOrCreate } from "./session-map.js"
 import { InboundDedupStore } from "./dedup.js"
 import { subscribeAndDeliver } from "./delivery.js"
+import { handleChannelCommand } from "./commands.js"
 
 /* -------------------------------------------------------------------------- */
 /* Service API                                                                 */
@@ -96,6 +98,18 @@ const buildChannelUserText = (msg: ChannelMessage): string => {
   return `[telegram user: ${formatChannelSender(msg)}]\n${msg.text}`
 }
 
+/** Build the adapter delivery target for a reply to this inbound message. */
+const buildDeliveryTarget = (msg: ChannelMessage): DeliveryTarget => ({
+  inReplyTo: msg,
+  address: {
+    transport: msg.transport,
+    channelId: msg.channelId,
+    senderId: msg.senderId,
+    threadingKey: msg.threadingKey,
+    ...(msg.metadata ?? {}),
+  },
+})
+
 /* -------------------------------------------------------------------------- */
 /* Layer                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -139,6 +153,37 @@ export const ChannelServiceLayer: Layer.Layer<
         const nowMs = yield* clock.nowMs()
         yield* dedupStore.markSeen(msg.transport, msg.platformMessageId, nowMs)
 
+        // 1.5. Built-in slash commands (/new, /stop, /help, /start) are
+        // answered at the channel level and never reach the LLM. Unknown
+        // "/verb" text falls through so Luna's own skills handle it. The
+        // reply is delivered directly through this transport's adapter(s)
+        // as a single final message.
+        const command = yield* handleChannelCommand(msg).pipe(
+          Effect.provide(
+            Layer.succeed(ChannelSessionStore, sessionStore).pipe(
+              Layer.merge(Layer.succeed(ChatService, chat)),
+            ),
+          ),
+        )
+        if (command.handled) {
+          if (command.reply !== undefined) {
+            const adapterList = yield* Ref.get(adapters)
+            const target = buildDeliveryTarget(msg)
+            for (const adapter of adapterList) {
+              if (adapter.transport !== msg.transport) continue
+              yield* adapter
+                .deliver(target, command.reply, {
+                  isPartial: false,
+                  isFinal: true,
+                  chunkIndex: 0,
+                  totalChunks: 1,
+                })
+                .pipe(Effect.catchAllCause(() => Effect.void))
+            }
+          }
+          return true
+        }
+
         // 2. Session map — get or create a Luna thread for this channel
         const threadId = yield* lookupOrCreate(msg).pipe(
           Effect.provide(
@@ -159,16 +204,7 @@ export const ChannelServiceLayer: Layer.Layer<
           const fibers = yield* Ref.get(deliveryFibers)
           if (!fibers.has(fiberKey)) {
             // Build the delivery target from the inbound message
-            const target: DeliveryTarget = {
-              inReplyTo: msg,
-              address: {
-                transport: msg.transport,
-                channelId: msg.channelId,
-                senderId: msg.senderId,
-                threadingKey: msg.threadingKey,
-                ...(msg.metadata ?? {}),
-              },
-            }
+            const target = buildDeliveryTarget(msg)
 
             // Spawn delivery fiber into the service scope so it survives the
             // inbound handler's transient runFork root fiber. Without forkIn

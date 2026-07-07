@@ -13,8 +13,15 @@
  *
  *   stream-edit     — deliver a placeholder on the first delta, then edit
  *                     it as more deltas arrive (throttled to ≤1 edit / 1.5s
- *                     to respect platform rate limits), finalize on
- *                     turn-complete with the complete text.
+ *                     to respect platform rate limits). Tool calls render a
+ *                     live "Working on it…" step block below the streamed
+ *                     text (Moon-timeline parity: chronological ✓/✗/active
+ *                     steps, Agent description labels, ↳ nested calls). On
+ *                     turn-complete the message finalizes as a collapsed
+ *                     "Worked for N steps" summary (">! " expandable-quote
+ *                     convention, see telegram-format.ts) above the full
+ *                     text; answers longer than maxMessageLength continue
+ *                     in follow-up messages (chunk 0 edits in place).
  *
  * The terminal signal is always `turn-complete` (the SDK's `result` frame
  * converted by ChatService). `assistant-done` marks one assistant message
@@ -107,23 +114,129 @@ export const splitToChunks = (text: string, maxLength: number): string[] => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Build the step-indicator status line from active and completed tool calls.
+ * One tool invocation in the current agentic turn, tracked in invocation
+ * order (chronological, mirroring Moon's timeline).
  *
- * Active calls show as "⚙ tool_name…"; completed calls show as "✓ tool_name"
- * or "✗ tool_name" depending on status. Completed entries appear before active
- * ones so the user sees history at the top and current work at the bottom.
- *
- * Returns "" when there are no steps to report (no active, no completed).
+ * `detail` carries the Agent/Task tool's `input.description` (the only
+ * humanized label Moon renders); every other tool shows its raw name.
+ * `nested` marks subagent-internal calls (frame.parentToolUseId set), shown
+ * with Moon's "↳ " prefix.
  */
-export const buildStatusLine = (
-  active: ReadonlyMap<string, string>,
-  completed: ReadonlyArray<{ readonly name: string; readonly ok: boolean }> = [],
-): string => {
-  const lines = [
-    ...completed.map((t) => `${t.ok ? "✓" : "✗"} ${t.name}`),
-    ...[...active.values()].map((name) => `⚙ ${name}…`),
-  ]
+export interface ToolStep {
+  readonly toolCallId: string
+  readonly name: string
+  readonly detail?: string
+  readonly nested: boolean
+  readonly status: "active" | "ok" | "error"
+}
+
+/** Max steps rendered in the live status block; older steps collapse. */
+const MAX_STATUS_STEPS = 8
+/** Max steps rendered in the final turn summary blockquote. */
+const MAX_SUMMARY_STEPS = 30
+
+/** Moon's step vocabulary: active spinner, ok check, error cross. */
+const stepIcon = (status: ToolStep["status"]): string =>
+  status === "active" ? "⚙" : status === "ok" ? "✓" : "✗"
+
+/** "↳ Agent - Research lunar cycles…" — one rendered step line. */
+const stepLabel = (step: ToolStep): string => {
+  const prefix = step.nested ? "↳ " : ""
+  const name = step.detail !== undefined ? `${step.name} - ${step.detail}` : step.name
+  const suffix = step.status === "active" ? "…" : ""
+  return `${stepIcon(step.status)} ${prefix}${name}${suffix}`
+}
+
+/**
+ * Extract the display detail for a tool-call frame the way Moon does
+ * (chat.html buildToolStep): only Agent/Task get a humanized label, taken
+ * from input.description, with input untrusted and read defensively.
+ */
+export const toolStepDetail = (name: string, input: unknown): string | undefined => {
+  if (name !== "Agent" && name !== "Task") return undefined
+  if (typeof input !== "object" || input === null) return undefined
+  const description = (input as Record<string, unknown>)["description"]
+  return typeof description === "string" && description.length > 0 ? description : undefined
+}
+
+/**
+ * Build the in-flight step-indicator block from the turn's steps, in
+ * chronological order. When the list exceeds MAX_STATUS_STEPS, older steps
+ * collapse into one "… +N earlier steps" line so long agentic turns can't
+ * crowd out the streamed text.
+ *
+ * Returns "" when there are no steps to report.
+ */
+export const buildStatusLine = (steps: ReadonlyArray<ToolStep>): string => {
+  if (steps.length === 0) return ""
+  const overflow = steps.length - MAX_STATUS_STEPS
+  const visible = overflow > 0 ? steps.slice(overflow) : steps
+  const lines = visible.map(stepLabel)
+  if (overflow > 0) lines.unshift(`… +${overflow} earlier step${overflow === 1 ? "" : "s"}`)
   return lines.join("\n")
+}
+
+/**
+ * Build the completed-turn summary — the Telegram analog of Moon's collapsed
+ * "Worked for N steps" timeline pill. Rendered as an EXPANDABLE blockquote
+ * (each line prefixed ">! ", the internal channels convention understood by
+ * telegram-format.ts): collapsed, Telegram shows just the first line — the
+ * pill; tapping it expands the full step list.
+ *
+ * Returns "" for a turn with no tool steps (pure-text answers stay clean).
+ */
+export const buildTurnSummary = (steps: ReadonlyArray<ToolStep>): string => {
+  if (steps.length === 0) return ""
+  const n = steps.length
+  const overflow = n - MAX_SUMMARY_STEPS
+  const visible = overflow > 0 ? steps.slice(0, MAX_SUMMARY_STEPS) : steps
+  const lines = [
+    `⚙ Worked for ${n} step${n === 1 ? "" : "s"}`,
+    ...visible.map(stepLabel),
+  ]
+  if (overflow > 0) lines.push(`… +${overflow} more step${overflow === 1 ? "" : "s"}`)
+  return lines.map((l) => `>! ${l}`).join("\n")
+}
+
+/** Header line shown above the live step block (Moon: "Working on it…"). */
+const WORKING_HEADER = "⏳ Working on it…"
+
+/** Compose the live status block: working header + chronological steps. */
+const buildWorkingBlock = (steps: ReadonlyArray<ToolStep>): string => {
+  const status = buildStatusLine(steps)
+  if (status.length === 0) return ""
+  return `${WORKING_HEADER}\n${status.split("\n").map((l) => `> ${l}`).join("\n")}`
+}
+
+/**
+ * Repair markdown code fences across chunk boundaries: when splitToChunks
+ * cuts inside a fenced block, the open fence is closed at the chunk's end
+ * and reopened at the start of the next chunk, so every delivered message
+ * parses as complete markdown on its own.
+ *
+ * Fence tracking is MARKER-AWARE, mirroring the converter's semantics: a
+ * block opened with ``` is only closed by a ``` line (a ~~~ line inside it
+ * is content, and vice versa), and the close/reopen markers inserted at a
+ * boundary always match the open block's own marker.
+ */
+export const repairSplitFences = (chunks: ReadonlyArray<string>): string[] => {
+  const out: string[] = []
+  let open: "```" | "~~~" | null = null
+  for (const chunk of chunks) {
+    let c: string = open !== null ? open + "\n" + chunk : chunk
+    let state: "```" | "~~~" | null = null
+    for (const line of c.split("\n")) {
+      const m = line.match(/^\s*(`{3,}|~{3,})/)
+      if (m === null) continue
+      const marker = (m[1] ?? "").startsWith("`") ? ("```" as const) : ("~~~" as const)
+      if (state === null) state = marker
+      else if (state === marker) state = null
+    }
+    open = state
+    if (open !== null) c = c + "\n" + open
+    out.push(c)
+  }
+  return out
 }
 
 const buildStreamEditText = (
@@ -199,10 +312,8 @@ export const subscribeAndDeliver = (
     const editStarted = yield* Ref.make<boolean>(false)
     // Throttle fiber for stream-edit (we cancel and restart it on each delta).
     const throttleFiber = yield* Ref.make<Fiber.RuntimeFiber<void, never> | null>(null)
-    // Active tool calls: toolCallId → tool name.
-    const activeTools = yield* Ref.make<Map<string, string>>(new Map())
-    // Completed tool calls this turn: { name, ok }.
-    const completedTools = yield* Ref.make<Array<{ name: string; ok: boolean }>>([])
+    // Tool steps of the current turn, in invocation order (Moon's timeline).
+    const toolSteps = yield* Ref.make<ReadonlyArray<ToolStep>>([])
     // Current rendered tool-status block for stream-edit adapters.
     const currentStatusLine = yield* Ref.make<string>("")
 
@@ -322,52 +433,56 @@ export const subscribeAndDeliver = (
               }
 
               case "tool-call": {
-                // Record the active tool call and update the status display.
-                yield* Ref.update(activeTools, (m) => {
-                  const next = new Map(m)
-                  next.set(frame.toolCallId, frame.name)
-                  return next
-                })
-                const active = yield* Ref.get(activeTools)
-                const completed = yield* Ref.get(completedTools)
-                const statusLine = buildStatusLine(active, completed)
-                yield* deliverStatusLine(statusLine)
+                // Record the step in invocation order and refresh the display.
+                const detail = toolStepDetail(frame.name, frame.input)
+                yield* Ref.update(toolSteps, (steps) => [
+                  ...steps,
+                  {
+                    toolCallId: frame.toolCallId,
+                    name: frame.name,
+                    ...(detail !== undefined ? { detail } : {}),
+                    nested: frame.parentToolUseId !== undefined,
+                    status: "active" as const,
+                  },
+                ])
+                const steps = yield* Ref.get(toolSteps)
+                yield* deliverStatusLine(buildWorkingBlock(steps))
                 break
               }
 
               case "tool-result": {
-                // Move the tool from active → completed and update the display.
-                const active0 = yield* Ref.get(activeTools)
-                const name = active0.get(frame.toolCallId) ?? "tool"
-                yield* Ref.update(activeTools, (m) => {
-                  const next = new Map(m)
-                  next.delete(frame.toolCallId)
-                  return next
-                })
-                yield* Ref.update(completedTools, (arr) => [
-                  ...arr,
-                  { name, ok: frame.status === "ok" },
-                ])
-                const active = yield* Ref.get(activeTools)
-                const completed = yield* Ref.get(completedTools)
-                const statusLine = buildStatusLine(active, completed)
-                yield* deliverStatusLine(statusLine)
+                // Settle the step in place (chronological order preserved).
+                yield* Ref.update(toolSteps, (steps) =>
+                  steps.map((s) =>
+                    s.toolCallId === frame.toolCallId
+                      ? { ...s, status: frame.status === "ok" ? ("ok" as const) : ("error" as const) }
+                      : s,
+                  ),
+                )
+                const steps = yield* Ref.get(toolSteps)
+                yield* deliverStatusLine(buildWorkingBlock(steps))
                 break
               }
 
               case "assistant-error": {
                 // Deliver an error notice. For stream-edit: edit the placeholder.
                 // For others: no-op (the UI handles errors separately).
+                // A user Stop reads as "Stopped", not as a failure — and any
+                // text streamed before the error is kept, not overwritten.
                 if (capability === "stream-edit") {
-                  const errText = "⚠ Something went wrong. Please try again."
+                  const notice =
+                    frame.error.kind === "interrupted"
+                      ? "⏹ Stopped."
+                      : "⚠ Something went wrong. Please try again."
                   yield* cancelPendingEdit
-                  yield* deliverStreamEdit(errText, true)
+                  const partial = yield* Ref.get(currentDeltaText)
+                  const errText = partial.length > 0 ? `${partial}\n\n${notice}` : notice
+                  yield* deliverStreamEdit(errText.slice(0, maxLen), true)
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
                   yield* Ref.set(currentStatusLine, "")
-                  yield* Ref.set(activeTools, new Map())
-                  yield* Ref.set(completedTools, [])
+                  yield* Ref.set(toolSteps, [])
                 }
                 break
               }
@@ -376,27 +491,50 @@ export const subscribeAndDeliver = (
                 // Cancel any pending throttle fiber
                 if (capability === "stream-edit") {
                   yield* cancelPendingEdit
-                  // Final edit with complete turn text
+                  // Final content: the collapsed step summary (Moon's
+                  // "Worked for N steps" pill, as an expandable quote) above
+                  // the complete turn text. Text-only turns get no summary.
                   const finalText = yield* Ref.get(currentDeltaText)
-                  if (finalText.length > 0) {
-                    const chunk = finalText.slice(0, maxLen)
-                    yield* deliverStreamEdit(chunk, true)
-                  } else {
-                    const started = yield* Ref.get(editStarted)
-                    if (started) {
-                      const current = yield* renderCurrentEdit
-                      if (current.length > 0) {
-                        yield* deliverStreamEdit(current, true)
-                      }
-                    }
+                  const steps = yield* Ref.get(toolSteps)
+                  const summary = buildTurnSummary(steps)
+                  const finalContent =
+                    summary.length > 0 && finalText.length > 0
+                      ? `${summary}\n\n${finalText}`
+                      : finalText.length > 0
+                        ? finalText
+                        : summary
+                  const started = yield* Ref.get(editStarted)
+                  if (finalContent.length > 0 && (finalText.length > 0 || started)) {
+                    // Long answers no longer truncate at maxMessageLength:
+                    // chunk 0 edits the placeholder in place; follow-up
+                    // chunks arrive as fresh messages (fence-repaired so
+                    // split code blocks stay valid markdown per message).
+                    // Multi-chunk splits leave 8 chars of headroom because
+                    // fence repair can add "```\n" + "\n```" to one chunk.
+                    const chunkLimit =
+                      finalContent.length <= maxLen ? maxLen : Math.max(1, maxLen - 8)
+                    const chunks = repairSplitFences(splitToChunks(finalContent, chunkLimit))
+                    const total = chunks.length
+                    yield* Effect.forEach(
+                      chunks,
+                      (chunk, idx) =>
+                        adapter
+                          .deliver(target, chunk, {
+                            isPartial: false,
+                            isFinal: idx === total - 1,
+                            chunkIndex: idx,
+                            totalChunks: total,
+                          })
+                          .pipe(Effect.catchAllCause(() => Effect.void)),
+                      { discard: true },
+                    )
                   }
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
                   yield* Ref.set(currentStatusLine, "")
                   // Reset tool tracking state for the next turn.
-                  yield* Ref.set(activeTools, new Map())
-                  yield* Ref.set(completedTools, [])
+                  yield* Ref.set(toolSteps, [])
                 } else if (capability === "final-only") {
                   const buffered = yield* Ref.get(turnBuffer)
                   if (buffered.length > 0) {

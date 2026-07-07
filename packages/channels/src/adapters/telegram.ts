@@ -49,8 +49,31 @@
  * The adapter tracks a `sentMessageId` keyed by `target.inReplyTo.platformMessageId`
  * (the inbound message's Telegram update_id). On the first partial it calls
  * sendMessage, captures the returned message_id, and edits from then on.
- * "Message is not modified" errors (Telegram error 400 / "Bad Request") are
- * silently ignored — content-identical edits are benign.
+ * Continuation chunks (chunkIndex > 0, long final answers) are fresh
+ * messages. "Message is not modified" errors (Telegram error 400 /
+ * "Bad Request") are silently ignored — content-identical edits are benign.
+ *
+ * ## Formatting
+ *
+ * All outbound content is Luna markdown, converted to Telegram HTML by
+ * telegram-format.ts (parse_mode: "HTML", link previews disabled). When
+ * Telegram rejects the HTML ("can't parse entities") the send retries once
+ * as plain text. Group replies thread onto the triggering message via
+ * reply_parameters; DMs do not.
+ *
+ * ## Loading indication
+ *
+ * Each accepted inbound message starts a "typing…" chat-action refresh loop
+ * (4 s cadence — Telegram clears the action after ≤5 s) that the first
+ * deliver() for that chat interrupts. Step-indicator edits take over from
+ * there (see delivery.ts).
+ *
+ * ## Commands
+ *
+ * start() registers the built-in channel commands (commands.ts) via
+ * setMyCommands (best-effort) and resolves the bot's username via getMe so
+ * group-addressed "/verb@BotName" commands are normalized — ours stripped,
+ * other bots' dropped (see normalizeCommandMention).
  *
  * ## HTTP transport injection
  *
@@ -76,8 +99,10 @@
  * at 30 s, so transient errors (network blips, Telegram 429/503) cause a brief
  * back-off rather than killing the adapter.
  */
-import { Effect, Redacted, Ref, Schedule } from "effect"
+import { Effect, Fiber, Redacted, Ref, Schedule } from "effect"
 import type { ChannelAdapter, ChannelMessage, DeliverOptions, DeliveryTarget } from "../types.js"
+import { markdownToTelegramHtml, toPlainTextFallback } from "./telegram-format.js"
+import { channelCommands } from "../commands.js"
 
 /* -------------------------------------------------------------------------- */
 /* Telegram Bot API types                                                      */
@@ -111,6 +136,51 @@ interface TelegramUser {
   readonly first_name?: string
 }
 
+/* -------------------------------------------------------------------------- */
+/* Typing indicator                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Telegram shows the "typing…" chat action for ≤5 s and clears it as soon as
+ * the bot sends a message, so the loop re-sends every 4 s until the first
+ * deliver() for the chat interrupts it (or the safety cap expires — a turn
+ * that produces neither a delta nor a tool step within 2 minutes has bigger
+ * problems than a stale indicator).
+ */
+const TYPING_REFRESH_MS = 4000
+const TYPING_MAX_REFRESHES = 30
+
+/* -------------------------------------------------------------------------- */
+/* Command-mention normalization                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Telegram group members address commands as "/verb@BotName". Normalize the
+ * leading token against OUR bot username (from getMe):
+ *
+ *   "/new@LunaBot …"  (ours)     → "/new …"        (mention stripped)
+ *   "/new@OtherBot …" (not ours) → null            (drop: addressed elsewhere)
+ *   "/new …"          (bare)     → unchanged
+ *   username unknown (getMe failed) → unchanged    (degraded: bare verbs only)
+ *
+ * Non-command text always passes through unchanged.
+ */
+export const normalizeCommandMention = (
+  text: string,
+  botUsername: string | null,
+): string | null => {
+  if (!text.startsWith("/")) return text
+  const wsIndex = text.search(/\s/)
+  const token = wsIndex === -1 ? text : text.slice(0, wsIndex)
+  const rest = wsIndex === -1 ? "" : text.slice(wsIndex)
+  const atIndex = token.indexOf("@")
+  if (atIndex === -1) return text
+  if (botUsername === null) return text
+  const mention = token.slice(atIndex + 1)
+  if (mention.toLowerCase() !== botUsername.toLowerCase()) return null
+  return `${token.slice(0, atIndex)}${rest}`
+}
+
 /** A single Telegram update from getUpdates. */
 interface TelegramUpdate {
   readonly update_id: number
@@ -140,12 +210,19 @@ export type TelegramHttpTransport = (
 export const makeRealTransport = (token: Redacted.Redacted<string>): TelegramHttpTransport =>
   (method, params) =>
     Effect.tryPromise({
-      try: async () => {
+      // Declaring the `signal` parameter makes Effect wire an AbortController
+      // that fires on fiber interruption. Without it, interrupting a fiber
+      // suspended in this fetch (e.g. delivery.ts cancelling a throttled
+      // edit) would abandon the promise but leave the HTTP request running —
+      // a stale editMessageText could then land AFTER the final edit and
+      // permanently overwrite the finished message.
+      try: async (signal) => {
         const url = `https://api.telegram.org/bot${Redacted.value(token)}/${method}`
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(params),
+          signal,
         })
         return (await res.json()) as TelegramApiResult
       },
@@ -229,6 +306,23 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // One entry per active turn; cleaned up on isFinal.
   const sentMessageIds = new Map<string, number>()
 
+  // Our bot's username from getMe, for "/verb@BotName" mention filtering in
+  // groups. null until start() resolves it (or when getMe fails — degraded
+  // mode: only bare "/verb" commands are recognized).
+  let botUsername: string | null = null
+
+  // Loading indication: chat_id → the "typing…" refresh fiber. Started when
+  // an inbound message is accepted, interrupted by the first deliver() to
+  // that chat (Telegram clears the indicator on send anyway) or by stop().
+  const typingFibers = new Map<string, Fiber.RuntimeFiber<void, unknown>>()
+
+  // Set by stop(). The poll loop is interrupted by the service scope closing
+  // around the same time stop() runs as a finalizer, with no ordering
+  // guarantee — a last buffered update could call startTyping() AFTER the
+  // sweep and leak a refresh fiber for up to ~2 minutes. Terminal flag
+  // closes that window (all three touch points are synchronous JS).
+  let typingSwept = false
+
   /* ------------------------------------------------------------------------ */
   /* Inbound message construction                                              */
   /* ------------------------------------------------------------------------ */
@@ -267,8 +361,76 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   }
 
   /* ------------------------------------------------------------------------ */
-  /* Poll loop                                                                 */
+  /* Typing indicator                                                          */
   /* ------------------------------------------------------------------------ */
+
+  /**
+   * Begin the "typing…" refresh loop for a chat (idempotent per chat). Runs
+   * as an independent runFork root — pollOnce's fiber completes every poll
+   * cycle, so a child fiber would be auto-interrupted immediately.
+   */
+  const startTyping = (transport: TelegramHttpTransport, chatId: string): void => {
+    if (typingSwept) return
+    if (typingFibers.has(chatId)) return
+    const loop = Effect.gen(function* () {
+      for (let i = 0; i < TYPING_MAX_REFRESHES; i++) {
+        yield* transport("sendChatAction", { chat_id: chatId, action: "typing" })
+        yield* Effect.sleep(`${TYPING_REFRESH_MS} millis`)
+      }
+    })
+    const fiber = Effect.runFork(loop)
+    typingFibers.set(chatId, fiber)
+    fiber.addObserver(() => {
+      if (typingFibers.get(chatId) === fiber) typingFibers.delete(chatId)
+    })
+  }
+
+  /** Stop the typing loop for a chat (first reply supersedes it). */
+  const stopTyping = (chatId: string): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const fiber = typingFibers.get(chatId)
+      if (fiber === undefined) return Effect.void
+      typingFibers.delete(chatId)
+      return Fiber.interrupt(fiber).pipe(Effect.asVoid)
+    })
+
+  /* ------------------------------------------------------------------------ */
+  /* Formatted send/edit (markdown → Telegram HTML, plain-text fallback)      */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * Send or edit with Telegram HTML formatting. `content` is Luna markdown;
+   * it is converted via markdownToTelegramHtml. If Telegram rejects the HTML
+   * (400 "Bad Request: can't parse entities: …"), the same call is retried
+   * once as plain text — a readable message always beats a lost one. Link
+   * previews are disabled: agent replies cite URLs constantly and preview
+   * cards would dwarf the text.
+   */
+  const sendFormatted = (
+    transport: TelegramHttpTransport,
+    method: "sendMessage" | "editMessageText",
+    params: Record<string, unknown>,
+    content: string,
+  ): Effect.Effect<TelegramApiResult> =>
+    Effect.gen(function* () {
+      const text = content.length > 0 ? content : "…"
+      const result = yield* transport(method, {
+        ...params,
+        text: markdownToTelegramHtml(text),
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      })
+      if (!result.ok && (result.description ?? "").includes("can't parse entities")) {
+        // Plain-text retry keeps the preview suppression — only parse_mode
+        // and the HTML conversion are dropped.
+        return yield* transport(method, {
+          ...params,
+          text: toPlainTextFallback(text),
+          link_preview_options: { is_disabled: true },
+        })
+      }
+      return result
+    })
 
   /**
    * Build the forever-running getUpdates polling loop.
@@ -310,11 +472,24 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           const channelMsg = buildChannelMessage(update)
           if (channelMsg === null) continue   // non-text or non-message update
 
+          // Group command addressing: strip our own "@BotName" mention from
+          // "/verb@BotName"; drop commands addressed to a DIFFERENT bot.
+          const normalizedText = normalizeCommandMention(channelMsg.text, botUsername)
+          if (normalizedText === null) continue
+          const msg =
+            normalizedText === channelMsg.text
+              ? channelMsg
+              : { ...channelMsg, text: normalizedText }
+
+          // Loading indication: show "typing…" until the first reply (the
+          // placeholder or a step-indicator edit) lands for this chat.
+          startTyping(transport, msg.channelId)
+
           if (messageHandler !== null) {
             // Fire-and-forget: the installed handler is a pure Effect<void>
             // closure over all service dependencies. Effect.runFork is the
             // production path documented in the ChannelAdapter contract.
-            Effect.runFork(messageHandler(channelMsg))
+            Effect.runFork(messageHandler(msg))
           }
         }
 
@@ -395,6 +570,32 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
         const transport = resolvedTransport
 
+        // Best-effort identity: our username enables "/verb@BotName" mention
+        // filtering in groups. Failure degrades to bare-verb commands only.
+        // The transport's error channel is `never` (the real transport folds
+        // failures into { ok: false }), but a defect — or an injected
+        // transport that dies — must still not take down start(): catch the
+        // full cause so polling always begins.
+        const me = yield* transport("getMe", {}).pipe(
+          Effect.catchAllCause(() =>
+            Effect.succeed<TelegramApiResult>({ ok: false, description: "getMe failed" }),
+          ),
+        )
+        if (me.ok && me.result !== null && me.result !== undefined) {
+          const user = me.result as TelegramUser
+          botUsername = typeof user.username === "string" ? user.username : null
+        }
+
+        // Best-effort command menu: registers the built-in channel commands
+        // so Telegram clients autocomplete them. A failure here must never
+        // block message handling (same defect-proofing as getMe above).
+        yield* transport("setMyCommands", {
+          commands: channelCommands.map((c) => ({
+            command: c.id,
+            description: c.description,
+          })),
+        }).pipe(Effect.catchAllCause(() => Effect.void))
+
         // Run the poll loop directly — this never returns normally.
         // The loop is uninterruptible at the inner level (only interrupted
         // from the outside when the service scope closes or stop() is called).
@@ -408,11 +609,16 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
     },
 
     stop() {
-      // start() runs the poll loop directly and is forked by service.ts.
-      // stop() is a no-op here because the fiber interruption (via the service
-      // scope finalizer) handles cleanup. stop() is kept as a belt-and-braces
-      // hook for future use (e.g., Telegram deleteWebhook for webhook mode).
-      return Effect.void
+      // start() runs the poll loop directly and is forked by service.ts, so
+      // fiber interruption (via the service scope finalizer) handles the
+      // poll loop. Typing-refresh fibers are independent runFork roots and
+      // need an explicit sweep here.
+      return Effect.suspend(() => {
+        typingSwept = true
+        const fibers = Array.from(typingFibers.values())
+        typingFibers.clear()
+        return Fiber.interruptAll(fibers).pipe(Effect.asVoid)
+      })
     },
 
     deliver(target: DeliveryTarget, content: string, opts: DeliverOptions): Effect.Effect<void> {
@@ -429,55 +635,67 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         const chatId = target.address["channelId"] as string | undefined
         if (chatId === undefined) return
 
+        // Anything we send supersedes the "typing…" loading indication.
+        yield* stopTyping(chatId)
+
         // The inbound message's update_id is the turn key for stream-edit state.
         const turnKey = target.inReplyTo.platformMessageId
 
-        const isFirstPartial = opts.isPartial && opts.chunkIndex === 0 && !sentMessageIds.has(turnKey)
+        // Capture the edit-routing entry, then drop it UP-FRONT on final
+        // deliveries: the turn is over whether or not the send below
+        // succeeds, and cleanup placed after a yield* would be skipped by a
+        // transport defect (delivery.ts swallows failures), leaking the
+        // entry forever (update_ids are never reused).
+        const existingMsgId = sentMessageIds.get(turnKey)
+        if (opts.isFinal) {
+          sentMessageIds.delete(turnKey)
+        }
 
-        if (isFirstPartial) {
-          // First partial: send a new message.
-          const result = yield* transport("sendMessage", {
-            chat_id: chatId,
-            text: content.length > 0 ? content : "…",
-          })
+        // In group chats, thread the reply onto the triggering message so
+        // the conversation stays legible amid other traffic. DMs stay clean
+        // (no quote header). Only the FIRST message of a turn replies;
+        // continuation chunks would re-ping the user for nothing.
+        const chatType = target.address["chatType"]
+        const inboundMessageId = target.address["messageId"]
+        const replyParams =
+          typeof chatType === "string" &&
+          chatType !== "private" &&
+          typeof inboundMessageId === "number"
+            ? { reply_parameters: { message_id: inboundMessageId } }
+            : {}
 
-          if (result.ok && result.result !== null && result.result !== undefined) {
+        // Continuation chunks of a long final answer (chunkIndex > 0) are
+        // always their own fresh messages — never edits of the placeholder.
+        if (opts.chunkIndex > 0) {
+          yield* sendFormatted(transport, "sendMessage", { chat_id: chatId }, content)
+          return
+        }
+
+        if (existingMsgId === undefined) {
+          // First send of the turn (placeholder, a status-first turn, a
+          // command reply, or a recovery after an earlier failed send).
+          const result = yield* sendFormatted(
+            transport,
+            "sendMessage",
+            { chat_id: chatId, ...replyParams },
+            content,
+          )
+          // Record the message id for follow-up edits — pointless when this
+          // delivery already ended the turn (the entry was dropped above).
+          if (!opts.isFinal && result.ok && result.result !== null && result.result !== undefined) {
             const sent = result.result as TelegramMessage
             sentMessageIds.set(turnKey, sent.message_id)
           }
         } else {
-          const existingMsgId = sentMessageIds.get(turnKey)
-          if (existingMsgId === undefined) {
-            // Recovery: sendMessage failed earlier. Try again.
-            // We do NOT return early here: fall through to the isFinal cleanup
-            // below so a recovery send on a final delivery never leaks the
-            // turn-key entry (which would cause unbounded map growth because
-            // the same update_id is never reused).
-            const result = yield* transport("sendMessage", {
-              chat_id: chatId,
-              text: content.length > 0 ? content : "…",
-            })
-            if (result.ok && result.result !== null && result.result !== undefined) {
-              const sent = result.result as TelegramMessage
-              sentMessageIds.set(turnKey, sent.message_id)
-            }
-          } else {
-            // Edit the existing message.
-            yield* transport("editMessageText", {
-              chat_id: chatId,
-              message_id: existingMsgId,
-              text: content.length > 0 ? content : "…",
-            })
-            // Telegram 400 "message is not modified" is silently ignored.
-            // delivery.ts wraps all deliver calls in catchAllCause anyway.
-          }
-        }
-
-        // Remove turn state after the final delivery.
-        // This runs for ALL branches (first partial, edit, and recovery send)
-        // so no turn-key entry is ever leaked.
-        if (opts.isFinal) {
-          sentMessageIds.delete(turnKey)
+          // Edit the existing message in place (stream-edit progress or the
+          // finalization pass). Telegram 400 "message is not modified" is
+          // silently ignored; delivery.ts wraps deliver in catchAllCause.
+          yield* sendFormatted(
+            transport,
+            "editMessageText",
+            { chat_id: chatId, message_id: existingMsgId },
+            content,
+          )
         }
       })
     },
