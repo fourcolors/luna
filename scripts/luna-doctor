@@ -30,10 +30,15 @@
 #     stable (deploy.timer=false): bare-host timer unit luna-autodeploy-stable.timer
 #     must NOT be installed.
 #
+#   Embedder reachability:
+#     When LUNA_EMBEDDER=ollama, probes LUNA_OLLAMA_BASE_URL with a short HTTP GET.
+#     Failure points to the fence ACL runbook as the most common cause in containers.
+#
 # ## Test seams (mirror luna-deploy.sh and luna-autodeploy pattern):
 #   LUNA_TEST_DOCTOR_INCUS_ACTIVE   — "true"/"false" — override incus exec check
 #   LUNA_TEST_DOCTOR_HOST_ACTIVE    — "true"/"false" — override host systemctl check
 #   LUNA_TEST_DOCTOR_TIMER_PRESENT  — "true"/"false" — override timer presence check
+#   LUNA_TEST_DOCTOR_EMBEDDER       — "reachable"/"unreachable" — override embedder probe
 #
 # These seams allow unit tests to simulate incus-active/bare-inactive (pass) or
 # bare-active/incus-inactive (the P_INCUS="" regression) without a real container.
@@ -91,6 +96,24 @@ _check_host_timer_present() {
   command -v systemctl >/dev/null 2>&1 || return 1
   # "loaded" or "active" in the list means installed
   systemctl list-unit-files "$timer_unit" --no-pager 2>/dev/null | grep -q "$timer_unit"
+}
+
+# ── check: is the configured Ollama embedder reachable? ──────────────────────
+# Returns 0 (reachable) or 1 (unreachable / not applicable).
+# Only meaningful when LUNA_EMBEDDER=ollama and LUNA_OLLAMA_BASE_URL is set.
+#
+# Test seam: LUNA_TEST_DOCTOR_EMBEDDER — "reachable" or "unreachable"
+_check_embedder_reachable() {
+  local base_url="$1"
+  if [[ "${LUNA_TEST_DOCTOR_EMBEDDER+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_DOCTOR_EMBEDDER" == "reachable" ]]
+    return $?
+  fi
+  command -v curl >/dev/null 2>&1 || return 0  # skip if curl absent; don't fail
+  local http_code
+  http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${base_url%/}/" 2>/dev/null || true)"
+  # Any HTTP response (2xx, 3xx, 4xx, 5xx) means the host is up and reachable
+  [[ "$http_code" =~ ^[2-5][0-9][0-9]$ ]]
 }
 
 # ── validate_profile <profile> ────────────────────────────────────────────────
@@ -175,6 +198,30 @@ validate_profile() {
     fi
   else
     _doctor_info "$profile" "deploy.timer=true — timer presence not checked by F5 rail"
+  fi
+
+  # Embedder reachability — only probed when LUNA_EMBEDDER=ollama.
+  # Uses environment variables directly. To include values from a profile .env
+  # file, source it before invoking luna-doctor:
+  #   source /path/to/state/.env && luna-doctor <profile>
+  local embedder_type="${LUNA_EMBEDDER:-}"
+  local ollama_url="${LUNA_OLLAMA_BASE_URL:-}"
+
+  if [[ "$embedder_type" == "ollama" && -n "$ollama_url" ]]; then
+    if _check_embedder_reachable "$ollama_url"; then
+      _doctor_ok "$profile" "embedder reachable: $ollama_url"
+    else
+      _doctor_fail "$profile" "embedder unreachable: $ollama_url"
+      _doctor_fail "$profile" "  LUNA_EMBEDDER=ollama but the Ollama endpoint did not respond."
+      _doctor_fail "$profile" "  If this is a fenced container, the fence ACL may have the"
+      _doctor_fail "$profile" "  gateway inside its reject set; see docs/runbooks/incus-fence-acl.md"
+      _doctor_fail "$profile" "  Diagnose: incus exec $profile -- curl -s --max-time 3 ${ollama_url%/}/"
+      DOCTOR_FAILED=true
+    fi
+  elif [[ "$embedder_type" == "ollama" ]]; then
+    _doctor_info "$profile" "LUNA_EMBEDDER=ollama but LUNA_OLLAMA_BASE_URL is unset — skipping embedder probe"
+  else
+    _doctor_info "$profile" "embedder=${embedder_type:-unset} — ollama probe not applicable"
   fi
 }
 
