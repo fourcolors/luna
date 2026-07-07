@@ -8,6 +8,11 @@
 #           on :11434), crash-looping the chat-server with EmbedderError.
 #           Fix: carve the gateway out of the reject destination so it is never
 #           covered, making rule ordering irrelevant.
+# LESSON:   2026-07-07 (iteration 3) — Luna's per-container fence ACLs
+#           (including lea-fence and every ACL that luna-container-create --fence
+#           creates) are attached at the INSTANCE NIC level, so their used_by
+#           entries are /1.0/instances/<inst>, not /1.0/networks/<bridge>.  The
+#           probe now resolves bridge gateways from BOTH attachment styles.
 # SEVERITY: critical
 #
 # Contract: exit 0 = PASS, 77 = SKIP, anything else = FAIL.
@@ -64,6 +69,99 @@ _ip_in_dest() {
   fi
 }
 
+# Resolve bridge names for a given ACL from instance-NIC-level used_by entries.
+# For each /1.0/instances/<inst> in used_by, run `incus config device show <inst>`
+# and parse the YAML for NIC device blocks whose security.acls field contains
+# the ACL name.  Returns one bridge name per line.
+#
+# Device YAML structure (from incus config device show):
+#   <devname>:          <- top-level key: no leading space, ends with ":"
+#     network: incusbr0 <- indented 2 spaces
+#     security.acls: lea-fence[,other-acl]
+#     type: nic
+#
+# mawk-compatible: no 3-arg match(), no gensub().
+_resolve_bridges_from_instances() {
+  local acl_name="$1"
+  local acl_yaml="$2"
+
+  # Collect instance names from used_by: /1.0/instances/<inst>
+  local instances
+  mapfile -t instances < <(
+    awk '
+      /^used_by:/ { in_used=1; next }
+      /^[a-z_]/ && !/^used_by:/ { in_used=0 }
+      in_used { print }
+    ' <<< "$acl_yaml" \
+    | grep '/1\.0/instances/' \
+    | sed 's|.*/1\.0/instances/||; s|[[:space:]"]*$||' \
+    || true
+  )
+
+  if [[ ${#instances[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  for inst in "${instances[@]}"; do
+    [[ -n "$inst" ]] || continue
+    local dev_yaml
+    dev_yaml="$(incus config device show "$inst" 2>/dev/null || true)"
+    [[ -n "$dev_yaml" ]] || continue
+
+    # Parse device YAML: track current device block, record network: and
+    # security.acls: values per block.  Emit the network: value when the
+    # security.acls field contains our acl_name.
+    # State: cur_dev, cur_network, cur_acls are reset at each top-level key.
+    awk -v acl="$acl_name" '
+      # Top-level device key: line starts with a non-space char and ends with ":"
+      /^[^[:space:]].*:$/ {
+        # flush previous device block
+        if (cur_network != "" && cur_acls != "") {
+          # check if acl appears in the comma/space-separated acls list
+          n = split(cur_acls, arr, /[, ]+/)
+          for (i = 1; i <= n; i++) {
+            if (arr[i] == acl) {
+              print cur_network
+              break
+            }
+          }
+        }
+        # start new device block
+        cur_network = ""
+        cur_acls = ""
+        next
+      }
+      # Indented properties
+      /^[[:space:]]+network:[[:space:]]/ {
+        val = $0
+        sub(/^[[:space:]]*network:[[:space:]]*/, "", val)
+        sub(/[[:space:]]*$/, "", val)
+        cur_network = val
+        next
+      }
+      /^[[:space:]]+security\.acls:[[:space:]]/ {
+        val = $0
+        sub(/^[[:space:]]*security\.acls:[[:space:]]*/, "", val)
+        sub(/[[:space:]]*$/, "", val)
+        cur_acls = val
+        next
+      }
+      END {
+        # flush last device block
+        if (cur_network != "" && cur_acls != "") {
+          n = split(cur_acls, arr, /[, ]+/)
+          for (i = 1; i <= n; i++) {
+            if (arr[i] == acl) {
+              print cur_network
+              break
+            }
+          }
+        }
+      }
+    ' <<< "$dev_yaml" || true
+  done
+}
+
 for acl_name in "${fence_acls[@]}"; do
   [[ -n "$acl_name" ]] || continue
 
@@ -73,11 +171,8 @@ for acl_name in "${fence_acls[@]}"; do
     continue
   fi
 
-  # Resolve which network bridges this ACL is attached to via used_by: entries
-  # of the form /1.0/networks/<bridge>.  NIC-level attachments (/1.0/instances/...)
-  # are intentionally ignored here; we only check network-level fence semantics.
-  # Uses grep + sed for mawk compatibility (avoids 3-arg match()).
-  mapfile -t bridges < <(
+  # --- Bridge resolution: NETWORK-LEVEL (used_by: /1.0/networks/<bridge>) ---
+  mapfile -t net_bridges < <(
     awk '
       /^used_by:/ { in_used=1; next }
       /^[a-z_]/ && !/^used_by:/ { in_used=0 }
@@ -88,9 +183,24 @@ for acl_name in "${fence_acls[@]}"; do
     || true
   )
 
+  # --- Bridge resolution: INSTANCE-NIC-LEVEL (used_by: /1.0/instances/<inst>) ---
+  mapfile -t nic_bridges < <(_resolve_bridges_from_instances "$acl_name" "$acl_yaml")
+
+  # Merge both bridge lists (may have duplicates; we check each)
+  mapfile -t bridges < <(printf '%s\n' "${net_bridges[@]}" "${nic_bridges[@]}" | sort -u | grep -v '^$' || true)
+
   if [[ ${#bridges[@]} -eq 0 ]]; then
-    echo "SKIP: ACL $acl_name has no network used_by entries — skipping"
+    echo "SKIP: ACL $acl_name — no bridge gateway resolvable from network or instance-NIC used_by entries"
     continue
+  fi
+
+  # Log which resolution path(s) were used
+  if [[ ${#net_bridges[@]} -gt 0 && ${#nic_bridges[@]} -gt 0 ]]; then
+    echo "INFO: ACL $acl_name — bridges resolved via network-level AND instance-NIC-level attachment"
+  elif [[ ${#net_bridges[@]} -gt 0 ]]; then
+    echo "INFO: ACL $acl_name — bridges resolved via network-level attachment"
+  else
+    echo "INFO: ACL $acl_name — bridges resolved via instance-NIC-level attachment"
   fi
 
   # Extract egress reject destinations from the ACL YAML.
@@ -109,7 +219,7 @@ for acl_name in "${fence_acls[@]}"; do
     }
   ' <<< "$acl_yaml" || true)
 
-  # Check each attached bridge's gateway against the reject destinations
+  # Check each resolved bridge's gateway against the reject destinations
   for bridge in "${bridges[@]}"; do
     gw_cidr="$(incus network get "$bridge" ipv4.address 2>/dev/null || true)"
     if [[ -z "$gw_cidr" ]]; then
@@ -119,6 +229,7 @@ for acl_name in "${fence_acls[@]}"; do
     gw_ip="${gw_cidr%%/*}"
 
     (( checked++ )) || true
+    echo "EVAL: ACL $acl_name on bridge $bridge (gateway $gw_ip) — checking ${#reject_dests[@]} egress reject rule(s)"
 
     for dest in "${reject_dests[@]}"; do
       [[ -n "$dest" ]] || continue
