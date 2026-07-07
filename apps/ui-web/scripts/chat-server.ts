@@ -424,6 +424,13 @@ const resolveBuildVersion = (): string | undefined => {
  *  once, threaded into the endpoints; `undefined` omits the wire field. */
 const BUILD_VERSION = resolveBuildVersion()
 
+// Built web SPA (apps/ui-web/dist), resolved relative to this script. When
+// present, the ui-ws server serves it on port 4753 so the web UI is reachable
+// via the same tailnet proxy as the WS (no extra infra). Absent in dev (vite
+// serves the app) → the server just 404s non-API GETs.
+const UI_DIST_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "dist")
+const UI_DIST_READY = existsSync(join(UI_DIST_DIR, "index.html"))
+
 /* ── UI model-list helpers ───────────────────────────────────────────────────
  *
  * `parseUiModels` parses the LUNA_UI_MODELS env var (comma-separated
@@ -3345,6 +3352,7 @@ const buildServerLayer = (
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
         serverVersion: BUILD_VERSION,
+        staticDir: UI_DIST_READY ? UI_DIST_DIR : null,
         // Advertise the operator-configured + built-in model list so the UI
         // dropdown is driven by the server (LUNA_UI_MODELS overrides go first
         // and become the recommended default). Absent on older/setup-mode

@@ -44,6 +44,7 @@ import * as http from "node:http"
 import { randomUUID } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import * as path from "node:path"
+import { existsSync, statSync, readFileSync } from "node:fs"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
@@ -120,6 +121,70 @@ export interface SurveyWsHandle {
   ) => import("effect").Effect.Effect<void, unknown>
 }
 
+/** Static-file MIME types for serving the built SPA (apps/ui-web/dist). */
+const STATIC_MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".txt": "text/plain; charset=utf-8",
+}
+
+/**
+ * Serve the built Vite SPA from `staticDir` for a plain GET that matched no API
+ * route. Real files get long-lived immutable caching (Vite emits hashed asset
+ * names); anything else falls back to index.html with no-cache (SPA routing).
+ * Module scope on purpose: `path` here is the node:path import, NOT the WS-path
+ * string that shadows it inside startUIWebSocketServer.
+ */
+function serveStaticSpa(res: http.ServerResponse, staticDir: string, rawUrl: string): void {
+  const urlPath = rawUrl.split("?")[0] ?? "/"
+  let rel: string
+  try {
+    rel = path.normalize(decodeURIComponent(urlPath)).replace(/^(\.\.[/\\])+/, "")
+  } catch {
+    res.writeHead(400)
+    res.end()
+    return
+  }
+  const candidate = path.join(staticDir, rel)
+  const indexPath = path.join(staticDir, "index.html")
+  const isFile =
+    candidate.startsWith(staticDir) &&
+    rel !== "/" &&
+    rel !== "" &&
+    existsSync(candidate) &&
+    statSync(candidate).isFile()
+  const filePath = isFile ? candidate : indexPath
+  try {
+    const body = readFileSync(filePath)
+    const isIndex = filePath === indexPath
+    const type = isIndex
+      ? "text/html; charset=utf-8"
+      : STATIC_MIME[path.extname(filePath).toLowerCase()] ?? "application/octet-stream"
+    res.writeHead(200, {
+      "content-type": type,
+      "cache-control": isIndex ? "no-cache" : "public, max-age=31536000, immutable",
+    })
+    res.end(body)
+  } catch {
+    res.writeHead(404)
+    res.end()
+  }
+}
+
 export interface UIWebSocketServerConfig {
   /** TCP port. Default: 4753 (UISE). */
   readonly port?: number
@@ -142,6 +207,13 @@ export interface UIWebSocketServerConfig {
    * WS path. Default: "/ui".
    */
   readonly path?: string
+  /**
+   * Absolute path to the built web SPA (apps/ui-web/dist). When set, plain GETs
+   * that match no API route are served from it (index.html SPA fallback) on the
+   * same port as the WS — so the web UI is reachable via the existing proxy with
+   * no extra infra. `null`/absent → 404 (the prior behavior).
+   */
+  readonly staticDir?: string | null
   /**
    * Keep-alive ping interval (ms). 0 disables. Default: 30_000.
    */
@@ -1038,6 +1110,12 @@ export const startUIWebSocketServer = (
         // GET on the WS path without upgrade headers → 426.
         res.writeHead(426, { "content-type": "text/plain" })
         res.end("upgrade required")
+        return
+      }
+      // Otherwise: serve the built SPA when configured, so the web UI is
+      // reachable on the same port/proxy as the WS (no extra infra).
+      if (config.staticDir) {
+        serveStaticSpa(res, config.staticDir, req.url ?? "/")
         return
       }
       res.writeHead(404)
