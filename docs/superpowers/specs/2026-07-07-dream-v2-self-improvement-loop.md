@@ -57,8 +57,11 @@ Four stages, independently shippable:
 ### 5.2 Chunked dreaming with per-chunk watermark advance
 
 - Sessions sort oldest-first by `lastMessageAt` and pack greedily into chunks under a token budget.
+- Each session charges `max(estimateTokens(excerpt), SESSION_OVERHEAD_TOKENS)` so empty-excerpt sessions cannot clump one chunk's prompt past the pre-flight budget (audit finding D2).
+- Sessions sharing an exact `lastMessageAt` form a tie group that packs as one indivisible unit, because the re-gather filter is strictly greater-than the watermark and a committed cutoff would otherwise orphan a split same-timestamp sibling forever (audit finding D1).
+- An indivisible item (an oversized single session or an oversized tie group) still runs as its own chunk even when over budget; distillation caps make this comfortably under the pre-flight limit in practice.
 - Each chunk runs reason, applyOps, then `setWatermark(chunkCutoff)` before the next chunk starts.
-- A failure in chunk N preserves chunks 1 through N-1; the watermark ratchets forward monotonically, which makes the death spiral structurally impossible and self-heals the live backlog.
+- A failure in chunk N preserves chunks 1 through N-1; the watermark ratchets forward monotonically, which makes the death spiral structurally impossible for divisible windows and self-heals the live backlog.
 - The worker checks remaining deadline between chunks and stops cleanly with partial progress; the next run continues from the committed watermark.
 - Per-chunk `dreamId` stays deterministic (`dream-<chunkStart>-<chunkCutoff>`), preserving the existing crash-retry idempotency contract.
 

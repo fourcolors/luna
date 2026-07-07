@@ -449,10 +449,13 @@ export const DreamReasonerDefault: Layer.Layer<
     const pathToClaudeCodeExecutable =
       process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || undefined
 
-    // Wall-clock ceiling for the single reasoning turn. Dream runs on its own
-    // cron (not the V2 ticker), so a hung turn doesn't stall other jobs — but
-    // without a deadline a wedged 3am turn would leave a zombie subprocess and
-    // never reschedule. Overridable via env; defaults to 10 min.
+    // Wall-clock ceiling for one reasoning turn. The dream is dispatched by
+    // the V2 JobTicker (kind:"dream" -> DreamWorker), whose 5-min per-dispatch
+    // deadline interrupts an overrunning CHUNK; runDream commits the watermark
+    // per chunk, so an interrupted chunk cleanly re-runs next dispatch. This
+    // timeout is the inner per-SDK-call ceiling (also covers the sampling
+    // extras phase) so a wedged turn can't hold the worker until the ticker
+    // kills it. Overridable via env; defaults to 10 min.
     const dreamTimeoutMs = (() => {
       const raw = process.env["LUNA_DREAM_TIMEOUT_MS"]?.trim()
       const n = raw ? Number(raw) : DEFAULT_QUERY_TIMEOUT_MS
