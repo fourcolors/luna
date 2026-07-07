@@ -9,10 +9,14 @@
  *       op://<rest>                                — bare 1Password
  *       luna-op://<label>/<rest>                   — explicit-account 1Password
  *       env:<VAR>                                  — process env (one colon)
- *       file:<path>  |  file://<host>/<path>       — local file
  *       claude-code:login                          — CLAUDE_CONFIG_DIR login
  *     where <label> matches ^[a-z][a-z0-9-]{0,30}$ and is not in
  *     {env, file, op}.
+ *
+ *   `file:<path>` / `file:///<path>` refs are REJECTED. FileSecretProvider
+ *   is not wired into the chat-server's production SecretProvider chain
+ *   (apps/ui-web/scripts/chat-server.ts), so an account added with a
+ *   `file:` ref would silently never resolve at runtime.
  *
  * NEVER resolves the secret. The CLI is a pointer-mover only.
  */
@@ -75,12 +79,14 @@ const validateSecretRef = (ref: string): boolean => {
     const name = ref.slice("env:".length)
     return name.length > 0 && !name.includes("/")
   }
-  if (ref.startsWith("file:")) {
-    // file:<path> or file:///<path> — both supported by FileSecretProvider.
-    return ref.length > "file:".length
-  }
+  // file:<path> / file:///<path> fall through to `return false` here.
+  // Rejected with a dedicated, actionable message in runAdd — see FILE_REF_ERROR.
   return false
 }
+
+const FILE_REF_ERROR =
+  "error: file: refs are not resolvable by the Luna server. " +
+  "Use env:NAME (value stored via the Vault) or luna-op://<label>/... for 1Password.\n"
 
 const runAdd = (args: AddArgs): CmdResult => {
   const missing: string[] = []
@@ -110,6 +116,9 @@ const runAdd = (args: AddArgs): CmdResult => {
         `Must be "anthropic" or start with "tool-" or "mcp-".\n`,
     }
   }
+  if (secretRef.startsWith("file:")) {
+    return { exitCode: 1, stderr: FILE_REF_ERROR }
+  }
   if (!validateSecretRef(secretRef)) {
     return {
       exitCode: 1,
@@ -117,7 +126,7 @@ const runAdd = (args: AddArgs): CmdResult => {
         `error: invalid --secret-ref "${secretRef}". ` +
         `Must be one of: op://<rest>, luna-op://<label>/<rest> ` +
         `(label matches ^[a-z][a-z0-9-]{0,30}$, not in {env, file, op}), ` +
-        `env:<VAR> (one colon, no slashes), file:<path>, file:///<path>, ` +
+        `env:<VAR> (one colon, no slashes), ` +
         `or claude-code:login.\n`,
     }
   }

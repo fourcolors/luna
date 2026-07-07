@@ -191,7 +191,7 @@ d("luna account CLI", () => {
         "--kind",
         "mcp-memory",
         "--secret-ref",
-        "file:///tmp/x",
+        "env:MCP_MEMORY_TOKEN",
       ],
       db,
     )
@@ -384,13 +384,21 @@ d("luna account CLI", () => {
     expect(r.status).toBe(1)
   })
 
-  it("add accepts file:<path>", () => {
+  it("add rejects file:<path> with an actionable message", () => {
     const r = runCli(addRefArgs("file:/tmp/x"), db)
-    expect(r.status, r.stderr).toBe(0)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(
+      /file: refs are not resolvable by the Luna server/,
+    )
+    expect(r.stderr).toMatch(/env:NAME/)
+    expect(r.stderr).toMatch(/luna-op:\/\/<label>/)
   })
 
-  it("add accepts file:///<path>", () => {
+  it("add rejects file:///<path> with an actionable message", () => {
     const r = runCli(addRefArgs("file:///tmp/x"), db)
-    expect(r.status, r.stderr).toBe(0)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(
+      /file: refs are not resolvable by the Luna server/,
+    )
   })
 })
