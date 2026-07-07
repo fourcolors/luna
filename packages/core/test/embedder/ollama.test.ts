@@ -204,6 +204,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
       baseUrl: "http://ollama.test:11434",
       model: "embeddinggemma",
       dimension: 768,
+      degradeOnProbeFailure: true,
       probeBackoffMs: 1,
     })
 
@@ -224,12 +225,35 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     ).toBe(true)
   })
 
+  it("stays fatal by default through the same persistent window even with a known dimension", async () => {
+    mockFetch.mockResolvedValue(emptyBodyOk())
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 768,
+      probeBackoffMs: 1,
+      // no `degradeOnProbeFailure` — degrade is opt-in, so direct callers of
+      // the shared layer keep fail-fast-on-exhausted-retries behavior.
+    })
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* EmbedderService
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toBeTruthy()
+    expect(probeAttemptCount(mockFetch)).toBe(3)
+  })
+
   it("stays fatal through the same persistent window when the dimension is unknown", async () => {
     mockFetch.mockResolvedValue(emptyBodyOk())
 
     const layer = makeOllamaEmbedderLayer({
       baseUrl: "http://ollama.test:11434",
       model: "embeddinggemma",
+      degradeOnProbeFailure: true,
       probeBackoffMs: 1,
       // no `dimension` — degrade must refuse to engage, to avoid sizing the
       // vectorlite table from a guess.
@@ -277,6 +301,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     const fatalLayer = makeOllamaEmbedderLayer({
       baseUrl: "http://ollama.test:11434",
       model: "embeddinggemma",
+      degradeOnProbeFailure: true,
       probeBackoffMs: 1,
     })
     await expect(
@@ -294,6 +319,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
       baseUrl: "http://ollama.test:11434",
       model: "embeddinggemma",
       dimension: 768,
+      degradeOnProbeFailure: true,
       probeBackoffMs: 1,
     })
 
@@ -321,6 +347,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
       baseUrl: "http://ollama.test:11434",
       model: "embeddinggemma",
       dimension: 999,
+      degradeOnProbeFailure: true,
       probeBackoffMs: 1,
     })
 

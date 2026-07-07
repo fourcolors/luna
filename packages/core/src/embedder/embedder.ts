@@ -142,7 +142,8 @@ export interface OllamaEmbedderOptions {
    * dimension is already known (declared, not probed), construct the layer
    * anyway instead of failing boot. Every real `embed()` call still hits
    * Ollama for real and can still fail with EmbedderError{op:"embed"} - this
-   * never fabricates vectors. Default: true.
+   * never fabricates vectors. Default: false (fail fast once retries are
+   * exhausted); the chat-server deploy path opts in via selectEmbedderLayer.
    */
   readonly degradeOnProbeFailure?: boolean
 }
@@ -254,8 +255,21 @@ export const makeOllamaEmbedderLayer = (
         opts?.maxProbeAttempts ?? DEFAULT_MAX_PROBE_ATTEMPTS,
       )
       const probeBackoffMs = opts?.probeBackoffMs ?? DEFAULT_PROBE_BACKOFF_MS
-      const degradeOnProbeFailure = opts?.degradeOnProbeFailure ?? true
+      const degradeOnProbeFailure = opts?.degradeOnProbeFailure ?? false
       const knownDimension = opts?.dimension
+
+      const makeApi = (dimension: number): EmbedderApi => ({
+        provider: "ollama",
+        model,
+        dimension,
+        embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
+        embed: (text) =>
+          Effect.tryPromise({
+            try: () => ollamaEmbedHttp(baseUrl, model, text),
+            catch: (cause) =>
+              new EmbedderError({ provider: "ollama", op: "embed", cause }),
+          }),
+      })
 
       // Probe-on-init: a real embedding call doubles as the health check
       // and tells us the dimension if the caller didn't pre-declare it.
@@ -306,18 +320,7 @@ export const makeOllamaEmbedderLayer = (
               `booting anyway with declared dimension - real embed() calls still hit ollama and self-heal: ` +
               `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts} cause=${errorMessage(cause)}`,
           )
-          return {
-            provider: "ollama",
-            model,
-            dimension: knownDimension,
-            embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
-            embed: (text) =>
-              Effect.tryPromise({
-                try: () => ollamaEmbedHttp(baseUrl, model, text),
-                catch: (cause) =>
-                  new EmbedderError({ provider: "ollama", op: "embed", cause }),
-              }),
-          } satisfies EmbedderApi
+          return makeApi(knownDimension)
         }
         return yield* Effect.fail(
           new EmbedderError({ provider: "ollama", op: "init", cause }),
@@ -349,20 +352,7 @@ export const makeOllamaEmbedderLayer = (
         )
       }
 
-      const dimension = knownDimension ?? probe.length
-
-      return {
-        provider: "ollama",
-        model,
-        dimension,
-        embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
-        embed: (text) =>
-          Effect.tryPromise({
-            try: () => ollamaEmbedHttp(baseUrl, model, text),
-            catch: (cause) =>
-              new EmbedderError({ provider: "ollama", op: "embed", cause }),
-          }),
-      } satisfies EmbedderApi
+      return makeApi(knownDimension ?? probe.length)
     }),
   )
 

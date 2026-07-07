@@ -105,6 +105,7 @@ export function selectEmbedderLayer(): Layer.Layer<
       ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
       ...(maxProbeAttempts !== undefined ? { maxProbeAttempts } : {}),
       ...(probeBackoffMs !== undefined ? { probeBackoffMs } : {}),
+      degradeOnProbeFailure: true,
     })
   }
   return StubEmbedderLayer
