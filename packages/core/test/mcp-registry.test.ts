@@ -101,4 +101,40 @@ describe("MCPRegistry", () => {
     expect(Object.keys(duringScope)).toEqual(["scoped"])
     expect(Object.keys(afterScope)).toEqual([])
   })
+
+  it("snapshotSync reflects register and unregister", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const reg = yield* MCPRegistry
+        const before = reg.snapshotSync()
+        yield* reg.register("snap-a", stdio("cmd-a"))
+        yield* reg.register("snap-b", { type: "http", url: "https://x" })
+        const during = reg.snapshotSync()
+        yield* reg.unregister("snap-a")
+        const after = reg.snapshotSync()
+        return { before, during, after }
+      }),
+    )
+    expect(Object.keys(result.before)).toHaveLength(0)
+    expect(Object.keys(result.during).sort()).toEqual(["snap-a", "snap-b"])
+    expect((result.during["snap-a"] as { command: string }).command).toBe("cmd-a")
+    expect(Object.keys(result.after)).toEqual(["snap-b"])
+  })
+
+  it("snapshotSync returns a copy — mutating the result does not affect the registry", async () => {
+    await run(
+      Effect.gen(function* () {
+        const reg = yield* MCPRegistry
+        yield* reg.register("immut", stdio("cmd-immut"))
+        const snap = reg.snapshotSync()
+        // Mutate the returned object — should NOT affect the registry.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(snap as any)["injected"] = { type: "evil" }
+        delete (snap as Record<string, unknown>)["immut"]
+        const snap2 = reg.snapshotSync()
+        expect(Object.keys(snap2)).toEqual(["immut"])
+        expect("injected" in snap2).toBe(false)
+      }),
+    )
+  })
 })

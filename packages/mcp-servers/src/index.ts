@@ -22,3 +22,7 @@ export {
 // Store
 export { McpServerStore } from "./store.js"
 export type { McpServerStoreApi } from "./store.js"
+
+// Mount loader (Slice B1)
+export { syncMcpMounts } from "./mount-loader.js"
+export type { SyncMcpMountsResult } from "./mount-loader.js"
