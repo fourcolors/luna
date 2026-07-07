@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client"
 import "@luna/design-system/appearance"
 // The watercolor token + primitive cascade (tokens → studio → final).
 import "@luna/design-system/css"
+// Dev-ops panel styles (settings/connectors/obs/artifacts/skills/vault/workflows).
+import "./studio/devops-panels.css"
 // The ported Final design root. No StrictMode: the design's effects (drag
 // listeners, intervals, SpeechSynthesis, the CustomEvent bus) were authored
 // for a single mount and are not all double-invoke-safe.

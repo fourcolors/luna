@@ -1,0 +1,849 @@
+/* ===== settings ===== */
+/* settings-panel.jsx — append to packages/design-system/css/final.css
+   (or studio.css). Reuses existing tokens (--ink/--ink-soft/--ink-faint/
+   --paper/--accent) and existing panel-body idiom (.section-label,
+   .swatch-row, .swatch/.swatch.active, .chip-row, .chip). Only the classes
+   below are new. */
+
+.stg-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 16px; overflow-y: auto; padding-right: 2px; }
+.stg-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 2px 0; }
+
+.stg-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.stg-field > span:first-child {
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  font-weight: 600; color: var(--ink-soft);
+}
+
+.stg-input {
+  appearance: none; box-sizing: border-box; min-width: 130px; height: 30px;
+  padding: 0 10px; border: 1.3px solid var(--ink-faint); border-radius: 8px;
+  background: var(--paper); color: var(--ink); font: inherit; font-size: 12.5px;
+  outline: none; transition: border-color 0.15s ease;
+}
+.stg-input:focus { border-color: var(--accent); }
+.stg-input::placeholder { color: var(--ink-soft); }
+select.stg-input { cursor: pointer; }
+
+/* Shared with account-switcher.jsx's <select> so it lines up visually with
+   the rest of the connection row without that file needing its own rule. */
+.stg-field-input {
+  appearance: none; box-sizing: border-box; min-width: 130px; height: 30px;
+  padding: 0 10px; border: 1.3px solid var(--ink-faint); border-radius: 8px;
+  background: var(--paper); color: var(--ink); font: inherit; font-size: 12.5px;
+  outline: none; cursor: pointer; transition: border-color 0.15s ease;
+}
+.stg-field-input:focus { border-color: var(--accent); }
+.stg-field-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.stg-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink); cursor: pointer; padding-bottom: 5px; }
+.stg-toggle input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+
+/* Connect/Disconnect/Restart reuse .ghost-btn; it had no disabled treatment
+   yet (Connect is disabled below the 16-char token floor; Restart is
+   disabled mid-restart). */
+.ghost-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ghost-btn:disabled:hover { border-color: var(--ink-faint); color: var(--ink); }
+
+/* .swatch.active already exists for the palette row; .chip has no active
+   state yet (luna-mini-apps.jsx's SettingsApp used inline style for this) —
+   promoting it to a class here since this panel needs it 3x (theme, chrome
+   rows) and it's a natural, collision-free addition to the shared chip
+   vocabulary. */
+.chip.active {
+  border-color: var(--accent); color: var(--accent); font-weight: 600;
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+/* ===== connectors-panel ===== */
+/* ---- Connectors panel (ConnectorsPanel port, PRD Part A section 17) ---- */
+/* Append to packages/design-system/css/studio.css (or wherever the app's
+   panel-content styles live) - no existing skills-panel/skill-row classes
+   exist in this design system to reuse, so these are new but follow the
+   established token vocabulary (--ink/--ink-soft/--ink-faint/--paper/
+   --paper-2/--accent/--panel-tint) and reuse .ghost-btn / .chip already
+   defined in tokens.css. */
+
+.cnx-panel { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.cnx-head { display: flex; align-items: center; justify-content: space-between; }
+.cnx-title {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.cnx-error {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+.cnx-empty { font-size: 12.5px; color: var(--ink-soft); padding: 10px 2px; }
+
+.cnx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-faint) transparent;
+}
+.cnx-list::-webkit-scrollbar { width: 7px; height: 7px; }
+.cnx-list::-webkit-scrollbar-track { background: transparent; }
+.cnx-list::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--ink) 22%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.cnx-list::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--ink) 32%, transparent); }
+
+.cnx-def {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--paper-2) 65%, transparent);
+  border: 1px solid var(--ink-faint);
+}
+.cnx-def.off { opacity: 0.82; }
+
+.cnx-def-meta { display: flex; flex-direction: column; gap: 2px; flex: 1 1 100%; }
+.cnx-def-name { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.cnx-def-desc { font-size: 11.5px; color: var(--ink-soft); line-height: 1.4; }
+.cnx-moon-hint { max-width: 170px; }
+
+/* Full-width break inside the flex-wrap tile: without flex:0 0 100% each
+   per-instance row and the controls row render squashed onto one line next
+   to the name/desc column instead of stacking. */
+.cnx-instance {
+  flex: 0 0 100%;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+}
+.cnx-instance-label { flex: 1; font-size: 12px; color: var(--ink); }
+
+.cnx-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.cnx-badge-connected { background: color-mix(in oklab, #4caf50 22%, transparent); color: #2f7d34; }
+.cnx-badge-needs-reauth { background: color-mix(in oklab, #d9a441 26%, transparent); color: #8a6114; }
+.cnx-badge-error { background: color-mix(in oklab, #d9534f 22%, transparent); color: #a3312d; }
+.cnx-badge-disconnected { background: color-mix(in oklab, var(--ink) 12%, transparent); color: var(--ink-soft); }
+.luna-root[data-theme="dark"] .cnx-badge-connected { color: #8fe396; }
+.luna-root[data-theme="dark"] .cnx-badge-needs-reauth { color: #f0c878; }
+.luna-root[data-theme="dark"] .cnx-badge-error { color: #f0918e; }
+
+.cnx-controls { flex: 0 0 100%; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cnx-controls.with-instances { margin-top: 6px; }
+.cnx-client-ok { font-size: 11.5px; color: #2f7d34; }
+.luna-root[data-theme="dark"] .cnx-client-ok { color: #8fe396; }
+
+.cnx-form {
+  flex: 0 0 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ink-faint);
+}
+.cnx-form-hint { line-height: 1.45; }
+
+.cnx-input {
+  border: 1.3px solid var(--ink-faint);
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.cnx-input:focus { border-color: var(--accent); }
+.cnx-input::placeholder { color: var(--ink-faint); }
+.cnx-input:disabled { opacity: 0.55; }
+
+.cnx-cap-toggle.toggle { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink); cursor: pointer; }
+.toggle input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+
+.cnx-primary-btn {
+  border: none;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--paper);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.cnx-primary-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.cnx-primary-btn:disabled { opacity: 0.4; cursor: default; }
+
+.cnx-danger:hover:not(:disabled) { border-color: #d9534f; color: #d9534f; }
+
+/* Modifier on the existing .chip (tokens.css) - the OAuth "edit"/"close"
+   toggle needs a smaller footprint than the chat topic chips it's shared
+   with. */
+.chip.small { padding: 3px 9px; font-size: 11px; }
+
+/* ===== obs ===== */
+/* ── obs-panel.jsx ──────────────────────────────────────────────────────
+   Scoped port of the old ui-web styles.css rules for .topbar/.chip/.banner/
+   .log/.meta/.row.event/.json, namespaced under obs-* so they can't bleed
+   into the Studio topbar / home chip-row / other panels that already own
+   those bare class names. Uses only tokens already defined in
+   packages/design-system/css/tokens.css (--paper, --ink, --ink-soft,
+   --ink-faint, --accent, --panel-tint); no --font-mono token exists in this
+   theme, so the JSON slab gets its own monospace stack. Add this block to
+   packages/design-system/css/studio.css (or a new obs.css imported from
+   packages/design-system/index.css). */
+
+.obs-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--ink);
+  font-family: inherit;
+}
+
+.obs-topbar {
+  position: relative;
+  z-index: 1;
+  border-bottom: 1px solid var(--ink-faint);
+  padding: 8px 12px;
+  flex: 0 0 auto;
+}
+
+.obs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+
+.obs-chip {
+  background: transparent;
+  color: var(--ink);
+  border: 1.3px solid var(--ink-faint);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.obs-chip:hover { background: color-mix(in oklab, var(--panel-tint) 20%, transparent); }
+.obs-chip.active {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  font-weight: 600;
+}
+.obs-chip.clear {
+  background: transparent;
+  color: var(--ink-soft);
+  border: 1px dashed var(--ink-faint);
+}
+
+.obs-muted { color: var(--ink-soft); font-size: 11px; }
+
+.obs-banner {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.obs-banner.drop {
+  background: color-mix(in oklab, #9a6b1f 15%, transparent);
+  color: #9a6b1f;
+}
+.luna-root[data-theme="dark"] .obs-banner.drop {
+  background: color-mix(in oklab, #f5c542 12%, transparent);
+  color: #f5c542;
+}
+
+.obs-log {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-faint) transparent;
+}
+
+.obs-meta {
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+}
+
+.obs-row-event {
+  display: grid;
+  grid-template-columns: 90px 140px 1fr;
+  gap: 8px;
+  padding: 4px 6px;
+  border-bottom: 1px solid color-mix(in oklab, var(--ink) 5%, transparent);
+  font-size: 12px;
+  cursor: pointer;
+  align-items: baseline;
+}
+.obs-row-event:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+.obs-row-event.level-warn .obs-kind  { color: #9a6b1f; }
+.luna-root[data-theme="dark"] .obs-row-event.level-warn .obs-kind { color: #f5c542; }
+.obs-row-event.level-error .obs-kind { color: #c0504d; }
+.luna-root[data-theme="dark"] .obs-row-event.level-error .obs-kind { color: #e85d5d; }
+
+.obs-ts { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.obs-kind { font-weight: 600; }
+.obs-summary {
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* JSON detail row — intentionally a dark slab regardless of active palette,
+   same rationale as the original: readable monospace on a fixed background
+   rather than fighting the watercolor theme per-token. */
+.obs-json {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  padding: 8px;
+  background: #0a0b0e;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: #c8d3e0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (max-width: 420px) {
+  .obs-row-event { grid-template-columns: 1fr; }
+  .obs-ts { font-size: 10px; }
+}
+
+/* ===== artifacts-panel ===== */
+/* ============ Artifacts panel (packages/design-system/css/studio.css) ============
+   Base list/row primitives (.artifact-panel/.artifact-head/.artifact-list/
+   .artifact-row/.artifact-title/.artifact-meta/.muted/.small/.chip.small) are
+   SHARED — apps/ui-web/src/studio/workflows-panel.jsx already depends on
+   these exact class names ("mirrors the ArtifactPanel pattern"). Define them
+   ONCE here; do not let a later panel's cssAdditions redefine them. */
+
+.artifact-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.artifact-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 2px 2px 0;
+  flex: 0 0 auto;
+}
+.artifact-subhead { font-size: 11px; padding-top: 6px; }
+
+/* Generic text-utility classes reused by every sidebar-list panel. */
+.muted { color: var(--ink-soft); font-weight: 500; }
+.small { font-size: 11px; }
+
+.artifact-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 42%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 2px;
+}
+.artifact-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1.3px solid transparent;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--paper-2) 60%, transparent);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.artifact-row:hover { background: color-mix(in oklab, var(--paper-2) 92%, transparent); }
+.artifact-row.selected {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+}
+.artifact-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.artifact-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-chip { align-self: flex-start; margin-top: 1px; }
+.artifact-chip-static { cursor: default; }
+
+/* .chip is already defined (tokens.css); .chip.small is a size variant
+   several panels (Artifacts/Workflows) already assume exists. */
+.chip.small { padding: 3px 9px; font-size: 11px; }
+
+/* ── detail view ── */
+.artifact-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--ink-faint);
+  padding-top: 8px;
+}
+.artifact-view-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.artifact-view-spacer { flex: 1; }
+.artifact-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+}
+.artifact-content.is-rich { background: transparent; }
+.artifact-iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  border: none;
+  border-radius: inherit;
+  background: var(--paper);
+}
+.code-fallback {
+  margin: 0;
+  height: 100%;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── minimal sanitized markdown renderer — React-node based, no raw HTML ── */
+.markdown { padding: 8px 10px; font-size: 12.5px; line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 {
+  margin: 0.6em 0 0.3em;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.markdown h1 { font-size: 1.35em; }
+.markdown h2 { font-size: 1.2em; }
+.markdown h3 { font-size: 1.08em; }
+.markdown p { margin: 0.4em 0; white-space: pre-wrap; }
+.markdown ul, .markdown ol { margin: 0.3em 0; padding-left: 1.4em; }
+.markdown li { margin: 0.15em 0; }
+.markdown blockquote {
+  margin: 0.4em 0;
+  padding: 2px 10px;
+  border-left: 3px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--ink-soft);
+}
+.markdown code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  background: color-mix(in oklab, var(--ink) 8%, transparent);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.markdown pre.code-fallback {
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  border-radius: 8px;
+  margin: 0.4em 0;
+}
+.markdown pre.code-fallback code { background: none; padding: 0; }
+.markdown a { color: var(--accent); text-decoration: none; }
+.markdown a:hover { text-decoration: underline; }
+.markdown hr { border: none; border-top: 1px solid var(--ink-faint); margin: 0.6em 0; }
+
+/* ===== skills-panel ===== */
+/* Skills panel (PRD Part B §12) — add to packages/design-system/css/studio.css
+   (or final.css alongside the other settings-row/chip rules). Reuses the
+   existing watercolor tokens (--paper/--paper-2/--ink/--ink-soft/--ink-faint/
+   --accent/--wash-*) so it matches the rest of Luna Studio with no new
+   palette. */
+
+.skills-panel { display: flex; flex-direction: column; gap: 10px; }
+.skills-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.skills-title { font-weight: 600; color: var(--ink); font-size: 13.5px; }
+.skills-count { font-weight: 400; color: var(--ink-soft); font-size: 12px; margin-left: 4px; }
+.skills-search {
+  border: 1.3px solid var(--ink-faint);
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 12.5px;
+  font-family: inherit;
+  min-width: 160px;
+}
+.skills-search:focus { outline: none; border-color: var(--accent); }
+.skills-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.skills-chip {
+  white-space: nowrap;
+  border: 1.3px solid var(--ink-faint);
+  background: transparent;
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.skills-chip:hover { border-color: var(--ink-soft); color: var(--ink); }
+.skills-chip.on {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.skills-chip-sep { width: 1px; align-self: stretch; background: var(--ink-faint); margin: 0 2px; }
+.skills-error {
+  border: 1.3px solid color-mix(in oklab, #c2596b 55%, var(--ink-faint));
+  background: color-mix(in oklab, #c2596b 12%, transparent);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+}
+.skills-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
+.skills-empty { color: var(--ink-faint); font-size: 12.5px; padding: 14px 4px; text-align: center; }
+.skill-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1.3px solid var(--ink-faint);
+  border-radius: 12px;
+  padding: 9px 12px;
+  background: color-mix(in oklab, var(--paper-2) 55%, transparent);
+  transition: opacity 0.15s ease;
+}
+.skill-row.off { opacity: 0.55; }
+.skill-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.skill-name { font-size: 13px; font-weight: 600; color: var(--ink); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.skill-id { font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; font-weight: 400; color: var(--ink-faint); background: transparent; }
+.skill-badge {
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  padding: 2px 8px;
+  border: 1px solid var(--ink-faint);
+  color: var(--ink-soft);
+}
+.skill-badge.src-builtin { border-color: color-mix(in oklab, var(--wash-4) 60%, var(--ink-faint)); }
+.skill-badge.src-user { border-color: color-mix(in oklab, var(--accent) 45%, var(--ink-faint)); color: var(--accent); }
+.skill-badge.cat { background: color-mix(in oklab, var(--wash-2) 30%, transparent); }
+.skill-desc { font-size: 12px; color: var(--ink-soft); line-height: 1.4; }
+.skill-toggle { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-soft); cursor: pointer; }
+.skill-toggle input[type="checkbox"] {
+  width: 30px; height: 18px;
+  appearance: none; -webkit-appearance: none;
+  border-radius: 999px;
+  border: 1.3px solid var(--ink-faint);
+  background: var(--paper-2);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.skill-toggle input[type="checkbox"]::after {
+  content: "";
+  position: absolute; top: 1.5px; left: 1.5px;
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.skill-toggle input[type="checkbox"]:checked { background: color-mix(in oklab, var(--accent) 35%, transparent); border-color: var(--accent); }
+.skill-toggle input[type="checkbox"]:checked::after { transform: translateX(12px); background: var(--accent); }
+.skill-toggle input[type="checkbox"]:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ===== vault-panel ===== */
+/* Target file: packages/design-system/css/studio.css (the watercolor
+   cascade tokens.css -> studio.css -> final.css, imported by
+   apps/ui-web/src/main.tsx via "@luna/design-system/css").
+
+   NOTE: `.skills-panel`/`.skill-row`/`.skill-*`/`.skills-*` are SHARED base
+   classes also required by skills-panel.jsx and obs-panel.jsx (parallel
+   porters). If those porters' cssAdditions land first, dedupe on merge —
+   these rules are copied verbatim from the old Solid app's styles.css and
+   should be byte-identical across porter outputs. `.chip.small` /
+   `.chip.small.danger` are likewise shared with every settings-style panel
+   (skills, connectors, workflows) and only need adding once. */
+
+/* ── shared settings-panel chrome (skills/vault/connectors/workflows) ───── */
+.skills-panel { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.skills-head { display: flex; align-items: center; gap: 10px; }
+.skills-title { font-weight: 600; font-size: 13px; }
+.skills-count { color: var(--ink-soft); font-weight: 400; font-size: 12px; }
+.skills-error {
+  font-size: 12px;
+  color: #c0504d;
+  background: color-mix(in oklab, #c0504d 8%, transparent);
+  border: 1px solid color-mix(in oklab, #c0504d 30%, transparent);
+  border-radius: 6px; padding: 4px 8px;
+}
+html[data-theme='dark'] .skills-error {
+  color: #e85d5d;
+  background: color-mix(in oklab, #e85d5d 8%, transparent);
+  border-color: color-mix(in oklab, #e85d5d 30%, transparent);
+}
+.skills-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+.skills-empty { color: var(--ink-soft); font-size: 12px; padding: 8px; font-style: italic; }
+.skill-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  border: 1px solid var(--ink-faint);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--paper-2) 60%, transparent);
+}
+.skill-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.skill-name { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.skill-badge {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  color: var(--ink-soft);
+}
+.skill-desc { font-size: 11.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Compact chip modifier (base .chip in tokens.css is comfortable/13px-pad;
+   settings-panel action buttons want the tighter Solid-original size). */
+.chip.small { font-size: 11px; padding: 3px 9px; }
+.chip.small.danger {
+  color: #c0504d;
+  border-color: color-mix(in oklab, #c0504d 40%, transparent);
+}
+html[data-theme='dark'] .chip.small.danger {
+  color: #f85149;
+  border-color: color-mix(in oklab, #f85149 40%, transparent);
+}
+
+/* ── Luna Vault panel (vault-panel.jsx specific) ─────────────────────────── */
+.vault-panel .vault-list { max-height: 320px; }
+.vault-row { flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.vault-row .skill-desc { white-space: normal; overflow: visible; }
+.vault-ref {
+  font-size: 10.5px;
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  padding: 0 4px; border-radius: 4px;
+  color: var(--ink-soft);
+}
+/* Vault kind colours — semantic, theme-aware */
+.vault-kind-env-secret { color: var(--accent); }
+.vault-kind-op-token   { color: var(--wash-2); }
+.vault-kind-op-item    { color: var(--wash-0); }
+.vault-badge-synced { color: #3f9460; }
+html[data-theme='dark'] .vault-badge-synced { color: #56d364; }
+.vault-badge-shadowed  { color: #9a6b1f; background: color-mix(in oklab, #9a6b1f 10%, transparent); }
+html[data-theme='dark'] .vault-badge-shadowed { color: #f0883e; background: color-mix(in oklab, #f0883e 10%, transparent); }
+.vault-delete-btn {
+  color: #c0504d;
+  border-color: color-mix(in oklab, #c0504d 40%, transparent);
+}
+html[data-theme='dark'] .vault-delete-btn { color: #f85149; border-color: color-mix(in oklab, #f85149 40%, transparent); }
+.vault-delete-btn:hover:not(:disabled) {
+  background: color-mix(in oklab, #c0504d 8%, transparent);
+}
+html[data-theme='dark'] .vault-delete-btn:hover:not(:disabled) {
+  background: color-mix(in oklab, #f85149 8%, transparent);
+}
+.vault-confirm-prompt { font-size: 11.5px; color: var(--ink); white-space: nowrap; }
+.vault-status-ok {
+  font-size: 12px;
+  color: #3f9460;
+  background: color-mix(in oklab, #3f9460 8%, transparent);
+  border: 1px solid color-mix(in oklab, #3f9460 30%, transparent);
+  border-radius: 6px; padding: 4px 8px;
+}
+html[data-theme='dark'] .vault-status-ok {
+  color: #56d364;
+  background: color-mix(in oklab, #56d364 8%, transparent);
+  border-color: color-mix(in oklab, #56d364 30%, transparent);
+}
+/* add form */
+.vault-add-form {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--ink-faint);
+  border-radius: 8px; padding: 12px;
+  background: color-mix(in oklab, var(--paper-2) 60%, transparent);
+}
+.vault-field { display: flex; flex-direction: column; gap: 3px; }
+.vault-label { font-size: 11.5px; color: var(--ink-soft); }
+.vault-input {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--ink-faint);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px;
+  width: 100%; box-sizing: border-box;
+}
+.vault-input:focus { outline: none; border-color: var(--accent); }
+.vault-mono { font-family: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace; }
+.vault-varname-row { display: flex; align-items: center; gap: 8px; }
+.vault-varname-preview {
+  font-size: 11.5px;
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  padding: 2px 6px; border-radius: 4px;
+  color: var(--accent);
+}
+.vault-warn-text { font-size: 11px; color: #9a6b1f; margin: 2px 0 0 0; }
+html[data-theme='dark'] .vault-warn-text { color: #f0883e; }
+.vault-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+
+/* 1Password sync section */
+.vault-sync-header {
+  display: flex; align-items: center; gap: 8px;
+  margin: 6px 0 0 0; padding: 4px 0;
+}
+.vault-sync-toggle-btn { font-size: 11.5px; color: var(--ink-soft); }
+.vault-sync-meta { font-size: 10.5px; color: var(--ink-faint); }
+.vault-sync-form {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--ink-faint);
+  border-radius: 8px; padding: 12px;
+  background: color-mix(in oklab, var(--paper-2) 60%, transparent);
+  margin-bottom: 4px;
+}
+.vault-sync-error { margin-bottom: 4px; }
+.vault-sync-checkbox { margin-right: 4px; }
+
+/* Apple Passwords CSV import */
+.vault-import-section {
+  border-top: 1px solid var(--ink-faint);
+  padding-top: 10px; margin-top: 4px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.vault-import-label { font-weight: 600; color: var(--ink-soft); margin-bottom: 2px; }
+.vault-import-disabled-note { font-size: 11.5px; color: var(--ink-faint); }
+.vault-import-file { font-size: 11.5px; color: var(--ink); }
+.vault-import-preview { display: flex; flex-direction: column; gap: 6px; }
+.vault-import-count { font-size: 12px; color: var(--ink); font-weight: 600; }
+.vault-import-titles {
+  list-style: none; margin: 0; padding: 0 0 0 8px;
+  border-left: 2px solid var(--ink-faint);
+}
+.vault-import-title-item { font-size: 11.5px; color: var(--ink-soft); padding: 1px 0; }
+.vault-import-more { color: var(--ink-faint); font-style: italic; }
+.vault-import-progress { font-size: 12px; color: var(--accent); padding: 4px 0; }
+.vault-import-done {
+  font-size: 12px;
+  color: #3f9460;
+  background: color-mix(in oklab, #3f9460 8%, transparent);
+  border: 1px solid color-mix(in oklab, #3f9460 30%, transparent);
+  border-radius: 6px; padding: 6px 8px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+}
+html[data-theme='dark'] .vault-import-done {
+  color: #56d364;
+  background: color-mix(in oklab, #56d364 8%, transparent);
+  border-color: color-mix(in oklab, #56d364 30%, transparent);
+}
+
+/* ===== workflows ===== */
+/* ============ Shared list-panel vocabulary (artifact-panel family) ============
+   Ported from packages/ui-shared-solid's ArtifactPanel/SkillsPanel/WorkflowGallery
+   class vocabulary. THIS IS SHARED across sibling ports (ArtifactPanel, SkillsPanel,
+   VaultPanel, ConnectorsPanel, WorkflowGallery) — if another panel's port has
+   already added these same selectors to final.css, DO NOT duplicate; only add
+   once. Add to packages/design-system/css/final.css. */
+.artifact-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+.artifact-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 2px 0;
+}
+.artifact-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding-right: 2px; }
+.artifact-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.artifact-row:hover { background: color-mix(in oklab, var(--paper-2) 95%, transparent); transform: translateX(3px); }
+.artifact-row.selected { background: color-mix(in oklab, var(--accent) 12%, transparent); }
+.artifact-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.artifact-title { font-size: 12.5px; font-weight: 600; color: var(--ink); display: flex; align-items: center; flex-wrap: wrap; }
+.artifact-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0; }
+
+/* Generic text/pill utility modifiers — also shared, same dedupe note as above. */
+.muted { color: var(--ink-soft); }
+.small { font-size: 11px; }
+.chip.small { padding: 3px 9px; font-size: 11px; }
+
+/* Notes:
+   - statusColor()/fmtDuration() emit inline var(--color-success/--color-danger/
+     --color-muted/--color-border, <hex-fallback>) exactly as the Solid source
+     did. Those custom properties are NOT defined anywhere in tokens.css today
+     (this design system uses --wash-N/--ink instead), so the CSS var() fallback
+     hex values (#4ade80 / #f87171 / #888 / #333) are what actually render.
+     That is intentional — it's a verbatim helper port — but if/when this design
+     system grows real semantic status tokens, swap these two var() names for
+     the real tokens rather than the ad-hoc fallbacks. Flagging, not fixing, per
+     the 'port verbatim' instruction.
+   - No workflow-specific classes were needed beyond the shared vocabulary above;
+     every per-tile visual detail in the Solid source was an inline style, so
+     the JSX port kept those as inline `style={{...}}` too. */

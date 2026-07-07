@@ -16,6 +16,25 @@ import { ThreadChat } from "./final-chat.jsx";
 import { FinalInbox } from "./final-inbox.jsx";
 import { useLunaData } from "../data/useLunaData";
 import { useLunaInbox } from "../data/useLunaInbox";
+import { SettingsPanel } from "./settings-panel.jsx";
+import ConnectorsPanel from "./connectors-panel.jsx";
+import { ObsPanel } from "./obs-panel.jsx";
+import { ArtifactsPanel } from "./artifacts-panel.jsx";
+import { SkillsPanel } from "./skills-panel.jsx";
+import { VaultPanel } from "./vault-panel.jsx";
+import { WorkflowGallery } from "./workflows-panel.jsx";
+
+// Dev-ops panels reachable from the topbar settings-gear launcher. Settings +
+// Events always show; the rest gate on the hello capability.
+const LAUNCHER_ITEMS = [
+  { type: "settings", label: "Settings", show: () => true },
+  { type: "obs", label: "Events", show: () => true },
+  { type: "artifacts", label: "Artifacts", show: (c) => c.artifacts === true },
+  { type: "skills", label: "Skills", show: (c) => c.skills === true },
+  { type: "connectors", label: "Connectors", show: (c) => c.connectors === true },
+  { type: "vault", label: "Vault", show: (c) => c.vault === true },
+  { type: "workflows", label: "Workflows", show: (c) => c.workflows === true },
+];
 
 const TWEAK_DEFAULTS = { theme: "light", palette: "tide", chrome: "wash", grain: false, motion: "lively", ambient: true, defaultBrain: "luna", snap: 28, guides: true };
 
@@ -113,8 +132,15 @@ const DEFS = {
   habit:   { title: "habits", w: 300, h: 230, render: () => <HabitApp /> },
   sticky:  { title: "sticky note", w: 250, h: 220, render: (ctx, p) => <StickyApp initial={p.request} /> },
   secure:  { title: "secure", w: 300, h: 290, render: (ctx, p) => <SecureApp request={p.request} kind={p.kind} onSubmit={(pl) => ctx.submitSecure(p.id, pl)} onCancel={() => ctx.close(p.id)} /> },
+  settings:   { title: "settings",   render: (ctx) => <SettingsPanel ctx={ctx} /> },
+  connectors: { title: "connectors", render: (ctx) => <ConnectorsPanel enabled={ctx.state.capabilities.connectors === true} catalog={ctx.state.connectorCatalog} instances={ctx.state.connectorInstances} lastError={ctx.state.connectorError} disabled={!ctx.connected} onConnectApiKey={(definitionId, secretRef, capabilityIds, label) => ctx.send({ type: "connector-connect", requestId: "conn_" + Date.now(), definitionId, label: label ?? definitionId, secretRef, capabilityIds })} onDisconnect={(instanceId) => ctx.send({ type: "connector-disconnect", instanceId })} onSetClient={(definitionId, clientId, clientSecret) => ctx.send({ type: "connector-set-client", requestId: "setclient_" + Date.now(), definitionId, clientId, ...(clientSecret ? { clientSecret } : {}) })} /> },
+  obs:        { title: "events",     render: (ctx) => <ObsPanel events={ctx.state.events} seenKinds={ctx.state.seenKinds} advertisedKinds={ctx.state.advertisedKinds} lastDrop={ctx.state.lastDrop} droppedTotal={ctx.state.droppedTotal} lastPingAt={ctx.state.lastPingAt} /> },
+  artifacts:  { title: "artifacts",  render: (ctx) => <ArtifactsPanel artifacts={ctx.activeThreadArtifacts} pinned={ctx.pinnedArtifacts} artifactsCapable={ctx.artifactsCapable} focusSignal={ctx.focusArtifact} mcp={ctx.mcp} onPin={ctx.pinArtifact} onUnpin={ctx.unpinArtifact} /> },
+  skills:     { title: "skills",     render: (ctx) => <SkillsPanel skills={ctx.state.skills} lastError={ctx.state.skillError} disabled={!ctx.connected} onToggle={(id, enabled) => ctx.send({ type: "skill-toggle", id, enabled })} /> },
+  vault:      { title: "vault",      render: (ctx) => <VaultPanel items={ctx.state.vaultItems} sync={ctx.state.vaultSync} disabled={!ctx.connected} onServerFrame={ctx.onServerFrame} onPut={(params) => ctx.send({ type: "vault-put", ...params })} onDelete={(params) => ctx.send({ type: "vault-delete", ...params })} onSyncConfig={(params) => ctx.send({ type: "vault-sync-config", ...params })} onImport={(params) => ctx.send({ type: "vault-import", ...params })} /> },
+  workflows:  { title: "workflows",  render: (ctx) => <WorkflowGallery workflows={ctx.state.workflows} runs={ctx.state.workflowRuns} onSelectRuns={(jobId) => ctx.send({ type: "workflow-runs-request", jobId })} onRefresh={() => ctx.send({ type: "workflow-refresh" })} /> },
 };
-const DEFAULT_SIZE = { task: { w: 304, h: 330 }, widget: { w: 262, h: 244 }, map: { w: 440, h: 360 }, inbox: { w: 340, h: 420 }, chat: { w: 420, h: 460 }, threads: { w: 260, h: 380 } };
+const DEFAULT_SIZE = { task: { w: 304, h: 330 }, widget: { w: 262, h: 244 }, map: { w: 440, h: 360 }, inbox: { w: 340, h: 420 }, chat: { w: 420, h: 460 }, threads: { w: 260, h: 380 }, settings: { w: 340, h: 540 }, connectors: { w: 380, h: 480 }, obs: { w: 560, h: 400 }, artifacts: { w: 360, h: 500 }, skills: { w: 400, h: 460 }, vault: { w: 400, h: 560 }, workflows: { w: 380, h: 460 } };
 
 function snapAxis(raw, candidates, thresh) {
   let best = null;
@@ -160,6 +186,7 @@ export function StudioApp() {
   const [now, setNow] = useState(Date.now());
   const [ready, setReady] = useState(false);
   const [shelfOpen, setShelfOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const panelsRef = useRef(panels); panelsRef.current = panels;
   const zTop = useRef(60);
@@ -476,6 +503,28 @@ export function StudioApp() {
     showToast("handed to " + (BRAINS[brain] ? BRAINS[brain].name : "a brain") + " ✦ live in Build", brain);
   }
 
+  // Summon a dev-ops panel by type: focus if open, restore if closed, else spawn.
+  function summonPanel(type) {
+    const existing = panelsRef.current.find((p) => p.type === type && p.ws === ws && !p.closed);
+    if (existing) { bringToFront(existing.id); }
+    else {
+      const closedP = panelsRef.current.find((p) => p.type === type && p.ws === ws && p.closed);
+      if (closedP) restore(closedP.id); else spawn({ type });
+    }
+    setMenuOpen(false);
+  }
+
+  // First run: the Studio has no other connect UI — auto-open Settings once
+  // while disconnected so the user can enter the server URL + token.
+  const settingsAutoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!settingsAutoOpenedRef.current && !luna.connected && luna.status.kind !== "connecting") {
+      settingsAutoOpenedRef.current = true;
+      summonPanel("settings");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [luna.connected, luna.status.kind]);
+
   const ctx = {
     spawn, close,
     openVoice: () => setVoiceOpen(true),
@@ -490,6 +539,26 @@ export function StudioApp() {
     // P4 vibe-coded widgets: real artifact lookup + the MCP relay + the obs
     // event stream, handed to DEFS.widget's WidgetFrame.
     widgetArtifacts, mcp: luna.mcp, obsEvents: luna.obsEvents,
+    // dev-ops panels (settings/connectors/obs/artifacts/skills/vault/workflows)
+    state: luna.state,
+    send: luna.send,
+    connected: luna.connected,
+    status: luna.status,
+    onServerFrame: luna.onServerFrame,
+    config: luna.config,
+    updateConfig: luna.updateConfig,
+    connect: luna.reconnect,
+    disconnect: luna.disconnect,
+    restartServer: luna.restartServer,
+    selectAccount: luna.selectAccount,
+    tweaks: t,
+    setTweak,
+    pinnedArtifacts: luna.pinnedArtifacts,
+    focusArtifact: luna.focusArtifact,
+    artifactsCapable: luna.state.capabilities.artifacts === true,
+    activeThreadArtifacts: luna.activeThread ? (luna.state.threads.get(luna.activeThread)?.artifacts ?? []) : [],
+    pinArtifact: (a) => luna.send({ type: "artifact-pin", id: a.id, title: a.title, content: a.content, lang: a.lang, origin: a.path ?? luna.activeThread ?? null }),
+    unpinArtifact: (id) => luna.send({ type: "artifact-unpin", id }),
   };
 
   const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -543,6 +612,21 @@ export function StudioApp() {
               )}
             </div>
           )}
+          <div className="settings-launcher" style={{ position: "relative" }}>
+            <button title="settings & panels" onClick={() => setMenuOpen((o) => !o)}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            </button>
+            {menuOpen && (
+              <div className="shelf-pop settings-menu">
+                {LAUNCHER_ITEMS.filter((it) => it.show(luna.state.capabilities)).map((it) => (
+                  <button key={it.type} className="shelf-chip" onClick={() => summonPanel(it.type)}>
+                    <span className="wash-dot" style={{ "--panel-tint": "var(--wash-2)" }}></span>
+                    <span className="shelf-name">{it.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="arrange-group">
             <button title="tidy into a grid" onClick={tidy}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="2"></rect><rect x="13" y="3" width="8" height="8" rx="2"></rect><rect x="3" y="13" width="8" height="8" rx="2"></rect><rect x="13" y="13" width="8" height="8" rx="2"></rect></svg>
