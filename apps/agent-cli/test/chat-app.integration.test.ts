@@ -200,7 +200,7 @@ describe("luna chat app", () => {
     await expect(chat.authHeader).resolves.toBe("Bearer token-from-env")
     expect(chat.received).toContainEqual({
       type: "new-thread",
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5",
     })
     // PR #26 adds the `client` identity blob to every user-message frame;
     // `objectContaining` lets us pin the meaningful fields without coupling

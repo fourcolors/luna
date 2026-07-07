@@ -34,15 +34,41 @@ export const isEffort = (v: unknown): v is EffortLevel =>
  *   - Haiku → no effort (too fast; effort param is a no-op).
  *   - Fable / Opus 4.7 / Opus 4.8 → all five levels (maximum reasoning
  *     models; the SDK documents xhigh for Opus 4.7+ and max for Opus 4.6+).
- *   - Sonnet 4.6 → low/medium/high/max (no xhigh).
+ *   - Sonnet 4.6 / Sonnet 5 → low/medium/high/max (no xhigh).
  *   - Everything else → no effort (safest default for unknown models).
+ *
+ * The `/sonnet-5/` branch does NOT match `claude-sonnet-4-5` — that id contains
+ * the substring `sonnet-4-5`, not `sonnet-5` — so the prior-gen model is
+ * untouched.
  */
 export const effortsForModel = (id: string): ReadonlyArray<EffortLevel> => {
   const m = id.toLowerCase()
   if (/haiku/.test(m)) return []
   if (/fable|opus-4-(7|8)|opus-4\.?[78]/.test(m)) return EFFORT_LEVELS
-  if (/sonnet-4-6|sonnet-4\.?6/.test(m)) return ["low", "medium", "high", "max"]
+  if (/sonnet-4-6|sonnet-4\.?6|sonnet-5/.test(m)) return ["low", "medium", "high", "max"]
   return []
+}
+
+/**
+ * The default effort a fresh thread should start on for model `id` when the
+ * caller supplies none. Returns undefined for most models → today's behavior is
+ * preserved (the SDK's own default applies; a UI dropdown falls back to the
+ * weakest supported level).
+ *
+ * Sonnet 5 defaults to "high": it is a strong reasoning model and "high" is the
+ * intended out-of-the-box level. This single value is consumed both server-side
+ * (buildSessionOptions normalizes an absent effort through it) and by every
+ * client (advertised per-model on the hello frame as `defaultEffort`), so the
+ * default is enforced end-to-end from one place.
+ *
+ * Invariant: a defined return value is ALWAYS a member of effortsForModel(id) —
+ * otherwise clampEffort would silently rewrite it. It is also never the
+ * "ultracode" token: this returns a real EffortLevel only.
+ */
+export const defaultEffortForModel = (id: string): EffortLevel | undefined => {
+  const m = id.toLowerCase()
+  if (/sonnet-5/.test(m)) return "high"
+  return undefined
 }
 
 /**

@@ -31,13 +31,13 @@ import type { ProviderSettingsPayload, RoleName } from "./types.js"
  * v1 default model per role when the store has no binding for it.
  *
  * advisor      → claude-opus-4-8    (most capable)
- * daily-driver → claude-sonnet-4-6  (balanced)
+ * daily-driver → claude-sonnet-5    (balanced default)
  * wake         → claude-sonnet-4-6  (cheapest capable)
  * dream        → claude-haiku-4-5   (cheapest)
  */
 const DEFAULT_ROLE_MODELS: Record<RoleName, string> = {
   advisor: "claude-opus-4-8",
-  "daily-driver": "claude-sonnet-4-6",
+  "daily-driver": "claude-sonnet-5",
   wake: "claude-sonnet-4-6",
   dream: "claude-haiku-4-5",
 }
@@ -130,7 +130,7 @@ export const resolveRoleModel = (
     const firstPref = binding?.preferenceList?.[0]
     if (firstPref?.model) return firstPref.model
   }
-  return DEFAULT_ROLE_MODELS[role] ?? "claude-sonnet-4-6"
+  return DEFAULT_ROLE_MODELS[role] ?? "claude-sonnet-5"
 }
 
 /** Validation error thrown when the store config would produce a dirty audit. */

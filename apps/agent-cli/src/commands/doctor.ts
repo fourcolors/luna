@@ -276,7 +276,7 @@ const HELLO_TIMEOUT_MS = 4_000
 const CHAT_PROBE_TIMEOUT_MS = 60_000
 
 /** The throwaway model used by the L4 active chat probe. Matches luna chat default. */
-const PROBE_MODEL = "claude-sonnet-4-5"
+const PROBE_MODEL = "claude-sonnet-5"
 
 /** Convert a ws(s):// URL to its http(s) /healthz sibling on the same host:port. */
 export const healthzUrlFor = (wsUrl: string): string => {

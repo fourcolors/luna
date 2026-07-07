@@ -260,7 +260,7 @@ const buildPayload = () => ({
       kind: "prompt" as const,
       user_prompt: USER_PROMPT,
       system_prompt: SYSTEM_PROMPT,
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5",
       max_turns: MAX_TURNS,
       timeout_ms: PROMPT_TIMEOUT_MS,
       allowed_tools: [...ALLOWED_TOOLS],

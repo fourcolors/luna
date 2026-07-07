@@ -3,6 +3,7 @@ import {
   EFFORT_LEVELS,
   effortsForModel,
   clampEffort,
+  defaultEffortForModel,
   effortOptionsForModel,
   modelSupportsUltracode,
   isEffort,
@@ -12,7 +13,12 @@ import {
 } from "./effort.js"
 
 const XHIGH_CAPABLE = ["claude-opus-4-8", "claude-opus-4-7", "claude-fable-5"]
-const NOT_CAPABLE = ["claude-sonnet-4-6", "claude-haiku-4-5", "some-unknown-model"]
+const NOT_CAPABLE = [
+  "claude-sonnet-4-6",
+  "claude-sonnet-5",
+  "claude-haiku-4-5",
+  "some-unknown-model",
+]
 
 describe("ultracode menu/token helpers", () => {
   it("advertises ultracode only for xhigh-capable models, appended last", () => {
@@ -52,5 +58,54 @@ describe("ultracodeFlagSettings — the ultracode Settings demux", () => {
     const s = ultracodeFlagSettings()
     expect(s.enableWorkflows).toBe(true)
     expect(s.ultracode).toBe(true)
+  })
+})
+
+describe("Sonnet 5 effort matrix", () => {
+  it("exposes low/medium/high/max (like Sonnet 4.6, no xhigh)", () => {
+    expect(effortsForModel("claude-sonnet-5")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "max",
+    ])
+  })
+
+  it("does NOT match the prior-gen claude-sonnet-4-5 (matrix-less)", () => {
+    // "claude-sonnet-4-5" contains the substring "sonnet-4-5", not "sonnet-5",
+    // so the /sonnet-5/ branch must not fire for it.
+    expect(effortsForModel("claude-sonnet-4-5")).toEqual([])
+  })
+
+  it("clamps an unsupported xhigh down to max (never ultracode)", () => {
+    expect(clampEffort("claude-sonnet-5", "xhigh").effort).toBe("max")
+  })
+})
+
+describe("defaultEffortForModel — per-model default effort", () => {
+  it("defaults Sonnet 5 to 'high'", () => {
+    expect(defaultEffortForModel("claude-sonnet-5")).toBe("high")
+  })
+
+  it("returns a value that is always a member of the model's effort matrix", () => {
+    const dflt = defaultEffortForModel("claude-sonnet-5")
+    expect(dflt).toBeDefined()
+    expect(effortsForModel("claude-sonnet-5")).toContain(dflt!)
+  })
+
+  it("has no opinion (undefined) for other models", () => {
+    for (const id of [
+      "claude-opus-4-8",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+      "some-unknown-model",
+    ]) {
+      expect(defaultEffortForModel(id)).toBeUndefined()
+    }
+  })
+
+  it("never returns the ultracode token", () => {
+    expect(isUltracode(defaultEffortForModel("claude-sonnet-5"))).toBe(false)
   })
 })

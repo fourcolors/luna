@@ -93,7 +93,7 @@
  * `luna-account add`, RESTART this server.
  *
  * The web UI will be able to:
- *   - send `{type:"new-thread", model:"claude-sonnet-4-5"}` to spawn a
+ *   - send `{type:"new-thread", model:"claude-sonnet-5"}` to spawn a
  *     persistent thread (the server auto-subscribes the connection)
  *   - send `{type:"user-message", threadId, text}` for each turn
  *   - send `{type:"interrupt", threadId}` for the Stop button
@@ -279,6 +279,7 @@ import {
   ChatService,
   ThreadToolsProviderTag,
   effortOptionsForModel,
+  defaultEffortForModel,
   type EffortOption,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
@@ -487,6 +488,10 @@ export interface UiModelEntry {
   /** Effort options for this model — server-computed. See effortOptionsForModel().
    *  Includes the "ultracode" token for xhigh-capable models. */
   readonly efforts?: readonly EffortOption[]
+  /** Effort a fresh thread should default to for this model when the client
+   *  persists none — server-computed via defaultEffortForModel(). Omitted when
+   *  the model has no opinion (clients then fall back to the weakest level). */
+  readonly defaultEffort?: EffortOption
 }
 
 /**
@@ -532,9 +537,10 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  * preferred). Efforts are attached server-side via effortsForModel().
  */
 const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
-  { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — balanced" },
+  { id: "claude-sonnet-5",     label: "Claude Sonnet 5 — balanced default" },
   { id: "claude-fable-5",       label: "Fable 5 (1M context)" },
   { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — most capable" },
+  { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — prior gen" },
   { id: "claude-haiku-4-5",     label: "Claude Haiku 4.5 — fastest" },
 ]
 
@@ -551,15 +557,23 @@ const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }
  * tests can inject a synthetic environment without touching process.env.
  */
 export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Array<UiModelEntry> => {
+  // Attach the server-computed effort matrix AND per-model default effort to a
+  // bare {id,label} entry. defaultEffort is omitted when the model has no
+  // opinion (defaultEffortForModel → undefined) so the wire stays minimal.
+  const withEffort = (m: { readonly id: string; readonly label: string }): UiModelEntry => {
+    const defaultEffort = defaultEffortForModel(m.id)
+    return {
+      ...m,
+      efforts: effortOptionsForModel(m.id),
+      ...(defaultEffort !== undefined ? { defaultEffort } : {}),
+    }
+  }
   const extras = parseUiModels(env["LUNA_UI_MODELS"])
   const seenIds = new Set(extras.map((e) => e.id))
-  const deduped: Array<UiModelEntry> = extras.map((e) => ({
-    ...e,
-    efforts: effortOptionsForModel(e.id),
-  }))
+  const deduped: Array<UiModelEntry> = extras.map(withEffort)
   for (const base of BASE_MODELS) {
     if (!seenIds.has(base.id)) {
-      deduped.push({ ...base, efforts: effortOptionsForModel(base.id) })
+      deduped.push(withEffort(base))
     }
   }
   return deduped
