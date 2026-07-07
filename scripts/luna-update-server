@@ -463,6 +463,16 @@ apply_ref() {
   else
     luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR" || return 1
   fi
+
+  # ── Build the web client SPA ─────────────────────────────────────────────────
+  # Runs on EVERY apply (not gated on bun.lock change) so source-only edits to
+  # apps/ui-web/src/** still rebuild dist/. Also runs on rollback — intentional:
+  # rolling back to a prior ref that had different UI source also rebuilds dist/
+  # for that ref, ensuring static serving always matches the running server code.
+  # Failure here fails apply_ref() loudly → routes into rollback, not a silent
+  # stale-SPA situation.
+  luna_info "building web client SPA (apps/ui-web)"
+  run_target "$BUN_BIN" --cwd "$CONTAINER_REPO_DIR/apps/ui-web" run build || return 1
 }
 
 # Settle between stop and start. A bounded, dry-run-aware wait that lets the

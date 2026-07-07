@@ -44,6 +44,7 @@ import * as http from "node:http"
 import { randomUUID } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import * as path from "node:path"
+import * as fs from "node:fs"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
@@ -625,6 +626,20 @@ export interface UIWebSocketServerConfig {
     /** Called after a successful save so activation (restart) is scheduled. */
     readonly scheduleRestart?: () => void
   } | null
+  /**
+   * Optional absolute path to the pre-built SPA directory to serve statically.
+   * When set, GET/HEAD requests that are not /healthz, /readyz, or the WS path
+   * are handled by a built-in static file server (no extra deps — native node:http
+   * + node:fs only). Absent → current behavior (all non-special paths → 404).
+   *
+   * Security: path-traversal protection via path.resolve + prefix-assert.
+   * SPA fallback: dotless paths → index.html; dotted-missing → 404.
+   * Cache-Control: /assets/** → immutable; everything else → no-cache.
+   *
+   * Set ONLY in normal-mode. Never set in setup-mode or tests that don't
+   * need static serving.
+   */
+  readonly staticRoot?: string
 }
 
 export interface UIWebSocketServerHandle {
@@ -951,6 +966,183 @@ const validateAttachments = (
   return null
 }
 
+// ── Static file serving ───────────────────────────────────────────────────────
+// Dependency-free (node:http + node:fs + node:path only) static handler for the
+// built SPA. Activated only when UIWebSocketServerConfig.staticRoot is provided.
+//
+// Security invariant: path-traversal protection via path.resolve + prefix-assert.
+//   path.normalize/join are NOT sufficient (they don't collapse ../ past the root).
+//   We decode the URL, reject null bytes, resolve the absolute target, and assert
+//   it is still within staticRoot before any fs call.
+//
+// SPA history fallback:
+//   - Path with NO file extension (no dot in last segment) → serve index.html (200).
+//     Covers /dashboard, /settings/accounts, etc.
+//   - Path WITH extension and file MISSING → 404. Never serve index.html as a fake
+//     asset (that confuses browsers into treating a text/html as a .js module).
+//
+// Cache-Control:
+//   - /assets/<name>-<hash>.<ext> → public, max-age=31536000, immutable
+//     (Vite content-hashes all assets under /assets/).
+//   - index.html and all other paths → no-cache (always revalidate).
+//
+// HEAD: same headers as GET, no body. Content-Length is set from stat() for GET.
+
+const MIME_MAP: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".svg": "image/svg+xml; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".ttf": "font/ttf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".txt": "text/plain; charset=utf-8",
+}
+
+function mimeFor(filePath: string): string {
+  const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase()
+  return MIME_MAP[ext] ?? "application/octet-stream"
+}
+
+function serveStatic(
+  staticRoot: string,
+  wsPath: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  // Parse just the pathname (strip query string / fragment).
+  // Note: node:http already normalises path traversal sequences (/../../../ → /)
+  // before our handler sees req.url, so /../../../etc/passwd arrives as /etc/passwd.
+  // Our path.resolve + prefix-assert below is a belt-and-suspenders guard for any
+  // edge cases the normalisation does not cover (e.g., null bytes, unusual encodings).
+  let rawPathname: string
+  try {
+    rawPathname = new URL(req.url ?? "/", "http://x").pathname
+  } catch {
+    res.writeHead(400)
+    res.end()
+    return
+  }
+
+  // Decode percent-encoding. Reject null bytes (null-byte injection).
+  let decodedPathname: string
+  try {
+    decodedPathname = decodeURIComponent(rawPathname)
+  } catch {
+    res.writeHead(400)
+    res.end()
+    return
+  }
+  if (decodedPathname.includes(" ")) {
+    res.writeHead(400)
+    res.end()
+    return
+  }
+
+  // Security: resolve to absolute path and assert it stays within staticRoot.
+  // path.resolve collapses ../ sequences; the prefix-assert rejects traversals.
+  const resolved = path.resolve(staticRoot, "." + decodedPathname)
+  if (resolved !== staticRoot && !resolved.startsWith(staticRoot + path.sep)) {
+    // Path traversal attempt — respond 404 (not 403, to avoid revealing root existence).
+    res.writeHead(404)
+    res.end()
+    return
+  }
+
+  // Also defensively skip the WS path (already handled above, but belt-and-suspenders).
+  if (decodedPathname === wsPath) {
+    res.writeHead(404)
+    res.end()
+    return
+  }
+
+  // Determine the last path segment for extension detection.
+  const lastSegment = decodedPathname.split("/").pop() ?? ""
+  const hasDot = lastSegment.includes(".")
+
+  // Check if the resolved path exists as a file.
+  let stat: fs.Stats | null = null
+  try {
+    stat = fs.statSync(resolved)
+  } catch {
+    stat = null
+  }
+
+  // Determine which file to serve.
+  let filePath: string
+  if (stat !== null && stat.isFile()) {
+    // File exists — serve it directly.
+    filePath = resolved
+  } else if (!hasDot) {
+    // No extension → SPA navigation route → fall back to index.html.
+    filePath = path.join(staticRoot, "index.html")
+  } else {
+    // Extension present but file missing → 404 (do NOT serve index.html as a fake asset).
+    res.writeHead(404)
+    res.end()
+    return
+  }
+
+  // Stat the actual file to get Content-Length.
+  let fileStat: fs.Stats
+  try {
+    fileStat = fs.statSync(filePath)
+  } catch {
+    res.writeHead(404)
+    res.end()
+    return
+  }
+
+  if (!fileStat.isFile()) {
+    res.writeHead(404)
+    res.end()
+    return
+  }
+
+  // Cache-Control: assets under /assets/ are content-hashed by Vite → immutable.
+  // Everything else (including index.html) must always revalidate.
+  const cacheControl = decodedPathname.startsWith("/assets/")
+    ? "public, max-age=31536000, immutable"
+    : "no-cache"
+
+  const contentType = mimeFor(filePath)
+  const headers: Record<string, string | number> = {
+    "content-type": contentType,
+    "cache-control": cacheControl,
+    "content-length": fileStat.size,
+  }
+
+  res.writeHead(200, headers)
+
+  if (req.method === "HEAD") {
+    res.end()
+    return
+  }
+
+  // Stream the file. On stream error: if headers not yet flushed, send 500;
+  // otherwise destroy the connection (headers already sent — can't change status).
+  const stream = fs.createReadStream(filePath)
+  stream.on("error", (_err) => {
+    if (!res.headersSent) {
+      res.writeHead(500)
+      res.end()
+    } else {
+      res.destroy()
+    }
+  })
+  stream.pipe(res)
+}
+
 /**
  * Start a UIWebSocketServer. Returns a handle inside a Scope.
  *
@@ -995,6 +1187,7 @@ export const startUIWebSocketServer = (
     const suggestedActions = config.suggestedActions ?? null
     const vaultService = config.vaultService ?? null
     const modelRoutingService = config.modelRoutingService ?? null
+    const staticRoot = config.staticRoot
     const buildSha = config.buildSha
     const serverVersion = config.serverVersion
     const availableModels = config.availableModels
@@ -1038,6 +1231,13 @@ export const startUIWebSocketServer = (
         // GET on the WS path without upgrade headers → 426.
         res.writeHead(426, { "content-type": "text/plain" })
         res.end("upgrade required")
+        return
+      }
+      // ── Opt-in static file serving ────────────────────────────────────────
+      // Only active when staticRoot is provided (normal-mode with a built dist/).
+      // /healthz, /readyz, and the WS path are matched above — never reached here.
+      if (staticRoot && (req.method === "GET" || req.method === "HEAD")) {
+        serveStatic(staticRoot, path, req, res)
         return
       }
       res.writeHead(404)

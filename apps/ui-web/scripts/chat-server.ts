@@ -120,7 +120,7 @@ import {
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -2450,6 +2450,36 @@ export const buildSetupServerLayer = (
 // system-prompt addendum appended. Wrapping at this seam (vs extending
 // ChatService.CreateThreadOptions) is additive — no other call sites
 // need to change.
+
+// ── SPA static root ───────────────────────────────────────────────────────────
+// Resolve the pre-built web client dist/ directory so the chat-server can serve
+// the SPA single-origin alongside its WebSocket endpoint.
+//
+// Resolution order (first match wins):
+//   1. LUNA_UI_WEB_STATIC_DISABLE=1  → always disabled (useful for debugging).
+//   2. LUNA_UI_WEB_STATIC_ROOT=<path> → explicit override (e.g. custom build dir).
+//   3. dist/ relative to apps/ui-web  → standard Vite output location.
+//
+// If dist/ is absent (e.g. first boot before `bun run build`), degrades
+// gracefully: staticRoot = undefined, static serving is disabled. The luna-
+// update-server upgrade script builds dist/ before restarting the service, so
+// on any fully-upgraded install this directory will be present.
+//
+// Only set in NORMAL mode (see below). Never set in setup-mode.
+const __uiWebDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const _computedStaticRoot = (() => {
+  if (process.env["LUNA_UI_WEB_STATIC_DISABLE"] === "1") return undefined
+  if (process.env["LUNA_UI_WEB_STATIC_ROOT"]) {
+    return process.env["LUNA_UI_WEB_STATIC_ROOT"]
+  }
+  const candidate = resolve(__uiWebDir, "dist")
+  if (existsSync(candidate)) return candidate
+  console.log(
+    "[luna/ui] dist/ not built — web client static serving disabled",
+  )
+  return undefined
+})()
+
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
 ): Layer.Layer<ServerHandle> =>
@@ -3396,6 +3426,7 @@ const buildServerLayer = (
         mcpAppHost,
         // PR 1: model-routing settings (config surface only; cap enforcement PR 2).
         modelRoutingService,
+        staticRoot: _computedStaticRoot,
       })
     }),
   ).pipe(
