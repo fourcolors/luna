@@ -45,14 +45,15 @@ const makeClosedQuery = (): Query => {
 
 const makeEnvCapturingFake = () => {
   const envsSeen: Array<Record<string, string | undefined>> = []
+  const optionsSeen: Array<Options | undefined> = []
   const layer = SDKClient.fake((params) => {
-    const env = (params.options as Options | undefined)?.env as
-      | Record<string, string | undefined>
-      | undefined
+    const opts = params.options as Options | undefined
+    optionsSeen.push(opts)
+    const env = opts?.env as Record<string, string | undefined> | undefined
     envsSeen.push(env ?? {})
     return makeClosedQuery()
   })
-  return { envsSeen, layer }
+  return { envsSeen, optionsSeen, layer }
 }
 
 const baseLayer = Layer.mergeAll(SessionStore.Default, CoreClock.Default)
@@ -76,28 +77,44 @@ let n = 0
 const runOnce = (
   fake: ReturnType<typeof makeEnvCapturingFake>,
   seeds: ReadonlyArray<AccountSeed>,
-  model: string,
+  model?: string,
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const store = yield* SessionStore
       const adapter = yield* SDKAdapter
       const localSid = `prov-${n++}`
-      yield* store.create({ id: localSid, options: { model }, createdAt: 0 })
+      yield* store.create({
+        id: localSid,
+        options: model !== undefined ? { model } : {},
+        createdAt: 0,
+      })
       yield* Effect.scoped(
         Effect.gen(function* () {
           const out = yield* adapter.query({
             sessionId: localSid,
             prompt: emptyPrompt,
             // The adapter routes on `sdkOptions.model` (the value that reaches
-            // the SDK), NOT the session's display `model` — so set both.
-            sessionOptions: { model, idleTimeoutMs: 5_000, sdkOptions: { model } },
+            // the SDK), NOT the session's display `model` — so set both. An
+            // omitted model mirrors chat-service's buildSessionOptions: the
+            // "default" display sentinel + NO sdkOptions.model (default lane).
+            sessionOptions: {
+              model: model ?? "default",
+              idleTimeoutMs: 5_000,
+              sdkOptions: model !== undefined ? { model } : {},
+            },
           })
           yield* Stream.runDrain(out)
         }),
       )
     }).pipe(Effect.provide(buildLayer(fake, seeds))),
   )
+
+const lastOptions = (fake: ReturnType<typeof makeEnvCapturingFake>) => {
+  const opts = fake.optionsSeen[fake.optionsSeen.length - 1]
+  expect(opts).toBeDefined()
+  return opts as Options
+}
 
 const lastEnv = (fake: ReturnType<typeof makeEnvCapturingFake>) => {
   const env = fake.envsSeen[fake.envsSeen.length - 1]
@@ -143,5 +160,95 @@ describe("provider routing through the real broker + adapter", () => {
     expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("tok-a")
     expect(env["ANTHROPIC_BASE_URL"]).toBeUndefined()
     expect(env["ANTHROPIC_AUTH_TOKEN"]).toBeUndefined()
+  })
+})
+
+/**
+ * #253 default-lane resolution: an omitted model acquires the broker's
+ * "default" lane. When that lane lands on a NATIVE Anthropic account with no
+ * overflow-chain step redirecting it, the adapter prefers the daily-driver
+ * default (claude-sonnet-5) over the SDK's own default model. Everything else
+ * about the lane is untouched: a configured default chain always wins, a
+ * non-Anthropic default lane leaves Options.model unset, and a deployment
+ * with no viable account fails the acquire exactly as before.
+ */
+describe("default-lane resolution (#253): Sonnet 5 preferred when Anthropic is available", () => {
+  const anthropicSeed: ReadonlyArray<AccountSeed> = [
+    { id: "a1", kind: "anthropic", secretRef: "env:PROV_TOK_A" },
+  ]
+  const ollamaSeed: ReadonlyArray<AccountSeed> = [
+    { id: "o1", kind: "ollama-cloud", secretRef: "env:PROV_TOK_O" },
+  ]
+
+  it("omitted model + native Anthropic account → SDK runs claude-sonnet-5", async () => {
+    const fake = makeEnvCapturingFake()
+    await runOnce(fake, anthropicSeed)
+    expect(lastOptions(fake).model).toBe("claude-sonnet-5")
+    const env = lastEnv(fake)
+    expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("tok-a")
+    expect(env["ANTHROPIC_BASE_URL"]).toBeUndefined()
+  })
+
+  it('a caller-persisted "default" sentinel resolves identically (never sent verbatim)', async () => {
+    const fake = makeEnvCapturingFake()
+    await runOnce(fake, anthropicSeed, "default")
+    expect(lastOptions(fake).model).toBe("claude-sonnet-5")
+  })
+
+  it("no Anthropic account + configured default chain → the chain wins (no Sonnet 5 stamp)", async () => {
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify({
+      chains: { default: [{ model: "qwen3-coder:cloud", kind: "ollama-cloud" }] },
+    })
+    try {
+      const fake = makeEnvCapturingFake()
+      await runOnce(fake, ollamaSeed)
+      // toWireModel strips the `:cloud` routing token before the SDK sees it.
+      expect(lastOptions(fake).model).toBe("qwen3-coder")
+      const env = lastEnv(fake)
+      expect(env["ANTHROPIC_BASE_URL"]).toBe("https://ollama.com")
+      expect(env["ANTHROPIC_AUTH_TOKEN"]).toBe("tok-o")
+      expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBeUndefined()
+    } finally {
+      delete process.env["LUNA_OVERFLOW_CHAINS"]
+    }
+  })
+
+  it("configured default chain outranks the Sonnet 5 preference even when Anthropic is available", async () => {
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify({
+      chains: { default: [{ model: "gemini-2.5-flash", kind: "google" }] },
+    })
+    try {
+      const fake = makeEnvCapturingFake()
+      await runOnce(fake, [
+        ...anthropicSeed,
+        { id: "g1", kind: "google", secretRef: "env:PROV_TOK_G" },
+      ])
+      expect(lastOptions(fake).model).toBe("gemini-2.5-flash")
+      expect(lastEnv(fake)["ANTHROPIC_AUTH_TOKEN"]).toBe("tok-g")
+    } finally {
+      delete process.env["LUNA_OVERFLOW_CHAINS"]
+    }
+  })
+
+  it("default lane mapped to a non-Anthropic provider keeps Options.model unset (provider decides)", async () => {
+    process.env["LUNA_MODEL_PROVIDER_MAP"] = "default=ollama-cloud"
+    try {
+      const fake = makeEnvCapturingFake()
+      await runOnce(fake, ollamaSeed)
+      expect(lastOptions(fake).model).toBeUndefined()
+      expect(lastEnv(fake)["ANTHROPIC_BASE_URL"]).toBe("https://ollama.com")
+    } finally {
+      delete process.env["LUNA_MODEL_PROVIDER_MAP"]
+    }
+  })
+
+  it("no Anthropic account and no default chain → acquire fails as before (no silent stamp)", async () => {
+    const fake = makeEnvCapturingFake()
+    await expect(
+      runOnce(fake, [{ id: "g1", kind: "google", secretRef: "env:PROV_TOK_G" }]),
+    ).rejects.toThrow()
+    // The SDK was never invoked — the failure is the pre-#253 exhausted-lane
+    // error, not a mis-routed Sonnet 5 session.
+    expect(fake.optionsSeen.length).toBe(0)
   })
 })

@@ -29,12 +29,14 @@ import {
   Stream,
 } from "effect"
 import {
+  ANTHROPIC_KIND,
   CLAUDE_CODE_LOGIN_SECRET_REF,
   SDKError,
   SessionStore,
   AccountBroker,
   profileForKind,
   readProviderEnv,
+  resolveRoleModel,
   toWireModel,
   type AccountBrokerApi,
   type SessionOptions,
@@ -69,6 +71,17 @@ import { mergeEnvOverlayLogged } from "./merge-env.js"
 import { loadAgents } from "./agent-loader.js"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
+
+/**
+ * Model the "default" lane PREFERS when it lands on a native Anthropic
+ * account (#253): the daily-driver role default (claude-sonnet-5). Resolved
+ * through the same table chat-server's role priming uses so the two cannot
+ * drift. This is a default-lane RESOLUTION preference, not a pre-stamp:
+ * threads with no model still acquire the broker's "default" lane, so a
+ * configured default overflow chain always wins and a deployment with no
+ * Anthropic account keeps its chain/no-chain behavior unchanged.
+ */
+const DEFAULT_LANE_PREFERRED_MODEL = resolveRoleModel("daily-driver", null)
 
 /**
  * Turn-aware inactivity watchdog (chat threads). When a chat turn streams no
@@ -409,6 +422,21 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               // know. acquiredModel (line above) keeps acq.model for B4 pricing;
               // only the SDK-bound value is normalized.
               overrides.model = toWireModel(acq.model, acq.credential.kind)
+            } else if (
+              acq.model === "default" &&
+              acq.credential.kind === ANTHROPIC_KIND
+            ) {
+              // Default-lane preference (#253): the lane resolved to the bare
+              // "default" sentinel (no overflow-chain step redirected it) on a
+              // NATIVE Anthropic account — Sonnet 5 is available, so prefer the
+              // daily-driver default over the SDK's own default model. Gated on
+              // the credential KIND: a default lane an operator mapped to a
+              // non-Anthropic provider (LUNA_MODEL_PROVIDER_MAP "default=...")
+              // keeps Options.model unset — that provider decides its default.
+              // acquiredModel follows so the B4 usage report prices the model
+              // the turn actually ran on, not the "default" alias tier.
+              overrides.model = DEFAULT_LANE_PREFERRED_MODEL
+              acquiredModel = DEFAULT_LANE_PREFERRED_MODEL
             }
             // B8: the broker advanced past a previously-used chain step → log a
             // warning so an operator sees budget/throttle-driven failover. (The

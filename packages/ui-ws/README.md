@@ -51,7 +51,7 @@ switcher list, each model's valid `efforts`, and an optional
 |------|--------|
 | `subscribe` / `unsubscribe` | toggle live forwarding for a `threadId` |
 | `list-threads` | request a fresh `thread-list` (sidebar refresh) |
-| `new-thread` | create + auto-subscribe (server emits `thread-created` then `thread-snapshot`); omitted `model` uses the daily-driver default (`claude-sonnet-5`) |
+| `new-thread` | create + auto-subscribe (server emits `thread-created` then `thread-snapshot`); omitted `model` routes through the broker default lane (prefers Sonnet 5 when Anthropic is available, else the configured default overflow chain) |
 | `user-message` | offer text into the chat queue |
 | `interrupt` | stop the current assistant turn |
 | `pong` / `bye` | liveness / clean shutdown |

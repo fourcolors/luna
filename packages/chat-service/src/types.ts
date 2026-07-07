@@ -204,9 +204,13 @@ export interface DeliveryNotification {
  *  a chat caller cares about; ChatService overlays the chat-required fields
  *  (disableIdleTimeout: true, sdkOptions.includePartialMessages: true). */
 export interface CreateThreadOptions {
-  /** Model for the thread's SDK session. Omitted on a fresh thread resolves to
-   *  the broker's daily-driver default (`claude-sonnet-5`); restart recovery
-   *  should pass the persisted model when one is known. */
+  /** Model for the thread's SDK session. Omitted ⇒ the broker's "default"
+   *  lane, resolved per session build by the SDK adapter: a configured default
+   *  overflow chain wins; a native-Anthropic default lane prefers the
+   *  daily-driver default (`claude-sonnet-5`); a non-Anthropic default lane
+   *  leaves the model to the provider. ChatService never stamps a model, so
+   *  restart-recovery threads with no persisted model keep resolving through
+   *  the default lane instead of being pinned to whatever it prefers today. */
   readonly model?: string | undefined
   /**
    * Effort level for this thread's SDK session. Controls how much reasoning

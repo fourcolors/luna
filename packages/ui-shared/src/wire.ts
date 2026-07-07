@@ -1033,7 +1033,7 @@ export interface ThreadArchiveErrorFrame {
 
 export interface NewThreadFrame {
   readonly type: "new-thread"
-  /** Optional; omitted means use the server's daily-driver default model. */
+  /** Optional; omitted routes through the broker default lane (prefers Sonnet 5 when Anthropic is available, else the configured default overflow chain). */
   readonly model?: string
   readonly accountId?: string    // pins this thread to a specific account
   readonly title?: string
