@@ -421,7 +421,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         link_preview_options: { is_disabled: true },
       })
       if (!result.ok && (result.description ?? "").includes("can't parse entities")) {
-        return yield* transport(method, { ...params, text: toPlainTextFallback(text) })
+        // Plain-text retry keeps the preview suppression — only parse_mode
+        // and the HTML conversion are dropped.
+        return yield* transport(method, {
+          ...params,
+          text: toPlainTextFallback(text),
+          link_preview_options: { is_disabled: true },
+        })
       }
       return result
     })

@@ -974,6 +974,8 @@ describe("deliver: markdown → Telegram HTML", () => {
     expect(sends[0]?.params["parse_mode"]).toBe("HTML")
     expect(sends[1]?.params["parse_mode"]).toBeUndefined()
     expect(sends[1]?.params["text"]).toBe("> step\n**bold**")
+    // Preview suppression survives the fallback — only parse_mode is dropped.
+    expect(sends[1]?.params["link_preview_options"]).toEqual({ is_disabled: true })
   })
 
   it("edits with HTML formatting too", async () => {
