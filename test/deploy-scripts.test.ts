@@ -682,9 +682,13 @@ esac
     )
     // Default-on auto-update: provisioning seeded the registry from the repo
     // template and rendered + enabled the host-side autodeploy timer.
-    expect(readFileSync(join(temp, "etc-luna", "servers.toml"), "utf8")).toContain(
-      '"registry"',
-    )
+    const seeded = readFileSync(join(temp, "etc-luna", "servers.toml"), "utf8")
+    expect(seeded).toContain('"registry"')
+    // The ACTUAL --repo-path is rendered into the dev stanza's hostRepoDir so a
+    // custom path never yields a timer pointing at a nonexistent repo.
+    expect(seeded).toContain(`update.params.hostRepoDir         = "${repo}"`)
+    // The stable stanza (a different profile) keeps the template default.
+    expect(seeded).toContain(`"/root/luna/stable/repo"`)
     const service = readFileSync(join(unitDir, "luna-autodeploy-dev.service"), "utf8")
     expect(service).toMatch(/^ExecStart=.* dev --from-timer$/m)
     expect(service).not.toContain("--allow-active")

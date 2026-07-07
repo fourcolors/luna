@@ -394,6 +394,18 @@ install_timer() {
   local unit_dir="${LUNA_TEST_SYSTEMD_DIR:-/etc/systemd/system}"
   local svc="$unit_dir/luna-autodeploy-$profile.service"
   local tmr="$unit_dir/luna-autodeploy-$profile.timer"
+
+  # ExecStart points at the CHANNEL repo's OWN copy of this script
+  # ($P_REPO/scripts/luna-autodeploy), not the provisioning checkout that may
+  # have invoked us. This keeps the timer alive if the provisioning checkout
+  # moves, and lets the channel run autodeploy fixes shipped through the very
+  # branch it updates. Fall back to the running copy only when the channel copy
+  # is not yet present (e.g. install-timer against a repo cloned later).
+  local exec_bin="$P_REPO/scripts/luna-autodeploy"
+  if [[ ! -x "$exec_bin" ]]; then
+    echo "luna-autodeploy: channel copy $exec_bin not found — timer ExecStart falls back to $SELF" >&2
+    exec_bin="$SELF"
+  fi
   cat > "$svc" <<EOF
 [Unit]
 Description=Luna auto-deploy ($profile) — pull origin/$P_BRANCH and update if it moved
@@ -407,7 +419,7 @@ Type=oneshot
 Environment=HOME=/root
 # --from-timer: machine-initiated run — respects the deploy.autoUpdate knob
 # and never bypasses the connect-aware active-session deferral.
-ExecStart=$SELF $profile --from-timer
+ExecStart=$exec_bin $profile --from-timer
 EOF
   cat > "$tmr" <<EOF
 [Unit]
@@ -425,7 +437,7 @@ EOF
   systemctl daemon-reload
   systemctl enable --now "luna-autodeploy-$profile.timer"
   echo "luna-autodeploy: installed + enabled luna-autodeploy-$profile.timer (every $interval)"
-  echo "  ExecStart=$SELF $profile --from-timer"
+  echo "  ExecStart=$exec_bin $profile --from-timer"
   systemctl list-timers "luna-autodeploy-$profile.timer" --no-pager 2>/dev/null | head -3 || true
 }
 

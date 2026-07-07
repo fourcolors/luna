@@ -500,6 +500,37 @@ describe("F5: timer install guard + timer unit rendering", () => {
     expect(service).not.toContain("--force")
   })
 
+  it("install-timer ExecStart targets the channel repo's own luna-autodeploy copy", () => {
+    // The timer must run the copy of luna-autodeploy that lives in the channel
+    // repo (hostRepoDir/scripts/luna-autodeploy), not the checkout that invoked
+    // install-timer — so it survives the invoking checkout moving and runs the
+    // autodeploy logic shipped through the branch it updates.
+    const temp = makeTempDir()
+    const channelRepo = join(temp, "channel-repo")
+    mkdirSync(join(channelRepo, "scripts"), { recursive: true })
+    const channelCopy = join(channelRepo, "scripts", "luna-autodeploy")
+    writeFileSync(channelCopy, "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", channelCopy])
+
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "${channelRepo}"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `deploy.timer = true`,
+      ].join("\n") + "\n",
+    )
+    const { result, unitDir } = runTimerInstall("stable", { registryFile: reg })
+    expect(result.status, result.stderr).toBe(0)
+    const service = readFileSync(join(unitDir, "luna-autodeploy-stable.service"), "utf8")
+    expect(service).toContain(`ExecStart=${channelCopy} stable --from-timer`)
+  })
+
   it("install-timer stable --interval override wins over the registry cadence", () => {
     const { result, unitDir } = runTimerInstall("stable", {
       extraArgs: ["--interval", "30min"],
