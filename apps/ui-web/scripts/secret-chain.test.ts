@@ -9,7 +9,7 @@
  * inserts the lunaVault tier between keychain and env.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { Effect, Layer, Redacted } from "effect"
+import { Effect, Exit, Layer, Redacted } from "effect"
 import {
   ConfigError,
   SecretProvider,
@@ -213,6 +213,41 @@ describe("buildSecretChainLayer: auto mode inserts lunaVault between keychain an
     expect(await resolve(layer, "env:AUTO_TEST_KEY")).toBe("from-env")
   })
 
+  it("vault INTEGRITY failure fails the chain loudly and NEVER consults the env tail (F1)", async () => {
+    const { LunaVaultIntegrityError } = await import("@luna/core")
+    const layer = buildSecretChainLayer({
+      mode: "auto",
+      platform: "linux",
+      opAccounts: [],
+      // The vault is present but locked out: read throws an integrity error.
+      lunaVaultRead: async () => {
+        throw new LunaVaultIntegrityError("key-missing", "vault locked out")
+      },
+    })
+    // AUTO_TEST_KEY IS set in process.env (beforeEach), so a fall-through to the
+    // env tail WOULD resolve "from-env". The stopOn guard must prevent that:
+    // resolution must FAIL with the integrity-prefixed message instead of
+    // silently resolving stale plaintext.
+    const exit = await Effect.runPromiseExit(
+      Effect.scoped(
+        Effect.provide(
+          Effect.gen(function* () {
+            const sp = yield* SecretProvider
+            return yield* sp.get("env:AUTO_TEST_KEY")
+          }),
+          layer,
+        ),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const j = JSON.stringify(exit.cause)
+      expect(j).toContain("luna vault integrity:")
+      // The env tail value must NOT have leaked through.
+      expect(j).not.toContain("from-env")
+    }
+  })
+
   it("op refs never fall through even in auto", async () => {
     const layer = buildSecretChainLayer({
       mode: "auto",
@@ -331,6 +366,7 @@ describe("assertVaultBootIntegrity", () => {
     let exited = false
     await assertVaultBootIntegrity(
       { checkIntegrity: async () => ({ ok: true, count: 0 }) },
+      "auto",
       (m) => logs.push(m),
       (() => {
         exited = true
@@ -341,11 +377,12 @@ describe("assertVaultBootIntegrity", () => {
     expect(logs).toEqual([])
   })
 
-  it("logs the restore instruction and exits non-zero on {ok:false}", async () => {
+  it("auto mode: logs the restore instruction and exits non-zero on {ok:false}", async () => {
     const logs: string[] = []
     let code: number | null = null
     await assertVaultBootIntegrity(
       { checkIntegrity: async () => ({ ok: false, reason: "key-missing" }) },
+      "auto",
       (m) => logs.push(m),
       ((c: number) => {
         code = c
@@ -358,7 +395,31 @@ describe("assertVaultBootIntegrity", () => {
     expect(logs[0]).toContain("restore the key or delete both")
   })
 
-  it("fails closed (exit 1) if checkIntegrity itself throws", async () => {
+  it("non-auto mode: {ok:false} does NOT exit, logs a loud warning and continues (F2)", async () => {
+    const logs: string[] = []
+    let exited = false
+    for (const mode of ["env", "keychain-preferred", "keychain-only"] as const) {
+      logs.length = 0
+      await assertVaultBootIntegrity(
+        { checkIntegrity: async () => ({ ok: false, reason: "key-missing" }) },
+        mode,
+        (m) => logs.push(m),
+        (() => {
+          exited = true
+          return undefined as never
+        }),
+      )
+      // Continues boot: no exit for a mode that never reads the vault tier.
+      expect(exited).toBe(false)
+      expect(logs).toHaveLength(1)
+      // The warning states the reason and that switching to auto will refuse boot.
+      expect(logs[0]).toContain("key-missing")
+      expect(logs[0]).toContain(mode)
+      expect(logs[0]).toContain("switching to auto will refuse boot")
+    }
+  })
+
+  it("auto mode: fails closed (exit 1) if checkIntegrity itself throws", async () => {
     const logs: string[] = []
     let code: number | null = null
     await assertVaultBootIntegrity(
@@ -367,6 +428,7 @@ describe("assertVaultBootIntegrity", () => {
           throw new Error("unexpected")
         },
       },
+      "auto",
       (m) => logs.push(m),
       ((c: number) => {
         code = c
@@ -375,6 +437,26 @@ describe("assertVaultBootIntegrity", () => {
     )
     expect(code).toBe(1)
     expect(logs[0]).toContain("refusing to boot")
+  })
+
+  it("non-auto mode: a checkIntegrity throw does NOT exit, warns and continues (F2)", async () => {
+    const logs: string[] = []
+    let exited = false
+    await assertVaultBootIntegrity(
+      {
+        checkIntegrity: async () => {
+          throw new Error("unexpected")
+        },
+      },
+      "env",
+      (m) => logs.push(m),
+      (() => {
+        exited = true
+        return undefined as never
+      }),
+    )
+    expect(exited).toBe(false)
+    expect(logs[0]).toContain("does not read the vault tier")
   })
 })
 

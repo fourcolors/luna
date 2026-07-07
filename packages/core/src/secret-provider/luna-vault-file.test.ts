@@ -137,6 +137,55 @@ describe("clean miss vs integrity failure", () => {
     expect(check.ok).toBe(false)
     if (!check.ok) expect(check.reason).toBe("corrupt-json")
   })
+
+  it("valid key + auth tag verifies but plaintext is NOT valid secrets JSON → reason 'corrupt', NOT 'auth-failed' (F5)", async () => {
+    const v = makeVault()
+    // First write with the real API so a valid vault.key exists.
+    await v.writeSecret("K", "secret")
+    const key = Buffer.from(
+      (await fsp.readFile(keyPath, "utf8")).trim(),
+      "base64",
+    )
+    // Hand-encrypt a store under the CORRECT key so the GCM tag verifies, but
+    // whose plaintext is deliberately NOT `{secrets:{...}}` JSON. This proves
+    // the taxonomy split: the key is right (tag passes), the DATA is corrupt.
+    const iv = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv)
+    cipher.setAAD(Buffer.from("luna-vault:v1"))
+    const badPlaintext = "this is not json at all"
+    const data = Buffer.concat([
+      cipher.update(Buffer.from(badPlaintext, "utf8")),
+      cipher.final(),
+    ])
+    const tag = cipher.getAuthTag()
+    await fsp.writeFile(
+      storePath,
+      JSON.stringify({
+        v: 1,
+        alg: "aes-256-gcm",
+        iv: iv.toString("base64"),
+        tag: tag.toString("base64"),
+        data: data.toString("base64"),
+      }),
+    )
+
+    // readSecret throws with the corrupt reason (not auth-failed).
+    const err = await makeVault()
+      .readSecret("K")
+      .then(
+        () => {
+          throw new Error("expected an integrity error")
+        },
+        (e: unknown) => e,
+      )
+    expect(err).toBeInstanceOf(LunaVaultIntegrityError)
+    expect((err as LunaVaultIntegrityError).reason).toBe("corrupt")
+
+    // checkIntegrity reports the same distinct reason.
+    const check = await makeVault().checkIntegrity()
+    expect(check.ok).toBe(false)
+    if (!check.ok) expect(check.reason).toBe("corrupt")
+  })
 })
 
 describe("permissions", () => {
@@ -294,6 +343,46 @@ describe("rotateKey", () => {
       badDecipher.update(Buffer.from(stored.data, "base64"))
       badDecipher.final()
     }).toThrow()
+  })
+
+  it("checkIntegrity PASSES when only vault.key.new can decrypt (rotate-crash recovery, F12)", async () => {
+    // Same interrupted-rotate setup as above: the store is ciphertext under the
+    // NEW key, vault.key still holds the OLD key, vault.key.new holds the new
+    // key staged. The boot integrity gate calls checkIntegrity - a crash
+    // mid-rotate must NOT report a false integrity failure and brick boot.
+    const v = makeVault()
+    await v.writeSecret("A", "one")
+
+    const newKey = crypto.randomBytes(32)
+    const iv = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv("aes-256-gcm", newKey, iv)
+    cipher.setAAD(Buffer.from("luna-vault:v1"))
+    const plaintext = JSON.stringify({ secrets: { A: "one" } })
+    const encData = Buffer.concat([
+      cipher.update(Buffer.from(plaintext, "utf8")),
+      cipher.final(),
+    ])
+    const tag = cipher.getAuthTag()
+    await fsp.writeFile(
+      storePath,
+      JSON.stringify({
+        v: 1,
+        alg: "aes-256-gcm",
+        iv: iv.toString("base64"),
+        tag: tag.toString("base64"),
+        data: encData.toString("base64"),
+      }),
+    )
+    await fsp.writeFile(
+      path.join(vaultDir, "vault.key.new"),
+      newKey.toString("base64"),
+      { mode: 0o600 },
+    )
+
+    // The gate's probe must recover via key.new and report ok, NOT ok:false.
+    const check = await makeVault().checkIntegrity()
+    expect(check.ok).toBe(true)
+    if (check.ok) expect(check.count).toBe(1)
   })
 })
 

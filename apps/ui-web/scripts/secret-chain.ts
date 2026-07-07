@@ -19,10 +19,20 @@
  *
  * Hard rules (mirrors the backends): never log a secret value, never embed one
  * in an error/status. Names, labels, tiers and reasons only.
+ *
+ * POST-BOOT VAULT CORRUPTION FAILS LOUDLY. Every chain is composed with a
+ * `stopOn` guard keyed to the integrity-error prefix (`LUNA_VAULT_INTEGRITY_
+ * PREFIX`), so a luna-vault integrity failure at RESOLUTION TIME (the store
+ * decayed after the one-shot boot gate ran - disk rot, an out-of-band edit, a
+ * mid-run key deletion) fails the whole chain immediately instead of silently
+ * resolving stale plaintext from the `.env` tail. The guard is harmless in
+ * modes without the vault tier (no provider ever emits that prefix there), so
+ * every mode uses one code path.
  */
 import {
   EnvSecretProvider,
   KeychainEnvSecretProvider,
+  LUNA_VAULT_INTEGRITY_PREFIX,
   LunaVaultIntegrityError,
   LunaVaultSecretProvider,
   RoutedOpSecretProvider,
@@ -40,20 +50,6 @@ import {
   fileTokenFor,
   type OpAccountConfig,
 } from "./op-accounts.js"
-import {
-  normalizeVaultStorageMode as normalizeVaultStorageModeV1,
-  type VaultStorageMode,
-} from "./vault-secret-store.js"
-
-/**
- * Re-export the legacy v1 normalizer so any code still importing it keeps
- * compiling. v2 (below) is the mode SOURCE OF TRUTH going forward; v1 stays
- * only for byte-compat with callers that predate the tiered redesign.
- */
-export {
-  normalizeVaultStorageModeV1 as normalizeVaultStorageMode,
-  type VaultStorageMode,
-}
 
 /**
  * Resolve the operator's `LUNA_VAULT_STORAGE` value to the v2 mode vocabulary.
@@ -160,6 +156,18 @@ export interface BuildSecretChainLayerOpts {
  * serves reserved refs alone and can never resurrect a migrated secret. The
  * same reasoning applies to `auto`'s lunaVault tier on a pruned store.
  */
+/**
+ * Chain-wide guard: stop resolution the instant a provider fails with an
+ * integrity-class error (its message carries {@link LUNA_VAULT_INTEGRITY_
+ * PREFIX}). Passed to EVERY mode's firstOf so a corrupt vault never degrades
+ * into a fall-through miss that resolves stale plaintext from the env tail. In
+ * modes without the vault tier no provider ever emits that prefix, so the guard
+ * is a harmless no-op there - one code path for all modes.
+ */
+const stopOnVaultIntegrity = {
+  stopOn: (e: ConfigError) => e.message.startsWith(LUNA_VAULT_INTEGRITY_PREFIX),
+} as const
+
 export const buildSecretChainLayer = (
   opts: BuildSecretChainLayerOpts,
 ): Layer.Layer<SecretProvider, ConfigError> => {
@@ -173,16 +181,15 @@ export const buildSecretChainLayer = (
 
   if (opts.mode === "env") {
     // env: routedOp → env. EXACTLY today's chain.
-    return secretProviderFirstOf([routedOpL, envProviderL])
+    return secretProviderFirstOf([routedOpL, envProviderL], stopOnVaultIntegrity)
   }
 
   if (opts.mode === "keychain-preferred" || opts.mode === "keychain-only") {
     // keychain modes: routedOp → keychainEnv → env. EXACTLY today's chain.
-    return secretProviderFirstOf([
-      routedOpL,
-      keychainEnvProviderL,
-      envProviderL,
-    ])
+    return secretProviderFirstOf(
+      [routedOpL, keychainEnvProviderL, envProviderL],
+      stopOnVaultIntegrity,
+    )
   }
 
   // mode === "auto": routedOp → keychainEnv (darwin only) → lunaVault → env.
@@ -190,7 +197,7 @@ export const buildSecretChainLayer = (
   const chain: Array<Layer.Layer<SecretProvider, ConfigError>> = [routedOpL]
   if (opts.platform === "darwin") chain.push(keychainEnvProviderL)
   chain.push(lunaVaultL, envProviderL)
-  return secretProviderFirstOf(chain)
+  return secretProviderFirstOf(chain, stopOnVaultIntegrity)
 }
 
 /**
@@ -280,17 +287,29 @@ export const discoverOpTokens = async (
  *   - missing / empty store            → fine, return (a fresh install).
  *   - store present + decrypts         → fine, return.
  *   - store present but key missing /
- *     wrong / tampered ({ok:false})    → log the explicit operator message and
- *                                         `exit(1)`.
+ *     wrong / tampered ({ok:false})    → depends on MODE (see below).
  *
- * A locked-out vault must NOT boot silently and treat every vaulted secret as
- * "not set" (which would fall through to plaintext or leave the operator's
- * secrets invisible). Failing loud with a restore instruction is the safe
- * outcome. `exit` is injectable so the gate is unit-testable; production passes
- * `process.exit`.
+ * MODE-GATED ENFORCEMENT. The gate only DENIES boot in `auto` mode - the only
+ * mode whose read chain actually consults the luna-vault tier. An orphaned or
+ * corrupt vault must NOT deny boot to an operator whose mode never reads it
+ * (e.g. `env` or a darwin `keychain-*` operator with a stale leftover vault
+ * dir): that would be a self-inflicted outage over a store they don't use. In
+ * any non-auto mode the gate instead logs a LOUD warning - stating the reason
+ * and that switching to `auto` will refuse boot until the vault is fixed - and
+ * CONTINUES.
+ *
+ *   - auto + {ok:false}     → log the restore instruction and `exit(1)`.
+ *   - non-auto + {ok:false} → log a loud warning and return (continue boot).
+ *
+ * In `auto`, a locked-out vault must NOT boot silently and treat every vaulted
+ * secret as "not set" (which would fall through to plaintext or leave the
+ * operator's secrets invisible). Failing loud with a restore instruction is the
+ * safe outcome. `exit` is injectable so the gate is unit-testable; production
+ * passes `process.exit`.
  */
 export const assertVaultBootIntegrity = async (
   vaultFile: { checkIntegrity: () => Promise<IntegrityResult> },
+  mode: VaultStorageModeV2,
   log: (msg: string) => void,
   exit: (code: number) => never = process.exit,
 ): Promise<void> => {
@@ -299,18 +318,33 @@ export const assertVaultBootIntegrity = async (
     result = await vaultFile.checkIntegrity()
   } catch {
     // checkIntegrity is designed never to throw, but be defensive: an
-    // unexpected error here is itself an integrity problem - fail closed.
+    // unexpected error here is itself an integrity problem.
+    if (mode === "auto") {
+      log(
+        "luna vault integrity check errored unexpectedly - refusing to boot; see docs",
+      )
+      exit(1)
+      return
+    }
     log(
-      "luna vault integrity check errored unexpectedly - refusing to boot; see docs",
+      "luna vault integrity check errored unexpectedly, but this mode does not read the vault tier - continuing; switch to auto only after fixing the vault; see docs",
+    )
+    return
+  }
+  if (result.ok) return
+  if (mode === "auto") {
+    log(
+      `luna vault integrity failure (${result.reason}): vault.key missing or unreadable but secrets.enc present - restore the key or delete both; see docs`,
     )
     exit(1)
     return
   }
-  if (result.ok) return
+  // Non-auto mode: the vault tier is NOT in this mode's read chain, so a broken
+  // vault is not fatal here. Warn loudly and continue - switching to auto will
+  // refuse boot until the vault is fixed.
   log(
-    `luna vault integrity failure (${result.reason}): vault.key missing or unreadable but secrets.enc present - restore the key or delete both; see docs`,
+    `luna vault integrity failure (${result.reason}), but mode "${mode}" does not read the vault tier - continuing boot; restore vault.key or delete both files, and note that switching to auto will refuse boot until this is fixed; see docs`,
   )
-  exit(1)
 }
 
 /** Boot capability snapshot handed to {@link buildStorageStatus}. */

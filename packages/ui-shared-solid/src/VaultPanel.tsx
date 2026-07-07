@@ -50,7 +50,7 @@ export interface VaultPanelProps {
   readonly items: ReadonlyArray<VaultWireItem>
   /** 1Password sync state (slice V3); null = not yet received. */
   readonly sync: VaultSyncWire | null
-  /** Storage snapshot (slice W3); null = server predates the field or no frame yet — render nothing. */
+  /** Storage snapshot (slice W3); null = server predates the field or no frame yet - render nothing. */
   readonly storage?: VaultStorageWire | null
   /** Called with a vault-put frame payload to send to the server. */
   readonly onPut: (params: {
@@ -140,7 +140,7 @@ export const humanizeRelTime = (ts: number, nowMs = Date.now()): string => {
 }
 
 /**
- * writeTierLabel — human phrasing for where a new secret will land.
+ * writeTierLabel - human phrasing for where a new secret will land.
  */
 const writeTierLabel = (tier: VaultStorageWire["writeTier"]): string => {
   if (tier === "keychain") return "New secrets → macOS Keychain"
@@ -149,7 +149,7 @@ const writeTierLabel = (tier: VaultStorageWire["writeTier"]): string => {
 }
 
 /**
- * storageStatusText — build the compact status line for a storage snapshot.
+ * storageStatusText - build the compact status line for a storage snapshot.
  * Returns null when there is nothing to show (graceful degradation for a
  * server that predates the field, handled by the caller passing null/undefined).
  */

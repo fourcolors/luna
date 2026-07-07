@@ -1,13 +1,8 @@
 # Luna Vault Keychain Migration Runbook
 
-Moves Vault **env-secret values** out of plaintext `~/.luna/.env` and into a
-platform-appropriate secure store: the macOS Keychain (`luna.vault.<VARNAME>`)
-on Darwin, or Luna's own encrypted vault (`~/.luna/vault/*`) on Linux and every
-other non-Darwin platform (see "Linux migration" below). Neither target
-changes the public `env:*` ref format, the `vault_items` pointer schema, or
-1Password sync. Roll-out is **dual-read → copy-only migration → (later)
-prune**, so every step is reversible with one env var until the explicit
-prune release.
+Moves Vault **env-secret values** out of plaintext `~/.luna/.env` and into a platform-appropriate secure store: the macOS Keychain (`luna.vault.<VARNAME>`) on Darwin, or Luna's own encrypted vault (`~/.luna/vault/*`) on Linux and every other non-Darwin platform (see "Linux migration" below).
+Neither target changes the public `env:*` ref format, the `vault_items` pointer schema, or 1Password sync.
+Roll-out is **dual-read → copy-only migration → (later) prune**, so every step is reversible with one env var until the explicit prune release.
 
 ## Storage modes
 
@@ -36,27 +31,18 @@ every connector, so it stays.
 
 ## Backups: what to exclude, what must travel together
 
-Only exclude the plaintext env file from Time Machine, **not** the whole
-`~/.luna` directory:
+Only exclude the plaintext env file from Time Machine, **not** the whole `~/.luna` directory:
 
 ```bash
 tmutil addexclusion ~/.luna/.env
 ```
 
-Why narrowed to `.env` specifically: on non-Darwin (and after a Darwin
-machine migrates to Luna's own vault tier), the secret store lives at
-`~/.luna/vault/vault.key` and `~/.luna/vault/secrets.enc`. These two files
-**must** be backed up - `vault.key` is the only thing that makes
-`secrets.enc` decryptable, and `secrets.enc` alone is useless ciphertext.
-Excluding all of `~/.luna` would silently stop backing up the vault key too,
-turning a routine backup restore into permanent secret loss.
+Why narrowed to `.env` specifically: on non-Darwin (and after a Darwin machine migrates to Luna's own vault tier), the secret store lives at `~/.luna/vault/vault.key` and `~/.luna/vault/secrets.enc`.
+These two files **must** be backed up - `vault.key` is the only thing that makes `secrets.enc` decryptable, and `secrets.enc` alone is useless ciphertext.
+Excluding all of `~/.luna` would silently stop backing up the vault key too, turning a routine backup restore into permanent secret loss.
 
-**Moving to a new machine:** copy `vault.key` and `secrets.enc` **together,
-in the same operation**, preserving the `0600`/`0700` permissions on
-`~/.luna/vault/`. Never copy one without the other - a store with a mismatched
-or missing key throws a `LunaVaultIntegrityError` at boot rather than silently
-losing secrets, so a partial copy is a boot-time discovery, not a silent one,
-but the correct fix is still to always move both files as a pair:
+**Moving to a new machine:** copy `vault.key` and `secrets.enc` **together, in the same operation**, preserving the `0600`/`0700` permissions on `~/.luna/vault/`.
+Never copy one without the other - a store with a mismatched or missing key throws a `LunaVaultIntegrityError` at boot rather than silently losing secrets, so a partial copy is a boot-time discovery, not a silent one, but the correct fix is still to always move both files as a pair:
 
 ```bash
 # on the old machine
@@ -69,18 +55,13 @@ chmod 700 ~/.luna/vault
 chmod 600 ~/.luna/vault/vault.key ~/.luna/vault/secrets.enc
 ```
 
-The Keychain (Darwin) is backed up by macOS's own Keychain sync/backup
-mechanisms and is out of scope for this file-level guidance.
+The Keychain (Darwin) is backed up by macOS's own Keychain sync/backup mechanisms and is out of scope for this file-level guidance.
 
 ## Migration (copy-only, non-destructive)
 
-The migration CLI is platform-aware: on Darwin it targets the macOS Keychain
-(as always); on Linux and every other non-Darwin platform it targets Luna's
-own encrypted vault instead of refusing. The flag surface
-(`--dry-run` / `--apply --keep-env` / `--prune-env`) is identical on every
-platform - only the target differs, and `--dry-run` always prints which
-target it would use. This script has no bearing on which tier `auto` storage
-mode writes new secrets to; it only relocates values still sitting in `.env`.
+The migration CLI is platform-aware: on Darwin it targets the macOS Keychain (as always); on Linux and every other non-Darwin platform it targets Luna's own encrypted vault instead of refusing.
+The flag surface (`--dry-run` / `--apply --keep-env` / `--prune-env`) is identical on every platform - only the target differs, and `--dry-run` always prints which target it would use.
+This script has no bearing on which tier `auto` storage mode writes new secrets to; it only relocates values still sitting in `.env`.
 
 ```bash
 # 1. Keep the plaintext env file out of Time Machine backups.
@@ -103,8 +84,7 @@ OAuth secrets keep using the `.env` path unchanged.
 
 ## Linux migration (Luna encrypted vault target)
 
-Same three-step flow as Darwin, same flags, but targeting
-`~/.luna/vault/{vault.key,secrets.enc}` instead of the Keychain:
+Same three-step flow as Darwin, same flags, but targeting `~/.luna/vault/{vault.key,secrets.enc}` instead of the Keychain:
 
 ```bash
 # 1. Preview - prints "target: Luna encrypted vault" plus toCopy/alreadyCopied/skippedReserved.

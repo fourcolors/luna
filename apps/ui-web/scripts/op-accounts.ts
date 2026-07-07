@@ -7,12 +7,14 @@
  *
  *   keychain (macOS, preferred):  service `luna.op.<label>`, account `<label>`
  *   env var  (Linux / fallback):  `LUNA_OP_TOKEN_<LABEL>`
- *   file     (runtime-written):   `~/.luna/op-tokens/<label>` (mode 0600)
+ *   luna vault (runtime-written): entry `LUNA_OP_TOKEN_<LABEL>` (encrypted)
+ *   file     (legacy, runtime):   `~/.luna/op-tokens/<label>` (mode 0600)
  *
- * `discoverOpTokens` (chat-server.ts) resolves keychain → env → file. The
- * file is the last fallback: it exists only when a token was set at
- * runtime (e.g. via the Moon secure-entry form on a Linux server where no
- * keychain exists), so existing keychain/env setups are never shadowed.
+ * `discoverOpTokens` (secret-chain.ts) resolves keychain → env → luna vault →
+ * legacy file. The vault and file tiers hold RUNTIME-written tokens (e.g. set
+ * via the Moon secure-entry form on a keychain-less server); the vault beats
+ * the legacy plaintext file, and both sit AFTER the operator-provisioned
+ * keychain/env tiers, so existing keychain/env setups are never shadowed.
  */
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"

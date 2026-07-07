@@ -153,7 +153,7 @@ describe("reducer: vault-list storage field (W2)", () => {
   })
 
   it("a vault-list WITHOUT storage tolerates the absence (stays/resets null)", () => {
-    // A pre-W2 server omits `storage` — the reducer must not throw and must
+    // A pre-W2 server omits `storage` - the reducer must not throw and must
     // leave vaultStorage null.
     const s = reduce(initialState, {
       type: "vault-list",

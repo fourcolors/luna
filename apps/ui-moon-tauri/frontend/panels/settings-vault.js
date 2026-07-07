@@ -455,7 +455,7 @@
       function applyList(frame) {
         vaultItems = frame && Array.isArray(frame.items) ? frame.items : [];
         vaultSync = (frame && frame.sync) || null;
-        // Additive (W2): older servers omit `storage` — null hides the line.
+        // Additive (W2): older servers omit `storage` - null hides the line.
         vaultStorage = (frame && frame.storage) || null;
         // An armed delete-confirm survives an unrelated broadcast, but dies
         // with its row (e.g. the delete actually happened elsewhere).
@@ -493,7 +493,7 @@
           text += ' · ' + residue + ' secret' + (residue === 1 ? '' : 's') +
             ' still in plaintext .env - run the migration script to secure them';
         }
-        storageLine.textContent = text;   // textContent only — never innerHTML
+        storageLine.textContent = text;   // textContent only - never innerHTML
         storageLine.hidden = false;
       }
 

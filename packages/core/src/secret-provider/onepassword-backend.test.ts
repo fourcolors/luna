@@ -15,7 +15,7 @@ interface SpawnBehavior {
   readonly stderr?: string
   readonly exitCode?: number
   readonly errorOnSpawn?: NodeJS.ErrnoException
-  /** When true, the child never emits close/error — exercises the deadline. */
+  /** When true, the child never emits close/error - exercises the deadline. */
   readonly hang?: boolean
 }
 interface SpawnRecord {
@@ -50,7 +50,7 @@ vi.mock("node:child_process", () => ({
     }
     // Defer events to the next microtask so `on()` listeners are attached.
     queueMicrotask(() => {
-      if (behavior.hang) return // never settle — the timeout guard must fire
+      if (behavior.hang) return // never settle - the timeout guard must fire
       if (behavior.errorOnSpawn) {
         child.emit("error", behavior.errorOnSpawn)
         return

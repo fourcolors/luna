@@ -107,13 +107,29 @@ export class LunaVaultIntegrityError extends Error {
   }
 }
 
-/** Discriminates the flavours of integrity failure for callers + status. */
+/**
+ * Discriminates the flavours of integrity failure for callers + status.
+ *
+ *   - key-missing     no key file at all, but a store is present.
+ *   - key-invalid     a key file exists but is not a usable 32-byte key.
+ *   - corrupt-json    the ENVELOPE JSON on disk is not parseable.
+ *   - bad-envelope    the envelope parsed but is the wrong shape/version, or the
+ *                     store file itself was unreadable.
+ *   - auth-failed     the GCM auth tag did not verify - a wrong key or a
+ *                     tampered/truncated ciphertext (a CRYPTO failure).
+ *   - corrupt         the ciphertext decrypted and authenticated fine, but the
+ *                     recovered PLAINTEXT is not the expected `{secrets:{...}}`
+ *                     JSON. Distinct from auth-failed: the key is correct and
+ *                     the tag verified, so this is data corruption at the
+ *                     plaintext layer, not an authentication problem.
+ */
 export type LunaVaultIntegrityReason =
   | "key-missing"
   | "key-invalid"
   | "corrupt-json"
   | "auth-failed"
   | "bad-envelope"
+  | "corrupt"
 
 /** Envelope-v1 JSON shape as it lands on disk. */
 interface EnvelopeV1 {
@@ -128,6 +144,17 @@ interface EnvelopeV1 {
 interface SecretsPlaintext {
   readonly secrets: Record<string, string>
 }
+
+/**
+ * Outcome of a single-key decrypt attempt. `auth` = the GCM tag did not verify
+ * (wrong key / tampered ciphertext); `corrupt` = the tag verified but the
+ * recovered plaintext is not the expected shape. The two are kept distinct so
+ * the caller can surface a precise integrity reason (auth-failed vs corrupt)
+ * rather than conflating a crypto failure with plaintext data corruption.
+ */
+type DecryptOutcome =
+  | { readonly ok: true; readonly value: SecretsPlaintext }
+  | { readonly ok: false; readonly kind: "auth" | "corrupt" }
 
 /** Result of {@link LunaVaultFile.checkIntegrity}. */
 export type IntegrityResult =
@@ -213,6 +240,13 @@ export class LunaVaultFile {
    *   - store missing or empty       → { ok: true, count: 0 }
    *   - store decrypts               → { ok: true, count: N }
    *   - key missing / tag failure / corrupt → { ok: false, reason }
+   *
+   * ROTATE-CRASH RECOVERY: checkIntegrity decrypts through the SAME
+   * `decryptStore` path as `readSecret`, so it inherits the interrupted-rotate
+   * recovery - if only `vault.key.new` can decrypt the store (a crash between
+   * the store re-encrypt and the key promote), the probe reports `ok` (and
+   * promotes the staged key) instead of a false `key`/`auth` failure. A crash
+   * mid-rotate must never brick the boot gate.
    */
   async checkIntegrity(): Promise<IntegrityResult> {
     const rawStore = await this.readStoreRaw()
@@ -354,10 +388,16 @@ export class LunaVaultFile {
   ): Promise<Record<string, string>> {
     const envelope = this.parseEnvelope(rawStore)
 
+    // Track whether ANY key authenticated the ciphertext. A key that verifies
+    // the GCM tag but yields non-JSON plaintext is a "corrupt" outcome, NOT an
+    // auth failure - the key is correct, the data is not.
+    let sawCorruptPlaintext = false
+
     const primaryKey = await this.readKey(this.keyPath)
     if (primaryKey !== undefined) {
       const viaPrimary = this.tryDecrypt(primaryKey, envelope)
-      if (viaPrimary !== undefined) return viaPrimary.secrets
+      if (viaPrimary.ok) return viaPrimary.value.secrets
+      if (viaPrimary.kind === "corrupt") sawCorruptPlaintext = true
     }
 
     // Recovery: an interrupted rotateKey may have re-encrypted the store under
@@ -365,10 +405,21 @@ export class LunaVaultFile {
     const newKey = await this.readKey(this.keyNewPath)
     if (newKey !== undefined) {
       const viaNew = this.tryDecrypt(newKey, envelope)
-      if (viaNew !== undefined) {
+      if (viaNew.ok) {
         await this.promoteNewKey()
-        return viaNew.secrets
+        return viaNew.value.secrets
       }
+      if (viaNew.kind === "corrupt") sawCorruptPlaintext = true
+    }
+
+    // A key authenticated the ciphertext but the decrypted plaintext was not
+    // valid `{secrets:{...}}` JSON: post-decryption data corruption, distinct
+    // from an auth/tag failure.
+    if (sawCorruptPlaintext) {
+      throw new LunaVaultIntegrityError(
+        "corrupt",
+        "luna vault decrypted but its contents are corrupt (plaintext is not valid secrets JSON)",
+      )
     }
 
     // Distinguish "no key at all" from "key present but wrong / tag failed".
@@ -422,40 +473,53 @@ export class LunaVaultFile {
   }
 
   /**
-   * Attempt to decrypt one envelope with one key. Returns the plaintext on
-   * success, or undefined if the auth tag fails (wrong key / tampered) OR the
-   * decrypted plaintext is not the expected shape. Never throws - the caller
-   * decides whether a failure across all keys is terminal.
+   * Attempt to decrypt one envelope with one key. Returns:
+   *   - `{ ok: true, value }` on a full success.
+   *   - `{ ok: false, kind: "auth" }` if the GCM tag does not verify (wrong key
+   *     / tampered / truncated ciphertext) - a CRYPTO failure.
+   *   - `{ ok: false, kind: "corrupt" }` if the tag verified but the recovered
+   *     plaintext is not the expected `{secrets:{...}}` JSON - data corruption
+   *     AFTER a successful, authenticated decryption.
+   * Never throws - the caller decides whether a failure across all keys is
+   * terminal and which precise integrity reason to surface.
    */
-  private tryDecrypt(
-    key: Buffer,
-    envelope: EnvelopeV1,
-  ): SecretsPlaintext | undefined {
+  private tryDecrypt(key: Buffer, envelope: EnvelopeV1): DecryptOutcome {
+    // Phase 1: authenticated decryption. A failure here (bad tag, wrong key,
+    // malformed iv/tag lengths) is an AUTH failure - never a corrupt-plaintext.
+    let plaintext: string
     try {
       const iv = Buffer.from(envelope.iv, "base64")
       const tag = Buffer.from(envelope.tag, "base64")
       const data = Buffer.from(envelope.data, "base64")
       if (iv.length !== IV_BYTES || tag.length !== AUTH_TAG_BYTES) {
-        return undefined
+        return { ok: false, kind: "auth" }
       }
       const decipher = crypto.createDecipheriv(ALGORITHM, key, iv)
       decipher.setAAD(AAD)
       decipher.setAuthTag(tag)
       // final() throws if the auth tag does not verify - the tag is checked
       // BEFORE we trust `plaintext`.
-      const plaintext = Buffer.concat([
+      plaintext = Buffer.concat([
         decipher.update(data),
         decipher.final(),
       ]).toString("utf8")
+    } catch {
+      return { ok: false, kind: "auth" }
+    }
+
+    // Phase 2: the ciphertext authenticated, so the KEY is correct. Any failure
+    // parsing/validating the recovered plaintext is data corruption, not auth.
+    try {
       const parsed = JSON.parse(plaintext) as unknown
       if (
         parsed === null ||
         typeof parsed !== "object" ||
         Array.isArray(parsed) ||
         typeof (parsed as { secrets?: unknown }).secrets !== "object" ||
-        (parsed as { secrets?: unknown }).secrets === null
+        (parsed as { secrets?: unknown }).secrets === null ||
+        Array.isArray((parsed as { secrets?: unknown }).secrets)
       ) {
-        return undefined
+        return { ok: false, kind: "corrupt" }
       }
       // Coerce to string map; drop any non-string values defensively.
       const rawSecrets = (parsed as { secrets: Record<string, unknown> })
@@ -464,9 +528,9 @@ export class LunaVaultFile {
       for (const [k, v] of Object.entries(rawSecrets)) {
         if (typeof v === "string") secrets[k] = v
       }
-      return { secrets }
+      return { ok: true, value: { secrets } }
     } catch {
-      return undefined
+      return { ok: false, kind: "corrupt" }
     }
   }
 

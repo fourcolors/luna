@@ -45,9 +45,22 @@ export class SecretProvider extends Effect.Tag(
  *
  * Implementation detail: each input layer is built once into its own
  * service instance, then a composite SecretProvider is exposed.
+ *
+ * INTEGRITY MUST NOT DEGRADE INTO A FALL-THROUGH MISS. A provider can fail
+ * for two very different reasons: a clean miss ("this secret isn't stored
+ * here, try the next tier") or an integrity-class failure ("the store IS
+ * here but is locked out / corrupt / tampered"). The default loop treats
+ * every Left the same and keeps trying later tiers - which is correct for a
+ * miss but catastrophic for an integrity failure, because a corrupt luna
+ * vault would silently fall through to the plaintext `.env` tail and resolve
+ * a STALE value the operator believed encrypted. Pass `options.stopOn` to
+ * make a matching error fail the whole chain IMMEDIATELY (no later provider
+ * is consulted), so post-boot vault corruption surfaces loudly instead of
+ * resolving stale plaintext. Without the option the behavior is unchanged.
  */
 export const firstOf = (
   layers: ReadonlyArray<Layer.Layer<SecretProvider, ConfigError>>,
+  options?: { stopOn?: (e: ConfigError) => boolean },
 ): Layer.Layer<SecretProvider, ConfigError> => {
   if (layers.length === 0) {
     return Layer.effect(
@@ -81,6 +94,11 @@ export const firstOf = (
           for (const p of providers) {
             const result = yield* Effect.either(p.get(ref))
             if (result._tag === "Right") return result.right
+            // Integrity-class failure: fail the whole chain now rather than
+            // degrading into a fall-through miss that resolves stale plaintext.
+            if (options?.stopOn?.(result.left) === true) {
+              return yield* Effect.fail(result.left)
+            }
             lastErr = result.left
           }
           return yield* Effect.fail(

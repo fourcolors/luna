@@ -80,7 +80,7 @@ const validateSecretRef = (ref: string): boolean => {
     return name.length > 0 && !name.includes("/")
   }
   // file:<path> / file:///<path> fall through to `return false` here.
-  // Rejected with a dedicated, actionable message in runAdd — see FILE_REF_ERROR.
+  // Rejected with a dedicated, actionable message in runAdd - see FILE_REF_ERROR.
   return false
 }
 

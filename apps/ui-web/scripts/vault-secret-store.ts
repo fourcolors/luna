@@ -33,7 +33,7 @@
  *
  * Hard rule: never log the value. This module only routes it.
  */
-import type { WriteTier } from "@luna/core"
+import { isReservedSecretName, type WriteTier } from "@luna/core"
 
 /**
  * Legacy v1 mode vocabulary + normalizer. RETAINED for byte-compat with callers
@@ -96,6 +96,16 @@ export const makeVaultSecretStore = (
   return {
     writeTier,
     persistEnvSecret: async (name, value) => {
+      // Defense-in-depth: reserved names are load-bearing in `.env` (the boot
+      // loader reads them from there, and systemd's EnvironmentFile points at
+      // it) and are gated upstream so they never reach this facade. This guard
+      // keeps a future direct caller from ever vaulting them: a reserved name
+      // ALWAYS writes via the env tier regardless of writeTier.
+      if (isReservedSecretName(name)) {
+        await deps.writeEnv(name, value)
+        deps.env[name] = value
+        return
+      }
       switch (writeTier) {
         case "keychain":
           await deps.writeKeychain(name, value)

@@ -112,6 +112,25 @@ describe("makeVaultSecretStore v2: persistEnvSecret routes by writeTier", () => 
     const { store } = makeStore({ writeTier: "luna-vault" })
     expect(store.writeTier).toBe("luna-vault")
   })
+
+  it("reserved name ALWAYS writes via env, even with writeTier=luna-vault (F4 defense-in-depth)", async () => {
+    const { store, rec } = makeStore({ writeTier: "luna-vault" })
+    // A reserved name (LUNA_* / UI_WS_TOKEN) is load-bearing in .env and must
+    // never reach a secure tier, regardless of the resolved writeTier.
+    await store.persistEnvSecret("LUNA_CONNECTOR_SLACK", "tok")
+    expect(rec.envWrites).toEqual(["LUNA_CONNECTOR_SLACK=tok"])
+    expect(rec.vaultWrites).toEqual([]) // vault tier NOT used
+    expect(rec.keychainWrites).toEqual([])
+    expect(rec.env.LUNA_CONNECTOR_SLACK).toBe("tok")
+  })
+
+  it("reserved UI_WS_TOKEN routes to env even with writeTier=keychain (F4)", async () => {
+    const { store, rec } = makeStore({ writeTier: "keychain" })
+    await store.persistEnvSecret("UI_WS_TOKEN", "bearer")
+    expect(rec.envWrites).toEqual(["UI_WS_TOKEN=bearer"])
+    expect(rec.keychainWrites).toEqual([])
+    expect(rec.vaultWrites).toEqual([])
+  })
 })
 
 /* -------------------------------------------------------------------------- */

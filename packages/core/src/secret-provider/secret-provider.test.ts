@@ -6,11 +6,13 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as util from "node:util"
 import { describe, expect, it } from "vitest"
-import { Effect, Exit, Redacted } from "effect"
+import { Effect, Exit, Layer, Redacted } from "effect"
+import { ConfigError } from "../errors.js"
 import {
   EnvSecretProvider,
   FileSecretProvider,
   KeychainEnvSecretProvider,
+  type SecretProviderApi,
   SecretProvider,
   secretProviderFirstOf,
 } from "./index.js"
@@ -178,6 +180,87 @@ describe("firstOf composer", () => {
       ),
     )
     expect(Exit.isFailure(exit)).toBe(true)
+  })
+})
+
+describe("firstOf stopOn (integrity must not fall through)", () => {
+  /** A provider that always fails with a given message. */
+  const failing = (
+    module: string,
+    message: string,
+  ): Layer.Layer<SecretProvider, ConfigError> =>
+    Layer.succeed(SecretProvider, {
+      get: (ref) =>
+        Effect.fail(new ConfigError({ module, key: ref, message })),
+    } satisfies SecretProviderApi)
+
+  /** A provider that always succeeds with a fixed value. */
+  const succeeding = (
+    value: string,
+  ): Layer.Layer<SecretProvider, ConfigError> =>
+    Layer.succeed(SecretProvider, {
+      get: () => Effect.succeed(Redacted.make(value)),
+    } satisfies SecretProviderApi)
+
+  const INTEGRITY = "luna vault integrity: key-missing (locked out)"
+
+  it("stops immediately with the matched error, never consulting later providers", async () => {
+    const later = succeeding("stale-from-env-tail")
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("env:X")
+      }).pipe(
+        Effect.provide(
+          secretProviderFirstOf(
+            [failing("Vault", INTEGRITY), later],
+            { stopOn: (e) => e.message.startsWith("luna vault integrity:") },
+          ),
+        ),
+      ),
+    )
+    // The later (succeeding) provider must NOT have been consulted: the chain
+    // fails loudly with the integrity error rather than resolving stale plaintext.
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(JSON.stringify(exit.cause)).toContain("luna vault integrity:")
+    }
+  })
+
+  it("without the option, an integrity-shaped miss still falls through", async () => {
+    const value = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("env:X")
+      }).pipe(
+        Effect.provide(
+          secretProviderFirstOf([
+            failing("Vault", INTEGRITY),
+            succeeding("from-env-tail"),
+          ]),
+        ),
+      ),
+    )
+    // Default behavior unchanged: no stopOn means the loop keeps trying tiers.
+    expect(Redacted.value(value)).toBe("from-env-tail")
+  })
+
+  it("continues on a NON-matching error (a clean miss still falls through)", async () => {
+    const value = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("env:X")
+      }).pipe(
+        Effect.provide(
+          secretProviderFirstOf(
+            [failing("Vault", "secret X is not set"), succeeding("from-next")],
+            { stopOn: (e) => e.message.startsWith("luna vault integrity:") },
+          ),
+        ),
+      ),
+    )
+    // The first provider's error does not match stopOn, so the chain proceeds.
+    expect(Redacted.value(value)).toBe("from-next")
   })
 })
 

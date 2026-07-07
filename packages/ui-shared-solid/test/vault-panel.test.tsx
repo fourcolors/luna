@@ -100,7 +100,7 @@ const mount = (
   }
 }
 
-/** Minimal mount for the storage-status-line tests — only `storage` varies. */
+/** Minimal mount for the storage-status-line tests - only `storage` varies. */
 const mountWithStorage = (storage: VaultStorageWire | null | undefined) => {
   const container = document.createElement("div")
   document.body.appendChild(container)
@@ -718,7 +718,7 @@ describe("VaultPanel — finding 7: value input wiped on disconnect", () => {
 })
 
 // ── Slice W3: storage status line ─────────────────────────────────────────────
-describe("VaultPanel — storage status line", () => {
+describe("VaultPanel - storage status line", () => {
   it("renders exact text for keychain + 1Password active + residue (plural)", () => {
     const rig = mountWithStorage(
       makeStorage({ writeTier: "keychain", onePassword: "active", envResidue: 3 }),
@@ -808,7 +808,7 @@ describe("VaultPanel — storage status line", () => {
     }
   })
 
-  it("never renders via innerHTML — the line is a plain text node", () => {
+  it("never renders via innerHTML - the line is a plain text node", () => {
     const rig = mountWithStorage(makeStorage({ onePassword: "active", envResidue: 2 }))
     try {
       const line = rig.container.querySelector(".vault-storage-line")!

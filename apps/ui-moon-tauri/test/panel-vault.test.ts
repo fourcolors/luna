@@ -517,7 +517,7 @@ describe('settings.vault panel', () => {
       expect(byId('vault-storage-line').hidden).toBe(true)
     })
 
-    it('never uses innerHTML — the line has no element children', async () => {
+    it('never uses innerHTML - the line has no element children', async () => {
       const { sock } = await bootVault()
       sock.fire('message', {
         data: listFrame([], undefined, {

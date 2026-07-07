@@ -238,6 +238,7 @@ import {
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
 import { makeVaultSecretStore } from "./vault-secret-store.js"
+import { makeScrubOpToken } from "./op-token-scrub.js"
 import {
   assertVaultBootIntegrity,
   buildSecretChainLayer,
@@ -1016,6 +1017,12 @@ const opWhoami = (token: string): Promise<TokenCheck> =>
  * plaintext `~/.luna/op-tokens/<label>` file for WRITES: a runtime op token no
  * longer lands in plaintext on a keychain-less host. Discovery still READS the
  * legacy file (last precedence) so any pre-W2 file keeps working forever.
+ *
+ * MODE-INDEPENDENT ON PURPOSE. Op-token storage is deliberately NOT driven by
+ * `LUNA_VAULT_STORAGE` / `resolveWriteTier` (unlike env secrets): the tier is a
+ * fixed platform split (darwin keychain, otherwise luna vault). Op tokens
+ * authenticate the `op` CLI itself and must be available in EVERY mode, so they
+ * never consult the storage-mode policy.
  */
 const persistOpToken = (label: string, token: string): Promise<void> => {
   if (process.platform === "darwin") {
@@ -1036,43 +1043,66 @@ const persistOpToken = (label: string, token: string): Promise<void> => {
 }
 
 /**
- * Delete a stored op token (Vault remove). Mirrors `persistOpToken`'s platform
- * split, and - like the env-secret DELETE contract - scrubs EVERY runtime tier
- * on non-darwin so the token stays deleted: the W2 vault entry AND the legacy
- * plaintext file. Idempotent: a missing keychain entry (`security` exit 44),
- * a missing vault name (deleteSecret returns false), and a missing legacy file
- * (unlink ENOENT) are all success. NOTE: a token defined via the ENV VAR
- * `LUNA_OP_TOKEN_<LABEL>` cannot be deleted here (the supervisor owns that env)
- * - discovery re-finds it after restart and the Vault reconciler re-adopts the
- * row, which is honest.
+ * Delete the keychain op-token entry for a label (darwin only). Rejects on a
+ * real `security` failure; a MISSING entry (`security` exit 44) resolves as
+ * success. Never surfaces the token value.
  */
-const deleteOpToken = (label: string): Promise<void> => {
-  if (process.platform === "darwin") {
-    return new Promise((resolve, reject) => {
-      const child = spawn(
-        "security",
-        ["delete-generic-password", "-s", `luna.op.${label}`, "-a", label],
-        { stdio: ["ignore", "ignore", "ignore"] },
-      )
-      child.on("error", reject)
-      child.on("close", (code) =>
-        code === 0 || code === 44
-          ? resolve()
-          : reject(new Error(`security delete-generic-password exited ${code}`)),
-      )
-    })
-  }
-  // Non-darwin: scrub both the vault entry and any legacy plaintext file.
-  return (async () => {
-    await lunaVaultFile.deleteSecret(tokenEnvVarFor(label))
+const deleteKeychainOpToken = (label: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      "security",
+      ["delete-generic-password", "-s", `luna.op.${label}`, "-a", label],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    )
+    child.on("error", reject)
+    child.on("close", (code) =>
+      code === 0 || code === 44
+        ? resolve()
+        : reject(new Error(`security delete-generic-password exited ${code}`)),
+    )
+  })
+
+/**
+ * Delete a stored op token (Vault remove). ANTI-RESURRECTION: op-token
+ * discovery falls through keychain (darwin) → env var → luna vault → legacy
+ * file, so a delete must scrub EVERY applicable persisted tier on EVERY
+ * platform - not just the one this platform WRITES to. A darwin delete that
+ * only cleared the keychain would leave a vault or legacy-file copy that
+ * discovery re-adopts on the next boot; hence darwin scrubs the vault + file
+ * too. This mirrors the env-secret DELETE contract in vault-secret-store.ts:
+ * attempt every tier unconditionally, treat "not found" as success, collect
+ * the tiers that genuinely FAILED, and if any failed throw an Error naming
+ * them (never the token value) so a partial scrub is never silently swallowed.
+ * Idempotent per tier: a missing keychain entry (`security` exit 44), a missing
+ * vault name (deleteSecret returns false, no throw), and a missing legacy file
+ * (unlink ENOENT) are all success.
+ *
+ * NOTE: this cannot scrub the `LUNA_OP_TOKEN_<LABEL>` process-env / env-file
+ * tier by design - that tier is operator-provisioned (the supervisor owns that
+ * env), so discovery may still find an env-var token after a delete. That is
+ * intentional: the operator owns the env, and discovery re-adopting it after
+ * restart is honest, not a resurrection bug.
+ *
+ * MODE-INDEPENDENT ON PURPOSE. Like persistOpToken, op-token deletion is NOT
+ * driven by `LUNA_VAULT_STORAGE` / `resolveWriteTier`: op tokens authenticate
+ * the `op` CLI itself and must be available in every mode, so both the write
+ * split and this scrub ignore the storage-mode policy.
+ *
+ * The contract + collect-and-reject logic lives in op-token-scrub.ts (injectable
+ * seams, unit-tested); here we only bind the real per-tier effects.
+ */
+const deleteOpToken = makeScrubOpToken({
+  platform: process.platform,
+  deleteKeychain: deleteKeychainOpToken,
+  deleteVault: (label) => lunaVaultFile.deleteSecret(tokenEnvVarFor(label)),
+  deleteLegacyFile: async (label) => {
     try {
       unlinkSync(tokenFilePathFor(label))
     } catch (e) {
-      const err = e as NodeJS.ErrnoException
-      if (err.code !== "ENOENT") throw err
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e
     }
-  })()
-}
+  },
+})
 
 /**
  * Real `op` runner for makeVaultOpSync (Vault V3 — 1Password sync). Mirrors
@@ -3533,11 +3563,12 @@ const buildMain = (
 const bootstrap = async (): Promise<void> => {
   // W2 boot integrity gate: refuse to boot on a locked-out Luna vault (store
   // present but the key is missing / wrong / tampered) BEFORE any layer graph
-  // or op-token discovery runs. A missing/empty store is fine (fresh install);
-  // a broken one logs the restore instruction and exits non-zero rather than
-  // silently treating every vaulted secret as "not set". Runs first because
-  // discovery itself now reads the vault.
-  await assertVaultBootIntegrity(lunaVaultFile, (msg) =>
+  // or op-token discovery runs. A missing/empty store is fine (fresh install).
+  // The gate only DENIES boot in `auto` mode - the only mode that reads the
+  // vault tier; any other mode logs a loud warning and continues, so an
+  // orphaned/corrupt vault never denies boot to an operator who never reads it.
+  // Runs first because discovery itself now reads the vault (in auto).
+  await assertVaultBootIntegrity(lunaVaultFile, vaultStorageMode, (msg) =>
     writeSync(2, `❌ ${msg}\n`),
   )
 

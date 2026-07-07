@@ -205,16 +205,18 @@ export const lunaVaultTargetOps = (
   kind: "luna-vault",
   label: "Luna encrypted vault",
   probeExisting: async (names) => {
-    const found = new Set<string>()
-    for (const name of names) {
-      try {
-        if ((await vault.readSecret(name)) !== undefined) found.add(name)
-      } catch {
-        // Integrity failure or any other read error: treat as "not
-        // confirmed readable" - never crash a probe, never surface a value.
-      }
+    // One `listNames()` call answers presence for every candidate at once,
+    // instead of a per-name `readSecret` that would also decrypt each VALUE
+    // just to test presence. Names-only, and a single decrypt of the store.
+    let stored: Set<string>
+    try {
+      stored = new Set(await vault.listNames())
+    } catch {
+      // Integrity failure or any other read error: treat the whole store as
+      // "not confirmed readable" - never crash a probe, never surface a value.
+      return new Set<string>()
     }
-    return found
+    return new Set(names.filter((name) => stored.has(name)))
   },
   write: async (name, value) => {
     try {
