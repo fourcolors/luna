@@ -88,7 +88,17 @@ bash seeds/harness-corpus/probes/060-incus-fence-acl-gateway-guard.sh
 
 ## Fix
 
-Recreate the fence ACL using `luna-container-create --fence`. The script auto-detects the bridge gateway and derives a reject range that excludes it:
+**Delete the bad ACL first.**
+`luna-container-create --fence` is idempotent at the ACL level: when an ACL with the target name already exists it is reused AS-IS (with a warning) — its rules are never verified or rewritten.
+Re-running `--fence` over a bad ACL therefore fixes nothing.
+Detach and delete the existing ACL, then re-run:
+
+```bash
+incus config device set <container> eth0 security.acls=   # detach (delete fails while attached)
+incus network acl delete <container>-fence
+```
+
+Then recreate the fence ACL using `luna-container-create --fence`. The script auto-detects the bridge gateway and derives a reject range that excludes it:
 
 ```bash
 scripts/luna-container-create \
@@ -114,6 +124,9 @@ The derivation uses integer arithmetic on the four octets; it handles any prefix
 ### Manual fix (if you cannot re-run the script)
 
 ```bash
+# Detach the ACL from the container NIC (delete fails while it is in use)
+incus config device set <container> eth0 security.acls=
+
 # Delete the bad ACL
 incus network acl delete <container>-fence
 

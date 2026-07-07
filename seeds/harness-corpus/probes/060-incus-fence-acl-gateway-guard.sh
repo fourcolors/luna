@@ -237,8 +237,10 @@ for acl_name in "${fence_acls[@]}"; do
         printf 'DRIFT: ACL %s (attached to bridge %s, gateway %s) has egress reject destination "%s" which contains that bridge'"'"'s gateway\n' \
           "$acl_name" "$bridge" "$gw_ip" "$dest"
         printf '  This causes ALL container-to-gateway traffic to be dropped (including Ollama).\n'
-        printf '  Fix: recreate the ACL with luna-container-create --fence, which derives a\n'
-        printf '  reject range that excludes the gateway.\n'
+        printf '  Fix: detach and delete the ACL, then recreate it with luna-container-create\n'
+        printf '  --fence, which derives a reject range that excludes the gateway. (--fence\n'
+        printf '  reuses an existing ACL as-is, so the delete is required.)\n'
+        printf '  See docs/runbooks/incus-fence-acl.md for the exact commands.\n'
         fail=1
       fi
     done
