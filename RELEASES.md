@@ -97,8 +97,15 @@ This bit us once already (chat-v0.12b briefly held "Latest" on
   self-hosters. Do not run it without reviewing intent and the tag contents.
 - **What the workflow publishes:** only `server-latest.json`. No binaries, no
   signed bundles — the server is updated via `git fetch` + conditional
-  `bun install` by `scripts/luna-update-server` (the apply engine), invoked
-  through `luna update` (Phase 1 Slice 4).
+  `bun install` by `scripts/luna-update-server` (the apply engine).
+- **How servers pick changes up:** the stable channel **auto-updates by
+  default** — a host-side systemd timer (`luna-autodeploy`, every 15min) polls
+  `origin/master` and applies moves while the channel is idle (it defers while
+  WebSocket sessions are active). The manual one-command deploy
+  (`luna-autodeploy stable`) still works, and the opt-out
+  (`deploy.autoUpdate = false` or `uninstall-timer`) is documented in
+  `docs/autodeploy.md`. `luna update` (Phase 1 Slice 4) drives the same apply
+  engine on demand.
 - **Discovery contract:** `luna update` and any monitoring script resolve the
   latest server release via the GitHub Releases API **filtered for `server-v*`**
   — never via the `releases/latest` endpoint (reserved for Moon).

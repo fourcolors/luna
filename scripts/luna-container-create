@@ -39,6 +39,7 @@ DRY_RUN=false
 INIT_INCUS=false
 REPLACE=false
 SKIP_CLONE=false
+AUTO_UPDATE=true
 ENABLE_DANGEROUS_LOCAL_SHELL=false
 EMBEDDER="${LUNA_EMBEDDER:-}"
 OLLAMA_BASE_URL="${LUNA_OLLAMA_BASE_URL:-}"
@@ -91,6 +92,9 @@ Options:
   --init-incus                 Run `incus admin init --minimal` if Incus is uninitialized.
   --replace                    Delete an existing instance with this name before creating it.
   --skip-clone                 Require an existing repo path instead of cloning/updating it.
+  --no-auto-update             Do not install the host-side auto-update timer for
+                               this channel (default: installed and enabled; the
+                               timer defers while WebSocket sessions are active).
   --enable-dangerous-local-shell
                                Write the marker and profile env that allow the
                                chat server to attach a container-scoped local
@@ -130,6 +134,7 @@ while [[ $# -gt 0 ]]; do
     --init-incus) INIT_INCUS=true; shift ;;
     --replace) REPLACE=true; shift ;;
     --skip-clone) SKIP_CLONE=true; shift ;;
+    --no-auto-update) AUTO_UPDATE=false; shift ;;
     --enable-dangerous-local-shell) ENABLE_DANGEROUS_LOCAL_SHELL=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) luna_die "unknown option: $1" ;;
@@ -550,6 +555,125 @@ if [[ "$DRY_RUN" == false ]]; then
 fi
 luna_run incus exec "$INSTANCE" -- test -w /root/luna
 luna_run incus exec "$INSTANCE" -- systemctl status "$STATUS_SERVICE"
+
+# ── Host-side auto-update timer (ON by default) ───────────────────────────────
+# The autodeploy timer polls GitHub from the HOST (GitHub cannot reach the box)
+# and drives luna-update-server against this container when the branch moved
+# and no WebSocket sessions are active. Provisioning enables it by default.
+# Opt out: --no-auto-update here, `luna-autodeploy uninstall-timer <profile>`
+# later, or deploy.autoUpdate = false in the registry (timer no-ops).
+
+# Render this profile's update.params.hostRepoDir in the seed registry to the
+# ACTUAL host repo path, so a custom --repo-path never yields a timer that
+# points at a nonexistent repo (the seed template ships the default paths). Only
+# the matching [[server]] stanza is touched; the rendered TOML is written to
+# stdout. Alignment/whitespace is irrelevant to the registry reader.
+render_seed_registry() {
+  local seed="$1" profile="$2" repo_path="$3"
+  awk -v target="$profile" -v repo="$repo_path" '
+    /^\[\[server\]\]/ { in_stanza = 1; is_target = 0 }
+    in_stanza && /^[[:space:]]*name[[:space:]]*=/ {
+      val = $0
+      sub(/#.*$/, "", val)
+      sub(/^[^=]*=[[:space:]]*/, "", val)
+      gsub(/[" ]/, "", val)
+      if (val == target) is_target = 1
+    }
+    is_target && /^[[:space:]]*update\.params\.hostRepoDir[[:space:]]*=/ {
+      match($0, /^[^=]*=/)
+      printf "%s \"%s\"\n", substr($0, 1, RLENGTH), repo
+      next
+    }
+    { print }
+  ' "$seed"
+}
+
+# Read this profile's update.params.hostRepoDir out of an EXISTING registry so
+# we can compare it to the actual --repo-path before installing a timer. Prints
+# the stored path, or nothing when the stanza (or the key) is absent. Parsing
+# mirrors render_seed_registry (name-before-key within a stanza).
+read_stanza_repo_dir() {
+  local registry="$1" profile="$2"
+  awk -v target="$profile" '
+    /^\[\[server\]\]/ { in_stanza = 1; is_target = 0 }
+    in_stanza && /^[[:space:]]*name[[:space:]]*=/ {
+      val = $0
+      sub(/#.*$/, "", val)
+      sub(/^[^=]*=[[:space:]]*/, "", val)
+      gsub(/[" ]/, "", val)
+      if (val == target) is_target = 1
+    }
+    is_target && /^[[:space:]]*update\.params\.hostRepoDir[[:space:]]*=/ {
+      val = $0
+      sub(/#.*$/, "", val)
+      sub(/^[^=]*=[[:space:]]*/, "", val)
+      gsub(/[" ]/, "", val)
+      print val
+      exit
+    }
+  ' "$registry"
+}
+
+install_autoupdate_timer() {
+  local registry_file="${LUNA_SERVERS_CONFIG:-/etc/luna/servers.toml}"
+  local seed_src="$SCRIPT_DIR/seeds/servers.toml"
+
+  # The timer machinery is registry-driven: seed the registry from the repo
+  # template when absent, rendering the ACTUAL --repo-path into this profile's
+  # hostRepoDir. An existing (operator-edited) file is never touched.
+  if [[ ! -f "$registry_file" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      luna_run mkdir -p "$(dirname "$registry_file")"
+      luna_run install -m 0600 "$seed_src" "$registry_file"
+      printf '+ render hostRepoDir=%s into the %s stanza of %s\n' "$REPO_PATH" "$PROFILE" "$registry_file"
+    else
+      # Stderr is intentionally NOT suppressed: the real failure cause
+      # (permission denied, read-only fs, missing dir) must reach the operator.
+      local seed_tmp=""
+      if seed_tmp="$(mktemp "${TMPDIR:-/tmp}/luna-seed.XXXXXX")" &&
+         render_seed_registry "$seed_src" "$PROFILE" "$REPO_PATH" > "$seed_tmp" &&
+         [[ -s "$seed_tmp" ]] &&
+         mkdir -p "$(dirname "$registry_file")" &&
+         install -m 0600 "$seed_tmp" "$registry_file"; then
+        rm -f "$seed_tmp"
+        luna_info "Seeded server registry $registry_file from scripts/seeds/servers.toml (hostRepoDir=$REPO_PATH)"
+      else
+        rm -f "${seed_tmp:-}"
+        luna_warn "could not seed $registry_file — auto-update timer not installed. Seed it (see scripts/seeds/servers.toml) and run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+        return 0
+      fi
+    fi
+  else
+    # An operator-owned registry already exists (e.g. a second profile on this
+    # host). We must NOT rewrite it, but install-timer would read this profile's
+    # stanza and bake its hostRepoDir into the unit. If that path disagrees with
+    # this container's --repo-path (or the stanza is missing), the timer would
+    # target a nonexistent repo and fail every tick — so warn and skip instead
+    # of installing a knowingly-broken unit.
+    local existing_repo
+    existing_repo="$(read_stanza_repo_dir "$registry_file" "$PROFILE")"
+    if [[ "$existing_repo" != "$REPO_PATH" ]]; then
+      if [[ -z "$existing_repo" ]]; then
+        luna_warn "registry $registry_file has no update.params.hostRepoDir for profile '$PROFILE' — auto-update timer not installed. Add a [[server]] stanza for '$PROFILE' with update.params.hostRepoDir = \"$REPO_PATH\", then run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+      else
+        luna_warn "registry $registry_file points profile '$PROFILE' at hostRepoDir=$existing_repo but this container uses $REPO_PATH — auto-update timer not installed (would target a nonexistent repo). Update the stanza's update.params.hostRepoDir to \"$REPO_PATH\", then run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+      fi
+      return 0
+    fi
+  fi
+
+  if luna_run "$SCRIPT_DIR/luna-autodeploy" install-timer "$PROFILE"; then
+    luna_info "Auto-update timer enabled for '$PROFILE' — disable with: $SCRIPT_DIR/luna-autodeploy uninstall-timer $PROFILE"
+  else
+    luna_warn "auto-update timer install failed for '$PROFILE' (container itself is fine). Retry with: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+  fi
+}
+
+if [[ "$AUTO_UPDATE" == true ]]; then
+  install_autoupdate_timer
+else
+  luna_info "Auto-update timer skipped (--no-auto-update) — enable later with: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+fi
 
 luna_info "Container ready"
 printf 'Client config:\n'

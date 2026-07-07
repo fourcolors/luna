@@ -34,13 +34,17 @@
 #
 # ## Exported variables (match profile_config() exactly)
 #
-#   P_REPO          — host-side git repo directory
-#   P_BRANCH        — branch to track
-#   P_INCUS         — incus container name ("" = bare-host)
-#   P_PORT          — WebSocket port
-#   P_UPDATE_ARGS   — bash array of flags for luna-update-server
-#   P_SERVICE_NAME  — systemd unit name (for F7 --validate)
-#   P_TIMER_ALLOWED — "true"/"false" from deploy.timer
+#   P_REPO           — host-side git repo directory
+#   P_BRANCH         — branch to track
+#   P_INCUS          — incus container name ("" = bare-host)
+#   P_PORT           — WebSocket port
+#   P_UPDATE_ARGS    — bash array of flags for luna-update-server
+#   P_SERVICE_NAME   — systemd unit name (for F7 --validate)
+#   P_TIMER_ALLOWED  — "true"/"false" from deploy.timer
+#   P_AUTO_UPDATE    — "true"/"false" from deploy.autoUpdate (ABSENT = "true";
+#                      auto-update is ON by default, opt-out is explicit)
+#   P_TIMER_INTERVAL — systemd time span from deploy.timerInterval ("" = unset;
+#                      install-timer falls back to its own default)
 #
 # ## Security: fail-closed
 #
@@ -300,6 +304,22 @@ luna_load_server() {
   local _timer
   _timer="$(_get "deploy.timer")" || _timer="false"
 
+  # auto_update: deploy.autoUpdate (boolean). DEFAULT-ON: an absent key means
+  # "true" — the operator opts OUT by writing deploy.autoUpdate = false. Any
+  # value other than the literal "true"/absent disables (fail toward "no
+  # unexpected restart", never toward one).
+  local _auto_update
+  _auto_update="$(_get "deploy.autoUpdate")" || _auto_update=""
+  if [[ -z "$_auto_update" ]]; then
+    _auto_update="true"
+  elif [[ "$_auto_update" != "true" ]]; then
+    _auto_update="false"
+  fi
+
+  # timer interval: deploy.timerInterval (systemd time span, e.g. "15min")
+  local _timer_interval
+  _timer_interval="$(_get "deploy.timerInterval")" || _timer_interval=""
+
   # ── validate required fields ─────────────────────────────────────────────
   if [[ -z "$_repo_dir" ]]; then
     printf 'luna-registry: profile "%s" missing required field update.params.hostRepoDir\n' "$profile" >&2
@@ -337,6 +357,15 @@ luna_load_server() {
       "$profile" "$_repo_dir" >&2
     exit 2
   fi
+  # Timer interval is interpolated into a systemd unit file — restrict it to a
+  # plain systemd time span (digits + unit words + spaces, e.g. "15min",
+  # "1h 30min") so a registry typo can never smuggle unit-file directives.
+  local _interval_re='^[0-9A-Za-z ]+$'
+  if [[ -n "$_timer_interval" ]] && [[ ! "$_timer_interval" =~ $_interval_re ]]; then
+    printf 'luna-registry: profile "%s" — deploy.timerInterval "%s" is not a plain systemd time span.\n' \
+      "$profile" "$_timer_interval" >&2
+    exit 2
+  fi
 
   # ── apply env overrides (same as profile_config() today) ─────────────────
   # luna-autodeploy lets operators override repo/branch/incus/port via env vars.
@@ -364,6 +393,13 @@ luna_load_server() {
   # Timer flag (no env override — this is a security rail, not a convenience)
   # shellcheck disable=SC2034  # P_TIMER_ALLOWED is an output variable consumed by the caller
   P_TIMER_ALLOWED="$_timer"
+
+  # Auto-update knob and timer cadence (no env override — the registry is the
+  # single source of truth for whether the machine may restart this channel)
+  # shellcheck disable=SC2034  # P_AUTO_UPDATE is an output variable consumed by the caller
+  P_AUTO_UPDATE="$_auto_update"
+  # shellcheck disable=SC2034  # P_TIMER_INTERVAL is an output variable consumed by the caller
+  P_TIMER_INTERVAL="$_timer_interval"
 
   # ── assemble P_UPDATE_ARGS (byte-identical to profile_config()) ───────────
   # Rule (from luna-autodeploy today):

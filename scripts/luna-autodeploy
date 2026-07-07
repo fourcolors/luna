@@ -16,16 +16,25 @@
 #   * The systemd unit log (journalctl -u luna-autodeploy-<profile>) is the audit
 #     trail: each run prints what it did and the from->to SHAs.
 #
-# Designed to be run BOTH ways (per operator choice 2026-06-08):
-#   - DEV   on a systemd timer  (auto-tracks origin/master), and
-#   - STABLE by hand            (the operator's one-command deploy; NEVER a timer
-#                                — the daily driver must not restart unexpectedly).
+# AUTO-UPDATE BY DEFAULT (owner decision 2026-07, supersedes the 2026-06-08
+# manual-stable choice): BOTH channels run on a systemd timer out of the box —
+# dev every 3min, stable every 15min. The connect-aware deferral above is the
+# safety mechanism: a timer run NEVER restarts under active sessions and never
+# passes --allow-active. Opt out per channel with deploy.autoUpdate = false in
+# the registry (the timer keeps ticking but no-ops) or remove the timer
+# entirely with `luna-autodeploy uninstall-timer <profile>`. Manual one-command
+# deploys (`luna-autodeploy <profile>`) always work regardless of the knob.
 #
 # Usage:
-#   luna-autodeploy <profile> [--force] [--allow-active] [--dry-run]
+#   luna-autodeploy <profile> [--force] [--allow-active] [--dry-run] [--from-timer]
 #   luna-autodeploy <profile> --validate
-#   luna-autodeploy install-timer <profile>  [--interval <systemd-time, default 3min>]
+#   luna-autodeploy install-timer <profile>  [--interval <systemd-time>]
+#     (interval default: registry deploy.timerInterval, else 3min)
 #   luna-autodeploy uninstall-timer <profile>
+#
+# --from-timer marks a machine-initiated run (baked into the timer unit's
+# ExecStart): it makes the run respect the deploy.autoUpdate knob. It grants
+# nothing else — deferral and rollback behave exactly like a manual run.
 #
 # Profile config is DATA-DRIVEN from /etc/luna/servers.toml (or LUNA_SERVERS_CONFIG).
 # Set LUNA_REGISTRY_DISABLE=1 to fall back to the hardcoded case (one-flag rollback).
@@ -172,8 +181,10 @@ luna_pin_engine() {
 }
 
 # ── profile config ───────────────────────────────────────────────────────────
-# P_TIMER_ALLOWED is set by luna_load_server; hardcoded fallback sets it inline.
+# P_TIMER_ALLOWED / P_AUTO_UPDATE / P_TIMER_INTERVAL are set by
+# luna_load_server; the hardcoded fallback sets them inline.
 P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" P_SERVICE_NAME="" P_TIMER_ALLOWED=""
+P_AUTO_UPDATE="" P_TIMER_INTERVAL=""
 P_UPDATE_ARGS=()
 
 profile_config() {
@@ -199,6 +210,8 @@ profile_config() {
       P_UPDATE_ARGS=(--profile dev --incus "$P_INCUS" --ref "origin/$P_BRANCH")
       P_SERVICE_NAME="luna-dev-chat-server.service"
       P_TIMER_ALLOWED="true"
+      P_AUTO_UPDATE="true"
+      P_TIMER_INTERVAL="3min"
       ;;
     stable)
       P_REPO="${LUNA_STABLE_REPO_DIR:-/root/luna/stable/repo}"
@@ -213,17 +226,33 @@ profile_config() {
       P_PORT="${LUNA_STABLE_WS_PORT:-4753}"
       P_UPDATE_ARGS=(--profile stable --repo-dir "$P_REPO" --ref "origin/$P_BRANCH")
       P_SERVICE_NAME="luna-chat-server.service"
+      # Timer stays DISALLOWED in the fallback: this branch encodes the legacy
+      # bare-host topology where an unattended restart was never designed. The
+      # default-on auto-update policy applies to the registry-driven production
+      # path (the seed registry ships stable with deploy.timer = true).
       P_TIMER_ALLOWED="false"
+      P_AUTO_UPDATE="true"
+      P_TIMER_INTERVAL="15min"
       ;;
     *) echo "luna-autodeploy: unknown profile '$_profile' (want dev|stable)" >&2; exit 2 ;;
   esac
 }
 
 # ── deploy one channel ───────────────────────────────────────────────────────
-FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL="" VALIDATE=false
+FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL="" VALIDATE=false FROM_TIMER=false
 
 do_deploy() {
   local profile="$1"; profile_config "$profile"
+
+  # Auto-update knob: a TIMER-initiated run respects deploy.autoUpdate; when
+  # the operator set it to false the timer keeps ticking but every run is a
+  # quiet no-op. A manual run (no --from-timer) ignores the knob — typing the
+  # command IS the consent the knob exists to gate.
+  if [[ "$FROM_TIMER" == true && "$P_AUTO_UPDATE" != "true" ]]; then
+    echo "[autodeploy:$profile] auto-update is OFF (deploy.autoUpdate=false) — timer run skipped; manual 'luna-autodeploy $profile' still deploys"
+    return 0
+  fi
+
   [[ -x "$UPDATE_SERVER" ]] || { echo "luna-autodeploy: $UPDATE_SERVER not found/executable" >&2; exit 2; }
   [[ -d "$P_REPO/.git" ]] || { echo "luna-autodeploy: $P_REPO is not a git repo" >&2; exit 2; }
 
@@ -344,22 +373,39 @@ do_validate() {
 }
 
 # ── systemd timer install ─────────────────────────────────────────────────────
+# Test seam:
+#   LUNA_TEST_SYSTEMD_DIR — override the unit dir (default /etc/systemd/system)
 install_timer() {
   local profile="$1"; profile_config "$profile"
 
   # (F5) Hard-reject timer install for any profile where the registry says
-  # timer is not allowed. This enforces the stable-no-autodeploy rail in CODE,
-  # not just data — even if someone edits the registry entry, this gate fires.
+  # timer is not allowed. This enforces the opt-out rail in CODE, not just
+  # data — even if someone edits the registry entry, this gate fires.
   if [[ "$P_TIMER_ALLOWED" != "true" ]]; then
     echo "luna-autodeploy: timers are not allowed for profile '$profile' (registry deploy.timer=false)." >&2
-    echo "  This is a deliberate production safety rail: '$profile' must be deployed by hand." >&2
+    echo "  This profile is deploy-by-hand only until the registry says otherwise." >&2
     echo "  If you intend to enable auto-deploy for this profile, set deploy.timer=true in the registry." >&2
     exit 2
   fi
 
-  local interval="${INTERVAL:-3min}"
-  local svc="/etc/systemd/system/luna-autodeploy-$profile.service"
-  local tmr="/etc/systemd/system/luna-autodeploy-$profile.timer"
+  # Cadence: --interval wins, else the registry's deploy.timerInterval, else
+  # 3min. The seed registry ships dev=3min, stable=15min.
+  local interval="${INTERVAL:-${P_TIMER_INTERVAL:-3min}}"
+  local unit_dir="${LUNA_TEST_SYSTEMD_DIR:-/etc/systemd/system}"
+  local svc="$unit_dir/luna-autodeploy-$profile.service"
+  local tmr="$unit_dir/luna-autodeploy-$profile.timer"
+
+  # ExecStart points at the CHANNEL repo's OWN copy of this script
+  # ($P_REPO/scripts/luna-autodeploy), not the provisioning checkout that may
+  # have invoked us. This keeps the timer alive if the provisioning checkout
+  # moves, and lets the channel run autodeploy fixes shipped through the very
+  # branch it updates. Fall back to the running copy only when the channel copy
+  # is not yet present (e.g. install-timer against a repo cloned later).
+  local exec_bin="$P_REPO/scripts/luna-autodeploy"
+  if [[ ! -x "$exec_bin" ]]; then
+    echo "luna-autodeploy: channel copy $exec_bin not found — timer ExecStart falls back to $SELF" >&2
+    exec_bin="$SELF"
+  fi
   cat > "$svc" <<EOF
 [Unit]
 Description=Luna auto-deploy ($profile) — pull origin/$P_BRANCH and update if it moved
@@ -371,7 +417,9 @@ Type=oneshot
 # HOME is required so git/gh find credentials for the private remote (see
 # memory: the unit running with HOME unset was a real auth footgun).
 Environment=HOME=/root
-ExecStart=$SELF $profile
+# --from-timer: machine-initiated run — respects the deploy.autoUpdate knob
+# and never bypasses the connect-aware active-session deferral.
+ExecStart=$exec_bin $profile --from-timer
 EOF
   cat > "$tmr" <<EOF
 [Unit]
@@ -389,14 +437,15 @@ EOF
   systemctl daemon-reload
   systemctl enable --now "luna-autodeploy-$profile.timer"
   echo "luna-autodeploy: installed + enabled luna-autodeploy-$profile.timer (every $interval)"
-  echo "  ExecStart=$SELF $profile"
+  echo "  ExecStart=$exec_bin $profile --from-timer"
   systemctl list-timers "luna-autodeploy-$profile.timer" --no-pager 2>/dev/null | head -3 || true
 }
 
 uninstall_timer() {
   local profile="$1"
+  local unit_dir="${LUNA_TEST_SYSTEMD_DIR:-/etc/systemd/system}"
   systemctl disable --now "luna-autodeploy-$profile.timer" 2>/dev/null || true
-  rm -f "/etc/systemd/system/luna-autodeploy-$profile.timer" "/etc/systemd/system/luna-autodeploy-$profile.service"
+  rm -f "$unit_dir/luna-autodeploy-$profile.timer" "$unit_dir/luna-autodeploy-$profile.service"
   systemctl daemon-reload
   echo "luna-autodeploy: removed luna-autodeploy-$profile timer + service"
 }
@@ -407,17 +456,25 @@ case "$CMD" in
   install-timer|uninstall-timer)
     SUBPROFILE="${2:?usage: luna-autodeploy $CMD <profile>}"; shift 2
     while [[ $# -gt 0 ]]; do case "$1" in --interval) INTERVAL="${2:?}"; shift 2 ;; *) echo "unknown arg: $1" >&2; exit 2 ;; esac; done
-    [[ "$CMD" == install-timer ]] && install_timer "$SUBPROFILE" || uninstall_timer "$SUBPROFILE"
+    # A plain if/else (not `A && B || C`): the list form suppressed `set -e`
+    # inside install_timer (a failed unit write still exited 0) and ran
+    # uninstall_timer whenever install_timer returned non-zero.
+    if [[ "$CMD" == install-timer ]]; then
+      install_timer "$SUBPROFILE"
+    else
+      uninstall_timer "$SUBPROFILE"
+    fi
     ;;
   *)
     # A profile name (or unknown command) — must be a non-empty string.
-    [[ -n "$CMD" && "$CMD" != "-h" && "$CMD" != "--help" ]] || { sed -n '2,40p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0; }
+    [[ -n "$CMD" && "$CMD" != "-h" && "$CMD" != "--help" ]] || { sed -n '2,53p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0; }
     PROFILE="$CMD"; shift
     while [[ $# -gt 0 ]]; do case "$1" in
       --force) FORCE=true; shift ;;
       --allow-active) ALLOW_ACTIVE=true; shift ;;
       --dry-run) DRY_RUN=true; shift ;;
       --validate) VALIDATE=true; shift ;;
+      --from-timer) FROM_TIMER=true; shift ;;
       *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac; done
     if [[ "$VALIDATE" == true ]]; then

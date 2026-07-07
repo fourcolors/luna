@@ -95,18 +95,18 @@ const runDoctor = (
 
 describe("incus runtime — declared==real → PASS", () => {
   it("stable (incus luna-stable): container active + host inactive → exit 0", () => {
-    // Phase 1b fixture: stable is now incus runtime.
+    // Phase 1b fixture: stable is now incus runtime. Auto-update default-on:
+    // stable has deploy.timer=true, so F5 no longer requires timer absence.
     const result = runDoctor("stable", {
       incusActive: true,   // in-container unit IS active
       hostActive: false,   // bare-host unit is NOT active (correct)
-      timerPresent: false, // no autodeploy timer (correct, timer=false)
+      timerPresent: true,  // autodeploy timer installed (the new default)
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     expect(result.stdout).toContain("All declared==real checks PASSED")
     expect(result.stdout).toContain("in-container unit")
     expect(result.stdout).toContain("correctly inactive")
-    expect(result.stdout).toContain("timer")
-    expect(result.stdout).toContain("correctly absent")
+    expect(result.stdout).toContain("timer presence not checked")
   })
 
   it("dev (incus luna-dev): container active + host inactive → exit 0", () => {
@@ -246,12 +246,35 @@ describe("bareFolder runtime — bare-host unit inactive → FAIL", () => {
 // 6. F5 rail — timer present for timer=false profile → FAIL
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Auto-update is default-on, so the shared fixture ships stable with
+// deploy.timer=true. The F5 rail still guards profiles that OPTED OUT —
+// exercise it with an explicit timer=false registry.
+const makeTimerOptOutRegistry = () => {
+  const dir = makeTempDir()
+  const file = join(dir, "servers.toml")
+  writeFileSync(
+    file,
+    [
+      `kind = "registry"`,
+      `[[server]]`,
+      `name = "stable"`,
+      `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+      `update.params.ref = "origin/master"`,
+      `runtime.target.incus.container = "luna-stable"`,
+      `ports.proxy = 4753`,
+      `deploy.timer = false`,
+    ].join("\n") + "\n",
+  )
+  return file
+}
+
 describe("F5 rail — timer present for timer=false profile", () => {
-  it("stable (timer=false): autodeploy timer IS present → exit 1 with F5 VIOLATION", () => {
+  it("stable opted out (timer=false): autodeploy timer IS present → exit 1 with F5 VIOLATION", () => {
     const result = runDoctor("stable", {
       incusActive: true,
       hostActive: false,
-      timerPresent: true,  // timer is present — this violates the no-autodeploy rail
+      timerPresent: true,  // timer is present — this violates the opt-out rail
+      registryFile: makeTimerOptOutRegistry(),
     })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain("F5 VIOLATION")
@@ -266,11 +289,12 @@ describe("F5 rail — timer present for timer=false profile", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("F5 rail — timer absent for timer=false profile → PASS", () => {
-  it("stable (timer=false): autodeploy timer absent → F5 check passes", () => {
+  it("stable opted out (timer=false): autodeploy timer absent → F5 check passes", () => {
     const result = runDoctor("stable", {
       incusActive: true,
       hostActive: false,
       timerPresent: false,
+      registryFile: makeTimerOptOutRegistry(),
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     expect(result.stdout).toContain("correctly absent")

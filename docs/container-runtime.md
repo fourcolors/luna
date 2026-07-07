@@ -52,10 +52,28 @@ jax-box:4753 -> stable WebSocket server
 jax-box:4754 -> stable control server
 ```
 
+## Auto-Update Timer
+
+`luna-container-create` installs a host-side auto-update timer for the channel
+by default (owner decision 2026-07). It seeds `/etc/luna/servers.toml` from
+`scripts/seeds/servers.toml` when absent and enables
+`luna-autodeploy install-timer <profile>`, so the channel polls its branch from
+the host and redeploys while idle (stable every 15min, dev every 3min). The
+timer defers whenever WebSocket sessions are active, so it never restarts a
+container mid-conversation.
+
+Pass `--no-auto-update` to `luna-container-create` to skip installing the timer
+(enable later with `scripts/luna-autodeploy install-timer <profile>`), or set
+`deploy.autoUpdate = false` in the channel's registry stanza to keep the timer
+installed but no-op. See [`docs/autodeploy.md`](./autodeploy.md) for cadence,
+the registry knobs, and opt-out details.
+
 ## Stable Container Cutover
 
 Build the stable container on candidate ports first so any existing host stable
-service stays available until the maintenance window.
+service stays available until the maintenance window. The candidate build
+installs an auto-update timer like any other create - pass `--no-auto-update`
+if you want to hold the candidate on a fixed commit until you cut over.
 
 ```bash
 # 1. Build candidate stable container on temporary host ports.
@@ -182,6 +200,8 @@ the container with `--replace` if the first-boot setup needs to be replayed.
 - Do not overwrite existing UI tokens unless using an explicit rotate flag.
 - Do not destroy or reinstall an existing Incus instance unless `--replace` is
   passed. The create script treats an existing instance as an unchanged success.
+- The auto-update timer is on by default; use `--no-auto-update` (or
+  `deploy.autoUpdate = false`) when a channel must stay on a pinned commit.
 - Prefer `0.0.0.0` for proxy listeners if the host must survive Tailscale being
   down at boot. The WebSocket server still requires a bearer token.
 - Keep stable and dev state directories separate.
