@@ -774,16 +774,33 @@ export interface VaultSyncWire {
 }
 
 /**
+ * Tiered-storage status snapshot (W2 vault redesign). METADATA ONLY -
+ * `envResidue` is a COUNT of non-reserved names still present in `.env` (never
+ * a name, never a value). Mirrors ui-shared's VaultStorageWire.
+ */
+export interface VaultStorageWire {
+  readonly mode: string
+  readonly writeTier: string
+  readonly onePassword: "absent" | "detected" | "active"
+  readonly osKeychain: boolean
+  readonly lunaVault: boolean
+  readonly envResidue: number
+}
+
+/**
  * Server→client: the current vault registry. Sent after `hello` (like
  * `connector-catalog`) and after every successful mutation. Contains METADATA
  * AND POINTERS ONLY — never secret values. `sync` is omitted when no sync
- * config exists (slice V3 not yet configured).
+ * config exists (slice V3 not yet configured). `storage` is additive (W2) and
+ * omitted by pre-W2 servers.
  */
 export interface VaultListFrame {
   readonly type: "vault-list"
   readonly items: ReadonlyArray<VaultWireItem>
   /** 1Password sync state, when configured (slice V3). Absent on V1 servers. */
   readonly sync?: VaultSyncWire
+  /** Tiered-storage status snapshot (W2). Absent on pre-W2 servers. */
+  readonly storage?: VaultStorageWire
 }
 
 /**

@@ -1,114 +1,232 @@
 import { describe, expect, it } from "vitest"
+import type { WriteTier } from "@luna/core"
 import {
   makeVaultSecretStore,
   normalizeVaultStorageMode,
+  type VaultSecretStoreDeps,
 } from "./vault-secret-store.js"
 
-describe("makeVaultSecretStore", () => {
-  it("defaults to env mode and writes only env", async () => {
-    const env: Record<string, string | undefined> = {}
-    const writes: string[] = []
-    const store = makeVaultSecretStore({
-      platform: "darwin",
-      mode: "env",
-      env,
-      writeEnv: async (name, value) => {
-        writes.push(`${name}=${value}`)
-        env[name] = value
-      },
-      removeEnv: async (name) => {
-        delete env[name]
-      },
-      writeKeychain: async () => {
-        throw new Error("must not write keychain")
-      },
-      deleteKeychain: async () => {
-        throw new Error("must not delete keychain")
-      },
-    })
+/* -------------------------------------------------------------------------- */
+/* Test harness - a store wired with recording fakes for every tier.          */
+/* -------------------------------------------------------------------------- */
 
+interface Recorder {
+  readonly envWrites: string[]
+  readonly envRemoves: string[]
+  readonly keychainWrites: string[]
+  readonly keychainDeletes: string[]
+  readonly vaultWrites: string[]
+  readonly vaultDeletes: string[]
+  readonly env: Record<string, string | undefined>
+}
+
+const makeStore = (
+  opts: {
+    platform?: NodeJS.Platform
+    writeTier: WriteTier
+    env?: Record<string, string | undefined>
+    // Optional failure injectors - throw from the named tier's delete.
+    failEnvRemove?: boolean
+    failKeychainDelete?: boolean
+    failVaultDelete?: boolean
+    // vaultFile.deleteSecret return value (default false = absent).
+    vaultDeleteReturns?: boolean
+  },
+): { store: ReturnType<typeof makeVaultSecretStore>; rec: Recorder } => {
+  const env = opts.env ?? {}
+  const rec: Recorder = {
+    envWrites: [],
+    envRemoves: [],
+    keychainWrites: [],
+    keychainDeletes: [],
+    vaultWrites: [],
+    vaultDeletes: [],
+    env,
+  }
+  const deps: VaultSecretStoreDeps = {
+    platform: opts.platform ?? "darwin",
+    writeTier: opts.writeTier,
+    env,
+    writeEnv: async (name, value) => {
+      rec.envWrites.push(`${name}=${value}`)
+      env[name] = value
+    },
+    removeEnv: async (name) => {
+      if (opts.failEnvRemove) throw new Error("env remove boom")
+      rec.envRemoves.push(name)
+    },
+    writeKeychain: async (name, value) => {
+      rec.keychainWrites.push(`${name}=${value}`)
+    },
+    deleteKeychain: async (name) => {
+      if (opts.failKeychainDelete) throw new Error("keychain delete boom")
+      rec.keychainDeletes.push(name)
+    },
+    vaultFile: {
+      writeSecret: async (name, value) => {
+        rec.vaultWrites.push(`${name}=${value}`)
+      },
+      deleteSecret: async (name) => {
+        if (opts.failVaultDelete) throw new Error("vault delete boom")
+        rec.vaultDeletes.push(name)
+        return opts.vaultDeleteReturns ?? false
+      },
+    },
+  }
+  return { store: makeVaultSecretStore(deps), rec }
+}
+
+/* -------------------------------------------------------------------------- */
+/* WRITE routing matrix - one tier per writeTier.                             */
+/* -------------------------------------------------------------------------- */
+
+describe("makeVaultSecretStore v2: persistEnvSecret routes by writeTier", () => {
+  it("writeTier=env writes only .env (+ process.env mirror)", async () => {
+    const { store, rec } = makeStore({ writeTier: "env" })
     await store.persistEnvSecret("OPENAI_API_KEY", "sk-test")
-
-    expect(writes).toEqual(["OPENAI_API_KEY=sk-test"])
-    expect(env.OPENAI_API_KEY).toBe("sk-test")
+    expect(rec.envWrites).toEqual(["OPENAI_API_KEY=sk-test"])
+    expect(rec.keychainWrites).toEqual([])
+    expect(rec.vaultWrites).toEqual([])
+    expect(rec.env.OPENAI_API_KEY).toBe("sk-test")
   })
 
-  it("keychain-preferred on darwin writes keychain and process env but not env file", async () => {
-    const env: Record<string, string | undefined> = {}
-    const keychainWrites: string[] = []
-    const store = makeVaultSecretStore({
-      platform: "darwin",
-      mode: "keychain-preferred",
-      env,
-      writeEnv: async () => {
-        throw new Error("must not write env file")
-      },
-      removeEnv: async () => {},
-      writeKeychain: async (name, value) => {
-        keychainWrites.push(`${name}=${value}`)
-      },
-      deleteKeychain: async () => {},
-    })
-
+  it("writeTier=keychain writes only the keychain (+ process.env mirror)", async () => {
+    const { store, rec } = makeStore({ writeTier: "keychain" })
     await store.persistEnvSecret("OPENAI_API_KEY", "sk-test")
-
-    expect(keychainWrites).toEqual(["OPENAI_API_KEY=sk-test"])
-    expect(env.OPENAI_API_KEY).toBe("sk-test")
+    expect(rec.keychainWrites).toEqual(["OPENAI_API_KEY=sk-test"])
+    expect(rec.envWrites).toEqual([])
+    expect(rec.vaultWrites).toEqual([])
+    expect(rec.env.OPENAI_API_KEY).toBe("sk-test")
   })
 
-  it("non-darwin keychain-preferred falls back to env mode", async () => {
-    const env: Record<string, string | undefined> = {}
-    const writes: string[] = []
-    const store = makeVaultSecretStore({
-      platform: "linux",
-      mode: "keychain-preferred",
-      env,
-      writeEnv: async (name, value) => {
-        writes.push(`${name}=${value}`)
-        env[name] = value
-      },
-      removeEnv: async () => {},
-      writeKeychain: async () => {
-        throw new Error("must not write keychain")
-      },
-      deleteKeychain: async () => {},
-    })
-
+  it("writeTier=luna-vault writes only the vault (+ process.env mirror)", async () => {
+    const { store, rec } = makeStore({ writeTier: "luna-vault" })
     await store.persistEnvSecret("OPENAI_API_KEY", "sk-test")
-
-    expect(writes).toEqual(["OPENAI_API_KEY=sk-test"])
+    expect(rec.vaultWrites).toEqual(["OPENAI_API_KEY=sk-test"])
+    expect(rec.envWrites).toEqual([])
+    expect(rec.keychainWrites).toEqual([])
+    expect(rec.env.OPENAI_API_KEY).toBe("sk-test")
   })
 
-  it("delete in keychain-preferred scrubs BOTH the keychain entry and the .env line (no resurrection on restart)", async () => {
-    // An explicit operator delete must not leave the value in .env: on the
-    // next boot .env reloads into process.env and the env-provider tail would
-    // resurrect a secret the operator believed revoked (review finding).
-    const env: Record<string, string | undefined> = { OPENAI_API_KEY: "old" }
-    const deleted: string[] = []
-    const removedEnv: string[] = []
-    const store = makeVaultSecretStore({
-      platform: "darwin",
-      mode: "keychain-preferred",
-      env,
-      writeEnv: async () => {},
-      removeEnv: async (name) => {
-        removedEnv.push(name)
-      },
-      writeKeychain: async () => {},
-      deleteKeychain: async (name) => {
-        deleted.push(name)
-      },
-    })
+  it("exposes the resolved writeTier", () => {
+    const { store } = makeStore({ writeTier: "luna-vault" })
+    expect(store.writeTier).toBe("luna-vault")
+  })
 
-    await store.removeEnvSecret("OPENAI_API_KEY")
+  it("reserved name ALWAYS writes via env, even with writeTier=luna-vault (F4 defense-in-depth)", async () => {
+    const { store, rec } = makeStore({ writeTier: "luna-vault" })
+    // A reserved name (LUNA_* / UI_WS_TOKEN) is load-bearing in .env and must
+    // never reach a secure tier, regardless of the resolved writeTier.
+    await store.persistEnvSecret("LUNA_CONNECTOR_SLACK", "tok")
+    expect(rec.envWrites).toEqual(["LUNA_CONNECTOR_SLACK=tok"])
+    expect(rec.vaultWrites).toEqual([]) // vault tier NOT used
+    expect(rec.keychainWrites).toEqual([])
+    expect(rec.env.LUNA_CONNECTOR_SLACK).toBe("tok")
+  })
 
-    expect(deleted).toEqual(["OPENAI_API_KEY"])
-    expect(removedEnv).toEqual(["OPENAI_API_KEY"])
-    expect(env.OPENAI_API_KEY).toBeUndefined()
+  it("reserved UI_WS_TOKEN routes to env even with writeTier=keychain (F4)", async () => {
+    const { store, rec } = makeStore({ writeTier: "keychain" })
+    await store.persistEnvSecret("UI_WS_TOKEN", "bearer")
+    expect(rec.envWrites).toEqual(["UI_WS_TOKEN=bearer"])
+    expect(rec.keychainWrites).toEqual([])
+    expect(rec.vaultWrites).toEqual([])
   })
 })
 
-describe("normalizeVaultStorageMode", () => {
+/* -------------------------------------------------------------------------- */
+/* DELETE contract - attempt every tier unconditionally, in every mode.       */
+/* -------------------------------------------------------------------------- */
+
+describe("makeVaultSecretStore v2: removeEnvSecret DELETE contract", () => {
+  it("scrubs keychain + vault + env in ONE call on darwin, regardless of writeTier", async () => {
+    const { store, rec } = makeStore({
+      platform: "darwin",
+      writeTier: "env", // even in env mode, every tier is scrubbed
+      env: { OPENAI_API_KEY: "old" },
+    })
+    await store.removeEnvSecret("OPENAI_API_KEY")
+    expect(rec.keychainDeletes).toEqual(["OPENAI_API_KEY"])
+    expect(rec.vaultDeletes).toEqual(["OPENAI_API_KEY"])
+    expect(rec.envRemoves).toEqual(["OPENAI_API_KEY"])
+    expect(rec.env.OPENAI_API_KEY).toBeUndefined()
+  })
+
+  it("skips the keychain on non-darwin (no keychain to scrub) but still scrubs vault + env", async () => {
+    const { store, rec } = makeStore({
+      platform: "linux",
+      writeTier: "luna-vault",
+      env: { OPENAI_API_KEY: "old" },
+    })
+    await store.removeEnvSecret("OPENAI_API_KEY")
+    expect(rec.keychainDeletes).toEqual([]) // never attempted off darwin
+    expect(rec.vaultDeletes).toEqual(["OPENAI_API_KEY"])
+    expect(rec.envRemoves).toEqual(["OPENAI_API_KEY"])
+  })
+
+  it("not-found everywhere still succeeds (all tiers report a clean miss)", async () => {
+    const { store, rec } = makeStore({
+      platform: "darwin",
+      writeTier: "keychain",
+      // vault deleteSecret returns false (absent), keychain wrapper treats
+      // not-found as success, removeEnv is a no-op on a missing line.
+      vaultDeleteReturns: false,
+    })
+    await expect(
+      store.removeEnvSecret("NEVER_STORED"),
+    ).resolves.toBeUndefined()
+    expect(rec.keychainDeletes).toEqual(["NEVER_STORED"])
+    expect(rec.vaultDeletes).toEqual(["NEVER_STORED"])
+    expect(rec.envRemoves).toEqual(["NEVER_STORED"])
+  })
+
+  it("PARTIAL FAILURE (vault delete throws) still calls removeEnv, then rejects listing the failed tier", async () => {
+    const { store, rec } = makeStore({
+      platform: "linux", // keychain skipped; vault + env attempted
+      writeTier: "luna-vault",
+      failVaultDelete: true,
+      env: { OPENAI_API_KEY: "old" },
+    })
+    await expect(store.removeEnvSecret("OPENAI_API_KEY")).rejects.toThrow(
+      /failed to remove secret "OPENAI_API_KEY" from: luna-vault/,
+    )
+    // The env scrub STILL happened despite the vault failure (resurrection
+    // guard): a partial scrub must not silently leave a rollback copy behind.
+    expect(rec.envRemoves).toEqual(["OPENAI_API_KEY"])
+    expect(rec.env.OPENAI_API_KEY).toBeUndefined()
+  })
+
+  it("collects MULTIPLE tier failures and lists them all", async () => {
+    const { store } = makeStore({
+      platform: "darwin",
+      writeTier: "keychain",
+      failKeychainDelete: true,
+      failVaultDelete: true,
+      env: { K: "v" },
+    })
+    await expect(store.removeEnvSecret("K")).rejects.toThrow(
+      /from: keychain, luna-vault/,
+    )
+  })
+
+  it("does not leak the value in the failure message (name only)", async () => {
+    const { store } = makeStore({
+      platform: "linux",
+      writeTier: "luna-vault",
+      failVaultDelete: true,
+      env: { SECRET_NAME: "super-secret-value" },
+    })
+    await store.removeEnvSecret("SECRET_NAME").catch((e: Error) => {
+      expect(e.message).toContain("SECRET_NAME")
+      expect(e.message).not.toContain("super-secret-value")
+    })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Legacy v1 normalizer - retained for compat.                                */
+/* -------------------------------------------------------------------------- */
+
+describe("normalizeVaultStorageMode (legacy v1, retained)", () => {
   it("defaults unknown values to env", () => {
     expect(normalizeVaultStorageMode(undefined, "darwin")).toBe("env")
     expect(normalizeVaultStorageMode("bad", "darwin")).toBe("env")

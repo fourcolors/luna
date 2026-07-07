@@ -510,6 +510,14 @@ export interface UIWebSocketServerConfig {
   readonly vaultService?: {
     readonly list: () => Promise<ReadonlyArray<import("./protocol.js").VaultWireItem>>
     readonly syncState: () => Promise<import("./protocol.js").VaultSyncWire | null>
+    /**
+     * Optional tiered-storage status snapshot (W2). A boot-time capability
+     * summary (mode/writeTier/probes/envResidue count) attached to every
+     * `vault-list` frame so the UI can render one "where secrets land" line.
+     * METADATA ONLY - never a name or value. Absent on pre-W2 handles; the
+     * server omits the frame field when this returns null.
+     */
+    readonly storage?: () => import("./protocol.js").VaultStorageWire | null
     readonly put: (
       f: import("./protocol.js").VaultPutFrame,
     ) => Promise<{ readonly ok: boolean; readonly message: string }>
@@ -1206,12 +1214,14 @@ export const startUIWebSocketServer = (
           Effect.gen(function* () {
             const items = yield* Effect.promise(() => vsvc.list())
             const sync = yield* Effect.promise(() => vsvc.syncState())
+            const storage = vsvc.storage?.() ?? null
             const sockets = yield* Ref.get(activeSockets)
             for (const sock of sockets) {
               send(sock, {
                 type: "vault-list",
                 items,
                 ...(sync !== null ? { sync } : {}),
+                ...(storage !== null ? { storage } : {}),
               })
             }
           }).pipe(Effect.catchAllCause(() => Effect.void)),
@@ -1494,10 +1504,12 @@ export const startUIWebSocketServer = (
             Effect.promise(async () => {
               const items = await vsvc.list()
               const sync = await vsvc.syncState()
+              const storage = vsvc.storage?.() ?? null
               send(ws, {
                 type: "vault-list",
                 items,
                 ...(sync !== null ? { sync } : {}),
+                ...(storage !== null ? { storage } : {}),
               })
             }).pipe(Effect.catchAllCause(() => Effect.void)),
           )
@@ -2015,11 +2027,13 @@ export const startUIWebSocketServer = (
               Effect.promise(async () => {
                 const items = await vsvc.list()
                 const sync = await vsvc.syncState()
+                const storage = vsvc.storage?.() ?? null
                 for (const sock of targets) {
                   send(sock, {
                     type: "vault-list",
                     items,
                     ...(sync !== null ? { sync } : {}),
+                    ...(storage !== null ? { storage } : {}),
                   })
                 }
               }).pipe(Effect.catchAllCause(() => Effect.void))

@@ -31,6 +31,7 @@
       style.textContent = [
         '.vault-label { font-weight:600; font-size:0.82rem; color:var(--text); }',
         '.vault-desc { display:block; font-size:0.68rem; color:var(--muted); line-height:1.4; margin-top:2px; }',
+        '.vault-storage-line { display:block; font-size:0.66rem; color:#64748b; line-height:1.4; margin:3px 0 6px; }',
         '.vault-input { width:100%; box-sizing:border-box; padding:6px 10px; margin-bottom:6px;',
         '  background:rgba(255,255,255,0.04); border:1px solid var(--border); border-radius:7px;',
         '  color:var(--text); font-size:0.8rem; outline:none; font-family:inherit; }',
@@ -93,6 +94,7 @@
       var serverSupportsVault = false;
       var vaultItems = [];
       var vaultSync = null;
+      var vaultStorage = null;   // storage snapshot (slice W3); null = server predates the field
       var reqId = null;            // in-flight vault-put / vault-delete requestId
       var reqKind = null;          // 'put' | 'put-op-token' | 'delete'
       var syncReqId = null;        // separate slot for an in-flight vault-sync-config
@@ -146,6 +148,11 @@
       head.appendChild(span('vault-desc',
         'Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear here again.'));
       vaultSection.appendChild(head);
+
+      var storageLine = span('vault-storage-line', '');
+      storageLine.id = 'vault-storage-line';
+      storageLine.hidden = true;
+      vaultSection.appendChild(storageLine);
 
       var listEl = document.createElement('div');
       listEl.id = 'vault-list';
@@ -429,6 +436,7 @@
           // any in-flight request — its vault-status will never arrive.
           vaultItems = [];
           vaultSync = null;
+          vaultStorage = null;
           confirmId = null;
           reqId = null;
           reqKind = null;
@@ -439,6 +447,7 @@
           setSyncStatus('', null);
         }
         renderList();
+        renderStorage();
       }
 
       /** Idempotent rebuild — vault-list arrives after hello AND is broadcast
@@ -446,6 +455,8 @@
       function applyList(frame) {
         vaultItems = frame && Array.isArray(frame.items) ? frame.items : [];
         vaultSync = (frame && frame.sync) || null;
+        // Additive (W2): older servers omit `storage` - null hides the line.
+        vaultStorage = (frame && frame.storage) || null;
         // An armed delete-confirm survives an unrelated broadcast, but dies
         // with its row (e.g. the delete actually happened elsewhere).
         if (confirmId && !vaultItems.some(function (i) { return i && i.id === confirmId; })) {
@@ -453,6 +464,37 @@
         }
         renderList();
         renderSync();
+        renderStorage();
+      }
+
+      /** Human phrasing for where a new secret will land. */
+      function writeTierLabel(tier) {
+        if (tier === 'keychain') return 'New secrets → macOS Keychain';
+        if (tier === 'luna-vault') return 'New secrets → Luna encrypted vault';
+        return 'New secrets → plaintext .env (LUNA_VAULT_STORAGE=env)';
+      }
+
+      /** Rebuild the compact storage status line from vaultStorage.
+       *  Hidden entirely when the server predates the field (null). */
+      function renderStorage() {
+        if (!vaultStorage) {
+          storageLine.hidden = true;
+          storageLine.textContent = '';
+          return;
+        }
+        var text = writeTierLabel(vaultStorage.writeTier);
+        if (vaultStorage.onePassword === 'active') {
+          text += ' · 1Password: connected';
+        } else if (vaultStorage.onePassword === 'detected') {
+          text += ' · 1Password: CLI detected - connect a service account to use it';
+        }
+        var residue = Number(vaultStorage.envResidue) || 0;
+        if (residue > 0) {
+          text += ' · ' + residue + ' secret' + (residue === 1 ? '' : 's') +
+            ' still in plaintext .env - run the migration script to secure them';
+        }
+        storageLine.textContent = text;   // textContent only - never innerHTML
+        storageLine.hidden = false;
       }
 
       /** Validate locally, then send vault-put with the OPEN-socket guard and

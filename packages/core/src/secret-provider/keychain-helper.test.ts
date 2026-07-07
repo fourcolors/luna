@@ -306,7 +306,7 @@ describe("keychain-helper write/delete", () => {
       }),
     )
 
-    expect(calls[0]?.cmd).toBe("security")
+    expect(calls[0]?.cmd).toBe("/usr/bin/security")
     expect(calls[0]?.args).toEqual([
       "add-generic-password",
       "-U",

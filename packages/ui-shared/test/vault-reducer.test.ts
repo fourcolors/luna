@@ -122,6 +122,71 @@ describe("reducer: vault-list", () => {
 })
 
 /* -------------------------------------------------------------------------- */
+/* vault-list storage field (W2 tiered-storage)                                */
+/* -------------------------------------------------------------------------- */
+
+describe("reducer: vault-list storage field (W2)", () => {
+  it("parses + stores the storage snapshot", () => {
+    const s = reduce(initialState, {
+      type: "vault-list",
+      items: [],
+      storage: {
+        mode: "auto",
+        writeTier: "luna-vault",
+        onePassword: "detected",
+        osKeychain: false,
+        lunaVault: true,
+        envResidue: 2,
+      },
+    } as ServerFrame)
+    expect(s.vaultStorage).not.toBeNull()
+    expect(s.vaultStorage?.mode).toBe("auto")
+    expect(s.vaultStorage?.writeTier).toBe("luna-vault")
+    expect(s.vaultStorage?.onePassword).toBe("detected")
+    expect(s.vaultStorage?.osKeychain).toBe(false)
+    expect(s.vaultStorage?.lunaVault).toBe(true)
+    expect(s.vaultStorage?.envResidue).toBe(2)
+  })
+
+  it("initial state has null vaultStorage", () => {
+    expect(initialState.vaultStorage).toBeNull()
+  })
+
+  it("a vault-list WITHOUT storage tolerates the absence (stays/resets null)", () => {
+    // A pre-W2 server omits `storage` - the reducer must not throw and must
+    // leave vaultStorage null.
+    const s = reduce(initialState, {
+      type: "vault-list",
+      items: [fakeItem("a", "Key A")],
+    } as ServerFrame)
+    expect(s.vaultStorage).toBeNull()
+    expect(s.vaultItems).toHaveLength(1)
+  })
+
+  it("a later vault-list without storage resets a previously-set snapshot to null", () => {
+    const withStorage = reduce(initialState, {
+      type: "vault-list",
+      items: [],
+      storage: {
+        mode: "env",
+        writeTier: "env",
+        onePassword: "absent",
+        osKeychain: true,
+        lunaVault: true,
+        envResidue: 5,
+      },
+    } as ServerFrame)
+    expect(withStorage.vaultStorage).not.toBeNull()
+
+    const withoutStorage = reduce(withStorage, {
+      type: "vault-list",
+      items: [],
+    } as ServerFrame)
+    expect(withoutStorage.vaultStorage).toBeNull()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
 /* vault-status reducer case                                                   */
 /* -------------------------------------------------------------------------- */
 

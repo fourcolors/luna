@@ -21,7 +21,7 @@ const add = defineCommand({
     id: { type: "string", description: "account id", required: true },
     label: { type: "string", description: "account label", required: true },
     kind: { type: "string", description: "account kind (anthropic | tool-<n> | mcp-<n>)", required: true },
-    "secret-ref": { type: "string", description: "secret reference (op://, luna-op://, env:, file:, claude-code:login)", required: true },
+    "secret-ref": { type: "string", description: "secret reference (op://, luna-op://, env:, claude-code:login)", required: true },
     "db-path": { type: "string", description: "override default ~/.luna/luna.db" },
   },
   async run({ args }) {

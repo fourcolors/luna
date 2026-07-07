@@ -1,11 +1,18 @@
 /**
- * FileSecretProvider — reads a JSON object file `{ [ref]: secret }`
+ * FileSecretProvider - reads a PLAINTEXT JSON object file `{ [ref]: secret }`
  * from a fixed path and resolves refs against it.
  *
- * The file is read once at layer build (lazy via Effect.sync inside
- * `get` would re-read every call; we cache by reading at construction).
+ * Caching: NONE. The file is read fresh on EVERY `get` call (see `make` below),
+ * so an external edit between calls is picked up without a restart. (An earlier
+ * version of this header claimed the file was "read once at layer build and
+ * cached" - that was never true of the code; the read is inside `get`. Header
+ * corrected to match behaviour.)
  *
- * No chmod enforcement this phase (Phase 17 hardening).
+ * No chmod enforcement - the values are plaintext on disk. This provider is NOT
+ * wired into production: it is kept deliberately as a TEST FIXTURE for the
+ * account-broker suites (and secret-provider composition tests), which need a
+ * simple, injectable SecretProvider backed by a temp JSON file. Real at-rest
+ * protection lives in the keychain and luna-vault tiers.
  *
  * Failure modes (all surface as ConfigError):
  *   - file does not exist

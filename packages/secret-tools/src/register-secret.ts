@@ -34,12 +34,15 @@ const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /**
  * Reserved env-var names that must never be overwritten by the agent or
- * operator via request_secret (env-secret branch). Mirrors the FROZEN
- * contract in packages/vault/src/internal.ts:isEnvDenied — inlined here so
- * secret-tools stays unit-testable without pulling @luna/vault. The predicate
+ * operator via request_secret (env-secret branch). Mirrors the CANONICAL
+ * definition, `isReservedSecretName` in
+ * packages/core/src/secret-provider/reserved-names.ts (which
+ * packages/vault/src/internal.ts:isEnvDenied now delegates to) - inlined here
+ * so secret-tools stays unit-testable without pulling @luna/core. The predicate
  * is CASE-INSENSITIVE (audit finding): an agent calling request_secret with
  * var_name "luna_x" or "ui_ws_token" must be rejected just like the uppercase
- * form. Normalise to uppercase before every comparison.
+ * form. Normalise to uppercase before every comparison. A cross-package drift
+ * test (apps/ui-web) pins behavioural equality with the canonical module.
  */
 const ENV_RESERVED_DENYLIST: ReadonlySet<string> = new Set(["UI_WS_TOKEN"])
 const isEnvReserved = (varName: string): boolean => {

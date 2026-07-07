@@ -101,6 +101,7 @@ export type {
   WorkflowRefreshFrame,
   VaultWireItem,
   VaultSyncWire,
+  VaultStorageWire,
   VaultListFrame,
   VaultStatusFrame,
   VaultPutFrame,
