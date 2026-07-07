@@ -8,7 +8,13 @@ import { readBelief } from "../beliefs/types.js"
 import { SessionStore } from "../session/session-store.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
-import { distillSession, DEFAULT_DISTILL_OPTIONS } from "./distill.js"
+import {
+  distillSession,
+  DEFAULT_DISTILL_OPTIONS,
+  estimateTokens,
+  DREAM_PROMPT_TOKEN_BUDGET,
+} from "./distill.js"
+import type { DistilledSession } from "./distill.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
 import { DREAM_OP_TRAITS } from "./types.js"
 
@@ -224,30 +230,176 @@ export const gatherInputs = (
   })
 
 /**
- * One dream cycle. `now` is injected (caller/cron supplies the clock reading)
- * so the function is deterministic in tests. Watermark is advanced LAST.
- *
- * Crash-recovery idempotency: dreamId and the watermark advance are keyed on
- * the MAX `lastMessageAt` of sessions actually gathered this cycle (the
- * "cutoff"), NOT on `now`. `now` is only the upper bound for gatherInputs.
- *
- * This means:
- *   - A crash retry on a LATER tick (different `now`) gathers the same
- *     sessions (same watermark, same data), produces the same cutoff, and
- *     therefore the same dreamId → INSERT OR IGNORE collapses duplicates.
- *   - Sessions that arrive between gather and watermark-advance (with
- *     lastMessageAt ≤ now but > cutoff) are NOT skipped forever; the
- *     watermark only advances to the latest session actually processed.
- *
- * When no sessions are in the window, cutoff === watermark, so the watermark
- * doesn't move and dreamId is "dream-W-W" — memory-hygiene ops (if any) still
- * get logged, and a clean re-run collapses them.
+ * Per-dream token budget for the packed session excerpts alone: the whole
+ * prompt budget MINUS the memories-block reservation (identical every chunk)
+ * MINUS a fixed headroom for the reasoner's own scaffolding (instructions,
+ * schema, framing). Keeps each chunk's session payload inside
+ * DREAM_PROMPT_TOKEN_BUDGET for every DIVISIBLE window; the one deliberate
+ * exception is an indivisible packing item — a single oversized session, or a
+ * tie group of equal-lastMessageAt sessions (see packSessions) — which runs as
+ * its own chunk even over budget rather than being dropped or split.
  */
-export const runDream = (now: number) =>
+export const DREAM_SESSION_TOKEN_BUDGET =
+  DREAM_PROMPT_TOKEN_BUDGET -
+  Math.ceil(DEFAULT_DISTILL_OPTIONS.memoriesChars / 4) -
+  2_000
+
+/**
+ * Per-session packing floor: every session charges at least this many tokens,
+ * regardless of excerpt size. A session whose in-window messages are all noise
+ * kinds distills to an EMPTY excerpt (estimateTokens("") = 0) yet still costs
+ * per-session prompt scaffolding (headers, ids, framing) the excerpt measure
+ * never sees — without a floor, unboundedly many zero-cost sessions clump into
+ * one chunk and their headers alone can blow the prompt budget (a residual
+ * death spiral).
+ */
+export const SESSION_OVERHEAD_TOKENS = 32
+
+/**
+ * Wall-time safety margin subtracted from a chunk's hard deadline: if the live
+ * clock is within this window of `deadlineAt`, stop BEFORE starting the next
+ * chunk rather than risk overrunning (a chunk is a real reasoner/LLM call).
+ */
+export const DREAM_DEADLINE_SAFETY_MS = 60_000
+
+export interface RunDreamOptions {
+  /** Per-chunk token budget for packed session excerpts. Default DREAM_SESSION_TOKEN_BUDGET. */
+  readonly sessionTokenBudget?: number
+  /** Hard deadline (epoch-ms) for this cycle; null/undefined = no deadline. */
+  readonly deadlineAt?: number | null
+  /** Safety margin subtracted from deadlineAt at each gate. Default DREAM_DEADLINE_SAFETY_MS. */
+  readonly deadlineSafetyMs?: number
+}
+
+export interface RunDreamSummary {
+  /** Reasoner passes committed this cycle (the zero-window dummy pass counts as 1). */
+  readonly chunksProcessed: number
+  /** Distinct sessions reasoned over this cycle. */
+  readonly sessionsProcessed: number
+  /** True if the deadline gate stopped the cycle before all chunks ran. */
+  readonly stoppedEarly: boolean
+  /** The watermark after this cycle (the last committed cutoff). */
+  readonly watermark: number
+}
+
+/**
+ * Packing cost of one session: excerpt tokens floored at
+ * SESSION_OVERHEAD_TOKENS (see that constant for why the floor exists).
+ */
+const sessionCost = (s: DistilledSession): number =>
+  Math.max(estimateTokens(s.excerpt), SESSION_OVERHEAD_TOKENS)
+
+/**
+ * Greedy first-fit packing over TIE GROUPS (pure). The ASCENDING-sorted
+ * sessions are first grouped by equal lastMessageAt; groups then pack
+ * greedily — a group joins the current chunk while the chunk's summed
+ * per-session cost (sessionCost, overhead-floored) stays within `budget`,
+ * otherwise a new chunk starts. A group whose summed cost ALONE exceeds the
+ * budget still becomes its own (possibly over-budget) chunk — never dropped,
+ * and the "fresh chunk only when the current one is non-empty" rule guarantees
+ * no infinite loop on an oversized item.
+ *
+ * Why groups are indivisible (auditor defect 1): the chunk loop commits
+ * watermark = cutoff = MAX lastMessageAt per chunk, and gatherInputs' window
+ * filter is STRICT (`lastMessageAt > watermark`). If two sessions sharing a
+ * timestamp were split across chunks and the run stopped between them
+ * (deadline trip or reasoner failure), the committed cutoff would EQUAL the
+ * orphan's lastMessageAt — no future run could ever gather it again. Cohesion
+ * beats the budget, exactly like the oversized-singleton rule.
+ */
+const packSessions = (
+  sessions: ReadonlyArray<DistilledSession>,
+  budget: number,
+): ReadonlyArray<ReadonlyArray<DistilledSession>> => {
+  // Group consecutive equal-lastMessageAt sessions (input is sorted ascending,
+  // so equal timestamps are adjacent).
+  const groups: Array<Array<DistilledSession>> = []
+  for (const session of sessions) {
+    const last = groups[groups.length - 1]
+    if (
+      last !== undefined &&
+      (last[0]?.summary.lastMessageAt ?? 0) === (session.summary.lastMessageAt ?? 0)
+    ) {
+      last.push(session)
+    } else {
+      groups.push([session])
+    }
+  }
+
+  const chunks: Array<Array<DistilledSession>> = []
+  let current: Array<DistilledSession> = []
+  let currentTokens = 0
+  for (const group of groups) {
+    const cost = group.reduce((sum, s) => sum + sessionCost(s), 0)
+    if (current.length === 0) {
+      current = [...group]
+      currentTokens = cost
+    } else if (currentTokens + cost <= budget) {
+      current.push(...group)
+      currentTokens += cost
+    } else {
+      chunks.push(current)
+      current = [...group]
+      currentTokens = cost
+    }
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
+/**
+ * One dream cycle. `now` is injected (caller/cron supplies the clock reading)
+ * so the function is deterministic in tests, and resolves with a
+ * RunDreamSummary (additive — existing callers ignore the value).
+ *
+ * CHUNKED, per-chunk watermark advance (issue #255, the death-spiral fix). The
+ * window is gathered once, sorted ASCENDING by lastMessageAt (SessionStore.list
+ * yields DESCENDING), and greedy-packed into chunks each within
+ * `sessionTokenBudget` — with two deliberate packing edges (see packSessions):
+ * per-session costs are floored at SESSION_OVERHEAD_TOKENS so empty-excerpt
+ * sessions can't clump unboundedly, and an indivisible item (oversized session
+ * or equal-lastMessageAt tie group) runs as one over-budget chunk rather than
+ * being split or dropped. Per chunk, in order: chunkStart = the watermark
+ * BEFORE the chunk; cutoff = MAX lastMessageAt in the chunk; dreamId =
+ * "dream-${chunkStart}-${cutoff}"; reason() -> applyOps() -> setWatermark(cutoff),
+ * BEFORE the next chunk begins. `memories` is identical across every chunk.
+ *
+ * The per-chunk advance REPLACES the old advance-LAST rule. A monotone ratchet
+ * means an oversized or failing night can no longer freeze ALREADY-COMMITTED
+ * progress: chunks that committed stay committed, the watermark sits at the
+ * last committed cutoff, and a re-run gathers only the unprocessed remainder
+ * (the self-heal that ends the death spiral). A pathological single chunk — an
+ * indivisible over-budget item whose reasoner call keeps failing — can still
+ * stall at ITS boundary, but never rolls back or re-processes what came before
+ * it. Per-chunk dreamId keyed on (chunkStart, cutoff) keeps crash-retry
+ * idempotency PER CHUNK — a retry over the same sub-window regenerates the
+ * same dreamId, so INSERT OR IGNORE collapses the re-run.
+ *
+ * Failure isolation falls out for free: a reasoner failure in chunk k
+ * propagates as a typed error, but chunks 1..k-1 are already applied and the
+ * watermark stays at chunk (k-1)'s cutoff — no special catch logic here.
+ *
+ * Deadline: before EVERY chunk (chunk 1 included), if `deadlineAt` is set and
+ * the LIVE clock is within `deadlineSafetyMs` of it, stop cleanly (resolve with
+ * stoppedEarly: true and the progress so far) instead of starting a chunk that
+ * might overrun the ticker deadline.
+ *
+ * Zero-window: when no sessions are in the window there are no chunks, so a
+ * single unconditional dummy pass runs — sessions:[], dreamId "dream-W-W",
+ * watermark unmoved, chunksProcessed:1, sessionsProcessed:0. This path is NOT
+ * subject to the deadline gate (memory-hygiene ops still get logged, and a
+ * clean re-run collapses them).
+ */
+export const runDream = (now: number, opts: RunDreamOptions = {}) =>
   Effect.gen(function* () {
     const store = yield* DreamStore
     const reasoner = yield* DreamReasoner
-    const watermark = (yield* store.getWatermark) ?? 0
+    const clock = yield* Clock
+    const sessionTokenBudget = opts.sessionTokenBudget ?? DREAM_SESSION_TOKEN_BUDGET
+    const deadlineAt = opts.deadlineAt ?? null
+    const deadlineSafetyMs = opts.deadlineSafetyMs ?? DREAM_DEADLINE_SAFETY_MS
+
+    let watermark = (yield* store.getWatermark) ?? 0
     yield* Effect.logInfo(
       `[luna/dream] runDream(${now}) starting; watermark=${watermark}`,
     )
@@ -257,26 +409,69 @@ export const runDream = (now: number) =>
       `[luna/dream] runDream: gathered ${inputs.sessions.length} session(s) and ${inputs.memories.length} memory record(s)`,
     )
 
-    // Cutoff = the latest lastMessageAt actually processed this cycle (spec
-    // §3.1.1 step 5). Keying dreamId + the watermark advance on processed data
-    // (not on `now`) makes a crash retry over the same sessions regenerate the
-    // same dreamId — so INSERT OR IGNORE collapses the re-run — and prevents
-    // skipping sessions that arrive between gather and watermark-advance.
-    const cutoff = inputs.sessions.reduce(
-      (max, s) => Math.max(max, s.summary.lastMessageAt ?? 0),
-      watermark,
+    // SessionStore.list yields DESCENDING lastMessageAt; pack ASCENDING so the
+    // watermark ratchets forward oldest-first — an interrupted night still
+    // advances past every chunk it managed to process.
+    const ordered = [...inputs.sessions].sort(
+      (a, b) => (a.summary.lastMessageAt ?? 0) - (b.summary.lastMessageAt ?? 0),
     )
-    const dreamId = deriveDreamId(watermark, cutoff)
+    const chunks = packSessions(ordered, sessionTokenBudget)
 
-    const ops = yield* reasoner.reason(inputs)
-    yield* applyOps(dreamId, ops)
+    let chunksProcessed = 0
+    let sessionsProcessed = 0
+    let stoppedEarly = false
 
-    // Advance to the latest processed lastMessageAt (no-op when no new sessions),
-    // LAST — a crash before this re-runs the same window safely.
-    yield* store.setWatermark(cutoff)
+    if (chunks.length === 0) {
+      // Zero-window dummy pass (today's exact behavior): ONE reasoner call over
+      // an empty session set, dreamId "dream-W-W", watermark unmoved. Kept as an
+      // unconditional path — NOT gated on the deadline (see header).
+      const dreamId = deriveDreamId(watermark, watermark)
+      const ops = yield* reasoner.reason({ sessions: [], memories: inputs.memories })
+      yield* applyOps(dreamId, ops)
+      yield* store.setWatermark(watermark)
+      chunksProcessed = 1
+    } else {
+      for (const chunk of chunks) {
+        // Deadline gate before EVERY chunk (chunk 1 included): each chunk is a
+        // real reasoner call, so re-read the LIVE clock and stop cleanly if
+        // starting this chunk would risk overrunning the deadline.
+        if (deadlineAt != null) {
+          const nowMs = yield* clock.nowMs()
+          if (nowMs >= deadlineAt - deadlineSafetyMs) {
+            stoppedEarly = true
+            break
+          }
+        }
+
+        const chunkStart = watermark
+        const cutoff = chunk.reduce(
+          (max, s) => Math.max(max, s.summary.lastMessageAt ?? 0),
+          chunkStart,
+        )
+        const dreamId = deriveDreamId(chunkStart, cutoff)
+
+        const ops = yield* reasoner.reason({ sessions: chunk, memories: inputs.memories })
+        yield* applyOps(dreamId, ops)
+
+        // Advance the watermark PER CHUNK, BEFORE the next chunk — the monotone
+        // ratchet that keeps a partial/failed night from freezing progress.
+        yield* store.setWatermark(cutoff)
+        watermark = cutoff
+        chunksProcessed += 1
+        sessionsProcessed += chunk.length
+      }
+    }
+
     yield* Effect.logInfo(
-      `[luna/dream] runDream: completed dreamId=${dreamId}; ops=${ops.length}; watermark advanced to ${cutoff}`,
+      `[luna/dream] runDream: completed; chunks=${chunksProcessed}; sessions=${sessionsProcessed}; stoppedEarly=${stoppedEarly}; watermark advanced to ${watermark}`,
     )
+
+    return {
+      chunksProcessed,
+      sessionsProcessed,
+      stoppedEarly,
+      watermark,
+    } satisfies RunDreamSummary
   }).pipe(
     Effect.tapErrorCause((cause) =>
       Effect.logError(`[luna/dream] runDream FAILED`, { cause }),

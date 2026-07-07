@@ -62,15 +62,24 @@ export interface DreamWorkerLayerOptions {
 export const buildDreamWorker = (
   ctx: Context.Context<DreamCtx>,
 ): Worker<never> => {
-  return (_payload, _jobCtx) =>
+  return (_payload, jobCtx) =>
     Effect.gen(function* () {
       const clock = yield* Clock
       const now = yield* clock.nowMs()
-      yield* runDream(now)
-      const store = yield* DreamStore
-      const watermark = yield* store.getWatermark
+      // Thread the ticker's hard deadline into runDream's deadline-aware stop so
+      // a long night stops CLEANLY between chunks instead of being interrupted
+      // mid-chunk. `deadline` is epoch-ms; 0 (or any non-positive value) is the
+      // generic WorkerContext "no deadline" sentinel, mapped to null so the
+      // chunk gate never trips on it.
+      const deadlineAt = jobCtx.deadline > 0 ? jobCtx.deadline : null
+      const summary = yield* runDream(now, { deadlineAt })
+      // Surface the RunDreamSummary in outputText (→ job_runs.output_text) so a
+      // deadline-truncated cycle is visible without reading dream_audit.
       return {
-        outputText: `dream cycle complete; watermark=${watermark ?? "null"}`,
+        outputText:
+          `dream cycle complete; chunks=${summary.chunksProcessed}; ` +
+          `sessions=${summary.sessionsProcessed}; stoppedEarly=${summary.stoppedEarly}; ` +
+          `watermark=${summary.watermark}`,
       } satisfies WorkerResult
     }).pipe(
       Effect.provide(ctx),

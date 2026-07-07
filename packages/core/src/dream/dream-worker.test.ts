@@ -43,6 +43,7 @@ import {
   DreamWorkerLayer,
   DREAM_WORKER_KIND,
 } from "./dream-worker.js"
+import { DREAM_DEADLINE_SAFETY_MS } from "./dream.js"
 
 // Minimal Ref-backed memory router double (mirrors dream-cron.test.ts).
 const FakeMemoryEmpty = Layer.effect(
@@ -225,5 +226,68 @@ describe("DreamWorkerLayer", () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.beliefId).toBe(candidate.id)
     expect(rows[0]?.confidence).toBe(0.6)
+  })
+
+  // ── S8 — deadline seam (Loop C: chunked dream + deadline-aware stop) ─────
+  // buildDreamWorker must forward `jobCtx.deadline` into runDream's new
+  // `deadlineAt` option, and the worker's outputText must surface the
+  // RunDreamSummary (chunks=/stoppedEarly=) so `job_runs.output_text` carries
+  // enough signal to spot a deadline-truncated cycle without reading
+  // dream_audit. Both the DREAM_DEADLINE_SAFETY_MS export and the
+  // summary-aware outputText format are new (chunking.test.ts pins the full
+  // runDream contract) — this is RED until the implementer wires runDream's
+  // RunDreamSummary through buildDreamWorker's outputText.
+  //
+  // Determinism: replaces the base composition's `Clock.Default` (real wall
+  // time) with a single static `Clock.Test(FIXED)` so the worker's `now` (via
+  // `clock.nowMs()`) and runDream's internal deadline-gate read the SAME
+  // deterministic instant. One seeded session ⇒ exactly one real chunk, so
+  // no clock-ticking trick is needed here (unlike chunking.test.ts's S7a
+  // multi-chunk scenario) — we only need "does the lone chunk run or not."
+  it("(f) forwards jobCtx.deadline into runDream — a generous deadline completes normally, an already-exhausted one stops early", async () => {
+    const FIXED = 5_000_000
+    const clockLayer = Clock.Test(FIXED)
+
+    const buildStack = (ops: ReadonlyArray<DreamOp>) => {
+      const baseDeps = Layer.mergeAll(
+        DreamStore.Memory,
+        FakeReasoner.of(ops),
+        SessionStore.Default,
+        FakeMemoryEmpty,
+        makeWorkerRegistry({}),
+      ).pipe(Layer.provideMerge(clockLayer))
+      return DreamWorkerLayer().pipe(Layer.provideMerge(baseDeps))
+    }
+
+    const seedAndDispatch = (dispatchCtx: WorkerContext) =>
+      Effect.gen(function* () {
+        const reg = yield* WorkerRegistry
+        const sessions = yield* SessionStore
+        yield* sessions.create({ id: "s-1", options: { model: "test" }, createdAt: 0 })
+        yield* sessions.appendMessage({
+          sessionId: "s-1", messageId: "m-1", ts: 1800,
+          parentId: null, kind: "user", payload: "hello",
+        })
+        return yield* reg.dispatch(DREAM_WORKER_KIND, {}, dispatchCtx)
+      })
+
+    // Generous deadline: far beyond FIXED — the single chunk completes.
+    const generousOut = await Effect.runPromise(
+      seedAndDispatch({ ...ctx, deadline: FIXED + 10_000_000 }).pipe(
+        Effect.provide(buildStack([])),
+      ),
+    )
+    expect(generousOut.outputText).toContain("chunks=")
+    expect(generousOut.outputText).toContain("stoppedEarly=false")
+
+    // Already-exhausted deadline (past even accounting for the safety
+    // margin): the gate trips before the only chunk runs.
+    const pastOut = await Effect.runPromise(
+      seedAndDispatch({ ...ctx, deadline: FIXED - DREAM_DEADLINE_SAFETY_MS - 1 }).pipe(
+        Effect.provide(buildStack([])),
+      ),
+    )
+    expect(pastOut.outputText).toContain("chunks=")
+    expect(pastOut.outputText).toContain("stoppedEarly=true")
   })
 })
