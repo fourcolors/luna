@@ -25,6 +25,7 @@ const BUN_RUNTIME_TESTS = [
   "packages/core/src/telemetry/metrics-flusher.test.ts",
   "packages/core/src/telemetry/telemetry-platform.test.ts",
   "packages/core/src/wake/wake.test.ts",
+  "packages/core/src/wake/workspace-schema.test.ts",
   "packages/observability-tools/test/tools.test.ts",
   "packages/observability-tools/test/mcp-structure.test.ts",
   "packages/channels/test/dedup-sqlite.test.ts",
