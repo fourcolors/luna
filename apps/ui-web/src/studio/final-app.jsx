@@ -14,6 +14,7 @@ import { AmbientLuna, VoiceScene } from "./studio-voice.jsx";
 import { ThreadsApp } from "./final-threads.jsx";
 import { ThreadChat } from "./final-chat.jsx";
 import { FinalInbox } from "./final-inbox.jsx";
+import { VaultPanel } from "./vault-panel.jsx";
 import { useLunaData } from "../data/useLunaData";
 import { useLunaInbox } from "../data/useLunaInbox";
 
@@ -53,7 +54,7 @@ function buildPanels(vw, vh) {
   const P = [];
   const push = (o) => { P.push({ z: z++, ...o }); };
 
-  /* --- Home: threads + pip (left), chat (center), inbox (right) --- */
+  /* --- Home: threads + vault (left), chat (center), inbox (right) --- */
   const leftW = 254;
   const inboxW = Math.min(364, vw * 0.27);
   const inboxX = vw - inboxW - EDGE_MARGIN;
@@ -61,7 +62,7 @@ function buildPanels(vw, vh) {
   const chatW = Math.max(280, inboxX - SNAP_GAP - chatX);
   const thH = Math.max(220, Math.round((colH - SNAP_GAP) * 0.62));
   push({ id: "h-threads", ws: "home", type: "threads", brain: "luna", x: x0, y: TOP_MIN, w: leftW, h: thH });
-  push({ id: "h-pip", ws: "home", type: "pip", x: x0, y: TOP_MIN + thH + SNAP_GAP, w: leftW, h: colH - thH - SNAP_GAP });
+  push({ id: "h-vault", ws: "home", type: "vault", x: x0, y: TOP_MIN + thH + SNAP_GAP, w: leftW, h: colH - thH - SNAP_GAP });
   push({ id: "h-chat", ws: "home", type: "chat", brain: "luna", x: chatX, y: TOP_MIN, w: chatW, h: colH });
   push({ id: "h-inbox", ws: "home", type: "inbox", brain: "luna", x: inboxX, y: TOP_MIN, w: inboxW, h: colH });
 
@@ -91,6 +92,7 @@ const DEFS = {
   chat:    { title: "luna", render: (ctx) => <ThreadChat threads={ctx.threads} activeId={ctx.activeThread} onSwitch={ctx.openThread} onNew={ctx.newThread} onAppend={ctx.appendMsg} onThreadNote={ctx.threadNote} onSpawn={ctx.spawn} onVoice={ctx.openVoice} onFocus={ctx.focusInbox} brain={ctx.chatBrain} setBrain={ctx.setChatBrain} suggestedActions={ctx.suggestedActions} onAcceptAction={ctx.acceptAction} onDismissAction={ctx.dismissAction} /> },
   threads: { title: "threads", render: (ctx) => <ThreadsApp threads={ctx.threads} activeId={ctx.activeThread} onOpen={ctx.openThread} /> },
   inbox:   { title: "inbox", render: (ctx) => <FinalInbox items={ctx.inboxItems} onDelegate={ctx.delegate} onToast={ctx.toast} onOpenThread={ctx.openThread} /> },
+  vault:   { title: "vault", render: (ctx, p) => <VaultPanel {...ctx.vault} closed={!!p.closed} /> },
   map:     { title: "the city", render: (ctx) => <MapApp onToast={ctx.toast} /> },
   task:    { title: "task", render: (ctx, p) => <TaskRunner def={p.def} startedAt={p.startedAt} /> },
   widget:  { title: "widget", render: (ctx, p) => {
@@ -114,7 +116,7 @@ const DEFS = {
   sticky:  { title: "sticky note", w: 250, h: 220, render: (ctx, p) => <StickyApp initial={p.request} /> },
   secure:  { title: "secure", w: 300, h: 290, render: (ctx, p) => <SecureApp request={p.request} kind={p.kind} onSubmit={(pl) => ctx.submitSecure(p.id, pl)} onCancel={() => ctx.close(p.id)} /> },
 };
-const DEFAULT_SIZE = { task: { w: 304, h: 330 }, widget: { w: 262, h: 244 }, map: { w: 440, h: 360 }, inbox: { w: 340, h: 420 }, chat: { w: 420, h: 460 }, threads: { w: 260, h: 380 } };
+const DEFAULT_SIZE = { task: { w: 304, h: 330 }, widget: { w: 262, h: 244 }, map: { w: 440, h: 360 }, inbox: { w: 340, h: 420 }, chat: { w: 420, h: 460 }, threads: { w: 260, h: 380 }, vault: { w: 320, h: 360 } };
 
 function snapAxis(raw, candidates, thresh) {
   let best = null;
@@ -483,6 +485,7 @@ export function StudioApp() {
     focusInbox, toast: showToast, delegate,
     threads, activeThread, openThread, newThread, appendMsg, threadNote,
     inboxItems: inbox.items,
+    vault: luna.vault,
     suggestedActions: luna.suggestedActions,
     acceptAction: (id) => luna.respondToAction(id, "accept"),
     dismissAction: (id) => luna.respondToAction(id, "dismiss"),
@@ -565,7 +568,7 @@ export function StudioApp() {
             key={p.id}
             className={"panel" + (p.entering ? " entering" : "") + (active && switching ? " wsenter" : "") + (snappedId === p.id ? " snapped" : "") + (p.min ? " minimized" : "") + (dragId === p.id ? " dragging" : "")}
             data-screen-label={title}
-            style={{ left: p.x, top: p.y, width: p.w, height: p.min ? HEAD_H : p.h, zIndex: p.z, display: active ? undefined : "none", "--panel-tint": brain ? "var(--brain-" + brain + ")" : "var(--wash-2)" }}
+            style={{ left: p.x, top: p.y, width: p.w, height: p.min ? HEAD_H : p.h, zIndex: p.z, display: active && !p.closed ? undefined : "none", "--panel-tint": brain ? "var(--brain-" + brain + ")" : "var(--wash-2)" }}
             onPointerDown={() => bringToFront(p.id)}
           >
             <div className="panel-wash"></div>

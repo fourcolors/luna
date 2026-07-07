@@ -28,6 +28,9 @@ import {
   type ThreadView,
   type TransportHandle,
   type UIState,
+  type VaultDeleteFrame,
+  type VaultPutFrame,
+  type VaultSyncConfigFrame,
 } from "@luna/ui-shared/core"
 import { loadConfig } from "./config"
 import { useUiStore } from "./useUiStore"
@@ -127,7 +130,18 @@ const WIDGET_DIRECTORY: ReadonlyArray<{
   { kind: "chat", title: "Chat", description: "The active conversation with Luna" },
   { kind: "threads", title: "Threads", description: "The conversation/thread list" },
   { kind: "inbox", title: "Inbox", description: "Delegated items awaiting a brain" },
+  { kind: "vault", title: "Vault", description: "Credential registry and 1Password sync settings" },
 ]
+
+/** requestId-correlated vault mutation ack. `vault-status` is deliberately a
+ *  reducer no-op (acks are per-consumer, matched by requestId, and the
+ *  follow-up vault-list already refreshes the store), so the ack is surfaced
+ *  through the onServerFrame side-channel into local hook state instead. */
+type VaultStatusAck = {
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
 
 /** requestId-keyed pending MCP relay promise, settled by the matching
  *  mcp-resource-result / mcp-tool-result frame (or a local timeout). */
@@ -187,6 +201,21 @@ export interface LunaData {
    */
   readonly state: UIState
   readonly send: (frame: ClientFrame) => void
+  /** Vault state plus send helpers. The secret value exists only in the caller
+   *  long enough to build the vault-put frame. `lastStatus` is tracked here
+   *  (via the onServerFrame side-channel) because `vault-status` is
+   *  deliberately a reducer no-op: mutation acks are per-consumer concerns,
+   *  matched by requestId, not shared store state. */
+  readonly vault: {
+    readonly items: UIState["vaultItems"]
+    readonly sync: UIState["vaultSync"]
+    readonly storage: UIState["vaultStorage"]
+    readonly lastStatus: VaultStatusAck | null
+    readonly disabled: boolean
+    readonly onPut: (params: Omit<VaultPutFrame, "type">) => void
+    readonly onDelete: (params: Omit<VaultDeleteFrame, "type">) => void
+    readonly onSyncConfig: (params: Omit<VaultSyncConfigFrame, "type">) => void
+  }
   /** Subscribe to every raw ServerFrame as it arrives, in addition to the
    *  reducer dispatch. For frame types the reducer intentionally no-ops
    *  (e.g. `turn-complete`, the only true end-of-agentic-turn signal) this is
@@ -248,6 +277,7 @@ export function useLunaData(): LunaData {
   const [focusArtifact, setFocusArtifact] = useState<FocusArtifactSignal | null>(null)
   const widgetOpenNonceRef = useRef(0)
   const [widgetOpen, setWidgetOpen] = useState<{ kind: string; nonce: number } | null>(null)
+  const [vaultLastStatus, setVaultLastStatus] = useState<VaultStatusAck | null>(null)
 
   // MCP Apps relay: a kind="mcp-app" WidgetFrame asks for resources/tools;
   // stamp a requestId, send the WS frame, and resolve when the matching
@@ -303,6 +333,12 @@ export function useLunaData(): LunaData {
           }
         } else if (frame.type === "mcp-resource-result" || frame.type === "mcp-tool-result") {
           mcpPendingRef.current.get(frame.requestId)?.(frame)
+        } else if (frame.type === "vault-status") {
+          setVaultLastStatus({
+            requestId: frame.requestId,
+            ok: frame.ok,
+            message: frame.message,
+          })
         }
       }),
     [onServerFrame],
@@ -503,6 +539,27 @@ export function useLunaData(): LunaData {
     [state.selectedThreadId, send],
   )
 
+  const vaultPut = useCallback(
+    (params: Omit<VaultPutFrame, "type">): void => {
+      send({ type: "vault-put", ...params })
+    },
+    [send],
+  )
+
+  const vaultDelete = useCallback(
+    (params: Omit<VaultDeleteFrame, "type">): void => {
+      send({ type: "vault-delete", ...params })
+    },
+    [send],
+  )
+
+  const vaultSyncConfig = useCallback(
+    (params: Omit<VaultSyncConfigFrame, "type">): void => {
+      send({ type: "vault-sync-config", ...params })
+    },
+    [send],
+  )
+
   const mcpCapable = state.capabilities.mcpApps === true
   const mcp = useMemo<WebMcpRelay | undefined>(
     () => (mcpCapable ? { readResource: mcpReadResource, callTool: mcpCallTool } : undefined),
@@ -522,6 +579,16 @@ export function useLunaData(): LunaData {
     respondToAction,
     state,
     send,
+    vault: {
+      items: state.vaultItems,
+      sync: state.vaultSync,
+      storage: state.vaultStorage,
+      lastStatus: vaultLastStatus,
+      disabled: status.kind !== "open",
+      onPut: vaultPut,
+      onDelete: vaultDelete,
+      onSyncConfig: vaultSyncConfig,
+    },
     onServerFrame,
     model: cfgRef.current.model,
     pinnedArtifacts: state.pinnedArtifacts,
