@@ -120,7 +120,7 @@ import {
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -441,13 +441,6 @@ const resolveBuildVersion = (): string | undefined => {
 /** Semver of this server release (or `undefined` when unresolvable) — computed
  *  once, threaded into the endpoints; `undefined` omits the wire field. */
 const BUILD_VERSION = resolveBuildVersion()
-
-// Built web SPA (apps/ui-web/dist), resolved relative to this script. When
-// present, the ui-ws server serves it on port 4753 so the web UI is reachable
-// via the same tailnet proxy as the WS (no extra infra). Absent in dev (vite
-// serves the app) → the server just 404s non-API GETs.
-const UI_DIST_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "dist")
-const UI_DIST_READY = existsSync(join(UI_DIST_DIR, "index.html"))
 
 /* ── UI model-list helpers ───────────────────────────────────────────────────
  *
@@ -2548,6 +2541,41 @@ export const buildSetupServerLayer = (
 // system-prompt addendum appended. Wrapping at this seam (vs extending
 // ChatService.CreateThreadOptions) is additive — no other call sites
 // need to change.
+
+// ── SPA static root ───────────────────────────────────────────────────────────
+// Resolve the pre-built web client dist/ directory so the chat-server can serve
+// the SPA single-origin alongside its WebSocket endpoint.
+//
+// Resolution order (first match wins):
+//   1. LUNA_UI_WEB_STATIC_DISABLE=1  → always disabled (useful for debugging).
+//   2. LUNA_UI_WEB_STATIC_ROOT=<path> → explicit override (e.g. custom build dir).
+//   3. dist/ relative to apps/ui-web  → standard Vite output location.
+//
+// If dist/ is absent (e.g. first boot before `bun run build`), degrades
+// gracefully: staticRoot = undefined, static serving is disabled. The luna-
+// update-server upgrade script builds dist/ before restarting the service, so
+// on any fully-upgraded install this directory will be present.
+//
+// Only set in NORMAL mode (see below). Never set in setup-mode.
+const __uiWebDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+// Lazy: only evaluated at the normal-mode call site (buildServerLayer). As a
+// top-level IIFE this would also run — and log "dist/ not built" — in setup-mode,
+// where static serving must stay untouched. The env override is resolved to an
+// absolute path so a relative LUNA_UI_WEB_STATIC_ROOT works from any cwd.
+const computeStaticRoot = (): string | undefined => {
+  if (process.env["LUNA_UI_WEB_STATIC_DISABLE"] === "1") return undefined
+  const override = process.env["LUNA_UI_WEB_STATIC_ROOT"]
+  if (override) {
+    return resolve(override)
+  }
+  const candidate = resolve(__uiWebDir, "dist")
+  if (existsSync(candidate)) return candidate
+  console.log(
+    "[luna/ui] dist/ not built — web client static serving disabled",
+  )
+  return undefined
+}
+
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
 ): Layer.Layer<ServerHandle> =>
@@ -3448,7 +3476,6 @@ const buildServerLayer = (
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
         serverVersion: BUILD_VERSION,
-        staticDir: UI_DIST_READY ? UI_DIST_DIR : null,
         // Advertise the operator-configured + built-in model list so the UI
         // dropdown is driven by the server (LUNA_UI_MODELS overrides go first
         // and become the recommended default). Absent on older/setup-mode
@@ -3500,6 +3527,7 @@ const buildServerLayer = (
         mcpAppHost,
         // PR 1: model-routing settings (config surface only; cap enforcement PR 2).
         modelRoutingService,
+        staticRoot: computeStaticRoot(),
       })
     }),
   ).pipe(
