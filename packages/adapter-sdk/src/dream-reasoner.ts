@@ -33,6 +33,9 @@ import {
   computeAgreement,
   CalibrationStore,
   AccountBroker,
+  DEFAULT_DISTILL_OPTIONS,
+  DREAM_PROMPT_TOKEN_BUDGET,
+  estimateTokens,
 } from "@luna/core"
 import type {
   DreamInputs,
@@ -133,7 +136,41 @@ type RawOp = RawBeliefCandidateOp | RawOtherOp
 // ---------------------------------------------------------------------------
 
 /**
+ * Cap the rendered memories block at `budget` chars. Keeps WHOLE leading lines
+ * that fit alongside the omission marker, then appends a final
+ * `[… N more memory records omitted]` line (N = dropped count). The returned
+ * string — kept lines + marker — is always <= budget (issue #255 §memories cap).
+ *
+ * The marker shrinks as more lines are kept (fewer digits in N), so the per-line
+ * fit check projects the marker for the count AFTER adding this line; the final
+ * marker therefore never overflows the budget it was admitted under.
+ */
+function capMemories(lines: ReadonlyArray<string>, budget: number): string {
+  const joined = lines.join("\n")
+  if (joined.length <= budget) return joined
+
+  const kept: string[] = []
+  let used = 0 // length of kept.join("\n") so far
+  for (const line of lines) {
+    const addition = kept.length === 0 ? line.length : line.length + 1 // +1 = "\n"
+    const omitted = lines.length - (kept.length + 1)
+    const marker = `[… ${omitted} more memory records omitted]`
+    if (used + addition + 1 + marker.length > budget) break // +1 = "\n" before marker
+    kept.push(line)
+    used += addition
+  }
+  const marker = `[… ${lines.length - kept.length} more memory records omitted]`
+  return kept.length === 0 ? marker : `${kept.join("\n")}\n${marker}`
+}
+
+/**
  * Build a deterministic prompt from DreamInputs.
+ *
+ * Sessions arrive PRE-DISTILLED (gatherInputs → distillSession): render each as
+ * its short excerpt under a count header. NEVER JSON.stringify the summary — the
+ * whole point of the distiller (issue #255) is that raw payloads never reach the
+ * prompt, and leaking summary fields (title, etc.) is both bloat and a category
+ * leak. Memories render one line each, capped at DEFAULT_DISTILL_OPTIONS.memoriesChars.
  *
  * Exported so it can be unit-tested independently of the full layer.
  */
@@ -141,16 +178,17 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
   const sessions = inputs.sessions
     .map(
       (s) =>
-        `SESSION ${s.summary.id} (${s.messages.length} msgs):\n` +
-        s.messages
-          .map((m) => `  [${m.kind}] ${JSON.stringify(m.payload)}`)
-          .join("\n"),
+        `SESSION ${s.summary.id} (${s.windowMessageCount}/${s.messageCount} msgs in window):\n` +
+        s.excerpt,
     )
     .join("\n\n")
 
-  const mems = inputs.memories
-    .map((m) => `MEMORY ${m.id} namespace=${m.namespace} kind=${m.kind}`)
-    .join("\n")
+  const mems = capMemories(
+    inputs.memories.map(
+      (m) => `MEMORY ${m.id} namespace=${m.namespace} kind=${m.kind}`,
+    ),
+    DEFAULT_DISTILL_OPTIONS.memoriesChars,
+  )
 
   return [
     "You are Luna's nightly Dream reasoner. Reflect over the sessions and current",
@@ -438,6 +476,24 @@ export const DreamReasonerDefault: Layer.Layer<
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
         const prompt = buildDreamPrompt(inputs)
+
+        // Pre-flight token budget gate (issue #255): distillation bounds each
+        // session/memory scope, but a pathological input can still overflow the
+        // model's context window. Reject BEFORE acquiring an account or issuing
+        // any SDK query — a prompt that would never fit is zero-cost to refuse.
+        // The message names BOTH numbers so the failure is self-explaining.
+        const estimatedTokens = estimateTokens(prompt)
+        if (estimatedTokens > DREAM_PROMPT_TOKEN_BUDGET) {
+          return yield* Effect.fail(
+            new DreamError({
+              op: "reason",
+              message:
+                `dream prompt too large: estimated ${estimatedTokens} tokens ` +
+                `exceeds budget of ${DREAM_PROMPT_TOKEN_BUDGET}`,
+            }),
+          )
+        }
+
         yield* Effect.logInfo("[luna/dream] reasoner.reason: starting", {
           sessions: inputs.sessions.length,
           memories: inputs.memories.length,

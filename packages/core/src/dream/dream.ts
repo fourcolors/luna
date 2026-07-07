@@ -8,6 +8,7 @@ import { readBelief } from "../beliefs/types.js"
 import { SessionStore } from "../session/session-store.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
+import { distillSession, DEFAULT_DISTILL_OPTIONS } from "./distill.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
 import { DREAM_OP_TRAITS } from "./types.js"
 
@@ -163,10 +164,20 @@ export const deriveDreamId = (windowStart: number, windowEnd: number): string =>
 
 /**
  * Collect the dream window (watermark, now]: sessions whose lastMessageAt falls
- * in range, their messages, and operator-namespace memories.
+ * in range, their messages DISTILLED to a bounded excerpt, and operator-namespace
+ * memories.
+ *
+ * Distillation (issue #255): each in-window session's raw StoredMessages are run
+ * through distillSession(...) so the reasoner receives a short excerpt (message-
+ * granularity windowing + per-scope char caps) instead of every raw payload —
+ * the reasoner MUST NOT re-serialize whole message bags into the prompt.
  *
  * NOTE: SessionStore.list has no `since` param, so we list ordered by
  * lastMessageAt and filter the window in code.
+ *
+ * A readMessages failure yields an EMPTY-message distillation (the session is
+ * still surfaced with excerpt="" and windowMessageCount=0), never a dropped
+ * session — losing a session silently is worse than reasoning over an empty one.
  *
  * Adaptation from task spec: the error channel is `MemoryBackendError` (not
  * `never`) because MemoryRouter.query returns Stream<MemoryRecord, MemoryBackendError>.
@@ -194,8 +205,14 @@ export const gatherInputs = (
         .readMessages(summary.id)
         .pipe(
           Stream.runCollect,
-          Effect.map((c) => ({ summary, messages: Array.from(c) })),
-          Effect.catchAll(() => Effect.succeed({ summary, messages: [] as never[] })),
+          Effect.map((c) =>
+            distillSession(summary, Array.from(c), { watermark, now }, DEFAULT_DISTILL_OPTIONS),
+          ),
+          // A failed readMessages still surfaces the session as an empty-message
+          // distillation (not a dropped session — see header comment).
+          Effect.catchAll(() =>
+            Effect.succeed(distillSession(summary, [], { watermark, now }, DEFAULT_DISTILL_OPTIONS)),
+          ),
         ),
     )
 

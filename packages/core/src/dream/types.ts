@@ -2,8 +2,7 @@
 import type { Effect } from "effect"
 import { Data } from "effect"
 import type { MemoryRecord } from "@luna/memory"
-import type { SessionSummary } from "../session/types.js"
-import type { StoredMessage } from "../messages.js"
+import type { DistilledSession } from "./distill.js"
 
 /** The change a reasoner proposes. `after` is an idempotent desired end-state. */
 export type DreamOpKind =
@@ -127,10 +126,7 @@ export interface DreamAuditQuery {
 
 /** Everything the reasoner reads for one dream cycle. */
 export interface DreamInputs {
-  readonly sessions: ReadonlyArray<{
-    readonly summary: SessionSummary
-    readonly messages: ReadonlyArray<StoredMessage>
-  }>
+  readonly sessions: ReadonlyArray<DistilledSession>
   readonly memories: ReadonlyArray<MemoryRecord>
 }
 
