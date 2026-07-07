@@ -2510,36 +2510,78 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
         })
       })
 
+      // A ThreadRegistry wrapper whose `get` suspends for 5 ms before
+      // delegating to the Memory impl. This suspension is the key to making
+      // the double-create race observable: with the real withPermits(1) guard
+      // fiber-2 blocks on the semaphore until fiber-1 has finished createThread
+      // and written the thread into the in-memory map. When fiber-2 eventually
+      // runs its post-acquire re-check its delayed `get` sees the winner and
+      // skips createThread (total SDK calls = 2). Without the guard (mutation:
+      // withPermits(0)) both fibers enter simultaneously, both suspend in their
+      // delayed `get`, both wake with a miss, both call createThread (total = 3)
+      // and the assertion fails — proving the guard was load-bearing.
+      const slowGetRegistryLayer: Layer.Layer<ThreadRegistryService> = Layer.effect(
+        ThreadRegistryService,
+        Effect.gen(function* () {
+          const inner = yield* ThreadRegistryService
+          const api: typeof inner = {
+            ...inner,
+            get: (id: string) =>
+              Effect.sleep("5 millis").pipe(Effect.zipRight(inner.get(id))),
+          }
+          return api
+        }),
+      ).pipe(Layer.provide(ThreadRegistryService.Memory.pipe(Layer.provide(testClock))))
+
+      const baseLayerWithSlowRegistry = Layer.mergeAll(
+        SessionStore.Default,
+        reapClock,
+        obsLayer,
+        telemetryLayer,
+        Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+        slowGetRegistryLayer,
+      )
+
+      const fullLayerWithSlowRegistry = (sdkLayer: Layer.Layer<SDKClient>) =>
+        Layer.provideMerge(
+          ChatService.Default,
+          Layer.provideMerge(
+            SDKAdapter.Default,
+            Layer.mergeAll(sdkLayer, baseLayerWithSlowRegistry),
+          ),
+        )
+
       try {
-        const result = await runScopedReg(
-          Effect.gen(function* () {
-            const chat = yield* ChatService
+        const result = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const chat = yield* ChatService
 
-            const t = yield* chat.createThread({ model: "claude-test", title: "concurrent-reap" })
-            const reg = yield* ThreadRegistryService
-            yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
+              const t = yield* chat.createThread({ model: "claude-test", title: "concurrent-reap" })
+              const reg = yield* ThreadRegistryService
+              yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
 
-            // Wait for idle-eligibility, then reap.
-            yield* waitForIdleEligibility()
-            yield* chat.reapIdleThreadsOnce()
+              // Wait for idle-eligibility, then reap.
+              yield* waitForIdleEligibility()
+              yield* chat.reapIdleThreadsOnce()
 
-            // Fire two sends concurrently — only one should spawn a new SDK query.
-            const [r1, r2] = yield* Effect.all(
-              [chat.send(t.id, "msg-a"), chat.send(t.id, "msg-b")],
-              { concurrency: "unbounded" },
-            )
+              // Fire two sends concurrently — only one should spawn a new SDK query.
+              const [r1, r2] = yield* Effect.all(
+                [chat.send(t.id, "msg-a"), chat.send(t.id, "msg-b")],
+                { concurrency: "unbounded" },
+              )
 
-            yield* Effect.sleep("30 millis")
+              yield* Effect.sleep("30 millis")
 
-            const store = yield* SessionStore
-            const msgs = yield* store.readMessages(t.id).pipe(
-              Stream.runCollect,
-              Effect.map((c) => Array.from(Chunk.toReadonlyArray(c)).filter((m) => m.kind === "user")),
-            )
+              const store = yield* SessionStore
+              const msgs = yield* store.readMessages(t.id).pipe(
+                Stream.runCollect,
+                Effect.map((c) => Array.from(Chunk.toReadonlyArray(c)).filter((m) => m.kind === "user")),
+              )
 
-            return { r1, r2, msgs, createCallCount }
-          }),
-          fakeLayer,
+              return { r1, r2, msgs, createCallCount }
+            }),
+          ).pipe(Effect.provide(fullLayerWithSlowRegistry(fakeLayer))),
         )
 
         // Both sends succeeded
@@ -2549,8 +2591,8 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
         expect(result.msgs.length).toBeGreaterThanOrEqual(2)
         // The semaphore ensures only ONE extra createThread call for the resume
         // (initial create + exactly 1 resume = 2 total; never 3).
-        // Initial create = createCallCount at thread-create time (1), then after
-        // reap exactly 1 more resume call, not 2.
+        // Without the semaphore guard both fibers would race through the delayed
+        // registry.get simultaneously and both call createThread => count = 3.
         expect(result.createCallCount).toBeLessThanOrEqual(2)
       } finally {
         if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
