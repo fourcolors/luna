@@ -157,7 +157,15 @@ const makeStubChatService = (
       }),
 
     send: (_threadId: string, _text: string) =>
-      Effect.succeed(Option.none<ChatMessage>()),
+      Effect.succeed(Option.some<ChatMessage>({
+        id: `stub-msg-${Math.random().toString(36).slice(2)}`,
+        seq: 1,
+        ts: Date.now(),
+        role: "user",
+        text: _text,
+        toolUses: [],
+        attachments: [],
+      })),
 
     interrupt: (_threadId: string) => Effect.void,
 
@@ -1677,5 +1685,79 @@ describe("delivery — stream-edit finalization", () => {
     expect(finals.slice(0, -1).every((f) => !f.opts.isFinal)).toBe(true)
     // The full text survives across chunks.
     expect(finals.map((f) => f.content).join(" ")).toContain("Third paragraph")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Dedup ordering: markSeen deferred until send returns Option.some            */
+/* -------------------------------------------------------------------------- */
+
+describe("dedup ordering (markSeen deferred)", () => {
+  it("when send returns Option.none, seenBefore stays false so the adapter can redeliver", async () => {
+    // Stub that returns Option.none for sends — simulates a Case C (unknown thread)
+    // or any other scenario where send drops the message.
+    const { service: chatService } = makeStubChatService(new Map())
+    const rejectionService = {
+      ...chatService,
+      send: (_threadId: string, _text: string) =>
+        Effect.succeed(Option.none<import("@luna/core").ChatMessage>()),
+    }
+
+    let secondCallResult: boolean | null = null
+
+    await run(
+      rejectionService as unknown as ReturnType<typeof makeStubChatService>["service"],
+      Effect.gen(function* () {
+        const svc = yield* ChannelService
+        yield* svc.registerAdapter(makeFakeAdapterClean("dedup-none-1", "final-only").adapter)
+
+        const msg = makeMessage({ platformMessageId: "dedup-none-pm-1" })
+
+        // First call: send returns none → should NOT mark seen
+        yield* svc.handleMessage(msg)
+
+        // Second call with same platformMessageId:
+        // If markSeen was NOT called on the first (as expected), this should NOT be filtered as a dup.
+        const r2 = yield* svc.handleMessage(msg)
+        secondCallResult = r2
+      }),
+    )
+
+    // The second call was allowed through (not treated as a dup) because
+    // the first send() returning none means we did not mark it seen.
+    expect(secondCallResult).toBe(true)
+  })
+
+  it("when send returns Option.some, seenBefore is true on the next call (normal dedup)", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    // Default stub already returns Option.some after our fix
+
+    let sendCount = 0
+    const trackedService = {
+      ...chatService,
+      send: (threadId: string, text: string) => {
+        sendCount++
+        return chatService.send(threadId, text)
+      },
+    }
+
+    await run(
+      trackedService as unknown as ReturnType<typeof makeStubChatService>["service"],
+      Effect.gen(function* () {
+        const svc = yield* ChannelService
+        yield* svc.registerAdapter(makeFakeAdapterClean("dedup-some-1", "final-only").adapter)
+
+        const msg = makeMessage({ platformMessageId: "dedup-some-pm-1" })
+
+        const r1 = yield* svc.handleMessage(msg)
+        const r2 = yield* svc.handleMessage(msg) // same platformMessageId
+
+        expect(r1).toBe(true)
+        expect(r2).toBe(false) // correctly deduped because first send returned some
+      }),
+    )
+
+    // Only one send() call — the second message was deduped before send
+    expect(sendCount).toBe(1)
   })
 })

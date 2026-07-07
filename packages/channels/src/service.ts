@@ -18,7 +18,7 @@
  * Effect discipline follows packages/connectors/src/service.ts: scoped
  * Layer, Effect.gen throughout, finalizers for teardown.
  */
-import { Effect, Fiber, Layer, Ref, Scope } from "effect"
+import { Effect, Fiber, Layer, Option, Ref, Scope } from "effect"
 import { Clock } from "@luna/core"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelAdapter, ChannelMessage, DeliveryTarget } from "./types.js"
@@ -142,16 +142,16 @@ export const ChannelServiceLayer: Layer.Layer<
     const handleMessage: ChannelServiceApi["handleMessage"] = (msg: ChannelMessage) =>
       Effect.gen(function* () {
         // 1. Dedup — drop at-least-once redeliveries.
-        // NOTE: at-most-once hole — we mark the message seen BEFORE attempting
-        // to send it to chat. If send() or the fiber fork below fails, the
-        // message is already suppressed on the next retry. This is intentional
-        // for the current design: error channels are `never`/orDie so a send
-        // failure crashes the fiber and the adapter's retry loop re-delivers.
-        // Revisit if send() gains a recoverable error channel.
+        // seenBefore guard is up-front as before. markSeen is moved to AFTER
+        // chat.send() returns and ONLY when send returns Option.some (i.e. the
+        // message was accepted and persisted). If send() returns Option.none
+        // (Case C: unknown thread, or store failure), we do NOT mark seen so
+        // the adapter can redeliver. This closes the at-most-once hole that the
+        // old "mark before send" approach had: a dropped message was permanently
+        // suppressed even though it was never actually processed.
         const isDup = yield* dedupStore.seenBefore(msg.transport, msg.platformMessageId)
         if (isDup) return false
         const nowMs = yield* clock.nowMs()
-        yield* dedupStore.markSeen(msg.transport, msg.platformMessageId, nowMs)
 
         // 1.5. Built-in slash commands (/new, /stop, /help, /start) are
         // answered at the channel level and never reach the LLM. Unknown
@@ -194,8 +194,17 @@ export const ChannelServiceLayer: Layer.Layer<
           ),
         )
 
-        // 3. Send the user message to the thread
-        yield* chat.send(threadId, buildChannelUserText(msg))
+        // 3. Send the user message to the thread.
+        // markSeen is deferred to after send() so a dropped message (Case C
+        // unknown thread, or store failure) is not permanently suppressed —
+        // the adapter can redeliver it on the next attempt.
+        const sendResult = yield* chat.send(threadId, buildChannelUserText(msg))
+        if (Option.isSome(sendResult)) {
+          yield* dedupStore.markSeen(msg.transport, msg.platformMessageId, nowMs)
+        }
+        // If send returned Option.none (thread unknown after reap — Case C),
+        // we do NOT mark seen. The adapter will redeliver the message and
+        // the next attempt may succeed once the service is healthy.
 
         // 4. Spawn a delivery fiber per (threadId, adapter) — idempotent
         const adapterList = yield* Ref.get(adapters)
