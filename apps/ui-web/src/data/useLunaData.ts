@@ -29,7 +29,7 @@ import {
   type TransportHandle,
   type UIState,
 } from "@luna/ui-shared/core"
-import { loadConfig } from "./config"
+import { loadConfig, saveConfig, type PersistedConfig } from "./config"
 import { useUiStore } from "./useUiStore"
 import { useTransport } from "./useTransport"
 
@@ -192,6 +192,13 @@ export interface LunaData {
    *  (e.g. `turn-complete`, the only true end-of-agentic-turn signal) this is
    *  the only way to observe them without a second socket. Returns unsubscribe. */
   readonly onServerFrame: (listener: (frame: ServerFrame) => void) => () => void
+  /** Persisted connection config + mutators — the Settings panel's connect form. */
+  readonly config: PersistedConfig
+  readonly updateConfig: (patch: Partial<PersistedConfig>) => void
+  readonly reconnect: () => void
+  readonly disconnect: () => void
+  readonly selectAccount: (id: string | null) => void
+  readonly restartServer: () => Promise<void>
   /** The default model new threads are created with (persisted config). */
   readonly model: string
 
@@ -223,7 +230,20 @@ export interface LunaData {
 
 export function useLunaData(): LunaData {
   const { state, dispatch } = useUiStore()
-  const cfgRef = useRef(loadConfig())
+  // Reactive persisted config (the Settings panel edits url/token/model/account);
+  // cfgRef mirrors it so the stable newThread()/bootstrap closures read the latest.
+  const [config, setConfig] = useState<PersistedConfig>(loadConfig)
+  const cfgRef = useRef(config)
+  cfgRef.current = config
+  const updateConfig = useCallback(
+    (patch: Partial<PersistedConfig>): void =>
+      setConfig((prev) => {
+        const next = { ...prev, ...patch }
+        saveConfig(next)
+        return next
+      }),
+    [],
+  )
 
   // Latest send in a ref so onFrame (stable) can request a fresh list-threads.
   const sendRef = useRef<(f: ClientFrame) => void>(() => {})
@@ -329,8 +349,39 @@ export function useLunaData(): LunaData {
     handle.send({ type: "list-threads" })
   }, [])
 
-  const { status, connect, send } = useTransport({ onFrame, onOpen })
+  const { status, connect, send, disconnect } = useTransport({ onFrame, onOpen })
   sendRef.current = send
+
+  // Connection controls for the Settings panel.
+  const reconnect = useCallback(
+    (): void => connect(cfgRef.current.url, cfgRef.current.token),
+    [connect],
+  )
+  const selectAccount = useCallback(
+    (id: string | null): void => {
+      dispatch({ tag: "select-account", accountId: id })
+      updateConfig({ selectedAccountId: id })
+    },
+    [dispatch, updateConfig],
+  )
+  const restartServer = useCallback(async (): Promise<void> => {
+    const ctrl = cfgRef.current.url.replace(/^ws/, "http").replace(/:4753\/ui$/, ":4754/trpc")
+    await fetch(ctrl + "/control.restart", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + cfgRef.current.token,
+      },
+      body: JSON.stringify({ json: null }),
+    })
+  }, [])
+  // Seed the reducer's selected account from persisted config once on mount.
+  useEffect(() => {
+    if (config.selectedAccountId !== null) {
+      dispatch({ tag: "select-account", accountId: config.selectedAccountId })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Announce this client as a widget host once per connection (the server
   // "replaces any previously announced directory for this connection") — a
@@ -523,6 +574,12 @@ export function useLunaData(): LunaData {
     state,
     send,
     onServerFrame,
+    config,
+    updateConfig,
+    reconnect,
+    disconnect,
+    selectAccount,
+    restartServer,
     model: cfgRef.current.model,
     pinnedArtifacts: state.pinnedArtifacts,
     mcp,
