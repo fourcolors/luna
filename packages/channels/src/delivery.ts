@@ -210,18 +210,30 @@ const buildWorkingBlock = (steps: ReadonlyArray<ToolStep>): string => {
 
 /**
  * Repair markdown code fences across chunk boundaries: when splitToChunks
- * cuts inside a ``` fence, the open fence is closed at the chunk's end and
- * reopened at the start of the next chunk, so every delivered message parses
- * as complete markdown on its own.
+ * cuts inside a fenced block, the open fence is closed at the chunk's end
+ * and reopened at the start of the next chunk, so every delivered message
+ * parses as complete markdown on its own.
+ *
+ * Fence tracking is MARKER-AWARE, mirroring the converter's semantics: a
+ * block opened with ``` is only closed by a ``` line (a ~~~ line inside it
+ * is content, and vice versa), and the close/reopen markers inserted at a
+ * boundary always match the open block's own marker.
  */
 export const repairSplitFences = (chunks: ReadonlyArray<string>): string[] => {
   const out: string[] = []
-  let open = false
+  let open: "```" | "~~~" | null = null
   for (const chunk of chunks) {
-    let c: string = open ? "```\n" + chunk : chunk
-    const fenceCount: number = (c.match(/^\s*(?:`{3,}|~{3,})/gm) ?? []).length
-    open = fenceCount % 2 === 1
-    if (open) c = c + "\n```"
+    let c: string = open !== null ? open + "\n" + chunk : chunk
+    let state: "```" | "~~~" | null = null
+    for (const line of c.split("\n")) {
+      const m = line.match(/^\s*(`{3,}|~{3,})/)
+      if (m === null) continue
+      const marker = (m[1] ?? "").startsWith("`") ? ("```" as const) : ("~~~" as const)
+      if (state === null) state = marker
+      else if (state === marker) state = null
+    }
+    open = state
+    if (open !== null) c = c + "\n" + open
     out.push(c)
   }
   return out

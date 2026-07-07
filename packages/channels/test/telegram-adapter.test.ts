@@ -1256,3 +1256,62 @@ describe("normalizeCommandMention", () => {
     expect(normalizeCommandMention("/stop@AnyBot", null)).toBe("/stop@AnyBot")
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle-call resilience + final-send cleanup                              */
+/* -------------------------------------------------------------------------- */
+
+describe("start(): lifecycle-call resilience", () => {
+  it("polling starts even when getMe and setMyCommands die", async () => {
+    const { transport: base, calls } = makeFakeTransport()
+    const dyingTransport: TelegramHttpTransport = (method, params) =>
+      method === "getMe" || method === "setMyCommands"
+        ? Effect.die(new Error(`${method} exploded`))
+        : base(method, params)
+
+    const adapter = makeTelegramAdapter({ id: "tg-lifecycle-die", httpTransport: dyingTransport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    // The poll loop reached getUpdates despite both lifecycle calls dying.
+    expect(calls.some((c) => c.method === "getUpdates")).toBe(true)
+  })
+})
+
+describe("deliver: final cleanup is failure-proof", () => {
+  it("drops the turn key even when the final send dies", async () => {
+    const { transport: base, calls } = makeFakeTransport()
+    let dieOnSend = false
+    const flakyTransport: TelegramHttpTransport = (method, params) =>
+      method === "editMessageText" && dieOnSend
+        ? Effect.die(new Error("network exploded"))
+        : base(method, params)
+
+    const adapter = makeTelegramAdapter({ id: "tg-final-die", httpTransport: flakyTransport })
+    const target = makeDeliveryTarget("303", "u-die-1")
+
+    // Placeholder creates the edit-routing entry.
+    await Effect.runPromise(
+      adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false })),
+    )
+    // Final edit dies mid-flight (delivery.ts would swallow this).
+    dieOnSend = true
+    await Effect.runPromise(Effect.exit(adapter.deliver(target, "final", makeDeliverOpts())))
+    dieOnSend = false
+
+    // The entry must be gone: a retry on the SAME turn key sends a fresh
+    // message instead of editing a stale one. (The dying edit bypasses the
+    // recording fake entirely, so no editMessageText call is visible.)
+    await Effect.runPromise(adapter.deliver(target, "retry", makeDeliverOpts()))
+    const methods = calls.map((c) => c.method)
+    expect(methods.filter((m) => m === "sendMessage")).toHaveLength(2) // placeholder + retry
+    expect(methods.filter((m) => m === "editMessageText")).toHaveLength(0)
+  })
+})

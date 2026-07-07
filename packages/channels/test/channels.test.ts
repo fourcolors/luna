@@ -1048,6 +1048,21 @@ describe("repairSplitFences", () => {
     const chunks = ["```\ncode\n```", "plain"]
     expect(repairSplitFences(chunks)).toEqual(["```\ncode\n```", "plain"])
   })
+
+  it("repairs tilde fences with tilde markers", () => {
+    const chunks = ["intro\n~~~\ncode start", "code end\n~~~\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n~~~\ncode start\n~~~")
+    expect(repaired[1]).toBe("~~~\ncode end\n~~~\ndone")
+  })
+
+  it("treats a backtick line inside a tilde block as content, not a closer", () => {
+    // The ``` line is inside an open ~~~ block: still open at the boundary.
+    const chunks = ["~~~\nshell\n```\nmore", "end\n~~~"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("~~~\nshell\n```\nmore\n~~~")
+    expect(repaired[1]).toBe("~~~\nend\n~~~")
+  })
 })
 
 /* -------------------------------------------------------------------------- */

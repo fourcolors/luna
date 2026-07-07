@@ -566,7 +566,15 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
         // Best-effort identity: our username enables "/verb@BotName" mention
         // filtering in groups. Failure degrades to bare-verb commands only.
-        const me = yield* transport("getMe", {})
+        // The transport's error channel is `never` (the real transport folds
+        // failures into { ok: false }), but a defect — or an injected
+        // transport that dies — must still not take down start(): catch the
+        // full cause so polling always begins.
+        const me = yield* transport("getMe", {}).pipe(
+          Effect.catchAllCause(() =>
+            Effect.succeed<TelegramApiResult>({ ok: false, description: "getMe failed" }),
+          ),
+        )
         if (me.ok && me.result !== null && me.result !== undefined) {
           const user = me.result as TelegramUser
           botUsername = typeof user.username === "string" ? user.username : null
@@ -574,13 +582,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
         // Best-effort command menu: registers the built-in channel commands
         // so Telegram clients autocomplete them. A failure here must never
-        // block message handling.
+        // block message handling (same defect-proofing as getMe above).
         yield* transport("setMyCommands", {
           commands: channelCommands.map((c) => ({
             command: c.id,
             description: c.description,
           })),
-        })
+        }).pipe(Effect.catchAllCause(() => Effect.void))
 
         // Run the poll loop directly — this never returns normally.
         // The loop is uninterruptible at the inner level (only interrupted
@@ -627,6 +635,16 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         // The inbound message's update_id is the turn key for stream-edit state.
         const turnKey = target.inReplyTo.platformMessageId
 
+        // Capture the edit-routing entry, then drop it UP-FRONT on final
+        // deliveries: the turn is over whether or not the send below
+        // succeeds, and cleanup placed after a yield* would be skipped by a
+        // transport defect (delivery.ts swallows failures), leaking the
+        // entry forever (update_ids are never reused).
+        const existingMsgId = sentMessageIds.get(turnKey)
+        if (opts.isFinal) {
+          sentMessageIds.delete(turnKey)
+        }
+
         // In group chats, thread the reply onto the triggering message so
         // the conversation stays legible amid other traffic. DMs stay clean
         // (no quote header). Only the FIRST message of a turn replies;
@@ -644,11 +662,9 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         // always their own fresh messages — never edits of the placeholder.
         if (opts.chunkIndex > 0) {
           yield* sendFormatted(transport, "sendMessage", { chat_id: chatId }, content)
-          if (opts.isFinal) sentMessageIds.delete(turnKey)
           return
         }
 
-        const existingMsgId = sentMessageIds.get(turnKey)
         if (existingMsgId === undefined) {
           // First send of the turn (placeholder, a status-first turn, a
           // command reply, or a recovery after an earlier failed send).
@@ -658,7 +674,9 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             { chat_id: chatId, ...replyParams },
             content,
           )
-          if (result.ok && result.result !== null && result.result !== undefined) {
+          // Record the message id for follow-up edits — pointless when this
+          // delivery already ended the turn (the entry was dropped above).
+          if (!opts.isFinal && result.ok && result.result !== null && result.result !== undefined) {
             const sent = result.result as TelegramMessage
             sentMessageIds.set(turnKey, sent.message_id)
           }
@@ -672,13 +690,6 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             { chat_id: chatId, message_id: existingMsgId },
             content,
           )
-        }
-
-        // Remove turn state after the final delivery.
-        // This runs for ALL branches (first send, edit, and recovery send)
-        // so no turn-key entry is ever leaked.
-        if (opts.isFinal) {
-          sentMessageIds.delete(turnKey)
         }
       })
     },
