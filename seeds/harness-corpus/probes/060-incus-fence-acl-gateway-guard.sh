@@ -9,7 +9,7 @@
 #           Fix: carve the gateway out of the reject destination so it is never
 #           covered, making rule ordering irrelevant.
 # LESSON:   2026-07-07 (iteration 3) — Luna's per-container fence ACLs
-#           (including lea-fence and every ACL that luna-container-create --fence
+#           (including myapp-fence and every ACL that luna-container-create --fence
 #           creates) are attached at the INSTANCE NIC level, so their used_by
 #           entries are /1.0/instances/<inst>, not /1.0/networks/<bridge>.  The
 #           probe now resolves bridge gateways from BOTH attachment styles.
@@ -77,7 +77,7 @@ _ip_in_dest() {
 # Device YAML structure (from incus config device show):
 #   <devname>:          <- top-level key: no leading space, ends with ":"
 #     network: incusbr0 <- indented 2 spaces
-#     security.acls: lea-fence[,other-acl]
+#     security.acls: myapp-fence[,other-acl]
 #     type: nic
 #
 # mawk-compatible: no 3-arg match(), no gensub().

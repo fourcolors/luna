@@ -84,7 +84,7 @@ bash seeds/harness-corpus/probes/060-incus-fence-acl-gateway-guard.sh
 
 - `OK` — all fence ACLs have reject destinations that exclude the gateway of the bridge they are attached to.
 - `DRIFT` — a reject destination covers the ACL's own bridge gateway. The probe prints the ACL name, bridge, and destination.
-- `SKIP` — incus is absent, no fence ACLs exist, or no fence ACL has a resolvable network-level bridge attachment.
+- `SKIP` — incus is absent, no fence ACLs exist, or no fence ACL has a resolvable network-level or instance-NIC-level bridge attachment.
 
 ## Fix
 
