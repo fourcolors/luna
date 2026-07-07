@@ -2793,34 +2793,191 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
         })
       })
 
+      // Mutable test clock, advanced explicitly. The wall clock made this
+      // test flaky: with the 1ms idle window, any ≥1ms scheduling hiccup
+      // between send()'s lastActivity write and the second sweep's now-read
+      // re-reaped the thread and failed the assertion. Driving time by hand
+      // makes "immediately reap again" mean EXACTLY zero elapsed ms.
+      let nowMs = 1_700_000_000_000
+      const mutableClockLayer: Layer.Layer<CoreClock> = Layer.succeed(
+        CoreClock,
+        CoreClock.of({
+          _tag: "luna/Clock",
+          nowMs: () => Effect.sync(() => nowMs),
+          nowIso: () => Effect.sync(() => new Date(nowMs).toISOString()),
+        }),
+      )
+      const baseLayerMutableClock = Layer.mergeAll(
+        SessionStore.Default,
+        mutableClockLayer,
+        obsLayer,
+        telemetryLayer,
+        Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+        ThreadRegistryService.Memory.pipe(Layer.provide(mutableClockLayer)),
+      )
+      const fullLayerMutableClock = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(fakeLayer, baseLayerMutableClock),
+        ),
+      )
+
       try {
-        const result = await runScopedReg(
-          Effect.gen(function* () {
-            const chat = yield* ChatService
+        const result = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const chat = yield* ChatService
 
-            const t = yield* chat.createThread({ model: "claude-test", title: "reap-resume-noreap" })
-            const reg = yield* ThreadRegistryService
-            yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
+              const t = yield* chat.createThread({ model: "claude-test", title: "reap-resume-noreap" })
+              const reg = yield* ThreadRegistryService
+              yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
 
-            // Wait for idle-eligibility, then reap.
-            yield* waitForIdleEligibility()
-            yield* chat.reapIdleThreadsOnce()
+              // Advance past the 1ms idle window, then reap.
+              nowMs += 10
+              yield* chat.reapIdleThreadsOnce()
 
-            // Resume via send() — this updates lastActivity.
-            const sendResult = yield* chat.send(t.id, "resuming now")
+              // Resume via send() — this updates lastActivity to `nowMs`.
+              const sendResult = yield* chat.send(t.id, "resuming now")
 
-            // Immediately reap again — the just-resumed thread must NOT be reaped
-            // because send() updated lastActivity to now (within the 1ms window).
-            const reapedCount = yield* chat.reapIdleThreadsOnce()
+              // Immediately reap again WITHOUT advancing the clock — the
+              // just-resumed thread must NOT be reaped (0ms elapsed < 1ms window).
+              const reapedCount = yield* chat.reapIdleThreadsOnce()
 
-            return { sendResult, reapedCount, createCallCount }
-          }),
-          fakeLayer,
+              return { sendResult, reapedCount, createCallCount }
+            }),
+          ).pipe(Effect.provide(fullLayerMutableClock)),
         )
 
         expect(Option.isSome(result.sendResult)).toBe(true)
         // The second reap sweep should not touch the resumed thread.
         expect(result.reapedCount).toBe(0)
+      } finally {
+        if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+        else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
+      }
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "subscriber attached BEFORE the reap keeps receiving frames after resume (persistent per-thread PubSub)",
+    async () => {
+      // The Moon regression: a client subscribes, the idle reaper evicts the
+      // thread, send() resumes it — the pre-reap subscription must still see
+      // the recovered turn's frames. Before the persistent-PubSub fix the
+      // resume minted a fresh hub, so this subscriber received nothing (no
+      // frames, no error) and the UI hung. server.chat.reap.test.ts pins the
+      // same contract over the real ws wire; this pins it at the service seam.
+      const SDK_SID = "sdk-pubsub-survives-reap"
+      const prevIdleMs = process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+      process.env["LUNA_CHAT_THREAD_IDLE_MS"] = "1"
+
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: SDK_SID,
+          responseFor: (t) => `echo:${t}`,
+        }),
+      )
+
+      try {
+        const result = await runScopedReg(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+
+            const t = yield* chat.createThread({ model: "claude-test", title: "pubsub-survives" })
+            const reg = yield* ThreadRegistryService
+            yield* reg.upsert({ id: t.id, sdkSessionId: SDK_SID, cwd: "/test", model: "claude-test" })
+
+            // Subscribe BEFORE the reap and hold the stream open across it,
+            // collecting every frame that arrives (like a connected client).
+            const seen: string[] = []
+            yield* Effect.forkScoped(
+              chat.subscribe(t.id).pipe(
+                Stream.runForEach((f) =>
+                  Effect.sync(() => {
+                    seen.push(f.type)
+                  }),
+                ),
+              ),
+            )
+            // Let the snapshot land so the subscription is fully attached.
+            yield* Effect.sleep("20 millis")
+
+            yield* waitForIdleEligibility()
+            const reaped = yield* chat.reapIdleThreadsOnce()
+
+            // Recovered turn: these frames MUST reach the pre-reap subscriber.
+            const sendResult = yield* chat.send(t.id, "after reap")
+            yield* Effect.sleep("50 millis")
+
+            return { reaped, sendResult, seen: [...seen] }
+          }),
+          fakeLayer,
+        )
+
+        expect(result.reaped).toBeGreaterThanOrEqual(1)
+        expect(Option.isSome(result.sendResult)).toBe(true)
+        expect(result.seen).toContain("user-accepted")
+        expect(result.seen).toContain("assistant-done")
+      } finally {
+        if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+        else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
+      }
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "setThreadConfig after reap: recovers the thread instead of rejecting with 'unknown thread'",
+    async () => {
+      // Same recovery contract as send()/subscribe(): the user parking a
+      // thread past the idle window and then flipping the model/effort
+      // dropdown must not be told the thread is unknown.
+      const SDK_SID = "sdk-config-after-reap"
+      const prevIdleMs = process.env["LUNA_CHAT_THREAD_IDLE_MS"]
+      process.env["LUNA_CHAT_THREAD_IDLE_MS"] = "1"
+
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: SDK_SID,
+          responseFor: (t) => `echo:${t}`,
+        }),
+      )
+
+      try {
+        const result = await runScopedReg(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+
+            const t = yield* chat.createThread({
+              model: "claude-sonnet-4-6",
+              title: "config-after-reap",
+            })
+            const reg = yield* ThreadRegistryService
+            yield* reg.upsert({
+              id: t.id,
+              sdkSessionId: SDK_SID,
+              cwd: "/test",
+              model: "claude-sonnet-4-6",
+            })
+
+            yield* waitForIdleEligibility()
+            const reaped = yield* chat.reapIdleThreadsOnce()
+
+            const config = yield* chat.setThreadConfig({ threadId: t.id, effort: "high" })
+
+            return { reaped, config }
+          }),
+          fakeLayer,
+        )
+
+        expect(result.reaped).toBeGreaterThanOrEqual(1)
+        const reasons = (result.config.rejected ?? []).map((r) => r.reason)
+        expect(reasons).not.toContain("unknown thread")
+        expect(result.config.applied).toContain("effort")
       } finally {
         if (prevIdleMs === undefined) delete process.env["LUNA_CHAT_THREAD_IDLE_MS"]
         else process.env["LUNA_CHAT_THREAD_IDLE_MS"] = prevIdleMs
