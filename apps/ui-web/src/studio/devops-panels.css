@@ -753,6 +753,8 @@ html[data-theme='dark'] .vault-warn-text { color: #f0883e; }
 }
 .vault-sync-toggle-btn { font-size: 11.5px; color: var(--ink-soft); }
 .vault-sync-meta { font-size: 10.5px; color: var(--ink-faint); }
+/* Tiered-storage status line (PR #241): muted one-liner under the Vault head. */
+.vault-storage-line { font-size: 10.5px; color: var(--ink-faint); margin: 2px 0 6px; line-height: 1.5; }
 .vault-sync-form {
   display: flex; flex-direction: column; gap: 8px;
   border: 1px solid var(--ink-faint);
