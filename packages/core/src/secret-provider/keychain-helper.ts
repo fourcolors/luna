@@ -20,7 +20,13 @@
  *
  * Platform: macOS only. Non-darwin returns ConfigError immediately
  * with no shell-out (Linux/Windows callers should fall through to a
- * different layer in the SecretProvider chain).
+ * different layer in the SecretProvider chain). The non-darwin error text
+ * is deliberately distinct from the entry-not-found text so the two are
+ * distinguishable in logs.
+ *
+ * Security: the `security` CLI is invoked by its ABSOLUTE path
+ * (`/usr/bin/security`), never as a bare command, so a manipulated PATH
+ * cannot redirect us to a planted binary while handling secret material.
  */
 import { execFile, type ExecFileException } from "node:child_process"
 import { Effect } from "effect"
@@ -28,6 +34,14 @@ import { ConfigError } from "../errors.js"
 
 const MODULE = "KeychainHelper"
 const DEFAULT_TIMEOUT_MS = 5_000
+
+/**
+ * Absolute path to the macOS keychain CLI. Pinned rather than bare "security"
+ * so PATH manipulation can never redirect us to an attacker-planted `security`
+ * on the way to reading/writing secret material. `/usr/bin/security` lives in a
+ * SIP-protected location and is the canonical binary on every supported macOS.
+ */
+const SECURITY_BIN = "/usr/bin/security"
 
 /** Key into the macOS keychain. Both fields must match the entry exactly. */
 export interface KeychainQuery {
@@ -54,11 +68,18 @@ const notFoundConfigError = (q: KeychainQuery): ConfigError =>
     message: `keychain entry not found: ${q.service}/${q.account}`,
   })
 
+/**
+ * Platform-unavailable error. Deliberately DISTINCT wording from
+ * `notFoundConfigError` (which says "keychain entry not found") so a caller (or
+ * a human reading logs) can tell "this OS has no keychain, use another tier"
+ * apart from "the keychain is here but this entry is missing". Same ConfigError
+ * tag either way - only the message differs.
+ */
 const platformConfigError = (platform: string): ConfigError =>
   new ConfigError({
     module: MODULE,
     key: "platform",
-    message: `keychain unsupported on platform ${platform}`,
+    message: `keychain unavailable on ${platform} (no macOS keychain on this platform)`,
   })
 
 const timeoutConfigError = (q: KeychainQuery): ConfigError =>
@@ -104,7 +125,7 @@ export const readKeychainToken = (
     }
 
     const child = ef(
-      "security",
+      SECURITY_BIN,
       ["find-generic-password", "-s", q.service, "-a", q.account, "-w"],
       { timeout: timeoutMs },
       (
@@ -194,7 +215,7 @@ export const writeKeychainSecret = (
     }
 
     const child = ef(
-      "security",
+      SECURITY_BIN,
       [
         "add-generic-password",
         "-U",
@@ -272,7 +293,7 @@ export const deleteKeychainSecret = (
     }
 
     const child = ef(
-      "security",
+      SECURITY_BIN,
       ["delete-generic-password", "-s", q.service, "-a", q.account],
       { timeout: timeoutMs },
       (

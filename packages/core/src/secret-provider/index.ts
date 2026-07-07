@@ -34,3 +34,25 @@ export {
   KeychainEnvSecretProvider,
   keychainVaultQueryForEnvName,
 } from "./keychain-env-backend.js"
+export { isReservedSecretName } from "./reserved-names.js"
+export {
+  LunaVaultFile,
+  LunaVaultIntegrityError,
+  type LunaVaultIntegrityReason,
+  type IntegrityResult,
+  type LunaVaultFileInternals,
+} from "./luna-vault-file.js"
+export {
+  LunaVaultSecretProvider,
+  LUNA_VAULT_INTEGRITY_PREFIX,
+  type LunaVaultBackendOptions,
+} from "./luna-vault-backend.js"
+export {
+  resolveWriteTier,
+  probeOnePassword,
+  type VaultStorageModeV2,
+  type WriteTier,
+  type OnePasswordProbe,
+  type StorageProbe,
+  type ProbeOnePasswordOptions,
+} from "./storage-policy.js"

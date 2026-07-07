@@ -15,6 +15,8 @@ interface SpawnBehavior {
   readonly stderr?: string
   readonly exitCode?: number
   readonly errorOnSpawn?: NodeJS.ErrnoException
+  /** When true, the child never emits close/error — exercises the deadline. */
+  readonly hang?: boolean
 }
 interface SpawnRecord {
   readonly cmd: string
@@ -24,6 +26,8 @@ interface SpawnRecord {
 
 const spawnQueue: SpawnBehavior[] = []
 const spawnLog: SpawnRecord[] = []
+// Signals delivered to the most recently spawned (hung) child, for assertions.
+const killSignals: Array<NodeJS.Signals | number> = []
 
 vi.mock("node:child_process", () => ({
   spawn: (
@@ -36,11 +40,17 @@ vi.mock("node:child_process", () => ({
     const child = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter
       stderr: EventEmitter
+      kill: (signal?: NodeJS.Signals | number) => boolean
     }
     child.stdout = new EventEmitter()
     child.stderr = new EventEmitter()
+    child.kill = (signal?: NodeJS.Signals | number) => {
+      killSignals.push(signal ?? "SIGTERM")
+      return true
+    }
     // Defer events to the next microtask so `on()` listeners are attached.
     queueMicrotask(() => {
+      if (behavior.hang) return // never settle — the timeout guard must fire
       if (behavior.errorOnSpawn) {
         child.emit("error", behavior.errorOnSpawn)
         return
@@ -68,6 +78,7 @@ const buildLayer = (overrides?: Parameters<typeof OnePasswordSecretProvider.make
 beforeEach(() => {
   spawnQueue.length = 0
   spawnLog.length = 0
+  killSignals.length = 0
   delete process.env.OP_SERVICE_ACCOUNT_TOKEN
 })
 
@@ -216,4 +227,28 @@ describe("OnePasswordSecretProvider", () => {
     )
     expect(spawnLog[0]?.env.OP_SERVICE_ACCOUNT_TOKEN).toBe("explicit-token")
   })
+
+  it("a hung `op` is killed after timeoutMs and fails with a timeout ConfigError", async () => {
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = "ops_do_not_leak"
+    spawnQueue.push({ hang: true })
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("op://v/i/f")
+      }).pipe(
+        Effect.provide(buildLayer({ accountLabel: "test", timeoutMs: 30 })),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const j = JSON.stringify(exit.cause)
+      expect(j).toContain("ConfigError")
+      expect(j).toContain("timed out")
+      expect(j).toContain("30ms")
+      // The token must never appear in the timeout error.
+      expect(j).not.toContain("ops_do_not_leak")
+    }
+    // The child was signalled (SIGTERM first).
+    expect(killSignals[0]).toBe("SIGTERM")
+  }, 2000)
 })

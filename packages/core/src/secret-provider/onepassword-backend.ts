@@ -26,6 +26,8 @@ import {
 
 const OP_PREFIX = "op://"
 const DEFAULT_TTL_MS = 300_000 // 5 minutes
+const DEFAULT_OP_TIMEOUT_MS = 10_000 // 10s hard deadline on a single `op read`
+const OP_KILL_GRACE_MS = 500 // SIGTERM → SIGKILL escalation window
 
 export interface OnePasswordOptions {
   /**
@@ -40,6 +42,15 @@ export interface OnePasswordOptions {
   readonly token?: string
   /** TTL for the in-memory cache; defaults to 5 minutes. */
   readonly ttlMs?: number
+  /**
+   * Hard deadline for a single `op read` spawn. Defaults to 10s. A hung `op`
+   * (e.g. waiting on an interactive prompt or a stalled network call) would
+   * otherwise hang the Effect forever - the keychain helper already guards its
+   * shell-out, and this closes the same gap for op. On overrun the child is
+   * sent SIGTERM, then SIGKILL after a short grace, and the read fails with a
+   * ConfigError mentioning the timeout (never the token).
+   */
+  readonly timeoutMs?: number
 }
 
 interface CacheEntry {
@@ -52,14 +63,21 @@ interface CacheEntry {
  * the trimmed stdout or a ConfigError. Token (if provided) is passed via
  * the spawned process env as `OP_SERVICE_ACCOUNT_TOKEN`.
  *
+ * Bounded by a hard `timeoutMs` deadline (mirrors keychain-helper's guard): a
+ * hung `op` is sent SIGTERM, then SIGKILL after OP_KILL_GRACE_MS, and the read
+ * fails with a timeout ConfigError. Without this, a stalled `op` (interactive
+ * prompt, wedged network call) hangs the Effect forever.
+ *
  * Error mapping (all → ConfigError, module "OnePasswordSecretProvider"):
  *   - ENOENT (missing `op` binary) → field "op", message about PATH/install
  *   - non-zero exit                → field "op", message includes stderr tail
  *   - empty stdout (after trim)    → field "ref", message "empty secret"
+ *   - deadline exceeded            → field "op", message mentions timeout
  */
 const spawnOpRead = (
   ref: string,
   token: string | undefined,
+  timeoutMs: number,
 ): Effect.Effect<string, ConfigError> =>
   Effect.async<string, ConfigError>((resume) => {
     const env: NodeJS.ProcessEnv = { ...process.env }
@@ -82,6 +100,44 @@ const spawnOpRead = (
       )
       return
     }
+
+    let settled = false
+    const settle = (e: Effect.Effect<string, ConfigError>): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      clearTimeout(killEscalation)
+      resume(e)
+    }
+
+    // Hard deadline: SIGTERM the child, then SIGKILL after a grace window if it
+    // refuses to die, and fail with a timeout error. Never mentions the token.
+    let killEscalation: ReturnType<typeof setTimeout>
+    const deadline = setTimeout(() => {
+      if (settled) return
+      try {
+        child.kill("SIGTERM")
+      } catch {
+        // best-effort
+      }
+      killEscalation = setTimeout(() => {
+        try {
+          child.kill("SIGKILL")
+        } catch {
+          // best-effort
+        }
+      }, OP_KILL_GRACE_MS)
+      settle(
+        Effect.fail(
+          new ConfigError({
+            module: "OnePasswordSecretProvider",
+            key: "op",
+            message: `'op read' timed out after ${timeoutMs}ms`,
+          }),
+        ),
+      )
+    }, timeoutMs)
+
     let stdout = ""
     let stderr = ""
     child.stdout?.on("data", (d: Buffer | string) => {
@@ -92,7 +148,7 @@ const spawnOpRead = (
     })
     child.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "ENOENT") {
-        resume(
+        settle(
           Effect.fail(
             new ConfigError({
               module: "OnePasswordSecretProvider",
@@ -104,7 +160,7 @@ const spawnOpRead = (
           ),
         )
       } else {
-        resume(
+        settle(
           Effect.fail(
             new ConfigError({
               module: "OnePasswordSecretProvider",
@@ -118,7 +174,7 @@ const spawnOpRead = (
     child.on("close", (code) => {
       if (code !== 0) {
         const tail = stderr.trim().slice(-400)
-        resume(
+        settle(
           Effect.fail(
             new ConfigError({
               module: "OnePasswordSecretProvider",
@@ -131,7 +187,7 @@ const spawnOpRead = (
       }
       const trimmed = stdout.replace(/\n+$/, "")
       if (trimmed.length === 0) {
-        resume(
+        settle(
           Effect.fail(
             new ConfigError({
               module: "OnePasswordSecretProvider",
@@ -142,7 +198,7 @@ const spawnOpRead = (
         )
         return
       }
-      resume(Effect.succeed(trimmed))
+      settle(Effect.succeed(trimmed))
     })
   })
 
@@ -186,6 +242,7 @@ const make = (
     Effect.gen(function* () {
       const clock = yield* Clock
       const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_OP_TIMEOUT_MS
       const token =
         opts.token !== undefined
           ? opts.token
@@ -211,7 +268,7 @@ const make = (
           const cache = yield* Ref.get(cacheRef)
           const hit = cache.get(ref)
           if (hit && hit.expiresAt > now) return hit.redacted
-          const value = yield* spawnOpRead(ref, token)
+          const value = yield* spawnOpRead(ref, token, timeoutMs)
           const redacted = Redacted.make(value)
           yield* Ref.update(cacheRef, (m) => {
             const next = new Map(m)
