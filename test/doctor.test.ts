@@ -56,6 +56,8 @@ const runDoctor = (
     hostActive?: boolean
     timerPresent?: boolean
     registryFile?: string
+    embedder?: "reachable" | "unreachable"
+    extraEnv?: Record<string, string>
   } = {},
 ) => {
   const env: Record<string, string | undefined> = {
@@ -64,6 +66,7 @@ const runDoctor = (
     LUNA_TAILSCALE_IP: "",
     LUNA_SERVERS_CONFIG: seams.registryFile ?? FIXTURE,
     LUNA_TEST_STAT_MODE: "600",
+    ...seams.extraEnv,
   }
   if (seams.incusActive !== undefined) {
     env.LUNA_TEST_DOCTOR_INCUS_ACTIVE = String(seams.incusActive)
@@ -73,6 +76,9 @@ const runDoctor = (
   }
   if (seams.timerPresent !== undefined) {
     env.LUNA_TEST_DOCTOR_TIMER_PRESENT = String(seams.timerPresent)
+  }
+  if (seams.embedder !== undefined) {
+    env.LUNA_TEST_DOCTOR_EMBEDDER = seams.embedder
   }
 
   const args = profile != null ? [profile] : []
@@ -268,6 +274,87 @@ describe("F5 rail — timer absent for timer=false profile → PASS", () => {
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     expect(result.stdout).toContain("correctly absent")
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7b. Embedder reachability probe (LUNA_EMBEDDER=ollama)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("embedder reachability probe", () => {
+  const ollamaEnv = {
+    LUNA_EMBEDDER: "ollama",
+    LUNA_OLLAMA_BASE_URL: "http://10.77.0.1:11434",
+  }
+
+  it("ollama reachable → PASS with embedder OK line", () => {
+    const result = runDoctor("stable", {
+      incusActive: true,
+      hostActive: false,
+      timerPresent: false,
+      embedder: "reachable",
+      extraEnv: ollamaEnv,
+    })
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0)
+    expect(result.stdout).toContain("embedder reachable")
+    expect(result.stdout).toContain("http://10.77.0.1:11434")
+  })
+
+  it("ollama unreachable on incus profile → FAIL, hint names the CONTAINER (not the profile)", () => {
+    // Regression: the diagnose hint used `incus exec $profile` (the bare
+    // profile name) instead of the actual incus instance name from P_INCUS.
+    const result = runDoctor("stable", {
+      incusActive: true,
+      hostActive: false,
+      timerPresent: false,
+      embedder: "unreachable",
+      extraEnv: ollamaEnv,
+    })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("embedder unreachable")
+    expect(result.stderr).toContain("docs/runbooks/incus-fence-acl.md")
+    // Fixture maps profile "stable" → container "luna-stable".
+    expect(result.stderr).toContain("incus exec luna-stable --")
+    expect(result.stderr).not.toContain("incus exec stable --")
+  })
+
+  it("ollama unreachable on bareFolder profile → FAIL with a plain curl hint (no incus exec)", () => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `ports.proxy = 4753`,
+        `deploy.timer = false`,
+      ].join("\n") + "\n",
+    )
+    const result = runDoctor("stable", {
+      registryFile: reg,
+      hostActive: true,
+      timerPresent: false,
+      embedder: "unreachable",
+      extraEnv: ollamaEnv,
+    })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("embedder unreachable")
+    expect(result.stderr).toContain("Diagnose: curl")
+    expect(result.stderr).not.toContain("incus exec")
+  })
+
+  it("ollama without LUNA_OLLAMA_BASE_URL → INFO skip, no failure", () => {
+    const result = runDoctor("stable", {
+      incusActive: true,
+      hostActive: false,
+      timerPresent: false,
+      extraEnv: { LUNA_EMBEDDER: "ollama" },
+    })
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0)
+    expect(result.stdout).toContain("LUNA_OLLAMA_BASE_URL is unset")
   })
 })
 
