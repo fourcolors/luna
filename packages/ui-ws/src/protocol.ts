@@ -79,6 +79,14 @@ export interface HelloFrame {
      * of SDK effort levels.
      */
     readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
+    /**
+     * Effort a fresh thread should DEFAULT to for this model when the client
+     * persists none - server-computed via defaultEffortForModel(). OPTIONAL
+     * and additive: absent on older servers and on models with no opinion;
+     * clients then fall back to the weakest supported level. When present it
+     * is always a member of `efforts` and never the "ultracode" pseudo-token.
+     */
+    readonly defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
