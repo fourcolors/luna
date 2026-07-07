@@ -9,7 +9,7 @@
     "build": "bun run --filter '@luna/core' build && bun run --filter '@luna/ui-web' build && bun run --filter '@luna/ui-moon-tauri' build -- --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:bun": "bun test packages/core packages/observability-tools packages/memory packages/vault packages/channels/test/dedup-sqlite.test.ts",
+    "test:bun": "bun test packages/core packages/observability-tools packages/memory packages/vault packages/channels/test/dedup-sqlite.test.ts packages/mcp-servers",
     "test:all": "bun run test && bun run test:bun",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/agent-cli/tsconfig.json && tsc --noEmit -p apps/ui-web/tsconfig.json && tsc --noEmit -p packages/ui-shared-solid/tsconfig.json",
     "vault:migrate-keychain:dry-run": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --dry-run",
