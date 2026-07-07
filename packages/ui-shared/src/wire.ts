@@ -169,7 +169,8 @@ export interface HelloFrame {
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
    * absent on older servers; clients fall back to their own hardcoded list.
-   * The FIRST entry is the recommended default.  Mirrors the same field in
+   * The FIRST entry is the recommended default (server/operator-preferred, not
+   * necessarily the highest-capability model). Mirrors the same field in
    * packages/ui-ws/src/protocol.ts — keep in sync.
    */
   readonly availableModels?: ReadonlyArray<{
@@ -182,6 +183,11 @@ export interface HelloFrame {
      * server demuxes into SDK settings (display/wire list).
      */
     readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
+    /**
+     * Effort a fresh thread should default to for this model when the client
+     * persists none. Optional/additive; present for Sonnet 5 as "high".
+     */
+    readonly defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   }>
   /**
    * Additive server descriptor (no protocol bump). Older clients ignore it.
@@ -1027,7 +1033,8 @@ export interface ThreadArchiveErrorFrame {
 
 export interface NewThreadFrame {
   readonly type: "new-thread"
-  readonly model: string
+  /** Optional; omitted means use the server's daily-driver default model. */
+  readonly model?: string
   readonly accountId?: string    // pins this thread to a specific account
   readonly title?: string
   readonly tags?: ReadonlyArray<string>

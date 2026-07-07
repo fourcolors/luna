@@ -59,7 +59,7 @@ export interface HelloFrame {
    * Models the operator can pick for new threads. OPTIONAL and additive —
    * absent on older servers; the client falls back to its own hardcoded list
    * when this field is missing. The FIRST entry is the recommended default
-   * (highest capability or operator-preferred).
+   * (server/operator-preferred, not necessarily the highest-capability model).
    *
    * No protocol bump needed: additive field, same pattern as `buildSha`.
    * The server includes it when `availableModels` is threaded into
@@ -1500,7 +1500,8 @@ export interface ThreadArchiveErrorFrame {
 
 export interface NewThreadFrame {
   readonly type: "new-thread"
-  readonly model: string
+  /** Optional; omitted means use the server's daily-driver default model. */
+  readonly model?: string
   readonly accountId?: string    // pins this thread to a specific account
   readonly title?: string
   readonly tags?: ReadonlyArray<string>

@@ -526,8 +526,9 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  * The built-in base list of selectable models shown when the operator has
  * not overridden via LUNA_UI_MODELS. This list is the recommended default
  * capability spread; entries are deduped (extras-first) in buildAvailableModels.
- * The first entry is the recommended default (highest capability or operator-
- * preferred). Efforts are attached server-side via effortsForModel().
+ * The first entry is the recommended default (server/operator-preferred, not
+ * necessarily the highest-capability model). Efforts are attached server-side
+ * via effortsForModel().
  */
 const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
   { id: "claude-sonnet-5",     label: "Claude Sonnet 5 — balanced default" },
