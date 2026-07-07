@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Effect, Exit, Layer, Redacted } from "effect"
 import {
   ConfigError,
+  LUNA_VAULT_INTEGRITY_PREFIX,
+  LunaVaultIntegrityError,
   SecretProvider,
   type KeychainQuery,
   type SecretProviderApi,
@@ -21,6 +23,7 @@ import {
   buildSecretChainLayer,
   buildStorageStatus,
   discoverOpTokens,
+  makeEnvSecretResolver,
   normalizeVaultStorageModeV2,
   type RoutedOpAccountLayer,
 } from "./secret-chain.js"
@@ -256,6 +259,96 @@ describe("buildSecretChainLayer: auto mode inserts lunaVault between keychain an
       lunaVaultRead: fakeVaultRead({}),
     })
     expect(await resolve(layer, "luna-op://primary/x")).toBe("op-secret")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* makeEnvSecretResolver                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe("makeEnvSecretResolver", () => {
+  const OLD_VAULT = process.env["RESOLVER_VAULT_KEY"]
+  const OLD_MISS = process.env["RESOLVER_MISS_KEY"]
+  const OLD_ENV = process.env["RESOLVER_ENV_KEY"]
+  const OLD_INTEGRITY = process.env["RESOLVER_INTEGRITY_KEY"]
+
+  afterEach(() => {
+    if (OLD_VAULT === undefined) delete process.env["RESOLVER_VAULT_KEY"]
+    else process.env["RESOLVER_VAULT_KEY"] = OLD_VAULT
+    if (OLD_MISS === undefined) delete process.env["RESOLVER_MISS_KEY"]
+    else process.env["RESOLVER_MISS_KEY"] = OLD_MISS
+    if (OLD_ENV === undefined) delete process.env["RESOLVER_ENV_KEY"]
+    else process.env["RESOLVER_ENV_KEY"] = OLD_ENV
+    if (OLD_INTEGRITY === undefined) delete process.env["RESOLVER_INTEGRITY_KEY"]
+    else process.env["RESOLVER_INTEGRITY_KEY"] = OLD_INTEGRITY
+  })
+
+  it("resolves a name through the vault tier", async () => {
+    delete process.env["RESOLVER_VAULT_KEY"]
+    const resolveEnvSecret = makeEnvSecretResolver({
+      mode: "auto",
+      platform: "darwin",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({ RESOLVER_VAULT_KEY: "from-vault" }),
+      _keychainRead: fakeKeychainRead({}),
+    })
+
+    const value = await resolveEnvSecret("RESOLVER_VAULT_KEY")
+
+    expect(value === undefined ? undefined : Redacted.value(value)).toBe(
+      "from-vault",
+    )
+  })
+
+  it("returns undefined on a full-chain miss", async () => {
+    delete process.env["RESOLVER_MISS_KEY"]
+    const resolveEnvSecret = makeEnvSecretResolver({
+      mode: "auto",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({}),
+    })
+
+    await expect(resolveEnvSecret("RESOLVER_MISS_KEY")).resolves.toBeUndefined()
+  })
+
+  it("rejects on an integrity-prefixed failure and never returns stale env", async () => {
+    process.env["RESOLVER_INTEGRITY_KEY"] = "from-env"
+    const resolveEnvSecret = makeEnvSecretResolver({
+      mode: "auto",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: async () => {
+        throw new LunaVaultIntegrityError("key-missing", "vault locked out")
+      },
+    })
+
+    await expect(resolveEnvSecret("RESOLVER_INTEGRITY_KEY")).rejects.toMatchObject(
+      {
+        message: expect.stringContaining(LUNA_VAULT_INTEGRITY_PREFIX),
+      },
+    )
+    await expect(resolveEnvSecret("RESOLVER_INTEGRITY_KEY")).rejects.not.toMatchObject(
+      {
+        message: expect.stringContaining("from-env"),
+      },
+    )
+  })
+
+  it("resolves plain process.env values from the env tail", async () => {
+    process.env["RESOLVER_ENV_KEY"] = "from-env"
+    const resolveEnvSecret = makeEnvSecretResolver({
+      mode: "env",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({}),
+    })
+
+    const value = await resolveEnvSecret("RESOLVER_ENV_KEY")
+
+    expect(value === undefined ? undefined : Redacted.value(value)).toBe(
+      "from-env",
+    )
   })
 })
 

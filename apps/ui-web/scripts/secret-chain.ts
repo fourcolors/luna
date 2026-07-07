@@ -44,7 +44,7 @@ import {
   type WriteTier,
 } from "@luna/core"
 import type { ConfigError } from "@luna/core"
-import type { Layer } from "effect"
+import { Context, Effect, Layer, Redacted } from "effect"
 import {
   envTokenFor,
   fileTokenFor,
@@ -199,6 +199,33 @@ export const buildSecretChainLayer = (
   chain.push(lunaVaultL, envProviderL)
   return secretProviderFirstOf(chain, stopOnVaultIntegrity)
 }
+
+/**
+ * Bound resolver for ad-hoc `env:NAME` lookups outside the main layer graph.
+ *
+ * Chat-server has a few boot-time seams that live outside the runtime context.
+ * They still need the SAME SecretProvider chain as AccountBroker: routed OP,
+ * keychain/vault/env by storage mode, and the integrity stopOn guard. Build
+ * that chain per call, resolve exactly one `env:` ref, turn a clean full-chain
+ * miss into undefined, and let integrity-prefixed ConfigError failures reject
+ * so callers fail closed instead of falling through to stale plaintext.
+ */
+export const makeEnvSecretResolver =
+  (opts: BuildSecretChainLayerOpts) =>
+  (name: string): Promise<Redacted.Redacted<string> | undefined> => {
+    const layer = buildSecretChainLayer(opts)
+    const program = Effect.gen(function* () {
+      const ctx = yield* Layer.build(layer)
+      const provider = Context.get(ctx, SecretProvider)
+      const result = yield* Effect.either(provider.get(`env:${name}`))
+      if (result._tag === "Right") return result.right
+      if (result.left.message.startsWith(LUNA_VAULT_INTEGRITY_PREFIX)) {
+        return yield* Effect.fail(result.left)
+      }
+      return undefined
+    })
+    return Effect.runPromise(Effect.scoped(program))
+  }
 
 /**
  * Reader for a single op token from the Luna vault, keyed by the account's

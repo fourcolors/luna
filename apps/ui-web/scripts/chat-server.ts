@@ -252,6 +252,7 @@ import {
   buildSecretChainLayer,
   buildStorageStatus,
   discoverOpTokens as discoverOpTokensChain,
+  makeEnvSecretResolver,
   normalizeVaultStorageModeV2,
   type DiscoveredOpToken,
   type RoutedOpAccountLayer,
@@ -1740,8 +1741,20 @@ export const buildWorkerRegistryLayer = (
 // OnePasswordSecretProvider built inline; the routed wrapper dispatches
 // based on the ref scheme (op://, luna-op://<label>/...) per
 // DESIGN.md §2.2.11. No fall-through across OP accounts.
-export const buildBaseLayer = (
+const buildRoutedOpAccountLayers = (
   opTokens: ReadonlyArray<DiscoveredOpToken>,
+  clockL: Layer.Layer<Clock>,
+): ReadonlyArray<RoutedOpAccountLayer> =>
+  opTokens.map((t) => ({
+    label: t.label,
+    layer: OnePasswordSecretProvider.make({
+      accountLabel: t.label,
+      token: t.token,
+    }).pipe(Layer.provide(clockL)),
+  }))
+
+export const buildBaseLayer = (
+  opAccountLayers: ReadonlyArray<RoutedOpAccountLayer>,
 ): Layer.Layer<
   | UIService
   | ObservabilityService
@@ -1776,18 +1789,6 @@ export const buildBaseLayer = (
   // onMirrorError hook and does NOT kill the live session.
   const storeL = makeSessionStoreSqlite(paths.lunaDbPath)
 
-  // Build one inner OP layer per discovered token; the routed dispatcher (owned
-  // by buildSecretChainLayer) wraps them. The inner backends are pure 1Password
-  // readers; the routed wrapper owns the op://-vs-luna-op:// grammar.
-  const opAccountLayers: ReadonlyArray<RoutedOpAccountLayer> = opTokens.map(
-    (t) => ({
-      label: t.label,
-      layer: OnePasswordSecretProvider.make({
-        accountLabel: t.label,
-        token: t.token,
-      }).pipe(Layer.provide(clockL)),
-    }),
-  )
   // Compose the read chain per mode (W2). Composition lives in secret-chain.ts;
   // this only injects the platform, the discovered OP accounts, and the
   // standalone luna-vault reader. The load-bearing env tail + the per-mode chain
@@ -3498,6 +3499,9 @@ const SEED_HINT =
   "    --secret-ref claude-code:login"
 
 const buildMain = (
+  resolveEnvSecret: (
+    name: string,
+  ) => Promise<Redacted.Redacted<string> | undefined>,
   opLabelsRegistered: ReadonlyArray<string>,
 ): Effect.Effect<never, Error, AccountBroker | ServerHandle | ChannelService> =>
   Effect.gen(function* () {
@@ -3541,15 +3545,20 @@ const buildMain = (
 
     // ── Communication channels: register + start adapters ────────────────────
     // Telegram is wired unconditionally; the bot token is the only requirement.
-    // The token is read from TELEGRAM_BOT_TOKEN and passed as a Redacted value
-    // so it never appears in logs/traces. With no token we skip registration
-    // (an unstartable bot would just back off forever) and log a one-liner so
+    // TELEGRAM_BOT_TOKEN resolves through the app SecretProvider chain
+    // (keychain/vault/env by mode) and is passed as a Redacted value so it never
+    // appears in logs/traces. With no token we skip registration (an
+    // unstartable bot would just back off forever) and log a one-liner so
     // operators know how to enable it. startAdapters() forks each adapter into
     // the ChannelService's own (long-lived) scope, so it runs for the life of
     // the server; the trailing Effect.scoped only discharges the unused ambient
     // Scope requirement on the API signature.
     const channels = yield* ChannelService
-    const tgToken = process.env["TELEGRAM_BOT_TOKEN"]?.trim()
+    const tgSecret = yield* Effect.promise(() =>
+      resolveEnvSecret("TELEGRAM_BOT_TOKEN"),
+    )
+    const tgToken =
+      tgSecret === undefined ? undefined : Redacted.value(tgSecret).trim()
     if (tgToken !== undefined && tgToken.length > 0) {
       yield* channels.registerAdapter(
         makeTelegramAdapter({ id: "telegram-main", token: Redacted.make(tgToken) }),
@@ -3639,7 +3648,14 @@ const bootstrap = async (): Promise<void> => {
   // AccountBrokerLayer.fromSql pick up the store-resolved values.
   applyProviderSettingsToEnv(paths.lunaDbPath)
 
-  const baseLayer = buildBaseLayer(opTokens)
+  const opAccountLayers = buildRoutedOpAccountLayers(opTokens, Clock.Default)
+  const resolveEnvSecret = makeEnvSecretResolver({
+    mode: vaultStorageMode,
+    platform: process.platform,
+    opAccounts: opAccountLayers,
+    lunaVaultRead,
+  })
+  const baseLayer = buildBaseLayer(opAccountLayers)
   const serverLayer = buildServerLayer(baseLayer)
   const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
 
@@ -3703,7 +3719,7 @@ const bootstrap = async (): Promise<void> => {
   // error rather than a boot crash. Hint to add a `luna.op.<label>`
   // keychain entry or set `LUNA_OP_TOKEN_<LABEL>` if chat queries fail
   // with a ConfigError tagged `OnePasswordSecretProvider`.
-  runtime.runPromise(buildMain(opLabelsRegistered)).catch((err) => {
+  runtime.runPromise(buildMain(resolveEnvSecret, opLabelsRegistered)).catch((err) => {
     const msg = String(err)
     console.error("❌ chat server crashed:", err)
     if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
