@@ -83,6 +83,7 @@ import {
 } from "./thread-session-map.js"
 import {
   clampEffort,
+  defaultEffortForModel,
   isEffort,
   isEffortOption,
   isUltracode,
@@ -695,7 +696,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           const binding = Option.map(threadToolsProvider, (p) =>
             p.decorate(opts),
           )
-          const effectiveOpts: CreateThreadOptions = Option.match(binding, {
+          const decorated: CreateThreadOptions = Option.match(binding, {
             onNone: () => opts,
             onSome: (b) => ({
               ...opts,
@@ -705,15 +706,36 @@ export class ChatService extends Effect.Service<ChatService>()(
                 : {}),
             }),
           })
+          // Per-model default effort: when the caller supplies none, fall back
+          // to the model's default (defaultEffortForModel — e.g. Sonnet 5 →
+          // "high") so a fresh thread starts at the intended level even for
+          // clients that omit effort. Resolved ONCE here so buildSessionOptions
+          // (the SDK options) and createClamp below (logging + persistence)
+          // agree on the applied value. Never yields the "ultracode" token
+          // (defaultEffortForModel returns a real EffortLevel or undefined), so
+          // the ultracode demux is unaffected. Only rebuilds the options object
+          // when a default is actually injected (opts.effort was absent).
+          const resolvedEffort: EffortOption | undefined =
+            opts.effort ?? defaultEffortForModel(opts.model ?? "")
+          // Rebuild the options object only when a default was actually injected
+          // (opts.effort was absent and the model has one). The `!== undefined`
+          // clause also narrows resolvedEffort so the `effort` key is never
+          // assigned `undefined` under exactOptionalPropertyTypes.
+          const effectiveOpts: CreateThreadOptions =
+            resolvedEffort !== undefined && resolvedEffort !== opts.effort
+              ? { ...decorated, effort: resolvedEffort }
+              : decorated
           const sessionOptions = buildSessionOptions(effectiveOpts)
 
           // Per-model clamp result for logging + eager persistence below.
           // The same pure clamp already ran inside buildSessionOptions —
           // recomputing it here avoids widening that function's return type.
-          // Mirror the ultracode demux: keep the token out of the clamp.
-          const createClamp = isUltracode(opts.effort)
+          // Mirror the ultracode demux: keep the token out of the clamp. Clamp
+          // the RESOLVED effort (post default-injection) so the persisted value
+          // matches what the SDK actually ran on.
+          const createClamp = isUltracode(effectiveOpts.effort)
             ? { effort: undefined as EffortLevel | undefined, dropped: false }
-            : clampEffort(opts.model, opts.effort)
+            : clampEffort(opts.model, effectiveOpts.effort)
           if (isUltracode(opts.effort)) {
             if (!modelSupportsUltracode(opts.model ?? "")) {
               // Distinguish "no model selected (default lane)" from a model

@@ -27,7 +27,7 @@ export interface PersistedConfig {
 
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
-const DEFAULT_MODEL = "claude-opus-4-8"
+const DEFAULT_MODEL = "claude-sonnet-5"
 
 const VALID_EFFORTS: ReadonlySet<string> = new Set([
   "low",

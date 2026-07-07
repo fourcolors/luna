@@ -44,7 +44,7 @@ export type LunaCliResult = {
   exitCode: 0 | 1 | 2
 }
 
-const DEFAULT_MODEL = "claude-sonnet-4-5"
+const DEFAULT_MODEL = "claude-sonnet-5"
 const DEFAULT_LOCAL_COMMAND_TIMEOUT_MS = 30_000
 const MAX_LOCAL_COMMAND_OUTPUT_BYTES = 64 * 1024
 const QUIT_DRAIN_MS = 1_000

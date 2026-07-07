@@ -76,6 +76,15 @@ const HAIKU: AvailableModel = {
   efforts: [],
 }
 
+// Sonnet 5 advertises a per-model default effort ("high"), unlike the models
+// above. Used to pin the defaultEffort display + new-thread fallback.
+const SONNET5: AvailableModel = {
+  id: "claude-sonnet-5",
+  label: "Sonnet 5 — balanced default",
+  efforts: ["low", "medium", "high", "max"],
+  defaultEffort: "high",
+}
+
 interface Rig {
   readonly container: HTMLElement
   readonly modelChangeCalls: Array<{ threadId: string; model: string }>
@@ -248,6 +257,37 @@ describe("ChatPanel config cluster — (b) effort control shows selected model's
       expect(Array.from(effortSelect(rig.container)!.options).length).toBe(5)
       const opts = Array.from(effortSelect(rig.container)!.options).map((o) => o.value)
       expect(opts).toEqual(["low", "medium", "high", "xhigh", "max"])
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("defaults the effort control to the model's defaultEffort when none selected (sonnet 5 → high)", () => {
+    const rig = mount({
+      availableModels: [SONNET5],
+      effortSelection: true,
+      model: SONNET5.id,
+      // no effort prop → falls back to the model's advertised defaultEffort,
+      // NOT the weakest level (which would be "low").
+    })
+    try {
+      const sel = effortSelect(rig.container)
+      expect(sel).not.toBeNull()
+      expect(sel!.value).toBe("high")
+    } finally {
+      rig.dispose()
+    }
+  })
+
+  it("a persisted effort still wins over the model default (sonnet 5 + low)", () => {
+    const rig = mount({
+      availableModels: [SONNET5],
+      effortSelection: true,
+      model: SONNET5.id,
+      effort: "low",
+    })
+    try {
+      expect(effortSelect(rig.container)!.value).toBe("low")
     } finally {
       rig.dispose()
     }
@@ -443,7 +483,7 @@ describe("buildNewThreadFrame — review F5: new-thread effort include/omit", ()
     expect("effort" in frame).toBe(false)
   })
 
-  it("omits effort when no effort is persisted", () => {
+  it("omits effort when no effort is persisted and the model has no default", () => {
     const frame = buildNewThreadFrame({
       model: FABLE.id,
       effort: undefined,
@@ -451,6 +491,26 @@ describe("buildNewThreadFrame — review F5: new-thread effort include/omit", ()
       availableModels: MODELS,
     })
     expect("effort" in frame).toBe(false)
+  })
+
+  it("falls back to the model's defaultEffort when none is persisted (sonnet 5 → high)", () => {
+    const frame = buildNewThreadFrame({
+      model: SONNET5.id,
+      effort: undefined,
+      accountId: null,
+      availableModels: [SONNET5, ...MODELS],
+    })
+    expect(frame.effort).toBe("high")
+  })
+
+  it("a persisted effort overrides the model default (sonnet 5 + low)", () => {
+    const frame = buildNewThreadFrame({
+      model: SONNET5.id,
+      effort: "low",
+      accountId: null,
+      availableModels: [SONNET5, ...MODELS],
+    })
+    expect(frame.effort).toBe("low")
   })
 
   it("includes accountId when non-null, omits when null (pre-existing behavior preserved)", () => {

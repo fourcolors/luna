@@ -25,7 +25,7 @@
  *
  * Role defaults (v1):
  *   advisor      -> claude-opus-4-8   (most capable)
- *   daily-driver -> claude-sonnet-4-6 (balanced)
+ *   daily-driver -> claude-sonnet-5   (balanced default)
  *   wake         -> claude-sonnet-4-6 (cheapest capable)
  *   dream        -> claude-haiku-4-5  (cheapest)
  *
@@ -46,7 +46,7 @@
   };
   var DEFAULT_ROLE_MODEL = {
     'advisor':      'claude-opus-4-8',
-    'daily-driver': 'claude-sonnet-4-6',
+    'daily-driver': 'claude-sonnet-5',
     'wake':         'claude-sonnet-4-6',
     'dream':        'claude-haiku-4-5',
   };
@@ -61,7 +61,8 @@
 
   var ANTHROPIC_MODELS = [
     { id: 'claude-opus-4-8',   label: 'Claude Opus 4.8 — most capable' },
-    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — balanced' },
+    { id: 'claude-sonnet-5',   label: 'Claude Sonnet 5 — balanced default' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — prior gen' },
     { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5 — fastest' },
   ];
 
@@ -196,7 +197,7 @@
         });
         ROLES.forEach(function (r) {
           if (!draftRoleModel[r]) {
-            draftRoleModel[r] = DEFAULT_ROLE_MODEL[r] || 'claude-sonnet-4-6';
+            draftRoleModel[r] = DEFAULT_ROLE_MODEL[r] || 'claude-sonnet-5';
           }
         });
       }
