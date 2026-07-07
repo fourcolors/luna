@@ -13,7 +13,11 @@
  * Per-thread state lives in a `Ref<Map<threadId, ThreadEntry>>`. Each entry
  * carries:
  *   - inbox: Queue<SDKUserMessage>    — the prompt stream feeding adapter.query
- *   - pubsub: PubSub<ChatFrame>       — the wire-shape fan-out
+ *   - pubsub: PubSub<ChatFrame>       — the wire-shape fan-out; a borrowed
+ *                                       reference into the persistent
+ *                                       per-thread-id `pubsubs` map, so
+ *                                       subscriptions survive idle-reap →
+ *                                       resume (see `pubsubs` below)
  *   - scope: Scope.CloseableScope     — the per-thread sub-scope; closing it
  *                                       interrupts the SDK subprocess for
  *                                       that thread only (Operator's "stop"
@@ -104,6 +108,10 @@ import {
 
 interface ThreadEntry {
   readonly inbox: Queue.Queue<SDKUserMessage>
+  /** Wire-shape ChatFrame fan-out. NOT owned by this entry or its scope: it is
+   *  a borrowed reference into the persistent per-thread-id `pubsubs` map, so
+   *  subscriptions taken before an idle reap keep receiving frames after the
+   *  thread is re-created. Never shut it down when the entry dies. */
   readonly pubsub: PubSub.PubSub<ChatFrame>
   readonly scope: Scope.CloseableScope
   /** Stable turn id of the in-flight assistant turn, or null if idle. */
@@ -1844,6 +1852,11 @@ export class ChatService extends Effect.Service<ChatService>()(
       /**
        * Live model + effort update for an existing thread.
        *
+       * Recovery contract matches send()/subscribe(): a thread evicted by the
+       * idle reaper is resumed via ensureThreadLive before anything else, so
+       * a switch on a quiet-but-real thread applies; only a genuinely unknown
+       * thread rejects both fields with reason "unknown thread".
+       *
        * - effort: clamped against the per-model matrix (effort.ts) FIRST —
        *   the reference model is the one this call switches to when
        *   provided, else the thread's current model. A model that takes no
@@ -2302,6 +2315,9 @@ export class ChatService extends Effect.Service<ChatService>()(
        *  thread "closed" in the store. Unlike `closeThread`, the thread stays a
        *  normal, resumable session — `subscribe`'s cache-miss path (Case A)
        *  transparently re-creates it via `resumeFromSessionId` on the next open.
+       *  The thread's ChatFrame PubSub lives in the persistent `pubsubs` map,
+       *  not the scope, so subscribers attached before the release keep
+       *  receiving frames after the resume.
        *  This is what the idle reaper uses to reclaim leaked subprocesses. */
       const releaseThreadRuntime = (
         threadId: string,
