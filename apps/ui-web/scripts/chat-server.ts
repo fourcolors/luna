@@ -231,7 +231,9 @@ import {
   importJsonMap,
   runAutoArchive,
   AUTO_ARCHIVE_IDLE_MS,
+  MCPRegistry,
 } from "@luna/core"
+import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
 import { loadWorkspaces } from "./workspaces-loader.js"
@@ -656,6 +658,23 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       if (bootMounts.length > 0) {
         console.log("[luna/boot] connector mounts:", bootMounts.join(", "))
       }
+      // Official MCP support: capture the runtime registry, then sync it ONCE at
+      // boot from the durable store's enabled+trusted rows (resolving header
+      // secret-refs; fail-closed skip on any unresolved ref). decorate() reads
+      // mcpRegistry.snapshotSync() synchronously below — same instance, so the
+      // boot-sync's registrations are visible to every thread. (Hot re-sync of
+      // added-after-boot servers is a follow-up; v1 syncs at boot.)
+      const mcpRegistry = yield* MCPRegistry
+      const mcpMountReport = yield* syncMcpMounts()
+      if (mcpMountReport.registered.length > 0 || mcpMountReport.skipped.length > 0) {
+        console.log(
+          "[luna/thread] MCP registry mounts:",
+          `registered=[${mcpMountReport.registered.join(", ")}]`,
+          mcpMountReport.skipped.length > 0
+            ? `skipped=[${mcpMountReport.skipped.map((s) => s.slug).join(", ")}]`
+            : "",
+        )
+      }
 
       const bootSkills = yield* skillRegistry.catalog()
       console.log(
@@ -837,6 +856,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
             [suggestedActionThreadTools.serverName]: suggestedActionThreadTools.server, // suggest_action (propose follow-ups)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
+            ...mcpRegistry.snapshotSync(), // official MCP support: operator-registered servers (enabled+trusted+secret-resolved)
           }
           return {
             mcpServers,
@@ -2027,6 +2047,12 @@ export const buildBaseLayer = (
   const connectorStoreL = ConnectorInstanceStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
+  // Official MCP support: durable operator registry (mcp_servers in luna.db)
+  // + the in-memory MCPRegistry runtime projection that decorate() reads.
+  const mcpServerStoreL = McpServerStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const mcpRegistryL = MCPRegistry.Default
   // PRD Part C/W1: durable pinned-artifact store (artifacts + artifact_versions
   // in luna.db). Resolved by buildServerLayer for the ui-ws artifact frames.
   const artifactStoreL = ArtifactStore.makeLayer(paths.lunaDbPath).pipe(
@@ -2095,6 +2121,9 @@ export const buildBaseLayer = (
     Layer.provide(SuggestedActionToolsLayer),
     Layer.provide(suggestedActionsL),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
+    Layer.provide(mcpServerStoreL), // official MCP support: durable registry read by boot-sync
+    Layer.provide(mcpRegistryL), // official MCP support: runtime projection read by decorate()
+    Layer.provide(secretL), // official MCP support: resolves header secret-refs at mount
     Layer.provide(obsL),
     Layer.provide(clockL),
     // JobsStore required by SchedulerToolsLayer for durable cron persistence
