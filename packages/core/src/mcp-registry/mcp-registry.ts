@@ -47,6 +47,17 @@ export interface MCPRegistryApi {
   readonly toMcpServersField: () => Effect.Effect<
     Record<string, McpServerConfigLike>
   >
+
+  /**
+   * Synchronous snapshot of all current registrations. Safe to call from
+   * synchronous contexts (e.g. per-thread `decorate()` wiring) where an
+   * Effect cannot be awaited. Returns a shallow copy so callers cannot
+   * mutate internal registry state.
+   *
+   * Kept in lockstep with the Ref via a plain mutable mirror maintained
+   * inside the Default layer. list/toMcpServersField still read the Ref.
+   */
+  readonly snapshotSync: () => Record<string, McpServerConfigLike>
 }
 
 export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
@@ -59,6 +70,11 @@ export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
       const ref = yield* Ref.make<ReadonlyMap<string, McpServerConfigLike>>(
         new Map(),
       )
+
+      // Mutable mirror kept in lockstep with `ref`. Never exposed directly —
+      // snapshotSync() returns a shallow copy so external mutations can't
+      // corrupt the registry.
+      const mirror: Record<string, McpServerConfigLike> = {}
 
       const register: MCPRegistryApi["register"] = (name, config) =>
         Effect.gen(function* () {
@@ -77,6 +93,7 @@ export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
             next.set(name, config)
             return next
           })
+          mirror[name] = config
         })
 
       const unregister: MCPRegistryApi["unregister"] = (name) =>
@@ -85,7 +102,13 @@ export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
           const next = new Map(m)
           next.delete(name)
           return [true, next] as const
-        })
+        }).pipe(
+          Effect.tap((removed) =>
+            Effect.sync(() => {
+              if (removed) delete mirror[name]
+            }),
+          ),
+        )
 
       const list: MCPRegistryApi["list"] = () =>
         Ref.get(ref).pipe(
@@ -105,11 +128,14 @@ export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
           }),
         )
 
+      const snapshotSync: MCPRegistryApi["snapshotSync"] = () => ({ ...mirror })
+
       return {
         register,
         unregister,
         list,
         toMcpServersField,
+        snapshotSync,
       } satisfies MCPRegistryApi
     }),
   )

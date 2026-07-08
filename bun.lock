@@ -37,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.53",
+      "version": "0.0.54",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -64,6 +64,7 @@
         "@luna/design-system": "workspace:*",
         "@luna/job-input-tools": "workspace:*",
         "@luna/local-shell-tools": "workspace:*",
+        "@luna/mcp-servers": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/memory-tools": "workspace:*",
         "@luna/oauth": "workspace:*",
@@ -222,6 +223,18 @@
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
         "zod": "^4.0.0",
+      },
+    },
+    "packages/mcp-servers": {
+      "name": "@luna/mcp-servers",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
       },
     },
     "packages/memory": {
@@ -677,6 +690,8 @@
     "@luna/job-input-tools": ["@luna/job-input-tools@workspace:packages/job-input-tools"],
 
     "@luna/local-shell-tools": ["@luna/local-shell-tools@workspace:packages/local-shell-tools"],
+
+    "@luna/mcp-servers": ["@luna/mcp-servers@workspace:packages/mcp-servers"],
 
     "@luna/memory": ["@luna/memory@workspace:packages/memory"],
 

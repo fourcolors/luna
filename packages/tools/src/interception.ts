@@ -239,3 +239,60 @@ export const defaultSafetyInterceptors = (): ReadonlyArray<ToolInterceptor> => [
   denyDangerousCommands(),
   denySecretPaths(),
 ]
+
+// ---------------------------------------------------------------------------
+// MCP server tool gate (Slice C)
+//
+// Operator-registered MCP servers (tool prefix `mcp__<slug>__`) are
+// DENY-BY-DEFAULT.  A tool call is allowed only when the server's durable
+// policy says so — either `allowAll: true` OR the exact tool name appears in
+// `allowedTools`.
+//
+// Built-in servers (memory, local_shell, …) and OAuth connector servers are
+// UNAFFECTED: the gate defers ("pass") whenever `policyLookup` returns
+// `undefined` for a slug, which only registered operator servers have.
+//
+// `policyLookup` is read on EVERY call — the caller is expected to back it
+// with a mutable Map so that policy changes (allowTool, allowAllTools) take
+// effect without recomposing the boot-global permission callback.
+// ---------------------------------------------------------------------------
+
+export interface McpServerPolicy {
+  readonly allowAll: boolean
+  readonly allowedTools: ReadonlySet<string>
+}
+
+/**
+ * Fail-closed gate for operator-registered MCP servers. `policyLookup`
+ * returns the live policy for a server slug, or undefined if the slug is
+ * NOT an operator-registered MCP server (built-ins / connectors → defer).
+ * Reading the lookup per-call is what makes opt-ins take effect without
+ * recomposing the boot-global permission callback.
+ */
+export const mcpToolGate = (
+  policyLookup: (slug: string) => McpServerPolicy | undefined,
+): ToolInterceptor =>
+  (toolName, input) =>
+    Effect.sync<InterceptorVerdict>(() => {
+      // mcp__<slug>__<tool>; slug is [a-z0-9-]+ (no underscores, enforced by
+      // the registry), tool may contain underscores.
+      const m = /^mcp__([a-z0-9-]+)__(.+)$/.exec(toolName)
+      if (m === null) return "pass"
+      const slug = m[1]
+      const tool = m[2]
+      // Both capture groups are guaranteed present when the match succeeds;
+      // this guard satisfies noUncheckedIndexedAccess without a non-null assertion.
+      if (slug === undefined || tool === undefined) return "pass"
+      const policy = policyLookup(slug)
+      if (policy === undefined) return "pass" // not an operator MCP server
+      const allowed = policy.allowAll || policy.allowedTools.has(tool)
+      return allowed
+        ? { behavior: "allow" as const, updatedInput: input }
+        : {
+            behavior: "deny" as const,
+            message:
+              `MCP tool "${tool}" on server "${slug}" is not permitted. ` +
+              `It is registered but this tool is not in its allowlist. ` +
+              `Grant it with: luna mcp allow ${slug} ${tool}`,
+          }
+    })
