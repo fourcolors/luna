@@ -3693,12 +3693,35 @@ const buildMain = (
     )
     const tgToken =
       tgSecret === undefined ? undefined : Redacted.value(tgSecret).trim()
+    // Inbound allowlist. LUNA_TELEGRAM_ALLOWED_SENDER_IDS is a comma-separated
+    // list of Telegram ids that may reach Luna. Each id is EITHER a positive
+    // user id (authorizes that user's DMs) OR a negative group/supergroup chat
+    // id (authorizes every member of that group). Empty/unset → open (the bot
+    // accepts anyone). See makeTelegramAdapter's allowedIds for the union gate.
+    const tgAllowedIds = (process.env["LUNA_TELEGRAM_ALLOWED_SENDER_IDS"] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
     if (tgToken !== undefined && tgToken.length > 0) {
       yield* channels.registerAdapter(
-        makeTelegramAdapter({ id: "telegram-main", token: Redacted.make(tgToken) }),
+        makeTelegramAdapter({
+          id: "telegram-main",
+          token: Redacted.make(tgToken),
+          allowedIds: tgAllowedIds,
+        }),
       )
       yield* channels.startAdapters().pipe(Effect.scoped)
       console.log(`📨 telegram channel: started (telegram-main)`)
+      if (tgAllowedIds.length > 0) {
+        console.log(
+          `🔒 telegram allowlist: active (${tgAllowedIds.length} id(s) — users and/or groups)`,
+        )
+      } else {
+        console.warn(
+          `⚠️  telegram allowlist: OPEN — anyone can message the bot. ` +
+            `Set LUNA_TELEGRAM_ALLOWED_SENDER_IDS to restrict access.`,
+        )
+      }
     } else {
       console.log(`📨 telegram channel: idle — set TELEGRAM_BOT_TOKEN to enable`)
     }

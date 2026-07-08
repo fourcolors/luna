@@ -99,7 +99,7 @@
  * at 30 s, so transient errors (network blips, Telegram 429/503) cause a brief
  * back-off rather than killing the adapter.
  */
-import { Effect, Fiber, Redacted, Ref, Schedule } from "effect"
+import { Cause, Effect, Fiber, Redacted, Ref, Schedule } from "effect"
 import type { ChannelAdapter, ChannelMessage, DeliverOptions, DeliveryTarget } from "../types.js"
 import { markdownToTelegramHtml, toPlainTextFallback } from "./telegram-format.js"
 import { channelCommands } from "../commands.js"
@@ -257,6 +257,23 @@ export interface TelegramAdapterConfig {
    * Injecting a fake transport takes priority over both config.token and env.
    */
   readonly httpTransport?: TelegramHttpTransport
+  /**
+   * Optional inbound allowlist — the ONLY authentication in front of Luna over
+   * Telegram. When provided and non-empty, an inbound message is accepted iff
+   * its sender id (`message.from.id`) OR its chat id (`message.chat.id`),
+   * stringified, is in this set; every other message is silently dropped.
+   *
+   * The union of sender AND chat id is deliberate. Telegram user ids are
+   * positive and group/supergroup/channel chat ids are negative, so one flat
+   * list unambiguously authorizes both a DM user (list their positive user id)
+   * and a whole group (list the group's negative chat id — every member of that
+   * group is then served, which is the intended multi-user group experience).
+   *
+   * When omitted or empty the bot accepts messages from ANY Telegram user
+   * (fail-open), so an unconfigured install is never bricked. Once any id is
+   * present the gate is fail-closed for everyone else.
+   */
+  readonly allowedIds?: Iterable<string>
 }
 
 /* -------------------------------------------------------------------------- */
@@ -301,6 +318,20 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // isolated unit tests that call deliver() directly).
   let resolvedTransport: TelegramHttpTransport | null =
     config.httpTransport !== undefined ? config.httpTransport : null
+
+  // Inbound allowlist (union gate). null when unconfigured; an empty set also
+  // means "open" (fail-open). See TelegramAdapterConfig.allowedIds for the
+  // sender-OR-chat union rationale and the positive/negative id convention.
+  const allowedIds: ReadonlySet<string> | null =
+    config.allowedIds !== undefined ? new Set(config.allowedIds) : null
+  const isInboundAllowed = (msg: ChannelMessage): boolean =>
+    allowedIds === null ||
+    allowedIds.size === 0 ||
+    allowedIds.has(msg.senderId) ||
+    allowedIds.has(msg.channelId)
+  // Rate-limit drop logging to the first hit per (chatId:senderId) so a busy
+  // open group or a spammer cannot flood the log.
+  const loggedDrops = new Set<string>()
 
   // stream-edit state: inbound platformMessageId → sent Telegram message_id.
   // One entry per active turn; cleaned up on isFinal.
@@ -472,6 +503,25 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           const channelMsg = buildChannelMessage(update)
           if (channelMsg === null) continue   // non-text or non-message update
 
+          // Inbound allowlist gate. Accept iff the sender id OR the chat id is
+          // allowlisted (union — see config.allowedIds); otherwise silently
+          // drop. Silent is deliberate: replying would confirm the bot exists
+          // to strangers. The offset was already advanced above, so a rejected
+          // update is consumed, not re-polled, and cannot wedge the loop. Drop
+          // logging is rate-limited to the first hit per (chat, sender).
+          if (!isInboundAllowed(channelMsg)) {
+            const dropKey = `${channelMsg.channelId}:${channelMsg.senderId}`
+            if (!loggedDrops.has(dropKey)) {
+              loggedDrops.add(dropKey)
+              console.warn(
+                `[luna/channels] telegram: dropped message from non-allowlisted ` +
+                  `sender=${channelMsg.senderId} chat=${channelMsg.channelId} ` +
+                  `(chatType=${String(channelMsg.metadata?.["chatType"] ?? "?")})`,
+              )
+            }
+            continue
+          }
+
           // Group command addressing: strip our own "@BotName" mention from
           // "/verb@BotName"; drop commands addressed to a DIFFERENT bot.
           const normalizedText = normalizeCommandMention(channelMsg.text, botUsername)
@@ -501,6 +551,28 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
     const loop: Effect.Effect<never, never> = Effect.gen(function* () {
       const offset = yield* Ref.get(offsetRef)
       const nextOffset = yield* pollOnce(offset).pipe(
+        // Log each transient failure before backing off, so a stalled poll loop
+        // is visible instead of silent (previously every getUpdates error was
+        // swallowed with no trace). A 409 Conflict specifically means another
+        // getUpdates consumer is polling this bot token (a second server
+        // instance or a leaked webhook) and will NOT clear on its own — flag it
+        // distinctly. Logging only; the retry/offset behavior is unchanged.
+        Effect.tapErrorCause((cause) =>
+          Effect.sync(() => {
+            const text = Cause.pretty(cause)
+            if (/\b409\b/.test(text) || text.toLowerCase().includes("conflict")) {
+              console.warn(
+                `[luna/channels] telegram: getUpdates 409 Conflict — another poller ` +
+                  `is consuming this bot token (second instance or leaked webhook); ` +
+                  `retrying with backoff. ${text}`,
+              )
+            } else {
+              console.warn(
+                `[luna/channels] telegram: getUpdates failed, retrying with backoff: ${text}`,
+              )
+            }
+          }),
+        ),
         // Retry on any error with exponential backoff (1 s → 30 s).
         // After retry, the error channel is `never` for our scheduling purposes —
         // we cast via catchAllCause to satisfy the type system.
