@@ -114,6 +114,15 @@ const resolveHeaderValue = (
   }
   // Template mode: find all ${ref} placeholders, resolve all, then substitute.
   const matches = [...value.matchAll(TEMPLATE_RE)]
+  if (matches.length === 0) {
+    // The value contains "${" but no well-formed "${ref}" (e.g. a missing
+    // closing brace). Fail closed: skip the server rather than mounting the
+    // unresolved literal as if it were a real header value.
+    return Effect.fail({
+      slug,
+      reason: `malformed secret-ref template in header '${headerName}': ${value}`,
+    })
+  }
   return Effect.forEach(matches, (m) => {
     const ref = m[1]!
     return secretProvider.get(ref).pipe(

@@ -2,7 +2,7 @@
  * FilePathSecretProvider tests — hardened file: and file-json: secret backend.
  *
  * All file fixtures use tmp directories (os.tmpdir() + fs.mkdtempSync).
- * No hardcoded /root/ paths.
+ * No hardcoded absolute user paths.
  */
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -63,6 +63,16 @@ describe("FilePathSecretProvider — happy paths", () => {
     fs.writeFileSync(p, "\xEF\xBB\xBFhello\n")
     const val = await run(get(`file:${p}`))
     expect(Redacted.value(val)).toBe("hello")
+  })
+
+  it("file: empty/whitespace-only file is a MISS (fail-closed, no empty secret)", async () => {
+    const dir = tmpDir()
+    const p = path.join(dir, "empty.txt")
+    fs.writeFileSync(p, "   \n")
+    const exit = await runExit(get(`file:${p}`))
+    // An empty token file must NOT resolve to an empty credential; it fails so
+    // the routed chain falls through / the mount is skipped.
+    expect(Exit.isFailure(exit)).toBe(true)
   })
 
   it("file-json: extracts a top-level field", async () => {

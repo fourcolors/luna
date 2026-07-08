@@ -190,7 +190,23 @@ const makeProvider = (): SecretProviderApi => ({
       if (pathErr !== null) return Effect.fail(pathErr)
 
       return readFileSafe(filePath, "FilePathSecretProvider").pipe(
-        Effect.map((raw) => Redacted.make(trimTrailing(stripBom(raw)))),
+        Effect.flatMap((raw) => {
+          const cleaned = trimTrailing(stripBom(raw))
+          if (cleaned.trim().length === 0) {
+            // Fail closed: an empty/whitespace-only file is a MISS, not an
+            // empty credential. Mirrors the file-json: empty-string check so a
+            // rotating-token file that is truncated/blank skips the mount
+            // instead of mounting an empty "Bearer " header.
+            return Effect.fail(
+              new ConfigError({
+                module: "FilePathSecretProvider",
+                key: ref,
+                message: `file is empty — no secret: ${filePath}`,
+              }),
+            )
+          }
+          return Effect.succeed(Redacted.make(cleaned))
+        }),
       )
     }
 

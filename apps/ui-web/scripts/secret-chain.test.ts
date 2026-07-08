@@ -8,6 +8,9 @@
  * legacy modes (env / keychain-*) must resolve byte-identically to today; auto
  * inserts the lunaVault tier between keychain and env.
  */
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Effect, Exit, Layer, Redacted } from "effect"
 import {
@@ -119,6 +122,67 @@ describe("buildSecretChainLayer: env mode (routedOp → env, byte-compat)", () =
     })
     expect(await resolve(layer, "luna-op://primary/vault/item")).toBe(
       "op-secret",
+    )
+  })
+})
+
+describe("buildSecretChainLayer: file:/file-json: tier (prod-chain integration)", () => {
+  let tmpDir: string
+  const OLD = process.env["CHAIN_FILE_ENV_KEY"]
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chain-file-"))
+    process.env["CHAIN_FILE_ENV_KEY"] = "from-env"
+  })
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    if (OLD === undefined) delete process.env["CHAIN_FILE_ENV_KEY"]
+    else process.env["CHAIN_FILE_ENV_KEY"] = OLD
+  })
+
+  it("resolves a file: ref through the inserted tier (env mode)", async () => {
+    const p = path.join(tmpDir, "token.txt")
+    fs.writeFileSync(p, "file-secret\n")
+    const layer = buildSecretChainLayer({
+      mode: "env",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({}),
+    })
+    expect(await resolve(layer, `file:${p}`)).toBe("file-secret")
+  })
+
+  it("resolves a file-json:#field ref through the chain (auto mode)", async () => {
+    const p = path.join(tmpDir, "creds.json")
+    fs.writeFileSync(p, JSON.stringify({ api_token: "json-secret" }))
+    const layer = buildSecretChainLayer({
+      mode: "auto",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({}),
+    })
+    expect(await resolve(layer, `file-json:${p}#api_token`)).toBe("json-secret")
+  })
+
+  it("env: refs still fall through PAST the file tier (byte-compat preserved)", async () => {
+    const layer = buildSecretChainLayer({
+      mode: "env",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({}),
+    })
+    // The inserted file tier must not swallow non-file refs.
+    expect(await resolve(layer, "env:CHAIN_FILE_ENV_KEY")).toBe("from-env")
+  })
+
+  it("a file: ref to a MISSING file is a chain-wide miss (fail-closed)", async () => {
+    const layer = buildSecretChainLayer({
+      mode: "env",
+      platform: "linux",
+      opAccounts: [],
+      lunaVaultRead: fakeVaultRead({}),
+    })
+    expect(await resolve(layer, `file:${path.join(tmpDir, "nope.txt")}`)).toBe(
+      null,
     )
   })
 })
