@@ -74,6 +74,66 @@ export interface SyncMcpMountsResult {
  *   be mounted (e.g. live connector mount keys).  Any row whose slug collides
  *   is skipped with a descriptive reason.  See {@link SyncMcpMountsOptions}.
  */
+// ---------------------------------------------------------------------------
+// Header value templating
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex to find embedded secret-ref placeholders in header values.
+ * Matches `${<ref>}` and captures the ref inside.
+ */
+const TEMPLATE_RE = /\$\{([^}]+)\}/g
+
+/**
+ * Resolve a header value that may contain embedded `${ref}` placeholders.
+ *
+ * - If the value contains no `${`, treat the entire value as a single secret
+ *   ref (backward-compatible behavior).
+ * - If the value contains `${...}`, resolve each placeholder via the
+ *   SecretProvider and substitute into the literal string. Any placeholder
+ *   that fails → the whole server is skipped (fail-closed).
+ *
+ * Never logs resolved values. Redacted.value() is called only at the moment
+ * of substitution.
+ */
+const resolveHeaderValue = (
+  headerName: string,
+  value: string,
+  slug: string,
+  secretProvider: import("@luna/core").SecretProviderApi,
+): Effect.Effect<string, { slug: string; reason: string }> => {
+  if (!value.includes("${")) {
+    // Backward-compat: treat the entire value as a single ref.
+    return secretProvider.get(value).pipe(
+      Effect.map((s) => Redacted.value(s)),
+      Effect.mapError(() => ({
+        slug,
+        reason: `unresolved secret-ref for header '${headerName}': ${value}`,
+      })),
+    )
+  }
+  // Template mode: find all ${ref} placeholders, resolve all, then substitute.
+  const matches = [...value.matchAll(TEMPLATE_RE)]
+  return Effect.forEach(matches, (m) => {
+    const ref = m[1]!
+    return secretProvider.get(ref).pipe(
+      Effect.map((s) => ({ placeholder: m[0]!, resolved: Redacted.value(s) })),
+      Effect.mapError(() => ({
+        slug,
+        reason: `unresolved embedded secret-ref '${ref}' in header '${headerName}'`,
+      })),
+    )
+  }).pipe(
+    Effect.map((resolutions) => {
+      let result = value
+      for (const { placeholder, resolved } of resolutions) {
+        result = result.replaceAll(placeholder, resolved)
+      }
+      return result
+    }),
+  )
+}
+
 export const syncMcpMounts = (
   opts?: SyncMcpMountsOptions,
 ): Effect.Effect<
@@ -134,16 +194,18 @@ export const syncMcpMounts = (
       const resolvedHeaders: Record<string, string> = {}
       let skip: { slug: string; reason: string } | undefined
 
-      for (const [headerName, ref] of entries) {
-        const result = yield* secretProvider.get(ref).pipe(Effect.either)
+      for (const [headerName, value] of entries) {
+        const result = yield* resolveHeaderValue(
+          headerName,
+          value,
+          row.slug,
+          secretProvider,
+        ).pipe(Effect.either)
         if (result._tag === "Left") {
-          skip = {
-            slug: row.slug,
-            reason: `unresolved secret-ref for header '${headerName}': ${ref}`,
-          }
+          skip = result.left
           break
         }
-        resolvedHeaders[headerName] = Redacted.value(result.right)
+        resolvedHeaders[headerName] = result.right
       }
 
       if (skip !== undefined) {

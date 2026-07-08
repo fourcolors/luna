@@ -31,6 +31,7 @@
  */
 import {
   EnvSecretProvider,
+  FilePathSecretProvider,
   KeychainEnvSecretProvider,
   LUNA_VAULT_INTEGRITY_PREFIX,
   LunaVaultIntegrityError,
@@ -175,26 +176,27 @@ export const buildSecretChainLayer = (
     accounts: opts.opAccounts.map((a) => ({ label: a.label, layer: a.layer })),
   })
   const envProviderL = EnvSecretProvider.Default
+  const filePathProviderL = FilePathSecretProvider.Default
   const keychainEnvProviderL = KeychainEnvSecretProvider.make(
     opts._keychainRead === undefined ? {} : { _read: opts._keychainRead },
   )
 
   if (opts.mode === "env") {
     // env: routedOp → env. EXACTLY today's chain.
-    return secretProviderFirstOf([routedOpL, envProviderL], stopOnVaultIntegrity)
+    return secretProviderFirstOf([routedOpL, filePathProviderL, envProviderL], stopOnVaultIntegrity)
   }
 
   if (opts.mode === "keychain-preferred" || opts.mode === "keychain-only") {
     // keychain modes: routedOp → keychainEnv → env. EXACTLY today's chain.
     return secretProviderFirstOf(
-      [routedOpL, keychainEnvProviderL, envProviderL],
+      [routedOpL, filePathProviderL, keychainEnvProviderL, envProviderL],
       stopOnVaultIntegrity,
     )
   }
 
   // mode === "auto": routedOp → keychainEnv (darwin only) → lunaVault → env.
   const lunaVaultL = LunaVaultSecretProvider.make({ read: opts.lunaVaultRead })
-  const chain: Array<Layer.Layer<SecretProvider, ConfigError>> = [routedOpL]
+  const chain: Array<Layer.Layer<SecretProvider, ConfigError>> = [routedOpL, filePathProviderL]
   if (opts.platform === "darwin") chain.push(keychainEnvProviderL)
   chain.push(lunaVaultL, envProviderL)
   return secretProviderFirstOf(chain, stopOnVaultIntegrity)

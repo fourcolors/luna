@@ -394,3 +394,159 @@ describe("syncMcpMounts", () => {
     expect(skip?.reason).toContain("GitHub")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Templating tests — header values with ${ref} embedded placeholders
+// ---------------------------------------------------------------------------
+
+// A fake SecretProvider that handles specific refs used in the templating tests.
+// Using fakes avoids real file I/O in the MCP-layer tests.
+const fakeSecretProviderLayerWithTemplate = Layer.succeed(SecretProvider, {
+  get: (ref) => {
+    if (ref === "env:GOOD") return Effect.succeed(Redacted.make("Bearer good-token"))
+    if (ref === "file-json:/tmp/test-agent.json#agent_token")
+      return Effect.succeed(Redacted.make("agt_test123"))
+    if (ref === "file:/tmp/test-a.txt") return Effect.succeed(Redacted.make("valueA"))
+    if (ref === "file:/tmp/test-b.txt") return Effect.succeed(Redacted.make("valueB"))
+    return Effect.fail(
+      new ConfigError({
+        module: "FakeSecretProvider",
+        key: ref,
+        message: `no secret for ref: ${ref}`,
+      }),
+    )
+  },
+} satisfies SecretProviderApi)
+
+const fullLayerWithTemplate = Layer.mergeAll(
+  memoryStoreLayer,
+  fakeSecretProviderLayerWithTemplate,
+  MCPRegistry.Default,
+)
+
+const runTemplate = <A, E>(prog: Effect.Effect<A, E, Deps>) =>
+  Effect.runPromise(
+    prog.pipe(Effect.provide(fullLayerWithTemplate)) as Effect.Effect<A, E, never>,
+  )
+
+describe("syncMcpMounts — header templating", () => {
+  // (k) Bearer ${file-json:...#field} resolves to "Bearer <token>"
+  it("(k) template header 'Bearer ${file-json:/tmp/test-agent.json#agent_token}' resolves to 'Bearer agt_test123'", async () => {
+    const result = await runTemplate(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+        const registry = yield* MCPRegistry
+
+        yield* store.add({
+          slug: "template-server",
+          url: "https://mcp.example.com/sse",
+          headers: {
+            Authorization:
+              "Bearer ${file-json:/tmp/test-agent.json#agent_token}",
+          },
+        })
+        yield* store.acceptTrust("template-server", 1_000_000)
+
+        const report = yield* syncMcpMounts()
+        const snap = registry.snapshotSync()
+        return { report, snap }
+      }),
+    )
+
+    expect(result.report.registered).toContain("template-server")
+    expect(result.report.skipped).toHaveLength(0)
+    const config = result.snap["template-server"] as {
+      headers: Record<string, string>
+    }
+    expect(config.headers["Authorization"]).toBe("Bearer agt_test123")
+  })
+
+  // (l) plain env:GOOD still works (regression: backward-compat, no template syntax)
+  it("(l) plain env:GOOD ref (no template syntax) still resolves correctly", async () => {
+    const result = await runTemplate(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+        const registry = yield* MCPRegistry
+
+        yield* store.add({
+          slug: "plain-env-server",
+          url: "https://mcp.example.com/sse",
+          headers: { Authorization: "env:GOOD" },
+        })
+        yield* store.acceptTrust("plain-env-server", 1_000_000)
+
+        const report = yield* syncMcpMounts()
+        const snap = registry.snapshotSync()
+        return { report, snap }
+      }),
+    )
+
+    expect(result.report.registered).toContain("plain-env-server")
+    const config = result.snap["plain-env-server"] as {
+      headers: Record<string, string>
+    }
+    expect(config.headers["Authorization"]).toBe("Bearer good-token")
+  })
+
+  // (m) one failing embedded ref → whole server skipped (fail-closed)
+  it("(m) a failing embedded ref causes the server to be skipped (fail-closed)", async () => {
+    const result = await runTemplate(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+        const registry = yield* MCPRegistry
+
+        yield* store.add({
+          slug: "fail-template-server",
+          url: "https://mcp.example.com/sse",
+          headers: {
+            Authorization: "Bearer ${file-json:/nonexistent/path.json#field}",
+          },
+        })
+        yield* store.acceptTrust("fail-template-server", 1_000_000)
+
+        const report = yield* syncMcpMounts()
+        const snap = registry.snapshotSync()
+        return { report, snap }
+      }),
+    )
+
+    expect(result.report.registered).not.toContain("fail-template-server")
+    expect(result.report.skipped).toHaveLength(1)
+    const skip = result.report.skipped[0]!
+    expect(skip.slug).toBe("fail-template-server")
+    expect(skip.reason).toContain("file-json:/nonexistent/path.json#field")
+    expect(skip.reason).toContain("Authorization")
+    expect("fail-template-server" in result.snap).toBe(false)
+  })
+
+  // (n) multiple embedded refs in one value, all resolve
+  it("(n) multiple embedded refs in one header value, all resolve", async () => {
+    const result = await runTemplate(
+      Effect.gen(function* () {
+        const store = yield* McpServerStore
+        const registry = yield* MCPRegistry
+
+        yield* store.add({
+          slug: "multi-ref-server",
+          url: "https://mcp.example.com/sse",
+          headers: {
+            "X-Combined":
+              "${file:/tmp/test-a.txt} ${file:/tmp/test-b.txt}",
+          },
+        })
+        yield* store.acceptTrust("multi-ref-server", 1_000_000)
+
+        const report = yield* syncMcpMounts()
+        const snap = registry.snapshotSync()
+        return { report, snap }
+      }),
+    )
+
+    expect(result.report.registered).toContain("multi-ref-server")
+    expect(result.report.skipped).toHaveLength(0)
+    const config = result.snap["multi-ref-server"] as {
+      headers: Record<string, string>
+    }
+    expect(config.headers["X-Combined"]).toBe("valueA valueB")
+  })
+})
