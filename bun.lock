@@ -64,6 +64,7 @@
         "@luna/design-system": "workspace:*",
         "@luna/job-input-tools": "workspace:*",
         "@luna/local-shell-tools": "workspace:*",
+        "@luna/mcp-servers": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/memory-tools": "workspace:*",
         "@luna/oauth": "workspace:*",
