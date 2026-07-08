@@ -14,6 +14,25 @@ import { Effect, Redacted } from "effect"
 import { MCPRegistry, SecretProvider } from "@luna/core"
 import type { McpServerConfigLike } from "@luna/core"
 import { McpServerStore } from "./store.js"
+import { validateSlug } from "./types.js"
+
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
+
+export interface SyncMcpMountsOptions {
+  /**
+   * Caller-supplied set of slug strings that must not be mounted even if
+   * they appear in the durable store as enabled+trusted.  Used by the
+   * boot caller to pass live connector mount keys (e.g. "github", "slack")
+   * so an operator row whose slug collides with a connector key is skipped
+   * rather than silently shadowing the connector — or worse, causing the
+   * gate to apply operator policy to connector tool names.
+   *
+   * Fail-closed: any collision → skip + report, never mount.
+   */
+  readonly reservedSlugs?: ReadonlySet<string>
+}
 
 // ---------------------------------------------------------------------------
 // Return type
@@ -50,8 +69,14 @@ export interface SyncMcpMountsResult {
  * Error channel is `never` — all failures are reported in the `skipped`
  * array so the loader never crashes the caller.  Servers with unresolvable
  * credentials are NEVER registered (fail-closed).
+ *
+ * @param opts.reservedSlugs - caller-supplied set of slug keys that must not
+ *   be mounted (e.g. live connector mount keys).  Any row whose slug collides
+ *   is skipped with a descriptive reason.  See {@link SyncMcpMountsOptions}.
  */
-export const syncMcpMounts = (): Effect.Effect<
+export const syncMcpMounts = (
+  opts?: SyncMcpMountsOptions,
+): Effect.Effect<
   SyncMcpMountsResult,
   never,
   McpServerStore | SecretProvider | MCPRegistry
@@ -76,6 +101,35 @@ export const syncMcpMounts = (): Effect.Effect<
     const desiredPolicy = new Map<string, { allowAll: boolean; allowedTools: string[] }>()
 
     for (const row of rows) {
+      // --- HOLE 3 FIX: re-validate slug before any secret resolution.
+      // Defense-in-depth: store.add() already validates, but a hand-edited
+      // luna.db row with an invalid slug (e.g. "GitHub", "my_server") would
+      // mount a server whose tool names the gate regex `^mcp__([a-z0-9-]+)__`
+      // cannot parse → slug lookup returns undefined → "pass" → full allow.
+      // Catching it here ensures the loader is the last line of defense.
+      try {
+        validateSlug(row.slug)
+      } catch (e) {
+        const reason =
+          e instanceof Error
+            ? `invalid slug (failed validation): ${row.slug} — ${e.message}`
+            : `invalid slug (failed validation): ${row.slug}`
+        skipped.push({ slug: row.slug, reason })
+        continue
+      }
+
+      // --- HOLE 2 FIX: skip rows whose slug collides with a caller-supplied
+      // reserved set (e.g. live connector mount keys).  An operator-registered
+      // "github" slug would shadow the connector mount in the mcpServers object
+      // AND cause the gate to apply operator policy to connector tool names.
+      if (opts?.reservedSlugs?.has(row.slug) === true) {
+        skipped.push({
+          slug: row.slug,
+          reason: `slug collides with a reserved/built-in mount key: ${row.slug}`,
+        })
+        continue
+      }
+
       const entries = Object.entries(row.headers)
       const resolvedHeaders: Record<string, string> = {}
       let skip: { slug: string; reason: string } | undefined
@@ -122,12 +176,23 @@ export const syncMcpMounts = (): Effect.Effect<
     }
 
     // 4. Register (or re-register) each desired server.
+    // MINOR FIX: only push to `registered` AFTER a successful register call.
+    // Previously registered.push(slug) ran unconditionally even when the
+    // registry.register() Effect was caught (failed silently).
     for (const [slug, config] of desired) {
       // Always unregister first to pick up rotated tokens / url changes.
       yield* registry.unregister(slug).pipe(Effect.catchAll(() => Effect.void))
+      let registerOk = true
       yield* registry.register(slug, config).pipe(
-        Effect.catchAll(() => Effect.void),
+        Effect.catchAll(() => {
+          registerOk = false
+          return Effect.void
+        }),
       )
+      if (!registerOk) {
+        skipped.push({ slug, reason: "registry.register() failed" })
+        continue
+      }
       registered.push(slug)
       // Populate the policy map for every successfully registered server.
       // Skipped servers have no entry — fail-closed: if a server couldn't be

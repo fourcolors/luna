@@ -682,7 +682,14 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // boot-sync's registrations are visible to every thread. (Hot re-sync of
       // added-after-boot servers is a follow-up; v1 syncs at boot.)
       const mcpRegistry = yield* MCPRegistry
-      const mcpMountReport = yield* syncMcpMounts()
+      // v1: operator MCP servers are synced ONCE at boot (boot-sync only).
+      // Disable/remove revocations take effect at next boot — not live.
+      // Pass the live connector mount keys as reserved so an operator row
+      // with a colliding slug (e.g. "github") is skipped rather than
+      // shadowing the connector or mis-routing gate policy.
+      const mcpMountReport = yield* syncMcpMounts({
+        reservedSlugs: new Set(Object.keys(connectorService.mountSnapshotSync())),
+      })
       if (mcpMountReport.registered.length > 0 || mcpMountReport.skipped.length > 0) {
         console.log(
           "[luna/thread] MCP registry mounts:",
@@ -875,7 +882,35 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
             [suggestedActionThreadTools.serverName]: suggestedActionThreadTools.server, // suggest_action (propose follow-ups)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
-            ...mcpRegistry.snapshotSync(), // official MCP support: operator-registered servers (enabled+trusted+secret-resolved)
+            // HOLE 1 FIX: operator MCP servers are only mounted when the
+            // thread's permission gate (canUseTool) will actually run.
+            // Under bypassPermissions (LUNA_TRUSTED_LOCAL=1 local-dev bypass)
+            // the SDK skips canUseTool entirely — mcpToolGate never fires —
+            // so mounting operator servers would expose all their tools with
+            // zero opt-in.  Fail-closed: withhold the spread when the gate
+            // is bypassed.  Built-in servers and connector mounts are
+            // unaffected (they are mounted unconditionally above).
+            // NOTE: per-server SDK tool policy (mode-independent projection)
+            // is a documented follow-up; for now the gate is the only fence.
+            ...(() => {
+              const effectiveMode =
+                opts.permissionMode ??
+                (process.env["LUNA_TRUSTED_LOCAL"] === "1"
+                  ? "bypassPermissions"
+                  : "default")
+              if (effectiveMode === "bypassPermissions") {
+                const operatorMounts = mcpRegistry.snapshotSync()
+                if (Object.keys(operatorMounts).length > 0) {
+                  console.warn(
+                    "[luna/thread] operator MCP servers withheld: permission gate (canUseTool) is bypassed for this thread (mode=" +
+                      effectiveMode +
+                      "); mount requires the gate.",
+                  )
+                }
+                return {}
+              }
+              return mcpRegistry.snapshotSync()
+            })(), // official MCP support: operator-registered servers (enabled+trusted+secret-resolved)
           }
           return {
             mcpServers,

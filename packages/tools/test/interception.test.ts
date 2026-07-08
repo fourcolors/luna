@@ -382,3 +382,52 @@ describe("mcpToolGate", () => {
     ).toMatchObject({ behavior: "allow" })
   })
 })
+
+// ---------------------------------------------------------------------------
+// mcpToolGate regex routing — pin tests that a future "simplification"
+// of the ^mcp__([a-z0-9-]+)__ routing regex cannot silently regress.
+// ---------------------------------------------------------------------------
+
+describe("mcpToolGate regex routing (regression pins)", () => {
+  const makeGate = (policies: Record<string, McpServerPolicy>) =>
+    mcpToolGate((slug) => policies[slug])
+
+  // (i) A built-in tool name that contains underscores
+  // (`mcp__local_shell__local_shell_run`) is never denied by the operator
+  // gate.  The regex `^mcp__([a-z0-9-]+)__(.+)$` parses it as slug="local"
+  // (stops at the first `_`), tool="shell__local_shell_run"; policyLookup
+  // for "local" returns undefined → "pass".  The built-in server's tool is
+  // never blocked by operator policy, regardless of what policies exist.
+  it("(i) mcp__local_shell__local_shell_run passes (built-in underscore name not blocked by operator gate)", async () => {
+    // Even with a policy for "local" present (deny-all), the gate parses the
+    // built-in name as slug="local" — but no operator server is named "local"
+    // in a real deployment.  Here we confirm: with NO entry for "local" the
+    // tool passes through (policyLookup returns undefined → "pass").
+    const gate = makeGate({
+      // No "local" entry — confirms undefined lookup → pass.
+    })
+    expect(await run(gate("mcp__local_shell__local_shell_run", {}))).toBe("pass")
+  })
+
+  // (ii) A hyphenated operator slug "a-b" with allowAll:true — tool names
+  // that themselves contain double-underscores (e.g. "c__d") are routed
+  // correctly: the regex captures "a-b" as the slug and "c__d" as the tool.
+  it("(ii) mcp__a-b__c__d with active allowAll policy for slug 'a-b' → allow; parsed tool is 'c__d'", async () => {
+    const gate = makeGate({
+      "a-b": { allowAll: true, allowedTools: new Set() },
+    })
+    const input = { x: 1 }
+    const result = await run(gate("mcp__a-b__c__d", input))
+    expect(result).toEqual({ behavior: "allow", updatedInput: input })
+  })
+
+  // (iii) `mcp__x__` (empty tool segment after the slug) — the gate must
+  // not crash and must pass through (no policy lookup should occur for an
+  // empty tool name, and no operator server's policy denies "nothing").
+  it("(iii) mcp__x__ (empty tool segment) passes without error", async () => {
+    const gate = makeGate({
+      x: { allowAll: false, allowedTools: new Set() },
+    })
+    expect(await run(gate("mcp__x__", {}))).toBe("pass")
+  })
+})
