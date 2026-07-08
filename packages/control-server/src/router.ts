@@ -2,7 +2,8 @@
  * tRPC v11 control plane router for Luna.
  *
  * Procedures:
- *   control.restart — triggers launchctl kickstart of the chat-server service
+ *   control.restart — platform-correct chat-server restart (launchctl on
+ *                     darwin, SIGTERM-under-supervisor elsewhere)
  *   control.status  — returns server uptime / startedAt / version
  *   control.version — returns the package version string
  */
@@ -58,24 +59,83 @@ export const createAppRouter = (buildSha: string = "unknown") =>
   t.router({
   control: t.router({
     /**
-     * Restart the chat server via launchctl.
-     * Returns immediately so the HTTP response can be flushed, then kicks the
-     * service after a 500ms delay.
+     * Restart the chat server, platform-correctly. Mirrors
+     * scheduleServerRestart in apps/ui-web/scripts/chat-server.ts (the
+     * reference implementation for this exact branch):
+     *
+     *   darwin — `launchctl kickstart -k` of the launchd job; KeepAlive
+     *            respawns it. The gui/<uid> label is the plist's hardcoded
+     *            Label, NOT derivable from .env (the plist sets no env vars).
+     *   else   — SIGTERM ourselves and let the unit's `Restart=always`
+     *            respawn. No systemctl dependency, no unit-name resolution,
+     *            works under any restart-on-exit supervisor. (The previous
+     *            unconditional launchctl call was silently inert on the
+     *            systemd production boxes — launchctl doesn't exist there
+     *            and stdio:"ignore" swallowed the ENOENT.)
+     *
+     * Returns immediately so the HTTP response can be flushed; the restart
+     * action runs after a 500ms delay. Failures of the delayed action can't
+     * reach this response, so they are LOGGED (append-file logs / journal)
+     * instead of ignored.
      */
     restart: t.procedure.mutation(async () => {
-      const uid = os.userInfo().uid
-      const label = `gui/${uid}/${CHAT_SERVICE_LABEL}`
+      if (process.platform === "darwin") {
+        const uid = os.userInfo().uid
+        const label = `gui/${uid}/${CHAT_SERVICE_LABEL}`
 
-      // Delay so the tRPC HTTP response is sent before the process restarts
+        // Delay so the tRPC HTTP response is sent before the process restarts
+        setTimeout(() => {
+          const result = spawnSync("launchctl", ["kickstart", "-k", label], {
+            stdio: "ignore",
+            timeout: 10_000,
+          })
+          if (result.error !== undefined || result.status !== 0) {
+            console.error(
+              `control.restart: launchctl kickstart failed (${
+                result.error !== undefined
+                  ? String(result.error)
+                  : `exit ${result.status}`
+              }) — is the ${CHAT_SERVICE_LABEL} launchd job installed?`,
+            )
+          }
+        }, 500)
+
+        return {
+          ok: true as const,
+          message: `Restart scheduled for ${label}`,
+        }
+      }
+
+      // SIGTERM-suicide only works when something respawns us. systemd sets
+      // INVOCATION_ID (and NOTIFY_SOCKET for Type=notify) in the service env;
+      // with neither present (local `bun run`, ad-hoc incus exec, CI smokes)
+      // a "restart" would silently become a permanent stop — the clean-exit-
+      // means-dead class this slice exists to kill. Refuse instead.
+      const supervised =
+        (process.env["INVOCATION_ID"] ?? "") !== "" ||
+        (process.env["NOTIFY_SOCKET"] ?? "") !== ""
+      if (!supervised) {
+        console.error(
+          "control.restart: no supervisor detected (no INVOCATION_ID/NOTIFY_SOCKET) — refusing SIGTERM restart that would be a permanent stop",
+        )
+        return {
+          ok: false as const,
+          message:
+            "no supervisor detected — restart refused (run under systemd, or restart manually)",
+        }
+      }
+
+      // Delay so the tRPC HTTP response is sent before the process exits.
       setTimeout(() => {
-        spawnSync("launchctl", ["kickstart", "-k", label], {
-          stdio: "ignore",
-        })
+        console.log(
+          "control.restart: sending SIGTERM — supervisor (Restart=always) respawns",
+        )
+        process.kill(process.pid, "SIGTERM")
       }, 500)
 
       return {
         ok: true as const,
-        message: `Restart scheduled for ${label}`,
+        message: "Restart scheduled via supervisor (SIGTERM + Restart=always)",
       }
     }),
 

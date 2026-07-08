@@ -127,6 +127,26 @@ import {
   resolveRuntimePaths,
 } from "./runtime-paths.js"
 import { applyClaudeExecutablePreflight } from "./claude-executable.js"
+import {
+  notifyStopping,
+  startSdWatchdog,
+  type SdWatchdogHandle,
+} from "./sd-notify.js"
+
+/**
+ * Setup-mode WS port. Single constant shared by buildSetupServerLayer's
+ * default and the setup-mode watchdog probe so the two can never drift (a
+ * drifted probe port would watchdog-kill a fresh credential-less install).
+ */
+const SETUP_WS_PORT = 4753
+
+/**
+ * Liveness ladder L1 handle, retained so self-initiated shutdowns can stop
+ * the beat loop and send STOPPING=1 — without it, a slow graceful drain
+ * (>WatchdogSec) would be SIGABRTed mid-shutdown by the still-armed watchdog
+ * and recorded as a failure toward the start limit.
+ */
+let sdWatchdog: SdWatchdogHandle | undefined
 
 /**
  * Absolute path to the macOS keychain CLI. Pinned rather than bare "security"
@@ -1239,10 +1259,13 @@ const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
  *
  *   linux/incus — systemd `Restart=always` respawns on ANY exit, so a graceful
  *     self-SIGTERM (→ dispose → exit 0) is enough.
- *   darwin — the launchd plist uses `KeepAlive { SuccessfulExit = false }`,
- *     which DELIBERATELY does NOT respawn a clean exit 0 (anti-restart-loop).
- *     A self-SIGTERM there would leave the server dead. So force a restart with
- *     `launchctl kickstart -k` — exactly what control.restart does.
+ *   darwin — the launchd plist uses `KeepAlive <true/>` (always respawn —
+ *     clean exits included, matching Restart=always; the old
+ *     `{SuccessfulExit=false}` treated a graceful exit 0 as "stay stopped",
+ *     the Sol-autopsy clean-exit loophole). A self-SIGTERM would respawn too,
+ *     but `launchctl kickstart -k` is kept: it is an immediate forced restart
+ *     with no dependence on exit-status semantics, and it is idempotent with
+ *     the guard below. control.restart's darwin branch does the same.
  */
 // Process-wide idempotency: this is invoked from several independent paths
 // (the Settings register-op-token handler, and the secret bridge's per-thread
@@ -1262,9 +1285,17 @@ const scheduleServerRestart = (): void => {
           stdio: "ignore",
           detached: true,
         }).unref()
-      } else {
-        // systemd Restart=always respawns the exit(0) from the SIGTERM handler.
+      } else if ((process.env["INVOCATION_ID"] ?? "") !== "") {
+        // systemd Restart=always respawns the exit(0) from the SIGTERM
+        // handler. INVOCATION_ID is systemd's own marker — without a
+        // supervisor a self-SIGTERM is a permanent stop, not a restart
+        // (control.restart applies the same gate).
         process.kill(process.pid, "SIGTERM")
+      } else {
+        console.warn(
+          "scheduleServerRestart: no supervisor detected — restart skipped; restart manually to apply the change",
+        )
+        serverRestartScheduled = false
       }
     } catch {
       process.exit(0)
@@ -2412,6 +2443,11 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
     // flushes before the dispose/exit, so the shutdown is observable in
     // journald.
     writeSync(1, `\n👋 shutting down (${signal})\n`)
+    // Deactivate the L1 watchdog BEFORE draining: stop the beat loop and tell
+    // systemd we're STOPPING so the drain is judged by TimeoutStopSec, not
+    // SIGABRTed by a watchdog window that no beats will ever refill.
+    sdWatchdog?.stop()
+    notifyStopping()
     void rt.dispose().then(() => process.exit(0))
   }
   process.on("SIGINT", () => shutdown("SIGINT"))
@@ -2439,7 +2475,7 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
 // used. Pass an explicit factory in tests/smokes to avoid spawning real
 // `claude` / calling real process.exit; pass `null` to wire no pty at all.
 export const buildSetupServerLayer = (
-  wsPort: number = 4753,
+  wsPort: number = SETUP_WS_PORT,
   controlPort: number = 4754,
   setupPtyFactory?: {
     onConnect: (send: (frame: PtyOutputFrame) => void) => {
@@ -3587,6 +3623,19 @@ const buildMain = (
     }
 
     const handle = yield* ServerHandle
+    // Liveness ladder L1: tell systemd we're READY (Type=notify holds the
+    // unit in `activating` until this arrives) and start the gated
+    // WATCHDOG=1 heartbeat. Inert no-op outside systemd (no NOTIFY_SOCKET).
+    // `host` MUST be the real bind host — production listens on the Tailscale
+    // IP only, so a loopback probe would fail every beat and watchdog-kill a
+    // healthy server. Handle retained module-level for shutdown (STOPPING=1).
+    yield* Effect.sync(() => {
+      sdWatchdog = startSdWatchdog({
+        port: handle.port,
+        host: handle.host,
+        lunaHome: LUNA_HOME,
+      })
+    })
     console.log(`✅ ui-ws chat server: ws://${handle.host}:${handle.port}/ui`)
     console.log(`🔑 token: configured`)
     console.log(`🧠 chat enabled (capabilities.chat=true, streamingDeltas=true)`)
@@ -3686,10 +3735,27 @@ const bootstrap = async (): Promise<void> => {
     writeSync(1, "\n🔧 setup-mode: model credential not usable — serving setup UI (log in to continue)\n")
     const setupRuntime = ManagedRuntime.make(buildSetupServerLayer())
     installShutdown(setupRuntime)
-    setupRuntime.runPromise(Effect.never).catch((err) => {
-      console.error("❌ setup-mode server crashed:", err)
-      process.exit(1)
-    })
+    // Liveness ladder L1: setup-mode is a legitimate long-lived state (the
+    // unit's Type=notify + WatchdogSec apply here too), so READY + heartbeat
+    // must fire once the setup WS server is listening. runPromise builds the
+    // layer graph (which listens) BEFORE running the effect body, so the
+    // sync callback below executes exactly at the accepting-connections
+    // moment. Without this a fresh credential-less install would sit in
+    // `activating` until TimeoutStartSec, fail, and restart-loop.
+    setupRuntime
+      .runPromise(
+        Effect.sync(() => {
+          sdWatchdog = startSdWatchdog({
+            port: SETUP_WS_PORT,
+            ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
+            lunaHome: paths.lunaHome,
+          })
+        }).pipe(Effect.zipRight(Effect.never)),
+      )
+      .catch((err) => {
+        console.error("❌ setup-mode server crashed:", err)
+        process.exit(1)
+      })
     return
   }
 

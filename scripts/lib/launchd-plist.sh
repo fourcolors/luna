@@ -14,9 +14,17 @@
 #
 # NOTE: launchd is NOT systemd. There is no `Restart=OnFailure` key (that was a
 # systemd-ism in an early sketch). Supervision is expressed with `KeepAlive`:
-# `{ SuccessfulExit = false }` means "respawn unless the process exited 0", which
-# pairs with chat-server.ts's graceful SIGTERM handler (clean exit 0 → stays
-# stopped; crash → respawned). `launchctl kickstart -k` force-restarts regardless.
+# `<true/>` means "always respawn", matching the systemd unit's Restart=always.
+#
+# KeepAlive was originally `{ SuccessfulExit = false }` ("respawn unless exit
+# 0", pairing with the graceful SIGTERM→exit-0 handler). That pairing is the
+# exact mechanism that kept the Sol agent dead for 50 days: an fd-exhaustion
+# cascade ended in SIGTERM → gracefulShutdown() → exit(0), and launchd
+# treated the clean exit as "stay stopped" — a graceful shutdown is precisely
+# the case a supervisor must NOT interpret as intentional. Intentional stops
+# have their own verb (`launchctl bootout`), which removes the job entirely
+# and is unaffected by KeepAlive. `launchctl kickstart -k` force-restarts
+# regardless.
 
 # render_launchd_plist <bun_bin> <luna_dir> <luna_home>
 # Print the LaunchAgent plist XML to stdout.
@@ -40,10 +48,7 @@ render_launchd_plist() {
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>StandardOutPath</key>
     <string>$luna_home/logs/server.log</string>
     <key>StandardErrorPath</key>

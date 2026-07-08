@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# luna-pager — liveness ladder L2: page a human when a unit crash-loops.
+#
+# Fired by luna-alert@<unit>.service (OnFailure= on the chat-server unit, i.e.
+# after StartLimitBurst failed starts). Design rules, all Sol-autopsy lessons:
+#
+#   - NEVER routes through Luna's own runtime: raw Telegram Bot API over curl
+#     with a DEDICATED pager token ($LUNA_HOME/pager.env), so the pager still
+#     works when the agent doesn't. No token configured → log-only, exit 0.
+#   - ALWAYS exits 0: a pager that can crash-loop becomes its own incident.
+#   - Cooldown file caps page rate per unit; every invocation (paged, cooled,
+#     or token-less) appends one JSONL line to $LUNA_HOME/logs/alerts.jsonl so
+#     the failure is observable even when no page goes out (ENG-008).
+#
+# Usage: luna-pager <unit-name-without-.service>
+#
+# Env (via luna-alert@.service Environment=/EnvironmentFile=):
+#   LUNA_HOME                 state root (default /root/.luna)
+#   TELEGRAM_PAGER_TOKEN      dedicated pager bot token (NOT Luna's bot token)
+#   LUNA_PAGER_CHAT_ID        Telegram chat id to page
+#   LUNA_PAGER_COOLDOWN_SEC   min seconds between pages per unit (default 900)
+#
+# Test seams (mirror scripts/lib conventions):
+#   LUNA_TEST_PAGER_TRANSPORT set → print the payload instead of curl;
+#                                   the value "fail" simulates a FAILED send
+#   LUNA_TEST_NOW_EPOCH       set → fixed clock for cooldown logic
+#   LUNA_TEST_PAGER_STATUS    set → canned `systemctl status` text
+#   LUNA_TEST_PAGER_JOURNAL   set → canned `journalctl` text
+set -u
+
+# %i arrives from systemd but flows into a root-written filesystem path, so
+# sanitize defensively: anything outside [A-Za-z0-9._-] (slashes included)
+# becomes "_" — no path traversal via a crafted instance name.
+RAW_INSTANCE="${1:-unknown}"
+INSTANCE="${RAW_INSTANCE//[^A-Za-z0-9._-]/_}"
+UNIT="${INSTANCE}.service"
+LUNA_HOME="${LUNA_HOME:-/root/.luna}"
+COOLDOWN_SEC="${LUNA_PAGER_COOLDOWN_SEC:-900}"
+ALERT_LOG="$LUNA_HOME/logs/alerts.jsonl"
+COOLDOWN_FILE="$LUNA_HOME/run/pager-cooldown-${INSTANCE}"
+
+mkdir -p "$LUNA_HOME/logs" "$LUNA_HOME/run" 2>/dev/null || true
+
+now_epoch() {
+  if [[ "${LUNA_TEST_NOW_EPOCH+set}" == "set" ]]; then
+    printf '%s' "$LUNA_TEST_NOW_EPOCH"
+  else
+    date +%s
+  fi
+}
+
+# JSON-escape a string: strip ALL control chars except newline (tabs, ANSI
+# escapes from status text would break the JSONL consumers), then escape
+# backslashes, quotes, and newlines.
+json_escape() {
+  printf '%s' "$1" | tr -d '\000-\011\013\014\016-\037' | tr -d '\r' |
+    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{printf "%s\\n", $0}' |
+    sed -e 's/\\n$//'
+}
+
+log_alert() {
+  # $1 = outcome: paged | cooldown | no-token | send-failed
+  # $NOW is validated numeric below, so the bare ts field is always valid JSON.
+  local outcome="$1"
+  printf '{"ts":%s,"unit":"%s","outcome":"%s"}\n' \
+    "$NOW" "$(json_escape "$UNIT")" "$outcome" >> "$ALERT_LOG" 2>/dev/null || true
+}
+
+unit_status() {
+  if [[ "${LUNA_TEST_PAGER_STATUS+set}" == "set" ]]; then
+    printf '%s' "$LUNA_TEST_PAGER_STATUS"
+  else
+    systemctl status --no-pager -n 0 -- "$UNIT" 2>&1 | head -6
+  fi
+}
+
+unit_journal() {
+  if [[ "${LUNA_TEST_PAGER_JOURNAL+set}" == "set" ]]; then
+    printf '%s' "$LUNA_TEST_PAGER_JOURNAL"
+  else
+    journalctl -n 25 --no-pager -u "$UNIT" 2>&1 | tail -25
+  fi
+}
+
+# ── Cooldown ──────────────────────────────────────────────────────────────────
+NOW="$(now_epoch)"
+# Validate once: a failing `date` or garbage test epoch must not produce
+# invalid JSONL ({"ts":,...}) or break the arithmetic below.
+[[ "$NOW" =~ ^[0-9]+$ ]] || NOW=0
+if [[ -f "$COOLDOWN_FILE" ]]; then
+  LAST="$(cat "$COOLDOWN_FILE" 2>/dev/null || printf '0')"
+  [[ "$LAST" =~ ^[0-9]+$ ]] || LAST=0
+  if (( NOW - LAST < COOLDOWN_SEC )); then
+    log_alert "cooldown"
+    exit 0
+  fi
+fi
+
+# ── Compose ───────────────────────────────────────────────────────────────────
+HOST="$(hostname 2>/dev/null || printf 'unknown-host')"
+
+# Redact obvious secrets before anything leaves the box: crash-path logs are
+# known to carry sensitive material (token-in-URL websocket lines, env dumps).
+# Belt-and-braces patterns: Telegram bot tokens, ?token= URLs, KEY=value pairs
+# whose KEY smells like a secret, and Authorization headers.
+redact() {
+  sed -E \
+    -e 's#bot[0-9]+:[A-Za-z0-9_-]+#bot<redacted>#g' \
+    -e 's#([?&](token|access_token|api_key)=)[^&[:space:]]+#\1<redacted>#g' \
+    -e 's#([A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)[A-Za-z0-9_]*[=:][[:space:]]*)[^[:space:]]+#\1<redacted>#gI' \
+    -e 's#(Authorization:[[:space:]]*)[^[:space:]].*#\1<redacted>#gI'
+}
+
+STATUS_TEXT="$(unit_status | redact)"
+JOURNAL_TEXT="$(unit_journal | redact)"
+# The journal is chronological (newest LAST — the crash lines). Truncate it
+# from the HEAD so the newest lines survive; mark when we did.
+JOURNAL_BYTES="$(printf '%s' "$JOURNAL_TEXT" | wc -c | tr -d ' ')"
+if (( JOURNAL_BYTES > 2800 )); then
+  JOURNAL_TEXT="…(truncated)
+$(printf '%s' "$JOURNAL_TEXT" | tail -c 2800)"
+fi
+MESSAGE="🚨 Luna pager: ${UNIT} on ${HOST} entered failed state (start limit hit).
+
+── status ──
+${STATUS_TEXT}
+
+── journal (last 25) ──
+${JOURNAL_TEXT}"
+# Hard backstop under Telegram's 4096-char cap. Bash slicing is byte-based in
+# the C locale (systemd oneshots set no LANG) and the message contains
+# multibyte chars, so re-validate UTF-8 after the cut. NOTE: glibc `iconv -c`
+# EXITS NONZERO when it drops bytes (exactly the mid-sequence-cut case) while
+# still emitting cleaned output — so judge by OUTPUT, never exit status, and
+# fall back to an ASCII-safe strip (not a byte-slice, which would recreate
+# the invalid-UTF-8 problem) only when iconv produced nothing.
+CLEAN="$(printf '%s' "$MESSAGE" | head -c 3900 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)"
+if [[ -n "$CLEAN" ]]; then
+  MESSAGE="$CLEAN"
+else
+  MESSAGE="$(printf '%s' "$MESSAGE" | head -c 3000 | LC_ALL=C tr -cd '\11\12\15\40-\176')"
+fi
+
+# ── Send ──────────────────────────────────────────────────────────────────────
+if [[ -z "${TELEGRAM_PAGER_TOKEN:-}" || -z "${LUNA_PAGER_CHAT_ID:-}" ]]; then
+  log_alert "no-token"
+  echo "luna-pager: no TELEGRAM_PAGER_TOKEN/LUNA_PAGER_CHAT_ID configured — logged only ($ALERT_LOG)"
+  exit 0
+fi
+
+send_page() {
+  if [[ "${LUNA_TEST_PAGER_TRANSPORT+set}" == "set" ]]; then
+    # "fail" simulates a send failure so the no-cooldown-on-failure contract
+    # is actually testable; any other value prints the payload and succeeds.
+    [[ "$LUNA_TEST_PAGER_TRANSPORT" == "fail" ]] && return 1
+    printf 'WOULD-PAGE chat_id=%s text:\n%s\n' "$LUNA_PAGER_CHAT_ID" "$MESSAGE"
+    return 0
+  fi
+  # argv is world-readable in /proc/<pid>/cmdline for the whole 15s window,
+  # so EVERYTHING sensitive (token URL, message text, chat id) goes via
+  # --config on stdin; only static flags remain on argv. curl config strings
+  # are line-based: escape backslash/quote AND newline/tab/CR (\n \t \r are
+  # supported escapes inside double quotes). --fail is LOAD-BEARING: without
+  # it an HTTP 401/400/403/429 from Telegram exits 0, the cooldown is
+  # stamped, alerts.jsonl says "paged" — and no human was paged.
+  local cfg_message="${MESSAGE//\\/\\\\}"
+  cfg_message="${cfg_message//\"/\\\"}"
+  cfg_message="${cfg_message//$'\n'/\\n}"
+  cfg_message="${cfg_message//$'\t'/\\t}"
+  cfg_message="${cfg_message//$'\r'/\\r}"
+  curl -sS --fail --max-time 15 --config - > /dev/null 2>&1 <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_PAGER_TOKEN}/sendMessage"
+data-urlencode = "chat_id=${LUNA_PAGER_CHAT_ID}"
+data-urlencode = "text=${cfg_message}"
+EOF
+}
+
+if send_page; then
+  printf '%s' "$NOW" > "$COOLDOWN_FILE" 2>/dev/null || true
+  log_alert "paged"
+else
+  # Send failed: do NOT stamp the cooldown, so the next failure retries.
+  log_alert "send-failed"
+fi
+
+exit 0

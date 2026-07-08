@@ -6,7 +6,7 @@
  * server.  `spawnSync` is mocked via `vi.mock` so the restart test never
  * actually touches launchctl.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 import { appRouter } from "./router.js"
 
 // ── Mock child_process.spawnSync so restart never calls launchctl ──────────
@@ -60,44 +60,124 @@ describe("control.version", () => {
 })
 
 describe("control.restart", () => {
-  it("returns { ok: true, message: string }", async () => {
-    const result = await caller.control.restart()
-    expect(result.ok).toBe(true)
-    expect(typeof result.message).toBe("string")
-    expect(result.message.length).toBeGreaterThan(0)
+  // The handler genuinely branches on process.platform (darwin → launchctl,
+  // else → SIGTERM under the supervisor), so every test pins the platform
+  // explicitly — the suite must pass identically on macOS dev and Linux CI.
+  const realPlatform = process.platform
+  const setPlatform = (value: string): void => {
+    Object.defineProperty(process, "platform", { value, configurable: true })
+  }
+
+  afterEach(() => {
+    setPlatform(realPlatform)
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    vi.useRealTimers()
   })
 
-  it("message contains the service label", async () => {
-    const result = await caller.control.restart()
-    expect(result.message).toContain("com.user.luna-chat-server")
-  })
+  const getSpawnMock = async () => {
+    const { spawnSync } = await import("node:child_process")
+    const mock = spawnSync as unknown as ReturnType<typeof vi.fn>
+    mock.mockClear()
+    mock.mockReturnValue({ status: 0, stdout: "", stderr: "" })
+    return mock
+  }
 
-  it("spawnSync is called after the 500ms delay", async () => {
-    // Isolate timer state: install fake timers, clear any pending timers from
-    // previous test calls (the module-level caller shares the JS event loop).
+  it("darwin: returns ok with the launchd label and kickstarts after the delay", async () => {
+    setPlatform("darwin")
     vi.useFakeTimers()
     vi.clearAllTimers()
+    const spawnMock = await getSpawnMock()
 
-    const { spawnSync } = await import("node:child_process")
-    const spy = spawnSync as unknown as { mockClear: () => void }
-    spy.mockClear()
+    const result = await caller.control.restart()
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain("com.user.luna-chat-server")
 
-    try {
-      await caller.control.restart()
+    // Not called yet — the timeout hasn't fired
+    expect(spawnMock).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(600)
+    expect(spawnMock).toHaveBeenCalledOnce()
+    expect(spawnMock).toHaveBeenCalledWith(
+      "launchctl",
+      expect.arrayContaining(["kickstart", "-k"]),
+      expect.objectContaining({ stdio: "ignore" }),
+    )
+  })
 
-      // Not called yet — the timeout hasn't fired
-      expect(spawnSync).not.toHaveBeenCalled()
+  it("darwin: logs instead of swallowing when kickstart fails", async () => {
+    setPlatform("darwin")
+    vi.useFakeTimers()
+    vi.clearAllTimers()
+    const spawnMock = await getSpawnMock()
+    spawnMock.mockReturnValue({ status: 1, stdout: "", stderr: "" })
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 
-      // Advance timers past the 500ms delay
-      vi.advanceTimersByTime(600)
-      expect(spawnSync).toHaveBeenCalledOnce()
-      expect(spawnSync).toHaveBeenCalledWith(
-        "launchctl",
-        expect.arrayContaining(["kickstart", "-k"]),
-        expect.objectContaining({ stdio: "ignore" }),
-      )
-    } finally {
-      vi.useRealTimers()
-    }
+    await caller.control.restart()
+    vi.advanceTimersByTime(600)
+
+    expect(errorSpy).toHaveBeenCalledOnce()
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain(
+      "launchctl kickstart failed",
+    )
+  })
+
+  it("linux (supervised): returns ok, SIGTERMs itself after the delay, and never touches launchctl", async () => {
+    setPlatform("linux")
+    vi.stubEnv("INVOCATION_ID", "abc-123") // systemd sets this for every service
+    vi.useFakeTimers()
+    vi.clearAllTimers()
+    const spawnMock = await getSpawnMock()
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true)
+    vi.spyOn(console, "log").mockImplementation(() => {})
+
+    const result = await caller.control.restart()
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain("SIGTERM")
+    expect(result.message).not.toContain("launchctl")
+
+    // Not fired yet — the HTTP response must flush first.
+    expect(killSpy).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(600)
+    expect(killSpy).toHaveBeenCalledOnce()
+    expect(killSpy).toHaveBeenCalledWith(process.pid, "SIGTERM")
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it("linux (unsupervised): refuses the restart instead of committing SIGTERM suicide", async () => {
+    setPlatform("linux")
+    vi.stubEnv("INVOCATION_ID", "")
+    vi.stubEnv("NOTIFY_SOCKET", "")
+    vi.useFakeTimers()
+    vi.clearAllTimers()
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true)
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    const result = await caller.control.restart()
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("no supervisor")
+
+    vi.advanceTimersByTime(600)
+    expect(killSpy).not.toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledOnce()
+  })
+
+  it("darwin: logs the spawn-level error arm (launchctl missing entirely)", async () => {
+    setPlatform("darwin")
+    vi.useFakeTimers()
+    vi.clearAllTimers()
+    const spawnMock = await getSpawnMock()
+    spawnMock.mockReturnValue({
+      status: null,
+      error: new Error("spawnSync launchctl ENOENT"),
+    })
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    await caller.control.restart()
+    vi.advanceTimersByTime(600)
+
+    expect(errorSpy).toHaveBeenCalledOnce()
+    const logged = String(errorSpy.mock.calls[0]?.[0])
+    expect(logged).toContain("ENOENT")
+    expect(logged).toContain("launchd job installed")
   })
 })
