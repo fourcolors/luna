@@ -937,6 +937,25 @@ deploy.autoUpdate    = true
     expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
     expect(result.stdout).toContain("EnvironmentFile=-" + join(temp, "state", ".env"))
     expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
+    // Liveness ladder L1: hang detection. Type=notify holds the unit in
+    // `activating` until the app's READY=1; WatchdogSec restarts a
+    // wedged-but-alive process; NotifyAccess=all because beats arrive from a
+    // spawned systemd-notify child, not MainPID.
+    expect(result.stdout).toContain("Type=notify")
+    expect(result.stdout).toContain("NotifyAccess=all")
+    expect(result.stdout).toContain("WatchdogSec=90")
+    expect(result.stdout).toContain("TimeoutStartSec=60")
+    expect(result.stdout).toContain("RestartSec=5")
+    // Liveness ladder L2: crash-loop escalation fires the per-profile pager
+    // unit. INVARIANT — the window must hold Burst cycles of the WORST
+    // failure class or the loop never enters failed state and repeats
+    // silently forever (the Sol failure mode):
+    //   wedged-at-start cycle    = TimeoutStartSec + RestartSec       =  65s
+    //   wedged-after-READY cycle = boot-to-READY + WatchdogSec + RestartSec ≈ 155s
+    //   1800 >= 10 * 155 = 1550 ✓
+    expect(result.stdout).toContain("StartLimitIntervalSec=1800")
+    expect(result.stdout).toContain("StartLimitBurst=10")
+    expect(result.stdout).toContain("OnFailure=luna-alert-luna-chat-server.service")
     // #28: HOME and PATH are load-bearing — systemd 259 sets neither for a root
     // system service, so omitting them silently lands the server in setup-mode.
     expect(result.stdout).toContain("Environment=HOME=")
@@ -962,6 +981,80 @@ deploy.autoUpdate    = true
     expect(result.stdout).not.toContain("LUNA_UI_WS_HOST=0.0.0.0")
     expect(result.stderr).toContain("no Tailscale interface detected")
     expect(result.stderr).not.toContain("NO transport confidentiality")
+  })
+
+  it("server install dry-run renders the luna-alert@ pager unit alongside the service", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    // Non-stable profile → per-profile unit name flows into OnFailure=.
+    expect(result.stdout).toContain("OnFailure=luna-alert-luna-dev-chat-server.service")
+    // The pager unit is CONCRETE per profile (no %i template): dev + stable
+    // co-installed on one host must not share a template whose baked-in
+    // LUNA_HOME/pager.env belongs to whichever profile installed last.
+    expect(result.stdout).toContain("Would write " + join(temp, "systemd", "luna-alert-luna-dev-chat-server.service"))
+    expect(result.stdout).toContain("Description=Luna failure pager (luna-dev-chat-server)")
+    expect(result.stdout).toContain("Type=oneshot")
+    expect(result.stdout).toContain("ExecStart=" + join(temp, "repo", "scripts", "luna-pager") + " luna-dev-chat-server")
+    expect(result.stdout).not.toContain("%i")
+    // Pager env: dedicated token file, never Luna's own .env — provisioned
+    // owner-only (the operator writes the token into it by hand later).
+    expect(result.stdout).toContain("EnvironmentFile=-" + join(temp, "state", "pager.env"))
+    expect(result.stdout).toContain("Environment=LUNA_HOME=" + join(temp, "state"))
+    expect(result.stdout).toContain("chmod 600 " + join(temp, "state", "pager.env"))
+    // Version-skew guard: the temp repo has no sd-notify.ts, so the installer
+    // must warn that this checkout cannot satisfy the Type=notify unit.
+    expect(result.stderr).toContain("sd-notify.ts")
+  })
+
+  it("does NOT emit the version-skew warning when the checkout has sd-notify.ts", () => {
+    const temp = makeTempDir()
+    // Provision the S1 marker file so the guard has nothing to warn about.
+    mkdirSync(join(temp, "repo", "apps", "ui-web", "scripts"), { recursive: true })
+    writeFileSync(join(temp, "repo", "apps", "ui-web", "scripts", "sd-notify.ts"), "// present")
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain("sd-notify.ts")
   })
 
   it("server install auto-resolves the bind to the Tailscale IP when a tailnet is present", () => {
@@ -1885,11 +1978,16 @@ exit 0
       expect(r.stdout).toContain("<string>scripts/chat-server.ts</string>")
     })
 
-    it("supervises via KeepAlive SuccessfulExit=false — NOT systemd's Restart key", () => {
+    it("supervises via KeepAlive=true (always respawn) — NOT systemd's Restart key", () => {
       const r = render()
       expect(r.stdout).toContain("<key>KeepAlive</key>")
-      expect(r.stdout).toContain("<key>SuccessfulExit</key>")
       expect(r.stdout).toContain("<key>RunAtLoad</key>")
+      // Sol-autopsy fix: `{SuccessfulExit=false}` treated a graceful
+      // SIGTERM→exit(0) as "stay stopped" — the clean-exit loophole that kept
+      // Sol dead for 50 days. KeepAlive must be the bare <true/> (parity with
+      // systemd Restart=always); intentional stops use `launchctl bootout`.
+      expect(r.stdout).not.toContain("<key>SuccessfulExit</key>")
+      expect(r.stdout).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/)
       // launchd has no `Restart`/`OnFailure` key — that was the sketch's systemd-ism.
       expect(r.stdout).not.toContain("OnFailure")
       expect(r.stdout).not.toContain("<key>Restart</key>")

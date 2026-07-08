@@ -192,14 +192,43 @@ render_service() {
   # silently lands the server in setup-mode. CLAUDE_CONFIG_DIR is also redundantly
   # set here (in addition to .env) so a missing .env can't strand the credential
   # dir. Logs go to append-files (not journald) to match the operator workflow.
+  # Liveness ladder (L1+L2), motivated by the Sol autopsy:
+  # - Type=notify + WatchdogSec: the app sends READY=1 once the WS server
+  #   listens (both normal and setup mode) and health-GATED WATCHDOG=1 beats
+  #   every ~30s (apps/ui-web/scripts/sd-notify.ts). A wedged-but-alive
+  #   process stops beating and pid 1 restarts it — the failure class bare
+  #   Restart= can never see. NotifyAccess=all because Bun has no
+  #   unix-datagram API, so beats arrive from a spawned systemd-notify child.
+  # - StartLimit* + OnFailure: repeated failed starts stop the thrash and
+  #   fire the luna-alert@ pager (L2) so a human hears about it — Sol died
+  #   silently for 50 days because no failure path ever paged.
+  #   INVARIANT (two failure classes, window must hold Burst cycles of BOTH):
+  #     wedged-at-start:  cycle = TimeoutStartSec + RestartSec        = 65s
+  #     wedged-after-READY (watchdog kill): cycle = boot-to-READY +
+  #                        WatchdogSec + RestartSec                   ~ 155s
+  #   StartLimitIntervalSec >= StartLimitBurst * worst-cycle, or the loop
+  #   never accumulates Burst starts in one window, the unit never enters
+  #   failed state, OnFailure/pager NEVER fires, and it restart-loops
+  #   silently forever — the Sol failure mode this unit exists to kill.
+  #   10 * 155 = 1550 <= 1800. Burst=10 also tolerates legitimate onboarding
+  #   churn (setup→login→self-restart cycles).
+  # - The alert unit is rendered per-profile (concrete name, no %i template):
+  #   dev + stable co-installed on one host must not share a template whose
+  #   baked-in LUNA_HOME/pager.env would belong to whichever installed last.
   cat <<EOF
 [Unit]
 Description=Luna chat server (${PROFILE})
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=1800
+StartLimitBurst=10
+OnFailure=luna-alert-${CHAT_SERVER_NAME}.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
+WatchdogSec=90
+TimeoutStartSec=60
 WorkingDirectory=${REPO_DIR}/apps/ui-web
 Environment=HOME=${HOME}
 Environment=PATH=${bun_dir}:/usr/local/bin:/usr/bin:/bin
@@ -207,13 +236,46 @@ Environment=CLAUDE_CONFIG_DIR=${LUNA_HOME}/claude
 EnvironmentFile=-${ENV_FILE}
 ExecStart=${bun_bin} run scripts/chat-server.ts
 Restart=always
-RestartSec=2
+RestartSec=5
 StandardOutput=append:${LUNA_HOME}/logs/${CHAT_SERVER_NAME}.log
 StandardError=append:${LUNA_HOME}/logs/${CHAT_SERVER_NAME}-error.log
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+# ── Liveness ladder L2: failure pager unit ───────────────────────────────────
+# Rendered per-profile with a CONCRETE name (luna-alert-<unit>.service, no %i
+# template): dev and stable co-install on one host is a supported shape, and a
+# shared template would bake in whichever profile installed last — its
+# LUNA_HOME, its pager.env — so the other profile's failures would page with
+# the wrong (possibly token-less) config. Type=oneshot, fire-and-forget; the
+# pager script owns cooldown/no-token behavior and ALWAYS exits 0 so the
+# pager itself can never crash-loop.
+ALERT_SERVICE_FILE="$SERVICE_DIR/luna-alert-${CHAT_SERVER_NAME}.service"
+
+render_alert_service() {
+  cat <<EOF
+[Unit]
+Description=Luna failure pager (${CHAT_SERVER_NAME})
+
+[Service]
+Type=oneshot
+Environment=LUNA_HOME=${LUNA_HOME}
+EnvironmentFile=-${LUNA_HOME}/pager.env
+ExecStart=${REPO_DIR}/scripts/luna-pager ${CHAT_SERVER_NAME}
+EOF
+}
+
+write_alert_service() {
+  if [[ "$DRY_RUN" == true ]]; then
+    printf 'Would write %s:\n' "$ALERT_SERVICE_FILE"
+    render_alert_service
+    return 0
+  fi
+  mkdir -p "$SERVICE_DIR"
+  render_alert_service > "$ALERT_SERVICE_FILE"
 }
 
 luna_info "Installing Luna server profile: $PROFILE"
@@ -300,7 +362,32 @@ elif [[ -n "$CLAUDE_TOKEN" ]]; then
   luna_info "[dry-run] would seed default account (secret_ref=env:CLAUDE_CODE_OAUTH_TOKEN)"
 fi
 
+# Version-skew guard: the unit rendered above demands READY=1 (Type=notify),
+# which only S1+ code sends. Re-rendering the unit against an older checkout
+# (or after a rollback across the S1 boundary) turns the rollback safety net
+# into an unpaged activating→timeout→restart spiral. Warn loudly; the runbook
+# ordering is: deploy + verify the code FIRST, then re-run this installer.
+if [[ ! -f "$REPO_DIR/apps/ui-web/scripts/sd-notify.ts" ]]; then
+  luna_warn "checkout at $REPO_DIR lacks apps/ui-web/scripts/sd-notify.ts — the Type=notify unit will start-timeout against this code; update the checkout BEFORE restarting the service"
+fi
+
 write_service "$BUN_BIN"
+write_alert_service
+
+# Pager secret file: create ATOMICALLY with owner-only perms if absent (umask
+# in a subshell — no world-readable window between create and chmod), and
+# enforce 0600 on a pre-existing file (the operator writes
+# TELEGRAM_PAGER_TOKEN/LUNA_PAGER_CHAT_ID by hand later).
+if [[ "$DRY_RUN" == false ]]; then
+  if [[ ! -f "$LUNA_HOME/pager.env" ]]; then
+    ( umask 077; printf '# TELEGRAM_PAGER_TOKEN=\n# LUNA_PAGER_CHAT_ID=\n' > "$LUNA_HOME/pager.env" )
+  else
+    chmod 600 "$LUNA_HOME/pager.env"
+  fi
+else
+  luna_run touch "$LUNA_HOME/pager.env"
+  luna_run chmod 600 "$LUNA_HOME/pager.env"
+fi
 
 if [[ "$DRY_RUN" == false ]]; then
   systemctl daemon-reload

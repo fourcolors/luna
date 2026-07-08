@@ -366,7 +366,7 @@ export function useLunaData(): LunaData {
   )
   const restartServer = useCallback(async (): Promise<void> => {
     const ctrl = cfgRef.current.url.replace(/^ws/, "http").replace(/:4753\/ui$/, ":4754/trpc")
-    await fetch(ctrl + "/control.restart", {
+    const res = await fetch(ctrl + "/control.restart", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -374,6 +374,22 @@ export function useLunaData(): LunaData {
       },
       body: JSON.stringify({ json: null }),
     })
+    // control.restart can now REFUSE (ok:false — e.g. no supervisor detected
+    // on the server side); a refused restart must not look like a silent
+    // success to the operator.
+    let refusal: string | undefined
+    try {
+      const body = (await res.json()) as {
+        result?: { data?: { json?: { ok?: boolean; message?: string } } }
+      }
+      const payload = body.result?.data?.json
+      if (payload?.ok === false) {
+        refusal = payload.message ?? "restart refused by server"
+      }
+    } catch {
+      // Non-JSON / transport oddities: keep prior fire-and-forget behavior.
+    }
+    if (refusal !== undefined) throw new Error(refusal)
   }, [])
   // Seed the reducer's selected account from persisted config once on mount.
   useEffect(() => {
