@@ -10,7 +10,7 @@
  *   - Poll-loop resilience (transient errors are retried, not fatal).
  *   - Dedup key correctness (platformMessageId = update_id).
  */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   Effect,
   Fiber,
@@ -1379,5 +1379,56 @@ describe("inbound allowlist", () => {
     const a = makeTextUpdate({ fromId: 1, chatId: 1, updateId: 7301 })
     const received = await runInbound([a], [])
     expect(received).toHaveLength(1)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Poll-loop error logging (surfaces previously-silent getUpdates failures)   */
+/* -------------------------------------------------------------------------- */
+
+describe("poll-loop error logging", () => {
+  /**
+   * Script one getUpdates failure (then recovery), run the loop briefly with a
+   * console.warn spy, and return every warning string emitted. The failure is
+   * retried per the reconnection contract; we only assert on the LOG side-effect
+   * so retry/offset behavior is untouched.
+   */
+  const captureWarnings = async (failDescription: string): Promise<string[]> => {
+    const warnings: string[] = []
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "))
+    })
+    try {
+      const { transport } = makeFakeTransport([], {
+        getUpdates: [{ ok: false, description: failDescription }],
+      })
+      const adapter = makeTelegramAdapter({ id: "tg-log", httpTransport: transport })
+      adapter.setMessageHandler(() => Effect.void)
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+          yield* Effect.sleep("120 millis") // enough for the failing poll to log once
+          yield* Fiber.interrupt(fiber)
+        }),
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+    return warnings
+  }
+
+  it("emits a DISTINCT 409 Conflict warning when another poller holds the token", async () => {
+    const warnings = await captureWarnings("409: Conflict: terminated by other getUpdates request")
+    const conflict = warnings.filter((w) => w.includes("409 Conflict") && w.includes("another poller"))
+    expect(conflict.length).toBeGreaterThanOrEqual(1)
+    // It must NOT be logged as the generic failure line.
+    expect(warnings.some((w) => w.includes("getUpdates failed, retrying"))).toBe(false)
+  })
+
+  it("logs a generic retry warning for a non-409 transient failure", async () => {
+    const warnings = await captureWarnings("503: Service Unavailable")
+    expect(warnings.some((w) => w.includes("getUpdates failed, retrying with backoff"))).toBe(true)
+    // A 503 must NOT trip the 409 branch.
+    expect(warnings.some((w) => w.includes("409 Conflict"))).toBe(false)
   })
 })
