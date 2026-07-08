@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:bun": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "bench:recall": "bun bench/paraphrase-recall.ts"
+    "bench:recall": "bun bench/paraphrase-recall.ts",
+    "eval:locomo": "bun src/adapters/locomo-eval/run.ts"
   },
   "dependencies": {
     "@luna/core": "workspace:*",

@@ -1,0 +1,5 @@
+# LoCoMo dataset is CC BY-NC 4.0 — never vendor it into git. Cached locally
+# on first run of run.ts, gitignored here.
+.cache/
+# Per-run results / retrieval-coverage JSON — not committed.
+.out/
