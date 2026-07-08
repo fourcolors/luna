@@ -31,6 +31,7 @@
  */
 import {
   EnvSecretProvider,
+  FilePathSecretProvider,
   KeychainEnvSecretProvider,
   LUNA_VAULT_INTEGRITY_PREFIX,
   LunaVaultIntegrityError,
@@ -127,14 +128,17 @@ export interface BuildSecretChainLayerOpts {
  *
  * READ chains (05-decide §READ chain by mode) - uniform `env:NAME` grammar:
  *
- *   auto:  firstOf([routedOp, keychainEnv (darwin only), lunaVault, env])
+ *   auto:  firstOf([routedOp, filePath, keychainEnv (darwin only), lunaVault, env])
  *   keychain-preferred | keychain-only:
- *          firstOf([routedOp, keychainEnv, env])   ← EXACTLY today's chain
- *   env:   firstOf([routedOp, env])                ← EXACTLY today's chain
+ *          firstOf([routedOp, filePath, keychainEnv, env])
+ *   env:   firstOf([routedOp, filePath, env])
  *
- * The two keychain modes and the env mode reproduce the PRE-redesign chain
- * byte-for-byte (pinned by test) so the tiered rollout never changes read
- * behavior for an operator who already picked a mode. `auto` is the only chain
+ * The `filePath` tier (file:/file-json: refs) sits right after routedOp in every
+ * mode. It is BEHAVIOR-TRANSPARENT for the legacy grammar: it only claims
+ * file:/file-json: refs and fails through (ConfigError) for env:/op://, so the
+ * two keychain modes and the env mode still resolve env:/op:// byte-identically
+ * to the pre-redesign chain (pinned by test) — the tiered rollout never changes
+ * read behavior for an operator who already picked a mode. `auto` is the only chain
  * that inserts the new lunaVault tier, and it sits BETWEEN keychainEnv and the
  * env tail: keychain (darwin) still wins, the vault covers non-darwin (and any
  * darwin name never mirrored to the keychain), and env remains the final
@@ -175,26 +179,29 @@ export const buildSecretChainLayer = (
     accounts: opts.opAccounts.map((a) => ({ label: a.label, layer: a.layer })),
   })
   const envProviderL = EnvSecretProvider.Default
+  const filePathProviderL = FilePathSecretProvider.Default
   const keychainEnvProviderL = KeychainEnvSecretProvider.make(
     opts._keychainRead === undefined ? {} : { _read: opts._keychainRead },
   )
 
   if (opts.mode === "env") {
-    // env: routedOp → env. EXACTLY today's chain.
-    return secretProviderFirstOf([routedOpL, envProviderL], stopOnVaultIntegrity)
+    // env: routedOp → filePath → env. filePath only claims file:/file-json:,
+    // so env:/op:// resolution stays byte-identical to the pre-file chain.
+    return secretProviderFirstOf([routedOpL, filePathProviderL, envProviderL], stopOnVaultIntegrity)
   }
 
   if (opts.mode === "keychain-preferred" || opts.mode === "keychain-only") {
-    // keychain modes: routedOp → keychainEnv → env. EXACTLY today's chain.
+    // keychain modes: routedOp → filePath → keychainEnv → env.
+    // filePath is behavior-transparent for env:/op:// (pinned by test).
     return secretProviderFirstOf(
-      [routedOpL, keychainEnvProviderL, envProviderL],
+      [routedOpL, filePathProviderL, keychainEnvProviderL, envProviderL],
       stopOnVaultIntegrity,
     )
   }
 
   // mode === "auto": routedOp → keychainEnv (darwin only) → lunaVault → env.
   const lunaVaultL = LunaVaultSecretProvider.make({ read: opts.lunaVaultRead })
-  const chain: Array<Layer.Layer<SecretProvider, ConfigError>> = [routedOpL]
+  const chain: Array<Layer.Layer<SecretProvider, ConfigError>> = [routedOpL, filePathProviderL]
   if (opts.platform === "darwin") chain.push(keychainEnvProviderL)
   chain.push(lunaVaultL, envProviderL)
   return secretProviderFirstOf(chain, stopOnVaultIntegrity)

@@ -56,3 +56,4 @@ export {
   type StorageProbe,
   type ProbeOnePasswordOptions,
 } from "./storage-policy.js"
+export { FilePathSecretProvider, FILE_PATH_PREFIX, FILE_JSON_PREFIX, FILE_SIZE_CAP_BYTES } from "./file-path-backend.js"
