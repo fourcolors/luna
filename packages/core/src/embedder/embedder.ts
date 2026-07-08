@@ -117,8 +117,12 @@ export const makeStubEmbedderLayer = (
 // ─────────────────────────────────────────────────────────────────────────────
 // OllamaLayer — HTTP to localhost:11434 (default).
 //
-// Layer.effect probes the daemon at construction; if unreachable, fails with
-// EmbedderError("init"). Tests are gated on LUNA_TEST_OLLAMA=1.
+// Layer.effect probes the daemon at construction, retrying up to
+// `maxProbeAttempts` times with jittered backoff. If every attempt fails,
+// it fails with EmbedderError("init") - unless `degradeOnProbeFailure` is
+// set and the dimension is already known, in which case it boots non-fatally
+// and later `embed()` calls hit Ollama for real. Tests are gated on
+// LUNA_TEST_OLLAMA=1.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface OllamaEmbedderOptions {

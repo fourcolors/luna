@@ -9,8 +9,10 @@
  *   - default → StubEmbedderLayer (deterministic, no I/O — safe for tests
  *     and for offline dev rigs where Ollama isn't running).
  *   - `LUNA_EMBEDDER=ollama` → makeOllamaEmbedderLayer() (probes the
- *     daemon at construction; fails fast with EmbedderError if it can't
- *     reach 127.0.0.1:11434).
+ *     daemon at construction with bounded retry; fails with EmbedderError
+ *     if it still can't reach 127.0.0.1:11434 once retries are exhausted
+ *     and the dimension isn't already known - see `selectEmbedderLayer`
+ *     for the degrade-on-probe-failure opt-in and its env knobs).
  *   - any other value → silently falls back to Stub. We don't fail open
  *     because a typo shouldn't break the dev rig.
  *
@@ -75,6 +77,12 @@ function parsePositiveIntegerEnv(name: string): number | undefined {
  * the selection rules. Returns a Layer that produces `EmbedderService`;
  * the failure channel is `EmbedderError` for ollama (probe-on-init) and
  * `never` for stub.
+ *
+ * For ollama, always passes `degradeOnProbeFailure: true` so the chat-server
+ * deploy path boots non-fatally once probe retries are exhausted, provided
+ * the dimension is already known via `LUNA_OLLAMA_EMBED_DIMENSION`. Probe
+ * retry is tunable via `LUNA_OLLAMA_PROBE_ATTEMPTS` (clamped to 5) and
+ * `LUNA_OLLAMA_PROBE_BACKOFF_MS`.
  */
 export function selectEmbedderLayer(): Layer.Layer<
   EmbedderService,
