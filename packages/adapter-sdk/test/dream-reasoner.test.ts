@@ -19,15 +19,18 @@ import {
   EnvSecretProvider,
   Clock,
   CLAUDE_CODE_LOGIN_SECRET_REF,
+  DEFAULT_DISTILL_OPTIONS,
+  DREAM_PROMPT_TOKEN_BUDGET,
+  estimateTokens,
 } from "@luna/core"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
 import { DreamReasoner } from "@luna/core"
 import { deriveBeliefId, makeBeliefRecord } from "@luna/core"
 import { SDKClient } from "../src/sdk-client.js"
-import { DreamReasonerDefault } from "../src/dream-reasoner.js"
+import { buildDreamPrompt, DreamReasonerDefault } from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
-import type { DreamInputs } from "@luna/core"
+import type { DreamInputs, DistilledSession } from "@luna/core"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 
 // ---------------------------------------------------------------------------
@@ -48,6 +51,42 @@ const brokerFake = (): Layer.Layer<AccountBroker> =>
 // ---------------------------------------------------------------------------
 
 const EMPTY_INPUTS: DreamInputs = { sessions: [], memories: [] }
+
+// ---------------------------------------------------------------------------
+// DistilledSession / DreamInputs fixtures (S4: buildDreamPrompt must consume
+// the distilled-session shape from Loop A/B, not raw {summary, messages}).
+// DistilledSession is plain data (summary + excerpt + counts) — literals are
+// constructed directly here, with NO call into distillSession (that module is
+// unit-tested on its own in packages/core/src/dream/distill.test.ts).
+// ---------------------------------------------------------------------------
+const baseSummary = (id: string): DistilledSession["summary"] => ({
+  id,
+  parentId: null,
+  title: null,
+  tags: [],
+  createdAt: 0,
+  endedAt: null,
+  model: "claude-test-model",
+  status: "closed",
+  lastMessageAt: null,
+  lastMessagePreview: null,
+})
+
+const makeInputs = (over: Partial<DreamInputs> = {}): DreamInputs => ({
+  sessions: over.sessions ?? [],
+  memories: over.memories ?? [],
+})
+
+const memRecordFixture = (id: string): MemoryRecord => ({
+  id,
+  namespace: "operator",
+  kind: "note",
+  content: { id },
+  schemaVersion: 1,
+  createdAt: 0,
+  updatedAt: 0,
+  tags: [],
+})
 
 // Ref-backed MemoryRouter double (copied from dream.test.ts).
 const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
@@ -573,5 +612,95 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
     const opts = sink.last!.options
     expect("outputFormat" in opts).toBe(false)
     expect(opts["maxTurns"]).toBe(1)
+  })
+})
+
+// ── S4 — Loop B integration: buildDreamPrompt + reason() consume distilled ──
+// sessions and a bounded memories block, with a pre-flight token budget gate.
+describe("buildDreamPrompt — distilled sessions + bounded memories (S4)", () => {
+  const MEMORY_HEADER = "CURRENT MEMORY STATE (for dedup/staleness/contradiction ops only):"
+
+  it("(e) renders each session's excerpt verbatim under a 'SESSION <id> (windowMessageCount/messageCount msgs in window):' header, never leaking raw summary fields via JSON.stringify", () => {
+    const EXCERPT_MARKER = "USER_SAID_HELLO_MARKER_e7f1"
+    const RAW_FIELD_SENTINEL = "SHOULD_NEVER_LEAK_INTO_PROMPT_9f3c"
+    const session: DistilledSession = {
+      // title carries a sentinel that would leak if buildDreamPrompt ever
+      // JSON.stringify'd the whole session/summary object instead of only
+      // rendering `summary.id` + the pre-distilled `excerpt`.
+      summary: { ...baseSummary("s-42"), title: RAW_FIELD_SENTINEL },
+      excerpt: `[user] ${EXCERPT_MARKER}\n[assistant] ok`,
+      messageCount: 5,
+      windowMessageCount: 2,
+    }
+    const prompt = buildDreamPrompt(makeInputs({ sessions: [session] }))
+    expect(prompt).toContain("SESSION s-42 (2/5 msgs in window):")
+    expect(prompt).toContain(EXCERPT_MARKER)
+    expect(prompt).not.toContain(RAW_FIELD_SENTINEL)
+  })
+
+  it("(f) caps the memories section at memoriesChars and appends a '[… N more memory records omitted]' marker when the rendered lines overflow the budget", () => {
+    // 5000 short records comfortably overflows the 40_000-char default budget
+    // under any reasonable per-line rendering, without hardcoding the exact
+    // per-line format (that's an implementation detail, not part of this spec).
+    const many = Array.from({ length: 5000 }, (_, i) =>
+      memRecordFixture(`mem-${String(i).padStart(5, "0")}`),
+    )
+    const prompt = buildDreamPrompt(makeInputs({ memories: many }))
+    const idx = prompt.indexOf(MEMORY_HEADER)
+    expect(idx).toBeGreaterThanOrEqual(0)
+    const memSection = prompt.slice(idx + MEMORY_HEADER.length).trim()
+    expect(memSection.length).toBeLessThanOrEqual(DEFAULT_DISTILL_OPTIONS.memoriesChars)
+    expect(memSection).toMatch(/\[… \d+ more memory records omitted\]/)
+  })
+
+  it("(f2) memories within the budget render with no omission marker", () => {
+    const few = [memRecordFixture("mem-1"), memRecordFixture("mem-2"), memRecordFixture("mem-3")]
+    const prompt = buildDreamPrompt(makeInputs({ memories: few }))
+    const idx = prompt.indexOf(MEMORY_HEADER)
+    expect(idx).toBeGreaterThanOrEqual(0)
+    const memSection = prompt.slice(idx + MEMORY_HEADER.length).trim()
+    expect(memSection).not.toMatch(/omitted/)
+  })
+
+  it("(g) reason() pre-flight: a prompt whose estimateTokens exceeds DREAM_PROMPT_TOKEN_BUDGET fails with a DreamError naming both numbers, WITHOUT calling the SDK", async () => {
+    // A single oversized excerpt (bypassing distillSession's own perSessionChars
+    // cap — constructed directly as plain data, per the task's fixture note)
+    // is enough on its own to blow the whole-prompt token budget.
+    const HUGE_EXCERPT = "x".repeat(500_000) // ~125,000 estimated tokens
+    const hugeSession: DistilledSession = {
+      summary: baseSummary("s-huge"),
+      excerpt: HUGE_EXCERPT,
+      messageCount: 1,
+      windowMessageCount: 1,
+    }
+    const inputs = makeInputs({ sessions: [hugeSession] })
+    const expectedTokens = estimateTokens(buildDreamPrompt(inputs))
+    expect(expectedTokens).toBeGreaterThan(DREAM_PROMPT_TOKEN_BUDGET) // fixture sanity
+
+    let calls = 0
+    const sdkLayer = SDKClient.fake((_params) => {
+      calls++
+      const r = { ...makeResultMessage("sid", "uuid-preflight"), result: "[]" }
+      return makeFakeQuery({ messages: [r] }).query
+    })
+
+    const exit = await Effect.runPromiseExit(
+      runReason(inputs, sdkLayer, FakeMemory()),
+    )
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const maybeError = Cause.failureOption(exit.cause)
+      expect(maybeError._tag).toBe("Some")
+      if (maybeError._tag === "Some") {
+        const error = maybeError.value
+        expect(error).toBeInstanceOf(DreamError)
+        expect((error as DreamError).op).toBe("reason")
+        expect((error as DreamError).message).toContain(String(expectedTokens))
+        expect((error as DreamError).message).toContain(String(DREAM_PROMPT_TOKEN_BUDGET))
+      }
+    }
+    // The pre-flight must reject BEFORE any sdk.query() call — zero cost on a
+    // prompt that would never fit the model's context window anyway.
+    expect(calls).toBe(0)
   })
 })
