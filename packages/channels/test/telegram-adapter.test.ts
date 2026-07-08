@@ -1317,3 +1317,67 @@ describe("deliver: final cleanup is failure-proof", () => {
     expect(methods.filter((m) => m === "editMessageText")).toHaveLength(0)
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* Inbound allowlist (union gate: sender id OR chat id)                        */
+/* -------------------------------------------------------------------------- */
+
+describe("inbound allowlist", () => {
+  /** Drive one poll of `updates` through an adapter with the given allowlist. */
+  const runInbound = async (
+    updates: ReturnType<typeof makeTextUpdate>[],
+    allowedIds: TelegramAdapterConfig["allowedIds"],
+  ): Promise<ChannelMessage[]> => {
+    const received: ChannelMessage[] = []
+    const { transport } = makeFakeTransport([{ ok: true, result: updates }])
+    const adapter = makeTelegramAdapter({
+      id: "tg-allow",
+      httpTransport: transport,
+      ...(allowedIds !== undefined ? { allowedIds } : {}),
+    })
+    adapter.setMessageHandler((msg) =>
+      Effect.sync(() => {
+        received.push(msg)
+      }),
+    )
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+    return received
+  }
+
+  it("accepts a DM whose sender id is allowlisted, drops other senders in the same batch", async () => {
+    const allowed = makeTextUpdate({ fromId: 111, chatId: 111, updateId: 7001, text: "hi" })
+    const blocked = makeTextUpdate({ fromId: 222, chatId: 222, updateId: 7002, text: "nope" })
+    const received = await runInbound([allowed, blocked], ["111"])
+    expect(received.map((m) => m.senderId)).toEqual(["111"])
+  })
+
+  it("serves EVERY sender in an allowlisted group (chat id), even senders not in the list", async () => {
+    // Group chat -100500 is allowlisted; neither member's user id is listed.
+    const memberA = makeTextUpdate({ fromId: 333, chatId: -100500, chatType: "supergroup", updateId: 7101, text: "a" })
+    const memberB = makeTextUpdate({ fromId: 444, chatId: -100500, chatType: "supergroup", updateId: 7102, text: "b" })
+    const outsider = makeTextUpdate({ fromId: 555, chatId: 555, updateId: 7103, text: "dm" })
+    const received = await runInbound([memberA, memberB, outsider], ["-100500"])
+    // Both group members served (chat-id match); the unrelated DM is dropped.
+    expect(received.map((m) => m.senderId).sort()).toEqual(["333", "444"])
+    expect(received.every((m) => m.channelId === "-100500")).toBe(true)
+  })
+
+  it("is open (accepts any sender) when allowedIds is omitted", async () => {
+    const a = makeTextUpdate({ fromId: 1, chatId: 1, updateId: 7201 })
+    const b = makeTextUpdate({ fromId: 2, chatId: 2, updateId: 7202 })
+    const received = await runInbound([a, b], undefined)
+    expect(received).toHaveLength(2)
+  })
+
+  it("is open when allowedIds is empty (fail-open, not fail-closed)", async () => {
+    const a = makeTextUpdate({ fromId: 1, chatId: 1, updateId: 7301 })
+    const received = await runInbound([a], [])
+    expect(received).toHaveLength(1)
+  })
+})
