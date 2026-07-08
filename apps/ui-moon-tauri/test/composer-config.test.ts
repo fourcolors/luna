@@ -608,4 +608,125 @@ describe('ComposerConfig (chat.html)', () => {
       expect(internals().ComposerConfig.isEffortValidForCurrentModel('max')).toBe(false)
     })
   })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Per-thread truth: the composer shows the ACTIVE thread's actual
+  // model/effort (learned from server frames), not the global localStorage
+  // picks — the fix for "changing the model/effort doesn't work".
+  describe('per-thread model/effort truth', () => {
+    const twoModels = [
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', efforts: ['low', 'max'] },
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+    ]
+
+    function interceptWsSend() {
+      const sent: any[] = []
+      vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((frame: any) => {
+        sent.push(frame)
+      })
+      return sent
+    }
+
+    it('thread-list records each thread model/effort; active thread wins over localStorage', () => {
+      sendHello({ models: twoModels, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thr-1'
+      localStorage.setItem('luna_model', 'claude-sonnet-4-6')
+      localStorage.setItem('luna_effort', 'low')
+      internals().ComposerConfig.applyModels(twoModels)
+      internals().handleFrame({
+        type: 'thread-list',
+        threads: [
+          { id: 'thr-1', model: 'claude-fable-5', effort: 'max' },
+          { id: 'thr-2', model: 'claude-sonnet-4-6' },
+        ],
+      })
+      expect(document.getElementById('model-cfg-btn')!.textContent).toBe('Fable 5')
+      expect(document.getElementById('effort-cfg-btn')!.textContent).toBe('Max')
+      // The global new-thread picks are untouched.
+      expect(localStorage.getItem('luna_model')).toBe('claude-sonnet-4-6')
+      expect(localStorage.getItem('luna_effort')).toBe('low')
+    })
+
+    it('a smart-bar model pill updates the active thread label (live switch feedback)', () => {
+      sendHello({ models: twoModels, effortSelection: true })
+      internals().State.activeThreadId = 'thr-1'
+      localStorage.setItem('luna_model', 'claude-sonnet-4-6')
+      internals().ComposerConfig.applyModels(twoModels)
+      internals().handleFrame({
+        type: 'smart-bar',
+        threadId: 'thr-1',
+        version: 1,
+        items: [{ id: 'model', kind: 'info', label: 'model', value: 'claude-fable-5', icon: '✶', group: 'context', priority: 1 }],
+      })
+      expect(document.getElementById('model-cfg-btn')!.textContent).toBe('Fable 5')
+    })
+
+    it('an applied thread-config ack records the EFFECTIVE effort (clamp feedback)', () => {
+      sendHello({ models: twoModels, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thr-1'
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      internals().ComposerConfig.applyModels(twoModels)
+      internals().handleFrame({
+        type: 'thread-config',
+        threadId: 'thr-1',
+        model: 'claude-fable-5',
+        effort: 'max',           // server-clamped effective value
+        applied: ['effort'],
+        deferred: [],
+        rejected: [],
+      })
+      expect(document.getElementById('effort-cfg-btn')!.textContent).toBe('Max')
+    })
+
+    it('re-picking the global default on a thread running another model STILL sends set-thread-config', () => {
+      // Regression guard: change detection must compare against the THREAD's
+      // model, not the localStorage pick — else this exact pick silently no-ops.
+      sendHello({ models: twoModels, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thr-1'
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      internals().ComposerConfig.applyModels(twoModels)
+      // Server told us the thread actually runs sonnet.
+      internals().State.threadModels['thr-1'] = 'claude-sonnet-4-6'
+      const sent = interceptWsSend()
+      internals().ComposerConfig._selectModel('claude-fable-5')
+      expect(sent.some((f: any) => f.type === 'set-thread-config' && f.model === 'claude-fable-5' && f.threadId === 'thr-1')).toBe(true)
+    })
+
+    it('picking the model the thread already runs does NOT send set-thread-config', () => {
+      sendHello({ models: twoModels, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thr-1'
+      localStorage.setItem('luna_model', 'claude-sonnet-4-6')
+      internals().ComposerConfig.applyModels(twoModels)
+      internals().State.threadModels['thr-1'] = 'claude-fable-5'
+      const sent = interceptWsSend()
+      internals().ComposerConfig._selectModel('claude-fable-5')
+      expect(sent.filter((f: any) => f.type === 'set-thread-config')).toHaveLength(0)
+    })
+
+    it('a rejected model ack rolls back the per-thread optimistic write', () => {
+      sendHello({ models: twoModels, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thr-1'
+      localStorage.setItem('luna_model', 'claude-sonnet-4-6')
+      internals().ComposerConfig.applyModels(twoModels)
+      internals().State.threadModels['thr-1'] = 'claude-sonnet-4-6'
+      interceptWsSend()
+      internals().ComposerConfig._selectModel('claude-fable-5')
+      // Optimistic per-thread write happened.
+      expect(internals().State.threadModels['thr-1']).toBe('claude-fable-5')
+      internals().handleFrame({
+        type: 'thread-config',
+        threadId: 'thr-1',
+        applied: [],
+        deferred: [],
+        rejected: [{ field: 'model', reason: 'cross-lane' }],
+      })
+      expect(internals().State.threadModels['thr-1']).toBe('claude-sonnet-4-6')
+      expect(document.getElementById('model-cfg-btn')!.textContent).toBe('Sonnet 4.6')
+    })
+  })
 })

@@ -338,4 +338,56 @@ describe("SessionStore (in-memory)", () => {
       ),
     ).resolves.toBeUndefined()
   })
+
+  it("setOptions with a model patch updates the summary model (mid-thread switch)", async () => {
+    const result = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "switch",
+          options: { model: "claude-sonnet-5" },
+          createdAt: 0,
+        })
+        // The setThreadConfig persist path: model + sdkOptions in one patch.
+        yield* store.setOptions("switch", {
+          model: "claude-opus-4-8",
+          sdkOptions: { model: "claude-opus-4-8" },
+        })
+        return yield* store.get("switch")
+      }),
+    )
+    // The denormalized summary model must follow the switch — a stale value
+    // here is what made thread-list report the creation model forever.
+    expect(result?.model).toBe("claude-opus-4-8")
+  })
+
+  it("summary surfaces effort from sdkOptions (and ultracode from settings)", async () => {
+    const result = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "eff",
+          options: { model: "m", sdkOptions: { effort: "high" } },
+          createdAt: 0,
+        })
+        yield* store.create({
+          id: "ultra",
+          options: {
+            model: "m",
+            sdkOptions: { settings: { ultracode: true, enableWorkflows: true } },
+          },
+          createdAt: 0,
+        })
+        yield* store.create({ id: "none", options: { model: "m" }, createdAt: 0 })
+        return {
+          eff: yield* store.get("eff"),
+          ultra: yield* store.get("ultra"),
+          none: yield* store.get("none"),
+        }
+      }),
+    )
+    expect(result.eff?.effort).toBe("high")
+    expect(result.ultra?.effort).toBe("ultracode")
+    expect(result.none?.effort).toBeUndefined()
+  })
 })
