@@ -85,6 +85,12 @@ export interface SessionSummary {
   readonly createdAt: number
   readonly endedAt: number | null
   readonly model: string
+  /**
+   * Persisted effort preference ("low" … "max" or "ultracode"), when set.
+   * Reflects mid-thread switches. Additive — absent on older servers and on
+   * sessions with no explicit effort.
+   */
+  readonly effort?: string
   readonly status: "active" | "idle" | "closed" | "errored"
   readonly lastMessageAt: number | null
   readonly lastMessagePreview: string | null

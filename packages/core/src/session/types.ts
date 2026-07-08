@@ -101,6 +101,14 @@ export interface SessionSummary {
   readonly createdAt: number
   readonly endedAt: number | null
   readonly model: string
+  /**
+   * The session's persisted effort preference, when one is set: a real
+   * effort level from `sdkOptions.effort` ("low" … "max") or "ultracode"
+   * when the ultracode flag-settings token is persisted. Reflects
+   * mid-thread switches (setThreadConfig), not just creation. Additive —
+   * absent when the session has no explicit effort.
+   */
+  readonly effort?: string
   readonly status: SessionStatus
   /**
    * Wall-clock ts of the most recently appended message, or null if none yet.

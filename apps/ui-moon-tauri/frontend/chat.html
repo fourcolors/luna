@@ -2919,7 +2919,7 @@
       // build they're talking to.
       CLIENT_INFO: {
         name: 'luna-moon',
-        version: '0.0.10',
+        version: '0.0.54',
         platform: 'tauri-darwin',
       },
     };
@@ -2934,6 +2934,13 @@
       ws: null,
       activeThreadId: null,
       activeTurnId: null,
+      // Per-thread ACTUAL config learned from server frames (thread-created /
+      // thread-list summaries, thread-config acks, smart-bar model pills).
+      // threadId → model id / effort level. The composer prefers these over
+      // the global localStorage picks so it shows the ACTIVE thread's truth,
+      // not the operator's last global selection.
+      threadModels: {},
+      threadEfforts: {},
       wsUrl: 'ws://127.0.0.1:4753/ui',
       wsToken: '',
       reconnectAttempts: 0,
@@ -5461,9 +5468,11 @@
        * Prior picks snapshotted just before an optimistic localStorage write
        * that triggered a set-thread-config send. The server's thread-config
        * ack consumes them: `rejected` rolls the write back (localStorage +
-       * labels); `applied`/`deferred` discard the snapshot. Keys: `model`,
-       * `modelEffort` (the effort a model pick may have cascade-cleared),
-       * `effort`. Empty string = "was unset".
+       * per-thread maps + labels); `applied`/`deferred` discard the snapshot.
+       * Keys: `model`, `modelEffort` (the effort a model pick may have
+       * cascade-cleared), `effort` (all localStorage; empty string = "was
+       * unset") and `threadModel` / `threadEffort` (State.threadModels /
+       * State.threadEfforts; null = "was unset").
        */
       _pendingRevert: {},
 
@@ -5505,11 +5514,74 @@
         this._refreshEffortVisibility(supportsEffort);
       },
 
-      /** Find the model object for the currently selected model id. */
+      /** Find the model object for the currently selected model id.
+       *  Reads the GLOBAL localStorage pick — this is the new-thread default
+       *  (used by sendNewThread + isEffortValidForCurrentModel), NOT what the
+       *  composer displays for an existing thread. */
       _currentModelEntry() {
         const id = localStorage.getItem('luna_model') || '';
         if (!id) return this._models[0] || null;
         return this._models.find((m) => m.id === id) || null;
+      },
+
+      /**
+       * The model id the composer should DISPLAY: the active thread's actual
+       * model when the server has told us (thread-created / thread-list /
+       * thread-config ack / smart-bar), else the operator's global pick.
+       * This is what makes a mid-thread switch — or opening an older thread —
+       * show the thread's REAL model instead of the last global selection.
+       */
+      _displayModelId() {
+        const tid = State.activeThreadId;
+        if (tid && State.threadModels[tid]) return State.threadModels[tid];
+        return localStorage.getItem('luna_model') || '';
+      },
+
+      /** The model entry to render menus/labels from (display-model aware). */
+      _displayModelEntry() {
+        const id = this._displayModelId();
+        if (!id) return this._models[0] || null;
+        return this._models.find((m) => m.id === id) || null;
+      },
+
+      /** The effort the composer should DISPLAY (active thread first). */
+      _displayEffort() {
+        const tid = State.activeThreadId;
+        if (tid && State.threadEfforts[tid]) return State.threadEfforts[tid];
+        return localStorage.getItem('luna_effort') || '';
+      },
+
+      /** Re-render menus + labels from current per-thread-aware state. */
+      refreshComposer() {
+        this._rebuildModelMenu();
+        this._rebuildEffortMenu();
+        this._refreshLabels();
+      },
+
+      /**
+       * Record a thread's ACTUAL config as reported by the server and refresh
+       * the composer when it concerns the active thread. Pass null/undefined
+       * for a field to leave it untouched. Sources: thread-created and
+       * thread-list summaries, thread-config acks, smart-bar model pills.
+       */
+      recordThreadConfig(threadId, model, effort) {
+        if (!threadId) return;
+        let changed = false;
+        if (typeof model === 'string' && model) {
+          if (State.threadModels[threadId] !== model) {
+            State.threadModels[threadId] = model;
+            changed = true;
+          }
+        }
+        if (typeof effort === 'string' && effort) {
+          if (State.threadEfforts[threadId] !== effort) {
+            State.threadEfforts[threadId] = effort;
+            changed = true;
+          }
+        }
+        if (changed && threadId === State.activeThreadId) {
+          this.refreshComposer();
+        }
       },
 
       /**
@@ -5527,7 +5599,7 @@
         if (!menu) return;
         // Keep the hint div (first child), remove the rest.
         while (menu.children.length > 1) menu.removeChild(menu.lastChild);
-        const current = localStorage.getItem('luna_model') || '';
+        const current = this._displayModelId();
         for (const m of this._models) {
           const item = document.createElement('div');
           item.className = 'cfg-menu-item' + (m.id === current ? ' selected' : '');
@@ -5554,7 +5626,7 @@
         const menu = DOM.effortCfgMenu;
         if (!menu) return;
         while (menu.children.length > 1) menu.removeChild(menu.lastChild);
-        const entry = this._currentModelEntry();
+        const entry = this._displayModelEntry();
         const rawEfforts = (entry && entry.efforts) || [];
         // Display order: surface "ultracode" at the TOP of the menu (the
         // headline mode), then the real effort levels in server order.
@@ -5562,7 +5634,7 @@
           ...rawEfforts.filter((e) => e === 'ultracode'),
           ...rawEfforts.filter((e) => e !== 'ultracode'),
         ];
-        const current = localStorage.getItem('luna_effort') || '';
+        const current = this._displayEffort();
         // "Server default" item (empty effort = omit from frame)
         const defItem = document.createElement('div');
         defItem.className = 'cfg-menu-item' + (!current ? ' selected' : '');
@@ -5620,22 +5692,31 @@
           localStorage.removeItem('luna_effort');
           State.selectedEffort = null;
         }
-        this._rebuildModelMenu();
-        this._rebuildEffortMenu();
-        this._refreshLabels();
         this.closeAllMenus();
         // Mid-thread: if there's an active thread, send set-thread-config.
-        if (State.activeThreadId && State.serverSupportsEffort && id !== prev) {
+        // Change detection compares against the thread's ACTUAL model when
+        // known (not the global localStorage pick) — otherwise re-picking your
+        // global default on a thread running something else silently no-ops.
+        const tid = State.activeThreadId;
+        const liveCurrent = (tid && State.threadModels[tid]) || prev;
+        if (tid && State.serverSupportsEffort && id !== liveCurrent && id) {
           // Snapshot the prior picks so a `rejected` ack can roll back the
-          // optimistic writes above (model + any cascade-cleared effort).
+          // optimistic writes (localStorage, per-thread map, cascade-cleared
+          // effort). null marks "was unset" for the per-thread map.
           this._pendingRevert.model = prev;
           this._pendingRevert.modelEffort = savedEffort;
+          this._pendingRevert.threadModel =
+            Object.prototype.hasOwnProperty.call(State.threadModels, tid)
+              ? State.threadModels[tid]
+              : null;
+          State.threadModels[tid] = id; // optimistic — ack reconciles
           WebSocketEngine.send({
             type: 'set-thread-config',
-            threadId: State.activeThreadId,
-            model: id || undefined,
+            threadId: tid,
+            model: id,
           });
         }
+        this.refreshComposer();
       },
 
       /** Persist effort selection, update labels, send mid-thread config if live. */
@@ -5648,30 +5729,46 @@
           localStorage.removeItem('luna_effort');
           State.selectedEffort = null;
         }
-        this._rebuildEffortMenu();
-        this._refreshLabels();
         this.closeAllMenus();
         // Mid-thread: if there's an active thread and cap on, send set-thread-config.
-        if (State.activeThreadId && State.serverSupportsEffort && effort !== prev) {
+        // Change detection compares against the thread's ACTUAL effort when
+        // known (not the global localStorage pick).
+        const tid = State.activeThreadId;
+        const liveCurrent = (tid && State.threadEfforts[tid]) || prev;
+        if (tid && State.serverSupportsEffort && effort !== liveCurrent && effort) {
           // Snapshot the prior pick so a `rejected` ack can roll back the
-          // optimistic write above.
+          // optimistic writes (localStorage + per-thread map; null marks
+          // "was unset" for the per-thread map).
           this._pendingRevert.effort = prev;
+          this._pendingRevert.threadEffort =
+            Object.prototype.hasOwnProperty.call(State.threadEfforts, tid)
+              ? State.threadEfforts[tid]
+              : null;
+          State.threadEfforts[tid] = effort; // optimistic — ack reconciles
           WebSocketEngine.send({
             type: 'set-thread-config',
-            threadId: State.activeThreadId,
-            effort: effort || undefined,
+            threadId: tid,
+            effort: effort,
           });
         }
+        this.refreshComposer();
       },
 
-      /** Update the visible button labels from current localStorage picks. */
+      /** Update the visible button labels. Prefers the ACTIVE thread's
+       *  server-reported model/effort; falls back to the global picks. */
       _refreshLabels() {
-        const modelId = localStorage.getItem('luna_model') || '';
-        const entry = this._models.find((m) => m.id === modelId) || this._models[0] || null;
+        const modelId = this._displayModelId();
+        const entry = modelId
+          ? (this._models.find((m) => m.id === modelId) || null)
+          : (this._models[0] || null);
         if (DOM.modelCfgBtn) {
-          DOM.modelCfgBtn.textContent = entry ? entry.label : 'Server default';
+          // A model id the hello list doesn't know (custom/older server) is
+          // shown raw rather than silently mislabelled as the default model.
+          DOM.modelCfgBtn.textContent = entry
+            ? entry.label
+            : (modelId || 'Server default');
         }
-        const effort = localStorage.getItem('luna_effort') || '';
+        const effort = this._displayEffort();
         if (DOM.effortCfgBtn) {
           DOM.effortCfgBtn.textContent = effort
             ? effort.charAt(0).toUpperCase() + effort.slice(1)
@@ -5737,6 +5834,21 @@
             if (DOM.cfgDeferredHint) DOM.cfgDeferredHint.classList.remove('visible');
           }, 4000);
         }
+        // Applied → the server confirmed; record the EFFECTIVE values it
+        // echoes (effort may have been clamped, ultracode normalized) as the
+        // thread's truth so labels/menus reflect reality, not the request.
+        let changed = false;
+        const ackThreadId = typeof frame.threadId === 'string' ? frame.threadId : '';
+        if (ackThreadId) {
+          if (applied.includes('model') && typeof frame.model === 'string' && frame.model) {
+            State.threadModels[ackThreadId] = frame.model;
+            changed = true;
+          }
+          if (applied.includes('effort') && typeof frame.effort === 'string' && frame.effort) {
+            State.threadEfforts[ackThreadId] = frame.effort;
+            changed = true;
+          }
+        }
         // Rejected → roll back the optimistic write to the send-time snapshot.
         let reverted = false;
         for (const r of rejected) {
@@ -5752,10 +5864,25 @@
             if (this._pendingRevert.modelEffort !== undefined) {
               this._writeEffort(this._pendingRevert.modelEffort);
             }
+            // Roll back the per-thread optimistic write (null = "was unset").
+            if (ackThreadId && this._pendingRevert.threadModel !== undefined) {
+              if (this._pendingRevert.threadModel === null) {
+                delete State.threadModels[ackThreadId];
+              } else {
+                State.threadModels[ackThreadId] = this._pendingRevert.threadModel;
+              }
+            }
             reverted = true;
           }
           if (r.field === 'effort' && this._pendingRevert.effort !== undefined) {
             this._writeEffort(this._pendingRevert.effort);
+            if (ackThreadId && this._pendingRevert.threadEffort !== undefined) {
+              if (this._pendingRevert.threadEffort === null) {
+                delete State.threadEfforts[ackThreadId];
+              } else {
+                State.threadEfforts[ackThreadId] = this._pendingRevert.threadEffort;
+              }
+            }
             reverted = true;
           }
         }
@@ -5766,10 +5893,14 @@
           if (f === 'model') {
             delete this._pendingRevert.model;
             delete this._pendingRevert.modelEffort;
+            delete this._pendingRevert.threadModel;
           }
-          if (f === 'effort') delete this._pendingRevert.effort;
+          if (f === 'effort') {
+            delete this._pendingRevert.effort;
+            delete this._pendingRevert.threadEffort;
+          }
         }
-        if (reverted) {
+        if (reverted || changed) {
           this._rebuildModelMenu();
           this._rebuildEffortMenu();
           this._refreshLabels();
@@ -6032,6 +6163,12 @@
     MoonFrames.register('thread-list', (frame) => {
       const threads = frame.threads || [];
 
+      // Record every thread's server-reported model/effort so the composer
+      // can show the ACTIVE thread's truth when the operator switches around.
+      for (const t of threads) {
+        if (t) ComposerConfig.recordThreadConfig(t.id, t.model, t.effort);
+      }
+
       // ── Tombstone-advance: stall self-heal round ──────────────────────────
       // onReattachStalled() cleared activeThreadId and added the stalled id(s)
       // to stalledIdSet. Pick the first thread NOT in that set so we skip every
@@ -6054,6 +6191,8 @@
         State.activeThreadId = target.id;
         Logger.info(`No active thread; auto-subscribing to thread "${target.id}"`);
         WebSocketEngine.send({ type: 'subscribe', threadId: target.id });
+        // Reflect the now-active thread's model/effort (recorded above).
+        ComposerConfig.refreshComposer();
       } else {
         // No threads exist — mint a fresh one.
         State.stalledThreadId = null;
@@ -6073,11 +6212,19 @@
     });
 
     MoonFrames.register('thread-created', (frame) => {
+      // Record the summary's model/effort as the thread's truth (the server
+      // clamps/normalizes at creation, so this is authoritative).
+      if (frame.thread) {
+        ComposerConfig.recordThreadConfig(frame.thread.id, frame.thread.model, frame.thread.effort);
+      }
       // A new thread was created (either by us or elsewhere)
       if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
         State.activeThreadId = frame.thread.id;
         Logger.info(`Auto-subscribing to newly created thread "${frame.thread.id}"`);
         WebSocketEngine.send({ type: 'subscribe', threadId: frame.thread.id });
+        // Now that this thread is active, reflect ITS model/effort in the
+        // composer (recorded above, before activeThreadId was set).
+        ComposerConfig.refreshComposer();
 
         if (State.pendingUserMessage) {
           const pending = State.pendingUserMessage;
@@ -6210,6 +6357,14 @@
       // Server-pushed context item list. SmartBarEngine renders kind="info"
       // pills above the composer row and hides the bar when empty.
       SmartBarEngine.applyFrame(frame);
+      // The model pill carries the thread's CURRENT model (server-side truth,
+      // re-pushed after an applied set-thread-config). Feed it into the
+      // composer's per-thread map so labels track live switches.
+      const items = Array.isArray(frame.items) ? frame.items : [];
+      const modelItem = items.find((it) => it && it.id === 'model');
+      if (modelItem && typeof modelItem.value === 'string' && frame.threadId) {
+        ComposerConfig.recordThreadConfig(frame.threadId, modelItem.value, null);
+      }
     });
 
     MoonFrames.register('tool-call', (frame) => {

@@ -49,18 +49,37 @@ const emptyState = (): StoreState => ({
   nextSeq: new Map(),
 })
 
-const toSummary = (row: SessionRow): SessionSummary => ({
-  id: row.id,
-  parentId: row.parentId,
-  title: row.title,
-  tags: row.tags,
-  createdAt: row.createdAt,
-  endedAt: row.endedAt,
-  model: row.model,
-  status: row.status,
-  lastMessageAt: row.lastMessageAt,
-  lastMessagePreview: row.lastMessagePreview,
-})
+/**
+ * Derive the session's persisted effort preference from its options.
+ * Mirrors the sqlite store's effortFromOptionsJson: real levels live at
+ * `sdkOptions.effort`, the ultracode mode at `sdkOptions.settings.ultracode`.
+ */
+const effortFromOptions = (options: SessionOptions): string | undefined => {
+  const sdk = (options.sdkOptions ?? {}) as Record<string, unknown>
+  const settings = sdk["settings"] as Record<string, unknown> | undefined
+  if (settings !== undefined && settings["ultracode"] === true) {
+    return "ultracode"
+  }
+  const e = sdk["effort"]
+  return typeof e === "string" && e !== "" ? e : undefined
+}
+
+const toSummary = (row: SessionRow): SessionSummary => {
+  const effort = effortFromOptions(row.options)
+  return {
+    id: row.id,
+    parentId: row.parentId,
+    title: row.title,
+    tags: row.tags,
+    createdAt: row.createdAt,
+    endedAt: row.endedAt,
+    model: row.model,
+    ...(effort !== undefined ? { effort } : {}),
+    status: row.status,
+    lastMessageAt: row.lastMessageAt,
+    lastMessagePreview: row.lastMessagePreview,
+  }
+}
 
 export class SessionStore extends Effect.Service<SessionStore>()(
   "luna/SessionStore",
@@ -293,8 +312,17 @@ export class SessionStore extends Effect.Service<SessionStore>()(
         Ref.update(ref, (state) => {
           const row = state.sessions.get(id)
           if (!row) return state
+          // Keep the denormalized summary `model` in sync with the options
+          // patch — SessionSummary.model is what thread-list/thread-created
+          // report, and a stale value makes clients display the creation-time
+          // model forever after a mid-thread switch.
+          const nextModel =
+            typeof patch.model === "string" && patch.model.trim() !== ""
+              ? patch.model
+              : row.model
           const updated: SessionRow = {
             ...row,
+            model: nextModel,
             options: { ...row.options, ...patch },
           }
           const sessions = new Map(state.sessions)

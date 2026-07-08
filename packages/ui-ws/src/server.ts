@@ -2571,6 +2571,19 @@ export const startUIWebSocketServer = (
                       ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
                     })
                     send(ws, { type: "thread-config", ...result })
+                    // An APPLIED model switch must reach the visible model
+                    // indicator: refresh this connection's cache and re-push
+                    // the smart bar. Without this the pill keeps showing the
+                    // pre-switch model until the next list-threads — the
+                    // "changing the model doesn't work" symptom.
+                    if (
+                      result.applied.includes("model") &&
+                      typeof frame.model === "string" &&
+                      frame.model.trim() !== ""
+                    ) {
+                      threadModelCache.set(threadId, frame.model)
+                      sendSmartBarFor(threadId)
+                    }
                     return
                   }
                   case "survey-response": {

@@ -124,8 +124,31 @@ const parseMeta = (s: string): SessionMeta => {
   }
 }
 
+/**
+ * Derive the session's persisted effort preference from its options JSON.
+ * The switcher stores real effort levels at `sdkOptions.effort` and the
+ * ultracode mode as `sdkOptions.settings.ultracode` (see chat-service
+ * setThreadConfig) — surface both so SessionSummary reflects mid-thread
+ * switches. Best-effort: malformed JSON yields undefined, never a throw.
+ */
+const effortFromOptionsJson = (optionsJson: string): string | undefined => {
+  try {
+    const o = JSON.parse(optionsJson) as Partial<SessionOptions>
+    const sdk = (o.sdkOptions ?? {}) as Record<string, unknown>
+    const settings = sdk["settings"] as Record<string, unknown> | undefined
+    if (settings !== undefined && settings["ultracode"] === true) {
+      return "ultracode"
+    }
+    const e = sdk["effort"]
+    return typeof e === "string" && e !== "" ? e : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const rowToSummary = (r: SessionDbRow): SessionSummary => {
   const meta = parseMeta(r.meta_json)
+  const effort = effortFromOptionsJson(r.options_json)
   return {
     id: r.id,
     parentId: r.parent_id,
@@ -134,6 +157,7 @@ const rowToSummary = (r: SessionDbRow): SessionSummary => {
     createdAt: r.created_at,
     endedAt: r.ended_at,
     model: r.model,
+    ...(effort !== undefined ? { effort } : {}),
     status: r.status,
     lastMessageAt: meta.lastMessageAt,
     lastMessagePreview: meta.lastMessagePreview,
@@ -270,6 +294,9 @@ export const makeSessionStoreSqlite = (
       )
       const sessionSetOptions = db.query(
         `UPDATE sessions SET options_json = ? WHERE id = ?`,
+      )
+      const sessionSetModel = db.query(
+        `UPDATE sessions SET model = ? WHERE id = ?`,
       )
       const sessionGetOptions = db.query(
         `SELECT options_json FROM sessions WHERE id = ?`,
@@ -421,6 +448,17 @@ export const makeSessionStoreSqlite = (
             sessionSetOptions.run(JSON.stringify(merged), id)
           } catch {
             // best-effort: a failed options patch is not a hard error
+          }
+          // Keep the denormalized `model` column in sync: SessionSummary
+          // (thread-list / thread-created / smart bar) reads the column, so
+          // leaving it at the creation-time value makes every client display
+          // a stale model forever after a mid-thread switch.
+          if (typeof patch.model === "string" && patch.model.trim() !== "") {
+            try {
+              sessionSetModel.run(patch.model, id)
+            } catch {
+              // best-effort, same contract as the options patch above
+            }
           }
         })
 
