@@ -15,7 +15,7 @@
  * Future (deferred): Anthropic / OpenAI / fastembed-onnx Layers. Add only
  * when a real cost case appears.
  */
-import { Effect, Layer } from "effect"
+import { Effect, Either, Layer, Schedule } from "effect"
 import { EmbedderError } from "../errors.js"
 
 export interface EmbedderApi {
@@ -117,8 +117,12 @@ export const makeStubEmbedderLayer = (
 // ─────────────────────────────────────────────────────────────────────────────
 // OllamaLayer — HTTP to localhost:11434 (default).
 //
-// Layer.effect probes the daemon at construction; if unreachable, fails with
-// EmbedderError("init"). Tests are gated on LUNA_TEST_OLLAMA=1.
+// Layer.effect probes the daemon at construction, retrying up to
+// `maxProbeAttempts` times with jittered backoff. If every attempt fails,
+// it fails with EmbedderError("init") - unless `degradeOnProbeFailure` is
+// set and the dimension is already known, in which case it boots non-fatally
+// and later `embed()` calls hit Ollama for real. Tests are gated on
+// LUNA_TEST_OLLAMA=1.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface OllamaEmbedderOptions {
@@ -130,6 +134,22 @@ export interface OllamaEmbedderOptions {
   readonly dimension?: number
   /** Probe timeout in ms. Default: 3000. */
   readonly probeTimeoutMs?: number
+  /**
+   * Bounded probe retry count. Default: 3. A value of 1 reproduces the
+   * original fail-fast-on-first-attempt behavior.
+   */
+  readonly maxProbeAttempts?: number
+  /** Backoff between probe attempts in ms. Default: 200. */
+  readonly probeBackoffMs?: number
+  /**
+   * When the probe is still failing once retries are exhausted, and the
+   * dimension is already known (declared, not probed), construct the layer
+   * anyway instead of failing boot. Every real `embed()` call still hits
+   * Ollama for real and can still fail with EmbedderError{op:"embed"} - this
+   * never fabricates vectors. Default: false (fail fast once retries are
+   * exhausted); the chat-server deploy path opts in via selectEmbedderLayer.
+   */
+  readonly degradeOnProbeFailure?: boolean
 }
 
 interface OllamaEmbedResponse {
@@ -218,6 +238,13 @@ async function ollamaEmbedHttp(
   ).embedding
 }
 
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
+const DEFAULT_MAX_PROBE_ATTEMPTS = 3
+const DEFAULT_PROBE_BACKOFF_MS = 200
+
 export const makeOllamaEmbedderLayer = (
   opts?: OllamaEmbedderOptions,
 ): Layer.Layer<EmbedderService, EmbedderError> =>
@@ -227,38 +254,15 @@ export const makeOllamaEmbedderLayer = (
       const model = opts?.model ?? "embeddinggemma"
       const baseUrl = opts?.baseUrl ?? "http://127.0.0.1:11434"
       const probeTimeoutMs = opts?.probeTimeoutMs ?? 3000
+      const maxProbeAttempts = Math.max(
+        1,
+        opts?.maxProbeAttempts ?? DEFAULT_MAX_PROBE_ATTEMPTS,
+      )
+      const probeBackoffMs = opts?.probeBackoffMs ?? DEFAULT_PROBE_BACKOFF_MS
+      const degradeOnProbeFailure = opts?.degradeOnProbeFailure ?? false
+      const knownDimension = opts?.dimension
 
-      // Probe-on-init: a real embedding call doubles as the health check
-      // and tells us the dimension if the caller didn't pre-declare it.
-      const probe = yield* Effect.tryPromise({
-        try: async () => {
-          const ctrl = new AbortController()
-          const t = setTimeout(() => ctrl.abort(), probeTimeoutMs)
-          try {
-            return await ollamaEmbedHttp(baseUrl, model, "ping", ctrl.signal)
-          } finally {
-            clearTimeout(t)
-          }
-        },
-        catch: (cause) =>
-          new EmbedderError({ provider: "ollama", op: "init", cause }),
-      })
-
-      const dimension = opts?.dimension ?? probe.length
-
-      if (opts?.dimension !== undefined && probe.length !== opts.dimension) {
-        return yield* Effect.fail(
-          new EmbedderError({
-            provider: "ollama",
-            op: "init",
-            cause: new Error(
-              `dimension mismatch: declared=${opts.dimension} probed=${probe.length}`,
-            ),
-          }),
-        )
-      }
-
-      return {
+      const makeApi = (dimension: number): EmbedderApi => ({
         provider: "ollama",
         model,
         dimension,
@@ -269,7 +273,90 @@ export const makeOllamaEmbedderLayer = (
             catch: (cause) =>
               new EmbedderError({ provider: "ollama", op: "embed", cause }),
           }),
-      } satisfies EmbedderApi
+      })
+
+      // Probe-on-init: a real embedding call doubles as the health check
+      // and tells us the dimension if the caller didn't pre-declare it.
+      // The AbortController/timeout live inside this thunk so a retry
+      // re-arms a fresh signal and budget rather than reusing an aborted one.
+      let attempts = 0
+      const singleProbe = Effect.tryPromise({
+        try: async () => {
+          attempts += 1
+          const ctrl = new AbortController()
+          const t = setTimeout(() => ctrl.abort(), probeTimeoutMs)
+          try {
+            return await ollamaEmbedHttp(baseUrl, model, "ping", ctrl.signal)
+          } finally {
+            clearTimeout(t)
+          }
+        },
+        catch: (cause): unknown => cause,
+      })
+
+      // Bounded retry - Schedule.recurs is a hard cap, never Schedule.union,
+      // so a persistently-flaky link can't eat the boot readiness budget.
+      const retrySchedule = Schedule.recurs(maxProbeAttempts - 1).pipe(
+        Schedule.intersect(Schedule.spaced(probeBackoffMs)),
+        Schedule.jittered,
+        Schedule.tapInput((cause: unknown) =>
+          Effect.sync(() => {
+            if (attempts < maxProbeAttempts) {
+              console.error(
+                `[embedder] ollama probe attempt ${attempts}/${maxProbeAttempts} failed, retrying: ` +
+                  `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts} cause=${errorMessage(cause)}`,
+              )
+            }
+          }),
+        ),
+      )
+
+      const probeOutcome = yield* singleProbe.pipe(
+        Effect.retry(retrySchedule),
+        Effect.either,
+      )
+
+      if (Either.isLeft(probeOutcome)) {
+        const cause = probeOutcome.left
+        if (degradeOnProbeFailure && knownDimension !== undefined) {
+          console.error(
+            `[embedder] DEGRADED MODE: ollama probe failed after ${attempts} attempts, ` +
+              `booting anyway with declared dimension - real embed() calls still hit ollama and self-heal: ` +
+              `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts} cause=${errorMessage(cause)}`,
+          )
+          return makeApi(knownDimension)
+        }
+        return yield* Effect.fail(
+          new EmbedderError({ provider: "ollama", op: "init", cause }),
+        )
+      }
+
+      const probe = probeOutcome.right
+
+      // Deterministic config-error check - never retried, never degraded.
+      // A declared dimension that doesn't match what the model actually
+      // returns is a config mistake, not a transient condition, and must
+      // fail loud on the very first successful probe.
+      if (knownDimension !== undefined && probe.length !== knownDimension) {
+        return yield* Effect.fail(
+          new EmbedderError({
+            provider: "ollama",
+            op: "init",
+            cause: new Error(
+              `dimension mismatch: declared=${knownDimension} probed=${probe.length}`,
+            ),
+          }),
+        )
+      }
+
+      if (attempts > 1) {
+        console.error(
+          `[embedder] ollama probe recovered after retry: ` +
+            `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts}`,
+        )
+      }
+
+      return makeApi(knownDimension ?? probe.length)
     }),
   )
 
