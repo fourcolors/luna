@@ -149,6 +149,36 @@ Luna runs autonomous background work via a job scheduler backed by
 The scheduler runs whenever the chat-server is up — the JobTicker is the only
 scheduler and is always wired (boot log: `[luna/sched] V2 ticker active`).
 
+### Deadlines, retries & concurrency
+
+Within a tick, due jobs dispatch with **bounded concurrency** (default 4
+at a time), not sequentially - one slow job cannot stall the rest of a tick.
+
+**Per-dispatch deadline.** Every dispatch is interrupted (a `deadline_passed`
+failure in `job_runs`) once its backstop deadline passes. The deadline
+resolves in priority order:
+
+1. A top-level `timeout_ms` in the job's payload (finite positive number).
+2. The worker kind's registered default: `prompt` 10 min, `workflow` 20 min,
+   `dream` 15 min (overridable via `LUNA_DREAM_WORKER_TIMEOUT_MS`, ms).
+3. The ticker's global 5-min `workerDeadline` fallback (kinds registered
+   without a default, e.g. `wake` - no floor/grace applied, as before).
+
+Sources 1-2 are clamped to a 1 s floor, get a 30 s **grace** window on top
+(so a worker's own inner timeout can fail first with a descriptive error),
+and the whole backstop is capped at 30 min regardless of payload values.
+
+**Retry with backoff.** A **recurring** job whose dispatch fails with a
+transient reason (`deadline_passed` / `worker_failed` / `defect`) is retried
+sooner than its next cron fire: `next_run_at` is pulled to
+`finish + backoff(attempt)` (exponential, 1 min doubling per attempt, capped
+at 30 min). Attempts are bounded by `max_attempts` in the payload (clamped to
+1-10) or the default of 3; on exhaustion the job falls back to its natural
+cron cadence with the streak reset. Deterministic failures (`bad_payload`,
+`unknown_kind`) and one-shot jobs are **never** retried. The streak lives in
+`jobs.retry_attempt` (reset to 0 on success), and `job_runs.attempt` records
+each dispatch's real attempt number (`retry_attempt + 1`).
+
 ### Job kinds
 
 #### `prompt` — autonomous agent turn
