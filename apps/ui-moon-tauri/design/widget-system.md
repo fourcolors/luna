@@ -134,7 +134,7 @@ widget windows (one each)
   ├─ now rail            panel.html?type=now
   ├─ briefing            panel.html?type=briefing
   ├─ workflow            panel.html?type=flow&id=…
-  ├─ agent line          chat.html?thread=…    [phase 8]
+  ├─ agent line          chat.html?thread=…[&redockTo=…]  [phase 8; drawer drag-out adds redockTo]
   └─ mini-apps           widget.html?id=…      (already shipped: artifact widgets)
 ```
 
@@ -224,7 +224,7 @@ Ship with Luna; designed UI; live data subscriptions. Opened from the moon
 | NOW rail | `panel.html?type=now` | `workflow-list` broadcast + obs | live job list, mini-moon phases |
 | Briefing | `panel.html?type=briefing` | workflow runs + obs digest | "while you were away" |
 | Workflow inspector | `panel.html?type=flow&id=…` | `workflow-runs` (+ request frame) | per-job step view |
-| Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pointed at another thread |
+| Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pointed at another thread. Spawnable by dragging a row OUT of the chat widget's thread drawer (adds `&redockTo=<owner>`); dragging the floater back over the owner's drawer strip redocks it (`redock_thread`) |
 
 ### System widgets: settings panels (v3)
 
@@ -802,6 +802,10 @@ close-by-name, if summon-by-name proves demand.
 **Phase 8 — agent direct lines. ✅ DONE 2026-06-12** (`ebd2ec3`, two pinned chat windows live-verified) — `chat.html?thread=…`; protocol already
 multi-thread (`subscribe-thread`/`thread-list`/`threadId` on every frame);
 needs an agent-identity/thread mapping, honors one-window-per-thread.
+✅ **As-built rider (thread drawer, `b1bf4e0`):** the chat widget grew a left-edge slide-out thread switcher (`ThreadDrawerEngine` in `chat.html`, toggle in the header, hidden in pinned `?thread=…` windows).
+A row click opens that thread in place; a row dragged OUT spawns a pinned floater at the drop point (`open_widget kind:chat, params:{thread, redockTo}`) and greys the row; dragging that floater back over the owner's drawer strip folds it back in (`redock_thread` → `redock-thread` event, carrying the unsent draft).
+A floater closed by its own X emits `floater-closed` so the owner un-greys the row.
+The drop/snap geometry and the trust discipline live in `docs/window-drag-snap.md`.
 
 **Server track (parallel):**
 - `open_widget` agent tool + `widget-open` frame + hello `widgets` capability
