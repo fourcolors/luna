@@ -4191,6 +4191,63 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBeGreaterThan(0)
     })
 
+    it('Scenario: _maxWidth caps by the chat panel width (not the whole window)', () => {
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      // Panel is only 400px wide even though the window is far larger.
+      vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      // 400 * 0.7 = 280; a 600px request must clamp to that, not window.innerWidth.
+      m.ThreadDrawerEngine.setSidebarWidth(600)
+      expect(m.State.sidebarWidth).toBe(280)
+    })
+
+    it('Scenario: shrinking the window re-clamps an over-wide open sidebar (resize listener)', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      const rect = vi.spyOn(panel, 'getBoundingClientRect')
+      rect.mockReturnValue({ width: 1000, left: 0 } as DOMRect) // roomy: 700 cap
+      m.ThreadDrawerEngine.setSidebarWidth(600)
+      expect(m.State.sidebarWidth).toBe(600)
+      // Window shrinks: panel is now 400px wide → cap drops to 280.
+      rect.mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      window.dispatchEvent(new Event('resize'))
+      expect(m.State.sidebarWidth).toBe(280)
+      // aria-valuenow/max on the divider track the clamped state for AT users.
+      const divider = document.getElementById('thread-divider')!
+      expect(divider.getAttribute('aria-valuenow')).toBe('280')
+      expect(divider.getAttribute('aria-valuemax')).toBe('280')
+    })
+
+    it('Scenario: a collapsed sidebar is left untouched by a window resize', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      const m = M()
+      expect(m.State.sidebarWidth).toBe(0)
+      window.dispatchEvent(new Event('resize'))
+      expect(m.State.sidebarWidth).toBe(0)
+    })
+
+    it('Scenario: the divider is keyboard-operable (arrows resize, Home/End, Enter toggles)', () => {
+      const m = M()
+      const divider = document.getElementById('thread-divider')!
+      const key = (k: string) => divider.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }))
+      expect(divider.getAttribute('tabindex')).toBe('0')
+      // From collapsed, ArrowRight opens toward MIN_W.
+      key('ArrowRight')
+      expect(m.State.sidebarWidth).toBe(m.ThreadDrawerEngine.MIN_W)
+      // End opens to the max.
+      key('End')
+      expect(m.State.sidebarWidth).toBe(m.ThreadDrawerEngine._maxWidth())
+      // Home collapses.
+      key('Home')
+      expect(m.State.sidebarWidth).toBe(0)
+      // Enter toggles open, again to collapse.
+      key('Enter')
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
+      key('Enter')
+      expect(m.State.sidebarWidth).toBe(0)
+    })
+
     it('Scenario: a thread-list frame renders one row per thread, sorted newest-first', () => {
       M().State.activeThreadId = 'keep' // handler early-returns (no auto-subscribe)
       seed()
