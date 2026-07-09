@@ -803,8 +803,8 @@ close-by-name, if summon-by-name proves demand.
 multi-thread (`subscribe-thread`/`thread-list`/`threadId` on every frame);
 needs an agent-identity/thread mapping, honors one-window-per-thread.
 ✅ **As-built rider (thread drawer, `b1bf4e0`):** the chat widget grew a left-edge slide-out thread switcher (`ThreadDrawerEngine` in `chat.html`, toggle in the header, hidden in pinned `?thread=…` windows).
-A row click opens that thread in place; a row dragged OUT spawns a pinned floater at the drop point (`open_widget kind:chat, params:{thread, redockTo}`) and greys the row; dragging that floater back over the owner's drawer strip folds it back in (`redock_thread` → `redock-thread` event, carrying the unsent draft).
-A floater closed by its own X emits `floater-closed` so the owner un-greys the row.
+A row click opens that thread in place; a row dragged OUT spawns a pinned floater at the drop point (`open_widget kind:chat, params:{thread, redockTo}`) and greys the row; dragging a SOLO floater back over the owner's drawer strip folds it back in (`redock_thread` → `redock-thread` event, carrying the unsent draft), and while such a floater is being dragged the owner shows a "drop to redock" strip (`redock-arming`/`redock-disarmed`).
+A floater closed by any non-redock path (its own X, the native red button, or Cmd+W) emits `floater-closed` so the owner un-greys the row.
 The drop/snap geometry and the trust discipline live in `docs/window-drag-snap.md`.
 
 **Server track (parallel):**

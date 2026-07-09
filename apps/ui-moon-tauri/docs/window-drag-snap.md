@@ -36,11 +36,13 @@ The OS swallows the webview's pointer events during a `startDragging` gesture, s
 
 A thread-drawer row dragged OUT spawns a chat window pinned to that thread (`chat.html?thread=<id>&redockTo=<owner-label>`), mirroring the `+` button.
 Dragging that floater back over its owner folds the thread back in instead of leaving a second window, so `LunaDock.wire` takes an optional `redock` config for exactly these floaters (`{ threadId, ownerLabel, getDraft }`); it is null for every ordinary window.
+Redock eligibility is computed once at drag start (`redockArmed`) and reused on release: only a SOLO floater is eligible, so a floater towing a welded cluster is never redocked (a redock folds in a lone window and would otherwise silently orphan its cluster-mates) and instead drags and snaps like any other cluster.
 When present, the release handler invokes the Rust `redock_thread` command BEFORE it would snap: if the command redocked, there is nothing to snap; if it declined (returned `false`) or the probe threw, the release falls through to the normal `snapOnRelease`.
+Because the native drag exposes no live cursor to track, an armed floater makes the target discoverable by emitting `redock-arming` on drag start (and `redock-disarmed` on release): the owner shows a non-interactive left "drop to redock" strip (`.redock-dropzone` in `chat.html`) for the whole drag and clears it on disarm, on `redock-thread`, and via a safety timeout.
 `redock_thread` (Rust, `main.rs`) trusts only the INVOKING window's label as the caller (never a page-supplied label, same discipline as `begin_cluster_drag`), refuses to redock a window into itself, and only closes a closable widget-family window.
 It computes the floater's center in global physical coordinates and runs a scale-independent `center_in_rect` test against the owner's LEFT drawer strip (~320 logical px, the drawer width plus card inset, clamped to the window width) rather than the whole owner window, so an accidental drop anywhere over the owner does not trigger it.
 On a hit it emits `redock-thread` (carrying the thread id and the floater's unsent composer draft) to the owner and closes the floater, returning `true`; the owner re-adopts the thread in place and carries the draft only when its own composer is empty.
-A floater closed by its own X (not a redock) instead emits `floater-closed` so the owner un-greys that thread's drawer row.
+A floater closed by any path other than a redock (its own X, the native red traffic-light, or Cmd+W) instead emits `floater-closed` from `onCloseRequested` so the owner un-greys that thread's drawer row.
 
 ## The magnet (`computeEdgeSnap`)
 
