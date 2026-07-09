@@ -127,7 +127,15 @@ jobs:
       - name: Moon version sync (HARD GATE)
         run: bun run scripts/bump-moon.ts --check
 
-      # HARD GATE 4: the server release version (server.version.json) is valid
+      # HARD GATE 4: Studio version quadruple stays in lockstep, same story as
+      # HARD GATE 3 above but for apps/ui-studio-tauri (package.json +
+      # src-tauri Cargo.toml/tauri.conf.json/Cargo.lock). Drift would only
+      # surface AFTER an irreversible `studio-v*` tag push (release-studio.yml).
+      # `bump-studio.ts` is the single writer that keeps the four in sync.
+      - name: Studio version sync (HARD GATE)
+        run: bun run scripts/bump-studio.ts --check
+
+      # HARD GATE 5: the server release version (server.version.json) is valid
       # semver. The `server-v*` tag the release pipeline cuts is derived from this
       # file; an invalid/missing version would otherwise only surface AFTER an
       # irreversible tag push (release-server.yml's coherence guard). Catch it here
