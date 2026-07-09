@@ -4162,6 +4162,48 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
     })
 
+    it('Scenario: clicking + clears the typed draft and staged attachments before minting', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = 'draft to leave behind'
+      input.style.height = '120px'
+      m.Attachments.items = [{ id: 'att_x', kind: 'text', name: 'notes.txt', text: 'notes' }]
+      m.Attachments.render()
+      const sendNewThread = vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(sendNewThread).toHaveBeenCalledTimes(1)
+      expect(input.value).toBe('')
+      expect(input.style.height).toBe('38px')
+      expect(m.Attachments.items).toEqual([])
+      expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('Scenario: offline + then reconnect mints a fresh thread instead of restoring the persisted thread', async () => {
+      const m = M()
+      const invoke = vi.fn((cmd: string) => Promise.resolve(cmd === 'get_last_thread_id' ? 'persisted-thread' : null))
+      ;(window as any).__TAURI__.core = { invoke }
+      m.State.ws = null
+      m.State.activeThreadId = 'current-thread'
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(m.State.activeThreadId).toBeNull()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'persisted-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id')
+      expect(m.State.pendingFreshThread).toBe(false)
+    })
+
     it('Scenario: in a pinned window the + click is a no-op (does not mint a thread)', () => {
       const m = M()
       m.State.pinnedThread = 't-pinned'
