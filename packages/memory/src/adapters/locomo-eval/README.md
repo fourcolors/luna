@@ -99,6 +99,10 @@ reimplemented in `scoring.ts`) uses **token-overlap F1**, not an LLM judge:
   explicitly instructs the model to say "No information available." when
   it can't find the answer in the retrieved excerpts.
 
+Because scoring is pure token-overlap F1 (no LLM judge call), the answer
+backend choice below has **zero effect on scoring cost** — only on answer
+quality and wall-clock time.
+
 **Deviation from the paper**: the paper stems tokens with a Porter
 stemmer before computing F1; we use a lightweight suffix-stripping
 approximation (`lightStem` in `scoring.ts`) rather than vendoring a full
@@ -119,7 +123,10 @@ answer-generation quality, independent of the LLM call.
 - `dataset.ts` — fetch (cached, gitignored) + flatten into per-turn records.
 - `ingest.ts` — turn → `MemoryRecord` → `MemoryRouter.put()` (same write path as `memory_save`).
 - `scoring.ts` — F1 scoring per LoCoMo's category rules, independently implemented.
-- `answer-model.ts` — Anthropic Messages API call + cost tracking (reuses `@luna/core`'s `rateFor`/`priceTurnUsd`, the same pricing table the chat-server itself uses).
+- `answer-model.ts` — answer-generation backends: **Ollama `/api/chat`
+  (default)** and Anthropic Messages API (opt-in, see below). Cost tracking
+  reuses `@luna/core`'s `rateFor`/`priceTurnUsd` — the same pricing table
+  the chat-server itself uses; the `ollama` rate is always $0.
 - `run.ts` — CLI entrypoint wiring it all together.
 
 ## Why the direct TypeScript API, not the MCP tool surface
@@ -135,39 +142,90 @@ to the router. `run.ts`'s retrieval call (`router.search(...)`) is
 identical in shape and options to what `memory_search` does, so the
 result is representative of what an agent actually sees.
 
+## Answer backend: local Ollama by default
+
+The answer-generation step (`answer-model.ts`) defaults to a **local Ollama
+model** (`llama3.1:8b` via `/api/chat`, non-streaming) — no API key, no
+per-token dollar cost. This is a deliberate swap from an earlier revision
+of this harness that called the raw Anthropic Messages API: that path
+needed a real `ANTHROPIC_API_KEY` (not the Claude Code OAuth credential),
+which wasn't available in the environment this harness was built and run
+in. The Anthropic path is preserved behind
+`LUNA_LOCOMO_ANSWER_BACKEND=anthropic` for a future paid-model comparison
+run, but it is no longer the default.
+
+Since LoCoMo scoring is pure F1 (see "Scoring methodology" above, no LLM
+judge), swapping the answer backend only changes answer quality and
+wall-clock time — never the marginal cost of scoring itself.
+
+## Time budget, not dollar budget
+
+With Ollama the marginal cost per QA pair is $0 (CPU/wall-clock only), so
+the old `LUNA_LOCOMO_BUDGET_USD` dollar cap has been replaced with
+**`LUNA_LOCOMO_MAX_MINUTES`** (default 55): `run.ts` times the answer-model
+calls as they happen, projects total runtime from the observed average
+seconds/QA-pair, and stops cleanly (writing all results collected so far)
+if the projection would exceed the cap — instead of silently truncating
+mid-run or blowing past an unbounded wall-clock budget.
+
+**Measured throughput on the reference machine** (16 vCPU, 14 GiB RAM, no
+GPU — `llama3.1:8b`, Q4 quantization, via Ollama): ~60 seconds per QA pair
+end-to-end (retrieval + answer generation), dominated by CPU-only prompt
+evaluation of the ~10 retrieved excerpts (topK=10) that make up each
+question's context. At that rate the full LoCoMo10 dataset (1,986 QA pairs
+across all 10 conversations) would take **roughly 33 hours** — far outside
+any reasonable single-run budget on this hardware.
+
+**What we actually ran**: a documented subset — the first 4 conversations
+in dataset order (`conv-26`, `conv-30`, `conv-41`, `conv-42`; no
+cherry-picking), first 8 QA pairs of each (`LUNA_LOCOMO_SAMPLE_LIMIT=4
+LUNA_LOCOMO_QA_LIMIT=8`), 32 QA pairs total, projected at ~42 minutes
+wall-clock (ingestion + answering) — comfortably under the 60-minute
+target. See the PR body / `obs_note` ledger for the actual result numbers
+and timing from that run.
+
+If this harness is re-run on faster hardware (GPU-backed Ollama, or a
+smaller/faster answer model), `LUNA_LOCOMO_SAMPLE_LIMIT`/
+`LUNA_LOCOMO_QA_LIMIT` can be raised accordingly — nothing else about the
+pipeline changes.
+
 ## Running
 
 Ingestion + retrieval need only a local Ollama daemon (`LUNA_EMBEDDER=ollama`,
 `LUNA_OLLAMA_BASE_URL`, `LUNA_OLLAMA_EMBED_MODEL` — same env vars
-`bench/paraphrase-recall.ts` uses). No API spend for this half.
+`bench/paraphrase-recall.ts` uses). No cost for this half either way.
 
 ```sh
-# Retrieval-only smoke test — zero API cost, validates ingestion + search wiring
+# Retrieval-only smoke test — zero cost, validates ingestion + search wiring
 LUNA_EMBEDDER=ollama LUNA_LOCOMO_SAMPLE_LIMIT=1 LUNA_LOCOMO_QA_LIMIT=5 \
   bun packages/memory/src/adapters/locomo-eval/run.ts --dry-run
 ```
 
-Full run (answer generation + scoring) additionally needs:
-
-- `ANTHROPIC_API_KEY` — a real Anthropic API key (not the Claude Code
-  OAuth/subscription credential — the raw Messages API needs its own key).
-- `LUNA_LOCOMO_ANSWER_MODEL` — the EXACT, dated Anthropic model id (the
-  raw API doesn't understand "haiku"/"sonnet" tier aliases the way the
-  Claude Agent SDK does). Check
-  https://docs.anthropic.com/en/docs/about-claude/models for the current
-  cheapest capable id before running — we deliberately don't hardcode a
-  guess here since a wrong dated id fails loudly (400) rather than
-  silently mispricing.
+Full run (answer generation + scoring) via local Ollama (default backend —
+needs `llama3.1:8b` pulled: `curl -s $LUNA_OLLAMA_BASE_URL/api/pull -d
+'{"name":"llama3.1:8b"}'`):
 
 ```sh
-ANTHROPIC_API_KEY=sk-ant-... LUNA_LOCOMO_ANSWER_MODEL=<current-haiku-id> \
+LUNA_EMBEDDER=ollama LUNA_LOCOMO_SAMPLE_LIMIT=4 LUNA_LOCOMO_QA_LIMIT=8 \
+  bun packages/memory/src/adapters/locomo-eval/run.ts
+```
+
+Full run via the Anthropic backend instead (needs a real
+`ANTHROPIC_API_KEY` — not the Claude Code OAuth/subscription credential —
+and the exact, dated model id; check
+https://docs.anthropic.com/en/docs/about-claude/models):
+
+```sh
+LUNA_LOCOMO_ANSWER_BACKEND=anthropic ANTHROPIC_API_KEY=sk-ant-... \
+  LUNA_LOCOMO_ANSWER_MODEL=<current-haiku-id> \
   LUNA_EMBEDDER=ollama LUNA_LOCOMO_SAMPLE_LIMIT=1 LUNA_LOCOMO_QA_LIMIT=5 \
   bun packages/memory/src/adapters/locomo-eval/run.ts
 ```
 
-`LUNA_LOCOMO_BUDGET_USD` (default 50) is a hard stop: the loop checks
-projected spend before every answer-model call and aborts (exit code 5)
-rather than risk exceeding the cap.
+`LUNA_LOCOMO_MAX_MINUTES` (default 55) is a wall-clock soft cap: the loop
+projects total runtime before every answer-model call and stops cleanly
+(exit code 5, partial results still written) rather than risk an
+unbounded run.
 
 ## Status (see obs_note ledger for the authoritative timeline)
 
@@ -175,12 +233,28 @@ rather than risk exceeding the cap.
   above).
 - Ingestion + hybrid retrieval validated end-to-end on a live Ollama
   embedder against 1 conversation / 5 QA pairs (`--dry-run`): 419 turns
-  ingested, retrieval evidence coverage computed successfully. Zero API
-  spend.
-- Answer-generation + F1 scoring is implemented but **not yet
-  smoke-tested against a real model** — this harness was built in a
-  session with no interactive operator client connected, so the
-  `request_secret` flow for `ANTHROPIC_API_KEY` couldn't complete. Needs
-  an operator to supply that key (and confirm the current Haiku-tier
-  model id) before Phase A's tiny paid smoke test and Phase B's full run
-  can proceed.
+  ingested, retrieval evidence coverage computed successfully. Zero cost.
+- Answer-generation + F1 scoring swapped from the (blocked, no-API-key)
+  Anthropic path to a local Ollama `llama3.1:8b` backend, smoke-tested
+  end-to-end (1 conversation / 5 QA pairs, full pipeline including answer
+  generation): answers are coherent and grounded in retrieved context, not
+  hallucinated.
+- **Full subset run completed**: 4 conversations (`conv-26`, `conv-30`,
+  `conv-41`, `conv-42`, first 8 QA pairs each — 32 QA pairs total), 31.3
+  minutes wall-clock end-to-end (ingestion + retrieval + Ollama answer
+  generation + F1 scoring), $0 cost. **Overall F1: 0.352.** Per category:
+  cat 1 (multi-hop) 0.527/11, cat 2 (single-hop) 0.272/16, cat 3 (temporal)
+  0.111/3, cat 4 (open-domain) 0.386/2 — no category-5 (adversarial) pairs
+  landed in this particular subset (first-8-per-conversation didn't happen
+  to include one; a larger `LUNA_LOCOMO_QA_LIMIT` would pick some up).
+  Retrieval evidence coverage: 61.1% (33/54 annotated evidence dia_ids
+  present in top-10 hits). See the PR body for the full write-up and
+  what-to-survey notes.
+- **Observed failure pattern worth flagging**: the model frequently answers
+  temporal questions with a *relative* expression ("last month", "next
+  month", "last Friday") instead of resolving it against the session date
+  in the retrieved excerpt — this tanks category 2/3 scores under exact
+  token-F1 even when the model clearly found the right memory. This is an
+  `llama3.1:8b` reasoning/instruction-following limitation, not a
+  retrieval miss — worth separating "found the right memory" (evidence
+  coverage) from "extracted it correctly" (F1) when reading this number.
