@@ -29,6 +29,7 @@ import { Clock } from "@luna/core"
 import { ChatService } from "@luna/chat-service"
 import type {
   ChannelAdapter,
+  ChannelAttachment,
   ChannelMessage,
   DeliveryCapability,
   DeliverOptions,
@@ -539,6 +540,81 @@ describe("channel user text", () => {
     }))
 
     expect(sentText).toBe("hello")
+  })
+
+  it("passes inbound attachments straight through to chat.send", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    let sentAttachments: ReadonlyArray<ChannelAttachment> | undefined
+    const trackedService = {
+      ...chatService,
+      send: (
+        threadId: string,
+        text: string,
+        attachments?: ReadonlyArray<ChannelAttachment>,
+      ) => {
+        sentAttachments = attachments
+        return chatService.send(threadId, text)
+      },
+    }
+
+    await run(trackedService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(makeFakeAdapterClean("attach-passthrough", "final-only").adapter)
+      yield* svc.handleMessage(makeMessage({
+        transport: "telegram",
+        channelId: "42",
+        threadingKey: "42",
+        senderId: "42",
+        platformMessageId: "attach-pm-1",
+        text: "please summarize",
+        attachments: [{ mediaType: "application/pdf", data: "JVBERi0=" }],
+        metadata: { chatType: "private" },
+      }))
+    }))
+
+    expect(sentAttachments).toEqual([{ mediaType: "application/pdf", data: "JVBERi0=" }])
+  })
+
+  it("a command-shaped CAPTION on an attachment goes to the LLM, not the command handler", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    let sentText: string | null = null
+    let sentAttachments: ReadonlyArray<ChannelAttachment> | undefined
+    const trackedService = {
+      ...chatService,
+      send: (
+        threadId: string,
+        text: string,
+        attachments?: ReadonlyArray<ChannelAttachment>,
+      ) => {
+        sentText = text
+        sentAttachments = attachments
+        return chatService.send(threadId, text)
+      },
+    }
+
+    await run(trackedService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(makeFakeAdapterClean("attach-cmd", "final-only").adapter)
+      // A photo captioned "/new": without the attachment guard the built-in
+      // command short-circuit would answer "/new" and silently DISCARD the
+      // downloaded file — the gaslighting failure this feature exists to kill.
+      const result = yield* svc.handleMessage(makeMessage({
+        transport: "telegram",
+        channelId: "42",
+        threadingKey: "42",
+        senderId: "42",
+        platformMessageId: "attach-cmd-pm-1",
+        text: "/new",
+        attachments: [{ mediaType: "image/jpeg", data: "AQIDBA==" }],
+        metadata: { chatType: "private" },
+      }))
+      expect(result).toBe(true)
+    }))
+
+    // The message reached chat.send WITH its attachment; the caption text
+    // rode along as plain user text.
+    expect(sentText).toBe("/new")
+    expect(sentAttachments).toEqual([{ mediaType: "image/jpeg", data: "AQIDBA==" }])
   })
 })
 

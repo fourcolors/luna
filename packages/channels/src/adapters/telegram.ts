@@ -39,6 +39,23 @@
  * globally unique across all chats for a given bot token. The foundation's
  * InboundDedupStore keys on (transport, platformMessageId) which is correct.
  *
+ * ## Inbound attachments
+ *
+ * Photos and file documents (PDF or image by mime/extension) are ingested:
+ * classifyInboundMedia resolves the media ref, getFile resolves a short-lived
+ * file_path, and a separate raw-byte transport (`TelegramFileTransport`)
+ * downloads it. The type allowlist and size caps come from @luna/core
+ * attachment-limits.ts (the same limits ui-ws enforces on Moon uploads), and
+ * downloaded bytes are magic-byte sniffed so a misnamed file is corrected or
+ * rejected before it reaches the model. Media captions ride in
+ * ChannelMessage.text and are never treated as channel commands. Unsupported
+ * media (voice, video, GIFs, unrecognized file types) gets a user-facing
+ * explanation instead of a silent drop, restricted to DMs for ambient group
+ * media; stickers are dropped silently. Downloads run off the poll fiber
+ * behind a small semaphore, and dispatch is per-chat FIFO: same-chat messages
+ * reach the handler in arrival order (a follow-up text queues behind its
+ * PDF's download) while different chats stay fully concurrent.
+ *
  * ## Outbound — stream-edit
  *
  * delivery.ts calls deliver() with:
@@ -85,13 +102,19 @@
  * accepts an optional `httpTransport` override; omitting it uses the real
  * fetch-based implementation wired against the bot token.
  *
+ * Raw file BYTES travel through a second seam, `TelegramFileTransport`
+ * (config `fileTransport` override; production `makeRealFileTransport`),
+ * because downloads use the separate `/file/bot<token>/<file_path>` URL
+ * scheme rather than the JSON-RPC-style method endpoint.
+ *
  * ## Token
  *
  * The token must be supplied as a `Redacted<string>` via `config.token`, or the
  * adapter will read `TELEGRAM_BOT_TOKEN` from the environment (via EnvSecretProvider
  * convention) and wrap it in `Redacted.make()` at start() time. The plain-text
- * value is only unwrapped with `Redacted.value(token)` at the single URL-building
- * call site inside `makeRealTransport`, so it never appears in logs or traces.
+ * value is only unwrapped with `Redacted.value(token)` at the URL-building
+ * call sites inside `makeRealTransport` and `makeRealFileTransport`, so it
+ * never appears in logs or traces.
  *
  * ## Reconnection
  *
@@ -99,8 +122,15 @@
  * at 30 s, so transient errors (network blips, Telegram 429/503) cause a brief
  * back-off rather than killing the adapter.
  */
-import { Cause, Effect, Fiber, Redacted, Ref, Schedule } from "effect"
-import type { ChannelAdapter, ChannelMessage, DeliverOptions, DeliveryTarget } from "../types.js"
+import { Buffer } from "node:buffer"
+import { Cause, Effect, Either, Fiber, Redacted, Ref, Schedule } from "effect"
+import {
+  ALLOWED_ATTACHMENT_MEDIA_TYPES,
+  MAX_IMAGE_RAW_BYTES,
+  MAX_PDF_RAW_BYTES,
+  attachmentByteCap,
+} from "@luna/core"
+import type { ChannelAdapter, ChannelAttachment, ChannelMessage, DeliverOptions, DeliveryTarget } from "../types.js"
 import { markdownToTelegramHtml, toPlainTextFallback } from "./telegram-format.js"
 import { channelCommands } from "../commands.js"
 
@@ -122,7 +152,44 @@ interface TelegramMessage {
   readonly chat: TelegramChat
   readonly from?: TelegramUser
   readonly text?: string
+  /** Media messages carry their user text here instead of `text`. */
+  readonly caption?: string
+  /** Compressed image — several size variants (ordering not guaranteed). */
+  readonly photo?: ReadonlyArray<TelegramPhotoSize>
+  /** File sent uncompressed ("attach as file") — PDFs arrive here. */
+  readonly document?: TelegramDocument
+  // Media kinds we recognize but do not ingest (see classifyInboundMedia).
+  // NB: animation messages (GIFs) also set `document` — animation is checked first.
+  readonly animation?: unknown
+  readonly voice?: unknown
+  readonly audio?: unknown
+  readonly video?: unknown
+  readonly video_note?: unknown
+  readonly sticker?: unknown
   readonly date: number
+}
+
+/** One size variant of a Telegram photo. Telegram photos are always JPEG. */
+interface TelegramPhotoSize {
+  readonly file_id: string
+  readonly width: number
+  readonly height: number
+  readonly file_size?: number
+}
+
+/** A Telegram document (file attachment sent uncompressed). */
+interface TelegramDocument {
+  readonly file_id: string
+  readonly file_name?: string
+  readonly mime_type?: string
+  readonly file_size?: number
+}
+
+/** getFile result payload. */
+interface TelegramFileInfo {
+  readonly file_id: string
+  readonly file_size?: number
+  readonly file_path?: string
 }
 
 interface TelegramChat {
@@ -235,6 +302,360 @@ export const makeRealTransport = (token: Redacted.Redacted<string>): TelegramHtt
       ),
     )
 
+/**
+ * Raw file download seam — the Bot API method transport above only speaks
+ * JSON-RPC-style methods; actual file BYTES come from a different URL scheme
+ * (`/file/bot<token>/<file_path>`). Tests inject a fake; production uses
+ * `makeRealFileTransport(token)`.
+ */
+export type TelegramFileTransport = (
+  filePath: string,
+) => Effect.Effect<Uint8Array, Error>
+
+/**
+ * Real file-download transport. Same Redacted-token discipline as
+ * makeRealTransport: the token is unwrapped only at URL construction time.
+ * Error messages never embed the URL, so the token cannot leak through logs
+ * or the user-facing failure replies built from them.
+ *
+ * Hardening (the caller's byte cap runs only AFTER the body is in memory, so
+ * the transport enforces its own absolute ceiling):
+ *   - file_path segments are percent-encoded, so a hostile path cannot alter
+ *     the URL structure.
+ *   - Content-Length is checked before reading when present.
+ *   - The body is read as a stream and aborted the moment the cumulative
+ *     bytes exceed the ceiling — a lying/absent Content-Length cannot make
+ *     us buffer a multi-GB body.
+ */
+export const makeRealFileTransport = (
+  token: Redacted.Redacted<string>,
+): TelegramFileTransport =>
+  (filePath) =>
+    Effect.tryPromise({
+      try: async (signal) => {
+        const encodedPath = filePath.split("/").map(encodeURIComponent).join("/")
+        const url = `https://api.telegram.org/file/bot${Redacted.value(token)}/${encodedPath}`
+        const res = await fetch(url, { signal })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const declared = res.headers.get("content-length")
+        if (declared !== null && Number(declared) > MAX_PDF_RAW_BYTES) {
+          throw new Error("file exceeds the size limit")
+        }
+        if (res.body === null) return new Uint8Array(0)
+        const reader = res.body.getReader()
+        const chunks: Uint8Array[] = []
+        let total = 0
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.byteLength
+          if (total > MAX_PDF_RAW_BYTES) {
+            await reader.cancel()
+            throw new Error("file exceeds the size limit")
+          }
+          chunks.push(value)
+        }
+        return new Uint8Array(Buffer.concat(chunks))
+      },
+      catch: (e) =>
+        new Error(
+          `download failed: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+    })
+
+/* -------------------------------------------------------------------------- */
+/* Inbound media classification + download                                     */
+/* -------------------------------------------------------------------------- */
+
+// Allowlist + size caps come from @luna/core attachment-limits.ts — the same
+// source ui-ws server.ts validateAttachments (the Moon-upload gate) enforces,
+// so Telegram files obey identical Anthropic content-block limits.
+// Telegram's own getFile additionally refuses files over ~20 MB for bots.
+
+/**
+ * Shape gate for a mime string that gets ECHOED back to the chat. The
+ * sender controls document.mime_type; an unconstrained echo through the
+ * markdown→HTML formatter would let a crafted mime render as a clickable
+ * link in a bot-authored message. Anything not shaped like a mime type is
+ * reported as "unknown".
+ */
+const MIME_SHAPE = /^[\w.+-]{1,64}\/[\w.+-]{1,64}$/
+const safeMimeForEcho = (mediaType: string | null): string =>
+  mediaType !== null && MIME_SHAPE.test(mediaType) ? mediaType : "unknown"
+
+/**
+ * getFile's file_path is interpolated into the token-bearing download URL.
+ * It comes from Telegram itself over TLS, but the boundary should not assume
+ * benign metadata: reject anything outside a conservative charset or with a
+ * ".." segment before it reaches the transport.
+ */
+const FILE_PATH_SHAPE = /^[A-Za-z0-9_\-./]{1,512}$/
+const isSafeFilePath = (filePath: string): boolean =>
+  FILE_PATH_SHAPE.test(filePath) && !filePath.split("/").includes("..")
+
+/**
+ * Magic-byte sniff for the five ingestible types. The declared mime is
+ * sender-controlled; a misnamed file (report.pdf that is actually a JPEG)
+ * would otherwise produce a content block the Anthropic API rejects mid-turn
+ * — a deep-pipeline error instead of the immediate reply this path exists
+ * to give. Returns null when the bytes match none of the known signatures.
+ */
+const sniffMediaType = (bytes: Uint8Array): string | null => {
+  const startsWith = (sig: number[], offset = 0): boolean =>
+    bytes.byteLength >= offset + sig.length &&
+    sig.every((b, i) => bytes[offset + i] === b)
+  if (startsWith([0x25, 0x50, 0x44, 0x46, 0x2d])) return "application/pdf" // %PDF-
+  if (startsWith([0xff, 0xd8, 0xff])) return "image/jpeg"
+  if (startsWith([0x89, 0x50, 0x4e, 0x47])) return "image/png"
+  if (startsWith([0x47, 0x49, 0x46, 0x38])) return "image/gif" // GIF8
+  if (startsWith([0x52, 0x49, 0x46, 0x46]) && startsWith([0x57, 0x45, 0x42, 0x50], 8)) {
+    return "image/webp" // RIFF....WEBP
+  }
+  return null
+}
+
+/** Fallback mime inference for documents Telegram sends without mime_type. */
+const EXTENSION_MEDIA_TYPES: Readonly<Record<string, string>> = {
+  pdf: "application/pdf",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+}
+
+const inferDocumentMediaType = (doc: TelegramDocument): string | null => {
+  // Normalize: senders and clients disagree on casing ("Application/PDF").
+  const declared = doc.mime_type === undefined ? undefined : doc.mime_type.trim().toLowerCase()
+  if (declared !== undefined && ALLOWED_ATTACHMENT_MEDIA_TYPES.has(declared)) return declared
+  // Declared mime is missing, generic (application/octet-stream), or
+  // unrecognized — fall back to the filename extension before rejecting.
+  // The magic-byte sniffer stays the final authority on the actual bytes.
+  const name = doc.file_name ?? ""
+  const dot = name.lastIndexOf(".")
+  const ext = dot === -1 ? null : name.slice(dot + 1).toLowerCase()
+  const fromExtension =
+    ext !== null && Object.hasOwn(EXTENSION_MEDIA_TYPES, ext)
+      ? (EXTENSION_MEDIA_TYPES[ext] ?? null)
+      : null
+  if (fromExtension !== null) return fromExtension
+  // Nothing ingestible: surface the (normalized) declared type so the
+  // unsupported-type reply can echo it, or null for "unknown".
+  return declared !== undefined && declared.length > 0 ? declared : null
+}
+
+/**
+ * What an inbound message's media resolves to:
+ *   - "file": an ingestible attachment — download it and hand it to the agent.
+ *   - "unsupported": media we cannot ingest. `userReply` is the explanation to
+ *     send back (null = drop silently); `dmOnly` restricts the reply to private
+ *     chats so ambient group media (voice notes, videos) doesn't trigger bot
+ *     noise. Replying beats the old silent drop — that silence is exactly what
+ *     made the agent gaslight the user with "it didn't come through, resend?".
+ */
+type InboundMediaRef =
+  | {
+      readonly _tag: "file"
+      readonly fileId: string
+      readonly mediaType: string
+      readonly fileName?: string
+      readonly declaredSize?: number
+    }
+  | {
+      readonly _tag: "unsupported"
+      readonly userReply: string | null
+      readonly dmOnly: boolean
+    }
+
+const SUPPORTED_TYPES_HINT =
+  "I can read images (JPEG/PNG/GIF/WebP) and PDF files sent as photos or file attachments."
+
+const classifyInboundMedia = (msg: TelegramMessage): InboundMediaRef | null => {
+  if (msg.photo !== undefined && msg.photo.length > 0) {
+    // Pick the largest variant by area — the Bot API does not guarantee the
+    // array ordering, and silently ingesting a thumbnail would degrade what
+    // the model sees with no error. Telegram photos are always JPEG.
+    const best = msg.photo.reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a))
+    return {
+      _tag: "file",
+      fileId: best.file_id,
+      mediaType: "image/jpeg",
+      ...(best.file_size !== undefined ? { declaredSize: best.file_size } : {}),
+    }
+  }
+  // Animations (GIFs) set BOTH `animation` and `document` (Bot API backward
+  // compatibility), so this check MUST precede the document branch —
+  // otherwise every ambient group GIF triggers an "unsupported file type"
+  // reply. Treated like video: explain in DMs, stay silent in groups.
+  if (msg.animation !== undefined) {
+    return {
+      _tag: "unsupported",
+      userReply: `⚠️ I can't watch GIFs or animations yet. ${SUPPORTED_TYPES_HINT}`,
+      dmOnly: true,
+    }
+  }
+  if (msg.document !== undefined) {
+    const mediaType = inferDocumentMediaType(msg.document)
+    if (mediaType === null || !ALLOWED_ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
+      return {
+        _tag: "unsupported",
+        userReply:
+          `⚠️ I can't accept this file type (${safeMimeForEcho(mediaType)}). ` +
+          SUPPORTED_TYPES_HINT,
+        dmOnly: false, // a file explicitly sent to the bot deserves an answer even in groups
+      }
+    }
+    return {
+      _tag: "file",
+      fileId: msg.document.file_id,
+      mediaType,
+      ...(msg.document.file_name !== undefined ? { fileName: msg.document.file_name } : {}),
+      ...(msg.document.file_size !== undefined ? { declaredSize: msg.document.file_size } : {}),
+    }
+  }
+  if (msg.voice !== undefined || msg.audio !== undefined) {
+    return {
+      _tag: "unsupported",
+      userReply: `⚠️ I can't listen to audio yet — please type it out. ${SUPPORTED_TYPES_HINT}`,
+      dmOnly: true, // group voice notes are ambient chatter, not bot input
+    }
+  }
+  if (msg.video !== undefined || msg.video_note !== undefined) {
+    return {
+      _tag: "unsupported",
+      userReply: `⚠️ I can't watch videos yet. ${SUPPORTED_TYPES_HINT}`,
+      dmOnly: true,
+    }
+  }
+  if (msg.sticker !== undefined) {
+    // Stickers are reactions, not attachments — never worth a bot reply.
+    return { _tag: "unsupported", userReply: null, dmOnly: true }
+  }
+  return null
+}
+
+const tooLargeReply = (bytes: number, cap: number): string =>
+  `⚠️ That file is too large (${Math.ceil(bytes / (1024 * 1024))} MB). ` +
+  `I can take images up to ${MAX_IMAGE_RAW_BYTES / (1024 * 1024)} MB and ` +
+  `PDFs up to ${MAX_PDF_RAW_BYTES / (1024 * 1024)} MB` +
+  (cap === MAX_PDF_RAW_BYTES ? "." : " — try sending it as a smaller file or a link.")
+
+type AttachmentFetchOutcome =
+  | { readonly _tag: "ok"; readonly attachment: ChannelAttachment }
+  | { readonly _tag: "failed"; readonly userReply: string }
+
+const fetchFailed = (userReply: string): AttachmentFetchOutcome => ({
+  _tag: "failed",
+  userReply,
+})
+
+/**
+ * Two-step Telegram file download: getFile (via the method transport) resolves
+ * a short-lived file_path, then the file transport fetches the raw bytes.
+ * Total — every failure mode folds into a "failed" outcome with a user-facing
+ * explanation; nothing here can fail the poll loop.
+ *
+ * Size is enforced three times deliberately: the declared size before any
+ * network call (cheap rejection), getFile's reported size (authoritative
+ * pre-download), and the actual byte length (defence against lying metadata).
+ */
+const fetchTelegramAttachment = (
+  transport: TelegramHttpTransport,
+  fileTransport: TelegramFileTransport | null,
+  ref: Extract<InboundMediaRef, { _tag: "file" }>,
+): Effect.Effect<AttachmentFetchOutcome> =>
+  Effect.gen(function* () {
+    const cap = attachmentByteCap(ref.mediaType)
+    if (ref.declaredSize !== undefined && ref.declaredSize > cap) {
+      return fetchFailed(tooLargeReply(ref.declaredSize, cap))
+    }
+    if (fileTransport === null) {
+      return fetchFailed(
+        "⚠️ I received your file but downloads aren't configured on my end — tell my operator.",
+      )
+    }
+    // Bounded getFile: makeRealTransport has no client-side timeout of its
+    // own (undici defaults run to minutes) and a hang is not an error, so
+    // without this the fiber could be pinned far longer than the download cap.
+    const info = yield* transport("getFile", { file_id: ref.fileId }).pipe(
+      Effect.timeoutTo({
+        duration: "30 seconds",
+        onTimeout: (): TelegramApiResult => ({ ok: false, description: "getFile timed out" }),
+        onSuccess: (r: TelegramApiResult) => r,
+      }),
+    )
+    const fileInfo = (info.ok ? info.result : undefined) as TelegramFileInfo | undefined
+    if (fileInfo === undefined || typeof fileInfo.file_path !== "string" || fileInfo.file_path.length === 0) {
+      // Telegram's bot download ceiling (~20 MB) surfaces here as
+      // "file is too big" — pass the description through when present.
+      return fetchFailed(
+        `⚠️ Telegram wouldn't hand over that file (${info.description ?? "no download path"}). ` +
+          "Bots can only download files up to 20 MB — try a smaller file or a link.",
+      )
+    }
+    if (!isSafeFilePath(fileInfo.file_path)) {
+      // file_path feeds the token-bearing download URL; never forward a
+      // path that could alter the URL structure.
+      return fetchFailed(
+        "⚠️ Telegram returned an unusable download path for that file. Please try again.",
+      )
+    }
+    if (fileInfo.file_size !== undefined && fileInfo.file_size > cap) {
+      return fetchFailed(tooLargeReply(fileInfo.file_size, cap))
+    }
+    const bytes = yield* fileTransport(fileInfo.file_path).pipe(
+      Effect.timeoutFail({
+        duration: "60 seconds",
+        onTimeout: () => new Error("download timed out"),
+      }),
+      Effect.either,
+    )
+    if (Either.isLeft(bytes)) {
+      return fetchFailed(
+        `⚠️ I couldn't download that file (${bytes.left.message}). Please try sending it again.`,
+      )
+    }
+    if (bytes.right.byteLength === 0) {
+      return fetchFailed("⚠️ That file came back empty from Telegram. Please try sending it again.")
+    }
+    if (bytes.right.byteLength > cap) {
+      return fetchFailed(tooLargeReply(bytes.right.byteLength, cap))
+    }
+    // Verify the bytes against the declared type; correct a misnamed file
+    // when the actual type is itself ingestible (report.pdf that is really a
+    // JPEG becomes an image block instead of a mid-turn Anthropic rejection).
+    const sniffed = sniffMediaType(bytes.right)
+    let mediaType = ref.mediaType
+    if (sniffed !== ref.mediaType) {
+      if (sniffed === null || !ALLOWED_ATTACHMENT_MEDIA_TYPES.has(sniffed)) {
+        return fetchFailed(
+          `⚠️ That file's content doesn't match a type I can read. ${SUPPORTED_TYPES_HINT}`,
+        )
+      }
+      mediaType = sniffed
+      // The corrected type may carry a smaller cap (PDF-labelled JPEG:
+      // 20 MB claimed cap, 10 MB actual image cap).
+      const correctedCap = attachmentByteCap(sniffed)
+      if (bytes.right.byteLength > correctedCap) {
+        return fetchFailed(tooLargeReply(bytes.right.byteLength, correctedCap))
+      }
+    }
+    return {
+      _tag: "ok",
+      attachment: {
+        mediaType,
+        data: Buffer.from(bytes.right).toString("base64"),
+      },
+    } satisfies AttachmentFetchOutcome
+  }).pipe(
+    // A dying injected transport (or any defect) must not kill the poll loop.
+    Effect.catchAllCause(() =>
+      Effect.succeed(
+        fetchFailed("⚠️ Something went wrong downloading that file. Please try sending it again."),
+      ),
+    ),
+  )
+
 /* -------------------------------------------------------------------------- */
 /* Adapter config                                                              */
 /* -------------------------------------------------------------------------- */
@@ -257,6 +678,15 @@ export interface TelegramAdapterConfig {
    * Injecting a fake transport takes priority over both config.token and env.
    */
   readonly httpTransport?: TelegramHttpTransport
+  /**
+   * Override the raw file-download transport for testing (getFile's second
+   * step — fetching bytes from /file/bot<token>/<file_path>). When omitted the
+   * adapter constructs the real one from the resolved token. When neither a
+   * fileTransport nor a token is available (e.g. a test injecting only
+   * httpTransport), inbound attachments fail gracefully with a user-facing
+   * reply instead of being dropped.
+   */
+  readonly fileTransport?: TelegramFileTransport
   /**
    * Optional inbound allowlist — the ONLY authentication in front of Luna over
    * Telegram. When provided and non-empty, an inbound message is accepted iff
@@ -319,6 +749,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   let resolvedTransport: TelegramHttpTransport | null =
     config.httpTransport !== undefined ? config.httpTransport : null
 
+  // Raw file-download transport (attachments). Same lifecycle as
+  // resolvedTransport: injected at construction (tests) or built from the
+  // resolved token in start() (production). Stays null when neither exists —
+  // attachment fetches then fail gracefully with a user-facing reply.
+  let resolvedFileTransport: TelegramFileTransport | null =
+    config.fileTransport !== undefined ? config.fileTransport : null
+
   // Inbound allowlist (union gate). null when unconfigured; an empty set also
   // means "open" (fail-open). See TelegramAdapterConfig.allowedIds for the
   // sender-OR-chat union rationale and the positive/negative id convention.
@@ -336,6 +773,47 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // stream-edit state: inbound platformMessageId → sent Telegram message_id.
   // One entry per active turn; cleaned up on isFinal.
   const sentMessageIds = new Map<string, number>()
+
+  // Bound on concurrent attachment downloads. Media units run as forked
+  // fibers off the poll loop; the semaphore keeps a photo flood from turning
+  // into unbounded parallel 20 MB downloads (it degrades to queuing instead).
+  const downloadSemaphore = Effect.unsafeMakeSemaphore(3)
+
+  // Per-chat FIFO dispatch. Media units run off the poll fiber (so downloads
+  // never starve other chats), but messages for the SAME chat must reach the
+  // handler in arrival order — "here's the PDF" followed by "please summarize
+  // it" must not deliver the text before the attachment. Each chat keeps a
+  // chain of fibers: a new unit awaits the previous one, so same-chat order
+  // is strict while different chats stay fully concurrent. Entries are
+  // removed when their chain drains, so the map stays bounded by the number
+  // of chats with in-flight work.
+  const chatChains = new Map<string, Fiber.RuntimeFiber<void, never>>()
+  const dispatchChained = (chatId: string, unit: Effect.Effect<void>): void => {
+    const safeUnit = unit.pipe(
+      Effect.catchAllCause((cause) =>
+        Effect.sync(() => {
+          try {
+            console.warn(
+              `[luna/channels] telegram: dispatch unit failed for chat=${chatId}: ` +
+                Cause.pretty(cause),
+            )
+          } catch {
+            // logging must never fail the chain
+          }
+        }),
+      ),
+    )
+    const prev = chatChains.get(chatId)
+    const chained =
+      prev === undefined
+        ? safeUnit
+        : Fiber.await(prev).pipe(Effect.andThen(safeUnit))
+    const fiber = Effect.runFork(chained)
+    chatChains.set(chatId, fiber)
+    fiber.addObserver(() => {
+      if (chatChains.get(chatId) === fiber) chatChains.delete(chatId)
+    })
+  }
 
   // Our bot's username from getMe, for "/verb@BotName" mention filtering in
   // groups. null until start() resolves it (or when getMe fails — degraded
@@ -358,15 +836,29 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   /* Inbound message construction                                              */
   /* ------------------------------------------------------------------------ */
 
-  const buildChannelMessage = (update: TelegramUpdate): ChannelMessage | null => {
+  /**
+   * Envelope pairing the normalized message with its media classification.
+   * Classification runs ONCE here — the metadata stamp and the poll loop's
+   * download decision both derive from the same value, so they cannot desync.
+   */
+  interface BuiltInbound {
+    readonly msg: ChannelMessage
+    readonly media: InboundMediaRef | null
+  }
+
+  const buildChannelMessage = (update: TelegramUpdate): BuiltInbound | null => {
     const msg = update.message
     if (msg === undefined) return null          // non-message update (callback, etc.)
-    if (msg.text === undefined) return null     // not a text message (photo, sticker, etc.)
+    const media = classifyInboundMedia(msg)
+    // Accept text messages AND recognized media (photo/document/voice/…).
+    // Media messages carry their user text in `caption`; service-membership
+    // updates and other exotic message kinds still fall through to null.
+    if (msg.text === undefined && media === null) return null
     if (msg.from === undefined) return null     // channels have no `from`; skip
 
     const chatId = String(msg.chat.id)
 
-    return {
+    const channelMsg: ChannelMessage = {
       transport: "telegram" as const,
       channelId: chatId,
       senderId: String(msg.from.id),
@@ -376,7 +868,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       // Setting threadingKey explicitly (even though it equals channelId here)
       // documents the intent and is forward-compatible with sub-topic routing.
       threadingKey: chatId,
-      text: msg.text,
+      text: msg.text ?? msg.caption ?? "",
       // update_id is monotonically increasing per bot, unique across all chats
       // for this bot token. The dedup store keys on (transport, platformMessageId).
       platformMessageId: String(update.update_id),
@@ -387,8 +879,15 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         userId: msg.from?.id,
         username: msg.from?.username,
         firstName: msg.from?.first_name,
+        ...(media?._tag === "file"
+          ? {
+              attachmentMediaType: media.mediaType,
+              ...(media.fileName !== undefined ? { attachmentFileName: media.fileName } : {}),
+            }
+          : {}),
       },
     }
+    return { msg: channelMsg, media }
   }
 
   /* ------------------------------------------------------------------------ */
@@ -399,10 +898,15 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
    * Begin the "typing…" refresh loop for a chat (idempotent per chat). Runs
    * as an independent runFork root — pollOnce's fiber completes every poll
    * cycle, so a child fiber would be auto-interrupted immediately.
+   *
+   * Returns true iff THIS call created the fiber. The fiber is shared per
+   * chat, so a caller that wants to cancel it on failure must only do so
+   * when it was the creator — otherwise a failed download would kill the
+   * indicator an earlier still-in-flight turn depends on.
    */
-  const startTyping = (transport: TelegramHttpTransport, chatId: string): void => {
-    if (typingSwept) return
-    if (typingFibers.has(chatId)) return
+  const startTyping = (transport: TelegramHttpTransport, chatId: string): boolean => {
+    if (typingSwept) return false
+    if (typingFibers.has(chatId)) return false
     const loop = Effect.gen(function* () {
       for (let i = 0; i < TYPING_MAX_REFRESHES; i++) {
         yield* transport("sendChatAction", { chat_id: chatId, action: "typing" })
@@ -414,6 +918,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
     fiber.addObserver(() => {
       if (typingFibers.get(chatId) === fiber) typingFibers.delete(chatId)
     })
+    return true
   }
 
   /** Stop the typing loop for a chat (first reply supersedes it). */
@@ -500,8 +1005,9 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             nextOffset = update.update_id + 1
           }
 
-          const channelMsg = buildChannelMessage(update)
-          if (channelMsg === null) continue   // non-text or non-message update
+          const built = buildChannelMessage(update)
+          if (built === null) continue   // non-ingestible or non-message update
+          const { msg: channelMsg, media } = built
 
           // Inbound allowlist gate. Accept iff the sender id OR the chat id is
           // allowlisted (union — see config.allowedIds); otherwise silently
@@ -509,6 +1015,8 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           // to strangers. The offset was already advanced above, so a rejected
           // update is consumed, not re-polled, and cannot wedge the loop. Drop
           // logging is rate-limited to the first hit per (chat, sender).
+          // Media sits BEHIND this gate too: no getFile call or download
+          // bandwidth is ever spent on non-allowlisted senders.
           if (!isInboundAllowed(channelMsg)) {
             const dropKey = `${channelMsg.channelId}:${channelMsg.senderId}`
             if (!loggedDrops.has(dropKey)) {
@@ -522,24 +1030,108 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             continue
           }
 
-          // Group command addressing: strip our own "@BotName" mention from
-          // "/verb@BotName"; drop commands addressed to a DIFFERENT bot.
-          const normalizedText = normalizeCommandMention(channelMsg.text, botUsername)
-          if (normalizedText === null) continue
-          const msg =
-            normalizedText === channelMsg.text
-              ? channelMsg
-              : { ...channelMsg, text: normalizedText }
+          // Group command addressing applies ONLY to true text messages:
+          // strip our own "@BotName" mention from "/verb@BotName"; drop
+          // commands addressed to a DIFFERENT bot. Media captions are user
+          // text for the LLM, never channel commands — running the null-drop
+          // on a caption would silently discard the photo/PDF it rides on
+          // (the exact failure mode this path exists to kill).
+          let msg = channelMsg
+          if (media === null) {
+            const normalizedText = normalizeCommandMention(channelMsg.text, botUsername)
+            if (normalizedText === null) continue
+            if (normalizedText !== channelMsg.text) {
+              msg = { ...channelMsg, text: normalizedText }
+            }
+          }
+
+          if (media !== null && media._tag === "unsupported") {
+            // Explain instead of silently dropping (a silent drop makes the
+            // agent deny ever receiving the file). dmOnly media (voice,
+            // video, GIFs) stays silent in groups — ambient chatter, not bot
+            // input. Forked: a hung sendMessage must not stall the poll loop.
+            // NB: replies are at-least-once — a crash between this reply and
+            // the next getUpdates offset confirm can repeat one batch.
+            const isPrivate = channelMsg.metadata?.["chatType"] === "private"
+            if (media.userReply !== null && (isPrivate || !media.dmOnly)) {
+              Effect.runFork(
+                sendFormatted(
+                  transport,
+                  "sendMessage",
+                  { chat_id: msg.channelId },
+                  media.userReply,
+                ).pipe(
+                  Effect.catchAllCause((cause) =>
+                    Effect.sync(() => {
+                      try {
+                        console.warn(
+                          `[luna/channels] telegram: unsupported-media reply failed ` +
+                            `for chat=${msg.channelId}: ` + Cause.pretty(cause),
+                        )
+                      } catch {
+                        // logging must never fail the fiber
+                      }
+                    }),
+                  ),
+                ),
+              )
+            }
+            continue
+          }
+
+          if (media !== null) {
+            // Fork the whole media unit of work (download → reply-or-dispatch)
+            // off the poll fiber, onto the same per-chat FIFO chain as the
+            // handler dispatch below. Inline it would serialize up-to-60s
+            // downloads in front of getUpdates — one slow CDN or an
+            // allowlisted spammer would starve EVERY chat's inbound,
+            // including the pager path.
+            // The semaphore bounds concurrent downloads so a flood degrades
+            // to queuing, never to poll-loop starvation or unbounded memory.
+            const mediaMsg = msg
+            const mediaUnit = Effect.gen(function* () {
+              // Typing indicator covers the download — a 20 MB PDF on a slow
+              // link takes seconds and the user should see the bot working.
+              const createdTyping = startTyping(transport, mediaMsg.channelId)
+              const outcome = yield* downloadSemaphore.withPermits(1)(
+                fetchTelegramAttachment(transport, resolvedFileTransport, media),
+              )
+              if (outcome._tag === "failed") {
+                // Only cancel the typing fiber this unit created — an earlier
+                // in-flight turn in the same chat may still own it.
+                if (createdTyping) yield* stopTyping(mediaMsg.channelId)
+                // At-least-once (see unsupported-reply note above).
+                yield* sendFormatted(
+                  transport,
+                  "sendMessage",
+                  { chat_id: mediaMsg.channelId },
+                  outcome.userReply,
+                )
+                return
+              }
+              if (messageHandler !== null) {
+                yield* messageHandler({ ...mediaMsg, attachments: [outcome.attachment] })
+              }
+            })
+            // Chained per chat: a follow-up text in the same chat queues
+            // behind this download instead of racing past it.
+            dispatchChained(mediaMsg.channelId, mediaUnit)
+            continue
+          }
 
           // Loading indication: show "typing…" until the first reply (the
           // placeholder or a step-indicator edit) lands for this chat.
           startTyping(transport, msg.channelId)
 
           if (messageHandler !== null) {
-            // Fire-and-forget: the installed handler is a pure Effect<void>
-            // closure over all service dependencies. Effect.runFork is the
-            // production path documented in the ChannelAdapter contract.
-            Effect.runFork(messageHandler(msg))
+            // Per-chat FIFO dispatch (fire-and-forget relative to the poll
+            // loop): the installed handler is a pure Effect<void> closure
+            // over all service dependencies. Same-chat messages run in
+            // arrival order behind any in-flight media download; a chat with
+            // no in-flight work dispatches immediately, and different chats
+            // never wait on each other.
+            const handlerMsg = msg
+            dispatchChained(handlerMsg.channelId, messageHandler(handlerMsg))
           }
         }
 
@@ -610,22 +1202,24 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       // the fork keeps the loop alive; the outer fiber (the test) interrupts it
       // via Fiber.interrupt(fiber) after assertions are collected.
       return Effect.gen(function* () {
+        // Resolve the token once for both transports (method calls + raw file
+        // downloads). Prefer the pre-resolved Redacted token from config; fall
+        // back to env. May be null when a test injects transports directly.
+        const redactedToken: Redacted.Redacted<string> | null =
+          config.token !== undefined
+            ? config.token
+            : (() => {
+                const raw = process.env["TELEGRAM_BOT_TOKEN"]
+                if (!raw || raw.trim().length === 0) return null
+                return Redacted.make(raw)
+              })()
+
         // Resolve the HTTP transport.
         // Priority: injected httpTransport (tests) > config.token (production)
         // > env var fallback (production legacy).
         if (config.httpTransport !== undefined) {
           resolvedTransport = config.httpTransport
         } else if (resolvedTransport === null) {
-          // Prefer the pre-resolved Redacted token from config; fall back to env.
-          const redactedToken: Redacted.Redacted<string> | null =
-            config.token !== undefined
-              ? config.token
-              : (() => {
-                  const raw = process.env["TELEGRAM_BOT_TOKEN"]
-                  if (!raw || raw.trim().length === 0) return null
-                  return Redacted.make(raw)
-                })()
-
           if (redactedToken === null) {
             return yield* Effect.die(
               new Error(
@@ -638,6 +1232,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           // Redacted.value() is the ONLY site that unwraps the token — inside
           // makeRealTransport at URL construction time.
           resolvedTransport = makeRealTransport(redactedToken)
+        }
+
+        // Resolve the file-download transport (attachments). Stays null when
+        // neither an injected fileTransport nor a token exists — attachment
+        // fetches then fail gracefully with a user-facing reply.
+        if (resolvedFileTransport === null && redactedToken !== null) {
+          resolvedFileTransport = makeRealFileTransport(redactedToken)
         }
 
         const transport = resolvedTransport
