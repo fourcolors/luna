@@ -4304,6 +4304,29 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
     })
 
+    it('Scenario: under the PoolEngine dark flag requestList still sends list-threads (engine-aware gate)', () => {
+      // The pool path never assigns State.ws, so a raw readyState gate would
+      // silently skip the list request and the sidebar would render empty.
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      m.ThreadDrawerEngine.requestList()
+
+      expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+      localStorage.removeItem('luna_pool_engine')
+    })
+
     it('Scenario: setSidebarWidth clamps to resting values and snaps small drags collapsed', () => {
       const m = M()
       const eng = m.ThreadDrawerEngine
@@ -4506,6 +4529,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
       expect(m.State.threadDrawerOpen).toBe(true)          // stays open, unlike the old overlay drawer
       expect(m.State.sidebarWidth).toBeGreaterThan(0)
+    })
+
+    it('Scenario: clicking a row arms the subscribe watchdog so a lost snapshot self-heals', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'other'
+      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+
+      m.ThreadDrawerEngine.onRowClick('b')
+
+      expect(watchdog).toHaveBeenCalledTimes(1)
+      expect(m.State.subscribeTimeout).not.toBeNull()
     })
 
     it('Scenario: clicking a row cancels a deferred "+ New" so reconnect resubscribes instead of minting', async () => {

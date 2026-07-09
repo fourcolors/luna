@@ -4169,7 +4169,7 @@
       isPinnedWindow() { return !!State.pinnedThread; },
 
       requestList() {
-        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+        if (WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'list-threads' });
         }
       },
@@ -4262,6 +4262,7 @@
         if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';   // instant feedback; snapshot rebuilds
         if (WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'subscribe', threadId: id });
+          WebSocketEngine.startSubscribeTimeout();
         } else {
           Logger.warn('[ThreadDrawer] not connected; queued switch to ' + id);
         }
