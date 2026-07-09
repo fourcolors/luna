@@ -3,7 +3,7 @@
  * WorkerRegistry. No SQLite, no real sleep, no real model calls.
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Layer, Duration } from "effect"
+import { Context, Effect, Layer, Duration } from "effect"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "./jobs-store.js"
 import { JobsStoreError, type JobsStoreApi } from "./jobs-store-types.js"
@@ -13,6 +13,7 @@ import {
   WorkerError,
   makeWorkerRegistry,
   type Worker,
+  type WorkerResult,
 } from "./worker-registry.js"
 
 /** Build a test stack: ticker + memory jobs store + worker registry.
@@ -1169,5 +1170,222 @@ describe("JobTicker", () => {
     await Effect.runPromise(
       prog.pipe(Effect.provide(buildStack({ wake: failTwiceThenOk }, { defaultMaxAttempts: 5 }))),
     )
+  })
+
+  // ── issue #277 Seam A: WorkerResult.postCommit ─────────────────────────
+  // Delivery moved OUT of the timed dispatch (Effect.timeoutFail) so a slow
+  // sink can never race the backstop into discarding an already-committed
+  // success and letting a Seam-3 retry re-run the turn and re-deliver. See
+  // worker-registry.ts's WorkerResult.postCommit doc + job-ticker.ts's
+  // handleJob for the ordering guarantee this section proves.
+  describe("postCommit (issue #277)", () => {
+    it("runs exactly once, strictly AFTER recordRunEnd durably wrote status=success", async () => {
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const clock = yield* Clock
+
+        // The worker closes over THIS resolved store instance (not
+        // `yield* JobsStoreService`, which a registered Worker<never> can't
+        // require) and reads job_runs from it inside postCommit - proving
+        // postCommit observes what recordRunEnd already committed, not just
+        // that it ran at some point.
+        let calls = 0
+        let observedStatus: string | null = null
+        const worker: Worker = () =>
+          Effect.succeed({
+            outputText: "ok",
+            postCommit: store.listRuns("postcommit-order", 1).pipe(
+              Effect.tap((runs) =>
+                Effect.sync(() => {
+                  calls++
+                  observedStatus = runs[0]?.status ?? null
+                }),
+              ),
+              Effect.catchAll(() => Effect.void),
+              Effect.asVoid,
+            ),
+          } satisfies WorkerResult)
+
+        yield* store.record({
+          id: "postcommit-order",
+          kind: "wake",
+          spec: "*/5 * * * *",
+          payload: { label: "p" },
+        })
+        yield* store.setV2Fields("postcommit-order", {
+          schedule: "*/5 * * * *",
+          nextRunAt: 0,
+        })
+
+        const tickerL = JobTickerLayer({ autoStart: false }).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(JobsStoreService, store),
+              makeWorkerRegistry({ wake: worker }),
+              Layer.succeed(Clock, clock),
+            ),
+          ),
+        )
+        const ctx = yield* Layer.build(tickerL).pipe(Effect.scoped)
+        const ticker = Context.get(ctx, JobTicker)
+        const summary = yield* ticker.drain
+        expect(summary.succeeded).toBe(1)
+
+        expect(calls).toBe(1)
+        expect(observedStatus).toBe("success")
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              JobsStoreService.Memory.pipe(Layer.provide(Clock.Default)),
+              Clock.Default,
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("a postCommit that fails or defects is caught, logged, and never affects the run's status, the tick summary, or sibling jobs", async () => {
+      const seen: string[] = []
+      const failingWorker: Worker = () =>
+        Effect.succeed({
+          outputText: "ok",
+          // Casts around the WorkerResult contract deliberately - this
+          // simulates a worker that failed to collapse its own typed error
+          // channel to E=never (the documented contract on
+          // WorkerResult.postCommit), proving the ticker's own
+          // Effect.catchAll defends against it anyway.
+          postCommit: Effect.fail(
+            new Error("delivery boom"),
+          ) as unknown as Effect.Effect<void>,
+        } satisfies WorkerResult)
+      const defectingWorker: Worker = () =>
+        Effect.succeed({
+          outputText: "ok",
+          // Same idea for a synchronous defect (Effect.die) - covered by
+          // the ticker's Effect.catchAllDefect.
+          postCommit: Effect.die(
+            new Error("delivery kaboom"),
+          ) as unknown as Effect.Effect<void>,
+        } satisfies WorkerResult)
+      const okSibling: Worker = () =>
+        Effect.sync(() => {
+          seen.push("sibling-ran")
+          return { outputText: "sibling-ok" } satisfies WorkerResult
+        })
+
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+
+        yield* store.record({ id: "pc-fail", kind: "wake", spec: "*/5 * * * *", payload: { label: "f" } })
+        yield* store.setV2Fields("pc-fail", { schedule: "*/5 * * * *", nextRunAt: 0 })
+        yield* store.record({ id: "pc-defect", kind: "dream", spec: "*/5 * * * *", payload: { label: "d" } })
+        yield* store.setV2Fields("pc-defect", { schedule: "*/5 * * * *", nextRunAt: 0 })
+        yield* store.record({ id: "pc-sibling", kind: "workflow", spec: "*/5 * * * *", payload: { label: "s" } })
+        yield* store.setV2Fields("pc-sibling", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+        const summary = yield* ticker.drain
+        expect(summary.claimed).toBe(3)
+        expect(summary.succeeded).toBe(3)
+        expect(summary.failed).toBe(0)
+        // The sibling's own dispatch was never touched by the other two
+        // jobs' postCommit blowing up - bounded concurrency isolation holds.
+        expect(seen).toEqual(["sibling-ran"])
+
+        const failRun = yield* store.listRuns("pc-fail")
+        expect(failRun[0]?.status).toBe("success")
+        const defectRun = yield* store.listRuns("pc-defect")
+        expect(defectRun[0]?.status).toBe("success")
+        const siblingRun = yield* store.listRuns("pc-sibling")
+        expect(siblingRun[0]?.status).toBe("success")
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack({
+              wake: failingWorker,
+              dream: defectingWorker,
+              workflow: okSibling,
+            }),
+          ),
+        ),
+      )
+    })
+
+    it("a worker that fails has no postCommit to run - Seam 3 retry scheduling is unaffected", async () => {
+      const angry: Worker = () =>
+        Effect.fail(new WorkerError({ reason: "worker_failed", message: "kaboom" }))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({
+          id: "fail-no-postcommit",
+          kind: "wake",
+          spec: "0 0 1 1 *",
+          payload: { label: "f" },
+        })
+        yield* store.setV2Fields("fail-no-postcommit", {
+          schedule: "0 0 1 1 *",
+          nextRunAt: 0,
+        })
+
+        const summary = yield* ticker.drain
+        expect(summary.failed).toBe(1)
+        expect(summary.succeeded).toBe(0)
+
+        // Seam A adds nothing to the failure path - retry scheduling from
+        // #275 fires exactly as it did before postCommit existed.
+        const after = yield* store.getById("fail-no-postcommit")
+        expect(after?.retryAttempt).toBe(1)
+      })
+      await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: angry }))))
+    })
+
+    it("a SLOW postCommit does not trip the dispatch backstop - it runs strictly after dispatch already returned", async () => {
+      // Deliberate, bounded exception to this file's "no real sleep"
+      // header note: ordering alone is what makes this safe (postCommit is
+      // OUTSIDE the Effect.timeoutFail-wrapped dispatch), so a short real
+      // sleep that clears a tiny real backstop is enough to demonstrate it
+      // without needing TestClock plumbing through Effect.timeout.
+      const worker: Worker = () =>
+        Effect.succeed({
+          outputText: "ok",
+          postCommit: Effect.sleep(Duration.millis(50)),
+        } satisfies WorkerResult)
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({
+          id: "slow-postcommit",
+          kind: "wake",
+          spec: "*/5 * * * *",
+          payload: { label: "s" },
+        })
+        yield* store.setV2Fields("slow-postcommit", {
+          schedule: "*/5 * * * *",
+          nextRunAt: 0,
+        })
+
+        const summary = yield* ticker.drain
+        expect(summary.succeeded).toBe(1)
+        expect(summary.failed).toBe(0)
+
+        const runs = yield* store.listRuns("slow-postcommit")
+        expect(runs[0]?.status).toBe("success")
+        expect(runs[0]?.error ?? "").not.toContain("deadline_passed")
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack(
+              { wake: worker },
+              { workerDeadline: Duration.millis(10), grace: Duration.millis(0) },
+            ),
+          ),
+        ),
+      )
+    })
   })
 })

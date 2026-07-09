@@ -59,6 +59,23 @@ export interface WorkerContext {
 export interface WorkerResult {
   readonly outputText: string | null
   readonly stepsJson?: string
+  /**
+   * issue #277 - deferred side effects (delivery sinks etc.) the ticker runs
+   * AFTER the run is durably recorded as success - OUTSIDE the dispatch
+   * backstop (`Effect.timeoutFail`), so a slow delivery can never turn a
+   * completed turn into `deadline_passed` (the double-delivery race a
+   * post-#275-retry review flagged: delivery run INSIDE the timed dispatch
+   * could commit, then still lose the race to the backstop, discarding the
+   * success value and letting a recurring job's retry re-run the whole turn
+   * and re-deliver). Best-effort: failures (typed or defect) are logged,
+   * never affect the run's terminal status, and are NOT retried - the worker
+   * MUST collapse its own typed error channel to E=never before returning
+   * this (the ticker's catchAll/catchAllDefect wrapping is runtime defense,
+   * not a type escape hatch). The ticker also bounds it with its own
+   * independent timeout (job-ticker.ts) - a worker cannot assume a delivery
+   * sink is self-bounding (e.g. a chat-server WS post can still hang).
+   */
+  readonly postCommit?: Effect.Effect<void>
 }
 
 /**

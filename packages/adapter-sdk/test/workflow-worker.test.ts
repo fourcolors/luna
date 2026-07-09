@@ -6,7 +6,10 @@
  * SDKClient.fake for prompt sub-steps. ZERO model calls.
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer } from "effect"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import {
   AgentNotesService,
   Clock,
@@ -394,4 +397,131 @@ describe("WorkflowWorkerLayer", () => {
     })
     await Effect.runPromise(prog.pipe(Effect.provide(exposed)))
   })
+})
+
+// ── issue #277 Seam B: abort-wired shell steps kill the process GROUP ──────
+//
+// A shell step's cmd backgrounds a grandchild (`sleep 30 &`) and publishes
+// its pid to a temp file - this is the process that must NOT outlive an
+// interrupted/timed-out dispatch. `wait` keeps the immediate `/bin/sh` child
+// alive until the grandchild exits (or is killed), mirroring a real
+// long-running command (e.g. `git push`) with children of its own (`ssh`).
+
+/** Poll `check` every `intervalMs` until it returns true, or throw once
+ *  `timeoutMs` elapses. Used to observe async OS-level state (a pidfile
+ *  appearing, a process dying) without a fixed sleep racing the assertion. */
+const pollUntil = async (
+  check: () => boolean,
+  timeoutMs: number,
+  intervalMs = 25,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (check()) return
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  if (!check()) {
+    throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`)
+  }
+}
+
+const isAlive = (pid: number): boolean => {
+  try {
+    // Signal 0 sends nothing but still throws ESRCH if the pid is gone -
+    // the standard liveness probe.
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const shellCmdPublishingGrandchildPid = (pidFile: string): string =>
+  `sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`
+
+describe("buildWorkflowWorker - shell step process-group kill (issue #277 Seam B)", () => {
+  it("interrupting the dispatch mid-shell-step kills the child process GROUP, not just the immediate shell", async () => {
+    const sdkLayer = fakeClientWithText("noop")
+    const pidFile = path.join(
+      os.tmpdir(),
+      `luna-wf-worker-interrupt-${process.pid}-${Date.now()}.pid`,
+    )
+    try {
+      const prog = Effect.gen(function* () {
+        const sdk = yield* SDKClient
+        const notes = yield* AgentNotesService
+        const worker = buildWorkflowWorker(sdk, notes)
+        const cmd = shellCmdPublishingGrandchildPid(pidFile)
+
+        // Fork (not yield*) - we need a live Fiber to interrupt mid-flight,
+        // which the existing tests never needed (they always run the
+        // worker to completion).
+        const fiber = yield* Effect.fork(
+          worker({ steps: [{ kind: "shell", cmd }] }, ctx),
+        )
+
+        // Wait for the grandchild to actually be spawned + alive before
+        // interrupting, so the test can't race ahead of the spawn.
+        yield* Effect.promise(() =>
+          pollUntil(() => {
+            if (!fs.existsSync(pidFile)) return false
+            const raw = fs.readFileSync(pidFile, "utf8").trim()
+            return raw.length > 0 && isAlive(Number(raw))
+          }, 3000),
+        )
+        const grandchildPid = Number(fs.readFileSync(pidFile, "utf8").trim())
+        expect(isAlive(grandchildPid)).toBe(true)
+
+        yield* Fiber.interrupt(fiber)
+
+        // The group kill must reach the grandchild, not just the immediate
+        // /bin/sh - proving `-pid` targets the whole process GROUP.
+        yield* Effect.promise(() => pollUntil(() => !isAlive(grandchildPid), 3000))
+        expect(isAlive(grandchildPid)).toBe(false)
+      })
+      await Effect.runPromise(
+        prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+      )
+    } finally {
+      try { fs.unlinkSync(pidFile) } catch { /* best effort cleanup */ }
+    }
+  }, 10_000)
+
+  it("the timeout path (not just interruption) also kills the process GROUP", async () => {
+    const sdkLayer = fakeClientWithText("noop")
+    const pidFile = path.join(
+      os.tmpdir(),
+      `luna-wf-worker-timeout-${process.pid}-${Date.now()}.pid`,
+    )
+    try {
+      const prog = Effect.gen(function* () {
+        const sdk = yield* SDKClient
+        const notes = yield* AgentNotesService
+        const worker = buildWorkflowWorker(sdk, notes)
+        const cmd = shellCmdPublishingGrandchildPid(pidFile)
+        const result = yield* Effect.either(
+          worker({ steps: [{ kind: "shell", cmd, timeout_ms: 100 }] }, ctx),
+        )
+        expect(result._tag).toBe("Left")
+        if (result._tag === "Left") {
+          const cause = result.left.cause as { steps: ShellStepResult[] }
+          expect(cause.steps[0]?.status).toBe("timeout")
+        }
+
+        // The timeout kill path group-kills exactly like the abort path
+        // above (both funnel through `runShellStep`'s `killGroup`). Poll
+        // rather than assert immediately: the worker settles on process
+        // EXIT, which precedes REAPING - a reparented grandchild can be a
+        // short-lived zombie for which `kill(pid, 0)` still succeeds.
+        const grandchildPid = Number(fs.readFileSync(pidFile, "utf8").trim())
+        yield* Effect.promise(() => pollUntil(() => !isAlive(grandchildPid), 3000))
+        expect(isAlive(grandchildPid)).toBe(false)
+      })
+      await Effect.runPromise(
+        prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+      )
+    } finally {
+      try { fs.unlinkSync(pidFile) } catch { /* best effort cleanup */ }
+    }
+  }, 10_000)
 })

@@ -167,6 +167,10 @@ resolves in priority order:
 Sources 1-2 are clamped to a 1 s floor, get a 30 s **grace** window on top
 (so a worker's own inner timeout can fail first with a descriptive error),
 and the whole backstop is capped at 30 min regardless of payload values.
+Interruption really terminates in-flight work: a workflow `shell` step whose
+dispatch is interrupted (or whose own step deadline passes) has its whole
+process group killed, so a hung command cannot keep running headless into a
+retry (issue #277).
 
 **Retry with backoff.** A **recurring** job whose dispatch fails with a
 transient reason (`deadline_passed` / `worker_failed` / `defect`) is retried
@@ -184,7 +188,8 @@ each dispatch's real attempt number (`retry_attempt + 1`).
 #### `prompt` — autonomous agent turn
 
 Runs a Claude agent turn with tools. Result lands in
-`job_runs.output_text`; optionally delivers to `agent_notes`.
+`job_runs.output_text`; optionally delivers to `agent_notes` or a chat
+thread.
 
 ```json
 {
@@ -204,7 +209,17 @@ Runs a Claude agent turn with tools. Result lands in
 - `{ "kind": "obs_note", "kind_tag": "<tag>", "session_id": "<id>" }` —
   writes result to `agent_notes`; both fields optional, `kind_tag`
   defaults to `prompt_result`
+- `{ "kind": "chat_thread", "thread_id": "<id>" }` - posts the result back
+  into a chat thread as an assistant message (`thread_id` required)
 - `{ "kind": "log" }` — log only (default)
+
+Delivery is deferred (issue #277): the worker returns it as a `postCommit`
+effect that the ticker runs only **after** the run is durably recorded
+`success`, outside the dispatch backstop and bounded by its own 30 s
+timeout. It is best-effort and at-most-once - a failed delivery is logged
+at WARN and never retried, and the result text stays in
+`job_runs.output_text` either way. A slow delivery can therefore never turn
+a completed turn into `deadline_passed` and double-deliver through a retry.
 
 #### `workflow` — multi-step shell + prompt pipeline
 
@@ -237,6 +252,12 @@ Right tool for shell work + intelligent analysis in one atomic unit.
 | `prompt` | `user_prompt` (string) | `system_prompt`, `model`, `allowed_tools`, `max_turns` (default 1), `timeout_ms` (default 10 min) |
 
 **Step result status:** `success` / `failed` / `timeout`
+
+A `shell` step past its deadline, or whose dispatch is interrupted by the
+ticker backstop, is killed by process **group** (issue #277), so a
+grandchild it spawned (e.g. `ssh` under `git push`) dies with it. An
+interrupted step is recorded `status: "failed"` (no new status value) with
+its stderr prefixed `aborted: dispatch interrupted`.
 
 `halt_on_failure: true` (default) stops at first non-success step.
 `halt_on_failure: false` records all step outcomes even on failure.
