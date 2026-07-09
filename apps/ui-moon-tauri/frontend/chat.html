@@ -2499,8 +2499,9 @@
          it. NOT a drag region so the click lands. -->
     <button class="min-btn" id="min-btn" title="Minimize into the moon" aria-label="Minimize into the moon">–</button>
     <span class="bar-title" id="bar-title">Luna</span>
-    <!-- New thread — the promoted action, alone on the right. Spawns a fresh
-         Luna panel docked to the right of this one (open_widget chat?thread=new). -->
+    <!-- New thread — the promoted action, alone on the right. Mints a fresh
+         thread in THIS window (single-window model; same as the sidebar's
+         "+ New"). Hidden and inert in pinned ?thread=<id> windows. -->
     <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New thread">
       <!-- Lucide "plus" (ISC). -->
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -5288,7 +5289,7 @@
             return;
           }
         }
-        // Fresh-spawn panel (opened via the title-bar + as ?thread=new): on the
+        // Fresh-spawn panel (spawned via open_widget as ?thread=new): on the
         // FIRST connect it owns no thread yet, so mint a brand-new one — the
         // thread-created handler then adopts it (activeThreadId is null). On a
         // later RECONNECT activeThreadId is already set, so this is skipped and

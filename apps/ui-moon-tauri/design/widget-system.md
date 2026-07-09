@@ -760,9 +760,11 @@ for two phases.
 _As-built decisions (2026-06-12):_ the singleton chat window's label is
 `panel-chat` (rides the panel-* dock/layout/capability surface; an ADDITIVE
 chat.json capability grants attachments/local-shell/thread-persistence/voice-surface/
-open_widget). The title-bar "+" opens a **parallel-thread** chat panel
-(`open_widget chat?thread=new`), which `panel_instance_label` (`main.rs:1377`)
-mints as `panel-chat-<hash>` - so chat.json lists **both** `panel-chat` and the
+open_widget). The title-bar "+" opened a **parallel-thread** chat panel
+(`open_widget chat?thread=new`) - since the single-window switcher (`a91055d`)
+it mints a fresh thread in THIS window instead, but `?thread=new` / `?thread=<id>`
+panels remain spawnable via `open_widget`, which `panel_instance_label`
+(`main.rs:1416`) mints as `panel-chat-<hash>` - so chat.json lists **both** `panel-chat` and the
 `panel-chat-*` glob, because Tauri's per-window-label ACL would otherwise deny
 `local_shell_exec` on every panel but the first (the broad `panel-*` glob in
 panels.json deliberately carries the dock/snap surface but **not** shell). The
