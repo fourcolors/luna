@@ -91,7 +91,12 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      /* Things-3 split: the thread sidebar occupies --sidebar-w on the left and
+         pushes the chat over via padding — one var drives the whole split pane. */
+      padding-left: var(--sidebar-w, 0px);
+      transition: padding-left 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
+    .chat-panel.sidebar-resizing { transition: none; } /* 1:1 while dragging the divider */
 
     /* ── Mic button (lives in the composer control bar as a .bar-btn). Its voice
        state paints as watercolor washes (flat pigment pools, edge-feathered) —
@@ -1433,25 +1438,56 @@
        the artifacts/workflows overlays — the composer stays full-width and
        usable with no stacking changes. Tokens only → themes for free across
        dawn/meadow/tide × light/dark. ── */
+    /* Things-3-style resizable thread sidebar: a real left column whose width is
+       --sidebar-w (0 = collapsed). #chat-panel's padding-left pushes the chat
+       over to match, so this is a split pane, NOT an overlay. Drag the divider
+       (or its collapsed grabber) to open / resize / collapse. */
     .thread-drawer {
       position: absolute;
-      /* Bottom is pinned to the composer's top (--composer-h, kept live by a
-         ResizeObserver) so the drawer's paper-2 bg never bleeds through the
-         transparent composer that paints over it. Fallback covers pre-observe. */
-      top: 0; left: 0; bottom: var(--composer-h, 96px);
-      width: 284px; max-width: 82%;
+      top: 0; left: 0; bottom: 0;
+      width: var(--sidebar-w, 0px);
       display: flex; flex-direction: column;
       background: var(--paper-2);
-      border-right: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
-      box-shadow: 3px 0 22px -8px color-mix(in oklab, var(--ink) 55%, transparent);
-      transform: translateX(-100%);
-      transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
-      will-change: transform;
+      border-right: 1px solid color-mix(in oklab, var(--ink) 12%, transparent);
       overflow: hidden;
+      /* Animate the width in lockstep with #chat-panel's padding-left so a
+         toggle/keyboard open+close slides the drawer and chat together. */
+      transition: width 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
-    .thread-drawer.open { transform: translateX(0); }
-    /* Closed = parked off the left edge; keep it from eating clicks there. */
-    .thread-drawer:not(.open) { pointer-events: none; }
+    /* 1:1 while dragging the divider (matches .chat-panel.sidebar-resizing). */
+    .chat-panel.sidebar-resizing .thread-drawer,
+    .chat-panel.sidebar-resizing .thread-divider { transition: none; }
+    /* Keep the inner content from squishing while the width animates/drags — it
+       clips (Things-3 feel) instead of reflowing. */
+    .thread-drawer-header, .thread-drawer-search, .thread-drawer-list { min-width: 200px; }
+    /* Draggable divider at the sidebar's right edge; doubles as the collapsed
+       grabber (parks at the window's left edge when --sidebar-w is 0). */
+    .thread-divider {
+      position: absolute; top: 0; bottom: 0;
+      left: max(0px, calc(var(--sidebar-w, 0px) - 5px));
+      width: 11px; z-index: 66;
+      cursor: col-resize; touch-action: none;
+      display: flex; align-items: center; justify-content: center;
+      /* Track the drawer edge in lockstep during a toggle animation; disabled
+         while dragging (.sidebar-resizing) so the grabber stays under the cursor. */
+      transition: left 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .thread-divider-grip {
+      width: 4px; height: 46px; border-radius: 3px;
+      background: color-mix(in oklab, var(--ink) 22%, transparent);
+      opacity: 0; transition: opacity 0.16s ease, background 0.16s ease, height 0.16s ease;
+    }
+    .thread-divider:hover .thread-divider-grip { opacity: 1; }
+    .thread-divider.dragging .thread-divider-grip { opacity: 1; background: color-mix(in oklab, var(--accent) 65%, transparent); height: 60px; }
+    /* Collapsed: shrink the hit area to a small centered grabber zone so it
+       cannot intercept the chat-header window-drag region or the composer along
+       the left edge. Full-height only when expanded (for easy resizing). */
+    .chat-panel.sidebar-collapsed .thread-divider {
+      top: 50%; bottom: auto; transform: translateY(-50%); height: 88px;
+    }
+    /* Collapsed: keep the grabber gently visible on the left edge so it invites a drag. */
+    .chat-panel.sidebar-collapsed .thread-divider-grip { opacity: 0.5; }
+    .chat-panel.sidebar-collapsed .thread-divider:hover .thread-divider-grip { opacity: 1; }
     .thread-drawer-header {
       display: flex; align-items: center; gap: 8px;
       padding: 11px 10px 11px 15px;
@@ -2685,6 +2721,10 @@
       </div>
     </aside>
 
+    <!-- Draggable divider for the resizable thread sidebar; parks at the window's
+         left edge as a grabber when the sidebar is collapsed. -->
+    <div class="thread-divider" id="thread-divider" role="separator" aria-orientation="vertical" aria-label="Resize thread sidebar" title="Drag to resize · click to toggle" tabindex="0" aria-valuemin="0" aria-valuenow="0"><span class="thread-divider-grip" aria-hidden="true"></span></div>
+
     <!-- Redock drop affordance — a left strip shown on the owner while a
          redock-capable floater is being dragged (armed/disarmed by cross-window
          events). Non-interactive; hidden by default. -->
@@ -3055,6 +3095,7 @@
       threadDrawerNew:     document.getElementById('thread-drawer-new'),
       toggleThreads:       document.getElementById('toggle-threads'),
       redockDropzone:      document.getElementById('redock-dropzone'),
+      threadDivider:       document.getElementById('thread-divider'),
       // Phase 3 D3: UserAsk / survey panel handles.
       userAskPanel:   document.getElementById('user-ask-panel'),
       userAskBody:    document.getElementById('user-ask-body'),
@@ -3205,8 +3246,10 @@
       workflowRuns: {},     // { [jobId: string]: WorkflowRunItem[] }
       selectedWorkflowId: null,  // currently-expanded tile id (string|null)
       workflowsPanelOpen: false,
-      // Thread drawer (slide-out thread switcher).
-      threadDrawerOpen: false,
+      // Thread sidebar (Things-3-style resizable split pane).
+      threadDrawerOpen: false,  // width > 0
+      sidebarWidth: 0,          // current sidebar width in px (0 = collapsed)
+      lastOpenWidth: 240,       // remembered width so a toggle reopens where you left it
       threads: [],              // SessionSummary[] from thread-list — the drawer render source
       poppedThreads: new Set(), // thread ids currently open in their own spawned window
       threadSearch: '',         // live filter text for the drawer
@@ -4021,27 +4064,167 @@
     const ThreadDrawerEngine = {
       _ghost: null,
 
-      // --- open / close -------------------------------------------------------
-      togglePanel() { this.isPinnedWindow() ? null : (State.threadDrawerOpen ? this.closePanel() : this.openPanel()); },
+      // --- open / close / resize (Things-3-style split pane) ------------------
+      MIN_W: 190,        // narrowest resting open width
+      MAX_FRAC: 0.7,     // sidebar may take at most this fraction of the window
+      COLLAPSE_AT: 120,  // release below this → snap collapsed
 
-      openPanel() {
-        if (this.isPinnedWindow()) return;   // pinned pop-outs are single-thread; no switcher
-        State.threadDrawerOpen = true;
-        if (DOM.threadDrawer) {
-          DOM.threadDrawer.classList.add('open');
-          DOM.threadDrawer.setAttribute('aria-hidden', 'false');
-        }
-        // Ask the server for a fresh list every time we open.
-        this.requestList();
-        this.render();
+      _maxWidth() {
+        // Cap by the chat panel's own border-box width (its padding-left IS the
+        // sidebar, so the border-box already spans the full available width),
+        // not window.innerWidth - the panel need not fill the whole window.
+        let avail = 0;
+        try { if (DOM.chatPanel) avail = DOM.chatPanel.getBoundingClientRect().width; } catch (_) {}
+        if (!(avail > 0)) avail = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 560;
+        return Math.max(this.MIN_W, Math.round(avail * this.MAX_FRAC));
       },
 
-      closePanel() {
-        State.threadDrawerOpen = false;
-        if (DOM.threadDrawer) {
-          DOM.threadDrawer.classList.remove('open');
-          DOM.threadDrawer.setAttribute('aria-hidden', 'true');
+      // Apply a raw width to the split (live during a drag). --sidebar-w drives
+      // both the sidebar's width AND #chat-panel's padding-left (the push). Pure
+      // DISPLAY: it never persists and never touches the remembered PREFERRED
+      // width. Refreshes the list the first time it opens.
+      _applyWidth(w) {
+        const prev = State.sidebarWidth;
+        w = Math.max(0, Math.round(w));
+        State.sidebarWidth = w;
+        State.threadDrawerOpen = w > 0;
+        if (DOM.chatPanel) {
+          DOM.chatPanel.style.setProperty('--sidebar-w', w + 'px');
+          DOM.chatPanel.classList.toggle('sidebar-collapsed', w === 0);
         }
+        if (DOM.threadDrawer) DOM.threadDrawer.setAttribute('aria-hidden', w > 0 ? 'false' : 'true');
+        if (DOM.threadDivider) {
+          DOM.threadDivider.setAttribute('aria-valuenow', String(w));
+          DOM.threadDivider.setAttribute('aria-valuemax', String(this._maxWidth()));
+        }
+        if (w > 0 && prev === 0) { this.requestList(); this.render(); }
+      },
+
+      // Persist the user's PREFERRED open width plus an open/collapsed flag.
+      // lastOpenWidth is the un-clamped width the user chose; a transient window
+      // shrink clamps the DISPLAY (reclampWidth) but never this stored value, so
+      // growing the window back restores toward the width they actually picked.
+      _persistPrefs() {
+        try {
+          if (State.lastOpenWidth > 0) localStorage.setItem('luna.sidebar.w', String(State.lastOpenWidth));
+          localStorage.setItem('luna.sidebar.open', State.sidebarWidth > 0 ? '1' : '0');
+        } catch (_) {}
+      },
+
+      // Snap to a resting width (0, or MIN_W..max) from an EXPLICIT user gesture
+      // (divider release, keyboard). A resting OPEN width becomes the remembered
+      // PREFERRED width; a sub-threshold value snaps collapsed without touching it.
+      setSidebarWidth(w) {
+        if (w < this.COLLAPSE_AT) w = 0;
+        else w = Math.min(Math.max(w, this.MIN_W), this._maxWidth());
+        if (w > 0) State.lastOpenWidth = w;
+        this._applyWidth(w);
+        this._persistPrefs();
+      },
+
+      // Re-clamp the open sidebar against the current max (e.g. after the window
+      // shrinks) for DISPLAY only — the PREFERRED width is left intact so a later
+      // grow restores it, and nothing is persisted. When collapsed just refresh
+      // the divider's aria-valuemax for AT.
+      reclampWidth() {
+        if (State.sidebarWidth > 0) this._applyWidth(Math.min(State.lastOpenWidth || State.sidebarWidth, this._maxWidth()));
+        else if (DOM.threadDivider) DOM.threadDivider.setAttribute('aria-valuemax', String(this._maxWidth()));
+      },
+
+      togglePanel() {
+        if (this.isPinnedWindow()) return;
+        if (State.sidebarWidth > 0) this.closePanel();
+        else this.openPanel();
+      },
+
+      // Open to the remembered PREFERRED width, clamped to fit the current panel
+      // (never overwriting the preferred value, so a big preference survives a
+      // small window). Persists the open flag.
+      openPanel() {
+        if (this.isPinnedWindow()) return;   // pinned pop-outs are single-thread; no switcher
+        this._applyWidth(Math.min(State.lastOpenWidth || 240, this._maxWidth()));
+        this._persistPrefs();
+      },
+
+      closePanel() { this._applyWidth(0); this._persistPrefs(); },
+
+      // Drag the divider (or its collapsed grabber) to open / resize / collapse;
+      // a click without a drag toggles. Width = cursor X minus the panel's left.
+      wireDivider(el) {
+        if (!el) return;
+        const self = this;
+        let startX = 0, moved = false, pid = null, panelLeft = 0;
+        const onMove = (e) => {
+          if (!moved && Math.abs(e.clientX - startX) > 3) {
+            moved = true;
+            el.classList.add('dragging');
+            if (DOM.chatPanel) DOM.chatPanel.classList.add('sidebar-resizing');
+          }
+          if (moved) self._applyWidth(Math.min(Math.max(0, e.clientX - panelLeft), self._maxWidth()));
+        };
+        const cleanup = () => {
+          el.removeEventListener('pointermove', onMove);
+          el.removeEventListener('pointerup', onUp);
+          el.removeEventListener('pointercancel', onCancel);
+          try { if (pid != null) el.releasePointerCapture(pid); } catch (_) {}
+          el.classList.remove('dragging');
+          if (DOM.chatPanel) DOM.chatPanel.classList.remove('sidebar-resizing');
+          pid = null;
+        };
+        const onUp = () => { const wasDrag = moved; cleanup(); wasDrag ? self.setSidebarWidth(State.sidebarWidth) : self.togglePanel(); };
+        const onCancel = () => { cleanup(); self.setSidebarWidth(State.sidebarWidth); };
+        el.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0 || self.isPinnedWindow()) return;
+          startX = e.clientX; moved = false; pid = e.pointerId;
+          panelLeft = DOM.chatPanel ? DOM.chatPanel.getBoundingClientRect().left : 0;
+          try { el.setPointerCapture(e.pointerId); } catch (_) {}
+          // preventDefault below suppresses the default focus, so focus the
+          // divider explicitly — click-then-Arrow/Home/End must work without Tab.
+          try { el.focus(); } catch (_) {}
+          el.addEventListener('pointermove', onMove);
+          el.addEventListener('pointerup', onUp);
+          el.addEventListener('pointercancel', onCancel);
+          e.preventDefault();
+        });
+        // Keyboard resize/toggle for the focused divider (role=separator).
+        el.addEventListener('keydown', (e) => {
+          if (self.isPinnedWindow()) return;
+          const STEP = 24, cur = State.sidebarWidth;
+          switch (e.key) {
+            case 'ArrowRight': self.setSidebarWidth(cur === 0 ? self.MIN_W : cur + STEP); break;
+            case 'ArrowLeft':  self.setSidebarWidth(cur - STEP); break;
+            case 'Home':       self.setSidebarWidth(0); break;
+            case 'End':        self.setSidebarWidth(self._maxWidth()); break;
+            case 'Enter': case ' ': case 'Spacebar': self.togglePanel(); break;
+            default: return;
+          }
+          e.preventDefault();
+        });
+      },
+
+      // Restore the persisted split at boot: the PREFERRED width plus an
+      // open/collapsed flag. Collapsed by default on first run (grabber shown).
+      // The preferred width is kept un-clamped so a later grow can restore it;
+      // only the DISPLAY is clamped to the current panel cap.
+      initSidebar() {
+        if (this.isPinnedWindow()) {
+          if (DOM.threadDivider) DOM.threadDivider.hidden = true;
+          return;
+        }
+        let pref = 0, openRaw = null;
+        try {
+          const s = localStorage.getItem('luna.sidebar.w');
+          if (s != null) pref = parseInt(s, 10) || 0;
+          openRaw = localStorage.getItem('luna.sidebar.open');
+        } catch (_) {}
+        if (pref > 0) State.lastOpenWidth = pref;
+        // An absent flag (fresh install, or pre-flag persistence where the stored
+        // width was 0 when collapsed) infers open from a saved positive width;
+        // otherwise honour the explicit '1'/'0'.
+        const open = openRaw === null ? pref > 0 : openRaw === '1';
+        if (open && State.lastOpenWidth > 0) this._applyWidth(Math.min(State.lastOpenWidth, this._maxWidth()));
+        else this._applyWidth(0);
+        if (DOM.chatPanel) DOM.chatPanel.classList.toggle('sidebar-collapsed', State.sidebarWidth === 0);
       },
 
       // A ?thread=<id> window is pinned to one thread forever — the switcher is
@@ -4234,7 +4417,8 @@
       // --- open thread in THIS window (row click / redock) --------------------
       onRowClick(id) {
         if (!id) return;
-        this.closePanel();
+        // Split-pane: clicking a thread switches it in place and LEAVES the
+        // sidebar open (Things-3 behavior), just moving the active highlight.
         if (id === State.activeThreadId) return;    // already here
         State.activeThreadId = id;
         State.activeTurnId = null;
@@ -9926,28 +10110,26 @@
       });
     }
 
-    // ── Thread drawer wiring ────────────────────────────────────────────────
-    // Keep --composer-h live so the drawer's bottom hugs the composer's top and
-    // its bg never bleeds through the transparent composer (which paints over
-    // the drawer via DOM order). Robust to the composer growing on multiline.
-    try {
-      const _composerEl = document.querySelector('.chat-input-area');
-      const _panelEl = document.getElementById('chat-panel');
-      if (_composerEl && _panelEl) {
-        const _syncComposerH = () => _panelEl.style.setProperty('--composer-h', _composerEl.offsetHeight + 'px');
-        _syncComposerH();
-        if (typeof ResizeObserver !== 'undefined') new ResizeObserver(_syncComposerH).observe(_composerEl);
-      }
-    } catch (_) { /* best-effort; CSS fallback covers it */ }
-
-    // Expose this window's Tauri label to the drawer engine (drag-out spawns +
+    // ── Thread sidebar wiring ───────────────────────────────────────────────
+    // Expose this window's Tauri label to the sidebar engine (drag-out spawns +
     // redock use it). Pinned ?thread=<id> windows are single-thread: hide the
-    // toggle and skip wiring so the switcher can never open there.
+    // toggle + divider and skip wiring so the switcher can never open there.
     State.winLabel = winLabel;
+    ThreadDrawerEngine.initSidebar();   // restore persisted width; hides the divider when pinned
     if (State.pinnedThread) {
       if (DOM.toggleThreads) DOM.toggleThreads.hidden = true;
     } else {
       if (DOM.toggleThreads) DOM.toggleThreads.addEventListener('click', () => ThreadDrawerEngine.togglePanel());
+      ThreadDrawerEngine.wireDivider(DOM.threadDivider);
+      // A shrinking window must never leave the sidebar wider than MAX_FRAC of
+      // the panel; re-clamp on resize (rAF-throttled). Non-pinned windows only.
+      let _sidebarResizeRAF = 0;
+      window.addEventListener('resize', () => {
+        if (_sidebarResizeRAF) return;
+        const raf = (typeof requestAnimationFrame === 'function')
+          ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+        _sidebarResizeRAF = raf(() => { _sidebarResizeRAF = 0; ThreadDrawerEngine.reclampWidth(); });
+      });
       if (DOM.threadDrawerClose) DOM.threadDrawerClose.addEventListener('click', () => ThreadDrawerEngine.closePanel());
       // Drawer "+ New" reuses the title-bar +'s spawn path exactly.
       if (DOM.threadDrawerNew) DOM.threadDrawerNew.addEventListener('click', () => { if (winNewThreadBtn) winNewThreadBtn.click(); });

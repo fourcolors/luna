@@ -802,8 +802,11 @@ close-by-name, if summon-by-name proves demand.
 **Phase 8 — agent direct lines. ✅ DONE 2026-06-12** (`ebd2ec3`, two pinned chat windows live-verified) — `chat.html?thread=…`; protocol already
 multi-thread (`subscribe-thread`/`thread-list`/`threadId` on every frame);
 needs an agent-identity/thread mapping, honors one-window-per-thread.
-✅ **As-built rider (thread drawer, `b1bf4e0`):** the chat widget grew a left-edge slide-out thread switcher (`ThreadDrawerEngine` in `chat.html`, toggle in the header, hidden in pinned `?thread=…` windows).
-A row click opens that thread in place; a row dragged OUT spawns a pinned floater at the drop point (`open_widget kind:chat, params:{thread, redockTo}`) and greys the row; dragging a SOLO floater back over the owner's drawer strip folds it back in (`redock_thread` → `redock-thread` event, carrying the unsent draft), and while such a floater is being dragged the owner shows a "drop to redock" strip (`redock-arming`/`redock-disarmed`).
+✅ **As-built rider (thread sidebar, `b1bf4e0` → `8f71c7f`):** the chat widget grew a Things-3-style resizable split-pane thread sidebar (`ThreadDrawerEngine` in `chat.html`, toggle in the header, hidden in pinned `?thread=…` windows).
+It is a real left column whose width is `--sidebar-w` (0 = collapsed); `#chat-panel`'s `padding-left` pushes the chat over to match, so it is a split pane, not an overlay.
+Drag the right-edge divider (or its collapsed grabber pill parked at the window's left edge) to open / resize / collapse, and the divider is keyboard-resizable (`role=separator`, Arrow/Home/End to resize, Enter/Space to toggle).
+The preferred open width and the open/collapsed flag persist across launches in `localStorage` (`luna.sidebar.w` / `luna.sidebar.open`); the sidebar re-clamps to at most 70% of the panel when the window shrinks without losing that preferred width.
+A row click switches that thread in place and LEAVES the sidebar open (Things-3 behavior); a row dragged OUT spawns a pinned floater at the drop point (`open_widget kind:chat, params:{thread, redockTo}`) and greys the row; dragging a SOLO floater back over the owner's drawer strip folds it back in (`redock_thread` → `redock-thread` event, carrying the unsent draft), and while such a floater is being dragged the owner shows a "drop to redock" strip (`redock-arming`/`redock-disarmed`).
 A floater closed by any non-redock path (its own X, the native red button, or Cmd+W) emits `floater-closed` so the owner un-greys the row.
 The drop/snap geometry and the trust discipline live in `docs/window-drag-snap.md`.
 

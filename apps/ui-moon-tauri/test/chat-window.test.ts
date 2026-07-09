@@ -4163,17 +4163,183 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       return new Ctor(type, { bubbles: true, ...props })
     }
 
-    it('Scenario: opening the drawer flips .open + aria-hidden and requests the thread list', () => {
+    it('Scenario: opening the sidebar gives it a width + aria-hidden and requests the thread list', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} } // WebSocket.OPEN
       const send = vi.spyOn(m.WebSocketEngine, 'send')
       const drawer = document.getElementById('thread-drawer')!
-      expect(drawer.classList.contains('open')).toBe(false)
+      expect(m.State.sidebarWidth).toBe(0)
       m.ThreadDrawerEngine.openPanel()
       expect(m.State.threadDrawerOpen).toBe(true)
-      expect(drawer.classList.contains('open')).toBe(true)
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
       expect(drawer.getAttribute('aria-hidden')).toBe('false')
       expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    it('Scenario: setSidebarWidth clamps to resting values and snaps small drags collapsed', () => {
+      const m = M()
+      const eng = m.ThreadDrawerEngine
+      eng.setSidebarWidth(240)
+      expect(m.State.sidebarWidth).toBe(240)
+      eng.setSidebarWidth(50)           // below COLLAPSE_AT -> collapse
+      expect(m.State.sidebarWidth).toBe(0)
+      eng.setSidebarWidth(140)          // between collapse and MIN_W -> snaps up to MIN_W
+      expect(m.State.sidebarWidth).toBe(eng.MIN_W)
+      eng.togglePanel()                 // open -> collapse
+      expect(m.State.sidebarWidth).toBe(0)
+      eng.togglePanel()                 // collapse -> reopen at last width
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
+    })
+
+    it('Scenario: _maxWidth caps by the chat panel width (not the whole window)', () => {
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      // Panel is only 400px wide even though the window is far larger.
+      vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      // 400 * 0.7 = 280; a 600px request must clamp to that, not window.innerWidth.
+      m.ThreadDrawerEngine.setSidebarWidth(600)
+      expect(m.State.sidebarWidth).toBe(280)
+    })
+
+    it('Scenario: shrinking the window re-clamps an over-wide open sidebar (resize listener)', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      const rect = vi.spyOn(panel, 'getBoundingClientRect')
+      rect.mockReturnValue({ width: 1000, left: 0 } as DOMRect) // roomy: 700 cap
+      m.ThreadDrawerEngine.setSidebarWidth(600)
+      expect(m.State.sidebarWidth).toBe(600)
+      // Window shrinks: panel is now 400px wide → cap drops to 280.
+      rect.mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      window.dispatchEvent(new Event('resize'))
+      expect(m.State.sidebarWidth).toBe(280)
+      // aria-valuenow/max on the divider track the clamped state for AT users.
+      const divider = document.getElementById('thread-divider')!
+      expect(divider.getAttribute('aria-valuenow')).toBe('280')
+      expect(divider.getAttribute('aria-valuemax')).toBe('280')
+    })
+
+    it('Scenario: a collapsed sidebar is left untouched by a window resize', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      const m = M()
+      expect(m.State.sidebarWidth).toBe(0)
+      window.dispatchEvent(new Event('resize'))
+      expect(m.State.sidebarWidth).toBe(0)
+    })
+
+    it('Scenario: the divider is keyboard-operable (arrows resize, Home/End, Enter toggles)', () => {
+      const m = M()
+      const divider = document.getElementById('thread-divider')!
+      const key = (k: string) => divider.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }))
+      expect(divider.getAttribute('tabindex')).toBe('0')
+      // From collapsed, ArrowRight opens toward MIN_W.
+      key('ArrowRight')
+      expect(m.State.sidebarWidth).toBe(m.ThreadDrawerEngine.MIN_W)
+      // End opens to the max.
+      key('End')
+      expect(m.State.sidebarWidth).toBe(m.ThreadDrawerEngine._maxWidth())
+      // Home collapses.
+      key('Home')
+      expect(m.State.sidebarWidth).toBe(0)
+      // Enter toggles open, again to collapse.
+      key('Enter')
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
+      key('Enter')
+      expect(m.State.sidebarWidth).toBe(0)
+    })
+
+    it('Scenario: pressing on the divider focuses it so click-then-keyboard resize works', () => {
+      M()
+      const divider = document.getElementById('thread-divider')!
+      // A mouse user presses the divider (which preventDefaults to avoid text
+      // selection); focus must still land so a following Arrow/Home/End resizes.
+      divider.dispatchEvent(pointer('pointerdown', { button: 0, pointerId: 1, clientX: 5, clientY: 100 }))
+      expect(document.activeElement).toBe(divider)
+    })
+
+    it('Scenario: a sub-threshold drag never pollutes lastOpenWidth (reopen stays usable)', () => {
+      const m = M()
+      const eng = m.ThreadDrawerEngine
+      eng.setSidebarWidth(300)               // a real resting open width is remembered
+      expect(m.State.lastOpenWidth).toBe(300)
+      // Live drag down to a sub-COLLAPSE_AT width, then pointerup snaps it collapsed.
+      eng._applyWidth(80)                    // raw drag frame below COLLAPSE_AT
+      eng.setSidebarWidth(m.State.sidebarWidth)
+      expect(m.State.sidebarWidth).toBe(0)
+      expect(m.State.lastOpenWidth).toBe(300) // NOT overwritten by the 80px drag frame
+      eng.openPanel()                        // the toggle / grabber must reopen to a real width
+      expect(m.State.sidebarWidth).toBe(300)
+    })
+
+    it('Scenario: initSidebar clamps an oversized persisted width to the panel cap at boot', () => {
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      localStorage.setItem('luna.sidebar.w', '900') // preferred width saved when the window was large
+      localStorage.setItem('luna.sidebar.open', '1')
+      m.ThreadDrawerEngine.initSidebar()
+      expect(m.State.sidebarWidth).toBe(280)        // DISPLAY clamped: 400 * 0.7, never the raw 900
+      expect(m.State.lastOpenWidth).toBe(900)       // PREFERRED width kept un-clamped for a later grow
+      // A persisted collapsed flag still boots collapsed (default behavior preserved).
+      localStorage.setItem('luna.sidebar.open', '0')
+      m.ThreadDrawerEngine.initSidebar()
+      expect(m.State.sidebarWidth).toBe(0)
+    })
+
+    it('Scenario: a transient window shrink+grow restores the preferred width (not the clamped one)', () => {
+      // Deferred rAF so the resize handler's throttle guard clears between events
+      // (mirrors real async rAF; a synchronous mock would stick the guard truthy).
+      let rafCbs: FrameRequestCallback[] = []
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { rafCbs.push(cb); return rafCbs.length }
+      const flushRAF = () => { const cbs = rafCbs; rafCbs = []; cbs.forEach((cb) => cb(0)) }
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      const rect = vi.spyOn(panel, 'getBoundingClientRect')
+      rect.mockReturnValue({ width: 1000, left: 0 } as DOMRect) // roomy: 700 cap
+      m.ThreadDrawerEngine.setSidebarWidth(600)
+      expect(m.State.sidebarWidth).toBe(600)
+      expect(m.State.lastOpenWidth).toBe(600)
+      // Shrink: DISPLAY clamps to the 280 cap, but the preferred 600 is preserved
+      // and NOT persisted over — luna.sidebar.w still records the user's choice.
+      rect.mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      window.dispatchEvent(new Event('resize')); flushRAF()
+      expect(m.State.sidebarWidth).toBe(280)
+      expect(m.State.lastOpenWidth).toBe(600)
+      expect(localStorage.getItem('luna.sidebar.w')).toBe('600')
+      // Grow back: the sidebar restores toward the user's preferred 600.
+      rect.mockReturnValue({ width: 1000, left: 0 } as DOMRect)
+      window.dispatchEvent(new Event('resize')); flushRAF()
+      expect(m.State.sidebarWidth).toBe(600)
+    })
+
+    it('Scenario: the open/collapsed flag and preferred width persist across boot', () => {
+      const m = M()
+      m.ThreadDrawerEngine.setSidebarWidth(320)     // explicit open gesture
+      expect(localStorage.getItem('luna.sidebar.w')).toBe('320')
+      expect(localStorage.getItem('luna.sidebar.open')).toBe('1')
+      m.ThreadDrawerEngine.closePanel()             // collapse flips the flag, keeps the preferred width
+      expect(localStorage.getItem('luna.sidebar.w')).toBe('320')
+      expect(localStorage.getItem('luna.sidebar.open')).toBe('0')
+      // Re-boot collapsed: the preferred width is remembered but stays closed.
+      m.ThreadDrawerEngine.initSidebar()
+      expect(m.State.sidebarWidth).toBe(0)
+      expect(m.State.lastOpenWidth).toBe(320)
+      // Re-open honours the persisted preferred width.
+      m.ThreadDrawerEngine.openPanel()
+      expect(m.State.sidebarWidth).toBe(320)
+    })
+
+    it('Scenario: a collapsed resize refreshes the divider aria-valuemax for AT', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      const rect = vi.spyOn(panel, 'getBoundingClientRect')
+      rect.mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      expect(m.State.sidebarWidth).toBe(0)          // collapsed
+      window.dispatchEvent(new Event('resize'))
+      const divider = document.getElementById('thread-divider')!
+      expect(m.State.sidebarWidth).toBe(0)          // still collapsed, untouched
+      expect(divider.getAttribute('aria-valuemax')).toBe('280') // but max is fresh
     })
 
     it('Scenario: a thread-list frame renders one row per thread, sorted newest-first', () => {
@@ -4205,7 +4371,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rowC.classList.contains('popped')).toBe(true)
     })
 
-    it('Scenario: clicking a row subscribes to that thread and closes the drawer', () => {
+    it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} }
       m.State.activeThreadId = 'other'
@@ -4213,11 +4379,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const send = vi.spyOn(m.WebSocketEngine, 'send')
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
-      expect(m.State.threadDrawerOpen).toBe(false)
-      expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+      expect(m.State.threadDrawerOpen).toBe(true)          // stays open, unlike the old overlay drawer
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
     })
 
-    it('Scenario: clicking the already-active thread just closes the drawer (no re-subscribe)', () => {
+    it('Scenario: clicking the already-active thread does not re-subscribe and keeps the sidebar open', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} }
       m.State.activeThreadId = 'b'
@@ -4225,7 +4391,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const send = vi.spyOn(m.WebSocketEngine, 'send')
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
-      expect(m.State.threadDrawerOpen).toBe(false)
+      expect(m.State.threadDrawerOpen).toBe(true)
     })
 
     it('Scenario: dragging a row OUT (release outside the drawer) spawns a window pinned to that thread at the drop point', () => {
@@ -4320,7 +4486,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.State.pinnedThread = 't-pinned'
       m.ThreadDrawerEngine.openPanel()
       expect(m.State.threadDrawerOpen).toBe(false)
-      expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+      expect(m.State.sidebarWidth).toBe(0)
     })
 
     it('Scenario: a thread-list frame arriving mid drag-out does NOT detach the dragged row (rebuild deferred until release)', () => {
