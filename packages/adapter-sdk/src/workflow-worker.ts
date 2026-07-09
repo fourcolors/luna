@@ -208,6 +208,16 @@ export function parseWorkflowPayload(raw: unknown): WorkflowPayload | string {
 const DEFAULT_SHELL_TIMEOUT_MS = 5 * 60 * 1000 // 5 min
 const SHELL_MAX_BYTES = 1_048_576 // 1 MB per stream
 
+// job-ticker-oban-deadlines (Seam 2 boot wiring) — the whole-dispatch ceiling
+// registered with the WorkerRegistry (see WorkflowWorkerLayer below), NOT a
+// per-step timeout. A workflow's payload is a step list whose individual
+// `timeout_ms` overrides (prompt steps up to DEFAULT_QUERY_TIMEOUT_MS=10min,
+// shell steps up to DEFAULT_SHELL_TIMEOUT_MS=5min each) can sum past 10
+// minutes across several steps, so the registered default is wider than a
+// single prompt worker's. A per-payload top-level `timeout_ms` still
+// overrides this at dispatch time (job-ticker.ts's Seam-1 resolution).
+const WORKFLOW_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000 // 20 min
+
 function runShellStep(step: ShellStep): Promise<ShellStepResult> {
   return new Promise((resolve) => {
     const timeoutMs = step.timeout_ms ?? DEFAULT_SHELL_TIMEOUT_MS
@@ -494,7 +504,7 @@ export const WorkflowWorkerLayer = (
       // the layer's R unchanged; absent provider = tool-free worker.
       const jobTools = yield* Effect.serviceOption(JobRunToolsProviderTag)
       const worker = buildWorkflowWorker(sdk, notes, Option.getOrNull(jobTools))
-      yield* reg.register(kind, worker)
+      yield* reg.register(kind, { run: worker, defaultTimeoutMs: WORKFLOW_DEFAULT_TIMEOUT_MS })
     }),
   )
 }

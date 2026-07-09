@@ -83,9 +83,13 @@ when armed it does nothing until work is seeded (by the wake reasoner's Path-B
 filing or by the operator).
 
 ## Known limits / fast-follows
-- The workflow-worker's prompt step has no wall-clock timeout and the V2 ticker
-  dispatches inline on a single fiber, so a hung agent turn can stall other V2
-  jobs. Recommended fast-follow: bound the prompt step with a timeout.
+- ~~The workflow-worker's prompt step has no wall-clock timeout and the V2
+  ticker dispatches inline on a single fiber, so a hung agent turn can stall
+  other V2 jobs.~~ Resolved: prompt steps carry a `timeout_ms` (default
+  10 min), the ticker enforces a per-dispatch backstop deadline (workflow
+  kind default 20 min + grace) that interrupts a hung dispatch, and due jobs
+  dispatch with bounded concurrency (default 4) so one slow job no longer
+  stalls the tick (see SYSTEM.md "Deadlines, retries & concurrency").
 - No per-action attempt cap: an action the agent can never complete is
   re-selected each cycle. Recommended fast-follow: an attempt counter that flips
   a stuck action to `status='blocked'`.

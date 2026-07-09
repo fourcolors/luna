@@ -376,4 +376,22 @@ describe("WorkflowWorkerLayer", () => {
     })
     await Effect.runPromise(prog.pipe(Effect.provide(exposed)))
   })
+
+  // job-ticker-oban-deadlines (Seam 2 boot wiring): a bare-function
+  // registration here would silently regress every workflow job back to the
+  // pre-slice 5-min ticker ceiling.
+  it("registers with a defaultTimeoutMs wide enough for a multi-step run (Seam 1/2 boot wiring)", async () => {
+    const sdkLayer = fakeClientWithText("noop")
+    const exposed = WorkflowWorkerLayer().pipe(
+      Layer.provideMerge(
+        Layer.mergeAll(sdkLayer, makeWorkerRegistry({}), TestNotes, Clock.Default),
+      ),
+    )
+    const prog = Effect.gen(function* () {
+      const reg = yield* WorkerRegistry
+      const entry = yield* reg.lookupEntry("workflow")
+      expect(entry?.defaultTimeoutMs).toBeGreaterThanOrEqual(10 * 60 * 1000)
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(exposed)))
+  })
 })

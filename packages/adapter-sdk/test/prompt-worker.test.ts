@@ -34,6 +34,7 @@ import type {
 } from "../src/chat-thread-poster.js"
 import { makeFakeQuery, makeAssistantMessage } from "./fake-sdk.js"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import { DEFAULT_QUERY_TIMEOUT_MS } from "../src/bounded-query.js"
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -442,6 +443,31 @@ describe("PromptWorkerLayer", () => {
       const reg = yield* WorkerRegistry
       const kinds = yield* reg.listKinds
       expect([...kinds]).toEqual(["daily_brief"])
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(exposed)))
+  })
+
+  // job-ticker-oban-deadlines (Seam 2 boot wiring): the production
+  // registration MUST carry a `defaultTimeoutMs` so the JobTicker's outer
+  // backstop is `defaultTimeoutMs + grace` instead of the bare 5-min
+  // `workerDeadline` fallback — a bare-function registration here would
+  // silently regress every prompt job back to the pre-slice 5-min ceiling.
+  it("registers with defaultTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS (Seam 1/2 boot wiring)", async () => {
+    const sdkLayer = fakeClientWithText("ok")
+    const exposed = PromptWorkerLayer().pipe(
+      Layer.provideMerge(
+        Layer.mergeAll(
+          sdkLayer,
+          makeWorkerRegistry({}),
+          AgentNotesService.Memory.pipe(Layer.provide(Clock.Default)),
+          Clock.Default,
+        ),
+      ),
+    )
+    const prog = Effect.gen(function* () {
+      const reg = yield* WorkerRegistry
+      const entry = yield* reg.lookupEntry("prompt")
+      expect(entry?.defaultTimeoutMs).toBe(DEFAULT_QUERY_TIMEOUT_MS)
     })
     await Effect.runPromise(prog.pipe(Effect.provide(exposed)))
   })

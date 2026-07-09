@@ -30,7 +30,7 @@ Four compounding defects were confirmed on the live instance:
 - **Human answers mint ground truth.** The dream may nominate candidate cases; only operator answers confirm them.
 - **Archive, never delete.** Every replaced artifact version, retired case, and losing variant is preserved with a tombstone.
 - **Nothing ungated ever auto-applies.** A proposal the gate router cannot measure degrades into a suggested-action chip where the operator decides.
-- **Everything long runs incrementally.** The V2 JobTicker enforces a 5-minute per-dispatch deadline, so all dream and experiment work is a resumable state machine with per-chunk committed progress.
+- **Everything long runs incrementally.** The V2 JobTicker enforces a per-dispatch deadline (for `dream`, a 15-minute default via `LUNA_DREAM_WORKER_TIMEOUT_MS` plus a grace window, with retry-with-backoff on `deadline_passed`), so all dream and experiment work is a resumable state machine with per-chunk committed progress.
 - **The dream never talks to the user directly.** It writes to stores and queues; chips and surveys are the delivery surfaces (unchanged from the alignment-loop design).
 
 ## 4. Architecture overview

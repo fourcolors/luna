@@ -60,6 +60,15 @@ export interface PersistedJob {
   readonly schedule: string | null
   readonly enabled: boolean
   readonly nextRunAt: number | null
+
+  /**
+   * Oban-style retry counter (job-ticker-oban-deadlines). Bumped by the
+   * JobTicker each time a RECURRING job's dispatch fails, so the retry
+   * backoff can grow (see `JobTickerOptions.retryBackoff`); reset to 0 on
+   * the next success. One-shot jobs never retry, so this stays 0 for them.
+   * Defaults to 0 for every existing row via the SCHEMA_V3 migration.
+   */
+  readonly retryAttempt: number
 }
 
 /**
@@ -175,6 +184,8 @@ export interface JobsStoreApi {
       readonly schedule?: string | null
       readonly enabled?: boolean
       readonly nextRunAt?: number | null
+      /** Oban-style retry counter — see `PersistedJob.retryAttempt`. */
+      readonly retryAttempt?: number
     },
   ) => Effect.Effect<boolean, JobsStoreError>
 

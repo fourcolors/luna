@@ -15,12 +15,20 @@
  *     `WorkerError({_tag:"unknown_kind"})` if no worker registered.
  *
  * Lifetime:
- *   - The registry itself is a single Ref<Map<string, Worker>> per Layer scope.
- *   - The JobTicker dispatches each worker INLINE on its single fiber, bounded
- *     by `Effect.timeoutFail(workerDeadline)` and wrapped in `Effect.catchAllDefect`
- *     so an overrun or a panicking worker is converted to a typed WorkerError
- *     and closed into job_runs — it cannot kill the ticker fiber. (Dispatch is
- *     NOT forked, so workers within a tick run sequentially, not concurrently.)
+ *   - The registry itself is a single Ref<Map<string, WorkerEntry>> per Layer
+ *     scope. `register()` accepts either a bare `Worker` function or a
+ *     `WorkerEntry` object (adds a per-kind `defaultTimeoutMs`) — see
+ *     `WorkerEntry` below.
+ *   - The JobTicker dispatches each worker bounded by
+ *     `Effect.timeoutFail(...)` (per-kind `defaultTimeoutMs` + grace, or the
+ *     ticker's global `workerDeadline` fallback) and wrapped in
+ *     `Effect.catchAllDefect` so an overrun or a panicking worker is
+ *     converted to a typed WorkerError and closed into job_runs — it cannot
+ *     kill the ticker fiber. Since job-ticker-oban-deadlines, dispatches
+ *     within a tick run with BOUNDED concurrency (`Effect.forEach(...,
+ *     {concurrency: dispatchConcurrency})`), not strictly sequentially — the
+ *     per-job Effect a worker runs inside is still wholly independent, so
+ *     nothing here changes for a Worker implementation.
  *
  * Why not Tag-per-kind? The kind set is data-driven (new rows can introduce
  * new kinds at runtime, especially once `workflow` payloads embed `prompt`
@@ -66,6 +74,36 @@ export type Worker<R = never> = (
   ctx: WorkerContext,
 ) => Effect.Effect<WorkerResult, WorkerError, R>
 
+/**
+ * job-ticker-oban-deadlines — a worker MAY register with its own per-kind
+ * timeout ceiling instead of relying on the JobTicker's global
+ * `workerDeadline`. `defaultTimeoutMs`, when present, becomes the
+ * "effective" deadline the ticker builds its outer backstop from
+ * (`effective + grace`, capped at `maxWorkerDeadline`) — giving a worker
+ * with its OWN inner timeout (e.g. dream's per-chunk `LUNA_DREAM_TIMEOUT_MS`)
+ * room to fail on its own typed WorkerError terms before the ticker's
+ * `Effect.timeoutFail` fires as a true last-resort backstop. Leave it unset
+ * for the back-compat path: the ticker's `workerDeadline` applies exactly as
+ * it did before this option existed, with no grace added.
+ */
+export interface WorkerEntry<R = never> {
+  readonly run: Worker<R>
+  readonly defaultTimeoutMs?: number
+}
+
+/** Accepted at `register()` — a bare function is sugar for `{ run: fn }`. */
+export type Registrable<R = never> = Worker<R> | WorkerEntry<R>
+
+/**
+ * Normalize the two accepted `register()` shapes into a `WorkerEntry`. A
+ * bare function IS a `Worker` (an ordinary JS function), while the object
+ * form is a plain object — `typeof` cleanly discriminates the two without
+ * needing a tag. Shared by BOTH registry constructors below so `lookup` /
+ * `lookupEntry` / `dispatch` agree no matter which one built the registry.
+ */
+const normalizeEntry = <R>(w: Registrable<R>): WorkerEntry<R> =>
+  typeof w === "function" ? { run: w } : w
+
 export class WorkerError extends Data.TaggedError("WorkerError")<{
   readonly reason:
     | "unknown_kind"
@@ -87,12 +125,15 @@ export class WorkerError extends Data.TaggedError("WorkerError")<{
 
 export interface WorkerRegistryApi {
   /**
-   * Register (or replace) the worker for `kind`. Returns the previous
-   * worker if any existed under that key.
+   * Register (or replace) the worker for `kind` — either a bare `Worker`
+   * function (back-compat) or a `WorkerEntry` object that also carries a
+   * per-kind `defaultTimeoutMs`. Returns the previous worker FUNCTION if any
+   * existed under that key (never the wrapping entry — swap-tests compare
+   * against the function they originally passed in).
    */
   readonly register: (
     kind: string,
-    worker: Worker<never>,
+    worker: Registrable<never>,
   ) => Effect.Effect<Worker<never> | null>
 
   /** Snapshot of registered kinds (sorted for determinism in tests). */
@@ -105,6 +146,16 @@ export interface WorkerRegistryApi {
   readonly lookup: (
     kind: string,
   ) => Effect.Effect<Worker<never> | null>
+
+  /**
+   * Look up the FULL registration entry (run fn + optional
+   * `defaultTimeoutMs`) for `kind`. The JobTicker uses this instead of
+   * `lookup` for its pre-screen so it can read `defaultTimeoutMs` when
+   * computing the per-dispatch backstop deadline.
+   */
+  readonly lookupEntry: (
+    kind: string,
+  ) => Effect.Effect<WorkerEntry<never> | null>
 
   /**
    * Look up + invoke. Convenience for the ticker. If `kind` is unregistered,
@@ -131,19 +182,20 @@ export class WorkerRegistry extends Effect.Tag("luna/WorkerRegistry")<
   static Default: Layer.Layer<WorkerRegistry> = Layer.effect(
     WorkerRegistry,
     Effect.gen(function* () {
-      const ref = yield* Ref.make<Map<string, Worker<never>>>(new Map())
+      const ref = yield* Ref.make<Map<string, WorkerEntry<never>>>(new Map())
 
       const register: WorkerRegistryApi["register"] = (kind, worker) =>
         Effect.gen(function* () {
+          const entry = normalizeEntry(worker)
           const before = yield* Ref.get(ref).pipe(
             Effect.map((m) => m.get(kind) ?? null),
           )
           yield* Ref.update(ref, (m) => {
             const next = new Map(m)
-            next.set(kind, worker)
+            next.set(kind, entry)
             return next
           })
-          return before
+          return before?.run ?? null
         })
 
       const listKinds: WorkerRegistryApi["listKinds"] = Effect.gen(
@@ -153,16 +205,19 @@ export class WorkerRegistry extends Effect.Tag("luna/WorkerRegistry")<
         },
       )
 
-      const lookup: WorkerRegistryApi["lookup"] = (kind) =>
+      const lookupEntry: WorkerRegistryApi["lookupEntry"] = (kind) =>
         Effect.gen(function* () {
           const m = yield* Ref.get(ref)
           return m.get(kind) ?? null
         })
 
+      const lookup: WorkerRegistryApi["lookup"] = (kind) =>
+        lookupEntry(kind).pipe(Effect.map((entry) => entry?.run ?? null))
+
       const dispatch: WorkerRegistryApi["dispatch"] = (kind, payload, ctx) =>
         Effect.gen(function* () {
-          const worker = yield* lookup(kind)
-          if (!worker) {
+          const entry = yield* lookupEntry(kind)
+          if (!entry) {
             return yield* Effect.fail(
               new WorkerError({
                 reason: "unknown_kind",
@@ -171,13 +226,14 @@ export class WorkerRegistry extends Effect.Tag("luna/WorkerRegistry")<
               }),
             )
           }
-          return yield* worker(payload, ctx)
+          return yield* entry.run(payload, ctx)
         })
 
       return {
         register,
         listKinds,
         lookup,
+        lookupEntry,
         dispatch,
       } satisfies WorkerRegistryApi
     }),
@@ -198,26 +254,29 @@ export class WorkerRegistry extends Effect.Tag("luna/WorkerRegistry")<
  * exercise the dynamic-register path.
  */
 export const makeWorkerRegistry = (
-  initial: Record<string, Worker<never>>,
+  initial: Record<string, Registrable<never>>,
 ): Layer.Layer<WorkerRegistry> =>
   Layer.effect(
     WorkerRegistry,
     Effect.gen(function* () {
-      const ref = yield* Ref.make<Map<string, Worker<never>>>(
-        new Map(Object.entries(initial)),
+      const ref = yield* Ref.make<Map<string, WorkerEntry<never>>>(
+        new Map(
+          Object.entries(initial).map(([kind, w]) => [kind, normalizeEntry(w)]),
+        ),
       )
 
       const register: WorkerRegistryApi["register"] = (kind, worker) =>
         Effect.gen(function* () {
+          const entry = normalizeEntry(worker)
           const before = yield* Ref.get(ref).pipe(
             Effect.map((m) => m.get(kind) ?? null),
           )
           yield* Ref.update(ref, (m) => {
             const next = new Map(m)
-            next.set(kind, worker)
+            next.set(kind, entry)
             return next
           })
-          return before
+          return before?.run ?? null
         })
 
       const listKinds: WorkerRegistryApi["listKinds"] = Effect.gen(function* () {
@@ -225,16 +284,19 @@ export const makeWorkerRegistry = (
         return Array.from(m.keys()).sort()
       })
 
-      const lookup: WorkerRegistryApi["lookup"] = (kind) =>
+      const lookupEntry: WorkerRegistryApi["lookupEntry"] = (kind) =>
         Effect.gen(function* () {
           const m = yield* Ref.get(ref)
           return m.get(kind) ?? null
         })
 
+      const lookup: WorkerRegistryApi["lookup"] = (kind) =>
+        lookupEntry(kind).pipe(Effect.map((entry) => entry?.run ?? null))
+
       const dispatch: WorkerRegistryApi["dispatch"] = (kind, payload, ctx) =>
         Effect.gen(function* () {
-          const worker = yield* lookup(kind)
-          if (!worker) {
+          const entry = yield* lookupEntry(kind)
+          if (!entry) {
             return yield* Effect.fail(
               new WorkerError({
                 reason: "unknown_kind",
@@ -243,13 +305,14 @@ export const makeWorkerRegistry = (
               }),
             )
           }
-          return yield* worker(payload, ctx)
+          return yield* entry.run(payload, ctx)
         })
 
       return {
         register,
         listKinds,
         lookup,
+        lookupEntry,
         dispatch,
       } satisfies WorkerRegistryApi
     }),

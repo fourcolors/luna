@@ -514,6 +514,11 @@ Migration is gated by a new `schema_versions` row `('jobs', 2)`. Old rows
 keep working: a row with `schedule IS NULL AND spec IS NOT NULL` is treated
 as legacy and migrated to `schedule = spec` on first tick.
 
+A later `('jobs', 3)` migration (job-ticker-oban-deadlines) adds
+`retry_attempt INTEGER NOT NULL DEFAULT 0` to `jobs` - the Oban-style retry
+counter the ticker bumps on a failed dispatch of a recurring job and resets
+to 0 on the next success (see §5.3.2).
+
 #### 5.3.2 JobTicker — semantics
 
 A single supervised fiber, scoped to the chat-server's Layer scope:
@@ -544,31 +549,55 @@ Effect.repeat(
    distributed coordination in Phase 13).
 5. INSERT a `job_runs` row with `status='running'`.
 6. Dispatch the row directly through `WorkerRegistry.dispatch(kind, payload)`
-   inside its OWN per-job Scope, bounded by `workerDeadline` (`Effect.timeoutFail`)
-   so a stuck worker is interrupted rather than blocking the loop. (There is no
-   separate worker pool — the removed V1 `JobScheduler` is not in this path.)
+   inside its OWN per-job Scope, bounded by a per-dispatch backstop deadline
+   (`Effect.timeoutFail`) so a stuck worker is interrupted rather than blocking
+   the loop. The backstop resolves per dispatch (job-ticker-oban-deadlines):
+   a payload-level `timeout_ms` wins, else the kind's registered
+   `defaultTimeoutMs` (see §5.3.3), else the ticker's global `workerDeadline`
+   (default 5 min). The first two sources are clamped to a 1 s floor, get a
+   `grace` window (default 30 s) added so the worker's own inner timeout can
+   fail first on its own typed error, and are capped at `maxWorkerDeadline`
+   (default 30 min). (There is no separate worker pool — the removed V1
+   `JobScheduler` is not in this path.)
 7. On `Exit`, UPDATE the matching `job_runs` row with `finished_at`,
-   `status`, `output_text`/`error`, and `steps_json`.
+   `status`, `output_text`/`error`, and `steps_json`. A recurring row whose
+   dispatch failed with a retryable reason (`deadline_passed` /
+   `worker_failed` / `defect` - not the deterministic `bad_payload` /
+   `unknown_kind`) gets `next_run_at` pulled earlier, to
+   `finished_at + retryBackoff(attempt)` (default exponential: 1 min doubling,
+   capped at 30 min), bumping `jobs.retry_attempt` - up to `max_attempts`
+   (payload override clamped to [1,10], else `defaultMaxAttempts`, default 3),
+   after which the row falls back to its natural cron cadence with
+   `retry_attempt` reset. One-shots never retry; success also resets the
+   counter.
 
-Within a tick, due rows are dispatched sequentially; excess due rows roll into
-the next tick. A job that runs longer than its deadline does not block
-subsequent ticks — only its OWN re-fire (the row's `next_run_at` won't be
-`≤ now` while the previous attempt is still in flight, since the claim already
-advanced it).
+Within a tick, due rows are dispatched with bounded concurrency
+(`dispatchConcurrency`, default 4); excess due rows roll into the next tick.
+A job that runs longer than its deadline does not block subsequent ticks —
+only its OWN re-fire (the row's `next_run_at` won't be `≤ now` while the
+previous attempt is still in flight, since the claim already advanced it).
 
 #### 5.3.3 WorkerRegistry contract
 
 ```ts
-export interface Worker<R = never> {
-  readonly kind: string                    // 'prompt' | 'workflow' | …
-  readonly run: (payload: unknown, ctx: WorkerContext) => Effect.Effect<WorkerResult, WorkerError, R>
+export type Worker<R = never> = (
+  payload: unknown,
+  ctx: WorkerContext,
+) => Effect.Effect<WorkerResult, WorkerError, R>
+
+// register() accepts a bare Worker fn (back-compat) or a WorkerEntry that
+// also carries a per-kind default timeout (job-ticker-oban-deadlines) -
+// the ticker's backstop becomes defaultTimeoutMs + grace, capped:
+export interface WorkerEntry<R = never> {
+  readonly run: Worker<R>
+  readonly defaultTimeoutMs?: number
 }
 
 export interface WorkerContext {
   readonly jobId: string
   readonly runId: number
-  readonly attempt: number
-  readonly deadline: Date                  // 60s wall-clock budget by default
+  readonly attempt: number                 // retry_attempt + 1 for this dispatch
+  readonly deadline: number                // epoch-ms; ticker ENFORCES it (grace-exclusive)
 }
 
 export interface WorkerResult {
@@ -693,7 +722,9 @@ Legacy `kind="cron"` rows left in an existing DB are skipped by the ticker (no
 
 #### 5.3.7 Non-goals (V1)
 
-- Retries with backoff. `attempt` column exists; retry loop is Phase 13.
+- ~~Retries with backoff~~ - SHIPPED (job-ticker-oban-deadlines): recurring
+  jobs retry transient failures on a capped exponential backoff, bounded by
+  `max_attempts` (see §5.3.2 step 7).
 - Cross-fire uniqueness / debounce — Phase 13.
 - Sub-minute cron resolution — out of scope; ticker is 60 s.
 - Distributed coordination — single-process; Phase 14 if needed.

@@ -400,7 +400,15 @@ export const PromptWorkerLayer = (
         Option.getOrNull(jobTools),
         Option.getOrNull(chatPoster),
       )
-      yield* reg.register(kind, worker)
+      // job-ticker-oban-deadlines (Seam 2 boot wiring): register with the
+      // worker's own inner ceiling (DEFAULT_QUERY_TIMEOUT_MS, 10 min; a
+      // per-payload `timeout_ms` still overrides at dispatch time — see
+      // job-ticker.ts's Seam-1 resolution) so the JobTicker's outer backstop
+      // is `defaultTimeoutMs + grace` instead of the bare 5-min
+      // `workerDeadline` fallback. Without this the ticker's global 5-min
+      // deadline fires BEFORE this worker's own 10-min inner timeout ever
+      // gets a chance to produce a descriptive `worker_failed` error.
+      yield* reg.register(kind, { run: worker, defaultTimeoutMs: DEFAULT_QUERY_TIMEOUT_MS })
     }),
   )
 }
