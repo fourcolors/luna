@@ -4,24 +4,44 @@
  * step per the task brief: it tests whether Luna's retrieval surfaced the
  * right memory, not whether a model with the whole transcript can answer.
  *
- * Backend: **Ollama by default** (`/api/chat`, local, zero API cost — same
- * daemon/base-URL convention `packages/core/src/embedder/embedder.ts` uses
- * for embeddings via `LUNA_OLLAMA_BASE_URL`). Deliberately dependency-free
- * (plain `fetch`, no SDK), mirroring the embedder module's own HTTP client
- * rather than introducing a new one.
+ * Three backends, selected via `LUNA_LOCOMO_ANSWER_BACKEND`:
+ *   - `ollama` (default) — local Ollama daemon, `/api/chat`, zero API cost,
+ *     same daemon/base-URL convention `packages/core/src/embedder/embedder.ts`
+ *     uses for embeddings via `LUNA_OLLAMA_BASE_URL`.
+ *   - `ollama-cloud` — Ollama's HOSTED cloud API (`https://ollama.com/api`),
+ *     same `/api/chat` request/response shape as local Ollama, authenticated
+ *     via a Bearer API key (`OLLAMA_CLOUD_KEY`, provisioned in 1Password —
+ *     see README.md). Much faster than local CPU inference and gives access
+ *     to larger hosted models (default `gpt-oss:120b`, override via
+ *     `LUNA_LOCOMO_CLOUD_MODEL` or `LUNA_LOCOMO_ANSWER_MODEL`).
+ *   - `anthropic` — the original Anthropic Messages API path, kept behind
+ *     `LUNA_LOCOMO_ANSWER_BACKEND=anthropic` for future flexibility. Blocked
+ *     in this environment (no `ANTHROPIC_API_KEY`).
  *
- * The original Anthropic Messages API path is kept behind
- * `LUNA_LOCOMO_ANSWER_BACKEND=anthropic` for future flexibility (e.g. if an
- * operator later wants a paid-model comparison run) — but it is no longer
- * the default, since this harness now runs entirely on local compute and
- * needs no key.
+ * All three are deliberately dependency-free (plain `fetch`, no SDK),
+ * mirroring the embedder module's own HTTP client rather than introducing a
+ * new one.
  *
- * Cost tracking: for the Ollama path this is always $0 (see
+ * Cost tracking: for the local `ollama` path this is always $0 (see
  * `packages/core/src/pricing.ts`'s `ollama` rate — 0/0 per million tokens).
- * We still fill in token counts (Ollama reports `prompt_eval_count` /
- * `eval_count`) purely for observability/debugging, not for a budget cap —
- * see `run.ts` for why the budget guard was replaced with a wall-clock
- * estimate instead of a dollar cap.
+ * `ollama-cloud` reuses the same free-tier accounting (`rateFor` treats any
+ * `ollama*` kind as $0 — see pricing.ts) since the harness is spending
+ * against a pre-provisioned API key, not per-token billing we can price
+ * here; token counts are still filled in for observability, not a budget
+ * cap — see `run.ts` for why the budget guard was replaced with a
+ * wall-clock estimate instead of a dollar cap.
+ *
+ * `ollama-cloud` failure handling: HTTP 429 and 5xx responses (and network
+ * errors) are retried with short exponential backoff (a handful of
+ * attempts — see `backoffDelayMs`). A HARD failure — auth error (401/403),
+ * a quota/billing/payment-required signal, or persistent 429/5xx that
+ * doesn't clear after retries — throws `LocomoHardStopError` instead of
+ * retrying forever. `run.ts` catches that specifically and stops the whole
+ * run cleanly (not just the one QA pair), so a broken key or an exhausted
+ * quota can't silently burn through the rest of the dataset one failed
+ * retry-loop at a time. `classifyOllamaCloudResponse` is the pure decision
+ * function (retry vs. hard-stop vs. plain fail) and is unit-tested directly
+ * — see `test/locomo-eval.test.ts`.
  */
 import { priceTurnUsd, rateFor } from "@luna/core"
 
@@ -41,6 +61,85 @@ export interface CostTracker {
 
 export function newCostTracker(): CostTracker {
   return { totalTokensIn: 0, totalTokensOut: 0, totalCostUsd: 0, calls: 0 }
+}
+
+/**
+ * Thrown by `answerFromContextOllamaCloud` when a failure is HARD — i.e.
+ * retrying will not help and continuing to call the API for the remaining
+ * QA pairs would just repeat the same failure (and burn quota/time) once
+ * per pair. `run.ts` catches this specifically (vs. a plain `Error`, which
+ * is recorded as a single failed QA pair and the run continues) and stops
+ * the entire run, writing partial results — same discipline as the
+ * wall-clock time cap.
+ */
+export class LocomoHardStopError extends Error {
+  readonly reason: "auth" | "quota" | "rate_limit" | "server"
+  constructor(reason: "auth" | "quota" | "rate_limit" | "server", message: string) {
+    super(message)
+    this.name = "LocomoHardStopError"
+    this.reason = reason
+  }
+}
+
+/** Exponential backoff (ms) for the Nth (1-based) failed attempt, capped at 4s. */
+export function backoffDelayMs(attempt: number): number {
+  return Math.min(400 * 2 ** (attempt - 1), 4000)
+}
+
+const QUOTA_SIGNAL_RE =
+  /insufficient[_ ]?quota|quota[_ ]?exceeded|billing|spend(ing)?[_ ]?cap|payment required|out of credit|insufficient credit/i
+
+export type OllamaCloudFailureAction =
+  | { readonly kind: "retry"; readonly delayMs: number }
+  | { readonly kind: "hard-stop"; readonly reason: "auth" | "quota" | "rate_limit" | "server" }
+  | { readonly kind: "fail" }
+
+/**
+ * Pure decision function for how to react to a non-OK `ollama-cloud`
+ * response. Kept side-effect-free and exported so it can be unit-tested
+ * directly (no network) — see `test/locomo-eval.test.ts`.
+ *
+ *   - 401/403                      → hard-stop (auth): the key is bad; every
+ *                                     subsequent call will fail the same way.
+ *   - 402, or body mentions quota/
+ *     billing/spend-cap/credit     → hard-stop (quota): a spend/quota cap,
+ *                                     regardless of HTTP status.
+ *   - 429                          → retry with backoff until `maxAttempts`,
+ *                                     then hard-stop (rate_limit): sustained
+ *                                     throttling that doesn't clear.
+ *   - 5xx                          → retry with backoff until `maxAttempts`,
+ *                                     then hard-stop (server): persistent
+ *                                     infra failure, not a one-off blip.
+ *   - anything else (4xx)          → plain "fail" — a normal per-QA-pair
+ *                                     error (e.g. a malformed request for
+ *                                     this one prompt), not systemic.
+ */
+export function classifyOllamaCloudResponse(args: {
+  readonly status: number
+  readonly body: string
+  readonly attempt: number
+  readonly maxAttempts: number
+}): OllamaCloudFailureAction {
+  const { status, body, attempt, maxAttempts } = args
+  if (status === 401 || status === 403) {
+    return { kind: "hard-stop", reason: "auth" }
+  }
+  if (status === 402 || QUOTA_SIGNAL_RE.test(body)) {
+    return { kind: "hard-stop", reason: "quota" }
+  }
+  if (status === 429) {
+    if (attempt >= maxAttempts) return { kind: "hard-stop", reason: "rate_limit" }
+    return { kind: "retry", delayMs: backoffDelayMs(attempt) }
+  }
+  if (status >= 500) {
+    if (attempt >= maxAttempts) return { kind: "hard-stop", reason: "server" }
+    return { kind: "retry", delayMs: backoffDelayMs(attempt) }
+  }
+  return { kind: "fail" }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function buildPrompt(question: string, context: ReadonlyArray<string>): string {
@@ -115,6 +214,101 @@ export async function answerFromContextOllama(args: {
   args.tracker.calls += 1
 
   return { text, tokensIn, tokensOut, costUsd }
+}
+
+const OLLAMA_CLOUD_DEFAULT_BASE_URL = "https://ollama.com/api"
+const OLLAMA_CLOUD_MAX_ATTEMPTS = 4
+// Per-attempt request timeout. Without this, a hung connection (no response,
+// no error) would block the harness indefinitely — worse than a clean hard
+// stop. A timeout is treated the same as any other network-level failure:
+// retried with backoff, hard-stop if it never clears.
+const OLLAMA_CLOUD_REQUEST_TIMEOUT_MS = 60_000
+
+/**
+ * Ask a model on Ollama's HOSTED cloud API (`https://ollama.com/api/chat`)
+ * to answer `question` using only `context`. Same request/response shape as
+ * local Ollama's `/api/chat`, authenticated via `Authorization: Bearer
+ * <apiKey>`. Retries 429/5xx/network errors with short exponential backoff
+ * (see `backoffDelayMs`); throws `LocomoHardStopError` on a hard failure
+ * (bad auth, a quota/billing signal, or persistent 429/5xx that doesn't
+ * clear after `OLLAMA_CLOUD_MAX_ATTEMPTS` attempts) instead of retrying
+ * forever or silently giving up per-call — see the module docstring and
+ * `classifyOllamaCloudResponse`.
+ */
+export async function answerFromContextOllamaCloud(args: {
+  readonly question: string
+  readonly context: ReadonlyArray<string>
+  readonly apiKey: string
+  readonly model: string
+  readonly tracker: CostTracker
+  readonly baseUrl?: string
+}): Promise<AnswerResult> {
+  const prompt = buildPrompt(args.question, args.context)
+  const url = `${normalizeBaseUrl(args.baseUrl ?? OLLAMA_CLOUD_DEFAULT_BASE_URL)}/chat`
+  const maxAttempts = OLLAMA_CLOUD_MAX_ATTEMPTS
+
+  for (let attempt = 1; ; attempt++) {
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${args.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: args.model,
+          stream: false,
+          messages: [{ role: "user", content: prompt }],
+          options: { temperature: 0 },
+        }),
+        signal: AbortSignal.timeout(OLLAMA_CLOUD_REQUEST_TIMEOUT_MS),
+      })
+    } catch (e) {
+      // Network-level failure (timeout, DNS, connection reset). Treated the
+      // same as a 5xx: retry with backoff, hard-stop if it never clears.
+      if (attempt >= maxAttempts) {
+        throw new LocomoHardStopError(
+          "server",
+          `locomo-eval: Ollama Cloud network error after ${attempt} attempt(s): ${String(e)}`,
+        )
+      }
+      await sleep(backoffDelayMs(attempt))
+      continue
+    }
+
+    if (res.ok) {
+      const json = (await res.json()) as OllamaChatResponse
+      const text = json.message?.content?.trim() ?? ""
+      const tokensIn = json.prompt_eval_count ?? 0
+      const tokensOut = json.eval_count ?? 0
+      const rate = rateFor(args.model, "ollama-cloud")
+      const costUsd = priceTurnUsd({ tokensIn, tokensOut }, rate)
+
+      args.tracker.totalTokensIn += tokensIn
+      args.tracker.totalTokensOut += tokensOut
+      args.tracker.totalCostUsd += costUsd
+      args.tracker.calls += 1
+
+      return { text, tokensIn, tokensOut, costUsd }
+    }
+
+    const body = await res.text().catch(() => "<no body>")
+    const action = classifyOllamaCloudResponse({ status: res.status, body, attempt, maxAttempts })
+    if (action.kind === "hard-stop") {
+      throw new LocomoHardStopError(
+        action.reason,
+        `locomo-eval: Ollama Cloud hard stop (${action.reason}) after ${attempt} attempt(s) — HTTP ${res.status} for model "${args.model}": ${body.slice(0, 500)}`,
+      )
+    }
+    if (action.kind === "retry") {
+      await sleep(action.delayMs)
+      continue
+    }
+    throw new Error(
+      `locomo-eval: Ollama Cloud /api/chat error ${res.status} for model "${args.model}": ${body}`,
+    )
+  }
 }
 
 /**

@@ -123,10 +123,13 @@ answer-generation quality, independent of the LLM call.
 - `dataset.ts` — fetch (cached, gitignored) + flatten into per-turn records.
 - `ingest.ts` — turn → `MemoryRecord` → `MemoryRouter.put()` (same write path as `memory_save`).
 - `scoring.ts` — F1 scoring per LoCoMo's category rules, independently implemented.
-- `answer-model.ts` — answer-generation backends: **Ollama `/api/chat`
-  (default)** and Anthropic Messages API (opt-in, see below). Cost tracking
+- `answer-model.ts` — answer-generation backends: local **Ollama**
+  `/api/chat` (`ollama`, default), **Ollama's hosted cloud API**
+  (`ollama-cloud`, `https://ollama.com/api/chat`, Bearer-authenticated), and
+  the Anthropic Messages API (`anthropic`, opt-in, see below). Cost tracking
   reuses `@luna/core`'s `rateFor`/`priceTurnUsd` — the same pricing table
-  the chat-server itself uses; the `ollama` rate is always $0.
+  the chat-server itself uses; any `ollama*` rate is always $0 in this
+  harness's accounting.
 - `run.ts` — CLI entrypoint wiring it all together.
 
 ## Why the direct TypeScript API, not the MCP tool surface
@@ -142,17 +145,40 @@ to the router. `run.ts`'s retrieval call (`router.search(...)`) is
 identical in shape and options to what `memory_search` does, so the
 result is representative of what an agent actually sees.
 
-## Answer backend: local Ollama by default
+## Answer backends: local Ollama, Ollama Cloud, or Anthropic
 
-The answer-generation step (`answer-model.ts`) defaults to a **local Ollama
-model** (`llama3.1:8b` via `/api/chat`, non-streaming) — no API key, no
-per-token dollar cost. This is a deliberate swap from an earlier revision
-of this harness that called the raw Anthropic Messages API: that path
-needed a real `ANTHROPIC_API_KEY` (not the Claude Code OAuth credential),
-which wasn't available in the environment this harness was built and run
-in. The Anthropic path is preserved behind
-`LUNA_LOCOMO_ANSWER_BACKEND=anthropic` for a future paid-model comparison
-run, but it is no longer the default.
+Three backends, selected via `LUNA_LOCOMO_ANSWER_BACKEND`:
+
+- **`ollama-cloud` — the current default recommendation for a real run.**
+  Ollama's HOSTED cloud API (`https://ollama.com/api/chat`, same
+  request/response shape as local Ollama's `/api/chat`), authenticated via
+  `Authorization: Bearer $OLLAMA_CLOUD_KEY` (a pre-provisioned API key,
+  resolved from your own secret manager at run time; **never log, print, or
+  commit this value** — only ever pass it as an in-memory env var). Model
+  defaults to `gpt-oss:120b` (override via `LUNA_LOCOMO_CLOUD_MODEL` or
+  `LUNA_LOCOMO_ANSWER_MODEL`). Dramatically faster than local CPU
+  inference — see "Time budget" below — and gives access to a much larger,
+  higher-quality open model than the 8B one that fits on this machine's
+  CPU. 429/5xx responses and network errors are retried with short
+  exponential backoff (`backoffDelayMs`, a handful of attempts); a HARD
+  failure (bad auth, a quota/billing signal, or throttling that never
+  clears) throws `LocomoHardStopError`, which `run.ts` catches specifically
+  to stop the ENTIRE run immediately (not just the one QA pair) and write
+  partial results — see `answer-model.ts`'s module docstring and
+  `classifyOllamaCloudResponse` (unit-tested in `test/locomo-eval.test.ts`).
+- **`ollama` (local, harness default when `LUNA_LOCOMO_ANSWER_BACKEND` is
+  unset)** — `llama3.1:8b` via a local Ollama daemon's `/api/chat`,
+  non-streaming. No API key, no per-token dollar cost, but CPU-only
+  inference on the reference machine is roughly 14x slower per QA pair than
+  `ollama-cloud`'s `gpt-oss:120b` (see "Time budget"). This was the ONLY
+  backend available in the environment this harness was originally built in
+  (no `ANTHROPIC_API_KEY`, no cloud key yet provisioned) — kept as the
+  zero-dependency fallback.
+- **`anthropic`** — the original Anthropic Messages API path, preserved
+  behind `LUNA_LOCOMO_ANSWER_BACKEND=anthropic` for a possible future
+  paid-model comparison run. Still blocked in this environment (no real
+  `ANTHROPIC_API_KEY`, i.e. not the Claude Code OAuth/subscription
+  credential).
 
 Since LoCoMo scoring is pure F1 (see "Scoring methodology" above, no LLM
 judge), swapping the answer backend only changes answer quality and
@@ -160,40 +186,68 @@ wall-clock time — never the marginal cost of scoring itself.
 
 ## Time budget, not dollar budget
 
-With Ollama the marginal cost per QA pair is $0 (CPU/wall-clock only), so
-the old `LUNA_LOCOMO_BUDGET_USD` dollar cap has been replaced with
+With Ollama (local or cloud) the marginal cost per QA pair is $0 in this
+harness's accounting (see "Cost tracking" above), so the old
+`LUNA_LOCOMO_BUDGET_USD` dollar cap has been replaced with
 **`LUNA_LOCOMO_MAX_MINUTES`** (default 55): `run.ts` times the answer-model
 calls as they happen, projects total runtime from the observed average
 seconds/QA-pair, and stops cleanly (writing all results collected so far)
 if the projection would exceed the cap — instead of silently truncating
-mid-run or blowing past an unbounded wall-clock budget.
+mid-run or blowing past an unbounded wall-clock budget. The projection is
+NOT enforced until at least `TIME_CAP_WARMUP_QA` (5) real answer calls have
+completed — before that there's only a rough per-backend fallback guess to
+project from (60s/QA for local `ollama`, 10s/QA for `ollama-cloud`), and
+multiplying a wrong guess across hundreds of remaining QA pairs on a large
+subset run was previously stopping runs before the first real call even
+finished (see `obs_note` ledger).
 
-**Measured throughput on the reference machine** (16 vCPU, 14 GiB RAM, no
-GPU — `llama3.1:8b`, Q4 quantization, via Ollama): ~60 seconds per QA pair
-end-to-end (retrieval + answer generation), dominated by CPU-only prompt
-evaluation of the ~10 retrieved excerpts (topK=10) that make up each
-question's context. At that rate the full LoCoMo10 dataset (1,986 QA pairs
-across all 10 conversations) would take **roughly 33 hours** — far outside
-any reasonable single-run budget on this hardware.
+**Measured throughput, local `ollama` (default) on the reference machine**
+(16 vCPU, 14 GiB RAM, no GPU — `llama3.1:8b`, Q4 quantization): ~60 seconds
+per QA pair end-to-end (retrieval + answer generation), dominated by
+CPU-only prompt evaluation of the ~10 retrieved excerpts (topK=10) that
+make up each question's context. At that rate the full LoCoMo10 dataset
+(1,986 QA pairs across all 10 conversations) would take **roughly 33
+hours** — far outside any reasonable single-run budget on this hardware.
+**What we ran with this backend**: a documented subset — the first 4
+conversations in dataset order (`conv-26`, `conv-30`, `conv-41`,
+`conv-42`; no cherry-picking), first 8 QA pairs of each
+(`LUNA_LOCOMO_SAMPLE_LIMIT=4 LUNA_LOCOMO_QA_LIMIT=8`), 32 QA pairs total,
+31.3 minutes wall-clock. **Overall F1: 0.352.** See the PR body for the
+full per-category breakdown.
 
-**What we actually ran**: a documented subset — the first 4 conversations
-in dataset order (`conv-26`, `conv-30`, `conv-41`, `conv-42`; no
-cherry-picking), first 8 QA pairs of each (`LUNA_LOCOMO_SAMPLE_LIMIT=4
-LUNA_LOCOMO_QA_LIMIT=8`), 32 QA pairs total, projected at ~42 minutes
-wall-clock (ingestion + answering) — comfortably under the 60-minute
-target. See the PR body / `obs_note` ledger for the actual result numbers
-and timing from that run.
+**Measured throughput, `ollama-cloud` (`gpt-oss:120b`, hosted)**: a
+real-context sizing sample (16 QA pairs, 2 conversations, real retrieved
+excerpts — not a trivial one-line prompt) measured ~4.2s/QA-pair, ~14x
+faster than local CPU inference. Ingestion (embedding, unaffected by answer
+backend) measured ~0.21s/turn. Projecting the full dataset (1,986 QA pairs,
+5,882 turns total) from those rates: ~140 min answering + ~21 min ingestion
+≈ **2.6 hours** — still meaningfully over a 90-minute target, so per the
+same "largest well-justified, non-cherry-picked subset" discipline as the
+local-Ollama run above, **what we actually ran**: ALL 10 conversations
+ingested (`LUNA_LOCOMO_SAMPLE_LIMIT=10`, so retrieval evidence coverage is
+computed over the FULL dataset's turns), first 84 QA pairs of each
+conversation scored (`LUNA_LOCOMO_QA_LIMIT=84` — every conversation has
+≥105 QA pairs, so this is a uniform, non-cherry-picked cap), **840 QA pairs
+total (42.3% of the full 1,986)**, `LUNA_LOCOMO_MAX_MINUTES=85` as an
+adaptive safety backstop. Actual result: **67.0 minutes wall-clock** (21.8
+min ingestion + 43.2 min answering, avg 3.09s/QA-pair — faster than the
+sizing sample), zero rate-limit/retry/hard-stop events across all 840
+calls. **Overall F1: 0.488** — see the PR body for the full per-category
+breakdown and the comparison against the local-`llama3.1:8b` number above.
 
-If this harness is re-run on faster hardware (GPU-backed Ollama, or a
-smaller/faster answer model), `LUNA_LOCOMO_SAMPLE_LIMIT`/
-`LUNA_LOCOMO_QA_LIMIT` can be raised accordingly — nothing else about the
-pipeline changes.
+If this harness is re-run again, `LUNA_LOCOMO_SAMPLE_LIMIT`/
+`LUNA_LOCOMO_QA_LIMIT` can be raised or lowered per backend — nothing else
+about the pipeline changes. The full 1,986-pair run is achievable within a
+~2.5-3 hour single session on `ollama-cloud` if that window is ever
+available; nothing in the harness prevents it, it just wasn't the
+documented single-session target this time.
 
 ## Running
 
 Ingestion + retrieval need only a local Ollama daemon (`LUNA_EMBEDDER=ollama`,
 `LUNA_OLLAMA_BASE_URL`, `LUNA_OLLAMA_EMBED_MODEL` — same env vars
-`bench/paraphrase-recall.ts` uses). No cost for this half either way.
+`bench/paraphrase-recall.ts` uses) regardless of answer backend. No cost for
+this half either way.
 
 ```sh
 # Retrieval-only smoke test — zero cost, validates ingestion + search wiring
@@ -201,9 +255,21 @@ LUNA_EMBEDDER=ollama LUNA_LOCOMO_SAMPLE_LIMIT=1 LUNA_LOCOMO_QA_LIMIT=5 \
   bun packages/memory/src/adapters/locomo-eval/run.ts --dry-run
 ```
 
-Full run (answer generation + scoring) via local Ollama (default backend —
-needs `llama3.1:8b` pulled: `curl -s $LUNA_OLLAMA_BASE_URL/api/pull -d
-'{"name":"llama3.1:8b"}'`):
+Full run via **`ollama-cloud`** (recommended — see "Answer backends" above;
+resolve `OLLAMA_CLOUD_KEY` from your own secret manager first, never paste
+it inline or commit it, e.g. via Luna's `SecretProvider` conventions
+(`op://<vault>/<item>/<field>`, `env:NAME`, etc. — see `DESIGN.md` §2.2.11):
+
+```sh
+OLLAMA_CLOUD_KEY="$(resolve-your-secret ollama-cloud-key)"   # your own retrieval command
+LUNA_EMBEDDER=ollama LUNA_LOCOMO_ANSWER_BACKEND=ollama-cloud \
+  LUNA_LOCOMO_SAMPLE_LIMIT=10 LUNA_LOCOMO_QA_LIMIT=84 LUNA_LOCOMO_MAX_MINUTES=85 \
+  OLLAMA_CLOUD_KEY="$OLLAMA_CLOUD_KEY" \
+  bun packages/memory/src/adapters/locomo-eval/run.ts
+```
+
+Full run via local Ollama instead (needs `llama3.1:8b` pulled: `curl -s
+$LUNA_OLLAMA_BASE_URL/api/pull -d '{"name":"llama3.1:8b"}'`):
 
 ```sh
 LUNA_EMBEDDER=ollama LUNA_LOCOMO_SAMPLE_LIMIT=4 LUNA_LOCOMO_QA_LIMIT=8 \
@@ -225,7 +291,8 @@ LUNA_LOCOMO_ANSWER_BACKEND=anthropic ANTHROPIC_API_KEY=sk-ant-... \
 `LUNA_LOCOMO_MAX_MINUTES` (default 55) is a wall-clock soft cap: the loop
 projects total runtime before every answer-model call and stops cleanly
 (exit code 5, partial results still written) rather than risk an
-unbounded run.
+unbounded run. Exit code 6 means an `ollama-cloud` hard-stop instead (bad
+auth / quota / persistent throttling — see "Answer backends" above).
 
 ## Status (see obs_note ledger for the authoritative timeline)
 
@@ -250,6 +317,30 @@ unbounded run.
   Retrieval evidence coverage: 61.1% (33/54 annotated evidence dia_ids
   present in top-10 hits). See the PR body for the full write-up and
   what-to-survey notes.
+- **`ollama-cloud` backend added** (`answer-model.ts`:
+  `answerFromContextOllamaCloud`, `classifyOllamaCloudResponse`,
+  `LocomoHardStopError`) — Ollama's hosted cloud API
+  (`https://ollama.com/api/chat`), Bearer-authenticated via a
+  1Password-provisioned key. Retries 429/5xx/network errors with backoff,
+  hard-stops cleanly on auth/quota/persistent-throttle failures instead of
+  burning through the rest of the dataset one failed retry-loop at a time.
+  6 new unit tests cover the retry/hard-stop decision logic (17 total, all
+  passing).
+- **Full-dataset-scale run completed on `ollama-cloud` (`gpt-oss:120b`)**:
+  all 10 conversations ingested (full-dataset retrieval evidence coverage),
+  first 84 QA pairs per conversation scored (840 QA pairs total, 42.3% of
+  the full 1,986 — see "Time budget" above for the exact sizing math and
+  selection method), 67.0 minutes wall-clock, $0 cost (pre-provisioned
+  key), zero rate-limit/retry/hard-stop events. **Overall F1: 0.488** —
+  substantially higher than the local `llama3.1:8b` run's 0.352 on the same
+  retrieval pipeline. Per category: cat 1 (multi-hop) 0.397/277, cat 2
+  (single-hop) 0.585/319, cat 3 (temporal) 0.289/93, cat 4 (open-domain)
+  0.569/148, cat 5 (adversarial) 0.667/3. Retrieval evidence coverage:
+  63.4% (1019/1607 annotated evidence dia_ids present in top-10 hits,
+  across the FULL 10-conversation dataset — a materially more representative
+  number than the prior 4-conversation subset's 61.1%, since it now spans
+  the whole dataset's retrieval difficulty distribution). See the PR body
+  for the full write-up and what-to-survey notes.
 - **Observed failure pattern worth flagging**: the model frequently answers
   temporal questions with a *relative* expression ("last month", "next
   month", "last Friday") instead of resolving it against the session date

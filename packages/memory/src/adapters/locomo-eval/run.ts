@@ -5,24 +5,36 @@
  * conversation's raw turns into a fresh sqlite-vector MemoryRouter (Ollama
  * embeddings, same backend the chat-server uses) → for each QA pair, run
  * memory_search-equivalent retrieval scoped to that conversation's
- * namespace → (unless --dry-run) ask a local Ollama model to answer using
- * ONLY the retrieved text → score against ground truth per LoCoMo's own
- * per-category methodology (scoring.ts) → aggregate + report.
+ * namespace → (unless --dry-run) ask a model to answer using ONLY the
+ * retrieved text → score against ground truth per LoCoMo's own per-category
+ * methodology (scoring.ts) → aggregate + report.
  *
- * Answer backend: **Ollama by default** (`LUNA_LOCOMO_ANSWER_BACKEND`
- * unset or "ollama") — local, zero API cost, needs no key. The original
- * Anthropic path is preserved behind `LUNA_LOCOMO_ANSWER_BACKEND=anthropic`
- * for future flexibility (see answer-model.ts).
+ * Answer backend (`LUNA_LOCOMO_ANSWER_BACKEND`): "ollama" (default, local,
+ * zero cost, needs no key), "ollama-cloud" (Ollama's hosted cloud API,
+ * `https://ollama.com/api/chat`, needs `OLLAMA_CLOUD_KEY` — much faster than
+ * local CPU inference), or "anthropic" (original path, needs
+ * `ANTHROPIC_API_KEY`, currently blocked in this environment). See
+ * answer-model.ts for all three implementations.
  *
- * Cost vs. time budget: with Ollama there is no per-token dollar cost to
- * cap (see pricing.ts's `ollama` rate — always $0), so the old
- * `LUNA_LOCOMO_BUDGET_USD` dollar guard has been replaced with a
- * **wall-clock time estimate + cap** (`LUNA_LOCOMO_MAX_MINUTES`, default
- * 55): the harness times the first few answer-model calls, projects total
- * runtime from the observed seconds/QA-pair, and refuses to start a run
- * that would blow past the cap. Use `LUNA_LOCOMO_SAMPLE_LIMIT` /
- * `LUNA_LOCOMO_QA_LIMIT` to run a documented subset instead of silently
- * truncating mid-run.
+ * Cost vs. time budget: with Ollama (local or cloud) there is no per-token
+ * dollar cost to cap (see pricing.ts's `ollama*` rate — always $0 in this
+ * harness's accounting), so the old `LUNA_LOCOMO_BUDGET_USD` dollar guard
+ * has been replaced with a **wall-clock time estimate + cap**
+ * (`LUNA_LOCOMO_MAX_MINUTES`, default 55): the harness times the first few
+ * answer-model calls, projects total runtime from the observed
+ * seconds/QA-pair, and refuses to start a run that would blow past the cap.
+ * Use `LUNA_LOCOMO_SAMPLE_LIMIT` / `LUNA_LOCOMO_QA_LIMIT` to run a
+ * documented subset instead of silently truncating mid-run.
+ *
+ * Hard-stop handling (ollama-cloud only): `answerFromContextOllamaCloud`
+ * retries 429/5xx/network errors with backoff, but throws
+ * `LocomoHardStopError` on a HARD failure (bad auth, a quota/billing
+ * signal, or persistent throttling that never clears). The main loop below
+ * catches that specifically and stops the ENTIRE run immediately — not just
+ * the one QA pair — writing partial results, same discipline as the
+ * wall-clock cap. This prevents a broken key or exhausted quota from
+ * silently burning through the rest of the dataset one failed retry-loop at
+ * a time.
  *
  * Env vars (all optional except where noted):
  *   LUNA_LOCOMO_SAMPLE_LIMIT     number of conversations to run (default: all 10)
@@ -34,13 +46,22 @@
  *                                overall runtime; if exceeded, the run stops
  *                                cleanly (exit code 5) with all results-so-far
  *                                written to disk, same as the old budget cap.
- *   LUNA_LOCOMO_ANSWER_BACKEND   "ollama" (default) or "anthropic"
- *   LUNA_LOCOMO_ANSWER_MODEL     model id. Default for ollama: "llama3.1:8b".
- *                                REQUIRED for the anthropic backend (exact
- *                                dated Anthropic model id — the raw Messages
- *                                API needs a dated id, not a "haiku"/"sonnet"
- *                                tier alias — check
- *                                https://docs.anthropic.com/en/docs/about-claude/models)
+ *   LUNA_LOCOMO_ANSWER_BACKEND   "ollama" (default), "ollama-cloud", or "anthropic"
+ *   LUNA_LOCOMO_ANSWER_MODEL     model id, overrides the per-backend default
+ *                                below for any backend. REQUIRED for the
+ *                                anthropic backend (exact dated Anthropic
+ *                                model id — the raw Messages API needs a
+ *                                dated id, not a "haiku"/"sonnet" tier alias
+ *                                — check
+ *                                https://docs.anthropic.com/en/docs/about-claude/models).
+ *                                Default for ollama: "llama3.1:8b". Default
+ *                                for ollama-cloud: "gpt-oss:120b" (or
+ *                                LUNA_LOCOMO_CLOUD_MODEL, see below).
+ *   LUNA_LOCOMO_CLOUD_MODEL      ollama-cloud model id (default "gpt-oss:120b").
+ *                                Only used when LUNA_LOCOMO_ANSWER_MODEL is unset.
+ *   OLLAMA_CLOUD_KEY             REQUIRED for the ollama-cloud backend — Bearer
+ *                                token for https://ollama.com/api. Never log
+ *                                or print this value.
  *   ANTHROPIC_API_KEY            REQUIRED only when LUNA_LOCOMO_ANSWER_BACKEND=anthropic
  *   LUNA_OLLAMA_BASE_URL         Ollama daemon base URL (default: http://127.0.0.1:11434)
  *   LUNA_EMBEDDER=ollama         required (same convention as bench/paraphrase-recall.ts)
@@ -52,7 +73,8 @@
  *               dialog turns?). Zero cost/time spent on answer generation.
  *
  * Exit codes: 0 success, 2 Ollama unreachable, 3 dataset load error,
- * 4 missing required env for a non-dry-run, 5 time cap would be/was exceeded.
+ * 4 missing required env for a non-dry-run, 5 time cap would be/was
+ * exceeded, 6 hard-stop from the ollama-cloud backend (see above).
  */
 import { Effect, Layer, Stream } from "effect"
 import {
@@ -70,6 +92,8 @@ import { ingestSample, namespaceFor } from "./ingest.js"
 import {
   answerFromContextAnthropic,
   answerFromContextOllama,
+  answerFromContextOllamaCloud,
+  LocomoHardStopError,
   newCostTracker,
   type CostTracker,
 } from "./answer-model.js"
@@ -90,9 +114,38 @@ const QA_LIMIT = process.env["LUNA_LOCOMO_QA_LIMIT"]
 const TOP_K = Number(process.env["LUNA_LOCOMO_TOPK"] ?? "10")
 const MAX_MINUTES = Number(process.env["LUNA_LOCOMO_MAX_MINUTES"] ?? "55")
 const ANSWER_BACKEND = (process.env["LUNA_LOCOMO_ANSWER_BACKEND"] ?? "ollama").toLowerCase()
-const ANSWER_MODEL =
-  process.env["LUNA_LOCOMO_ANSWER_MODEL"] ?? (ANSWER_BACKEND === "ollama" ? "llama3.1:8b" : undefined)
+const DEFAULT_MODEL_BY_BACKEND: Record<string, string | undefined> = {
+  ollama: "llama3.1:8b",
+  "ollama-cloud": process.env["LUNA_LOCOMO_CLOUD_MODEL"] ?? "gpt-oss:120b",
+  anthropic: undefined,
+}
+// Fallback seconds/QA-pair used ONLY before the first real answer-model call
+// has completed (so the wall-clock guard has something to project from).
+// This is backend-specific: local `ollama` (CPU-only llama3.1:8b) really is
+// ~60s/QA on the reference machine (see README.md "Time budget"), but
+// `ollama-cloud` (gpt-oss:120b, hosted) is roughly 14x faster in practice
+// (~4.2s/QA measured on a real-context sizing sample — see PR body). Reusing
+// the 60s local fallback here made the guard fire before the FIRST
+// ollama-cloud answer call ever completed, wildly over-projecting total
+// runtime from a number that was never true for this backend. 10s is a
+// generous (2x) upper bound over the measured ~4.2s, not a tight guess.
+const FALLBACK_SEC_PER_QA_BY_BACKEND: Record<string, number> = {
+  ollama: 60,
+  "ollama-cloud": 10,
+  anthropic: 5,
+}
+// Don't enforce the wall-clock projection cap until at least this many REAL
+// answer calls have completed. The pre-first-call fallback above is a rough
+// guess; multiplying it across hundreds of remaining QA pairs before ANY
+// real measurement exists made the guard fire before the first call ever
+// finished on a large-subset ollama-cloud run (a wrong 60s/QA guess ×
+// hundreds of remaining pairs blew past even a generous cap in one shot —
+// see obs_note ledger for the incident). A handful of real calls gives an
+// honest average to project from instead.
+const TIME_CAP_WARMUP_QA = 5
+const ANSWER_MODEL = process.env["LUNA_LOCOMO_ANSWER_MODEL"] ?? DEFAULT_MODEL_BY_BACKEND[ANSWER_BACKEND]
 const API_KEY = process.env["ANTHROPIC_API_KEY"]
+const OLLAMA_CLOUD_KEY = process.env["OLLAMA_CLOUD_KEY"]
 const OLLAMA_BASE_URL =
   process.env["LUNA_OLLAMA_BASE_URL"] ?? process.env["OLLAMA_HOST"] ?? "http://127.0.0.1:11434"
 
@@ -146,7 +199,7 @@ async function main(): Promise<void> {
     if (ANSWER_BACKEND === "anthropic") {
       if (!ANSWER_MODEL) {
         console.error(
-          "[locomo-eval] LUNA_LOCOMO_ANSWER_MODEL is required for the anthropic backend (exact Anthropic model id). Use --dry-run to test retrieval only, or unset LUNA_LOCOMO_ANSWER_BACKEND to use local Ollama.",
+          "[locomo-eval] LUNA_LOCOMO_ANSWER_MODEL is required for the anthropic backend. Use --dry-run to test retrieval only, or unset LUNA_LOCOMO_ANSWER_BACKEND to use local Ollama.",
         )
         process.exit(4)
       }
@@ -154,9 +207,16 @@ async function main(): Promise<void> {
         console.error("[locomo-eval] ANTHROPIC_API_KEY is required for the anthropic backend.")
         process.exit(4)
       }
+    } else if (ANSWER_BACKEND === "ollama-cloud") {
+      if (!OLLAMA_CLOUD_KEY) {
+        console.error(
+          "[locomo-eval] OLLAMA_CLOUD_KEY is required for the ollama-cloud backend (Bearer token for https://ollama.com/api).",
+        )
+        process.exit(4)
+      }
     } else if (ANSWER_BACKEND !== "ollama") {
       console.error(
-        `[locomo-eval] unknown LUNA_LOCOMO_ANSWER_BACKEND "${ANSWER_BACKEND}" — expected "ollama" or "anthropic".`,
+        `[locomo-eval] unknown LUNA_LOCOMO_ANSWER_BACKEND "${ANSWER_BACKEND}" — expected "ollama", "ollama-cloud", or "anthropic".`,
       )
       process.exit(4)
     }
@@ -209,6 +269,7 @@ async function main(): Promise<void> {
   const scored: ScoredQA[] = []
   const retrieval: RetrievalRecord[] = []
   let timeCapExceeded = false
+  const hardStop: { current: { reason: string; message: string } | null } = { current: null }
   const answerStartedAt = Date.now()
   let qaAnswered = 0
   // Ingestion and answer-generation time are tracked SEPARATELY. Ingestion
@@ -238,7 +299,7 @@ async function main(): Promise<void> {
 
           const qas = QA_LIMIT ? sample.qa.slice(0, QA_LIMIT) : sample.qa
           for (const qa of qas) {
-            if (timeCapExceeded) break
+            if (timeCapExceeded || hardStop.current) break
 
             const hits = yield* Stream.runCollect(
               router.search({
@@ -279,14 +340,17 @@ async function main(): Promise<void> {
             // — the constraint that matters here is operator wall-clock
             // time, not spend.
             const elapsedSec = (Date.now() - answerStartedAt) / 1000
-            const avgAnswerSecPerQa = qaAnswered > 0 ? answerElapsedMs / 1000 / qaAnswered : 60
+            const avgAnswerSecPerQa =
+              qaAnswered > 0
+                ? answerElapsedMs / 1000 / qaAnswered
+                : (FALLBACK_SEC_PER_QA_BY_BACKEND[ANSWER_BACKEND] ?? 60)
             const avgIngestSecPerSample =
               samplesIngested > 0 ? ingestionElapsedMs / 1000 / samplesIngested : 0
             const remainingQa = totalQaPlanned - qaAnswered
             const remainingSamples = samples.length - sampleIdx - 1
             const projectedTotalSec =
               elapsedSec + avgAnswerSecPerQa * remainingQa + avgIngestSecPerSample * remainingSamples
-            if (projectedTotalSec > MAX_MINUTES * 60) {
+            if (qaAnswered >= TIME_CAP_WARMUP_QA && projectedTotalSec > MAX_MINUTES * 60) {
               console.error(
                 `[locomo-eval] TIME CAP — stopping before projected runtime (${(projectedTotalSec / 60).toFixed(1)}m) exceeds LUNA_LOCOMO_MAX_MINUTES=${MAX_MINUTES}m (answered ${qaAnswered}/${totalQaPlanned} so far, ${elapsedSec.toFixed(0)}s elapsed, avg ${avgAnswerSecPerQa.toFixed(1)}s/QA).`,
               )
@@ -296,34 +360,58 @@ async function main(): Promise<void> {
 
             const answerCallStart = Date.now()
             const result = yield* Effect.tryPromise({
-              try: () =>
-                ANSWER_BACKEND === "anthropic"
-                  ? answerFromContextAnthropic({
-                      question: qa.question,
-                      context: contextTexts,
-                      apiKey: API_KEY!,
-                      model: ANSWER_MODEL!,
-                      tracker,
-                    })
-                  : answerFromContextOllama({
-                      question: qa.question,
-                      context: contextTexts,
-                      baseUrl: OLLAMA_BASE_URL,
-                      model: ANSWER_MODEL!,
-                      tracker,
-                    }),
-              catch: (cause) => new Error(`answer-model call failed: ${String(cause)}`),
+              try: (): Promise<AnswerCallResult> => {
+                if (ANSWER_BACKEND === "anthropic") {
+                  return answerFromContextAnthropic({
+                    question: qa.question,
+                    context: contextTexts,
+                    apiKey: API_KEY!,
+                    model: ANSWER_MODEL!,
+                    tracker,
+                  })
+                }
+                if (ANSWER_BACKEND === "ollama-cloud") {
+                  return answerFromContextOllamaCloud({
+                    question: qa.question,
+                    context: contextTexts,
+                    apiKey: OLLAMA_CLOUD_KEY!,
+                    model: ANSWER_MODEL!,
+                    tracker,
+                  })
+                }
+                return answerFromContextOllama({
+                  question: qa.question,
+                  context: contextTexts,
+                  baseUrl: OLLAMA_BASE_URL,
+                  model: ANSWER_MODEL!,
+                  tracker,
+                })
+              },
+              catch: (cause) => cause,
             }).pipe(
-              Effect.catchAll((e) =>
-                Effect.succeed({ text: "", tokensIn: 0, tokensOut: 0, costUsd: 0, error: String(e) }),
-              ),
+              Effect.catchAll((cause) => {
+                if (cause instanceof LocomoHardStopError) {
+                  hardStop.current = { reason: cause.reason, message: cause.message }
+                  console.error(`[locomo-eval] HARD STOP (${cause.reason}): ${cause.message}`)
+                } else {
+                  console.error(`[locomo-eval] answer-model call failed: ${String(cause)}`)
+                }
+                return Effect.succeed({
+                  text: "",
+                  tokensIn: 0,
+                  tokensOut: 0,
+                  costUsd: 0,
+                })
+              }),
             )
             answerElapsedMs += Date.now() - answerCallStart
+
+            if (hardStop.current) break
 
             qaAnswered += 1
             scored.push(scoreQA(qa, result.text))
           }
-          if (timeCapExceeded) break
+          if (timeCapExceeded || hardStop.current) break
         }
       }),
     ).pipe(Effect.provide(layer)),
@@ -359,6 +447,14 @@ async function main(): Promise<void> {
     console.log(
       `# answer backend: ${ANSWER_BACKEND} (${ANSWER_MODEL}) · ${tracker.calls} calls · ${tracker.totalTokensIn} in / ${tracker.totalTokensOut} out tokens · $${tracker.totalCostUsd.toFixed(4)} · wall-clock ${(totalWallSec / 60).toFixed(1)}m`,
     )
+    console.log(
+      `# timing split: ingestion ${(ingestionElapsedMs / 1000).toFixed(1)}s across ${samplesIngested} conversation(s) (avg ${(samplesIngested > 0 ? ingestionElapsedMs / 1000 / samplesIngested : 0).toFixed(1)}s/conversation) · answering ${(answerElapsedMs / 1000).toFixed(1)}s across ${qaAnswered} QA pair(s) (avg ${(qaAnswered > 0 ? answerElapsedMs / 1000 / qaAnswered : 0).toFixed(2)}s/QA-pair)`,
+    )
+    if (hardStop.current) {
+      console.error(
+        `[locomo-eval] run stopped early due to a HARD STOP (${hardStop.current.reason}) — ${qaAnswered}/${totalQaPlanned} QA pairs answered before stopping. Partial results written below.`,
+      )
+    }
     writeFileSync(
       resolve(OUT_DIR, `results-${stamp}.json`),
       JSON.stringify(
@@ -367,6 +463,8 @@ async function main(): Promise<void> {
           aggregate: agg,
           cost: tracker,
           wallClockSec: totalWallSec,
+          hardStopped: hardStop.current,
+          timeCapExceeded,
           config: {
             SAMPLE_LIMIT,
             QA_LIMIT,
@@ -383,7 +481,15 @@ async function main(): Promise<void> {
     console.log(`# wrote ${resolve(OUT_DIR, `results-${stamp}.json`)}`)
   }
 
+  if (hardStop.current) process.exit(6)
   if (timeCapExceeded) process.exit(5)
+}
+
+interface AnswerCallResult {
+  readonly text: string
+  readonly tokensIn: number
+  readonly tokensOut: number
+  readonly costUsd: number
 }
 
 await main()

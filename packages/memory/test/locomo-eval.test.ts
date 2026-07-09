@@ -7,6 +7,10 @@
  */
 import { describe, expect, it } from "vitest"
 import { aggregateByCategory, f1Score, scoreQA } from "../src/adapters/locomo-eval/scoring.js"
+import {
+  backoffDelayMs,
+  classifyOllamaCloudResponse,
+} from "../src/adapters/locomo-eval/answer-model.js"
 import { flattenTurns } from "../src/adapters/locomo-eval/dataset.js"
 import type { LocomoQA, LocomoSample } from "../src/adapters/locomo-eval/types.js"
 
@@ -89,6 +93,56 @@ describe("locomo-eval scoring", () => {
     expect(cat2?.count).toBe(2)
     expect(cat2?.meanScore).toBeCloseTo(0.5, 5)
     expect(cat5?.meanScore).toBe(1)
+  })
+})
+
+describe("locomo-eval answer-model: ollama-cloud failure classification", () => {
+  it("401/403 -> hard-stop (auth), regardless of attempt count", () => {
+    const a = classifyOllamaCloudResponse({ status: 401, body: "unauthorized", attempt: 1, maxAttempts: 4 })
+    const b = classifyOllamaCloudResponse({ status: 403, body: "forbidden", attempt: 1, maxAttempts: 4 })
+    expect(a).toEqual({ kind: "hard-stop", reason: "auth" })
+    expect(b).toEqual({ kind: "hard-stop", reason: "auth" })
+  })
+
+  it("402, or a quota/billing-signal body, -> hard-stop (quota) even on a 200-adjacent status", () => {
+    const a = classifyOllamaCloudResponse({ status: 402, body: "", attempt: 1, maxAttempts: 4 })
+    const b = classifyOllamaCloudResponse({
+      status: 429,
+      body: '{"error":"insufficient_quota: spend cap reached"}',
+      attempt: 1,
+      maxAttempts: 4,
+    })
+    expect(a).toEqual({ kind: "hard-stop", reason: "quota" })
+    expect(b).toEqual({ kind: "hard-stop", reason: "quota" })
+  })
+
+  it("429 retries with backoff until maxAttempts, then hard-stops (rate_limit)", () => {
+    const early = classifyOllamaCloudResponse({ status: 429, body: "slow down", attempt: 1, maxAttempts: 4 })
+    expect(early.kind).toBe("retry")
+    if (early.kind === "retry") expect(early.delayMs).toBeGreaterThan(0)
+
+    const last = classifyOllamaCloudResponse({ status: 429, body: "slow down", attempt: 4, maxAttempts: 4 })
+    expect(last).toEqual({ kind: "hard-stop", reason: "rate_limit" })
+  })
+
+  it("5xx retries with backoff until maxAttempts, then hard-stops (server)", () => {
+    const early = classifyOllamaCloudResponse({ status: 503, body: "unavailable", attempt: 2, maxAttempts: 4 })
+    expect(early.kind).toBe("retry")
+
+    const last = classifyOllamaCloudResponse({ status: 500, body: "internal error", attempt: 4, maxAttempts: 4 })
+    expect(last).toEqual({ kind: "hard-stop", reason: "server" })
+  })
+
+  it("other 4xx (e.g. a malformed request) is a plain, non-systemic failure", () => {
+    const result = classifyOllamaCloudResponse({ status: 400, body: "bad request", attempt: 1, maxAttempts: 4 })
+    expect(result).toEqual({ kind: "fail" })
+  })
+
+  it("backoffDelayMs grows exponentially and is capped", () => {
+    expect(backoffDelayMs(1)).toBe(400)
+    expect(backoffDelayMs(2)).toBe(800)
+    expect(backoffDelayMs(3)).toBe(1600)
+    expect(backoffDelayMs(10)).toBe(4000)
   })
 })
 
