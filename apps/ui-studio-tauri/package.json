@@ -4,6 +4,7 @@
   "version": "0.1.1",
   "type": "module",
   "scripts": {
+    "tauri": "tauri",
     "dev": "tauri dev",
     "dev:hmr": "tauri dev --config src-tauri/tauri.hmr.conf.json",
     "build": "tauri build"
