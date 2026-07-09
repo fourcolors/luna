@@ -1,7 +1,12 @@
-// Luna Studio native shell — Phase 0: shell only.
-// No notifications, no updater, no tray (see
-// docs/superpowers/specs/2026-07-08-luna-studio-native-macos.md).
+// Luna Studio native shell — Phase 0: shell only, plus v1 staged-on-boot
+// self-update (see update-train-spec.md decision 4). No notifications, no
+// tray (see docs/superpowers/specs/2026-07-08-luna-studio-native-macos.md).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+// `app.updater()` (check) + `update.download_and_install()` come from
+// UpdaterExt. v1 has no restart/apply command — the staged bytes just sit
+// until the OS-level bundle swap takes effect on the next launch.
+use tauri_plugin_updater::UpdaterExt;
 
 /// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
 /// IndexedDB. WKWebView caches the `tauri://` asset responses (the embedded
@@ -65,8 +70,57 @@ fn clear_webview_cache_if_updated() {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
-        .setup(|_app| {
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
             clear_webview_cache_if_updated();
+
+            // v1 staged-on-boot update check (design decision 4): one
+            // check -> download -> install pass right after boot, held until
+            // the NEXT launch — no mid-session restart, no UI (Moon's
+            // banner/progress UX is a later phase). Runs on Tauri's async
+            // runtime so it never blocks the window paint. Every failure
+            // path is a soft `[studio-update]` eprintln: a flaky network or
+            // a signature mismatch must never crash boot. On staged success
+            // we write nothing extra — the existing webview-version stamp
+            // (above) already handles the cache purge on the NEXT boot,
+            // once the new binary is actually running.
+            // Dev builds never self-update: `tauri dev` runs a debug binary
+            // outside any installed .app, and a staged install over it would
+            // be meaningless at best (Moon's dev config likewise drops the
+            // updater entirely).
+            if cfg!(debug_assertions) {
+                eprintln!("[studio-update] debug build - update check skipped");
+                return Ok(());
+            }
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let updater = match handle.updater() {
+                    Ok(u) => u,
+                    Err(e) => {
+                        eprintln!("[studio-update] updater unavailable: {e}");
+                        return;
+                    }
+                };
+                match updater.check().await {
+                    Ok(None) => {
+                        eprintln!("[studio-update] no update available");
+                    }
+                    Err(e) => {
+                        eprintln!("[studio-update] check failed: {e}");
+                    }
+                    Ok(Some(update)) => {
+                        let version = update.version.clone();
+                        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+                            eprintln!("[studio-update] download/install failed: {e}");
+                            return;
+                        }
+                        eprintln!(
+                            "[studio-update] update {version} staged; takes effect on next launch"
+                        );
+                    }
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

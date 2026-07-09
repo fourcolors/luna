@@ -11,6 +11,14 @@ tauri = { version = "2", features = [] }
 # Clipboard write-text only (capabilities/default.json grants exactly
 # clipboard-manager:allow-write-text) — see phase0-spike-spec.md decision 8.
 tauri-plugin-clipboard-manager = "2"
+# v1 staged-on-boot self-update (see update-train-spec.md decision 4): check
+# → download_and_install on a background task in setup, no mid-session
+# restart, no UI. Feed + pubkey live in tauri.conf.json under plugins.updater.
+tauri-plugin-updater = "2"
+# `tauri::generate_context!` expands code that needs `serde_json` in scope now
+# that tauri.conf.json has a `plugins` block (the updater config parses as raw
+# JSON at compile time). Not used directly in main.rs.
+serde_json = "1"
 
 # Always-on (NOT feature-gated, macOS only): the webview cache-bust
 # (clear_webview_disk_cache, main.rs) needs MainThreadMarker + NSString/NSSet/
