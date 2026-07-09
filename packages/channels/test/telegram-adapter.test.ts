@@ -890,6 +890,87 @@ describe("inbound: attachments (photo / document)", () => {
     expect(received[0]!.attachments).toHaveLength(1)
   })
 
+  it("accepts an uppercase declared mime (Application/PDF)", async () => {
+    const { received } = await runInbound({
+      updates: [
+        makeDocumentUpdate({ updateId: 10_400, fileName: "report.pdf", mimeType: "Application/PDF" }),
+      ],
+      fileBytes: PDF_BYTES,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.attachments![0]!.mediaType).toBe("application/pdf")
+  })
+
+  it("rescues a generic application/octet-stream via the filename extension", async () => {
+    const { received } = await runInbound({
+      updates: [
+        makeDocumentUpdate({
+          updateId: 10_500,
+          fileName: "report.pdf",
+          mimeType: "application/octet-stream",
+        }),
+      ],
+      fileBytes: PDF_BYTES,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.attachments![0]!.mediaType).toBe("application/pdf")
+  })
+
+  it("still rejects octet-stream with an unhelpful filename", async () => {
+    const { received, calls } = await runInbound({
+      updates: [
+        makeDocumentUpdate({
+          updateId: 10_600,
+          fileName: "blob.bin",
+          mimeType: "application/octet-stream",
+        }),
+      ],
+    })
+    expect(received).toHaveLength(0)
+    expect(calls.some((c) => c.method === "getFile")).toBe(false)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "application/octet-stream",
+    )
+  })
+
+  it("delivers same-chat messages in arrival order: a text sent after a photo waits for the download", async () => {
+    // Slow download: the text update in the same batch/chat must still arrive
+    // at the handler AFTER the photo message, not race past it.
+    const slowTransport: TelegramFileTransport = () =>
+      Effect.sleep("150 millis").pipe(Effect.andThen(Effect.succeed(JPEG_BYTES)))
+    const { received } = await runInbound({
+      updates: [
+        makePhotoUpdate({ updateId: 10_700, chatId: 111, caption: "here is the PDF... err photo" }),
+        makeTextUpdate({ updateId: 10_701, chatId: 111, text: "please summarize it" }),
+      ],
+      fileTransportOverride: slowTransport,
+      runMillis: 500,
+    })
+    expect(received.map((m) => m.text)).toEqual([
+      "here is the PDF... err photo",
+      "please summarize it",
+    ])
+    expect(received[0]!.attachments).toHaveLength(1)
+  })
+
+  it("a slow download in one chat does NOT delay another chat's text", async () => {
+    const slowTransport: TelegramFileTransport = () =>
+      Effect.sleep("300 millis").pipe(Effect.andThen(Effect.succeed(JPEG_BYTES)))
+    const { received } = await runInbound({
+      updates: [
+        makePhotoUpdate({ updateId: 10_800, chatId: 111 }),
+        makeTextUpdate({ updateId: 10_801, chatId: 222, fromId: 222, text: "other chat" }),
+      ],
+      fileTransportOverride: slowTransport,
+      runMillis: 600,
+    })
+    // The other chat's text arrived FIRST (its chain was empty), proving
+    // cross-chat concurrency survived the per-chat ordering fix.
+    expect(received[0]?.text).toBe("other chat")
+    expect(received).toHaveLength(2)
+    expect(received[1]?.attachments).toHaveLength(1)
+  })
+
   it("stops the typing indicator it started when the download fails (no refresh after the reply)", async () => {
     const { calls } = await runInbound({
       updates: [makePhotoUpdate({ updateId: 10_300 })],

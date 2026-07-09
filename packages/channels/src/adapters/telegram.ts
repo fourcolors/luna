@@ -402,11 +402,20 @@ const EXTENSION_MEDIA_TYPES: Readonly<Record<string, string>> = {
 }
 
 const inferDocumentMediaType = (doc: TelegramDocument): string | null => {
-  if (doc.mime_type !== undefined && doc.mime_type.length > 0) return doc.mime_type
+  // Normalize: senders and clients disagree on casing ("Application/PDF").
+  const declared = doc.mime_type === undefined ? undefined : doc.mime_type.trim().toLowerCase()
+  if (declared !== undefined && ALLOWED_ATTACHMENT_MEDIA_TYPES.has(declared)) return declared
+  // Declared mime is missing, generic (application/octet-stream), or
+  // unrecognized — fall back to the filename extension before rejecting.
+  // The magic-byte sniffer stays the final authority on the actual bytes.
   const name = doc.file_name ?? ""
   const dot = name.lastIndexOf(".")
-  if (dot === -1) return null
-  return EXTENSION_MEDIA_TYPES[name.slice(dot + 1).toLowerCase()] ?? null
+  const fromExtension =
+    dot === -1 ? null : (EXTENSION_MEDIA_TYPES[name.slice(dot + 1).toLowerCase()] ?? null)
+  if (fromExtension !== null) return fromExtension
+  // Nothing ingestible: surface the (normalized) declared type so the
+  // unsupported-type reply can echo it, or null for "unknown".
+  return declared !== undefined && declared.length > 0 ? declared : null
 }
 
 /**
@@ -744,6 +753,29 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // into unbounded parallel 20 MB downloads (it degrades to queuing instead).
   const downloadSemaphore = Effect.unsafeMakeSemaphore(3)
 
+  // Per-chat FIFO dispatch. Media units run off the poll fiber (so downloads
+  // never starve other chats), but messages for the SAME chat must reach the
+  // handler in arrival order — "here's the PDF" followed by "please summarize
+  // it" must not deliver the text before the attachment. Each chat keeps a
+  // chain of fibers: a new unit awaits the previous one, so same-chat order
+  // is strict while different chats stay fully concurrent. Entries are
+  // removed when their chain drains, so the map stays bounded by the number
+  // of chats with in-flight work.
+  const chatChains = new Map<string, Fiber.RuntimeFiber<void, never>>()
+  const dispatchChained = (chatId: string, unit: Effect.Effect<void>): void => {
+    const safeUnit = unit.pipe(Effect.catchAllCause(() => Effect.void))
+    const prev = chatChains.get(chatId)
+    const chained =
+      prev === undefined
+        ? safeUnit
+        : Fiber.await(prev).pipe(Effect.andThen(safeUnit))
+    const fiber = Effect.runFork(chained)
+    chatChains.set(chatId, fiber)
+    fiber.addObserver(() => {
+      if (chatChains.get(chatId) === fiber) chatChains.delete(chatId)
+    })
+  }
+
   // Our bot's username from getMe, for "/verb@BotName" mention filtering in
   // groups. null until start() resolves it (or when getMe fails — degraded
   // mode: only bare "/verb" commands are recognized).
@@ -1028,8 +1060,10 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
               if (messageHandler !== null) {
                 yield* messageHandler({ ...mediaMsg, attachments: [outcome.attachment] })
               }
-            }).pipe(Effect.catchAllCause(() => Effect.void))
-            Effect.runFork(mediaUnit)
+            })
+            // Chained per chat: a follow-up text in the same chat queues
+            // behind this download instead of racing past it.
+            dispatchChained(mediaMsg.channelId, mediaUnit)
             continue
           }
 
@@ -1038,10 +1072,14 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           startTyping(transport, msg.channelId)
 
           if (messageHandler !== null) {
-            // Fire-and-forget: the installed handler is a pure Effect<void>
-            // closure over all service dependencies. Effect.runFork is the
-            // production path documented in the ChannelAdapter contract.
-            Effect.runFork(messageHandler(msg))
+            // Per-chat FIFO dispatch (fire-and-forget relative to the poll
+            // loop): the installed handler is a pure Effect<void> closure
+            // over all service dependencies. Same-chat messages run in
+            // arrival order behind any in-flight media download; a chat with
+            // no in-flight work dispatches immediately, and different chats
+            // never wait on each other.
+            const handlerMsg = msg
+            dispatchChained(handlerMsg.channelId, messageHandler(handlerMsg))
           }
         }
 
