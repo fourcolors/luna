@@ -932,24 +932,16 @@ const pushSmartBar = (
  * image type, oversized payload, or non-string data. Returns a human-readable
  * error message on failure, or null on success.
  *
- * Limits follow the Anthropic content-block limits:
- *   - mediaType ∈ { image/jpeg, image/png, image/gif, image/webp, application/pdf }
- *   - data: base64 string
- *   - decoded size ≤ 10 MB per image, ≤ 20 MB per PDF
- *   - turn total decoded ≤ 20 MB (base64 ≈ 27 MB, under the 32 MB API request ceiling)
- *   - ≤ 8 attachments per turn (defence-in-depth on top of maxPayload)
+ * Limits live in @luna/core attachment-limits.ts — the single source of truth
+ * shared with every other inbound surface (e.g. the Telegram channel adapter).
  */
-const ALLOWED_ATTACH_MEDIA_TYPES = new Set<string>([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "application/pdf",
-])
-const MAX_IMAGE_RAW_BYTES = 10 * 1024 * 1024 // Anthropic per-image base64 limit
-const MAX_PDF_RAW_BYTES = 20 * 1024 * 1024   // PDFs are large and can't be downscaled
-const MAX_TURN_RAW_BYTES = 20 * 1024 * 1024  // sum of decoded; base64 ≈ 27 MB < 32 MB request ceiling
-const MAX_ATTACHMENTS_PER_TURN = 8
+import {
+  ALLOWED_ATTACHMENT_MEDIA_TYPES as ALLOWED_ATTACH_MEDIA_TYPES,
+  MAX_IMAGE_RAW_BYTES,
+  MAX_PDF_RAW_BYTES,
+  MAX_TURN_RAW_BYTES,
+  MAX_ATTACHMENTS_PER_TURN,
+} from "@luna/core"
 
 const validateAttachments = (
   atts: ReadonlyArray<{ readonly mediaType?: unknown; readonly data?: unknown }> | undefined,

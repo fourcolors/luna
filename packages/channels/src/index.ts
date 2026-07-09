@@ -20,6 +20,7 @@
 export type {
   TransportKind,
   ChannelMessage,
+  ChannelAttachment,
   DeliveryCapability,
   DeliveryTarget,
   DeliverOptions,
@@ -54,10 +55,15 @@ export { channelCommands, handleChannelCommand } from "./commands.js"
 export type { ChannelServiceApi } from "./service.js"
 export { ChannelService, ChannelServiceLayer } from "./service.js"
 
-export type { TelegramAdapterConfig, TelegramHttpTransport } from "./adapters/telegram.js"
+export type {
+  TelegramAdapterConfig,
+  TelegramHttpTransport,
+  TelegramFileTransport,
+} from "./adapters/telegram.js"
 export {
   makeTelegramAdapter,
   makeRealTransport,
+  makeRealFileTransport,
   normalizeCommandMention,
 } from "./adapters/telegram.js"
 export {

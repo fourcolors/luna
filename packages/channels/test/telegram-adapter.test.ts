@@ -10,9 +10,11 @@
  *   - Poll-loop resilience (transient errors are retried, not fatal).
  *   - Dedup key correctness (platformMessageId = update_id).
  */
+import { Buffer } from "node:buffer"
 import { describe, expect, it, vi } from "vitest"
 import {
   Effect,
+  Either,
   Fiber,
   Layer,
   Option,
@@ -26,8 +28,10 @@ import { ChatService } from "@luna/chat-service"
 import {
   makeTelegramAdapter,
   makeRealTransport,
+  makeRealFileTransport,
   normalizeCommandMention,
   type TelegramHttpTransport,
+  type TelegramFileTransport,
   type TelegramAdapterConfig,
 } from "../src/adapters/telegram.js"
 import { channelCommands } from "../src/commands.js"
@@ -159,17 +163,91 @@ const makeTextUpdate = (overrides: {
   }
 }
 
-/** A non-text update (photo). Should be ignored. */
-const makePhotoUpdate = (chatId = 111, updateId = updateIdCounter++) => ({
-  update_id: updateId,
+/** A photo update (compressed image — several size variants, smallest first). */
+const makePhotoUpdate = (overrides: {
+  chatId?: number
+  chatType?: "private" | "group" | "supergroup" | "channel"
+  fromId?: number
+  updateId?: number
+  caption?: string
+  photo?: Array<{ file_id: string; width: number; height: number; file_size?: number }>
+} = {}) => ({
+  update_id: overrides.updateId ?? updateIdCounter++,
   message: {
     message_id: 43,
-    chat: { id: chatId, type: "private" as const },
-    from: { id: 999, first_name: "Test" },
-    photo: [{ file_id: "abc", width: 100, height: 100, file_size: 1234 }],
+    chat: { id: overrides.chatId ?? 111, type: overrides.chatType ?? ("private" as const) },
+    from: { id: overrides.fromId ?? 999, first_name: "Test" },
+    // Deliberately NOT smallest-first: the Bot API does not guarantee
+    // ordering, so the fixture proves max-by-area selection, not array position.
+    photo: overrides.photo ?? [
+      { file_id: "photo-large", width: 800, height: 800, file_size: 64_000 },
+      { file_id: "photo-small", width: 90, height: 90, file_size: 800 },
+    ],
+    ...(overrides.caption !== undefined ? { caption: overrides.caption } : {}),
     date: Math.floor(Date.now() / 1000),
   },
 })
+
+/** A document update (file sent uncompressed — PDFs arrive this way). */
+const makeDocumentUpdate = (overrides: {
+  chatId?: number
+  fromId?: number
+  updateId?: number
+  caption?: string
+  fileId?: string
+  fileName?: string
+  mimeType?: string
+  fileSize?: number
+} = {}) => ({
+  update_id: overrides.updateId ?? updateIdCounter++,
+  message: {
+    message_id: 44,
+    chat: { id: overrides.chatId ?? 111, type: "private" as const },
+    from: { id: overrides.fromId ?? 999, first_name: "Test" },
+    document: {
+      file_id: overrides.fileId ?? "doc-1",
+      ...(overrides.fileName !== undefined ? { file_name: overrides.fileName } : {}),
+      ...(overrides.mimeType !== undefined ? { mime_type: overrides.mimeType } : {}),
+      ...(overrides.fileSize !== undefined ? { file_size: overrides.fileSize } : {}),
+    },
+    ...(overrides.caption !== undefined ? { caption: overrides.caption } : {}),
+    date: Math.floor(Date.now() / 1000),
+  },
+})
+
+/** A sticker update. Remains silently ignored (reactions, not attachments). */
+const makeStickerUpdate = (chatId = 111, updateId = updateIdCounter++) => ({
+  update_id: updateId,
+  message: {
+    message_id: 45,
+    chat: { id: chatId, type: "private" as const },
+    from: { id: 999, first_name: "Test" },
+    sticker: { file_id: "stk", width: 512, height: 512 },
+    date: Math.floor(Date.now() / 1000),
+  },
+})
+
+/** Realistic file bodies — the adapter sniffs magic bytes before ingesting. */
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0x03, 0x04])
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+const PDF_BYTES = new Uint8Array(Buffer.from("%PDF-1.4 fake pdf body"))
+
+/**
+ * Fake file-download transport: records requested file_paths and returns the
+ * scripted bytes (or fails with the scripted error). Defaults to a JPEG body
+ * since photos are the most common case.
+ */
+const makeFakeFileTransport = (bytes: Uint8Array | Error = JPEG_BYTES) => {
+  const paths: string[] = []
+  const transport: TelegramFileTransport = (filePath) =>
+    Effect.suspend(() => {
+      paths.push(filePath)
+      return bytes instanceof Error
+        ? Effect.fail(bytes)
+        : Effect.succeed(bytes)
+    })
+  return { transport, paths }
+}
 
 /** A non-message update (e.g. callback_query). Should be ignored. */
 const makeCallbackUpdate = (updateId = updateIdCounter++) => ({
@@ -296,17 +374,17 @@ describe("inbound: getUpdates → ChannelMessage", () => {
 /* 2. Non-text / non-message updates are ignored                              */
 /* -------------------------------------------------------------------------- */
 
-describe("inbound: non-text / non-message updates ignored", () => {
-  it("ignores a photo update (no text field)", async () => {
+describe("inbound: non-ingestible / non-message updates ignored", () => {
+  it("ignores a sticker update silently (no handler call, no reply)", async () => {
     const receivedMessages: ChannelMessage[] = []
-    const photoUpdate = makePhotoUpdate(111, 300)
+    const stickerUpdate = makeStickerUpdate(111, 300)
     const textUpdate = makeTextUpdate({ updateId: 301, text: "actual text" })
 
-    const { transport } = makeFakeTransport([
-      { ok: true, result: [photoUpdate, textUpdate] },
+    const { transport, calls } = makeFakeTransport([
+      { ok: true, result: [stickerUpdate, textUpdate] },
     ])
 
-    const adapter = makeTelegramAdapter({ id: "tg-photo", httpTransport: transport })
+    const adapter = makeTelegramAdapter({ id: "tg-sticker", httpTransport: transport })
     adapter.setMessageHandler((msg) =>
       Effect.sync(() => { receivedMessages.push(msg) }),
     )
@@ -323,6 +401,8 @@ describe("inbound: non-text / non-message updates ignored", () => {
     expect(receivedMessages).toHaveLength(1)
     expect(receivedMessages[0]?.text).toBe("actual text")
     expect(receivedMessages[0]?.platformMessageId).toBe("301")
+    // No explanatory reply for stickers, and no download attempt.
+    expect(calls.some((c) => c.method === "getFile")).toBe(false)
   })
 
   it("ignores a callback_query update (no message field)", async () => {
@@ -349,6 +429,556 @@ describe("inbound: non-text / non-message updates ignored", () => {
 
     expect(receivedMessages).toHaveLength(1)
     expect(receivedMessages[0]?.platformMessageId).toBe("401")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* 2b. Inbound attachments: photo + document download                          */
+/* -------------------------------------------------------------------------- */
+
+describe("inbound: attachments (photo / document)", () => {
+  /**
+   * Drive one poll of `updates` through an adapter wired with a fake file
+   * transport. Returns received messages, all API calls, and file paths
+   * requested from the file transport.
+   */
+  const runInbound = async (opts: {
+    updates: unknown[]
+    fileBytes?: Uint8Array | Error
+    fileTransportOverride?: TelegramFileTransport
+    omitFileTransport?: boolean
+    perMethod?: Partial<Record<string, Array<FakeResponse>>>
+    allowedIds?: Iterable<string>
+    runMillis?: number
+  }) => {
+    const received: ChannelMessage[] = []
+    const { transport, calls } = makeFakeTransport(
+      [{ ok: true, result: opts.updates }],
+      opts.perMethod ?? {
+        getFile: [
+          { ok: true, result: { file_id: "any", file_path: "files/file_1.bin", file_size: 4 } },
+        ],
+      },
+    )
+    const fake = makeFakeFileTransport(opts.fileBytes)
+    const fileTransport = opts.fileTransportOverride ?? fake.transport
+    const adapter = makeTelegramAdapter({
+      id: "tg-attach",
+      httpTransport: transport,
+      ...(opts.omitFileTransport === true ? {} : { fileTransport }),
+      ...(opts.allowedIds !== undefined ? { allowedIds: opts.allowedIds } : {}),
+    })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep(`${opts.runMillis ?? 60} millis`)
+        yield* Fiber.interrupt(fiber)
+        yield* adapter.stop()
+      }),
+    )
+    return { received, calls, filePaths: fake.paths }
+  }
+
+  it("downloads a photo (largest variant) and attaches it as image/jpeg with the caption as text", async () => {
+    const { received, calls, filePaths } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 8100, caption: "here is the receipt" })],
+    })
+
+    // getFile was called with the LARGEST photo variant's file_id.
+    const getFile = calls.find((c) => c.method === "getFile")
+    expect(getFile?.params["file_id"]).toBe("photo-large")
+    // The raw bytes were fetched from the path getFile returned.
+    expect(filePaths).toEqual(["files/file_1.bin"])
+
+    expect(received).toHaveLength(1)
+    const msg = received[0]!
+    expect(msg.text).toBe("here is the receipt")
+    expect(msg.attachments).toHaveLength(1)
+    expect(msg.attachments![0]!.mediaType).toBe("image/jpeg")
+    expect(msg.attachments![0]!.data).toBe(Buffer.from(JPEG_BYTES).toString("base64"))
+  })
+
+  it("downloads a PDF document and attaches it as application/pdf (the bug-report case)", async () => {
+    const { received, calls } = await runInbound({
+      updates: [
+        makeDocumentUpdate({
+          updateId: 8200,
+          fileId: "pdf-99",
+          fileName: "report.pdf",
+          mimeType: "application/pdf",
+          fileSize: 4,
+          caption: "please summarize",
+        }),
+      ],
+      fileBytes: PDF_BYTES,
+    })
+
+    expect(calls.find((c) => c.method === "getFile")?.params["file_id"]).toBe("pdf-99")
+    expect(received).toHaveLength(1)
+    const msg = received[0]!
+    expect(msg.text).toBe("please summarize")
+    expect(msg.attachments![0]!.mediaType).toBe("application/pdf")
+    expect(msg.metadata).toMatchObject({
+      attachmentMediaType: "application/pdf",
+      attachmentFileName: "report.pdf",
+    })
+  })
+
+  it("infers application/pdf from the .pdf extension when Telegram omits mime_type", async () => {
+    const { received } = await runInbound({
+      updates: [makeDocumentUpdate({ updateId: 8250, fileName: "scan.PDF" })],
+      fileBytes: PDF_BYTES,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.attachments![0]!.mediaType).toBe("application/pdf")
+  })
+
+  it("accepts an image sent as an uncompressed document (image/png)", async () => {
+    const { received } = await runInbound({
+      updates: [
+        makeDocumentUpdate({ updateId: 8300, fileName: "shot.png", mimeType: "image/png" }),
+      ],
+      fileBytes: PNG_BYTES,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.attachments![0]!.mediaType).toBe("image/png")
+  })
+
+  it("corrects a misnamed file to its sniffed type (PDF-labelled JPEG becomes image/jpeg)", async () => {
+    const { received } = await runInbound({
+      updates: [
+        makeDocumentUpdate({ updateId: 8310, fileName: "photo.pdf", mimeType: "application/pdf" }),
+      ],
+      fileBytes: JPEG_BYTES,
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.attachments![0]!.mediaType).toBe("image/jpeg")
+  })
+
+  it("rejects a file whose bytes match no ingestible signature", async () => {
+    const { received, calls } = await runInbound({
+      updates: [
+        makeDocumentUpdate({ updateId: 8320, fileName: "real.pdf", mimeType: "application/pdf" }),
+      ],
+      fileBytes: new Uint8Array([1, 2, 3, 4]),
+    })
+    expect(received).toHaveLength(0)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "doesn't match a type I can read",
+    )
+  })
+
+  it("rejects an unsupported document type with an explanatory reply (no getFile, no handler)", async () => {
+    const { received, calls } = await runInbound({
+      updates: [
+        makeDocumentUpdate({ updateId: 8400, fileName: "code.zip", mimeType: "application/zip" }),
+      ],
+    })
+
+    expect(received).toHaveLength(0)
+    expect(calls.some((c) => c.method === "getFile")).toBe(false)
+    const reply = calls.find((c) => c.method === "sendMessage")
+    expect(reply).toBeDefined()
+    expect(String(reply?.params["text"])).toContain("application/zip")
+  })
+
+  it("rejects a declared-oversize file BEFORE any getFile call", async () => {
+    const { received, calls } = await runInbound({
+      updates: [
+        makeDocumentUpdate({
+          updateId: 8500,
+          fileName: "huge.pdf",
+          mimeType: "application/pdf",
+          fileSize: 25 * 1024 * 1024, // over the 20 MB PDF cap
+        }),
+      ],
+    })
+
+    expect(received).toHaveLength(0)
+    expect(calls.some((c) => c.method === "getFile")).toBe(false)
+    const reply = calls.find((c) => c.method === "sendMessage")
+    expect(String(reply?.params["text"])).toContain("too large")
+  })
+
+  it("enforces the smaller 10 MB cap for images (a 12 MB png is rejected)", async () => {
+    const { received, calls } = await runInbound({
+      updates: [
+        makeDocumentUpdate({
+          updateId: 8550,
+          fileName: "big.png",
+          mimeType: "image/png",
+          fileSize: 12 * 1024 * 1024, // over the 10 MB image cap, under the PDF cap
+        }),
+      ],
+    })
+    expect(received).toHaveLength(0)
+    expect(calls.some((c) => c.method === "getFile")).toBe(false)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "too large",
+    )
+  })
+
+  it("replies with an explanation when getFile fails (Telegram 20 MB bot ceiling)", async () => {
+    const { received, calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 8600 })],
+      perMethod: {
+        getFile: [{ ok: false, error_code: 400, description: "Bad Request: file is too big" }],
+      },
+    })
+
+    expect(received).toHaveLength(0)
+    const reply = calls.find((c) => c.method === "sendMessage")
+    expect(String(reply?.params["text"])).toContain("file is too big")
+  })
+
+  it("replies with an explanation when the byte download fails", async () => {
+    const { received, calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 8700 })],
+      fileBytes: new Error("connection reset"),
+    })
+
+    expect(received).toHaveLength(0)
+    const reply = calls.find((c) => c.method === "sendMessage")
+    expect(String(reply?.params["text"])).toContain("connection reset")
+  })
+
+  it("fails gracefully when no file transport is configured (no crash, user is told)", async () => {
+    const { received, calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 8800 })],
+      omitFileTransport: true,
+    })
+
+    expect(received).toHaveLength(0)
+    const reply = calls.find((c) => c.method === "sendMessage")
+    expect(String(reply?.params["text"])).toContain("downloads aren't configured")
+  })
+
+  it("never calls getFile for a non-allowlisted sender (no bandwidth for strangers)", async () => {
+    const { received, calls, filePaths } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 8900, fromId: 666, chatId: 666 })],
+      allowedIds: ["111"],
+    })
+
+    expect(received).toHaveLength(0)
+    expect(calls.some((c) => c.method === "getFile")).toBe(false)
+    expect(calls.some((c) => c.method === "sendMessage")).toBe(false) // silent drop, no bot-existence leak
+    expect(filePaths).toHaveLength(0)
+  })
+
+  it("replies to a voice note in a private chat but stays silent in groups", async () => {
+    const voiceUpdate = (chatId: number, chatType: "private" | "group", updateId: number) => ({
+      update_id: updateId,
+      message: {
+        message_id: 46,
+        chat: { id: chatId, type: chatType },
+        from: { id: 999, first_name: "Test" },
+        voice: { file_id: "v1", duration: 3 },
+        date: Math.floor(Date.now() / 1000),
+      },
+    })
+
+    const dm = await runInbound({ updates: [voiceUpdate(111, "private", 9000)] })
+    expect(dm.received).toHaveLength(0)
+    expect(String(dm.calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "audio",
+    )
+
+    const group = await runInbound({ updates: [voiceUpdate(-700, "group", 9001)] })
+    expect(group.received).toHaveLength(0)
+    expect(group.calls.some((c) => c.method === "sendMessage")).toBe(false)
+  })
+
+  it("a photo with no caption produces an empty-text message with the attachment", async () => {
+    const { received } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 9100 })],
+    })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.text).toBe("")
+    expect(received[0]!.attachments).toHaveLength(1)
+  })
+
+  it("rejects when getFile REPORTS an oversize file — no byte fetch happens", async () => {
+    const { received, calls, filePaths } = await runInbound({
+      updates: [
+        makeDocumentUpdate({ updateId: 9200, fileName: "big.pdf", mimeType: "application/pdf" }),
+      ],
+      perMethod: {
+        getFile: [
+          {
+            ok: true,
+            result: { file_id: "x", file_path: "documents/big.pdf", file_size: 25 * 1024 * 1024 },
+          },
+        ],
+      },
+    })
+    expect(received).toHaveLength(0)
+    expect(filePaths).toHaveLength(0) // the lying-metadata defence fired BEFORE the download
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "too large",
+    )
+  })
+
+  it("rejects when the ACTUAL bytes exceed the image cap despite small declared sizes", async () => {
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 16)
+    oversized.set(JPEG_BYTES, 0)
+    const { received, calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 9300 })], // declared size small (64 KB)
+      fileBytes: oversized,
+    })
+    expect(received).toHaveLength(0)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "too large",
+    )
+  })
+
+  it("replies when the file comes back empty", async () => {
+    const { received, calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 9400 })],
+      fileBytes: new Uint8Array(0),
+    })
+    expect(received).toHaveLength(0)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "came back empty",
+    )
+  })
+
+  it("a DYING file transport (defect) doesn't kill the loop — the text update in the same batch still lands", async () => {
+    const dyingTransport: TelegramFileTransport = () =>
+      Effect.suspend(() => {
+        throw new Error("boom")
+      })
+    const { received, calls } = await runInbound({
+      updates: [
+        makePhotoUpdate({ updateId: 9500 }),
+        makeTextUpdate({ updateId: 9501, text: "still alive" }),
+      ],
+      fileTransportOverride: dyingTransport,
+    })
+    // The defect folded into a generic user reply…
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "Something went wrong",
+    )
+    // …and the rest of the batch was processed normally.
+    expect(received.map((m) => m.text)).toEqual(["still alive"])
+    // The poll loop survived: at least a second getUpdates happened.
+    expect(calls.filter((c) => c.method === "getUpdates").length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("replies to an unsupported document even in a GROUP chat (deliberate file share)", async () => {
+    const groupZip = {
+      update_id: 9600,
+      message: {
+        message_id: 47,
+        chat: { id: -800, type: "group" as const },
+        from: { id: 999, first_name: "Test" },
+        document: { file_id: "zip-1", file_name: "code.zip", mime_type: "application/zip" },
+        date: Math.floor(Date.now() / 1000),
+      },
+    }
+    const { received, calls } = await runInbound({ updates: [groupZip] })
+    expect(received).toHaveLength(0)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "application/zip",
+    )
+  })
+
+  it("sanitizes a markdown-link-shaped mime_type — the bot must not post attacker-authored links", async () => {
+    const evil = {
+      update_id: 9700,
+      message: {
+        message_id: 48,
+        chat: { id: 111, type: "private" as const },
+        from: { id: 999, first_name: "Test" },
+        document: {
+          file_id: "evil-1",
+          file_name: "x.bin",
+          mime_type: "x/y). [Re-verify your account](https://evil.example/phish) (",
+        },
+        date: Math.floor(Date.now() / 1000),
+      },
+    }
+    const { received, calls } = await runInbound({ updates: [evil] })
+    expect(received).toHaveLength(0)
+    const reply = String(calls.find((c) => c.method === "sendMessage")?.params["text"])
+    expect(reply).toContain("unknown")
+    expect(reply).not.toContain("<a href")
+    expect(reply).not.toContain("evil.example")
+  })
+
+  it("replies to a video in a DM with the videos hint", async () => {
+    const video = {
+      update_id: 9800,
+      message: {
+        message_id: 49,
+        chat: { id: 111, type: "private" as const },
+        from: { id: 999, first_name: "Test" },
+        video: { file_id: "v-1", duration: 10 },
+        date: Math.floor(Date.now() / 1000),
+      },
+    }
+    const { received, calls } = await runInbound({ updates: [video] })
+    expect(received).toHaveLength(0)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "videos",
+    )
+  })
+
+  it("treats an animation (GIF) like video, NOT like its backward-compat document field", async () => {
+    // Bot API: animation messages set BOTH animation and document.
+    const makeGif = (chatId: number, chatType: "private" | "group", updateId: number) => ({
+      update_id: updateId,
+      message: {
+        message_id: 50,
+        chat: { id: chatId, type: chatType },
+        from: { id: 999, first_name: "Test" },
+        animation: { file_id: "gif-1", width: 300, height: 200 },
+        document: { file_id: "gif-1", file_name: "funny.mp4", mime_type: "video/mp4" },
+        date: Math.floor(Date.now() / 1000),
+      },
+    })
+
+    // In a DM: an explanatory reply mentioning GIFs, and NO getFile call.
+    const dm = await runInbound({ updates: [makeGif(111, "private", 9900)] })
+    expect(dm.received).toHaveLength(0)
+    expect(dm.calls.some((c) => c.method === "getFile")).toBe(false)
+    expect(String(dm.calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "GIFs",
+    )
+
+    // In a group: complete silence — ambient GIFs must not trigger bot noise.
+    const group = await runInbound({ updates: [makeGif(-900, "group", 9901)] })
+    expect(group.received).toHaveLength(0)
+    expect(group.calls.some((c) => c.method === "sendMessage")).toBe(false)
+  })
+
+  it("replies with the no-download-path hint when getFile succeeds without a file_path", async () => {
+    const { received, calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 10_000 })],
+      perMethod: { getFile: [{ ok: true, result: { file_id: "x" } }] },
+    })
+    expect(received).toHaveLength(0)
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "wouldn't hand over",
+    )
+  })
+
+  it("rejects an unsafe file_path from getFile before it reaches the download URL", async () => {
+    const { received, calls, filePaths } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 10_100 })],
+      perMethod: {
+        getFile: [
+          { ok: true, result: { file_id: "x", file_path: "../../botEVIL/files/a.jpg" } },
+        ],
+      },
+    })
+    expect(received).toHaveLength(0)
+    expect(filePaths).toHaveLength(0) // never forwarded to the transport
+    expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
+      "unusable download path",
+    )
+  })
+
+  it("keeps a media caption out of command interpretation (photo captioned /status@OtherBot is NOT dropped)", async () => {
+    const { received } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 10_200, caption: "/status@SomeOtherBot check this" })],
+    })
+    // A TEXT message with this content would be dropped (addressed to another
+    // bot). A caption is user text riding on media — it must survive verbatim.
+    expect(received).toHaveLength(1)
+    expect(received[0]!.text).toBe("/status@SomeOtherBot check this")
+    expect(received[0]!.attachments).toHaveLength(1)
+  })
+
+  it("stops the typing indicator it started when the download fails (no refresh after the reply)", async () => {
+    const { calls } = await runInbound({
+      updates: [makePhotoUpdate({ updateId: 10_300 })],
+      fileBytes: new Error("connection reset"),
+      // Past one 4s refresh interval: a leaked typing fiber would re-send
+      // sendChatAction at ~4s; a stopped one leaves exactly the initial call.
+      runMillis: 4500,
+    })
+    expect(calls.filter((c) => c.method === "sendChatAction")).toHaveLength(1)
+  }, 10_000)
+})
+
+describe("makeRealFileTransport (stubbed fetch — no network)", () => {
+  const TOKEN = "fake_token_12345"
+
+  const runWithFetch = async (
+    fetchImpl: (url: string) => Promise<unknown>,
+    filePath = "photos/file_1.jpg",
+  ): Promise<{ error: Error | null; urls: string[] }> => {
+    const urls: string[] = []
+    const stub = (async (input: unknown) => {
+      const url = String(input)
+      urls.push(url)
+      return fetchImpl(url)
+    }) as unknown as typeof fetch
+    vi.stubGlobal("fetch", stub)
+    try {
+      const ft = makeRealFileTransport(Redacted.make(TOKEN))
+      const result = await Effect.runPromise(Effect.either(ft(filePath)))
+      return { error: Either.isLeft(result) ? result.left : null, urls }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  }
+
+  it("maps an HTTP failure to a message with NO token and NO URL in it", async () => {
+    const { error } = await runWithFetch(async () => ({ ok: false, status: 404 }))
+    expect(error?.message).toBe("download failed: HTTP 404")
+    expect(error?.message).not.toContain(TOKEN)
+    expect(error?.message).not.toContain("api.telegram.org")
+  })
+
+  it("wraps a rejecting fetch without adding the URL or token", async () => {
+    const { error } = await runWithFetch(async () => {
+      throw new Error("boom")
+    })
+    expect(error?.message).toBe("download failed: boom")
+    expect(error?.message).not.toContain(TOKEN)
+  })
+
+  it("percent-encodes file_path segments in the download URL", async () => {
+    const { urls } = await runWithFetch(
+      async () => ({ ok: false, status: 404 }), // fail fast; we only care about the URL
+      "documents/weird name+.pdf",
+    )
+    expect(urls[0]).toBe(
+      `https://api.telegram.org/file/bot${TOKEN}/documents/weird%20name%2B.pdf`,
+    )
+  })
+
+  it("aborts on an oversize Content-Length before reading the body", async () => {
+    const { error } = await runWithFetch(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => String(25 * 1024 * 1024) },
+      body: null,
+    }))
+    expect(error?.message).toBe("download failed: file exceeds the size limit")
+  })
+
+  it("enforces a hard streaming ceiling when Content-Length lies or is absent", async () => {
+    let cancelled = false
+    const chunk = new Uint8Array(5 * 1024 * 1024)
+    const { error } = await runWithFetch(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          // Endless 5 MB chunks — the reader must be cancelled at the ceiling.
+          read: async () => ({ done: false, value: chunk }),
+          cancel: async () => {
+            cancelled = true
+          },
+        }),
+      },
+    }))
+    expect(error?.message).toBe("download failed: file exceeds the size limit")
+    expect(cancelled).toBe(true)
   })
 })
 
