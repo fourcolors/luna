@@ -677,17 +677,15 @@ fn load_connection_in(luna_dir: &std::path::Path) -> Option<serde_json::Value> {
                         // Resolve the "legacy" sentinel: the real token lives in
                         // moon-connection.json under a profile keyed by cfg.default.
                         // URL stays from client.toml (authoritative for routing).
-                        let resolved = read_connection_value_in(luna_dir)
-                            .map(|v| {
-                                let (_, profiles) = normalize_profiles(&v);
-                                profile_connection(&profiles, &cfg.default).and_then(|c| {
-                                    c["wsToken"]
-                                        .as_str()
-                                        .filter(|t| !t.is_empty())
-                                        .map(|t| t.to_string())
-                                })
+                        let resolved = read_connection_value_in(luna_dir).and_then(|v| {
+                            let (_, profiles) = normalize_profiles(&v);
+                            profile_connection(&profiles, &cfg.default).and_then(|c| {
+                                c["wsToken"]
+                                    .as_str()
+                                    .filter(|t| !t.is_empty())
+                                    .map(|t| t.to_string())
                             })
-                            .flatten();
+                        });
                         // Fall through to the sentinel when resolution fails so the
                         // frontend surfaces Disconnected rather than silently breaking.
                         resolved.unwrap_or_else(|| entry.token_ref.clone())
@@ -1073,7 +1071,7 @@ fn parse_loopback_request(req: &str) -> CallbackOutcome {
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .unwrap_or("");
-    let query = path.splitn(2, '?').nth(1).unwrap_or("");
+    let query = path.split_once('?').map(|x| x.1).unwrap_or("");
     if let (Some(code), Some(state)) = (query_param(query, "code"), query_param(query, "state")) {
         return CallbackOutcome::Captured(OauthRedirectResult { code, state });
     }
@@ -1307,10 +1305,10 @@ fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     // lowercasing the whole string would corrupt the path/query/address.
     let is_https = url
         .get(..8)
-        .map_or(false, |p| p.eq_ignore_ascii_case("https://"));
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"));
     let is_mailto = url
         .get(..7)
-        .map_or(false, |p| p.eq_ignore_ascii_case("mailto:"));
+        .is_some_and(|p| p.eq_ignore_ascii_case("mailto:"));
     if !(is_https || is_mailto) {
         return Err("only https:// or mailto: URLs can be opened".into());
     }
@@ -1860,7 +1858,6 @@ fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
-
 // ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
 //
 // The moon orb (window "main") and the widget windows (panel-* / widget-*) are
@@ -2319,7 +2316,6 @@ fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Resul
         // Returns the event unchanged (does NOT consume it).
         let local_block = {
             let end = end.clone();
-            let ns_win_ptr = ns_win_ptr;
             block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
                 let ev = unsafe { event.as_ref() };
                 let up = ev.r#type() == NSEventType::LeftMouseUp
@@ -2799,7 +2795,7 @@ fn sync_ptt_shortcut(app: &tauri::AppHandle, want_registered: bool) {
         Err(_) => return, // a constant that fails to parse is a build-time bug
     };
     let gs = app.global_shortcut();
-    let registered = gs.is_registered(shortcut.clone());
+    let registered = gs.is_registered(shortcut);
     if want_registered && !registered {
         let result = gs.on_shortcut(shortcut, |app, _shortcut, event| {
             let controller = app.state::<VoiceController>();
@@ -3043,7 +3039,7 @@ fn main() {
                 )
                 && window.app_handle().get_webview_window("main").is_some()
             {
-                write_panel_layout(&window.app_handle());
+                write_panel_layout(window.app_handle());
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
@@ -3065,7 +3061,7 @@ fn main() {
                     // A panel the USER closed leaves the layout (absence =
                     // closed). Hub-owned shutdown skips this (main is
                     // already gone) so quitting never wipes the layout.
-                    write_panel_layout(&app);
+                    write_panel_layout(app);
                 }
                 // A destroyed dock window leaves a hole in the weld graph: tell
                 // the survivors to recompute NOW, or they keep squared corners
@@ -3073,7 +3069,7 @@ fn main() {
                 // Guarded on the hub like the layout write — during hub-owned
                 // shutdown everything is dying anyway.
                 if is_dock_label(window.label()) && app.get_webview_window("main").is_some() {
-                    broadcast_dock_geometry_settled(&app, window.label());
+                    broadcast_dock_geometry_settled(app, window.label());
                 }
                 // Don't strand the user with nothing on screen: while the
                 // workspace is EXPANDED the moon is hidden, so closing (×) the
@@ -3316,7 +3312,7 @@ fn main() {
             let mut registered = false;
             for shortcut_str in shortcuts {
                 if let Ok(shortcut) = shortcut_str.parse::<Shortcut>() {
-                    let shortcut_clone = shortcut.clone();
+                    let shortcut_clone = shortcut;
                     let _ = app
                         .global_shortcut()
                         .on_shortcut(shortcut, |app, _shortcut, event| {
