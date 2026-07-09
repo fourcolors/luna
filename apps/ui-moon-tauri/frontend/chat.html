@@ -1540,6 +1540,34 @@
       border-right-color: color-mix(in oklab, var(--accent) 72%, transparent);
       background: color-mix(in oklab, var(--accent) 9%, var(--paper-2));
     }
+    /* Live redock drop affordance — a soft left strip shown on the OWNER window
+       for the whole duration a redock-capable floater is being dragged, so the
+       redock target is discoverable (the native drag has no live cursor to
+       track). Non-interactive; armed/disarmed by cross-window events. Its width
+       matches the redock hit-strip (~320px incl. card inset). */
+    .redock-dropzone {
+      position: absolute; top: 0; left: 0; bottom: 0;
+      width: 320px; max-width: 86%;
+      z-index: 62;
+      pointer-events: none;
+      display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(to right,
+        color-mix(in oklab, var(--accent) 22%, transparent),
+        color-mix(in oklab, var(--accent) 7%, transparent) 68%,
+        transparent);
+      border-right: 2px dashed color-mix(in oklab, var(--accent) 55%, transparent);
+      animation: redockPulse 1.4s ease-in-out infinite;
+    }
+    .redock-dropzone[hidden] { display: none !important; }
+    .redock-dropzone-label {
+      font-family: var(--font-hand); font-size: 0.92rem; font-weight: 600;
+      color: var(--ink);
+      background: color-mix(in oklab, var(--paper-2) 90%, transparent);
+      padding: 6px 13px; border-radius: 11px;
+      border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+      box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--ink) 55%, transparent);
+    }
+    @keyframes redockPulse { 0%,100% { opacity: 0.72; } 50% { opacity: 1; } }
     /* The threads toggle is a .close-btn, and `.chat-panel .close-btn` forces
        display:flex — which beats the UA [hidden]{display:none} by cascade (the
        same trap the mic button hit). Without this !important guard, a pinned
@@ -2657,6 +2685,13 @@
       </div>
     </aside>
 
+    <!-- Redock drop affordance — a left strip shown on the owner while a
+         redock-capable floater is being dragged (armed/disarmed by cross-window
+         events). Non-interactive; hidden by default. -->
+    <div class="redock-dropzone" id="redock-dropzone" hidden aria-hidden="true">
+      <span class="redock-dropzone-label">Drop to redock</span>
+    </div>
+
     <!-- UserAsk / alignment-survey banner. Hidden by default; SurveyEngine
          populates and reveals it when a server `survey-request` frame
          arrives. Lives between chat-messages and the input form so it sits
@@ -3019,6 +3054,7 @@
       threadDrawerClose:   document.getElementById('thread-drawer-close'),
       threadDrawerNew:     document.getElementById('thread-drawer-new'),
       toggleThreads:       document.getElementById('toggle-threads'),
+      redockDropzone:      document.getElementById('redock-dropzone'),
       // Phase 3 D3: UserAsk / survey panel handles.
       userAskPanel:   document.getElementById('user-ask-panel'),
       userAskBody:    document.getElementById('user-ask-body'),
@@ -9895,8 +9931,26 @@
       // floater). Adopt that thread here and un-grey its row.
       try {
         if (W && typeof W.listen === 'function') {
+          // Live drop affordance: while a redock-capable floater WE own is being
+          // dragged it emits `redock-arming`; show the "drop to redock" strip for
+          // the drag's duration and hide it on release/redock. A safety timeout
+          // covers a missed disarm (the floater may close on redock before its
+          // disarm is delivered).
+          let _redockArmTimer = null;
+          const _showDropzone = (on) => {
+            if (!DOM.redockDropzone) return;
+            DOM.redockDropzone.hidden = !on;
+            if (_redockArmTimer) { clearTimeout(_redockArmTimer); _redockArmTimer = null; }
+            if (on) _redockArmTimer = setTimeout(() => { if (DOM.redockDropzone) DOM.redockDropzone.hidden = true; }, 20000);
+          };
+          W.listen('redock-arming', (e) => { const p = e && e.payload; if (p && p.owner === winLabel) _showDropzone(true); }).catch(() => {});
+          W.listen('redock-disarmed', (e) => { const p = e && e.payload; if (p && p.owner === winLabel) _showDropzone(false); }).catch(() => {});
+          // Redock return channel: a popped thread window dragged back over this
+          // window emits `redock-thread` (Rust redock_thread also closes the
+          // floater). Adopt that thread here and un-grey its row.
           W.listen('redock-thread', (e) => {
             const p = e && e.payload; const id = p && p.threadId;
+            _showDropzone(false);
             if (!id) return;
             ThreadDrawerEngine.unmarkPopped(id);
             ThreadDrawerEngine.onRowClick(id);

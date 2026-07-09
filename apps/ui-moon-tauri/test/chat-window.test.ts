@@ -4285,6 +4285,31 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.poppedThreads.has('b')).toBe(true)
     })
 
+    it('Scenario: a redock-arming event for OUR window shows the drop-zone strip; disarm and redock-thread hide it', () => {
+      const dz = document.getElementById('redock-dropzone') as HTMLElement
+      expect(dz.hidden).toBe(true)
+      expect(windowEventHandlers['redock-arming']).toBeTypeOf('function')
+      windowEventHandlers['redock-arming']({ payload: { owner: 'chat-test' } })
+      expect(dz.hidden).toBe(false)
+      windowEventHandlers['redock-disarmed']({ payload: { owner: 'chat-test' } })
+      expect(dz.hidden).toBe(true)
+      // redock-thread also clears the strip (covers the redocked-and-closed case)
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} }
+      m.State.activeThreadId = 'other'
+      windowEventHandlers['redock-arming']({ payload: { owner: 'chat-test' } })
+      expect(dz.hidden).toBe(false)
+      windowEventHandlers['redock-thread']({ payload: { threadId: 'b' } })
+      expect(dz.hidden).toBe(true)
+    })
+
+    it('Scenario: a redock-arming event for a DIFFERENT owner is ignored', () => {
+      const dz = document.getElementById('redock-dropzone') as HTMLElement
+      dz.hidden = true
+      windowEventHandlers['redock-arming']({ payload: { owner: 'someone-else' } })
+      expect(dz.hidden).toBe(true)
+    })
+
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {
       const m = M()
       m.State.pinnedThread = 't-pinned'

@@ -556,6 +556,14 @@
         tow = [];
       }
       var sh = dockShell(); if (sh) sh.classList.add('dragging');
+      // Live drop affordance + redock eligibility: a redock-capable SOLO floater
+      // tells its owner to show the "drop to redock" strip for the whole drag. A
+      // floater towing a welded cluster is NOT redock-eligible (a redock only
+      // folds in a lone window), so it drags and snaps like any other cluster.
+      var redockArmed = !!(redock && redock.threadId && redock.ownerLabel && tow.length === 0);
+      if (redockArmed) {
+        try { var _ea = ev(); if (_ea && _ea.emit) _ea.emit('redock-arming', { owner: redock.ownerLabel }); } catch (_) { /* best-effort */ }
+      }
       var unlisten = null, done = false;
       // The OS swallows the webview's pointer events mid-drag, so the RELIABLE
       // end signal is a Rust NSEvent mouse-up watcher that emits
@@ -585,7 +593,7 @@
         // overlap test says "not over the owner" (or it's an ordinary window),
         // fall through to the normal snap-on-release.
         var settle;
-        if (redock && redock.threadId && redock.ownerLabel) {
+        if (redockArmed) {
           var inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
           settle = (inv
             ? inv('redock_thread', { threadId: redock.threadId, ownerLabel: redock.ownerLabel, draft: (redock.getDraft && redock.getDraft()) || '' })
@@ -595,6 +603,9 @@
           }, function () {
             return snapOnRelease(tow, peel); // redock probe failed → behave like a normal release
           });
+          // Clear the owner's drop affordance now the gesture ended (the owner
+          // also clears it on redock-thread; this covers the declined case).
+          try { var _ed = ev(); if (_ed && _ed.emit) _ed.emit('redock-disarmed', { owner: redock.ownerLabel }); } catch (_) { /* best-effort */ }
         } else {
           settle = snapOnRelease(tow, peel);
         }
