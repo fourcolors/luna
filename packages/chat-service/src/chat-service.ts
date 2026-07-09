@@ -58,6 +58,7 @@ import {
   Clock as CoreClock,
   ObservabilityService,
   TelemetryService,
+  extractText,
   projectChatMessages,
   projectOne,
   SuggestedActions,
@@ -2292,19 +2293,81 @@ export class ChatService extends Effect.Service<ChatService>()(
         const sessionList = store
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+        // Derive a display title from the thread's FIRST top-level user message
+        // (same heuristic the first-turn path uses). Null when the thread has no
+        // user message yet or the store read fails — the client shows its own
+        // untitled fallback then.
+        const deriveFirstMessageTitle = (
+          sessionId: string,
+        ): Effect.Effect<string | null, never> =>
+          store.readMessages(sessionId).pipe(
+            Stream.filter((m) => m.kind === "user" && m.parentId === null),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.map((chunk) => {
+              const first = Chunk.head(chunk)
+              if (Option.isNone(first)) return null
+              const text = extractText(first.value.payload)
+              return text ? deriveTitleFromMessage(text) : null
+            }),
+            Effect.catchAll(() => Effect.succeed(null)),
+          )
+        // Overlay display titles onto summaries that lack one. The SessionStore
+        // `title` column is write-once at INSERT (Moon never sends one), while
+        // the first-turn heuristic writes derived titles to the ThreadRegistry —
+        // so without this overlay every active row projects title=null and the
+        // sidebar renders "untitled". Preference order per row:
+        //   1. the SessionStore title (explicitly set at creation);
+        //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
+        //   3. derive-on-read from the first user message (threads predating the
+        //      heuristic), persisted back to the registry so it runs once.
+        const resolveTitles = (
+          sessions: ReadonlyArray<SessionSummary>,
+          regTitles: ReadonlyMap<string, string | null>,
+          persist: ((id: string, title: string) => Effect.Effect<void, never>) | null,
+        ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
+          Effect.forEach(
+            sessions,
+            (s) => {
+              if (s.title !== null && s.title !== "") return Effect.succeed(s)
+              const regTitle = regTitles.get(s.id)
+              if (regTitle) return Effect.succeed({ ...s, title: regTitle })
+              return deriveFirstMessageTitle(s.id).pipe(
+                Effect.tap((derived) =>
+                  derived && persist ? persist(s.id, derived) : Effect.void,
+                ),
+                Effect.map((derived) => (derived ? { ...s, title: derived } : s)),
+              )
+            },
+            { concurrency: 4 },
+          )
         if (Option.isNone(threadRegistry)) {
-          return sessionList
+          return sessionList.pipe(
+            Effect.flatMap((sessions) => resolveTitles(sessions, new Map(), null)),
+          )
         }
         const reg = threadRegistry.value
         return Effect.gen(function* () {
-          const [sessions, archivedRows] = yield* Effect.all([
+          const [sessions, archivedRows, activeRows] = yield* Effect.all([
             sessionList,
             reg.listByStatus("archived").pipe(
               Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
             ),
+            reg.listByStatus("active").pipe(
+              Effect.catchAllCause(() =>
+                Effect.succeed([] as readonly { readonly id: string; readonly title: string | null }[]),
+              ),
+            ),
           ])
           const archivedIds = new Set(archivedRows.map((r) => r.id))
-          return sessions.filter((s) => !archivedIds.has(s.id))
+          const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
+          const visible = sessions.filter((s) => !archivedIds.has(s.id))
+          // Persist derived titles so legacy threads are derived exactly once.
+          // upsert only touches `title` for an existing row (CASE WHEN guard) and
+          // mints a minimal row otherwise; never changes archival status.
+          const persist = (id: string, title: string) =>
+            reg.upsert({ id, title }).pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
+          return yield* resolveTitles(visible, regTitles, persist)
         })
       }
 
