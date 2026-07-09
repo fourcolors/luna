@@ -30,6 +30,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   let mockMe: any
 
   beforeEach(() => {
+    // 0. Boot from a clean URL. A floater boots off ?thread=<id>&redockTo=<owner>;
+    // resetting here keeps a floater-boot test from leaking those params into the
+    // next case (which would wrongly pin the drawer window).
+    window.history.replaceState({}, '', '/')
+
     // 1. Load chat.html content + body structure.
     htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/chat.html'), 'utf8')
     const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
@@ -4316,6 +4321,56 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.ThreadDrawerEngine.openPanel()
       expect(m.State.threadDrawerOpen).toBe(false)
       expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+    })
+
+    it('Scenario: a thread-list frame arriving mid drag-out does NOT detach the dragged row (rebuild deferred until release)', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      const m = M()
+      m.State.activeThreadId = 'keep'
+      m.State.winLabel = 'chat-test'
+      seed()
+      const row = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]') as HTMLElement
+      row.dispatchEvent(pointer('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 }))
+      row.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: 140, clientY: 100 })) // past threshold → dragging
+      expect(m.State.threadDragActive).toBe(true)
+      expect(row.classList.contains('dragging')).toBe(true)
+
+      // A concurrent list frame (new thread appears) must NOT rebuild the list —
+      // detaching the captured node would drop pointer capture and abort the drag.
+      m.handleFrame({ type: 'thread-list', threads: [
+        { id: 'd', title: 'Delta', lastMessagePreview: 'newest', lastMessageAt: 4000 },
+        ...sampleThreads,
+      ] })
+      expect(document.body.contains(row)).toBe(true)                                   // same node, still attached
+      expect(row).toBe(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]'))
+      expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="d"]')).toBeNull() // deferred
+
+      // Ending the gesture flushes the deferred frame → the new row now renders.
+      row.dispatchEvent(pointer('pointercancel', { pointerId: 1 }))
+      expect(m.State.threadDragActive).toBe(false)
+      expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="d"]')).not.toBeNull()
+    })
+
+    it('Scenario: a redock-capable floater emits floater-closed on ANY native close path (onCloseRequested)', () => {
+      // Re-boot the page IIFE as a drawer-spawned floater: ?thread=<id>&redockTo=<owner>.
+      window.history.replaceState({}, '', '/?thread=b&redockTo=owner-win')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      let closeHandler: (() => void) | null = null
+      mockMe.onCloseRequested = vi.fn(async (cb: () => void) => { closeHandler = cb; return () => {} })
+      const emit = vi.fn(async () => {})
+      ;(window as any).__TAURI__.event = { listen: vi.fn(async () => () => {}), emit }
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((m) => m[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+
+      expect(mockMe.onCloseRequested).toHaveBeenCalled()
+      expect(closeHandler).toBeTypeOf('function')
+      // Native red traffic-light / Cmd+W → onCloseRequested fires (no custom-X click).
+      closeHandler!()
+      expect(emit).toHaveBeenCalledWith('floater-closed', { threadId: 'b', owner: 'owner-win' })
     })
   })
 })

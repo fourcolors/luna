@@ -3210,6 +3210,7 @@
       threads: [],              // SessionSummary[] from thread-list — the drawer render source
       poppedThreads: new Set(), // thread ids currently open in their own spawned window
       threadSearch: '',         // live filter text for the drawer
+      threadDragActive: false,  // a row drag-out/click gesture is in flight — render() defers rebuilds so the captured node is never detached mid-gesture
       winLabel: null,           // this window's Tauri label (set at boot; used by drag-out)
       // Model + effort switcher (§1 wire contract). effortSelection cap gates
       // whether the server accepts set-thread-config + computes efforts per model.
@@ -4086,6 +4087,10 @@
       render() {
         const listEl = DOM.threadDrawerList;
         if (!listEl) return;
+        // A row drag-out is a native pointer-capture gesture: rebuilding the list
+        // now would detach the captured node, drop capture, fire pointercancel,
+        // and silently abort the user's drag. Defer the rebuild until teardown.
+        if (State.threadDragActive) { this._renderPendingDuringDrag = true; return; }
         // Drop existing rows (keep the empty-state node).
         listEl.querySelectorAll('.thread-row').forEach((n) => n.remove());
         const rows = this._visibleThreads();
@@ -4162,6 +4167,9 @@
           row.classList.remove('dragging');
           try { if (pid != null) row.releasePointerCapture(pid); } catch (_) {}
           pid = null; dragging = false;
+          State.threadDragActive = false;
+          // Flush any list frame that arrived (and was deferred) mid-gesture.
+          if (self._renderPendingDuringDrag) { self._renderPendingDuringDrag = false; self.render(); }
         };
 
         const onUp = (e) => {
@@ -4182,6 +4190,7 @@
         row.addEventListener('pointerdown', (e) => {
           if (e.button !== 0) return;
           startX = e.clientX; startY = e.clientY; dragging = false; pid = e.pointerId;
+          State.threadDragActive = true;
           try { row.setPointerCapture(e.pointerId); } catch (_) {}
           row.addEventListener('pointermove', onMove);
           row.addEventListener('pointerup', onUp);
@@ -9831,6 +9840,23 @@
         winLabel = W.label;
       }
     } catch (_) { /* not in Tauri (tests/browser) */ }
+
+    // A drawer-spawned floater must un-grey its row in the owner's drawer on
+    // EVERY close path — the custom X, the native red traffic-light, and Cmd+W.
+    // onCloseRequested is the only hook that fires for all three; the Rust
+    // Destroyed arm only sees the opaque panel-chat-<hash> label and cannot
+    // recover threadId/owner. Emitting from here (with PINNED_THREAD + REDOCK_TO
+    // in scope) is the truthful choke point. Redock closes via redock_thread and
+    // sends redock-thread first, so a redundant floater-closed after is harmless
+    // (unmarkPopped is idempotent once the row is already un-greyed).
+    try {
+      if (W && typeof W.onCloseRequested === 'function' && PINNED_THREAD && REDOCK_TO
+          && window.__TAURI__ && window.__TAURI__.event) {
+        W.onCloseRequested(() => {
+          try { window.__TAURI__.event.emit('floater-closed', { threadId: PINNED_THREAD, owner: REDOCK_TO }); } catch (_) {}
+        });
+      }
+    } catch (_) { /* off-Tauri; no-op */ }
 
     const winCloseBtn = document.getElementById('close-btn');
     if (winCloseBtn) {
