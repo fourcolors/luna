@@ -30,8 +30,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   let mockMe: any
 
   beforeEach(() => {
-    // 0. Boot from a clean URL. A floater boots off ?thread=<id>&redockTo=<owner>;
-    // resetting here keeps a floater-boot test from leaking those params into the
+    // 0. Boot from a clean URL. A pinned window boots off ?thread=<id>;
+    // resetting here keeps a pinned-boot test from leaking that param into the
     // next case (which would wrongly pin the drawer window).
     window.history.replaceState({}, '', '/')
 
@@ -4145,6 +4145,134 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Feature: title-bar + button — mints a fresh thread IN THIS window
+  // (single-window model), and is disarmed entirely in pinned windows
+  // (one-thread-forever invariant).
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: title-bar + button (new thread in place)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: clicking + in a normal window calls newConversation and never open_widget', () => {
+      const m = M()
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      const newConv = vi.spyOn(m.ChatEngine, 'newConversation').mockImplementation(() => {})
+      document.getElementById('new-thread-btn')!.click()
+      expect(newConv).toHaveBeenCalledTimes(1)
+      expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
+    })
+
+    it('Scenario: clicking + preserves the typed draft and staged attachments (they carry into the fresh thread)', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = 'draft that must survive'
+      input.style.height = '120px'
+      m.Attachments.items = [{ id: 'att_x', kind: 'text', name: 'notes.txt', text: 'notes' }]
+      m.Attachments.render()
+      const sendNewThread = vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(sendNewThread).toHaveBeenCalledTimes(1)
+      expect(input.value).toBe('draft that must survive')
+      expect(input.style.height).toBe('120px')
+      expect(m.Attachments.items).toHaveLength(1)
+      expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(false)
+    })
+
+    it('Scenario: the online + arms the subscribe watchdog so a stalled mint self-heals', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
+      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(watchdog).toHaveBeenCalledTimes(1)
+      expect(m.State.subscribeTimeout).not.toBeNull()
+    })
+
+    it('Scenario: under the PoolEngine dark flag a connected + mints immediately (engine-aware gate)', () => {
+      // Re-boot the page with the pool vendor + dark flag so the delegation
+      // block is live - the pool path never assigns State.ws, so a raw
+      // readyState gate would wrongly take the offline branch here.
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      const mint = vi.spyOn(m.PoolEngine, 'sendNewThread').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(mint).toHaveBeenCalledTimes(1)
+      expect(m.State.pendingFreshThread).toBe(false)
+      localStorage.removeItem('luna_pool_engine')
+    })
+
+    it('Scenario: offline + then reconnect mints a fresh thread instead of restoring the persisted thread', async () => {
+      const m = M()
+      const invoke = vi.fn((cmd: string) => Promise.resolve(cmd === 'get_last_thread_id' ? 'persisted-thread' : null))
+      ;(window as any).__TAURI__.core = { invoke }
+      m.State.ws = null
+      m.State.activeThreadId = 'current-thread'
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(m.State.activeThreadId).toBeNull()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'persisted-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id')
+      expect(m.State.pendingFreshThread).toBe(false)
+    })
+
+    it('Scenario: in a pinned window the + click is a no-op (does not mint a thread)', () => {
+      const m = M()
+      m.State.pinnedThread = 't-pinned'
+      const newConv = vi.spyOn(m.ChatEngine, 'newConversation').mockImplementation(() => {})
+      document.getElementById('new-thread-btn')!.click()
+      expect(newConv).not.toHaveBeenCalled()
+    })
+
+    it('Scenario: a pinned (?thread=<id>) boot hides the + button', () => {
+      // The hidden attribute is set at BOOT from the URL-derived pin, so this
+      // one test re-runs the page script under a pinned URL (same mechanism
+      // as the beforeEach boot) instead of injecting State.pinnedThread.
+      window.history.replaceState({}, '', '/?thread=t-pinned')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      expect((document.getElementById('new-thread-btn') as HTMLElement).hidden).toBe(true)
+      // The non-pinned boot in beforeEach leaves it visible (contrast pin).
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('+ button: .newthread-btn[hidden] forces display:none over its own display:flex', () => {
+      // Same cascade trap as .mic-btn: the class's display:flex beats the UA
+      // [hidden]{display:none} rule, so the !important override must exist.
+      expect(htmlContent).toMatch(/\.newthread-btn\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Feature: Thread drawer (left slide-out thread switcher)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Thread drawer', () => {
@@ -4174,6 +4302,29 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBeGreaterThan(0)
       expect(drawer.getAttribute('aria-hidden')).toBe('false')
       expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    it('Scenario: under the PoolEngine dark flag requestList still sends list-threads (engine-aware gate)', () => {
+      // The pool path never assigns State.ws, so a raw readyState gate would
+      // silently skip the list request and the sidebar would render empty.
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      m.ThreadDrawerEngine.requestList()
+
+      expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+      localStorage.removeItem('luna_pool_engine')
     })
 
     it('Scenario: setSidebarWidth clamps to resting values and snaps small drags collapsed', () => {
@@ -4360,15 +4511,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rows[0].querySelector('.thread-row-title')!.textContent).toBe('Beta')
     })
 
-    it('Scenario: the active row is highlighted and popped threads are greyed', () => {
+    it('Scenario: the active row is highlighted', () => {
       const m = M()
       m.State.activeThreadId = 'b'
-      m.ThreadDrawerEngine.markPopped('c')
       seed()
       const rowB = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')!
-      const rowC = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="c"]')!
       expect(rowB.classList.contains('active')).toBe(true)
-      expect(rowC.classList.contains('popped')).toBe(true)
     })
 
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
@@ -4383,6 +4531,37 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBeGreaterThan(0)
     })
 
+    it('Scenario: clicking a row arms the subscribe watchdog so a lost snapshot self-heals', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'other'
+      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+
+      m.ThreadDrawerEngine.onRowClick('b')
+
+      expect(watchdog).toHaveBeenCalledTimes(1)
+      expect(m.State.subscribeTimeout).not.toBeNull()
+    })
+
+    it('Scenario: clicking a row cancels a deferred "+ New" so reconnect resubscribes instead of minting', async () => {
+      const m = M()
+      // Offline "+ New" defers the mint…
+      m.State.ws = null
+      m.State.pendingFreshThread = true
+      // …then the user picks an existing thread before reconnecting.
+      m.ThreadDrawerEngine.onRowClick('b')
+      expect(m.State.pendingFreshThread).toBe(false)
+      expect(m.State.activeThreadId).toBe('b')
+      // Reconnect honors the newer intent: fast-path resubscribe, no mint.
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const mint = vi.spyOn(m.WebSocketEngine, 'sendNewThread')
+      await m.WebSocketEngine.syncThread()
+      expect(mint).not.toHaveBeenCalled()
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
+    })
+
     it('Scenario: clicking the already-active thread does not re-subscribe and keeps the sidebar open', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} }
@@ -4394,93 +4573,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.threadDrawerOpen).toBe(true)
     })
 
-    it('Scenario: dragging a row OUT (release outside the drawer) spawns a window pinned to that thread at the drop point', () => {
-      const invoke = vi.fn(async () => null)
-      ;(window as any).__TAURI__.core = { invoke }
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
-      const m = M()
-      m.State.activeThreadId = 'keep'
-      m.State.winLabel = 'chat-test'
-      seed()
-      const row = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]') as HTMLElement
-      row.dispatchEvent(pointer('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 }))
-      row.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: 140, clientY: 100 })) // past 6px threshold
-      row.dispatchEvent(pointer('pointerup',   { pointerId: 1, clientX: 900, clientY: 100, screenX: 940, screenY: 160 }))
-      expect(invoke).toHaveBeenCalledWith('open_widget', {
-        kind: 'chat',
-        params: { thread: 'a', redockTo: 'chat-test' },
-        x: 940, y: 160,
-      })
-      expect(document.querySelector('.thread-drag-ghost')).toBeNull() // ghost cleaned up
-    })
-
-    it('Scenario: a redock-thread event adopts the thread (subscribe), un-greys its row, and carries the unsent draft', () => {
-      const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
-      m.State.activeThreadId = 'other'
-      m.ThreadDrawerEngine.markPopped('b')
-      const input = document.getElementById('message-input') as HTMLTextAreaElement
-      input.value = ''
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
-      expect(windowEventHandlers['redock-thread']).toBeTypeOf('function')
-      windowEventHandlers['redock-thread']({ payload: { threadId: 'b', draft: 'half-typed idea' } })
-      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
-      expect(m.State.poppedThreads.has('b')).toBe(false)
-      expect(input.value).toBe('half-typed idea') // draft carried, not lost
-    })
-
-    it('Scenario: a redock draft does NOT clobber an existing composer draft', () => {
-      const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
-      m.State.activeThreadId = 'other'
-      const input = document.getElementById('message-input') as HTMLTextAreaElement
-      input.value = 'my own draft'
-      windowEventHandlers['redock-thread']({ payload: { threadId: 'b', draft: 'incoming' } })
-      expect(input.value).toBe('my own draft') // owner's draft preserved
-    })
-
-    it('Scenario: a floater-closed event for OUR floater un-greys its row', () => {
-      const m = M()
-      m.ThreadDrawerEngine.markPopped('b')
-      expect(m.State.poppedThreads.has('b')).toBe(true)
-      expect(windowEventHandlers['floater-closed']).toBeTypeOf('function')
-      windowEventHandlers['floater-closed']({ payload: { threadId: 'b', owner: 'chat-test' } })
-      expect(m.State.poppedThreads.has('b')).toBe(false)
-    })
-
-    it('Scenario: a floater-closed event for a DIFFERENT owner is ignored', () => {
-      const m = M()
-      m.ThreadDrawerEngine.markPopped('b')
-      windowEventHandlers['floater-closed']({ payload: { threadId: 'b', owner: 'someone-else' } })
-      expect(m.State.poppedThreads.has('b')).toBe(true)
-    })
-
-    it('Scenario: a redock-arming event for OUR window shows the drop-zone strip; disarm and redock-thread hide it', () => {
-      const dz = document.getElementById('redock-dropzone') as HTMLElement
-      expect(dz.hidden).toBe(true)
-      expect(windowEventHandlers['redock-arming']).toBeTypeOf('function')
-      windowEventHandlers['redock-arming']({ payload: { owner: 'chat-test' } })
-      expect(dz.hidden).toBe(false)
-      windowEventHandlers['redock-disarmed']({ payload: { owner: 'chat-test' } })
-      expect(dz.hidden).toBe(true)
-      // redock-thread also clears the strip (covers the redocked-and-closed case)
-      const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
-      m.State.activeThreadId = 'other'
-      windowEventHandlers['redock-arming']({ payload: { owner: 'chat-test' } })
-      expect(dz.hidden).toBe(false)
-      windowEventHandlers['redock-thread']({ payload: { threadId: 'b' } })
-      expect(dz.hidden).toBe(true)
-    })
-
-    it('Scenario: a redock-arming event for a DIFFERENT owner is ignored', () => {
-      const dz = document.getElementById('redock-dropzone') as HTMLElement
-      dz.hidden = true
-      windowEventHandlers['redock-arming']({ payload: { owner: 'someone-else' } })
-      expect(dz.hidden).toBe(true)
-    })
-
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {
       const m = M()
       m.State.pinnedThread = 't-pinned'
@@ -4489,54 +4581,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBe(0)
     })
 
-    it('Scenario: a thread-list frame arriving mid drag-out does NOT detach the dragged row (rebuild deferred until release)', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
-      const m = M()
-      m.State.activeThreadId = 'keep'
-      m.State.winLabel = 'chat-test'
-      seed()
-      const row = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]') as HTMLElement
-      row.dispatchEvent(pointer('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 }))
-      row.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: 140, clientY: 100 })) // past threshold → dragging
-      expect(m.State.threadDragActive).toBe(true)
-      expect(row.classList.contains('dragging')).toBe(true)
-
-      // A concurrent list frame (new thread appears) must NOT rebuild the list —
-      // detaching the captured node would drop pointer capture and abort the drag.
-      m.handleFrame({ type: 'thread-list', threads: [
-        { id: 'd', title: 'Delta', lastMessagePreview: 'newest', lastMessageAt: 4000 },
-        ...sampleThreads,
-      ] })
-      expect(document.body.contains(row)).toBe(true)                                   // same node, still attached
-      expect(row).toBe(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]'))
-      expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="d"]')).toBeNull() // deferred
-
-      // Ending the gesture flushes the deferred frame → the new row now renders.
-      row.dispatchEvent(pointer('pointercancel', { pointerId: 1 }))
-      expect(m.State.threadDragActive).toBe(false)
-      expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="d"]')).not.toBeNull()
+    it('divider: #thread-divider[hidden] forces display:none over its own display:flex', () => {
+      // Same cascade trap as .newthread-btn/.mic-btn: initSidebar hides the
+      // divider in pinned windows via the hidden PROPERTY, but the class's
+      // display:flex beats the UA [hidden]{display:none} rule, so the
+      // !important override must exist or a phantom col-resize strip paints.
+      expect(htmlContent).toMatch(/#thread-divider\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
 
-    it('Scenario: a redock-capable floater emits floater-closed on ANY native close path (onCloseRequested)', () => {
-      // Re-boot the page IIFE as a drawer-spawned floater: ?thread=<id>&redockTo=<owner>.
-      window.history.replaceState({}, '', '/?thread=b&redockTo=owner-win')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      let closeHandler: (() => void) | null = null
-      mockMe.onCloseRequested = vi.fn(async (cb: () => void) => { closeHandler = cb; return () => {} })
-      const emit = vi.fn(async () => {})
-      ;(window as any).__TAURI__.event = { listen: vi.fn(async () => () => {}), emit }
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((m) => m[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
-
-      expect(mockMe.onCloseRequested).toHaveBeenCalled()
-      expect(closeHandler).toBeTypeOf('function')
-      // Native red traffic-light / Cmd+W → onCloseRequested fires (no custom-X click).
-      closeHandler!()
-      expect(emit).toHaveBeenCalledWith('floater-closed', { threadId: 'b', owner: 'owner-win' })
-    })
   })
 })

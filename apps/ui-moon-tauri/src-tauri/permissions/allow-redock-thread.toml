@@ -1,8 +1,0 @@
-# Drag-IN redock: a drawer-spawned thread floater (chat.html?thread=<id>&redockTo=<owner>)
-# folds back into its owner window on a native-drag release whose center lands
-# over the owner. See main.rs (redock_thread) — emits `redock-thread` to the
-# owner window and closes the floater.
-[[permission]]
-identifier = "allow-redock-thread"
-description = "Allows the redock_thread command"
-commands.allow = ["redock_thread"]
