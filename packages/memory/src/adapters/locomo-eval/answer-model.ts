@@ -142,19 +142,46 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function buildPrompt(question: string, context: ReadonlyArray<string>): string {
+/** One session's number + its LoCoMo-annotated date/time string. */
+export interface SessionDateEntry {
+  readonly sessionNum: number
+  readonly date: string
+}
+
+/**
+ * Builds the explicit, clearly-labeled "Session dates for reference" block
+ * injected into the answer prompt (Task 3 — deterministic temporal index,
+ * no LLM call). Returns null when there's no date index to inject (empty
+ * array), so callers can skip the block entirely rather than emit an empty
+ * label. Kept as a small pure function so it's unit-testable without
+ * building a full prompt string.
+ */
+export function buildDateIndexBlock(dateIndex: ReadonlyArray<SessionDateEntry> | undefined): string | null {
+  if (!dateIndex || dateIndex.length === 0) return null
+  return dateIndex.map((d) => `session ${d.sessionNum} = ${d.date}`).join(", ")
+}
+
+function buildPrompt(
+  question: string,
+  context: ReadonlyArray<string>,
+  dateIndex?: ReadonlyArray<SessionDateEntry>,
+): string {
   const contextBlock = context.length > 0 ? context.join("\n") : "(no memories retrieved)"
-  return [
+  const dateBlock = buildDateIndexBlock(dateIndex)
+  const lines = [
     "You are answering a question using ONLY the memory excerpts below.",
     "Do not use any outside knowledge. Keep the answer short — a phrase or date, not a paragraph.",
     'If the excerpts do not contain enough information to answer, reply EXACTLY: "No information available."',
-    "",
-    "Memory excerpts:",
-    contextBlock,
-    "",
-    `Question: ${question}`,
-    "Answer:",
-  ].join("\n")
+  ]
+  if (dateBlock !== null) {
+    lines.push(
+      "",
+      'Session dates for reference — resolve any relative date language ("last month", "next Friday", "the week before", etc) in the excerpts or question against these actual dates; do not guess:',
+      dateBlock,
+    )
+  }
+  lines.push("", "Memory excerpts:", contextBlock, "", `Question: ${question}`, "Answer:")
+  return lines.join("\n")
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -182,8 +209,9 @@ export async function answerFromContextOllama(args: {
   readonly baseUrl: string
   readonly model: string
   readonly tracker: CostTracker
+  readonly dateIndex?: ReadonlyArray<SessionDateEntry>
 }): Promise<AnswerResult> {
-  const prompt = buildPrompt(args.question, args.context)
+  const prompt = buildPrompt(args.question, args.context, args.dateIndex)
   const url = `${normalizeBaseUrl(args.baseUrl)}/api/chat`
   const res = await fetch(url, {
     method: "POST",
@@ -326,8 +354,9 @@ export async function answerFromContextOllamaCloud(args: {
   readonly model: string
   readonly tracker: CostTracker
   readonly baseUrl?: string
+  readonly dateIndex?: ReadonlyArray<SessionDateEntry>
 }): Promise<AnswerResult> {
-  const prompt = buildPrompt(args.question, args.context)
+  const prompt = buildPrompt(args.question, args.context, args.dateIndex)
   const { text, tokensIn, tokensOut } = await callOllamaCloudChat({
     prompt,
     apiKey: args.apiKey,
@@ -357,8 +386,9 @@ export async function answerFromContextAnthropic(args: {
   readonly apiKey: string
   readonly model: string
   readonly tracker: CostTracker
+  readonly dateIndex?: ReadonlyArray<SessionDateEntry>
 }): Promise<AnswerResult> {
-  const prompt = buildPrompt(args.question, args.context)
+  const prompt = buildPrompt(args.question, args.context, args.dateIndex)
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {

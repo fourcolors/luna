@@ -65,6 +65,21 @@
  *   ANTHROPIC_API_KEY            REQUIRED only when LUNA_LOCOMO_ANSWER_BACKEND=anthropic
  *   LUNA_OLLAMA_BASE_URL         Ollama daemon base URL (default: http://127.0.0.1:11434)
  *   LUNA_EMBEDDER=ollama         required (same convention as bench/paraphrase-recall.ts)
+ *   LUNA_LOCOMO_RETRIEVAL_MODE   "flat" (default, unchanged baseline), "decompose", or
+ *                                "hierarchical" — see retrieval-modes.ts module docstring
+ *                                for the category-1 diagnosis this is built on.
+ *   LUNA_LOCOMO_HIERARCHICAL_TOP_SESSIONS   sessions prioritized in hierarchical mode (default 3)
+ *   LUNA_LOCOMO_HIERARCHICAL_CANDIDATE_K    widened candidate pool hierarchical mode
+ *                                           re-ranks before trimming to LUNA_LOCOMO_TOPK
+ *                                           (default TOP_K*5)
+ *   LUNA_LOCOMO_DATE_INDEX       "1" to inject the deterministic per-session date index
+ *                                into the answer prompt (Task 3 temporal fix); default "0"
+ *                                (off, baseline prompt unchanged) — see answer-model.ts.
+ *   LUNA_LOCOMO_CATEGORY_FILTER  comma-separated category numbers (e.g. "1,3") — only
+ *                                ANSWER those categories this run (evidence/retrieval is
+ *                                still computed for all). Lets a comparison run re-score
+ *                                just the categories a change affects, against the SAME
+ *                                QA-pair selection as a prior full run.
  *
  * Flags:
  *   --dry-run   skip the answer-model + scoring step entirely. Ingests +
@@ -83,6 +98,7 @@ import {
   StubEmbedderLayer,
   makeOllamaEmbedderLayer,
 } from "@luna/core"
+import type { MemoryRecord } from "@luna/memory"
 import { SqliteVectorBackend } from "../../backends/sqlite-vector.js"
 import { LunaSqliteBootstrapLive } from "../../backends/vectorlite-bootstrap.js"
 import { MemoryLayer } from "../../layer.js"
@@ -96,9 +112,19 @@ import {
   LocomoHardStopError,
   newCostTracker,
   type CostTracker,
+  type SessionDateEntry,
 } from "./answer-model.js"
 import { aggregateByCategory, scoreQA, type ScoredQA } from "./scoring.js"
 import type { LocomoSample, RetrievalRecord } from "./types.js"
+import {
+  buildSessionSummaries,
+  decomposeQuestion,
+  mergeHits,
+  parseRetrievalMode,
+  prioritizeBySessions,
+  rankSessions,
+  sessionNumFromTags,
+} from "./retrieval-modes.js"
 import { writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -112,6 +138,39 @@ const QA_LIMIT = process.env["LUNA_LOCOMO_QA_LIMIT"]
   ? Number(process.env["LUNA_LOCOMO_QA_LIMIT"])
   : undefined
 const TOP_K = Number(process.env["LUNA_LOCOMO_TOPK"] ?? "10")
+// Retrieval strategy — see retrieval-modes.ts module docstring for the
+// diagnosis this is built on (topK/result-count budget is the dominant
+// category-1 failure mode; decompose/hierarchical are two independent,
+// additional strategies for the same "many evidence sub-topics share one
+// budget" mechanism). Default "flat" preserves today's behavior exactly —
+// nothing changes unless this env var is set.
+const RETRIEVAL_MODE = parseRetrievalMode(process.env["LUNA_LOCOMO_RETRIEVAL_MODE"])
+const HIERARCHICAL_TOP_SESSIONS = Number(process.env["LUNA_LOCOMO_HIERARCHICAL_TOP_SESSIONS"] ?? "3")
+// Widened candidate pool hierarchical mode pulls from before re-ranking by
+// session priority and trimming to TOP_K — must be >= TOP_K to have room to
+// widen at all.
+const HIERARCHICAL_CANDIDATE_K = Math.max(
+  TOP_K,
+  Number(process.env["LUNA_LOCOMO_HIERARCHICAL_CANDIDATE_K"] ?? String(TOP_K * 5)),
+)
+// Task 3 — deterministic per-session date index injected into the answer
+// prompt (see answer-model.ts's buildDateIndexBlock). Default OFF so the
+// baseline prompt is unchanged unless this is explicitly opted into for a
+// measurement run — same "env-gated, don't regress baseline" discipline as
+// RETRIEVAL_MODE above.
+const DATE_INDEX_ENABLED = (process.env["LUNA_LOCOMO_DATE_INDEX"] ?? "0") === "1"
+// Restrict which QA categories get ANSWERED this run (evidence/retrieval is
+// still computed for every QA pair regardless). Lets a comparison run
+// re-score only the categories a change actually affects (e.g. "1,3" for
+// the category-1/category-3 fixes in this PR) against the SAME QA-pair
+// selection (SAMPLE_LIMIT/QA_LIMIT) as a prior full run, without spending
+// time re-answering unaffected categories 2/4/5. Unset (default): every
+// category in the QA_LIMIT-sliced set is answered, same as before this
+// flag existed.
+const CATEGORY_FILTER_RAW = process.env["LUNA_LOCOMO_CATEGORY_FILTER"]
+const CATEGORY_FILTER: ReadonlySet<number> | undefined = CATEGORY_FILTER_RAW
+  ? new Set(CATEGORY_FILTER_RAW.split(",").map((s) => Number(s.trim())))
+  : undefined
 const MAX_MINUTES = Number(process.env["LUNA_LOCOMO_MAX_MINUTES"] ?? "55")
 const ANSWER_BACKEND = (process.env["LUNA_LOCOMO_ANSWER_BACKEND"] ?? "ollama").toLowerCase()
 const DEFAULT_MODEL_BY_BACKEND: Record<string, string | undefined> = {
@@ -233,12 +292,13 @@ async function main(): Promise<void> {
   }
 
   const samples = dataset.slice(0, SAMPLE_LIMIT)
-  const totalQaPlanned = samples.reduce(
-    (acc, s) => acc + (QA_LIMIT ? Math.min(QA_LIMIT, s.qa.length) : s.qa.length),
-    0,
-  )
+  const totalQaPlanned = samples.reduce((acc, s) => {
+    const sliced = QA_LIMIT ? s.qa.slice(0, QA_LIMIT) : s.qa
+    const filtered = CATEGORY_FILTER ? sliced.filter((qa) => CATEGORY_FILTER.has(qa.category)) : sliced
+    return acc + filtered.length
+  }, 0)
   console.log(
-    `# ${samples.length}/${dataset.length} conversations (${samples.map((s) => s.sample_id).join(", ")}) · ${totalQaPlanned} QA pairs planned · topK=${TOP_K} · embedder=${process.env["LUNA_EMBEDDER"] ?? "stub"}`,
+    `# ${samples.length}/${dataset.length} conversations (${samples.map((s) => s.sample_id).join(", ")}) · ${totalQaPlanned} QA pairs planned · topK=${TOP_K} · mode=${RETRIEVAL_MODE} · dateIndex=${DATE_INDEX_ENABLED} · categoryFilter=${CATEGORY_FILTER ? Array.from(CATEGORY_FILTER).join(",") : "none"} · embedder=${process.env["LUNA_EMBEDDER"] ?? "stub"}`,
   )
 
   const embedderL = buildEmbedderLayer()
@@ -290,19 +350,57 @@ async function main(): Promise<void> {
           samplesIngested += 1
           console.log(`# ingested ${n} turns for ${sample.sample_id}`)
 
-          const qas = QA_LIMIT ? sample.qa.slice(0, QA_LIMIT) : sample.qa
-          for (const qa of qas) {
-            if (timeCapExceeded || hardStop.current) break
+          // Per-sample session -> date index (Task 3, cheap/deterministic —
+          // reused for every QA pair in this sample) and, only in
+          // "hierarchical" mode, the per-session lexical summaries
+          // rankSessions() scores against each question.
+          const sessionDates: ReadonlyArray<SessionDateEntry> = Array.from(
+            new Map(turns.map((t) => [t.sessionNum, t.sessionDateTime])).entries(),
+          )
+            .sort((a, b) => a[0] - b[0])
+            .map(([sessionNum, date]) => ({ sessionNum, date }))
+          const sessionSummaries = RETRIEVAL_MODE === "hierarchical" ? buildSessionSummaries(turns) : []
 
-            const hits = yield* Stream.runCollect(
+          const runSearch = (queryText: string, topK: number) =>
+            Stream.runCollect(
               router.search({
-                queryText: qa.question,
-                topK: TOP_K,
+                queryText,
+                topK,
                 namespace: namespaceFor(sample.sample_id),
                 mode: "hybrid",
               }),
-            )
-            const arr = Array.from(hits)
+            ).pipe(Effect.map((hits) => Array.from(hits)))
+
+          const qas = QA_LIMIT ? sample.qa.slice(0, QA_LIMIT) : sample.qa
+          for (const qa of qas) {
+            if (timeCapExceeded || hardStop.current) break
+            if (CATEGORY_FILTER && !CATEGORY_FILTER.has(qa.category)) continue
+
+            // Retrieval strategy — see retrieval-modes.ts. "flat" (default)
+            // is byte-for-byte the same single router.search() call this
+            // harness has always made; "decompose"/"hierarchical" are
+            // opt-in via LUNA_LOCOMO_RETRIEVAL_MODE.
+            let arr: ReadonlyArray<{ readonly record: MemoryRecord; readonly score: number }>
+            if (RETRIEVAL_MODE === "decompose") {
+              const subQueries = decomposeQuestion(qa.question)
+              if (subQueries.length <= 1) {
+                arr = yield* runSearch(qa.question, TOP_K)
+              } else {
+                const hitLists = []
+                for (const sq of subQueries) {
+                  const hits = yield* runSearch(sq, TOP_K)
+                  hitLists.push(hits.map((h) => ({ ...h, recordId: h.record.id })))
+                }
+                arr = mergeHits(hitLists, TOP_K)
+              }
+            } else if (RETRIEVAL_MODE === "hierarchical") {
+              const wide = yield* runSearch(qa.question, HIERARCHICAL_CANDIDATE_K)
+              const tagged = wide.map((h) => ({ ...h, sessionNum: sessionNumFromTags(h.record.tags) }))
+              const prioritySessions = new Set(rankSessions(qa.question, sessionSummaries, HIERARCHICAL_TOP_SESSIONS))
+              arr = prioritizeBySessions(tagged, prioritySessions, TOP_K)
+            } else {
+              arr = yield* runSearch(qa.question, TOP_K)
+            }
             const contextTexts = arr.map((h) => {
               const c = h.record.content
               return c !== null && typeof c === "object" && "text" in c
@@ -354,6 +452,7 @@ async function main(): Promise<void> {
             const answerCallStart = Date.now()
             const result = yield* Effect.tryPromise({
               try: (): Promise<AnswerCallResult> => {
+                const dateIndexArg = DATE_INDEX_ENABLED ? { dateIndex: sessionDates } : {}
                 if (ANSWER_BACKEND === "anthropic") {
                   return answerFromContextAnthropic({
                     question: qa.question,
@@ -361,6 +460,7 @@ async function main(): Promise<void> {
                     apiKey: API_KEY!,
                     model: ANSWER_MODEL!,
                     tracker,
+                    ...dateIndexArg,
                   })
                 }
                 if (ANSWER_BACKEND === "ollama-cloud") {
@@ -370,6 +470,7 @@ async function main(): Promise<void> {
                     apiKey: OLLAMA_CLOUD_KEY!,
                     model: ANSWER_MODEL!,
                     tracker,
+                    ...dateIndexArg,
                   })
                 }
                 return answerFromContextOllama({
@@ -378,6 +479,7 @@ async function main(): Promise<void> {
                   baseUrl: OLLAMA_BASE_URL,
                   model: ANSWER_MODEL!,
                   tracker,
+                  ...dateIndexArg,
                 })
               },
               catch: (cause) => cause,
@@ -464,6 +566,9 @@ async function main(): Promise<void> {
             TOP_K,
             ANSWER_BACKEND,
             ANSWER_MODEL,
+            RETRIEVAL_MODE,
+            DATE_INDEX_ENABLED,
+            CATEGORY_FILTER: CATEGORY_FILTER ? Array.from(CATEGORY_FILTER) : null,
             samples: samples.map((s) => s.sample_id),
           },
         },

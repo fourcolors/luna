@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest"
 import { aggregateByCategory, f1Score, scoreQA } from "../src/adapters/locomo-eval/scoring.js"
 import {
   backoffDelayMs,
+  buildDateIndexBlock,
   classifyOllamaCloudResponse,
 } from "../src/adapters/locomo-eval/answer-model.js"
 import { flattenTurns } from "../src/adapters/locomo-eval/dataset.js"
@@ -20,6 +21,15 @@ import {
   type JudgedQA,
 } from "../src/adapters/locomo-eval/judge-rescore.js"
 import type { LocomoQA, LocomoSample, RetrievalRecord } from "../src/adapters/locomo-eval/types.js"
+import {
+  buildSessionSummaries,
+  decomposeQuestion,
+  mergeHits,
+  parseRetrievalMode,
+  prioritizeBySessions,
+  rankSessions,
+  sessionNumFromTags,
+} from "../src/adapters/locomo-eval/retrieval-modes.js"
 
 describe("locomo-eval scoring", () => {
   it("f1Score: identical strings score 1", () => {
@@ -318,5 +328,120 @@ describe("judge-rescore: buildCrosstab", () => {
       evidenceMissingIncorrect: 0,
       excludedNoEvidenceAnnotated: 1,
     })
+  })
+})
+
+describe("answer-model: buildDateIndexBlock (Task 3 — deterministic temporal index)", () => {
+  it("returns null when no date index is provided", () => {
+    expect(buildDateIndexBlock(undefined)).toBeNull()
+    expect(buildDateIndexBlock([])).toBeNull()
+  })
+
+  it("formats session -> date pairs as a single comma-joined line", () => {
+    const block = buildDateIndexBlock([
+      { sessionNum: 1, date: "8 May 2023" },
+      { sessionNum: 3, date: "12 June 2023" },
+    ])
+    expect(block).toBe("session 1 = 8 May 2023, session 3 = 12 June 2023")
+  })
+})
+
+describe("retrieval-modes: parseRetrievalMode", () => {
+  it("defaults to flat for unset/unknown values", () => {
+    expect(parseRetrievalMode(undefined)).toBe("flat")
+    expect(parseRetrievalMode("")).toBe("flat")
+    expect(parseRetrievalMode("bogus")).toBe("flat")
+  })
+
+  it("recognizes decompose and hierarchical, case-insensitively", () => {
+    expect(parseRetrievalMode("decompose")).toBe("decompose")
+    expect(parseRetrievalMode("HIERARCHICAL")).toBe("hierarchical")
+  })
+})
+
+describe("retrieval-modes: decomposeQuestion", () => {
+  it("splits a literally-conjunctive multi-hop question into sub-questions", () => {
+    const parts = decomposeQuestion("What does Joanna like, and what does Nate like?")
+    expect(parts.length).toBe(2)
+    expect(parts[0]).toMatch(/Joanna/)
+    expect(parts[1]).toMatch(/Nate/)
+  })
+
+  it("returns the question unchanged when there is nothing meaningful to split", () => {
+    expect(decomposeQuestion("What has Melanie painted?")).toEqual(["What has Melanie painted?"])
+  })
+
+  it("does not split off trivial short fragments (fewer than 3 words)", () => {
+    // "her family" is 2 words -- not a standalone sub-question.
+    expect(decomposeQuestion("What did Melanie do with her family?")).toEqual([
+      "What did Melanie do with her family?",
+    ])
+  })
+})
+
+describe("retrieval-modes: mergeHits", () => {
+  it("dedupes by recordId keeping the max score, then sorts desc and truncates to topK", () => {
+    const listA = [
+      { recordId: "a", score: 0.5 },
+      { recordId: "b", score: 0.9 },
+    ]
+    const listB = [
+      { recordId: "a", score: 0.8 }, // higher score for "a" than listA
+      { recordId: "c", score: 0.3 },
+    ]
+    const merged = mergeHits([listA, listB], 2)
+    expect(merged).toEqual([
+      { recordId: "b", score: 0.9 },
+      { recordId: "a", score: 0.8 },
+    ])
+  })
+
+  it("returns an empty array for empty input", () => {
+    expect(mergeHits([], 10)).toEqual([])
+  })
+})
+
+describe("retrieval-modes: buildSessionSummaries + rankSessions", () => {
+  const turns = [
+    { sampleId: "s", sessionNum: 1, sessionDateTime: "1 May 2023", speaker: "A", diaId: "D1:1", text: "I love hiking in the mountains every weekend." },
+    { sampleId: "s", sessionNum: 1, sessionDateTime: "1 May 2023", speaker: "B", diaId: "D1:2", text: "That sounds fun, I prefer painting landscapes." },
+    { sampleId: "s", sessionNum: 2, sessionDateTime: "10 June 2023", speaker: "A", diaId: "D2:1", text: "I adopted a turtle named Tilly last week." },
+  ]
+
+  it("buildSessionSummaries: one summary per session, in session-number order, carrying the date", () => {
+    const summaries = buildSessionSummaries(turns)
+    expect(summaries.map((s) => s.sessionNum)).toEqual([1, 2])
+    expect(summaries[0]?.date).toBe("1 May 2023")
+    expect(summaries[0]?.summary).toContain("hiking")
+    expect(summaries[1]?.summary).toContain("turtle")
+  })
+
+  it("rankSessions: ranks the session whose summary shares more question vocabulary higher", () => {
+    const summaries = buildSessionSummaries(turns)
+    const ranked = rankSessions("What turtle does the person have?", summaries, 1)
+    expect(ranked).toEqual([2])
+  })
+
+  it("rankSessions: returns an empty array when the question has no scorable content words", () => {
+    const summaries = buildSessionSummaries(turns)
+    expect(rankSessions("what is it", summaries, 3)).toEqual([])
+  })
+})
+
+describe("retrieval-modes: sessionNumFromTags + prioritizeBySessions", () => {
+  it("sessionNumFromTags: extracts the session:<N> tag, or null if absent", () => {
+    expect(sessionNumFromTags(["conv-26", "session:3", "Melanie"])).toBe(3)
+    expect(sessionNumFromTags(["conv-26", "Melanie"])).toBeNull()
+  })
+
+  it("prioritizeBySessions: reorders priority-session hits first, then fills remaining slots", () => {
+    const hits = [
+      { id: "a", sessionNum: 1 },
+      { id: "b", sessionNum: 5 },
+      { id: "c", sessionNum: 2 },
+      { id: "d", sessionNum: 5 },
+    ]
+    const result = prioritizeBySessions(hits, new Set([5]), 3)
+    expect(result.map((h) => h.id)).toEqual(["b", "d", "a"])
   })
 })

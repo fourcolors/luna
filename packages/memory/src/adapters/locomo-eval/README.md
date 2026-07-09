@@ -416,3 +416,32 @@ auth / quota / persistent throttling — see "Answer backends" above).
   `llama3.1:8b` reasoning/instruction-following limitation, not a
   retrieval miss — worth separating "found the right memory" (evidence
   coverage) from "extracted it correctly" (F1) when reading this number.
+- **Judge-rescore of the 840-QA-pair run** (`judge-rescore.ts`, see that
+  module's docstring): overall judge accuracy 52.6%. Category 1 (multi-hop,
+  277/840, the largest category) has only 36.1% evidence-found rate and
+  78.3% of its failures are retrieval misses, not model reasoning failures.
+  Category 3 (temporal, 93/840) has 47.2% evidence-found and 63.6%
+  retrieval-attributable failures, plus a real secondary reasoning
+  weakness (wrong 47.6% of the time even when evidence IS found, above the
+  31.4% baseline).
+- **Category-1 diagnosis** (re-ran retrieval at topK up to 100 for
+  category-1 QA pairs across two conversations, `conv-26` and `conv-42`,
+  202 evidence dia_ids checked): the DOMINANT cause of category-1 misses is
+  a result-COUNT budget problem, not an embedding-quality problem — 68% of
+  the evidence missing from a top-10 result set was already present in the
+  SAME ranked candidate list, just below rank 10 (recoverable by raising
+  `LUNA_LOCOMO_TOPK`); the model/embedder found the right turns, `topK=10`
+  just didn't have enough slots to hold them alongside noise from other
+  sub-topics. Category-1 questions need 2-19 (median ~2-3) distinct
+  evidence turns each, 96% of which span MULTIPLE sessions. The remaining
+  32% of the gap never surfaced even at rank ≤100 — a real, smaller,
+  genuinely-not-retrieved component. See `retrieval-modes.ts`'s module
+  docstring for the three retrieval strategies this motivated
+  (`LUNA_LOCOMO_RETRIEVAL_MODE=flat|decompose|hierarchical`) and the PR
+  body for full before/after numbers.
+- **Category-3 fix**: a deterministic (zero-LLM-call) per-session date
+  index is now available via `LUNA_LOCOMO_DATE_INDEX=1` — injects an
+  explicit "Session dates for reference" block into the answer prompt
+  (see `answer-model.ts`'s `buildDateIndexBlock`) so the model can resolve
+  relative-date language against real dates instead of guessing. Off by
+  default (baseline prompt unchanged).
