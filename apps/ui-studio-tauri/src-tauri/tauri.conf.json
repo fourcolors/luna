@@ -5,7 +5,7 @@
   "identifier": "com.luna.studio",
   "build": {
     "beforeDevCommand": "",
-    "beforeBuildCommand": "bun run --cwd ../../ui-web build",
+    "beforeBuildCommand": "bun run --filter @luna/ui-web build",
     "devUrl": null,
     "frontendDist": "../../ui-web/dist"
   },
