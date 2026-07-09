@@ -47,6 +47,13 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
+import {
+  ALLOWED_ATTACHMENT_MEDIA_TYPES as ALLOWED_ATTACH_MEDIA_TYPES,
+  MAX_IMAGE_RAW_BYTES,
+  MAX_PDF_RAW_BYTES,
+  MAX_TURN_RAW_BYTES,
+  MAX_ATTACHMENTS_PER_TURN,
+} from "@luna/core"
 import type { ObsEvent } from "@luna/core"
 import type {
   ChatService,
@@ -935,14 +942,6 @@ const pushSmartBar = (
  * Limits live in @luna/core attachment-limits.ts — the single source of truth
  * shared with every other inbound surface (e.g. the Telegram channel adapter).
  */
-import {
-  ALLOWED_ATTACHMENT_MEDIA_TYPES as ALLOWED_ATTACH_MEDIA_TYPES,
-  MAX_IMAGE_RAW_BYTES,
-  MAX_PDF_RAW_BYTES,
-  MAX_TURN_RAW_BYTES,
-  MAX_ATTACHMENTS_PER_TURN,
-} from "@luna/core"
-
 const validateAttachments = (
   atts: ReadonlyArray<{ readonly mediaType?: unknown; readonly data?: unknown }> | undefined,
 ): string | null => {

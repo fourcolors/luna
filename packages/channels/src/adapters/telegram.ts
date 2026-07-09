@@ -410,8 +410,11 @@ const inferDocumentMediaType = (doc: TelegramDocument): string | null => {
   // The magic-byte sniffer stays the final authority on the actual bytes.
   const name = doc.file_name ?? ""
   const dot = name.lastIndexOf(".")
+  const ext = dot === -1 ? null : name.slice(dot + 1).toLowerCase()
   const fromExtension =
-    dot === -1 ? null : (EXTENSION_MEDIA_TYPES[name.slice(dot + 1).toLowerCase()] ?? null)
+    ext !== null && Object.hasOwn(EXTENSION_MEDIA_TYPES, ext)
+      ? (EXTENSION_MEDIA_TYPES[ext] ?? null)
+      : null
   if (fromExtension !== null) return fromExtension
   // Nothing ingestible: surface the (normalized) declared type so the
   // unsupported-type reply can echo it, or null for "unknown".
@@ -763,7 +766,20 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // of chats with in-flight work.
   const chatChains = new Map<string, Fiber.RuntimeFiber<void, never>>()
   const dispatchChained = (chatId: string, unit: Effect.Effect<void>): void => {
-    const safeUnit = unit.pipe(Effect.catchAllCause(() => Effect.void))
+    const safeUnit = unit.pipe(
+      Effect.catchAllCause((cause) =>
+        Effect.sync(() => {
+          try {
+            console.warn(
+              `[luna/channels] telegram: dispatch unit failed for chat=${chatId}: ` +
+                Cause.pretty(cause),
+            )
+          } catch {
+            // logging must never fail the chain
+          }
+        }),
+      ),
+    )
     const prev = chatChains.get(chatId)
     const chained =
       prev === undefined
@@ -1021,7 +1037,20 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
                   "sendMessage",
                   { chat_id: msg.channelId },
                   media.userReply,
-                ).pipe(Effect.catchAllCause(() => Effect.void)),
+                ).pipe(
+                  Effect.catchAllCause((cause) =>
+                    Effect.sync(() => {
+                      try {
+                        console.warn(
+                          `[luna/channels] telegram: unsupported-media reply failed ` +
+                            `for chat=${msg.channelId}: ` + Cause.pretty(cause),
+                        )
+                      } catch {
+                        // logging must never fail the fiber
+                      }
+                    }),
+                  ),
+                ),
               )
             }
             continue
