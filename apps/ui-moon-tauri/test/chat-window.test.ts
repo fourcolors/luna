@@ -4145,6 +4145,55 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Feature: title-bar + button — mints a fresh thread IN THIS window
+  // (single-window model), and is disarmed entirely in pinned windows
+  // (one-thread-forever invariant).
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: title-bar + button (new thread in place)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: clicking + in a normal window calls newConversation and never open_widget', () => {
+      const m = M()
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      const newConv = vi.spyOn(m.ChatEngine, 'newConversation').mockImplementation(() => {})
+      document.getElementById('new-thread-btn')!.click()
+      expect(newConv).toHaveBeenCalledTimes(1)
+      expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
+    })
+
+    it('Scenario: in a pinned window the + click is a no-op (does not mint a thread)', () => {
+      const m = M()
+      m.State.pinnedThread = 't-pinned'
+      const newConv = vi.spyOn(m.ChatEngine, 'newConversation').mockImplementation(() => {})
+      document.getElementById('new-thread-btn')!.click()
+      expect(newConv).not.toHaveBeenCalled()
+    })
+
+    it('Scenario: a pinned (?thread=<id>) boot hides the + button', () => {
+      // The hidden attribute is set at BOOT from the URL-derived pin, so this
+      // one test re-runs the page script under a pinned URL (same mechanism
+      // as the beforeEach boot) instead of injecting State.pinnedThread.
+      window.history.replaceState({}, '', '/?thread=t-pinned')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      expect((document.getElementById('new-thread-btn') as HTMLElement).hidden).toBe(true)
+      // The non-pinned boot in beforeEach leaves it visible (contrast pin).
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('+ button: .newthread-btn[hidden] forces display:none over its own display:flex', () => {
+      // Same cascade trap as .mic-btn: the class's display:flex beats the UA
+      // [hidden]{display:none} rule, so the !important override must exist.
+      expect(htmlContent).toMatch(/\.newthread-btn\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Feature: Thread drawer (left slide-out thread switcher)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Thread drawer', () => {

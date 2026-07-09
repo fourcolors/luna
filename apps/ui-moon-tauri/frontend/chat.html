@@ -575,6 +575,9 @@
     #title-bar .newthread-btn:hover {
       background: color-mix(in oklab, var(--accent) 16%, transparent);
     }
+    /* Pinned windows hide the + via [hidden]; the class's display:flex beats
+       the UA [hidden]{display:none} by cascade, so force it. */
+    #title-bar .newthread-btn[hidden] { display: none !important; }
 
     /* Watercolor scrollbar styling — applied to every scrolling container in
        the moon. `width` covers vertical, `height` covers horizontal (assistant
@@ -9891,7 +9894,10 @@
     // no separate window is spawned).
     const winNewThreadBtn = document.getElementById('new-thread-btn');
     if (winNewThreadBtn) {
-      winNewThreadBtn.addEventListener('click', () => { try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ } });
+      winNewThreadBtn.addEventListener('click', () => {
+        if (State.pinnedThread) return;
+        try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ }
+      });
     }
 
     // ── Thread sidebar wiring ───────────────────────────────────────────────
@@ -9900,6 +9906,7 @@
     ThreadDrawerEngine.initSidebar();   // restore persisted width; hides the divider when pinned
     if (State.pinnedThread) {
       if (DOM.toggleThreads) DOM.toggleThreads.hidden = true;
+      if (winNewThreadBtn) winNewThreadBtn.hidden = true;
     } else {
       if (DOM.toggleThreads) DOM.toggleThreads.addEventListener('click', () => ThreadDrawerEngine.togglePanel());
       ThreadDrawerEngine.wireDivider(DOM.threadDivider);
