@@ -4248,6 +4248,47 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBe(0)
     })
 
+    it('Scenario: a sub-threshold drag never pollutes lastOpenWidth (reopen stays usable)', () => {
+      const m = M()
+      const eng = m.ThreadDrawerEngine
+      eng.setSidebarWidth(300)               // a real resting open width is remembered
+      expect(m.State.lastOpenWidth).toBe(300)
+      // Live drag down to a sub-COLLAPSE_AT width, then pointerup snaps it collapsed.
+      eng._applyWidth(80, false)             // raw drag frame below COLLAPSE_AT
+      eng.setSidebarWidth(m.State.sidebarWidth)
+      expect(m.State.sidebarWidth).toBe(0)
+      expect(m.State.lastOpenWidth).toBe(300) // NOT overwritten by the 80px drag frame
+      eng.openPanel()                        // the toggle / grabber must reopen to a real width
+      expect(m.State.sidebarWidth).toBe(300)
+    })
+
+    it('Scenario: initSidebar clamps an oversized persisted width to the panel cap at boot', () => {
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      localStorage.setItem('luna.sidebar.w', '900') // saved when the window was large
+      m.ThreadDrawerEngine.initSidebar()
+      expect(m.State.sidebarWidth).toBe(280)        // 400 * 0.7, never the raw 900
+      expect(m.State.lastOpenWidth).toBe(280)
+      // A persisted 0 still boots collapsed (default behavior preserved).
+      localStorage.setItem('luna.sidebar.w', '0')
+      m.ThreadDrawerEngine.initSidebar()
+      expect(m.State.sidebarWidth).toBe(0)
+    })
+
+    it('Scenario: a collapsed resize refreshes the divider aria-valuemax for AT', () => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      const rect = vi.spyOn(panel, 'getBoundingClientRect')
+      rect.mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      expect(m.State.sidebarWidth).toBe(0)          // collapsed
+      window.dispatchEvent(new Event('resize'))
+      const divider = document.getElementById('thread-divider')!
+      expect(m.State.sidebarWidth).toBe(0)          // still collapsed, untouched
+      expect(divider.getAttribute('aria-valuemax')).toBe('280') // but max is fresh
+    })
+
     it('Scenario: a thread-list frame renders one row per thread, sorted newest-first', () => {
       M().State.activeThreadId = 'keep' // handler early-returns (no auto-subscribe)
       seed()

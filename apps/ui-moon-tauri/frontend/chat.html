@@ -4078,7 +4078,6 @@
         w = Math.max(0, Math.round(w));
         State.sidebarWidth = w;
         State.threadDrawerOpen = w > 0;
-        if (w > 0) State.lastOpenWidth = w;
         if (DOM.chatPanel) {
           DOM.chatPanel.style.setProperty('--sidebar-w', w + 'px');
           DOM.chatPanel.classList.toggle('sidebar-collapsed', w === 0);
@@ -4096,13 +4095,18 @@
       setSidebarWidth(w) {
         if (w < this.COLLAPSE_AT) w = 0;
         else w = Math.min(Math.max(w, this.MIN_W), this._maxWidth());
+        // Only a resting OPEN width is worth remembering for the toggle/openPanel;
+        // never a live sub-threshold drag value (that would re-collapse on reopen).
+        if (w > 0) State.lastOpenWidth = w;
         this._applyWidth(w, true);
       },
 
       // Re-clamp the open sidebar against the current max (e.g. after the window
-      // shrinks) so it can never exceed MAX_FRAC of the panel. No-op when collapsed.
+      // shrinks) so it can never exceed MAX_FRAC of the panel. When collapsed the
+      // width is already 0, so just refresh the divider's aria-valuemax for AT.
       reclampWidth() {
         if (State.sidebarWidth > 0) this.setSidebarWidth(State.sidebarWidth);
+        else if (DOM.threadDivider) DOM.threadDivider.setAttribute('aria-valuemax', String(this._maxWidth()));
       },
 
       togglePanel() {
@@ -4177,8 +4181,11 @@
         }
         let w = 0;
         try { const s = localStorage.getItem('luna.sidebar.w'); if (s != null) w = parseInt(s, 10) || 0; } catch (_) {}
-        if (w > 0) State.lastOpenWidth = w;
-        this._applyWidth(w, false);
+        // Enforce the same MAX_FRAC cap on the boot restore: a width saved in a
+        // large window must not boot over-wide in a smaller one. setSidebarWidth
+        // clamps and records lastOpenWidth; a 0 stays collapsed by default.
+        if (w > 0) this.setSidebarWidth(w);
+        else this._applyWidth(0, false);
         if (DOM.chatPanel) DOM.chatPanel.classList.toggle('sidebar-collapsed', State.sidebarWidth === 0);
       },
 
