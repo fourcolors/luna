@@ -32,6 +32,18 @@ The OS swallows the webview's pointer events during a `startDragging` gesture, s
 `watch_drag_release` (Rust, `main.rs`) installs a local + global `NSEvent` `LeftMouseUp` monitor and emits `luna-drag-released` on the REAL button release.
 `startNativeDrag` finishes (and snaps) on that event, with a `pointerup` fallback and a long safety timeout.
 
+### Drag-in redock overrides the snap (thread-drawer floaters)
+
+A thread-drawer row dragged OUT spawns a chat window pinned to that thread (`chat.html?thread=<id>&redockTo=<owner-label>`), mirroring the `+` button.
+Dragging that floater back over its owner folds the thread back in instead of leaving a second window, so `LunaDock.wire` takes an optional `redock` config for exactly these floaters (`{ threadId, ownerLabel, getDraft }`); it is null for every ordinary window.
+Redock eligibility is computed once at drag start (`redockArmed`) and reused on release: only a SOLO floater is eligible, so a floater towing a welded cluster is never redocked (a redock folds in a lone window and would otherwise silently orphan its cluster-mates) and instead drags and snaps like any other cluster.
+When present, the release handler invokes the Rust `redock_thread` command BEFORE it would snap: if the command redocked, there is nothing to snap; if it declined (returned `false`) or the probe threw, the release falls through to the normal `snapOnRelease`.
+Because the native drag exposes no live cursor to track, an armed floater makes the target discoverable by emitting `redock-arming` on drag start (and `redock-disarmed` on release): the owner shows a non-interactive left "drop to redock" strip (`.redock-dropzone` in `chat.html`) for the whole drag and clears it on disarm, on `redock-thread`, and via a safety timeout.
+`redock_thread` (Rust, `main.rs`) trusts only the INVOKING window's label as the caller (never a page-supplied label, same discipline as `begin_cluster_drag`), refuses to redock a window into itself, and only closes a closable widget-family window.
+It computes the floater's center in global physical coordinates and runs a scale-independent `center_in_rect` test against the owner's LEFT drawer strip (~320 logical px, the drawer width plus card inset, clamped to the window width) rather than the whole owner window, so an accidental drop anywhere over the owner does not trigger it.
+On a hit it emits `redock-thread` (carrying the thread id and the floater's unsent composer draft) to the owner and closes the floater, returning `true`; the owner re-adopts the thread in place and carries the draft only when its own composer is empty.
+A floater closed by any path other than a redock (its own X, the native red traffic-light, or Cmd+W) instead emits `floater-closed` from `onCloseRequested` so the owner un-greys that thread's drawer row.
+
 ## The magnet (`computeEdgeSnap`)
 
 On release, `snapOnRelease` runs `LunaDeckSnap.computeEdgeSnap` over the candidate cards:
@@ -107,6 +119,7 @@ Pure geometry is unit-tested and must stay green:
 - `test/physical-snap.test.ts` — `physicalSnapEdge` (touching seam pixel-exact across scale factors; perpendicular offset preserved).
 - `test/resolve-overlap.test.ts` — `resolveOverlap` (clears overlap with one and many neighbours; bounds-aware, never off-screen).
 - `test/deck-snap.test.ts`, `test/deck-weld.test.ts` — existing snap + weld geometry.
+- `src-tauri/src/main.rs` `redock_geometry_tests` - `center_in_rect` (the drag-in redock hit-test: inside, inclusive edges, and just-outside).
 
 The live behaviours (the actual wall, the off-screen gap, the welded seam) were verified by driving the REAL app: a local harness opened real panels, fired the real snap path, and pixel-measured the result.
 That harness is intentionally not committed.

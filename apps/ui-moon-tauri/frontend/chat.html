@@ -1423,6 +1423,157 @@
     }
     .suggested-action-see-all:hover { color: var(--ink); }
 
+    /* ── Thread drawer — a left-edge slide-out thread switcher anchored inside
+       #chat-panel. Lists thread history; a row can be clicked (open in this
+       window) or dragged OUT (spawns a window pinned to that thread at the drop
+       point, mirroring the + button) and the popped window dragged back over
+       the drawer to redock. Slides via transform (not display:none) so it
+       animates BOTH ways; it carries NO z-index so CSS paint order keeps it
+       above the static header/messages yet below the later-in-DOM composer and
+       the artifacts/workflows overlays — the composer stays full-width and
+       usable with no stacking changes. Tokens only → themes for free across
+       dawn/meadow/tide × light/dark. ── */
+    .thread-drawer {
+      position: absolute;
+      /* Bottom is pinned to the composer's top (--composer-h, kept live by a
+         ResizeObserver) so the drawer's paper-2 bg never bleeds through the
+         transparent composer that paints over it. Fallback covers pre-observe. */
+      top: 0; left: 0; bottom: var(--composer-h, 96px);
+      width: 284px; max-width: 82%;
+      display: flex; flex-direction: column;
+      background: var(--paper-2);
+      border-right: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
+      box-shadow: 3px 0 22px -8px color-mix(in oklab, var(--ink) 55%, transparent);
+      transform: translateX(-100%);
+      transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+      will-change: transform;
+      overflow: hidden;
+    }
+    .thread-drawer.open { transform: translateX(0); }
+    /* Closed = parked off the left edge; keep it from eating clicks there. */
+    .thread-drawer:not(.open) { pointer-events: none; }
+    .thread-drawer-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 11px 10px 11px 15px;
+      border-bottom: 1px solid var(--ink-faint);
+      flex-shrink: 0;
+    }
+    .thread-drawer-title {
+      flex: 1; margin: 0;
+      font-family: var(--font-hand); font-weight: 600; font-size: 0.92rem;
+      color: var(--ink); letter-spacing: 0.01em;
+    }
+    .thread-drawer-new {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px 3px 7px; border-radius: 7px;
+      background: color-mix(in oklab, var(--accent) 15%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 32%, transparent);
+      color: var(--ink); font-size: 0.68rem; font-weight: 700; cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .thread-drawer-new:hover { background: color-mix(in oklab, var(--accent) 26%, transparent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+    .thread-drawer-close {
+      background: transparent; border: none; color: var(--ink-soft);
+      font-size: 1.15rem; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .thread-drawer-close:hover { background: color-mix(in oklab, var(--ink) 9%, transparent); color: var(--ink); }
+    .thread-drawer-search {
+      margin: 9px 10px 5px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 9px; border-radius: 8px;
+      background: color-mix(in oklab, var(--ink) 4%, transparent);
+      border: 1px solid var(--ink-faint);
+    }
+    .thread-drawer-search input {
+      flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+      color: var(--ink); font-size: 0.76rem; font-family: var(--font-body);
+    }
+    .thread-drawer-search input::placeholder { color: var(--ink-faint); }
+    .thread-drawer-list {
+      flex: 1; overflow-y: auto; overflow-x: hidden;
+      display: flex; flex-direction: column; gap: 3px;
+      padding: 6px 8px 12px;
+    }
+    .thread-drawer-list::-webkit-scrollbar { width: 6px; }
+    .thread-drawer-list::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 3px; }
+    .thread-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border-radius: 9px;
+      border: 1px solid transparent;
+      cursor: grab; user-select: none;
+      transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+    }
+    .thread-row:hover { background: color-mix(in oklab, var(--accent) 10%, transparent); border-color: color-mix(in oklab, var(--accent) 20%, transparent); }
+    .thread-row.active { background: color-mix(in oklab, var(--accent) 17%, transparent); border-color: color-mix(in oklab, var(--accent) 34%, transparent); }
+    .thread-row.popped { opacity: 0.55; }
+    .thread-row.dragging { opacity: 0.35; cursor: grabbing; }
+    .thread-row-dot {
+      flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+      background: color-mix(in oklab, var(--accent) 72%, transparent);
+      opacity: 0; transition: opacity 0.14s ease;
+    }
+    .thread-row.active .thread-row-dot { opacity: 1; }
+    .thread-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .thread-row-title { font-size: 0.79rem; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread-row-preview { font-size: 0.66rem; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread-row-pop { flex-shrink: 0; color: var(--ink-faint); display: none; font-size: 0.8rem; line-height: 1; }
+    .thread-row.popped .thread-row-pop { display: inline-flex; }
+    .thread-drawer-empty {
+      font-size: 0.76rem; color: var(--ink-soft); text-align: center;
+      padding: 26px 12px; font-style: italic;
+    }
+    /* Ghost clone that trails the cursor during a drag-out. Viewport-fixed,
+       above everything, non-interactive. */
+    .thread-drag-ghost {
+      position: fixed; top: 0; left: 0; z-index: 9999;
+      max-width: 240px; padding: 8px 12px; border-radius: 10px;
+      background: var(--paper-2);
+      border: 1px solid color-mix(in oklab, var(--accent) 48%, transparent);
+      box-shadow: 0 12px 34px -8px color-mix(in oklab, var(--ink) 60%, transparent);
+      color: var(--ink); font-size: 0.79rem; font-weight: 600;
+      pointer-events: none; opacity: 0.94;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Drop-zone glow when a popped window is dragged back over the drawer. */
+    .thread-drawer.redock-target {
+      border-right-color: color-mix(in oklab, var(--accent) 72%, transparent);
+      background: color-mix(in oklab, var(--accent) 9%, var(--paper-2));
+    }
+    /* Live redock drop affordance — a soft left strip shown on the OWNER window
+       for the whole duration a redock-capable floater is being dragged, so the
+       redock target is discoverable (the native drag has no live cursor to
+       track). Non-interactive; armed/disarmed by cross-window events. Its width
+       matches the redock hit-strip (~320px incl. card inset). */
+    .redock-dropzone {
+      position: absolute; top: 0; left: 0; bottom: 0;
+      width: 320px; max-width: 86%;
+      z-index: 62;
+      pointer-events: none;
+      display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(to right,
+        color-mix(in oklab, var(--accent) 22%, transparent),
+        color-mix(in oklab, var(--accent) 7%, transparent) 68%,
+        transparent);
+      border-right: 2px dashed color-mix(in oklab, var(--accent) 55%, transparent);
+      animation: redockPulse 1.4s ease-in-out infinite;
+    }
+    .redock-dropzone[hidden] { display: none !important; }
+    .redock-dropzone-label {
+      font-family: var(--font-hand); font-size: 0.92rem; font-weight: 600;
+      color: var(--ink);
+      background: color-mix(in oklab, var(--paper-2) 90%, transparent);
+      padding: 6px 13px; border-radius: 11px;
+      border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+      box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--ink) 55%, transparent);
+    }
+    @keyframes redockPulse { 0%,100% { opacity: 0.72; } 50% { opacity: 1; } }
+    /* The threads toggle is a .close-btn, and `.chat-panel .close-btn` forces
+       display:flex — which beats the UA [hidden]{display:none} by cascade (the
+       same trap the mic button hit). Without this !important guard, a pinned
+       ?thread=<id> window would still render the toggle as a dead button. */
+    #toggle-threads[hidden] { display: none !important; }
+
     /* ── Artifacts panel (PRD Part C W1) — slide-in overlay anchored inside
        #chat-panel. Hidden until ArtifactsEngine.openPanel(). Uses the same
        watercolor palette as user-ask-panel and skill rows. ── */
@@ -2482,6 +2633,15 @@
              quip / suggestion). Their engines + docked panels remain wired
              (DOM refs are null-guarded), so re-adding a trigger is a markup-
              only change if those capabilities need a home again. -->
+        <!-- Threads toggle — opens the left slide-out thread drawer. Re-added
+             to the reserved .header-actions slot (markup-only, per the redesign
+             note above). Hidden in ?thread=<id> pinned pop-out windows. -->
+        <button class="close-btn" id="toggle-threads" aria-label="Threads" title="Threads">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+            <path d="M9 3v18"></path>
+          </svg>
+        </button>
         <!-- Settings gear. The hub's tabbed modal is gone from this page:
              the gear summons the settings LAUNCHER panel window
              (open_widget kind 'settings'). -->
@@ -2501,6 +2661,37 @@
       </div>
     </div>
     
+    <!-- Thread drawer — left-edge slide-out thread switcher. A sibling of the
+         chat body inside #chat-panel, painted below the composer via DOM order
+         so the composer stays full-width. Populated by ThreadDrawerEngine from
+         the thread-list frame. Drag a row out → new window pinned to that
+         thread; drag that window back over here → redock. Disabled/hidden in
+         ?thread=<id> pinned pop-out windows (one-thread-forever invariant). -->
+    <aside class="thread-drawer" id="thread-drawer" aria-label="Threads" aria-hidden="true">
+      <div class="thread-drawer-header">
+        <h2 class="thread-drawer-title">Threads</h2>
+        <button class="thread-drawer-new" id="thread-drawer-new" type="button" title="New thread" aria-label="New thread">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          New
+        </button>
+        <button class="thread-drawer-close" id="thread-drawer-close" type="button" title="Close threads" aria-label="Close threads">✕</button>
+      </div>
+      <div class="thread-drawer-search">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--ink-faint);flex-shrink:0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="thread-drawer-search-input" placeholder="Search threads…" autocomplete="off" spellcheck="false" aria-label="Search threads" />
+      </div>
+      <div class="thread-drawer-list" id="thread-drawer-list" role="list">
+        <div class="thread-drawer-empty" id="thread-drawer-empty">No threads yet.</div>
+      </div>
+    </aside>
+
+    <!-- Redock drop affordance — a left strip shown on the owner while a
+         redock-capable floater is being dragged (armed/disarmed by cross-window
+         events). Non-interactive; hidden by default. -->
+    <div class="redock-dropzone" id="redock-dropzone" hidden aria-hidden="true">
+      <span class="redock-dropzone-label">Drop to redock</span>
+    </div>
+
     <!-- UserAsk / alignment-survey banner. Hidden by default; SurveyEngine
          populates and reveals it when a server `survey-request` frame
          arrives. Lives between chat-messages and the input form so it sits
@@ -2855,6 +3046,15 @@
       workflowsPanelRefresh: document.getElementById('workflows-panel-refresh'),
       workflowsList: document.getElementById('workflows-list'),
       workflowsEmpty: document.getElementById('workflows-empty'),
+      // Thread drawer (slide-out thread switcher) handles.
+      threadDrawer:        document.getElementById('thread-drawer'),
+      threadDrawerList:    document.getElementById('thread-drawer-list'),
+      threadDrawerEmpty:   document.getElementById('thread-drawer-empty'),
+      threadDrawerSearch:  document.getElementById('thread-drawer-search-input'),
+      threadDrawerClose:   document.getElementById('thread-drawer-close'),
+      threadDrawerNew:     document.getElementById('thread-drawer-new'),
+      toggleThreads:       document.getElementById('toggle-threads'),
+      redockDropzone:      document.getElementById('redock-dropzone'),
       // Phase 3 D3: UserAsk / survey panel handles.
       userAskPanel:   document.getElementById('user-ask-panel'),
       userAskBody:    document.getElementById('user-ask-body'),
@@ -3005,6 +3205,13 @@
       workflowRuns: {},     // { [jobId: string]: WorkflowRunItem[] }
       selectedWorkflowId: null,  // currently-expanded tile id (string|null)
       workflowsPanelOpen: false,
+      // Thread drawer (slide-out thread switcher).
+      threadDrawerOpen: false,
+      threads: [],              // SessionSummary[] from thread-list — the drawer render source
+      poppedThreads: new Set(), // thread ids currently open in their own spawned window
+      threadSearch: '',         // live filter text for the drawer
+      threadDragActive: false,  // a row drag-out/click gesture is in flight — render() defers rebuilds so the captured node is never detached mid-gesture
+      winLabel: null,           // this window's Tauri label (set at boot; used by drag-out)
       // Model + effort switcher (§1 wire contract). effortSelection cap gates
       // whether the server accepts set-thread-config + computes efforts per model.
       // Defaults false; `hello` corrects to true when the server supports it.
@@ -3803,6 +4010,246 @@
     //   artifact-pin       → pin()
     //   artifact-unpin     → unpin()
     //
+    // ── Thread drawer engine ─────────────────────────────────────────────────
+    // Left-edge slide-out thread switcher. Renders the thread-list frame (the
+    // SAME frame the reattach handler consumes — we hook it additively, never
+    // replacing that load-bearing handler). A row click opens that thread in
+    // THIS window (subscribe); a row drag-OUT past the drawer edge spawns a
+    // window pinned to that thread at the drop point (open_widget, mirroring the
+    // + button). Defined before WebSocketEngine so the __MoonInternals exposure
+    // block can reference it without a TDZ (same pattern as ArtifactsEngine).
+    const ThreadDrawerEngine = {
+      _ghost: null,
+
+      // --- open / close -------------------------------------------------------
+      togglePanel() { this.isPinnedWindow() ? null : (State.threadDrawerOpen ? this.closePanel() : this.openPanel()); },
+
+      openPanel() {
+        if (this.isPinnedWindow()) return;   // pinned pop-outs are single-thread; no switcher
+        State.threadDrawerOpen = true;
+        if (DOM.threadDrawer) {
+          DOM.threadDrawer.classList.add('open');
+          DOM.threadDrawer.setAttribute('aria-hidden', 'false');
+        }
+        // Ask the server for a fresh list every time we open.
+        this.requestList();
+        this.render();
+      },
+
+      closePanel() {
+        State.threadDrawerOpen = false;
+        if (DOM.threadDrawer) {
+          DOM.threadDrawer.classList.remove('open');
+          DOM.threadDrawer.setAttribute('aria-hidden', 'true');
+        }
+      },
+
+      // A ?thread=<id> window is pinned to one thread forever — the switcher is
+      // contradictory there, so it's disabled + its toggle hidden at boot.
+      isPinnedWindow() { return !!State.pinnedThread; },
+
+      requestList() {
+        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+          WebSocketEngine.send({ type: 'list-threads' });
+        }
+      },
+
+      // --- data ---------------------------------------------------------------
+      // Fed by the thread-list frame (see the augmented handler below). Renders
+      // regardless of active-thread state; the reattach logic stays untouched.
+      applyList(list) {
+        State.threads = Array.isArray(list) ? list.slice() : [];
+        this.render();
+      },
+
+      setSearch(q) { State.threadSearch = q || ''; this.render(); },
+
+      markPopped(id)   { if (id) { State.poppedThreads.add(id); this.render(); } },
+      unmarkPopped(id) { if (id && State.poppedThreads.delete(id)) this.render(); },
+
+      _ts(t) {
+        const v = (t && (t.lastMessageAt || t.updatedAt || t.createdAt)) || 0;
+        const n = typeof v === 'number' ? v : Date.parse(v);
+        return Number.isFinite(n) ? n : 0;
+      },
+
+      _visibleThreads() {
+        const q = (State.threadSearch || '').trim().toLowerCase();
+        let rows = (State.threads || []).filter((t) => t && t.id && !t.system);
+        if (q) {
+          rows = rows.filter((t) =>
+            ((t.title || '') + ' ' + (t.lastMessagePreview || '')).toLowerCase().includes(q));
+        }
+        return rows.sort((a, b) => this._ts(b) - this._ts(a));
+      },
+
+      // --- render -------------------------------------------------------------
+      render() {
+        const listEl = DOM.threadDrawerList;
+        if (!listEl) return;
+        // A row drag-out is a native pointer-capture gesture: rebuilding the list
+        // now would detach the captured node, drop capture, fire pointercancel,
+        // and silently abort the user's drag. Defer the rebuild until teardown.
+        if (State.threadDragActive) { this._renderPendingDuringDrag = true; return; }
+        // Drop existing rows (keep the empty-state node).
+        listEl.querySelectorAll('.thread-row').forEach((n) => n.remove());
+        const rows = this._visibleThreads();
+        if (DOM.threadDrawerEmpty) {
+          DOM.threadDrawerEmpty.style.display = rows.length ? 'none' : '';
+          DOM.threadDrawerEmpty.textContent =
+            (State.threadSearch || '').trim() ? 'No matching threads.' : 'No threads yet.';
+        }
+        const frag = document.createDocumentFragment();
+        for (const t of rows) frag.appendChild(this._renderRow(t));
+        listEl.appendChild(frag);
+      },
+
+      _renderRow(t) {
+        const row = document.createElement('div');
+        row.className = 'thread-row';
+        row.setAttribute('role', 'listitem');
+        row.dataset.threadId = t.id;
+        if (t.id === State.activeThreadId) row.classList.add('active');
+        if (State.poppedThreads.has(t.id)) row.classList.add('popped');
+        // Static skeleton (icons only); text set via textContent to avoid any
+        // markup injection from server-provided titles/previews.
+        row.innerHTML =
+          '<span class="thread-row-dot" aria-hidden="true"></span>' +
+          '<span class="thread-row-info">' +
+            '<span class="thread-row-title"></span>' +
+            '<span class="thread-row-preview"></span>' +
+          '</span>' +
+          '<span class="thread-row-pop" title="Open in its own window" aria-hidden="true">⧉</span>';
+        row.querySelector('.thread-row-title').textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
+        const preview = (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || this._relTime(t);
+        row.querySelector('.thread-row-preview').textContent = preview;
+        this._wireRow(row, t);
+        return row;
+      },
+
+      _relTime(t) {
+        const ms = this._ts(t);
+        if (!ms) return '';
+        try { if (typeof formatRelTime === 'function') return formatRelTime(ms); } catch (_) { /* fall through */ }
+        return new Date(ms).toLocaleDateString();
+      },
+
+      // --- click vs drag-out gesture -----------------------------------------
+      // pointerdown arms; a move past threshold becomes a drag (ghost follows
+      // the cursor); pointerup outside the drawer spawns a pinned window at the
+      // drop point; a release without crossing the threshold is a plain click.
+      _wireRow(row, t) {
+        const self = this;
+        const THRESH = 6;
+        let startX = 0, startY = 0, dragging = false, pid = null, raf = 0, lastX = 0, lastY = 0;
+
+        const onMove = (e) => {
+          if (!dragging) {
+            if (Math.abs(e.clientX - startX) <= THRESH && Math.abs(e.clientY - startY) <= THRESH) return;
+            dragging = true;
+            row.classList.add('dragging');
+            self._ghost = self._makeGhost(t);
+          }
+          lastX = e.clientX; lastY = e.clientY;
+          if (!raf) raf = requestAnimationFrame(() => {
+            raf = 0;
+            if (self._ghost) self._ghost.style.transform =
+              'translate(' + lastX + 'px,' + lastY + 'px) translate(-50%,-50%)';
+          });
+        };
+
+        const teardown = () => {
+          row.removeEventListener('pointermove', onMove);
+          row.removeEventListener('pointerup', onUp);
+          row.removeEventListener('pointercancel', onCancel);
+          if (raf) { cancelAnimationFrame(raf); raf = 0; }
+          if (self._ghost) { self._ghost.remove(); self._ghost = null; }
+          row.classList.remove('dragging');
+          try { if (pid != null) row.releasePointerCapture(pid); } catch (_) {}
+          pid = null; dragging = false;
+          State.threadDragActive = false;
+          // Flush any list frame that arrived (and was deferred) mid-gesture.
+          if (self._renderPendingDuringDrag) { self._renderPendingDuringDrag = false; self.render(); }
+        };
+
+        const onUp = (e) => {
+          const wasDragging = dragging;
+          const rect = DOM.threadDrawer ? DOM.threadDrawer.getBoundingClientRect() : null;
+          const insideDrawer = !!rect &&
+            e.clientX >= rect.left && e.clientX <= rect.right &&
+            e.clientY >= rect.top && e.clientY <= rect.bottom;
+          const sx = e.screenX, sy = e.screenY;
+          teardown();
+          if (!wasDragging) { self.onRowClick(t.id); return; }   // plain click
+          if (!insideDrawer) self.spawnWindow(t, sx, sy);        // dragged out → pop
+          // dropped back inside the drawer → snap back (no-op)
+        };
+
+        const onCancel = () => teardown();
+
+        row.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0) return;
+          startX = e.clientX; startY = e.clientY; dragging = false; pid = e.pointerId;
+          State.threadDragActive = true;
+          try { row.setPointerCapture(e.pointerId); } catch (_) {}
+          row.addEventListener('pointermove', onMove);
+          row.addEventListener('pointerup', onUp);
+          row.addEventListener('pointercancel', onCancel);
+        });
+      },
+
+      _makeGhost(t) {
+        const g = document.createElement('div');
+        g.className = 'thread-drag-ghost';
+        g.textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
+        document.body.appendChild(g);
+        return g;
+      },
+
+      // --- window spawn (drag-out) -------------------------------------------
+      // Mirror the + button's open_widget, but pin params.thread to this thread
+      // (deterministic label → re-dragging focuses the existing floater) and
+      // pass an explicit drop point. NO opener → a genuine free-float window.
+      spawnWindow(t, screenX, screenY) {
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            // Carry redockTo = this window's label so the spawned window knows
+            // exactly which window to fold back into on a drag-in (no guessing).
+            const params = { thread: t.id };
+            if (State.winLabel) params.redockTo = State.winLabel;
+            window.__TAURI__.core.invoke('open_widget', {
+              kind: 'chat',
+              params,
+              x: Math.round(screenX),
+              y: Math.round(screenY),
+            })
+              .then(() => this.markPopped(t.id))
+              .catch((err) => Logger.warn('thread drag-out spawn failed:', err));
+          } else {
+            Logger.info('[ThreadDrawer] drag-out (no Tauri): would open_widget chat thread=' + t.id + ' @ ' + Math.round(screenX) + ',' + Math.round(screenY));
+          }
+        } catch (_) { /* best-effort */ }
+      },
+
+      // --- open thread in THIS window (row click / redock) --------------------
+      onRowClick(id) {
+        if (!id) return;
+        this.closePanel();
+        if (id === State.activeThreadId) return;    // already here
+        State.activeThreadId = id;
+        State.activeTurnId = null;
+        State.pendingUserMessage = null;
+        try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
+        if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';   // instant feedback; snapshot rebuilds
+        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+          WebSocketEngine.send({ type: 'subscribe', threadId: id });
+        } else {
+          Logger.warn('[ThreadDrawer] not connected; queued switch to ' + id);
+        }
+        this.render();
+      },
+    };
+
     // Defined BEFORE WebSocketEngine — the __MoonInternals exposure block runs
     // mid-script and a later const would hit the TDZ (same pattern as Skills +
     // Connectors above).
@@ -6169,6 +6616,11 @@
         if (t) ComposerConfig.recordThreadConfig(t.id, t.model, t.effort);
       }
 
+      // Feed the thread drawer FIRST — additive, and independent of the reattach
+      // early-return below (this same frame is the drawer's only data source).
+      // Guarded so a drawer error can never break reattach self-heal.
+      try { ThreadDrawerEngine.applyList(threads); } catch (_) { /* drawer never blocks reattach */ }
+
       // ── Tombstone-advance: stall self-heal round ──────────────────────────
       // onReattachStalled() cleared activeThreadId and added the stalled id(s)
       // to stalledIdSet. Pick the first thread NOT in that set so we skip every
@@ -6209,6 +6661,12 @@
         WebSocketEngine.send({ type: 'list-threads' });
         State.activeThreadId = null;
       }
+      // Keep the drawer honest: drop the archived thread from the popped set and
+      // refresh the visible list if the drawer is open.
+      try {
+        ThreadDrawerEngine.unmarkPopped(frame.threadId);
+        if (State.threadDrawerOpen && frame.threadId !== State.activeThreadId) ThreadDrawerEngine.requestList();
+      } catch (_) { /* drawer refresh is best-effort */ }
     });
 
     MoonFrames.register('thread-created', (frame) => {
@@ -6225,6 +6683,8 @@
         // Now that this thread is active, reflect ITS model/effort in the
         // composer (recorded above, before activeThreadId was set).
         ComposerConfig.refreshComposer();
+        // Surface the brand-new thread in the drawer if it's open.
+        try { if (State.threadDrawerOpen) ThreadDrawerEngine.requestList(); } catch (_) { /* best-effort */ }
 
         if (State.pendingUserMessage) {
           const pending = State.pendingUserMessage;
@@ -9359,6 +9819,9 @@
     const _threadParam = new URLSearchParams(location.search).get('thread') || null;
     const SPAWN_FRESH = _threadParam === 'new';
     const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
+    // Set on windows spawned by a drawer drag-OUT: the label of the window to
+    // fold back into on a drag-IN (redock). Only such windows attempt a redock.
+    const REDOCK_TO = new URLSearchParams(location.search).get('redockTo') || null;
     // Max stall-recovery rounds before we give up and surface "Reattach stalled".
     // 3 rounds covers: one tombstone advance + one validation miss + one final retry.
     const MAX_REATTACH_ROUNDS = 3;
@@ -9378,10 +9841,35 @@
       }
     } catch (_) { /* not in Tauri (tests/browser) */ }
 
+    // A drawer-spawned floater must un-grey its row in the owner's drawer on
+    // EVERY close path — the custom X, the native red traffic-light, and Cmd+W.
+    // onCloseRequested is the only hook that fires for all three; the Rust
+    // Destroyed arm only sees the opaque panel-chat-<hash> label and cannot
+    // recover threadId/owner. Emitting from here (with PINNED_THREAD + REDOCK_TO
+    // in scope) is the truthful choke point. Redock closes via redock_thread and
+    // sends redock-thread first, so a redundant floater-closed after is harmless
+    // (unmarkPopped is idempotent once the row is already un-greyed).
+    try {
+      if (W && typeof W.onCloseRequested === 'function' && PINNED_THREAD && REDOCK_TO
+          && window.__TAURI__ && window.__TAURI__.event) {
+        W.onCloseRequested(() => {
+          try { window.__TAURI__.event.emit('floater-closed', { threadId: PINNED_THREAD, owner: REDOCK_TO }); } catch (_) {}
+        });
+      }
+    } catch (_) { /* off-Tauri; no-op */ }
+
     const winCloseBtn = document.getElementById('close-btn');
     if (winCloseBtn) {
       winCloseBtn.addEventListener('click', () => {
         try {
+          // A drawer floater closed by its own X (NOT a redock) must tell its
+          // owner to un-grey the thread's row — otherwise the drawer keeps
+          // showing that thread as "popped" forever. Redock uses a different
+          // path (redock_thread closes the window from Rust), so this fires
+          // only on a plain user close.
+          if (PINNED_THREAD && REDOCK_TO && window.__TAURI__ && window.__TAURI__.event) {
+            window.__TAURI__.event.emit('floater-closed', { threadId: PINNED_THREAD, owner: REDOCK_TO });
+          }
           if (window.__TAURI__ && window.__TAURI__.core && winLabel) {
             window.__TAURI__.core.invoke('close_widget', { label: winLabel }).catch(() => {});
           }
@@ -9438,9 +9926,93 @@
       });
     }
 
+    // ── Thread drawer wiring ────────────────────────────────────────────────
+    // Keep --composer-h live so the drawer's bottom hugs the composer's top and
+    // its bg never bleeds through the transparent composer (which paints over
+    // the drawer via DOM order). Robust to the composer growing on multiline.
+    try {
+      const _composerEl = document.querySelector('.chat-input-area');
+      const _panelEl = document.getElementById('chat-panel');
+      if (_composerEl && _panelEl) {
+        const _syncComposerH = () => _panelEl.style.setProperty('--composer-h', _composerEl.offsetHeight + 'px');
+        _syncComposerH();
+        if (typeof ResizeObserver !== 'undefined') new ResizeObserver(_syncComposerH).observe(_composerEl);
+      }
+    } catch (_) { /* best-effort; CSS fallback covers it */ }
+
+    // Expose this window's Tauri label to the drawer engine (drag-out spawns +
+    // redock use it). Pinned ?thread=<id> windows are single-thread: hide the
+    // toggle and skip wiring so the switcher can never open there.
+    State.winLabel = winLabel;
+    if (State.pinnedThread) {
+      if (DOM.toggleThreads) DOM.toggleThreads.hidden = true;
+    } else {
+      if (DOM.toggleThreads) DOM.toggleThreads.addEventListener('click', () => ThreadDrawerEngine.togglePanel());
+      if (DOM.threadDrawerClose) DOM.threadDrawerClose.addEventListener('click', () => ThreadDrawerEngine.closePanel());
+      // Drawer "+ New" reuses the title-bar +'s spawn path exactly.
+      if (DOM.threadDrawerNew) DOM.threadDrawerNew.addEventListener('click', () => { if (winNewThreadBtn) winNewThreadBtn.click(); });
+      if (DOM.threadDrawerSearch) DOM.threadDrawerSearch.addEventListener('input', (e) => ThreadDrawerEngine.setSearch(e.target.value));
+      // Redock return channel: a popped thread window dragged back over this
+      // window emits `redock-thread` (Rust redock_thread also closes the
+      // floater). Adopt that thread here and un-grey its row.
+      try {
+        if (W && typeof W.listen === 'function') {
+          // Live drop affordance: while a redock-capable floater WE own is being
+          // dragged it emits `redock-arming`; show the "drop to redock" strip for
+          // the drag's duration and hide it on release/redock. A safety timeout
+          // covers a missed disarm (the floater may close on redock before its
+          // disarm is delivered).
+          let _redockArmTimer = null;
+          const _showDropzone = (on) => {
+            if (!DOM.redockDropzone) return;
+            DOM.redockDropzone.hidden = !on;
+            if (_redockArmTimer) { clearTimeout(_redockArmTimer); _redockArmTimer = null; }
+            if (on) _redockArmTimer = setTimeout(() => { if (DOM.redockDropzone) DOM.redockDropzone.hidden = true; }, 20000);
+          };
+          W.listen('redock-arming', (e) => { const p = e && e.payload; if (p && p.owner === winLabel) _showDropzone(true); }).catch(() => {});
+          W.listen('redock-disarmed', (e) => { const p = e && e.payload; if (p && p.owner === winLabel) _showDropzone(false); }).catch(() => {});
+          // Redock return channel: a popped thread window dragged back over this
+          // window emits `redock-thread` (Rust redock_thread also closes the
+          // floater). Adopt that thread here and un-grey its row.
+          W.listen('redock-thread', (e) => {
+            const p = e && e.payload; const id = p && p.threadId;
+            _showDropzone(false);
+            if (!id) return;
+            ThreadDrawerEngine.unmarkPopped(id);
+            ThreadDrawerEngine.onRowClick(id);
+            // Carry the floater's unsent draft so a redock never eats typing —
+            // only when our own composer is empty, to avoid clobbering it.
+            const draft = p && p.draft;
+            if (draft && DOM.messageInput && !DOM.messageInput.value) {
+              DOM.messageInput.value = draft;
+              try { ChatEngine.autoGrowMessageInput(); } catch (_) {}
+            }
+          }).catch(() => {});
+          // A floater closed by its own X (not redocked) reports so its row
+          // stops showing as popped. Filtered to floaters WE own.
+          W.listen('floater-closed', (e) => {
+            const p = e && e.payload;
+            if (p && p.owner === winLabel && p.threadId) ThreadDrawerEngine.unmarkPopped(p.threadId);
+          }).catch(() => {});
+        }
+      } catch (_) { /* off-Tauri */ }
+    }
+
     // Dock/snap wiring (shared vendor module): snap-on-release, dock groups,
     // pin-to-detach, seam flash, perimeter outline, grab_dock re-rooting.
-    if (window.LunaDock) LunaDock.wire({ win: W, label: winLabel });
+    // `redock`: for a drag-out floater (?thread=<id>&redockTo=<owner>), releasing
+    // a native drag with its center over the owner window folds the thread back
+    // in (redock_thread) instead of snapping.
+    if (window.LunaDock) LunaDock.wire({
+      win: W,
+      label: winLabel,
+      redock: (PINNED_THREAD && REDOCK_TO) ? {
+        threadId: PINNED_THREAD,
+        ownerLabel: REDOCK_TO,
+        // Read at release so a redock carries the floater's unsent draft.
+        getDraft: () => (DOM.messageInput && DOM.messageInput.value) || '',
+      } : null,
+    });
 
     // ── hub-event return channel ────────────────────────────────────────────
     // Rust delivers window-targeted hub-events with the same `for:` discipline
@@ -9558,6 +10130,7 @@
       window.__MoonInternals.MoonFace = MoonFace;
       window.__MoonInternals.MoonBar = MoonBar;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
+      window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
       window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
