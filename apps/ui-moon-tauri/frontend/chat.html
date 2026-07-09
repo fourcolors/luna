@@ -1450,7 +1450,13 @@
       background: var(--paper-2);
       border-right: 1px solid color-mix(in oklab, var(--ink) 12%, transparent);
       overflow: hidden;
+      /* Animate the width in lockstep with #chat-panel's padding-left so a
+         toggle/keyboard open+close slides the drawer and chat together. */
+      transition: width 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
+    /* 1:1 while dragging the divider (matches .chat-panel.sidebar-resizing). */
+    .chat-panel.sidebar-resizing .thread-drawer,
+    .chat-panel.sidebar-resizing .thread-divider { transition: none; }
     /* Keep the inner content from squishing while the width animates/drags — it
        clips (Things-3 feel) instead of reflowing. */
     .thread-drawer-header, .thread-drawer-search, .thread-drawer-list { min-width: 200px; }
@@ -1462,6 +1468,9 @@
       width: 11px; z-index: 66;
       cursor: col-resize; touch-action: none;
       display: flex; align-items: center; justify-content: center;
+      /* Track the drawer edge in lockstep during a toggle animation; disabled
+         while dragging (.sidebar-resizing) so the grabber stays under the cursor. */
+      transition: left 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     .thread-divider-grip {
       width: 4px; height: 46px; border-radius: 3px;
@@ -4071,9 +4080,10 @@
       },
 
       // Apply a raw width to the split (live during a drag). --sidebar-w drives
-      // both the sidebar's width AND #chat-panel's padding-left (the push). Only
-      // persists when asked; refreshes the list the first time it opens.
-      _applyWidth(w, persist) {
+      // both the sidebar's width AND #chat-panel's padding-left (the push). Pure
+      // DISPLAY: it never persists and never touches the remembered PREFERRED
+      // width. Refreshes the list the first time it opens.
+      _applyWidth(w) {
         const prev = State.sidebarWidth;
         w = Math.max(0, Math.round(w));
         State.sidebarWidth = w;
@@ -4087,25 +4097,37 @@
           DOM.threadDivider.setAttribute('aria-valuenow', String(w));
           DOM.threadDivider.setAttribute('aria-valuemax', String(this._maxWidth()));
         }
-        if (persist) { try { localStorage.setItem('luna.sidebar.w', String(w)); } catch (_) {} }
         if (w > 0 && prev === 0) { this.requestList(); this.render(); }
       },
 
-      // Snap to a resting width (0, or MIN_W..max) and persist.
+      // Persist the user's PREFERRED open width plus an open/collapsed flag.
+      // lastOpenWidth is the un-clamped width the user chose; a transient window
+      // shrink clamps the DISPLAY (reclampWidth) but never this stored value, so
+      // growing the window back restores toward the width they actually picked.
+      _persistPrefs() {
+        try {
+          if (State.lastOpenWidth > 0) localStorage.setItem('luna.sidebar.w', String(State.lastOpenWidth));
+          localStorage.setItem('luna.sidebar.open', State.sidebarWidth > 0 ? '1' : '0');
+        } catch (_) {}
+      },
+
+      // Snap to a resting width (0, or MIN_W..max) from an EXPLICIT user gesture
+      // (divider release, keyboard). A resting OPEN width becomes the remembered
+      // PREFERRED width; a sub-threshold value snaps collapsed without touching it.
       setSidebarWidth(w) {
         if (w < this.COLLAPSE_AT) w = 0;
         else w = Math.min(Math.max(w, this.MIN_W), this._maxWidth());
-        // Only a resting OPEN width is worth remembering for the toggle/openPanel;
-        // never a live sub-threshold drag value (that would re-collapse on reopen).
         if (w > 0) State.lastOpenWidth = w;
-        this._applyWidth(w, true);
+        this._applyWidth(w);
+        this._persistPrefs();
       },
 
       // Re-clamp the open sidebar against the current max (e.g. after the window
-      // shrinks) so it can never exceed MAX_FRAC of the panel. When collapsed the
-      // width is already 0, so just refresh the divider's aria-valuemax for AT.
+      // shrinks) for DISPLAY only — the PREFERRED width is left intact so a later
+      // grow restores it, and nothing is persisted. When collapsed just refresh
+      // the divider's aria-valuemax for AT.
       reclampWidth() {
-        if (State.sidebarWidth > 0) this.setSidebarWidth(State.sidebarWidth);
+        if (State.sidebarWidth > 0) this._applyWidth(Math.min(State.lastOpenWidth || State.sidebarWidth, this._maxWidth()));
         else if (DOM.threadDivider) DOM.threadDivider.setAttribute('aria-valuemax', String(this._maxWidth()));
       },
 
@@ -4115,12 +4137,16 @@
         else this.openPanel();
       },
 
+      // Open to the remembered PREFERRED width, clamped to fit the current panel
+      // (never overwriting the preferred value, so a big preference survives a
+      // small window). Persists the open flag.
       openPanel() {
         if (this.isPinnedWindow()) return;   // pinned pop-outs are single-thread; no switcher
-        this.setSidebarWidth(State.lastOpenWidth || 240);
+        this._applyWidth(Math.min(State.lastOpenWidth || 240, this._maxWidth()));
+        this._persistPrefs();
       },
 
-      closePanel() { this._applyWidth(0, true); },
+      closePanel() { this._applyWidth(0); this._persistPrefs(); },
 
       // Drag the divider (or its collapsed grabber) to open / resize / collapse;
       // a click without a drag toggles. Width = cursor X minus the panel's left.
@@ -4134,7 +4160,7 @@
             el.classList.add('dragging');
             if (DOM.chatPanel) DOM.chatPanel.classList.add('sidebar-resizing');
           }
-          if (moved) self._applyWidth(Math.min(Math.max(0, e.clientX - panelLeft), self._maxWidth()), false);
+          if (moved) self._applyWidth(Math.min(Math.max(0, e.clientX - panelLeft), self._maxWidth()));
         };
         const cleanup = () => {
           el.removeEventListener('pointermove', onMove);
@@ -4152,6 +4178,9 @@
           startX = e.clientX; moved = false; pid = e.pointerId;
           panelLeft = DOM.chatPanel ? DOM.chatPanel.getBoundingClientRect().left : 0;
           try { el.setPointerCapture(e.pointerId); } catch (_) {}
+          // preventDefault below suppresses the default focus, so focus the
+          // divider explicitly — click-then-Arrow/Home/End must work without Tab.
+          try { el.focus(); } catch (_) {}
           el.addEventListener('pointermove', onMove);
           el.addEventListener('pointerup', onUp);
           el.addEventListener('pointercancel', onCancel);
@@ -4173,19 +4202,28 @@
         });
       },
 
-      // Restore the persisted width at boot (collapsed by default, grabber shown).
+      // Restore the persisted split at boot: the PREFERRED width plus an
+      // open/collapsed flag. Collapsed by default on first run (grabber shown).
+      // The preferred width is kept un-clamped so a later grow can restore it;
+      // only the DISPLAY is clamped to the current panel cap.
       initSidebar() {
         if (this.isPinnedWindow()) {
           if (DOM.threadDivider) DOM.threadDivider.hidden = true;
           return;
         }
-        let w = 0;
-        try { const s = localStorage.getItem('luna.sidebar.w'); if (s != null) w = parseInt(s, 10) || 0; } catch (_) {}
-        // Enforce the same MAX_FRAC cap on the boot restore: a width saved in a
-        // large window must not boot over-wide in a smaller one. setSidebarWidth
-        // clamps and records lastOpenWidth; a 0 stays collapsed by default.
-        if (w > 0) this.setSidebarWidth(w);
-        else this._applyWidth(0, false);
+        let pref = 0, openRaw = null;
+        try {
+          const s = localStorage.getItem('luna.sidebar.w');
+          if (s != null) pref = parseInt(s, 10) || 0;
+          openRaw = localStorage.getItem('luna.sidebar.open');
+        } catch (_) {}
+        if (pref > 0) State.lastOpenWidth = pref;
+        // An absent flag (fresh install, or pre-flag persistence where the stored
+        // width was 0 when collapsed) infers open from a saved positive width;
+        // otherwise honour the explicit '1'/'0'.
+        const open = openRaw === null ? pref > 0 : openRaw === '1';
+        if (open && State.lastOpenWidth > 0) this._applyWidth(Math.min(State.lastOpenWidth, this._maxWidth()));
+        else this._applyWidth(0);
         if (DOM.chatPanel) DOM.chatPanel.classList.toggle('sidebar-collapsed', State.sidebarWidth === 0);
       },
 

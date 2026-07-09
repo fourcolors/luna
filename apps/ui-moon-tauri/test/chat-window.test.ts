@@ -4248,13 +4248,22 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBe(0)
     })
 
+    it('Scenario: pressing on the divider focuses it so click-then-keyboard resize works', () => {
+      M()
+      const divider = document.getElementById('thread-divider')!
+      // A mouse user presses the divider (which preventDefaults to avoid text
+      // selection); focus must still land so a following Arrow/Home/End resizes.
+      divider.dispatchEvent(pointer('pointerdown', { button: 0, pointerId: 1, clientX: 5, clientY: 100 }))
+      expect(document.activeElement).toBe(divider)
+    })
+
     it('Scenario: a sub-threshold drag never pollutes lastOpenWidth (reopen stays usable)', () => {
       const m = M()
       const eng = m.ThreadDrawerEngine
       eng.setSidebarWidth(300)               // a real resting open width is remembered
       expect(m.State.lastOpenWidth).toBe(300)
       // Live drag down to a sub-COLLAPSE_AT width, then pointerup snaps it collapsed.
-      eng._applyWidth(80, false)             // raw drag frame below COLLAPSE_AT
+      eng._applyWidth(80)                    // raw drag frame below COLLAPSE_AT
       eng.setSidebarWidth(m.State.sidebarWidth)
       expect(m.State.sidebarWidth).toBe(0)
       expect(m.State.lastOpenWidth).toBe(300) // NOT overwritten by the 80px drag frame
@@ -4266,14 +4275,58 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const panel = document.getElementById('chat-panel')!
       vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ width: 400, left: 0 } as DOMRect)
-      localStorage.setItem('luna.sidebar.w', '900') // saved when the window was large
+      localStorage.setItem('luna.sidebar.w', '900') // preferred width saved when the window was large
+      localStorage.setItem('luna.sidebar.open', '1')
       m.ThreadDrawerEngine.initSidebar()
-      expect(m.State.sidebarWidth).toBe(280)        // 400 * 0.7, never the raw 900
-      expect(m.State.lastOpenWidth).toBe(280)
-      // A persisted 0 still boots collapsed (default behavior preserved).
-      localStorage.setItem('luna.sidebar.w', '0')
+      expect(m.State.sidebarWidth).toBe(280)        // DISPLAY clamped: 400 * 0.7, never the raw 900
+      expect(m.State.lastOpenWidth).toBe(900)       // PREFERRED width kept un-clamped for a later grow
+      // A persisted collapsed flag still boots collapsed (default behavior preserved).
+      localStorage.setItem('luna.sidebar.open', '0')
       m.ThreadDrawerEngine.initSidebar()
       expect(m.State.sidebarWidth).toBe(0)
+    })
+
+    it('Scenario: a transient window shrink+grow restores the preferred width (not the clamped one)', () => {
+      // Deferred rAF so the resize handler's throttle guard clears between events
+      // (mirrors real async rAF; a synchronous mock would stick the guard truthy).
+      let rafCbs: FrameRequestCallback[] = []
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { rafCbs.push(cb); return rafCbs.length }
+      const flushRAF = () => { const cbs = rafCbs; rafCbs = []; cbs.forEach((cb) => cb(0)) }
+      const m = M()
+      const panel = document.getElementById('chat-panel')!
+      const rect = vi.spyOn(panel, 'getBoundingClientRect')
+      rect.mockReturnValue({ width: 1000, left: 0 } as DOMRect) // roomy: 700 cap
+      m.ThreadDrawerEngine.setSidebarWidth(600)
+      expect(m.State.sidebarWidth).toBe(600)
+      expect(m.State.lastOpenWidth).toBe(600)
+      // Shrink: DISPLAY clamps to the 280 cap, but the preferred 600 is preserved
+      // and NOT persisted over — luna.sidebar.w still records the user's choice.
+      rect.mockReturnValue({ width: 400, left: 0 } as DOMRect)
+      window.dispatchEvent(new Event('resize')); flushRAF()
+      expect(m.State.sidebarWidth).toBe(280)
+      expect(m.State.lastOpenWidth).toBe(600)
+      expect(localStorage.getItem('luna.sidebar.w')).toBe('600')
+      // Grow back: the sidebar restores toward the user's preferred 600.
+      rect.mockReturnValue({ width: 1000, left: 0 } as DOMRect)
+      window.dispatchEvent(new Event('resize')); flushRAF()
+      expect(m.State.sidebarWidth).toBe(600)
+    })
+
+    it('Scenario: the open/collapsed flag and preferred width persist across boot', () => {
+      const m = M()
+      m.ThreadDrawerEngine.setSidebarWidth(320)     // explicit open gesture
+      expect(localStorage.getItem('luna.sidebar.w')).toBe('320')
+      expect(localStorage.getItem('luna.sidebar.open')).toBe('1')
+      m.ThreadDrawerEngine.closePanel()             // collapse flips the flag, keeps the preferred width
+      expect(localStorage.getItem('luna.sidebar.w')).toBe('320')
+      expect(localStorage.getItem('luna.sidebar.open')).toBe('0')
+      // Re-boot collapsed: the preferred width is remembered but stays closed.
+      m.ThreadDrawerEngine.initSidebar()
+      expect(m.State.sidebarWidth).toBe(0)
+      expect(m.State.lastOpenWidth).toBe(320)
+      // Re-open honours the persisted preferred width.
+      m.ThreadDrawerEngine.openPanel()
+      expect(m.State.sidebarWidth).toBe(320)
     })
 
     it('Scenario: a collapsed resize refreshes the divider aria-valuemax for AT', () => {
