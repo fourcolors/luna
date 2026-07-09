@@ -17,10 +17,15 @@ https://github.com/fourcolors/luna/releases/latest/download/latest.json
 ```
 
 GitHub resolves `releases/latest` to whichever non-draft, non-prerelease
-release was published most recently AND has the "Latest" flag set. Only
-`moon-v*` releases include a `latest.json` asset; if any other release
-holds the "Latest" flag, the URL returns HTML or 404 and the updater
-fails with **"Could not fetch a valid release JSON from the remote"**.
+release was published most recently AND has the "Latest" flag set. If a
+release without a `latest.json` asset holds the flag, the URL returns
+HTML or 404 and Moon's updater fails with **"Could not fetch a valid
+release JSON from the remote"**. Worse: `studio-v*` releases DO carry a
+`latest.json` (for Studio's own rolling feed) — a Studio release holding
+"Latest" would feed Moon syntactically valid JSON for the WRONG app, so
+the flag discipline matters even more with two Tauri apps in the repo.
+(Studio's own updater never reads `releases/latest` — see the Studio
+section below.)
 
 This bit us once already (chat-v0.12b briefly held "Latest" on
 2026-06-07 around 09:27 UTC — fixed via `gh release edit moon-v0.0.12 --latest`).
@@ -45,6 +50,43 @@ This bit us once already (chat-v0.12b briefly held "Latest" on
   `package.json` / `tauri.conf.json` / `Cargo.toml` / **`Cargo.lock`** (the
   `luna-moon-ui` entry). `bump-moon.ts --check` is the CI gate that fails a
   PR on any version drift across the four.
+
+## Studio releases (`studio-v*`)
+
+- **Trigger:** EITHER (1) run the **"Release Studio"** workflow from the
+  Actions tab and enter a version (recommended), OR (2) push a `studio-v*`
+  tag. Both funnel into the same `release-studio.yml` run.
+- **Pipeline:** `.github/workflows/release-studio.yml` runs on macOS-14,
+  builds + signs + publishes `apps/ui-studio-tauri` via `tauri-apps/tauri-action`.
+- **Updater feed (deliberately NOT `releases/latest`):** Studio's updater
+  endpoint is the fixed rolling release `studio-updater`:
+
+  ```
+  https://github.com/fourcolors/luna/releases/download/studio-updater/latest.json
+  ```
+
+  The workflow uploads each release's `latest.json` to that rolling release
+  (`--clobber`), so Studio's feed never depends on the repo-wide "Latest"
+  flag and can never collide with Moon's.
+  **Never delete the `studio-updater` release** — installed Studio apps
+  poll it forever.
+- **"Latest" flag:** Studio releases are published `--latest=false` and the
+  workflow's final step re-anchors "Latest" to the newest `moon-v*` release,
+  preserving the invariant above.
+- **Signing:** minisign keypair in repo secrets
+  `STUDIO_TAURI_SIGNING_PRIVATE_KEY` / `STUDIO_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+  (distinct from Moon's; recovery copies in the operator keychain under
+  `luna.studio.updater-key`). macOS bundle is ad-hoc signed (committed conf).
+- **Version lockstep:** `bump-studio.ts` moves all four Studio version files —
+  `package.json` / `tauri.conf.json` / `Cargo.toml` / `Cargo.lock` (the
+  `luna-studio-ui` entry). `bump-studio.ts --check` is the CI gate.
+- **Update UX (v1):** release builds check the feed on boot, silently stage
+  `download_and_install`, and the new version takes effect on the next
+  launch. Debug builds skip the check entirely.
+- **Operator runbook:** open GitHub → **Actions → Release Studio → Run
+  workflow**, enter `x.y.z` — or locally
+  `bun run scripts/bump-studio.ts <version> --tag --push` then
+  `git push origin master`.
 
 ## Chat-server / library releases (`chat-v*`, anything else)
 

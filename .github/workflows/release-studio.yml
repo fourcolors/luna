@@ -1,0 +1,191 @@
+# Release Studio — builds the Luna Studio desktop app and publishes a GitHub
+# Release with the Tauri v2 auto-updater artifacts (.app.tar.gz + .sig +
+# latest.json).
+#
+# TWO ways to release, both land in this ONE workflow run:
+#   1. Tag push — `git push origin studio-v0.1.1` (e.g. the local
+#      `bump-studio.ts <ver> --tag --push` path). Builds the already-tagged commit.
+#   2. The button — Actions ▸ "Release Studio" ▸ Run workflow ▸ enter a version.
+#      The run BUMPS all four version files in lockstep, commits them to master,
+#      tags `studio-v<version>`, pushes both, then builds — no local Mac, no git
+#      ritual, no Cargo.lock hand-edit. This is the recommended path.
+#
+# Why one workflow and not a separate "cut" workflow that pushes a tag: a tag
+# pushed using the in-run GITHUB_TOKEN does NOT trigger another workflow
+# (`on: push: tags`) — so a split design would push the tag and the build would
+# silently never fire. Doing the bump+tag+build in a single run sidesteps that
+# entirely (no PAT / deploy key needed). The master push is allowed because this
+# workflow grants `contents: write` and `actions/checkout` persists the token.
+#
+# SEPARATE from ci.yml (which runs on push/PR, not tags) so the two never overlap.
+#
+# THE ROLLING FEED, AND WHY NOT releases/latest:
+# Moon's updater reads `releases/latest/download/latest.json`, and
+# release-moon.yml re-anchors the repo's "Latest" release flag to Moon's own
+# release as its final step. If Studio did the same thing, the two apps would
+# fight over one shared flag and whichever released second would silently break
+# the other's updater endpoint (HTTP 200 but JSON for the wrong app). Studio
+# sidesteps this entirely by publishing its updater feed to a FIXED, non-latest
+# release tagged `studio-updater` — Studio's tauri.conf.json points its updater
+# endpoint at
+# `https://github.com/fourcolors/luna/releases/download/studio-updater/latest.json`
+# directly, so it never depends on which release currently holds "Latest". Every
+# Studio release run replaces that fixed release's `latest.json` asset (its
+# own `studio-v*` release keeps its own copy too, for humans browsing Releases),
+# then explicitly hands the "Latest" flag back to the newest `moon-v*` release
+# so a Studio release never leaves Moon's updater pointed at the wrong JSON.
+#
+# Prereqs (one-time): repo secrets STUDIO_TAURI_SIGNING_PRIVATE_KEY +
+# STUDIO_TAURI_SIGNING_PRIVATE_KEY_PASSWORD (a Studio-only minisign keypair,
+# never Moon's). The matching public key is baked into
+# apps/ui-studio-tauri/src-tauri/tauri.conf.json (plugins.updater.pubkey). No
+# Apple notarization yet — the committed tauri.conf.json already signs ad-hoc
+# (bundle.macOS.signingIdentity "-"), so unlike release-moon.yml there is no
+# "rewrite to ad-hoc for CI" step here.
+#
+# NOTE: editing this file requires pushing over the SSH remote — the gh HTTPS
+# token lacks the `workflow` scope.
+
+name: Release Studio
+
+on:
+  push:
+    tags:
+      - "studio-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release as x.y.z (bumps all 4 files, commits to master, tags studio-v<version>, then builds + publishes)"
+        required: true
+        type: string
+
+permissions:
+  contents: write # tauri-action needs this to create the Release; the cut step also pushes the bump commit to master
+
+jobs:
+  release-studio:
+    runs-on: macos-14 # Apple Silicon (arm64)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Match ci.yml / the bun that wrote the text lockfile.
+          bun-version: "1.3.14"
+
+      # Resolve the tag once so every later step is trigger-agnostic:
+      #   - tag push:        the pushed ref (github.ref_name = studio-v0.1.1)
+      #   - workflow_dispatch: studio-v<input.version> (the cut step creates it)
+      - name: Resolve release tag
+        id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=studio-v${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # workflow_dispatch only: turn a bare version into a tagged, pushed commit.
+      # bump-studio.ts rewrites all four version files atomically (and validates
+      # the x.y.z shape — a bad value exits non-zero and fails the run before
+      # anything is committed). We then commit to master + tag + push both; the
+      # build below runs on this exact working tree.
+      - name: Cut version, commit + tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euxo pipefail
+          # Refuse a re-used tag up front (mirrors bump-studio.ts --tag's guard).
+          if git ls-remote --exit-code --tags origin "refs/tags/studio-v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::tag studio-v${VERSION} already exists on origin — pick a new version"
+            exit 1
+          fi
+          bun run scripts/bump-studio.ts "${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(ui-studio-tauri): bump to ${VERSION}"
+          git tag -a "studio-v${VERSION}" -m "Luna Studio ${VERSION}"
+          # Push the bump to master first so the remote tag resolves to it, then
+          # the tag. (A GITHUB_TOKEN push won't trigger ci.yml — fine, no double run.)
+          git push origin HEAD:master
+          git push origin "studio-v${VERSION}"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/ui-studio-tauri/src-tauri
+
+      - name: Install JS deps (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Build, sign, and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.STUDIO_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.STUDIO_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/ui-studio-tauri
+          # steps.tag.outputs.name, not github.ref_name — on a workflow_dispatch
+          # github.ref_name is the branch (master), not the studio-v* tag.
+          tagName: ${{ steps.tag.outputs.name }}
+          releaseName: "Luna Studio ${{ steps.tag.outputs.name }}"
+          # MUST be false/false — a draft or prerelease makes the release's
+          # own download assets unreliable to fetch from the next step.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target aarch64-apple-darwin
+
+      # Studio's updater endpoint is the FIXED `studio-updater` release, not
+      # releases/latest — see the header comment. Publish this run's
+      # latest.json there so Studio installs pick up the update regardless of
+      # which release currently holds the repo's "Latest" flag.
+      - name: Publish updater feed to the studio-updater rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          repo="${{ github.repository }}"
+          if ! gh release view studio-updater --repo "$repo" >/dev/null 2>&1; then
+            gh release create studio-updater \
+              --title "Luna Studio updater feed" \
+              --notes "Rolling updater feed - assets replaced by release-studio.yml. Do not delete." \
+              --latest=false \
+              --repo "$repo"
+          fi
+          gh release download "${{ steps.tag.outputs.name }}" \
+            --pattern latest.json \
+            --output latest.json \
+            --clobber \
+            --repo "$repo"
+          gh release upload studio-updater latest.json --clobber --repo "$repo"
+
+      # A Studio release must never steal Moon's updater feed (Moon reads
+      # releases/latest/download/latest.json). Explicitly drop this Studio
+      # release's own Latest flag, then hand Latest back to the newest
+      # `moon-v*` release. Skips gracefully if no moon-v* release exists yet.
+      - name: Return the Latest flag to Moon
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          repo="${{ github.repository }}"
+          gh release edit "${{ steps.tag.outputs.name }}" --latest=false --repo "$repo"
+          latest_moon=$(gh release list --limit 100 --json tagName -q '[.[].tagName | select(startswith("moon-v"))][0]' --repo "$repo")
+          if [ -n "$latest_moon" ]; then
+            gh release edit "$latest_moon" --latest --repo "$repo"
+          else
+            echo "No moon-v* release found yet — skipping Latest re-anchor."
+          fi
