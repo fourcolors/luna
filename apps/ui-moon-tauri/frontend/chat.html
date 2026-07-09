@@ -2495,7 +2495,7 @@
     <span class="bar-title" id="bar-title">Luna</span>
     <!-- New thread — the promoted action, alone on the right. Spawns a fresh
          Luna panel docked to the right of this one (open_widget chat?thread=new). -->
-    <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New parallel thread">
+    <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New thread">
       <!-- Lucide "plus" (ISC). -->
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -9886,25 +9886,12 @@
       });
     }
 
-    // New-thread button → spawn a FRESH Luna panel docked to the right of this
-    // one. open_widget focuses an existing window when its params match, so a
-    // unique nonce makes every click a new sibling; ?thread=new tells the new
-    // window to mint its own thread (syncThread); opener=this panel positions it
-    // flush-right and joins this panel's dock group.
-    let _newThreadSeq = 0;
+    // New-thread button → mint a FRESH thread in THIS window (single-window
+    // model; the title-bar + and the sidebar "+ New" now do the same thing —
+    // no separate window is spawned).
     const winNewThreadBtn = document.getElementById('new-thread-btn');
     if (winNewThreadBtn) {
-      winNewThreadBtn.addEventListener('click', () => {
-        try {
-          if (window.__TAURI__ && window.__TAURI__.core) {
-            const nonce = `${Date.now().toString(36)}-${++_newThreadSeq}`;
-            const args = { kind: 'chat', params: { thread: 'new', n: nonce } };
-            if (winLabel) args.opener = winLabel;
-            window.__TAURI__.core.invoke('open_widget', args)
-              .catch((err) => Logger.warn('new-thread spawn failed:', err));
-          }
-        } catch (_) { /* best-effort */ }
-      });
+      winNewThreadBtn.addEventListener('click', () => { try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ } });
     }
 
     // ── Thread sidebar wiring ───────────────────────────────────────────────
