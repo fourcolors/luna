@@ -134,7 +134,7 @@ widget windows (one each)
   ├─ now rail            panel.html?type=now
   ├─ briefing            panel.html?type=briefing
   ├─ workflow            panel.html?type=flow&id=…
-  ├─ agent line          chat.html?thread=…[&redockTo=…]  [phase 8; drawer drag-out adds redockTo]
+  ├─ agent line          chat.html?thread=…    [phase 8]
   └─ mini-apps           widget.html?id=…      (already shipped: artifact widgets)
 ```
 
@@ -224,7 +224,7 @@ Ship with Luna; designed UI; live data subscriptions. Opened from the moon
 | NOW rail | `panel.html?type=now` | `workflow-list` broadcast + obs | live job list, mini-moon phases |
 | Briefing | `panel.html?type=briefing` | workflow runs + obs digest | "while you were away" |
 | Workflow inspector | `panel.html?type=flow&id=…` | `workflow-runs` (+ request frame) | per-job step view |
-| Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pointed at another thread. Spawnable by dragging a row OUT of the chat widget's thread drawer (adds `&redockTo=<owner>`); dragging the floater back over the owner's drawer strip redocks it (`redock_thread`) |
+| Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pinned to another thread (spawned via `open_widget kind:chat, params:{thread}`); its thread sidebar is hidden (one-thread-forever) |
 
 ### System widgets: settings panels (v3)
 
@@ -806,9 +806,9 @@ needs an agent-identity/thread mapping, honors one-window-per-thread.
 It is a real left column whose width is `--sidebar-w` (0 = collapsed); `#chat-panel`'s `padding-left` pushes the chat over to match, so it is a split pane, not an overlay.
 Drag the right-edge divider (or its collapsed grabber pill parked at the window's left edge) to open / resize / collapse, and the divider is keyboard-resizable (`role=separator`, Arrow/Home/End to resize, Enter/Space to toggle).
 The preferred open width and the open/collapsed flag persist across launches in `localStorage` (`luna.sidebar.w` / `luna.sidebar.open`); the sidebar re-clamps to at most 70% of the panel when the window shrinks without losing that preferred width.
-A row click switches that thread in place and LEAVES the sidebar open (Things-3 behavior); a row dragged OUT spawns a pinned floater at the drop point (`open_widget kind:chat, params:{thread, redockTo}`) and greys the row; dragging a SOLO floater back over the owner's drawer strip folds it back in (`redock_thread` → `redock-thread` event, carrying the unsent draft), and while such a floater is being dragged the owner shows a "drop to redock" strip (`redock-arming`/`redock-disarmed`).
-A floater closed by any non-redock path (its own X, the native red button, or Cmd+W) emits `floater-closed` so the owner un-greys the row.
-The drop/snap geometry and the trust discipline live in `docs/window-drag-snap.md`.
+A row click (or Enter/Space on a focused row) switches that thread in place and LEAVES the sidebar open (Things-3 behavior); the sidebar's "+ New" mints a fresh thread in THIS window.
+✅ **As-built rider (single-window switcher, `a91055d`):** the row drag-out / drag-in redock machinery the sidebar briefly shipped with (drag a row out to spawn a `redockTo` floater, `redock_thread`, the "drop to redock" strip, `floater-closed`, popped-row greying) proved fragile in real multi-window use and was removed; the sidebar is a pure single-window switcher, and pinned `?thread=…` windows remain spawnable via `open_widget`.
+The drag/snap geometry lives in `docs/window-drag-snap.md`.
 
 **Server track (parallel):**
 - `open_widget` agent tool + `widget-open` frame + hello `widgets` capability
