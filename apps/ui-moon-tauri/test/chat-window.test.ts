@@ -30,8 +30,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   let mockMe: any
 
   beforeEach(() => {
-    // 0. Boot from a clean URL. A floater boots off ?thread=<id>&redockTo=<owner>;
-    // resetting here keeps a floater-boot test from leaking those params into the
+    // 0. Boot from a clean URL. A pinned window boots off ?thread=<id>;
+    // resetting here keeps a pinned-boot test from leaking that param into the
     // next case (which would wrongly pin the drawer window).
     window.history.replaceState({}, '', '/')
 

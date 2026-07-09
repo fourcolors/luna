@@ -3985,13 +3985,14 @@
     //   artifact-unpin     → unpin()
     //
     // ── Thread drawer engine ─────────────────────────────────────────────────
-    // Left-edge slide-out thread switcher. Renders the thread-list frame (the
-    // SAME frame the reattach handler consumes — we hook it additively, never
-    // replacing that load-bearing handler). A row click opens that thread in
-    // THIS window (subscribe); a row drag-OUT past the drawer edge spawns a
-    // window pinned to that thread at the drop point (open_widget, mirroring the
-    // + button). Defined before WebSocketEngine so the __MoonInternals exposure
-    // block can reference it without a TDZ (same pattern as ArtifactsEngine).
+    // Left-edge single-window thread switcher: a Things-3-style resizable
+    // split-pane sidebar that pushes the chat over. Renders the thread-list
+    // frame (the SAME frame the reattach handler consumes — we hook it
+    // additively, never replacing that load-bearing handler). A row click opens
+    // that thread in THIS window (subscribe); dragging the divider/grabber
+    // opens, resizes, or collapses the pane. Defined before WebSocketEngine so
+    // the __MoonInternals exposure block can reference it without a TDZ (same
+    // pattern as ArtifactsEngine).
     const ThreadDrawerEngine = {
       // --- open / close / resize (Things-3-style split pane) ------------------
       MIN_W: 190,        // narrowest resting open width
