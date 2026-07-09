@@ -4163,17 +4163,32 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       return new Ctor(type, { bubbles: true, ...props })
     }
 
-    it('Scenario: opening the drawer flips .open + aria-hidden and requests the thread list', () => {
+    it('Scenario: opening the sidebar gives it a width + aria-hidden and requests the thread list', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} } // WebSocket.OPEN
       const send = vi.spyOn(m.WebSocketEngine, 'send')
       const drawer = document.getElementById('thread-drawer')!
-      expect(drawer.classList.contains('open')).toBe(false)
+      expect(m.State.sidebarWidth).toBe(0)
       m.ThreadDrawerEngine.openPanel()
       expect(m.State.threadDrawerOpen).toBe(true)
-      expect(drawer.classList.contains('open')).toBe(true)
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
       expect(drawer.getAttribute('aria-hidden')).toBe('false')
       expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    it('Scenario: setSidebarWidth clamps to resting values and snaps small drags collapsed', () => {
+      const m = M()
+      const eng = m.ThreadDrawerEngine
+      eng.setSidebarWidth(240)
+      expect(m.State.sidebarWidth).toBe(240)
+      eng.setSidebarWidth(50)           // below COLLAPSE_AT -> collapse
+      expect(m.State.sidebarWidth).toBe(0)
+      eng.setSidebarWidth(140)          // between collapse and MIN_W -> snaps up to MIN_W
+      expect(m.State.sidebarWidth).toBe(eng.MIN_W)
+      eng.togglePanel()                 // open -> collapse
+      expect(m.State.sidebarWidth).toBe(0)
+      eng.togglePanel()                 // collapse -> reopen at last width
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
     })
 
     it('Scenario: a thread-list frame renders one row per thread, sorted newest-first', () => {
@@ -4205,7 +4220,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rowC.classList.contains('popped')).toBe(true)
     })
 
-    it('Scenario: clicking a row subscribes to that thread and closes the drawer', () => {
+    it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} }
       m.State.activeThreadId = 'other'
@@ -4213,11 +4228,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const send = vi.spyOn(m.WebSocketEngine, 'send')
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
-      expect(m.State.threadDrawerOpen).toBe(false)
-      expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+      expect(m.State.threadDrawerOpen).toBe(true)          // stays open, unlike the old overlay drawer
+      expect(m.State.sidebarWidth).toBeGreaterThan(0)
     })
 
-    it('Scenario: clicking the already-active thread just closes the drawer (no re-subscribe)', () => {
+    it('Scenario: clicking the already-active thread does not re-subscribe and keeps the sidebar open', () => {
       const m = M()
       m.State.ws = { readyState: 1, send: () => {} }
       m.State.activeThreadId = 'b'
@@ -4225,7 +4240,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const send = vi.spyOn(m.WebSocketEngine, 'send')
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
-      expect(m.State.threadDrawerOpen).toBe(false)
+      expect(m.State.threadDrawerOpen).toBe(true)
     })
 
     it('Scenario: dragging a row OUT (release outside the drawer) spawns a window pinned to that thread at the drop point', () => {
@@ -4320,7 +4335,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.State.pinnedThread = 't-pinned'
       m.ThreadDrawerEngine.openPanel()
       expect(m.State.threadDrawerOpen).toBe(false)
-      expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+      expect(m.State.sidebarWidth).toBe(0)
     })
 
     it('Scenario: a thread-list frame arriving mid drag-out does NOT detach the dragged row (rebuild deferred until release)', () => {
