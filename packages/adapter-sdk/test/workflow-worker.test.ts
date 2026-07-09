@@ -508,10 +508,13 @@ describe("buildWorkflowWorker - shell step process-group kill (issue #277 Seam B
           expect(cause.steps[0]?.status).toBe("timeout")
         }
 
-        // By the time the worker settles, the grandchild must already be
-        // gone - the timeout kill path group-kills exactly like the abort
-        // path above (both funnel through `runShellStep`'s `killGroup`).
+        // The timeout kill path group-kills exactly like the abort path
+        // above (both funnel through `runShellStep`'s `killGroup`). Poll
+        // rather than assert immediately: the worker settles on process
+        // EXIT, which precedes REAPING - a reparented grandchild can be a
+        // short-lived zombie for which `kill(pid, 0)` still succeeds.
         const grandchildPid = Number(fs.readFileSync(pidFile, "utf8").trim())
+        yield* Effect.promise(() => pollUntil(() => !isAlive(grandchildPid), 3000))
         expect(isAlive(grandchildPid)).toBe(false)
       })
       await Effect.runPromise(
