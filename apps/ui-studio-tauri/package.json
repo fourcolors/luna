@@ -1,0 +1,14 @@
+{
+  "name": "@luna/ui-studio-tauri",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:hmr": "tauri dev --config src-tauri/tauri.hmr.conf.json",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

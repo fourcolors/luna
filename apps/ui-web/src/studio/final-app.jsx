@@ -1,7 +1,6 @@
 // final-app.jsx — Luna Studio (final): Home space with inbox + threads,
 // City and Build spaces, keyboard jumping, and threads woven through chat.
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, TweakToggle, TweakSelect, TweakSlider } from "./tweaks-panel.jsx";
 import { LUNA_PALETTES, PipApp, TimerApp, WeatherApp, MusicApp, HabitApp, StickyApp, SecureApp } from "./luna-mini-apps.jsx";
 import { TASK_DEFS, BRAINS } from "./studio-data.jsx";
 import { BrainBadge } from "./studio-brain.jsx";
@@ -37,6 +36,19 @@ const LAUNCHER_ITEMS = [
 ];
 
 const TWEAK_DEFAULTS = { theme: "light", palette: "tide", chrome: "wash", grain: false, motion: "lively", ambient: true, defaultBrain: "luna", snap: 28, guides: true };
+
+// Appearance/presence/canvas state, edited from the Settings panel (the old
+// floating dev-only Tweaks panel is gone — its controls live in Settings now).
+// setTweak accepts setTweak('key', value) or setTweak({ key: value, ... }).
+function useTweaks(defaults) {
+  const [values, setValues] = useState(defaults);
+  const setTweak = useCallback((keyOrEdits, val) => {
+    const edits = typeof keyOrEdits === "object" && keyOrEdits !== null
+      ? keyOrEdits : { [keyOrEdits]: val };
+    setValues((prev) => ({ ...prev, ...edits }));
+  }, []);
+  return [values, setTweak];
+}
 
 const RAIL_W = 78;
 const EDGE_MARGIN = 24;
@@ -680,23 +692,6 @@ export function StudioApp() {
       {t.ambient && !voiceOpen && <AmbientLuna onOpen={() => setVoiceOpen(true)} />}
       {voiceOpen && <VoiceScene onClose={() => setVoiceOpen(false)} onSpawn={(req) => { switchWs(req.type === "map" ? "city" : req.type === "task" ? "build" : ws); spawn(req); }} />}
 
-      <TweaksPanel>
-        <TweakSection label="Watercolor" />
-        <TweakRadio label="Appearance" value={t.theme} options={["light", "dark"]} onChange={(v) => setTweak("theme", v)} />
-        <TweakColor label="Palette" value={LUNA_PALETTES[t.palette]} options={[LUNA_PALETTES.dawn, LUNA_PALETTES.meadow, LUNA_PALETTES.tide]} onChange={(v) => {
-          const name = Object.keys(LUNA_PALETTES).find((k) => LUNA_PALETTES[k].join() === (Array.isArray(v) ? v.join() : v));
-          if (name) setTweak("palette", name);
-        }} />
-        <TweakRadio label="Panel chrome" value={t.chrome} options={["wash", "ink"]} onChange={(v) => setTweak("chrome", v)} />
-        <TweakToggle label="Paper grain" value={t.grain} onChange={(v) => setTweak("grain", v)} />
-        <TweakSection label="Presence" />
-        <TweakRadio label="Motion" value={t.motion} options={["calm", "lively", "showy"]} onChange={(v) => setTweak("motion", v)} />
-        <TweakToggle label="Ambient Luna" value={t.ambient} onChange={(v) => setTweak("ambient", v)} />
-        <TweakSelect label="Default brain" value={t.defaultBrain} options={[{ value: "luna", label: "Luna" }, { value: "hermes", label: "Hermes" }, { value: "openclaw", label: "OpenClaw" }]} onChange={(v) => { setTweak("defaultBrain", v); setChatBrain(v); }} />
-        <TweakSection label="Canvas" />
-        <TweakSlider label="Magnet strength" value={t.snap} min={0} max={40} step={1} unit="px" onChange={(v) => setTweak("snap", v)} />
-        <TweakToggle label="Snap guides" value={t.guides} onChange={(v) => setTweak("guides", v)} />
-      </TweaksPanel>
     </div>
   );
 }

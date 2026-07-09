@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Luna Studio main window - Phase 0: core defaults + clipboard write only.",
+  "windows": ["main"],
+  "permissions": ["core:default", "clipboard-manager:allow-write-text"]
+}

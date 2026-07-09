@@ -1,0 +1,43 @@
+[package]
+name = "luna-studio-ui"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Clipboard write-text only (capabilities/default.json grants exactly
+# clipboard-manager:allow-write-text) — see phase0-spike-spec.md decision 8.
+tauri-plugin-clipboard-manager = "2"
+
+# Always-on (NOT feature-gated, macOS only): the webview cache-bust
+# (clear_webview_disk_cache, main.rs) needs MainThreadMarker + NSString/NSSet/
+# NSDate + WKWebsiteDataStore to build the cache-clear call on every build.
+# Ported from apps/ui-moon-tauri/src-tauri/Cargo.toml — versions pinned
+# identically to Moon; ONLY the crates Moon's purge function needs, none of
+# Moon's voice/AppKit/updater stack.
+[target.'cfg(target_os = "macos")'.dependencies.objc2]
+version = "0.6.4"
+
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
+version = "0.3.2"
+default-features = false
+features = ["std", "NSString", "NSSet", "NSDate"]
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-web-kit]
+version = "0.3.2"
+default-features = false
+features = ["WKWebsiteDataStore", "WKWebsiteDataRecord"]
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "luna-studio-ui"
+path = "src/main.rs"

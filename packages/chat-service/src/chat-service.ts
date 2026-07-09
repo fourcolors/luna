@@ -551,8 +551,20 @@ export class ChatService extends Effect.Service<ChatService>()(
             : "default"
         const pathToClaudeCodeExecutable =
           process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim()
+        // The SDK uses this object as the ENTIRE subprocess env (no
+        // process.env merge). Forward basic process identity so the CLI can
+        // resolve its config dir and credentials on a local Mac (HOME drives
+        // ~/.claude + Keychain lookup; PATH lets it spawn helpers like
+        // /usr/bin/security). Without these, local keychain logins report
+        // "Not logged in" while CLAUDE_CONFIG_DIR-pinned deploys still work.
         const sdkEnv: Record<string, string | undefined> = {
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          ...(["HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR"] as const)
+            .filter((k) => process.env[k]?.trim())
+            .reduce<Record<string, string>>((acc, k) => {
+              acc[k] = process.env[k] as string
+              return acc
+            }, {}),
           ...(process.env["CLAUDE_CONFIG_DIR"]?.trim()
             ? { CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] }
             : {}),

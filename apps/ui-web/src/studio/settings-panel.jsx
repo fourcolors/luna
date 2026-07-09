@@ -32,6 +32,13 @@ const APPEARANCE_CHROME = [
   { value: "wash", label: "soft wash" },
   { value: "ink", label: "ink outline" },
 ];
+// Presence/Canvas options (folded in from the old dev-only Tweaks panel).
+const MOTION_LEVELS = ["calm", "lively", "showy"];
+const DEFAULT_BRAINS = [
+  { value: "luna", label: "Luna" },
+  { value: "hermes", label: "Hermes" },
+  { value: "openclaw", label: "OpenClaw" },
+];
 // Palette swatch hexes shown per option — Studio's LUNA_PALETTES names
 // (dawn/meadow/tide), matched by ctx.tweaks.palette. Kept local (not
 // imported from luna-mini-apps.jsx) so this panel has no import-order
@@ -237,6 +244,75 @@ export function SettingsPanel({ ctx }) {
             onChange={(e) => ctx.setTweak("grain", e.target.checked)}
           />
           <span>Paper grain</span>
+        </label>
+      </div>
+
+      {/* Presence — motion, ambient Luna, default brain. Folded in from the
+          old dev-only Tweaks panel; same ctx.tweaks/ctx.setTweak plumbing as
+          Appearance, so it works while disconnected too. Default brain also
+          syncs the live chat brain (ctx.setChatBrain) exactly as the Tweaks
+          control did. */}
+      <div className="stg-row">
+        <div className="section-label">Presence</div>
+        <div className="chip-row">
+          {MOTION_LEVELS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={"chip" + (ctx.tweaks.motion === m ? " active" : "")}
+              onClick={() => ctx.setTweak("motion", m)}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <label className="stg-toggle" title="Show the ambient Luna presence on the canvas">
+          <input
+            type="checkbox"
+            checked={ctx.tweaks.ambient}
+            onChange={(e) => ctx.setTweak("ambient", e.target.checked)}
+          />
+          <span>Ambient Luna</span>
+        </label>
+        <div className="chip-row" title="Which brain new chats talk to by default">
+          {DEFAULT_BRAINS.map((b) => (
+            <button
+              key={b.value}
+              type="button"
+              className={"chip" + (ctx.tweaks.defaultBrain === b.value ? " active" : "")}
+              onClick={() => {
+                ctx.setTweak("defaultBrain", b.value);
+                ctx.setChatBrain?.(b.value);
+              }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Canvas — panel magnet strength + snap guides (also ex-Tweaks). */}
+      <div className="stg-row">
+        <div className="section-label">Canvas</div>
+        <label className="stg-field" style={{ minWidth: 160 }}>
+          <span>Magnet strength · {ctx.tweaks.snap}px</span>
+          <input
+            type="range"
+            min={0}
+            max={40}
+            step={1}
+            value={ctx.tweaks.snap}
+            onChange={(e) => ctx.setTweak("snap", Number(e.target.value))}
+            style={{ accentColor: "var(--accent)" }}
+          />
+        </label>
+        <label className="stg-toggle" title="Show alignment guides while dragging panels">
+          <input
+            type="checkbox"
+            checked={ctx.tweaks.guides}
+            onChange={(e) => ctx.setTweak("guides", e.target.checked)}
+          />
+          <span>Snap guides</span>
         </label>
       </div>
     </div>
