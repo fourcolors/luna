@@ -40,6 +40,23 @@ import { runDream } from "./dream.js"
 /** The registry discriminant for the dream worker. */
 export const DREAM_WORKER_KIND = "dream"
 
+// job-ticker-oban-deadlines (Seam 2 boot wiring) — the whole-dispatch ceiling
+// registered with the WorkerRegistry (see DreamWorkerLayer below). This is
+// DISTINCT from `LUNA_DREAM_TIMEOUT_MS` (dream-reasoner.ts's per-SDK-call
+// inner ceiling, default 10 min): a dream cycle draining a multi-day backlog
+// legitimately spans MANY inner calls, so the outer registered default is
+// wider (15 min) — and still just the "well-behaved" ceiling; the ticker's
+// `grace` window on top of it is the true last-resort backstop, and a large
+// backlog hitting THAT is the expected, retry-recoverable terminal (Seam 3).
+// Overridable via env so operators can widen it without a redeploy.
+const DEFAULT_DREAM_WORKER_TIMEOUT_MS = 15 * 60 * 1000 // 15 min
+const dreamWorkerDefaultTimeoutMs = (): number => {
+  const raw = process.env["LUNA_DREAM_WORKER_TIMEOUT_MS"]?.trim()
+  if (!raw) return DEFAULT_DREAM_WORKER_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_DREAM_WORKER_TIMEOUT_MS
+}
+
 /** The (non-optional) dream service environment a dream cycle requires. */
 type DreamCtx = DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock
 
@@ -136,7 +153,10 @@ export const DreamWorkerLayer = (
         ? (Context.add(base, CalibrationStore, calOpt.value) as Context.Context<DreamCtx>)
         : base
       const worker = buildDreamWorker(ctx)
-      yield* reg.register(kind, worker)
+      yield* reg.register(kind, {
+        run: worker,
+        defaultTimeoutMs: dreamWorkerDefaultTimeoutMs(),
+      })
     }),
   )
 }

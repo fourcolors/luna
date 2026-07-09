@@ -108,6 +108,33 @@ describe("DreamWorkerLayer", () => {
     await Effect.runPromise(prog.pipe(Effect.provide(exposed([]))))
   })
 
+  // job-ticker-oban-deadlines (Seam 2 boot wiring): a bare-function
+  // registration here would silently regress every dream cycle back to the
+  // pre-slice 5-min ticker ceiling — exactly the production bug (3/3 nightly
+  // dream failures) this slice exists to fix.
+  it("(a2) registers with a defaultTimeoutMs of 15 min by default, overridable via LUNA_DREAM_WORKER_TIMEOUT_MS", async () => {
+    const prog = Effect.gen(function* () {
+      const reg = yield* WorkerRegistry
+      const entry = yield* reg.lookupEntry(DREAM_WORKER_KIND)
+      expect(entry?.defaultTimeoutMs).toBe(15 * 60 * 1000)
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(exposed([]))))
+
+    const prevEnv = process.env["LUNA_DREAM_WORKER_TIMEOUT_MS"]
+    process.env["LUNA_DREAM_WORKER_TIMEOUT_MS"] = "600000"
+    try {
+      const prog2 = Effect.gen(function* () {
+        const reg = yield* WorkerRegistry
+        const entry = yield* reg.lookupEntry(DREAM_WORKER_KIND)
+        expect(entry?.defaultTimeoutMs).toBe(600_000)
+      })
+      await Effect.runPromise(prog2.pipe(Effect.provide(exposed([]))))
+    } finally {
+      if (prevEnv === undefined) delete process.env["LUNA_DREAM_WORKER_TIMEOUT_MS"]
+      else process.env["LUNA_DREAM_WORKER_TIMEOUT_MS"] = prevEnv
+    }
+  })
+
   it("(b) dispatching 'dream' runs a full runDream cycle (watermark advances to the gathered cutoff)", async () => {
     const prog = Effect.gen(function* () {
       const reg = yield* WorkerRegistry

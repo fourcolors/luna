@@ -415,6 +415,38 @@ describe("JobsStoreService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  // job-ticker-oban-deadlines — Oban-style retry counter (SCHEMA_V3).
+  it("retryAttempt defaults to 0 on record() and round-trips through setV2Fields", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const job = yield* store.record({
+        id: "retry-me",
+        kind: "dream",
+        spec: "0 3 * * *",
+        payload: { label: "retry-me" },
+      })
+      expect(job.retryAttempt).toBe(0)
+      const fresh = yield* store.getById("retry-me")
+      expect(fresh?.retryAttempt).toBe(0)
+
+      yield* store.setV2Fields("retry-me", { retryAttempt: 3 })
+      const bumped = yield* store.getById("retry-me")
+      expect(bumped?.retryAttempt).toBe(3)
+
+      // An unrelated patch (no retryAttempt key) must NOT reset it — matches
+      // the `!== undefined` omit semantics every other V2 field already has.
+      yield* store.setV2Fields("retry-me", { enabled: false })
+      const untouched = yield* store.getById("retry-me")
+      expect(untouched?.retryAttempt).toBe(3)
+      expect(untouched?.enabled).toBe(false)
+
+      yield* store.setV2Fields("retry-me", { retryAttempt: 0 })
+      const reset = yield* store.getById("retry-me")
+      expect(reset?.retryAttempt).toBe(0)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
 })
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -523,6 +555,45 @@ dSqlite("JobsStoreService (SQLite layer) — null clears, undefined omits", () =
       Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
     )
   })
+
+  // job-ticker-oban-deadlines — the setV2FieldsStmt CASE-WHEN sentinel gained
+  // a 4th (retry_attempt) pair; a positional-bind slip here would silently
+  // scramble ANY of the four columns (a classic off-by-position trap), so
+  // this exercises every column touched in the SAME call, not in isolation.
+  it("setV2Fields writes retry_attempt alongside the other V2 columns without cross-column corruption", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const job = yield* store.record({ id: "ra", kind: "dream", spec: "", payload: { label: "ra" } })
+      expect(job.retryAttempt).toBe(0)
+
+      yield* store.setV2Fields("ra", {
+        schedule: "0 3 * * *",
+        enabled: true,
+        nextRunAt: 4321,
+        retryAttempt: 2,
+      })
+      const all = yield* store.getById("ra")
+      expect(all?.schedule).toBe("0 3 * * *")
+      expect(all?.enabled).toBe(true)
+      expect(all?.nextRunAt).toBe(4321)
+      expect(all?.retryAttempt).toBe(2)
+
+      // A retryAttempt-only patch must leave the sibling columns untouched.
+      yield* store.setV2Fields("ra", { retryAttempt: 5 })
+      const bumped = yield* store.getById("ra")
+      expect(bumped?.retryAttempt).toBe(5)
+      expect(bumped?.schedule).toBe("0 3 * * *")
+      expect(bumped?.nextRunAt).toBe(4321)
+
+      // An explicit reset back to 0 is a real write, not an omit.
+      yield* store.setV2Fields("ra", { retryAttempt: 0 })
+      const reset = yield* store.getById("ra")
+      expect(reset?.retryAttempt).toBe(0)
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
 })
 
 dSqlite("JobsStoreService (SQLite layer) — pruneRuns", () => {
@@ -546,5 +617,120 @@ dSqlite("JobsStoreService (SQLite layer) — pruneRuns", () => {
     await Effect.runPromise(
       Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
     )
+  })
+})
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * job-ticker-oban-deadlines — SCHEMA_V3 migration on an EXISTING V2 database.
+ * DESIGN.md §5.1's required regression guard: open a real on-disk DB that
+ * already has V1+V2 applied and rows recorded (as a pre-upgrade deployment
+ * would), THEN let makeLayer() apply only the new V3 migration, and assert
+ * the pre-existing rows survive with retry_attempt defaulted to 0. This is
+ * distinct from the other SQLite tests, which all build a fresh DB where
+ * V1+V2+V3 apply together and never exercise the V2->V3 upgrade path on
+ * already-populated data.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+dSqlite("JobsStoreService (SQLite layer) — SCHEMA_V3 migration on existing V2 DB", () => {
+  it("preserves pre-existing V2 rows and defaults retry_attempt=0 after the V3 ALTER", async () => {
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { mkdtempSync } = await import("node:fs")
+    const { Database } = (await import(
+      /* @vite-ignore */ "bun:sqlite"
+    )) as { Database: new (p: string) => import("../db/schema-versions.js").BunDb }
+    const { ensureSchemaVersions, applyMigration } = await import(
+      "../db/schema-versions.js"
+    )
+
+    const tmp = mkdtempSync(join(tmpdir(), "luna-jobs-v2v3-"))
+    const dbPath = join(tmp, "test.db")
+
+    // Arrange: hand-build a V1+V2-only database (mirrors SCHEMA_V1/V2 in
+    // jobs-store.ts) and insert a row exactly as a pre-upgrade deployment
+    // would have — no retry_attempt column exists yet.
+    const seedDb = new Database(dbPath)
+    seedDb.run(`
+      CREATE TABLE IF NOT EXISTS jobs (
+        id           TEXT NOT NULL PRIMARY KEY,
+        kind         TEXT NOT NULL,
+        spec         TEXT NOT NULL,
+        next_run     INTEGER,
+        last_run     INTEGER,
+        last_status  TEXT,
+        payload_json TEXT NOT NULL,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_jobs_kind_created
+        ON jobs(kind, created_at);
+    `)
+    seedDb.run(`
+      ALTER TABLE jobs ADD COLUMN schedule    TEXT;
+      ALTER TABLE jobs ADD COLUMN enabled     INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE jobs ADD COLUMN next_run_at INTEGER;
+      CREATE INDEX IF NOT EXISTS idx_jobs_due
+        ON jobs(enabled, next_run_at);
+
+      CREATE TABLE IF NOT EXISTS job_runs (
+        id           INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        job_id       TEXT    NOT NULL,
+        started_at   INTEGER NOT NULL,
+        finished_at  INTEGER,
+        status       TEXT    NOT NULL,
+        attempt      INTEGER NOT NULL DEFAULT 1,
+        output_text  TEXT,
+        error        TEXT,
+        steps_json   TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_job_runs_job
+        ON job_runs(job_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_job_runs_status
+        ON job_runs(status, started_at DESC);
+    `)
+    ensureSchemaVersions(seedDb)
+    applyMigration(seedDb, "jobs", 1, "SELECT 1", 1000) // ledger only; DDL already ran above
+    applyMigration(seedDb, "jobs", 2, "SELECT 1", 1000)
+    seedDb
+      .query(
+        `INSERT INTO jobs
+           (id, kind, spec, next_run, last_run, last_status, payload_json, created_at, updated_at, schedule, enabled, next_run_at)
+         VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "pre-v3-job",
+        "cron",
+        "*/15 * * * *",
+        JSON.stringify({ label: "pre-v3-job" }),
+        1000,
+        1000,
+        "*/15 * * * *",
+        1,
+        2000,
+      )
+    seedDb.close()
+
+    // Act: re-open the same on-disk DB through makeLayer(). V1 and V2 are
+    // already recorded in schema_versions, so only SCHEMA_V3's additive
+    // ALTER should run.
+    const layer = JobsStoreService.makeLayer(dbPath).pipe(
+      Layer.provide(Clock.Default),
+      Layer.provide(bootstrapStubL),
+    )
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const row = yield* store.getById("pre-v3-job")
+      expect(row).not.toBeNull()
+      expect(row?.kind).toBe("cron")
+      expect(row?.spec).toBe("*/15 * * * *")
+      expect(row?.schedule).toBe("*/15 * * * *")
+      expect(row?.enabled).toBe(true)
+      expect(row?.nextRunAt).toBe(2000)
+      expect(row?.payload).toEqual({ label: "pre-v3-job" })
+      // The required regression guard: retry_attempt defaults to 0 on a row
+      // that predates SCHEMA_V3.
+      expect(row?.retryAttempt).toBe(0)
+    })
+    await Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(layer))))
   })
 })

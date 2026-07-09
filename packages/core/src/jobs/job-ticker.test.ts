@@ -638,4 +638,536 @@ describe("JobTicker", () => {
       prog.pipe(Effect.provide(buildStack({ wake: counting }))),
     )
   })
+
+  // ── job-ticker-oban-deadlines ────────────────────────────────────────────
+
+  it("Seam 4: bounded concurrency — a failing post-dispatch store write on one job does not block a sibling's in-flight dispatch from closing", async () => {
+    const SLEEP_MS = 60
+    const finished: string[] = []
+    const worker: Worker = (_p, ctx) =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(Duration.millis(SLEEP_MS))
+        finished.push(ctx.jobId)
+        return { outputText: "ok" }
+      })
+
+    const prog = Effect.gen(function* () {
+      const real = yield* JobsStoreService
+      // recordRunEnd fails ONLY for "flaky"'s run — simulates a storage blip
+      // on its post-dispatch write. Keyed by runId -> jobId (recordRunEnd
+      // itself only receives a runId), captured via a recordRunStart tap.
+      const runIdToJobId = new Map<number, string>()
+      const wrapped: JobsStoreApi = {
+        ...real,
+        recordRunStart: (input) =>
+          real.recordRunStart(input).pipe(
+            Effect.tap((run) =>
+              Effect.sync(() => runIdToJobId.set(run.id, input.jobId)),
+            ),
+          ),
+        recordRunEnd: (runId, end) =>
+          runIdToJobId.get(runId) === "flaky"
+            ? Effect.fail(
+                new JobsStoreError({ op: "run_end", message: "simulated storage blip" }),
+              )
+            : real.recordRunEnd(runId, end),
+      }
+
+      yield* real.record({ id: "flaky", kind: "wake", spec: "*/5 * * * *", payload: { label: "f" } })
+      yield* real.setV2Fields("flaky", { schedule: "*/5 * * * *", nextRunAt: 0 })
+      yield* real.record({ id: "steady", kind: "wake", spec: "*/5 * * * *", payload: { label: "s" } })
+      yield* real.setV2Fields("steady", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+      const startedAt = Date.now()
+      yield* Effect.gen(function* () {
+        const ticker = yield* JobTicker
+        yield* ticker.drain
+      }).pipe(
+        Effect.provide(
+          JobTickerLayer({ autoStart: false, dispatchConcurrency: 2 }).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(JobsStoreService, wrapped),
+                makeWorkerRegistry({ wake: worker }),
+                Clock.Default,
+              ),
+            ),
+          ),
+        ),
+      )
+      const elapsedMs = Date.now() - startedAt
+
+      // TRUE concurrency: two ~SLEEP_MS workers finish in ~SLEEP_MS wall-clock,
+      // not ~2*SLEEP_MS — a regression to sequential-only dispatch (or a
+      // fail-fast interruption cutting the run short) would show up here.
+      expect(elapsedMs).toBeLessThan(SLEEP_MS * 1.8)
+      expect(finished.sort()).toEqual(["flaky", "steady"])
+
+      // "steady"'s run closed successfully DESPITE "flaky"'s recordRunEnd
+      // failing concurrently — no fail-fast interruption of the sibling.
+      const steadyRuns = yield* real.listRuns("steady", 1)
+      expect(steadyRuns[0]?.status).toBe("success")
+      expect(steadyRuns[0]?.finishedAt).not.toBeNull()
+
+      // "flaky"'s own run stays 'running' (its recordRunEnd never landed) —
+      // that's the pre-existing per-item error-isolation behavior (reaped by
+      // boot reconcile on next restart); the point of this test is that its
+      // failure did NOT also sink "steady".
+      const flakyRuns = yield* real.listRuns("flaky", 1)
+      expect(flakyRuns[0]?.status).toBe("running")
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            JobsStoreService.Memory.pipe(Layer.provide(Clock.Default)),
+            Clock.Default,
+          ),
+        ),
+      ),
+    )
+  })
+
+  it("Seam 3: a failed dispatch on a RECURRING job retries sooner than its natural cron fire, bumping retry_attempt", async () => {
+    const hang: Worker = () => Effect.never
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const clock = yield* Clock
+      const ticker = yield* JobTicker
+      // A yearly cron: its natural next fire is always FAR in the future, so
+      // the backoff-computed retryAt (default ~1 min) is unambiguously sooner
+      // regardless of real wall-clock timing at test-run time.
+      yield* store.record({ id: "retry-recurring", kind: "wake", spec: "0 0 1 1 *", payload: { label: "r" } })
+      yield* store.setV2Fields("retry-recurring", { schedule: "0 0 1 1 *", nextRunAt: 0 })
+
+      const beforeMs = yield* clock.nowMs()
+      const summary = yield* ticker.drain
+      expect(summary.failed).toBe(1)
+
+      const after = yield* store.getById("retry-recurring")
+      expect(after?.retryAttempt).toBe(1)
+      expect(after?.nextRunAt).not.toBeNull()
+      // retryAt = observed POST-dispatch now + backoff(1) — strictly greater
+      // than the PRE-dispatch clock read taken above (deadline_passed can
+      // only fire after the worker deadline elapses).
+      expect((after?.nextRunAt ?? 0) > beforeMs).toBe(true)
+      // ...and sooner than the yearly cron's real next fire, proving the
+      // retry path (not the cron-computed path) decided next_run_at.
+      const wellPastRetryWindowMs = beforeMs + 24 * 3600 * 1000 * 300 // 300 days
+      expect((after?.nextRunAt ?? Infinity) < wellPastRetryWindowMs).toBe(true)
+
+      // A second drain does NOT re-fire it — the retry window (~1 min) has
+      // not elapsed against the real clock yet.
+      const s2 = yield* ticker.drain
+      expect(s2.considered).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(buildStack({ wake: hang }, { workerDeadline: Duration.millis(50) })),
+      ),
+    )
+  })
+
+  it("Seam 3: retry_attempt resets to 0 on the next success after a prior failure", async () => {
+    let attempt = 0
+    const flakyThenOk: Worker = () => {
+      attempt++
+      return attempt === 1
+        ? Effect.fail(new WorkerError({ reason: "worker_failed", message: "transient" }))
+        : Effect.succeed({ outputText: "recovered" })
+    }
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "recovers", kind: "wake", spec: "0 0 1 1 *", payload: { label: "rec" } })
+      yield* store.setV2Fields("recovers", { schedule: "0 0 1 1 *", nextRunAt: 0 })
+
+      const s1 = yield* ticker.drain
+      expect(s1.failed).toBe(1)
+      const afterFail = yield* store.getById("recovers")
+      expect(afterFail?.retryAttempt).toBe(1)
+      expect(afterFail?.nextRunAt).not.toBeNull()
+
+      // Force the row due again right now (bypassing the real backoff wait,
+      // which is the ticker's business, not this test's) so the retry fires.
+      yield* store.setV2Fields("recovers", { nextRunAt: 0 })
+      const s2 = yield* ticker.drain
+      expect(s2.succeeded).toBe(1)
+      const afterSuccess = yield* store.getById("recovers")
+      expect(afterSuccess?.retryAttempt).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: flakyThenOk }))),
+    )
+  })
+
+  it("Seam 3 guard: a one-shot job's failed dispatch is NEVER retried/rescheduled — it fires exactly once and stays disabled", async () => {
+    const angry: Worker = () =>
+      Effect.fail(new WorkerError({ reason: "worker_failed", message: "boom" }))
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "oneshot-fail", kind: "wake", spec: "", payload: { label: "o" } })
+      yield* store.setV2Fields("oneshot-fail", { enabled: true, nextRunAt: 0 })
+
+      const s1 = yield* ticker.drain
+      expect(s1.failed).toBe(1)
+      expect(s1.succeeded).toBe(0)
+
+      const after = yield* store.getById("oneshot-fail")
+      // One-shots never retry: retry_attempt stays 0 and the row is disabled
+      // (the pre-existing one-shot guard) rather than rescheduled sooner.
+      expect(after?.retryAttempt).toBe(0)
+      expect(after?.enabled).toBe(false)
+
+      // A second drain must not re-dispatch it — proving it was never
+      // rescheduled by the Seam-3 retry path.
+      const s2 = yield* ticker.drain
+      expect(s2.considered).toBe(0)
+      expect(s2.failed).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: angry }))),
+    )
+  })
+
+  it("Seam 1: a worker registered with defaultTimeoutMs gets `grace` added on top before the outer backstop fires", async () => {
+    const hang: Worker = () => Effect.never
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "graced", kind: "dream", spec: "0 0 * * *", payload: { label: "g" } })
+      yield* store.setV2Fields("graced", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const startedAt = Date.now()
+      const summary = yield* ticker.drain
+      const elapsedMs = Date.now() - startedAt
+
+      expect(summary.failed).toBe(1)
+      const runs = yield* store.listRuns("graced", 1)
+      expect(runs[0]?.error ?? "").toMatch(/deadline/i)
+      // defaultTimeoutMs(1100) is chosen ABOVE MIN_RESOLVED_TIMEOUT_MS(1000)
+      // so the floor clamp cannot swallow the grace term (a prior version of
+      // this test used numbers under the floor, so the backstop was actually
+      // floor(1000) + grace regardless of the configured defaultTimeoutMs,
+      // and the assertion below could not distinguish grace-added from
+      // grace-absent). defaultTimeoutMs(1100) + grace(400) = 1500ms backstop;
+      // with grace NOT added the backstop would be 1100ms, which fails this
+      // assertion — so this test actually fails if `+ graceMs` is removed.
+      expect(elapsedMs).toBeGreaterThanOrEqual(1400)
+      expect(elapsedMs).toBeLessThan(2500)
+    })
+    const registry = makeWorkerRegistry({ dream: { run: hang, defaultTimeoutMs: 1100 } })
+    const storeL = JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))
+    const tickerL = JobTickerLayer({
+      tickInterval: Duration.seconds(60),
+      autoStart: false,
+      workerDeadline: Duration.millis(10),
+      grace: Duration.millis(400),
+      maxWorkerDeadline: Duration.minutes(30),
+    }).pipe(Layer.provideMerge(Layer.mergeAll(storeL, registry, Clock.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(tickerL)))
+  })
+
+  it("Seam 1: a worker that fails on its OWN inner timeout before the backstop closes as worker_failed, not deadline_passed (grace lets it self-report)", async () => {
+    // Simulates a well-behaved worker (like the dream worker) that owns an
+    // inner timeout shorter than its registered defaultTimeoutMs and fails
+    // itself with a descriptive `worker_failed` error well before the
+    // ticker's grace-inclusive backstop would fire.
+    const selfTimingOut: Worker = () =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(Duration.millis(60))
+        return yield* Effect.fail(
+          new WorkerError({
+            reason: "worker_failed",
+            message: "inner timeout: exceeded self-imposed 60ms chunk budget",
+          }),
+        )
+      })
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "self-timeout", kind: "dream", spec: "0 0 * * *", payload: { label: "s" } })
+      yield* store.setV2Fields("self-timeout", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const summary = yield* ticker.drain
+      expect(summary.failed).toBe(1)
+      const runs = yield* store.listRuns("self-timeout", 1)
+      // The worker's OWN error must win: `worker_failed`, not the ticker's
+      // `deadline_passed` backstop — proving the grace window (defaultTimeoutMs
+      // 1000ms below the 1000ms+grace backstop) gave the inner timeout room to
+      // fire and be recorded on its own terms.
+      expect(runs[0]?.error ?? "").toMatch(/inner timeout/i)
+      expect(runs[0]?.error ?? "").not.toMatch(/deadline/i)
+    })
+    // defaultTimeoutMs(1000) + grace(2000) = 3000ms backstop, far past the
+    // worker's own ~60ms self-inflicted failure — the backstop must never
+    // fire for this dispatch.
+    const registry = makeWorkerRegistry({ dream: { run: selfTimingOut, defaultTimeoutMs: 1000 } })
+    const storeL = JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))
+    const tickerL = JobTickerLayer({
+      tickInterval: Duration.seconds(60),
+      autoStart: false,
+      workerDeadline: Duration.millis(10),
+      grace: Duration.seconds(2),
+      maxWorkerDeadline: Duration.minutes(30),
+    }).pipe(Layer.provideMerge(Layer.mergeAll(storeL, registry, Clock.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(tickerL)))
+  })
+
+  it("Seam 1 back-compat: a bare-function registration (no defaultTimeoutMs) ignores `grace` entirely and uses workerDeadline exactly as before", async () => {
+    const hang: Worker = () => Effect.never
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "bare", kind: "wake", spec: "0 0 * * *", payload: { label: "b" } })
+      yield* store.setV2Fields("bare", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const startedAt = Date.now()
+      yield* ticker.drain
+      const elapsedMs = Date.now() - startedAt
+
+      // Even with a large `grace` configured, a bare-function registration
+      // must fire at the global workerDeadline ALONE (30ms) — not
+      // workerDeadline + grace (which would be ~2030ms).
+      expect(elapsedMs).toBeLessThan(500)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          buildStack(
+            { wake: hang },
+            { workerDeadline: Duration.millis(30), grace: Duration.seconds(2) },
+          ),
+        ),
+      ),
+    )
+  })
+
+  it("Seam 1: payload.timeout_ms overrides the worker's registered defaultTimeoutMs (highest-priority source)", async () => {
+    const hang: Worker = () => Effect.never
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      // Worker registers defaultTimeoutMs=10ms (tiny); the payload asks for
+      // far more (1200ms) — the payload override must win.
+      yield* store.record({
+        id: "payload-override",
+        kind: "dream",
+        spec: "0 0 * * *",
+        payload: { label: "g", timeout_ms: 1200 },
+      })
+      yield* store.setV2Fields("payload-override", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const startedAt = Date.now()
+      const summary = yield* ticker.drain
+      const elapsedMs = Date.now() - startedAt
+
+      expect(summary.failed).toBe(1)
+      // If the worker's defaultTimeoutMs(10) had won, this would fire in
+      // well under 100ms — asserting >=1100 proves the payload override
+      // (1200) was the effective timeout, not the worker default.
+      expect(elapsedMs).toBeGreaterThanOrEqual(1100)
+    })
+    const registry = makeWorkerRegistry({ dream: { run: hang, defaultTimeoutMs: 10 } })
+    const storeL = JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))
+    const tickerL = JobTickerLayer({
+      tickInterval: Duration.seconds(60),
+      autoStart: false,
+      workerDeadline: Duration.millis(10),
+      grace: Duration.millis(0),
+      maxWorkerDeadline: Duration.minutes(30),
+    }).pipe(Layer.provideMerge(Layer.mergeAll(storeL, registry, Clock.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(tickerL)))
+  })
+
+  it("Seam 1: payload.timeout_ms is clamped at maxWorkerDeadline, not honoured unbounded", async () => {
+    const hang: Worker = () => Effect.never
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({
+        id: "clamp-huge",
+        kind: "wake",
+        spec: "0 0 * * *",
+        payload: { label: "c", timeout_ms: 999_999_999 },
+      })
+      yield* store.setV2Fields("clamp-huge", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const startedAt = Date.now()
+      const summary = yield* ticker.drain
+      const elapsedMs = Date.now() - startedAt
+
+      expect(summary.failed).toBe(1)
+      // An unbounded payload override would hang far past any reasonable
+      // test duration; maxWorkerDeadline(150ms) must still cap it.
+      expect(elapsedMs).toBeLessThan(500)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          buildStack(
+            { wake: hang },
+            {
+              workerDeadline: Duration.minutes(5),
+              grace: Duration.millis(0),
+              maxWorkerDeadline: Duration.millis(150),
+            },
+          ),
+        ),
+      ),
+    )
+  })
+
+  it("Seam 1: garbage payload.timeout_ms (negative) falls through cleanly to the worker default, still floored at 1s", async () => {
+    const hang: Worker = () => Effect.never
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({
+        id: "garbage-timeout",
+        kind: "dream",
+        spec: "0 0 * * *",
+        payload: { label: "g", timeout_ms: -50 },
+      })
+      yield* store.setV2Fields("garbage-timeout", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const startedAt = Date.now()
+      const summary = yield* ticker.drain
+      const elapsedMs = Date.now() - startedAt
+
+      expect(summary.failed).toBe(1)
+      // A negative payload.timeout_ms must NOT be honoured (which would
+      // otherwise produce a ~0ms or negative backstop) — it falls through to
+      // the worker's defaultTimeoutMs(40), which is itself floored at 1s.
+      expect(elapsedMs).toBeGreaterThanOrEqual(900)
+      expect(elapsedMs).toBeLessThan(3000)
+    })
+    const registry = makeWorkerRegistry({ dream: { run: hang, defaultTimeoutMs: 40 } })
+    const storeL = JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))
+    const tickerL = JobTickerLayer({
+      tickInterval: Duration.seconds(60),
+      autoStart: false,
+      workerDeadline: Duration.millis(10),
+      grace: Duration.millis(0),
+      maxWorkerDeadline: Duration.minutes(30),
+    }).pipe(Layer.provideMerge(Layer.mergeAll(storeL, registry, Clock.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(tickerL)))
+  })
+
+  it("Seam 3: a bad_payload failure is NOT retried — retry_attempt stays 0 and next_run_at is left at the natural cron fire", async () => {
+    const badPayload: Worker = () =>
+      Effect.fail(new WorkerError({ reason: "bad_payload", message: "missing user_prompt" }))
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({
+        id: "bad-payload-job",
+        kind: "wake",
+        spec: "0 0 1 1 *",
+        payload: { label: "bp" },
+      })
+      yield* store.setV2Fields("bad-payload-job", { schedule: "0 0 1 1 *", nextRunAt: 0 })
+
+      const summary = yield* ticker.drain
+      expect(summary.failed).toBe(1)
+
+      const after = yield* store.getById("bad-payload-job")
+      expect(after?.retryAttempt).toBe(0)
+      // A yearly cron's natural next fire is always far in the future —
+      // proving next_run_at was NOT pulled earlier by a (wrongly-granted)
+      // retry.
+      // Well past ANY retry backoff (max 30 min) but comfortably short of
+      // the yearly cron's actual next fire (months away) — proving
+      // next_run_at is the natural cron fire, not a retry nudge.
+      const wellPastRetryWindowMs = Date.now() + 24 * 3600 * 1000 * 7
+      expect((after?.nextRunAt ?? 0) > wellPastRetryWindowMs).toBe(true)
+
+      // A second drain does not re-fire it — proving it was never
+      // rescheduled sooner by the retry path.
+      const s2 = yield* ticker.drain
+      expect(s2.considered).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: badPayload }))),
+    )
+  })
+
+  it("Seam 3: exhausting maxAttempts stops retrying and resets retry_attempt (falls back to cron cadence)", async () => {
+    const alwaysFail: Worker = () =>
+      Effect.fail(new WorkerError({ reason: "worker_failed", message: "still broken" }))
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "exhaust", kind: "wake", spec: "0 0 1 1 *", payload: { label: "e" } })
+      yield* store.setV2Fields("exhaust", { schedule: "0 0 1 1 *", nextRunAt: 0 })
+
+      // First failure: attempt #1, under the ceiling (defaultMaxAttempts=2) — retried.
+      const s1 = yield* ticker.drain
+      expect(s1.failed).toBe(1)
+      const afterFirst = yield* store.getById("exhaust")
+      expect(afterFirst?.retryAttempt).toBe(1)
+
+      // Force it due again right now (bypassing the real backoff wait, which
+      // is the ticker's business, not this test's).
+      yield* store.setV2Fields("exhaust", { nextRunAt: 0 })
+
+      // Second failure: attempt #2 reaches maxAttempts(2) — exhausted.
+      const s2 = yield* ticker.drain
+      expect(s2.failed).toBe(1)
+      const afterSecond = yield* store.getById("exhaust")
+      expect(afterSecond?.retryAttempt).toBe(0)
+      // Well past ANY retry backoff (max 30 min) but comfortably short of
+      // the yearly cron's actual next fire (months away).
+      const wellPastRetryWindowMs = Date.now() + 24 * 3600 * 1000 * 7
+      expect((afterSecond?.nextRunAt ?? 0) > wellPastRetryWindowMs).toBe(true)
+
+      // A third drain does not fire it either — proving exhaustion truly
+      // fell back to the (far-future) natural cron cadence, not a fast retry.
+      const s3 = yield* ticker.drain
+      expect(s3.considered).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: alwaysFail }, { defaultMaxAttempts: 2 }))),
+    )
+  })
+
+  it("Seam 3: job_runs.attempt reflects the retry streak (1, 2, 3)", async () => {
+    let calls = 0
+    const failTwiceThenOk: Worker = () => {
+      calls++
+      return calls < 3
+        ? Effect.fail(new WorkerError({ reason: "worker_failed", message: "flaky" }))
+        : Effect.succeed({ outputText: "ok" })
+    }
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({
+        id: "attempt-count",
+        kind: "wake",
+        spec: "0 0 1 1 *",
+        payload: { label: "a" },
+      })
+      yield* store.setV2Fields("attempt-count", { schedule: "0 0 1 1 *", nextRunAt: 0 })
+
+      yield* ticker.drain
+      yield* store.setV2Fields("attempt-count", { nextRunAt: 0 })
+      yield* ticker.drain
+      yield* store.setV2Fields("attempt-count", { nextRunAt: 0 })
+      yield* ticker.drain
+
+      const runs = yield* store.listRuns("attempt-count", 10)
+      // `id` is monotonically assigned at insertion (recordRunStart), so
+      // sorting on it gives a deterministic chronological order even when
+      // successive real-clock `startedAt` reads land in the same
+      // millisecond (listRuns' `started_at DESC` ordering ties unreliably
+      // in that case).
+      const attempts = [...runs].sort((a, b) => a.id - b.id).map((r) => r.attempt)
+      expect(attempts).toEqual([1, 2, 3])
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: failTwiceThenOk }, { defaultMaxAttempts: 5 }))),
+    )
+  })
 })

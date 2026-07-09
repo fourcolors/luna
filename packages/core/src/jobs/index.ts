@@ -14,6 +14,8 @@ export {
   type WorkerContext,
   type WorkerResult,
   type WorkerRegistryApi,
+  type WorkerEntry,
+  type Registrable,
 } from "./worker-registry.js"
 export {
   JobsStoreError,

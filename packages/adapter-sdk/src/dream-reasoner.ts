@@ -450,12 +450,25 @@ export const DreamReasonerDefault: Layer.Layer<
       process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || undefined
 
     // Wall-clock ceiling for one reasoning turn. The dream is dispatched by
-    // the V2 JobTicker (kind:"dream" -> DreamWorker), whose 5-min per-dispatch
-    // deadline interrupts an overrunning CHUNK; runDream commits the watermark
-    // per chunk, so an interrupted chunk cleanly re-runs next dispatch. This
-    // timeout is the inner per-SDK-call ceiling (also covers the sampling
-    // extras phase) so a wedged turn can't hold the worker until the ticker
-    // kills it. Overridable via env; defaults to 10 min.
+    // the V2 JobTicker (kind:"dream" -> DreamWorker), whose per-dispatch
+    // backstop deadline interrupts an overrunning CHUNK; runDream commits the
+    // watermark per chunk, so an interrupted chunk cleanly re-runs next
+    // dispatch. This timeout is the inner per-SDK-call ceiling (also covers
+    // the sampling extras phase) so a wedged turn can't hold the worker until
+    // the ticker kills it. Overridable via env; defaults to 10 min.
+    //
+    // job-ticker-oban-deadlines (Seam 1): the ticker's `grace` window (which
+    // lets a worker's OWN inner timeout fire first, on its own typed
+    // WorkerError terms, before the ticker's outer timeoutFail) only helps
+    // SINGLE-TURN-shaped workers (prompt/workflow) whose one inner timeout
+    // maps directly onto the whole dispatch. It does NOT save a large dream
+    // backlog: this LUNA_DREAM_TIMEOUT_MS is a PER-CHUNK ceiling, unrelated to
+    // the whole-dispatch backstop, and a dream draining many chunks can
+    // legitimately run past `defaultTimeoutMs + grace`. For dream, hitting the
+    // ticker's backstop `deadline_passed` on a large backlog remains the
+    // EXPECTED terminal outcome — it is now survivable because Seam 3 retries
+    // the job with backoff and runDream resumes from its last committed
+    // per-chunk watermark, not because grace prevents it from happening.
     const dreamTimeoutMs = (() => {
       const raw = process.env["LUNA_DREAM_TIMEOUT_MS"]?.trim()
       const n = raw ? Number(raw) : DEFAULT_QUERY_TIMEOUT_MS

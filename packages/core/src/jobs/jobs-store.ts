@@ -86,6 +86,19 @@ const SCHEMA_V2 = `
     ON job_runs(status, started_at DESC);
 `
 
+/**
+ * job-ticker-oban-deadlines — Oban-style retry counter.
+ *
+ * `retry_attempt` tracks how many times the CURRENT failure streak has been
+ * retried for a recurring job; the JobTicker bumps it on a failed dispatch
+ * and resets it to 0 on the next success (see JobTickerOptions.retryBackoff).
+ * A plain literal DEFAULT is legal on SQLite's `ADD COLUMN`, so every
+ * existing row backfills to 0 without a data migration pass.
+ */
+const SCHEMA_V3 = `
+  ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0;
+`
+
 // ── bun:sqlite minimal shape ─────────────────────────────────────────────────
 
 interface BunDb {
@@ -130,6 +143,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             schedule: null,
             enabled: input.enabled ?? true,
             nextRunAt: input.nextRunAt ?? null,
+            retryAttempt: 0,
           }
           const existed = yield* Ref.get(store).pipe(
             Effect.map((m) => m.has(input.id)),
@@ -197,21 +211,26 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
       const setV2Fields: JobsStoreApi["setV2Fields"] = (id, patch) =>
         Effect.gen(function* () {
           const ts = yield* clock.nowMs()
-          const map = yield* Ref.get(store)
-          const existing = map.get(id)
-          if (!existing) return false
-          const next: PersistedJob = {
-            ...existing,
-            schedule: patch.schedule !== undefined ? patch.schedule : existing.schedule,
-            enabled: patch.enabled !== undefined ? patch.enabled : existing.enabled,
-            nextRunAt:
-              patch.nextRunAt !== undefined ? patch.nextRunAt : existing.nextRunAt,
-            updatedAt: ts,
-          }
-          const m2 = new Map(map)
-          m2.set(id, next)
-          yield* Ref.set(store, m2)
-          return true
+          return yield* Ref.modify(store, (map) => {
+            const existing = map.get(id)
+            if (!existing) return [false, map] as [boolean, typeof map]
+            const next: PersistedJob = {
+              ...existing,
+              schedule:
+                patch.schedule !== undefined ? patch.schedule : existing.schedule,
+              enabled: patch.enabled !== undefined ? patch.enabled : existing.enabled,
+              nextRunAt:
+                patch.nextRunAt !== undefined ? patch.nextRunAt : existing.nextRunAt,
+              retryAttempt:
+                patch.retryAttempt !== undefined
+                  ? patch.retryAttempt
+                  : existing.retryAttempt,
+              updatedAt: ts,
+            }
+            const m2 = new Map(map)
+            m2.set(id, next)
+            return [true, m2] as [boolean, typeof map]
+          })
         })
 
       const listDue: JobsStoreApi["listDue"] = (now) =>
@@ -232,21 +251,23 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
       const claim: JobsStoreApi["claim"] = (id, args) =>
         Effect.gen(function* () {
           const ts = yield* clock.nowMs()
-          const map = yield* Ref.get(store)
-          const existing = map.get(id)
-          if (!existing) return false
-          if (existing.lastRun !== args.previousLastRun) return false
-          const next: PersistedJob = {
-            ...existing,
-            lastRun: args.claimAt,
-            lastStatus: "running",
-            nextRunAt: args.nextRunAt,
-            updatedAt: ts,
-          }
-          const m2 = new Map(map)
-          m2.set(id, next)
-          yield* Ref.set(store, m2)
-          return true
+          return yield* Ref.modify(store, (map) => {
+            const existing = map.get(id)
+            if (!existing) return [false, map] as [boolean, typeof map]
+            if (existing.lastRun !== args.previousLastRun) {
+              return [false, map] as [boolean, typeof map]
+            }
+            const next: PersistedJob = {
+              ...existing,
+              lastRun: args.claimAt,
+              lastStatus: "running",
+              nextRunAt: args.nextRunAt,
+              updatedAt: ts,
+            }
+            const m2 = new Map(map)
+            m2.set(id, next)
+            return [true, m2] as [boolean, typeof map]
+          })
         })
 
       const recordRunStart: JobsStoreApi["recordRunStart"] = (input) =>
@@ -400,6 +421,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         ensureSchemaVersions(db)
         applyMigration(db, "jobs", 1, SCHEMA_V1, nowMs)
         applyMigration(db, "jobs", 2, SCHEMA_V2, nowMs)
+        applyMigration(db, "jobs", 3, SCHEMA_V3, nowMs)
 
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -411,10 +433,11 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
              (id, kind, spec, next_run, last_run, last_status, payload_json, created_at, updated_at, enabled, next_run_at)
            VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
         )
-        // V2 SELECT includes the additive columns (schedule, enabled, next_run_at).
+        // V2 SELECT includes the additive columns (schedule, enabled, next_run_at);
+        // V3 adds retry_attempt (job-ticker-oban-deadlines).
         const SELECT_COLS =
           "id, kind, spec, next_run, last_run, last_status, payload_json, " +
-          "created_at, updated_at, schedule, enabled, next_run_at"
+          "created_at, updated_at, schedule, enabled, next_run_at, retry_attempt"
         const listAllStmt = db.query(
           `SELECT ${SELECT_COLS} FROM jobs ORDER BY created_at ASC`,
         )
@@ -444,10 +467,11 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         // diverged from the Memory layer (which honours null-clears).
         const setV2FieldsStmt = db.query(
           `UPDATE jobs
-              SET schedule    = CASE WHEN ? = 1 THEN ? ELSE schedule END,
-                  enabled     = CASE WHEN ? = 1 THEN ? ELSE enabled END,
-                  next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
-                  updated_at  = ?
+              SET schedule      = CASE WHEN ? = 1 THEN ? ELSE schedule END,
+                  enabled       = CASE WHEN ? = 1 THEN ? ELSE enabled END,
+                  next_run_at   = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+                  retry_attempt = CASE WHEN ? = 1 THEN ? ELSE retry_attempt END,
+                  updated_at    = ?
             WHERE id = ?`,
         )
         const listDueStmt = db.query(
@@ -526,6 +550,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           schedule: string | null
           enabled: number
           next_run_at: number | null
+          retry_attempt: number
         }
         type RawRunRow = {
           id: number
@@ -568,6 +593,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             schedule: row.schedule,
             enabled: row.enabled !== 0,
             nextRunAt: row.next_run_at,
+            retryAttempt: row.retry_attempt,
           }
         }
         const rowToRun = (row: RawRunRow): JobRun => ({
@@ -637,6 +663,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               schedule: null,
               enabled: input.enabled ?? true,
               nextRunAt: input.nextRunAt ?? null,
+              retryAttempt: 0,
             } satisfies PersistedJob
           })
 
@@ -706,6 +733,8 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                   patch.enabled ? 1 : 0,
                   patch.nextRunAt !== undefined ? 1 : 0,
                   patch.nextRunAt ?? null,
+                  patch.retryAttempt !== undefined ? 1 : 0,
+                  patch.retryAttempt ?? null,
                   ts,
                   id,
                 )
