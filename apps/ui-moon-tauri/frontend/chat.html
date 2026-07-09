@@ -4254,12 +4254,13 @@
         // Split-pane: clicking a thread switches it in place and LEAVES the
         // sidebar open (Things-3 behavior), just moving the active highlight.
         if (id === State.activeThreadId) return;    // already here
+        State.pendingFreshThread = false;           // newer intent beats a deferred "+ New"
         State.activeThreadId = id;
         State.activeTurnId = null;
         State.pendingUserMessage = null;
         try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
         if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';   // instant feedback; snapshot rebuilds
-        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+        if (WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'subscribe', threadId: id });
         } else {
           Logger.warn('[ThreadDrawer] not connected; queued switch to ' + id);
@@ -5167,6 +5168,14 @@
         }, 90000);
       },
 
+      // Engine-aware connectivity predicate. Callers outside the engines MUST
+      // gate on this (never on State.ws directly): under the PoolEngine dark
+      // flag State.ws is never assigned, so a raw readyState check would
+      // always read "offline" while the pool adapter is connected.
+      isConnected() {
+        return !!(State.ws && State.ws.readyState === WebSocket.OPEN);
+      },
+
       clearSubscribeTimeout() {
         if (State.subscribeTimeout) {
           clearTimeout(State.subscribeTimeout);
@@ -5268,10 +5277,15 @@
         }
         if (State.pendingFreshThread) {
           State.pendingFreshThread = false;
-          Logger.info('Pending new-conversation request: minting a fresh thread');
-          this.sendNewThread();
-          this.startSubscribeTimeout();
-          return;
+          // Only mint while no thread was picked since: a row click after the
+          // deferred "+ New" sets activeThreadId (newer intent wins) and the
+          // fast-path resubscribe below takes over.
+          if (!State.activeThreadId) {
+            Logger.info('Pending new-conversation request: minting a fresh thread');
+            this.sendNewThread();
+            this.startSubscribeTimeout();
+            return;
+          }
         }
         // Fresh-spawn panel (opened via the title-bar + as ?thread=new): on the
         // FIRST connect it owns no thread yet, so mint a brand-new one — the
@@ -5400,6 +5414,8 @@
       _hooksArmed: false,   // true after first 'ready'; cleared by _fireDisconnect
 
       registerCloseHook(fn) { this._closeHooks.push(fn); },
+
+      isConnected() { return this._isConnected; },
 
       // connect() — acquire a LunaWsAdapter via ConnectionManager for the
       // resolved route and wire up frame + connection subscriptions.
@@ -5768,10 +5784,12 @@
         }
         if (State.pendingFreshThread) {
           State.pendingFreshThread = false;
-          Logger.info('[PoolEngine] Pending new-conversation request: minting a fresh thread');
-          this.sendNewThread();
-          this.startSubscribeTimeout();
-          return;
+          if (!State.activeThreadId) {
+            Logger.info('[PoolEngine] Pending new-conversation request: minting a fresh thread');
+            this.sendNewThread();
+            this.startSubscribeTimeout();
+            return;
+          }
         }
         if (SPAWN_FRESH && !State.activeThreadId) {
           Logger.info('[PoolEngine] Fresh-spawn panel: minting its own new thread');
@@ -5910,6 +5928,8 @@
       WebSocketEngine.clearTurnTimeout  = function() { return PoolEngine.clearTurnTimeout(); };
       WebSocketEngine.startTurnTimeout  = function() { return PoolEngine.startTurnTimeout(); };
       WebSocketEngine.clearSubscribeTimeout = function() { return PoolEngine.clearSubscribeTimeout(); };
+      WebSocketEngine.startSubscribeTimeout = function() { return PoolEngine.startSubscribeTimeout(); };
+      WebSocketEngine.isConnected       = function() { return PoolEngine.isConnected(); };
       WebSocketEngine.sendNewThread     = function() { return PoolEngine.sendNewThread(); };
       WebSocketEngine.syncThread        = function() { return PoolEngine.syncThread(); };
       WebSocketEngine.onReattachStalled = function() { return PoolEngine.onReattachStalled(); };
@@ -8842,15 +8862,15 @@
         State.activeTurnId = null;
         WebSocketEngine.clearTurnTimeout();
         State.pendingUserMessage = null;
-        DOM.messageInput.value = '';
-        this.autoGrowMessageInput();
-        Attachments.clear();
+        // The composer draft and staged attachments deliberately survive the
+        // switch - they carry into the fresh thread, ready to send.
         DOM.chatMessages.innerHTML = '';
         this.appendMessage('assistant', 'New conversation started. Type a message below!');
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+        if (WebSocketEngine.isConnected()) {
           State.pendingFreshThread = false;
           WebSocketEngine.sendNewThread();
+          WebSocketEngine.startSubscribeTimeout();
         } else {
           State.pendingFreshThread = true;
           Logger.warn("Not connected; cleared locally. A new thread is created on next connect.");

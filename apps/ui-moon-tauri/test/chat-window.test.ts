@@ -4162,11 +4162,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
     })
 
-    it('Scenario: clicking + clears the typed draft and staged attachments before minting', () => {
+    it('Scenario: clicking + preserves the typed draft and staged attachments (they carry into the fresh thread)', () => {
       const m = M()
       m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
       const input = document.getElementById('message-input') as HTMLTextAreaElement
-      input.value = 'draft to leave behind'
+      input.value = 'draft that must survive'
       input.style.height = '120px'
       m.Attachments.items = [{ id: 'att_x', kind: 'text', name: 'notes.txt', text: 'notes' }]
       m.Attachments.render()
@@ -4175,10 +4175,47 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       document.getElementById('new-thread-btn')!.click()
 
       expect(sendNewThread).toHaveBeenCalledTimes(1)
-      expect(input.value).toBe('')
-      expect(input.style.height).toBe('38px')
-      expect(m.Attachments.items).toEqual([])
-      expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(true)
+      expect(input.value).toBe('draft that must survive')
+      expect(input.style.height).toBe('120px')
+      expect(m.Attachments.items).toHaveLength(1)
+      expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(false)
+    })
+
+    it('Scenario: the online + arms the subscribe watchdog so a stalled mint self-heals', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
+      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(watchdog).toHaveBeenCalledTimes(1)
+      expect(m.State.subscribeTimeout).not.toBeNull()
+    })
+
+    it('Scenario: under the PoolEngine dark flag a connected + mints immediately (engine-aware gate)', () => {
+      // Re-boot the page with the pool vendor + dark flag so the delegation
+      // block is live - the pool path never assigns State.ws, so a raw
+      // readyState gate would wrongly take the offline branch here.
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      const mint = vi.spyOn(m.PoolEngine, 'sendNewThread').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+
+      expect(mint).toHaveBeenCalledTimes(1)
+      expect(m.State.pendingFreshThread).toBe(false)
+      localStorage.removeItem('luna_pool_engine')
     })
 
     it('Scenario: offline + then reconnect mints a fresh thread instead of restoring the persisted thread', async () => {
@@ -4469,6 +4506,24 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
       expect(m.State.threadDrawerOpen).toBe(true)          // stays open, unlike the old overlay drawer
       expect(m.State.sidebarWidth).toBeGreaterThan(0)
+    })
+
+    it('Scenario: clicking a row cancels a deferred "+ New" so reconnect resubscribes instead of minting', async () => {
+      const m = M()
+      // Offline "+ New" defers the mint…
+      m.State.ws = null
+      m.State.pendingFreshThread = true
+      // …then the user picks an existing thread before reconnecting.
+      m.ThreadDrawerEngine.onRowClick('b')
+      expect(m.State.pendingFreshThread).toBe(false)
+      expect(m.State.activeThreadId).toBe('b')
+      // Reconnect honors the newer intent: fast-path resubscribe, no mint.
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const mint = vi.spyOn(m.WebSocketEngine, 'sendNewThread')
+      await m.WebSocketEngine.syncThread()
+      expect(mint).not.toHaveBeenCalled()
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
     })
 
     it('Scenario: clicking the already-active thread does not re-subscribe and keeps the sidebar open', () => {
