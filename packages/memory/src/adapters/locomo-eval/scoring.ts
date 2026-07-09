@@ -97,6 +97,22 @@ function multiAnswerF1(prediction: string, groundTruth: string): number {
 
 const ABSTAIN_PHRASES = ["no information available", "not mentioned"]
 
+/**
+ * Category-5 (adversarial) correctness rule: did `prediction` abstain
+ * (decline to answer) rather than produce the distractor
+ * `adversarial_answer`? Exported so `judge-rescore.ts` can reuse the exact
+ * same deterministic rule for category 5 instead of asking an LLM judge to
+ * grade against a "gold answer" that doesn't exist for this category (there
+ * is no ground-truth `answer` field — only a plausible-but-wrong
+ * `adversarial_answer`, see `LocomoQA` in types.ts). Keeping one
+ * implementation means the F1 pass and the judge pass agree on category 5
+ * by construction, not by coincidence.
+ */
+export function isAbstained(prediction: string): boolean {
+  const lower = prediction.toLowerCase()
+  return ABSTAIN_PHRASES.some((p) => lower.includes(p))
+}
+
 export interface ScoredQA {
   readonly question: string
   readonly category: LocomoCategory
@@ -110,8 +126,7 @@ export function scoreQA(qa: LocomoQA, prediction: string): ScoredQA {
   const category = qa.category
 
   if (category === 5) {
-    const lower = prediction.toLowerCase()
-    const abstained = ABSTAIN_PHRASES.some((p) => lower.includes(p))
+    const abstained = isAbstained(prediction)
     return {
       question: qa.question,
       category,

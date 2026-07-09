@@ -67,3 +67,18 @@ export interface FlatTurn {
   readonly diaId: string
   readonly text: string
 }
+
+/**
+ * Per-QA retrieval evidence-coverage record, written by `run.ts` to
+ * `.out/retrieval-<stamp>.json` for every QA pair that has annotated
+ * `evidence` dia_ids. Lives here (not in `run.ts`) so it can be imported
+ * by `judge-rescore.ts` WITHOUT pulling in `run.ts` itself — `run.ts` runs
+ * its entire pipeline as a module-scope side effect (`await main()` at the
+ * bottom), so importing anything from it would trigger a live run.
+ */
+export interface RetrievalRecord {
+  readonly sampleId: string
+  readonly question: string
+  readonly evidenceCount: number
+  readonly evidenceHit: number
+}

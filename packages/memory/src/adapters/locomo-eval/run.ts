@@ -98,7 +98,7 @@ import {
   type CostTracker,
 } from "./answer-model.js"
 import { aggregateByCategory, scoreQA, type ScoredQA } from "./scoring.js"
-import type { LocomoSample } from "./types.js"
+import type { LocomoSample, RetrievalRecord } from "./types.js"
 import { writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -175,13 +175,6 @@ function buildEmbedderLayer() {
     return makeOllamaEmbedderLayer(opts)
   }
   return StubEmbedderLayer
-}
-
-interface RetrievalRecord {
-  readonly sampleId: string
-  readonly question: string
-  readonly evidenceCount: number
-  readonly evidenceHit: number
 }
 
 function diaIdFromRecordId(recordId: string): string {

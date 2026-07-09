@@ -119,18 +119,85 @@ answer-generation quality, independent of the LLM call.
 
 ## Directory layout
 
-- `types.ts` — LoCoMo dataset types (verified against the actual downloaded file).
+- `types.ts` — LoCoMo dataset types (verified against the actual downloaded file), plus `RetrievalRecord` (shared between `run.ts` and `judge-rescore.ts` — see below).
 - `dataset.ts` — fetch (cached, gitignored) + flatten into per-turn records.
 - `ingest.ts` — turn → `MemoryRecord` → `MemoryRouter.put()` (same write path as `memory_save`).
-- `scoring.ts` — F1 scoring per LoCoMo's category rules, independently implemented.
+- `scoring.ts` — F1 scoring per LoCoMo's category rules, independently implemented. Also exports `isAbstained` (category-5 abstention rule), reused by `judge-rescore.ts`.
 - `answer-model.ts` — answer-generation backends: local **Ollama**
   `/api/chat` (`ollama`, default), **Ollama's hosted cloud API**
   (`ollama-cloud`, `https://ollama.com/api/chat`, Bearer-authenticated), and
   the Anthropic Messages API (`anthropic`, opt-in, see below). Cost tracking
   reuses `@luna/core`'s `rateFor`/`priceTurnUsd` — the same pricing table
   the chat-server itself uses; any `ollama*` rate is always $0 in this
-  harness's accounting.
-- `run.ts` — CLI entrypoint wiring it all together.
+  harness's accounting. Exports `callOllamaCloudChat`, the shared
+  retry/hard-stop HTTP client both `answerFromContextOllamaCloud` and
+  `judge-rescore.ts` build on.
+- `run.ts` — CLI entrypoint wiring it all together (ingest + retrieve + answer + F1-score).
+- `judge-rescore.ts` — LLM-judge binary-accuracy RE-SCORING pass over an
+  EXISTING `run.ts` output (no re-ingestion/retrieval/answering — see
+  "LLM-judge re-scoring" below). Run via `bun run --filter '@luna/memory' eval:locomo:judge-rescore` or directly with `bun`.
+
+## LLM-judge re-scoring: a number comparable to vendor benchmarks
+
+LoCoMo has two different scoring conventions in circulation: this harness's
+own token-overlap **F1** (see "Scoring methodology" above — the paper's own
+primary metric), and **LLM-judge binary accuracy** (a judge model looks at
+the question, gold answer, and prediction, and scores 1/"correct" or
+0/"incorrect") — which is what memory-product vendors report as their
+headline LoCoMo numbers (Honcho, Hindsight, ByteRover — see the comparison
+table in the PR body). **F1 and judge-accuracy are not the same metric and
+are not directly comparable** — F1 punishes a correct-but-differently-
+phrased answer (e.g. "7th of May, 2023" vs "7 May 2023" scores well under
+F1 by coincidence of token overlap, but a genuinely paraphrased correct
+answer can score near 0), so comparing our F1 number to a vendor's judge
+number head-to-head would be misleading in both directions.
+
+`judge-rescore.ts` re-scores an EXISTING `run.ts` results file
+(`.out/results-<stamp>.json`) with an LLM judge, at zero re-ingestion/
+re-retrieval/re-answering cost — it's purely a re-scoring pass over
+predictions we already generated:
+
+- **Judge prompt**: independently written (see `buildJudgePrompt`), based
+  on the general, publicly-described "is the predicted answer the same as
+  the gold answer" methodology. NOT copied from any vendor's (Honcho,
+  Hindsight, ByteRover) proprietary judge prompt — those aren't published.
+- **Category 5 (adversarial)** is graded by the SAME deterministic
+  abstention rule the F1 pass uses (`isAbstained`), not an LLM call — there
+  is no ground-truth `answer` for category 5, only a distractor
+  `adversarial_answer`, so "same as the gold answer" doesn't apply. This
+  keeps category 5 identical between the F1 pass and the judge pass by
+  construction (a useful cross-check, not a limitation).
+- **Judge model**: `gpt-oss:120b` by default (same model as the answer
+  backend, for a same-backbone comparison; override via
+  `LUNA_LOCOMO_JUDGE_MODEL`).
+- **Concurrency**: ~8 in-flight judge calls by default
+  (`LUNA_LOCOMO_JUDGE_CONCURRENCY`), each call using the SAME
+  `callOllamaCloudChat` retry/hard-stop discipline as the answer step
+  (429/5xx retried with backoff, hard-stop on auth/quota/persistent
+  failure — see `answer-model.ts`). On top of that, 3 consecutive
+  non-hard-stop failures halve the pool's concurrency (down to
+  `LUNA_LOCOMO_JUDGE_MIN_CONCURRENCY`, default 1).
+- **Retrieval-vs-judge crosstab**: cross-references each QA pair's
+  retrieval evidence coverage (from the matching `.out/retrieval-<stamp>.json`)
+  against judge correctness to build a 2x2 — evidence found/missing ×
+  correct/incorrect — overall and per category. This is what separates a
+  RETRIEVAL problem (right memory never surfaced) from a MODEL problem
+  (right memory surfaced, extraction/reasoning still failed).
+- **Sanity checks against the F1 pass**: per-category rank correlation
+  (Spearman) between F1 and judge-accuracy, and mean F1 split by judge
+  verdict — both should show the two metrics broadly agree even though the
+  absolute numbers differ; a wild divergence would flag a scoring bug
+  rather than an expected metric difference.
+
+Run it: `OLLAMA_CLOUD_KEY=... bun packages/memory/src/adapters/locomo-eval/judge-rescore.ts`
+(resolve `OLLAMA_CLOUD_KEY` the same way as the answer-generation step — see
+"Answer backends" above; never paste it inline or commit it).
+
+**Result on the 840-QA-pair run above**: see the PR body for the full
+judge-accuracy number, the comparison table against Honcho/Hindsight/
+ByteRover (with caveats), the retrieval-vs-judge failure-mode breakdown,
+and the resulting recommendations (also tracked in `workspace.db`'s
+`tasks` table).
 
 ## Why the direct TypeScript API, not the MCP tool surface
 

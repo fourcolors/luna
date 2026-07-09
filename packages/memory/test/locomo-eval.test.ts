@@ -12,7 +12,14 @@ import {
   classifyOllamaCloudResponse,
 } from "../src/adapters/locomo-eval/answer-model.js"
 import { flattenTurns } from "../src/adapters/locomo-eval/dataset.js"
-import type { LocomoQA, LocomoSample } from "../src/adapters/locomo-eval/types.js"
+import {
+  buildCrosstab,
+  buildJudgePrompt,
+  parseJudgeVerdict,
+  spearmanRankCorrelation,
+  type JudgedQA,
+} from "../src/adapters/locomo-eval/judge-rescore.js"
+import type { LocomoQA, LocomoSample, RetrievalRecord } from "../src/adapters/locomo-eval/types.js"
 
 describe("locomo-eval scoring", () => {
   it("f1Score: identical strings score 1", () => {
@@ -195,5 +202,121 @@ describe("locomo-eval dataset flattening", () => {
     const [turn] = flattenTurns(sample)
     expect(turn?.text).toContain("look at this")
     expect(turn?.text).toContain("a photo of a mural")
+  })
+})
+
+
+describe("judge-rescore: parseJudgeVerdict", () => {
+  it("parses the exact requested format", () => {
+    expect(parseJudgeVerdict("VERDICT: 1")).toEqual({ verdict: 1, parseOk: true })
+    expect(parseJudgeVerdict("VERDICT: 0")).toEqual({ verdict: 0, parseOk: true })
+  })
+
+  it("parses the requested format even wrapped in extra prose", () => {
+    const raw = "Let me think about this.\n\nVERDICT: 1\n\nThe candidate matches the reference."
+    expect(parseJudgeVerdict(raw)).toEqual({ verdict: 1, parseOk: true })
+  })
+
+  it("falls back to a bare standalone digit when the format isn't followed", () => {
+    expect(parseJudgeVerdict("1").verdict).toBe(1)
+    expect(parseJudgeVerdict("Answer: 0").verdict).toBe(0)
+  })
+
+  it("falls back to correct/incorrect keywords, checking 'incorrect' before the 'correct' substring it contains", () => {
+    expect(parseJudgeVerdict("The candidate answer is incorrect.")).toEqual({ verdict: 0, parseOk: true })
+    expect(parseJudgeVerdict("This is correct.")).toEqual({ verdict: 1, parseOk: true })
+  })
+
+  it("falls back to yes/no keywords", () => {
+    expect(parseJudgeVerdict("Yes, these match.").verdict).toBe(1)
+    expect(parseJudgeVerdict("No, these are different.").verdict).toBe(0)
+  })
+
+  it("flags totally unparseable responses as parseOk: false, defaulting to incorrect", () => {
+    const result = parseJudgeVerdict("I cannot determine this.")
+    expect(result).toEqual({ verdict: 0, parseOk: false })
+  })
+})
+
+describe("judge-rescore: buildJudgePrompt", () => {
+  it("includes the question, reference answer, and candidate answer", () => {
+    const prompt = buildJudgePrompt("When did X happen?", "7 May 2023", "May 7 2023")
+    expect(prompt).toContain("QUESTION: When did X happen?")
+    expect(prompt).toContain("REFERENCE ANSWER: 7 May 2023")
+    expect(prompt).toContain("CANDIDATE ANSWER: May 7 2023")
+  })
+
+  it("marks an empty candidate answer explicitly rather than leaving it blank", () => {
+    const prompt = buildJudgePrompt("Q?", "gold", "")
+    expect(prompt).toContain("CANDIDATE ANSWER: (empty — no answer given)")
+  })
+})
+
+describe("judge-rescore: spearmanRankCorrelation", () => {
+  it("is 1 for identically ranked series", () => {
+    expect(spearmanRankCorrelation([1, 2, 3, 4], [10, 20, 30, 40])).toBeCloseTo(1, 5)
+  })
+
+  it("is -1 for perfectly inverted series", () => {
+    expect(spearmanRankCorrelation([1, 2, 3, 4], [40, 30, 20, 10])).toBeCloseTo(-1, 5)
+  })
+})
+
+describe("judge-rescore: buildCrosstab", () => {
+  const qa = (question: string, category: 1 | 2 | 3 | 4 | 5, verdict: 0 | 1): JudgedQA => ({
+    question,
+    category,
+    f1Score: verdict,
+    judgeVerdict: verdict,
+    judgeParseOk: true,
+    judgeCallMade: true,
+    rawJudgeResponse: `VERDICT: ${verdict}`,
+  })
+  const retrieval = (question: string, evidenceCount: number, evidenceHit: number): RetrievalRecord => ({
+    sampleId: "conv-test",
+    question,
+    evidenceCount,
+    evidenceHit,
+  })
+
+  it("buckets evidence-found/missing x correct/incorrect, and counts QA pairs with no retrieval record separately", () => {
+    const judged: JudgedQA[] = [
+      qa("q1", 2, 1), // evidence found, correct
+      qa("q2", 2, 0), // evidence found, incorrect
+      qa("q3", 2, 1), // evidence missing (partial), correct
+      qa("q4", 2, 0), // evidence missing, incorrect
+      qa("q5", 3, 1), // no retrieval record at all
+    ]
+    const retrievalByQuestion = new Map<string, RetrievalRecord>([
+      ["q1", retrieval("q1", 2, 2)],
+      ["q2", retrieval("q2", 2, 2)],
+      ["q3", retrieval("q3", 2, 1)], // partial coverage counts as "missing"
+      ["q4", retrieval("q4", 1, 0)],
+      // q5 intentionally absent — no evidence annotated for this QA pair
+    ])
+
+    const { overall, byCategory } = buildCrosstab(judged, retrievalByQuestion)
+
+    expect(overall).toEqual({
+      evidenceFoundCorrect: 1,
+      evidenceFoundIncorrect: 1,
+      evidenceMissingCorrect: 1,
+      evidenceMissingIncorrect: 1,
+      excludedNoEvidenceAnnotated: 1,
+    })
+    expect(byCategory[2]).toEqual({
+      evidenceFoundCorrect: 1,
+      evidenceFoundIncorrect: 1,
+      evidenceMissingCorrect: 1,
+      evidenceMissingIncorrect: 1,
+      excludedNoEvidenceAnnotated: 0,
+    })
+    expect(byCategory[3]).toEqual({
+      evidenceFoundCorrect: 0,
+      evidenceFoundIncorrect: 0,
+      evidenceMissingCorrect: 0,
+      evidenceMissingIncorrect: 0,
+      excludedNoEvidenceAnnotated: 1,
+    })
   })
 })

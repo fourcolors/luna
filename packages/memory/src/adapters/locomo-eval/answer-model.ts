@@ -224,26 +224,35 @@ const OLLAMA_CLOUD_MAX_ATTEMPTS = 4
 // retried with backoff, hard-stop if it never clears.
 const OLLAMA_CLOUD_REQUEST_TIMEOUT_MS = 60_000
 
+export interface OllamaCloudChatResult {
+  readonly text: string
+  readonly tokensIn: number
+  readonly tokensOut: number
+}
+
 /**
- * Ask a model on Ollama's HOSTED cloud API (`https://ollama.com/api/chat`)
- * to answer `question` using only `context`. Same request/response shape as
- * local Ollama's `/api/chat`, authenticated via `Authorization: Bearer
- * <apiKey>`. Retries 429/5xx/network errors with short exponential backoff
- * (see `backoffDelayMs`); throws `LocomoHardStopError` on a hard failure
- * (bad auth, a quota/billing signal, or persistent 429/5xx that doesn't
- * clear after `OLLAMA_CLOUD_MAX_ATTEMPTS` attempts) instead of retrying
- * forever or silently giving up per-call — see the module docstring and
+ * Shared retry/hard-stop HTTP client for Ollama's HOSTED cloud
+ * `/api/chat` endpoint (`https://ollama.com/api/chat`), authenticated via
+ * `Authorization: Bearer <apiKey>`. Retries 429/5xx/network errors with
+ * short exponential backoff (see `backoffDelayMs`); throws
+ * `LocomoHardStopError` on a hard failure (bad auth, a quota/billing
+ * signal, or persistent 429/5xx that doesn't clear after
+ * `OLLAMA_CLOUD_MAX_ATTEMPTS` attempts) — see the module docstring and
  * `classifyOllamaCloudResponse`.
+ *
+ * Extracted as a standalone function (no cost-tracker mutation, no
+ * question/context prompt-building) so it can be reused by BOTH the
+ * answer-generation step below (`answerFromContextOllamaCloud`) and the
+ * LLM-judge re-scoring pass (`judge-rescore.ts`, a different prompt, same
+ * auth/retry/hard-stop discipline) without duplicating the retry loop in
+ * two places where it could drift.
  */
-export async function answerFromContextOllamaCloud(args: {
-  readonly question: string
-  readonly context: ReadonlyArray<string>
+export async function callOllamaCloudChat(args: {
+  readonly prompt: string
   readonly apiKey: string
   readonly model: string
-  readonly tracker: CostTracker
   readonly baseUrl?: string
-}): Promise<AnswerResult> {
-  const prompt = buildPrompt(args.question, args.context)
+}): Promise<OllamaCloudChatResult> {
   const url = `${normalizeBaseUrl(args.baseUrl ?? OLLAMA_CLOUD_DEFAULT_BASE_URL)}/chat`
   const maxAttempts = OLLAMA_CLOUD_MAX_ATTEMPTS
 
@@ -259,7 +268,7 @@ export async function answerFromContextOllamaCloud(args: {
         body: JSON.stringify({
           model: args.model,
           stream: false,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: args.prompt }],
           options: { temperature: 0 },
         }),
         signal: AbortSignal.timeout(OLLAMA_CLOUD_REQUEST_TIMEOUT_MS),
@@ -282,15 +291,7 @@ export async function answerFromContextOllamaCloud(args: {
       const text = json.message?.content?.trim() ?? ""
       const tokensIn = json.prompt_eval_count ?? 0
       const tokensOut = json.eval_count ?? 0
-      const rate = rateFor(args.model, "ollama-cloud")
-      const costUsd = priceTurnUsd({ tokensIn, tokensOut }, rate)
-
-      args.tracker.totalTokensIn += tokensIn
-      args.tracker.totalTokensOut += tokensOut
-      args.tracker.totalCostUsd += costUsd
-      args.tracker.calls += 1
-
-      return { text, tokensIn, tokensOut, costUsd }
+      return { text, tokensIn, tokensOut }
     }
 
     const body = await res.text().catch(() => "<no body>")
@@ -309,6 +310,39 @@ export async function answerFromContextOllamaCloud(args: {
       `locomo-eval: Ollama Cloud /api/chat error ${res.status} for model "${args.model}": ${body}`,
     )
   }
+}
+
+/**
+ * Ask a model on Ollama's HOSTED cloud API to answer `question` using only
+ * `context`. Builds the answer-generation prompt, delegates the HTTP
+ * request/retry/hard-stop handling to `callOllamaCloudChat`, and records
+ * token/cost totals on `tracker` — see that function's docstring for the
+ * request semantics.
+ */
+export async function answerFromContextOllamaCloud(args: {
+  readonly question: string
+  readonly context: ReadonlyArray<string>
+  readonly apiKey: string
+  readonly model: string
+  readonly tracker: CostTracker
+  readonly baseUrl?: string
+}): Promise<AnswerResult> {
+  const prompt = buildPrompt(args.question, args.context)
+  const { text, tokensIn, tokensOut } = await callOllamaCloudChat({
+    prompt,
+    apiKey: args.apiKey,
+    model: args.model,
+    ...(args.baseUrl !== undefined ? { baseUrl: args.baseUrl } : {}),
+  })
+  const rate = rateFor(args.model, "ollama-cloud")
+  const costUsd = priceTurnUsd({ tokensIn, tokensOut }, rate)
+
+  args.tracker.totalTokensIn += tokensIn
+  args.tracker.totalTokensOut += tokensOut
+  args.tracker.totalCostUsd += costUsd
+  args.tracker.calls += 1
+
+  return { text, tokensIn, tokensOut, costUsd }
 }
 
 /**
