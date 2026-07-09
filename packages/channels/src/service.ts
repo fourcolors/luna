@@ -158,7 +158,15 @@ export const ChannelServiceLayer: Layer.Layer<
         // "/verb" text falls through so Luna's own skills handle it. The
         // reply is delivered directly through this transport's adapter(s)
         // as a single final message.
-        const command = yield* handleChannelCommand(msg).pipe(
+        //
+        // A message CARRYING ATTACHMENTS never takes the command path: its
+        // text is a media caption (e.g. a photo captioned "/new"), and the
+        // short-circuit would silently discard the already-downloaded file —
+        // the caption goes to the LLM as plain text instead.
+        const hasAttachments = msg.attachments !== undefined && msg.attachments.length > 0
+        const command = hasAttachments
+          ? { handled: false as const }
+          : yield* handleChannelCommand(msg).pipe(
           Effect.provide(
             Layer.succeed(ChannelSessionStore, sessionStore).pipe(
               Layer.merge(Layer.succeed(ChatService, chat)),
@@ -198,7 +206,9 @@ export const ChannelServiceLayer: Layer.Layer<
         // markSeen is deferred to after send() so a dropped message (Case C
         // unknown thread, or store failure) is not permanently suppressed —
         // the adapter can redeliver it on the next attempt.
-        const sendResult = yield* chat.send(threadId, buildChannelUserText(msg))
+        // Attachments (images/PDFs downloaded by the adapter) pass straight
+        // through — chat-service turns them into Anthropic content blocks.
+        const sendResult = yield* chat.send(threadId, buildChannelUserText(msg), msg.attachments)
         if (Option.isSome(sendResult)) {
           yield* dedupStore.markSeen(msg.transport, msg.platformMessageId, nowMs)
         }

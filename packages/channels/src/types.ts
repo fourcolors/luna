@@ -42,6 +42,20 @@ export type TransportKind = "discord" | "telegram" | "slack" | "cli" | "http" | 
  * unique within a (transport, channelId) scope — use the platform's own
  * message-id field (Telegram message_id, Discord snowflake, etc.).
  */
+/**
+ * Inline binary attachment (image or PDF) carried with an inbound message.
+ * `data` is raw base64 (no `data:` URI prefix). The shape deliberately mirrors
+ * the `attachments` parameter of `ChatService.send` so the service can pass
+ * attachments straight through — chat-service turns them into Anthropic
+ * image/document content blocks.
+ */
+export interface ChannelAttachment {
+  /** MIME type: image/jpeg, image/png, image/gif, image/webp, application/pdf. */
+  readonly mediaType: string
+  /** Raw base64 payload (no data: prefix). */
+  readonly data: string
+}
+
 export interface ChannelMessage {
   /** Which platform sent this. */
   readonly transport: TransportKind
@@ -55,8 +69,14 @@ export interface ChannelMessage {
    * peer). For group channels, pass the channel id or topic id explicitly.
    */
   readonly threadingKey?: string
-  /** Plain text content. */
+  /** Plain text content (media messages carry their caption here, or ""). */
   readonly text: string
+  /**
+   * Inline binary attachments downloaded by the adapter (images / PDFs).
+   * Optional — text-only messages omit it. At most a handful per message;
+   * adapters enforce per-type size caps before populating this.
+   */
+  readonly attachments?: ReadonlyArray<ChannelAttachment>
   /**
    * Platform-assigned message id for dedup. Must be stable across retries.
    * Long-poll adapters and webhook adapters that retry on failure will see
