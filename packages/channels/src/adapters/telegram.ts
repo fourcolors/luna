@@ -39,6 +39,23 @@
  * globally unique across all chats for a given bot token. The foundation's
  * InboundDedupStore keys on (transport, platformMessageId) which is correct.
  *
+ * ## Inbound attachments
+ *
+ * Photos and file documents (PDF or image by mime/extension) are ingested:
+ * classifyInboundMedia resolves the media ref, getFile resolves a short-lived
+ * file_path, and a separate raw-byte transport (`TelegramFileTransport`)
+ * downloads it. The type allowlist and size caps come from @luna/core
+ * attachment-limits.ts (the same limits ui-ws enforces on Moon uploads), and
+ * downloaded bytes are magic-byte sniffed so a misnamed file is corrected or
+ * rejected before it reaches the model. Media captions ride in
+ * ChannelMessage.text and are never treated as channel commands. Unsupported
+ * media (voice, video, GIFs, unrecognized file types) gets a user-facing
+ * explanation instead of a silent drop, restricted to DMs for ambient group
+ * media; stickers are dropped silently. Downloads run off the poll fiber
+ * behind a small semaphore, and dispatch is per-chat FIFO: same-chat messages
+ * reach the handler in arrival order (a follow-up text queues behind its
+ * PDF's download) while different chats stay fully concurrent.
+ *
  * ## Outbound — stream-edit
  *
  * delivery.ts calls deliver() with:
@@ -85,13 +102,19 @@
  * accepts an optional `httpTransport` override; omitting it uses the real
  * fetch-based implementation wired against the bot token.
  *
+ * Raw file BYTES travel through a second seam, `TelegramFileTransport`
+ * (config `fileTransport` override; production `makeRealFileTransport`),
+ * because downloads use the separate `/file/bot<token>/<file_path>` URL
+ * scheme rather than the JSON-RPC-style method endpoint.
+ *
  * ## Token
  *
  * The token must be supplied as a `Redacted<string>` via `config.token`, or the
  * adapter will read `TELEGRAM_BOT_TOKEN` from the environment (via EnvSecretProvider
  * convention) and wrap it in `Redacted.make()` at start() time. The plain-text
- * value is only unwrapped with `Redacted.value(token)` at the single URL-building
- * call site inside `makeRealTransport`, so it never appears in logs or traces.
+ * value is only unwrapped with `Redacted.value(token)` at the URL-building
+ * call sites inside `makeRealTransport` and `makeRealFileTransport`, so it
+ * never appears in logs or traces.
  *
  * ## Reconnection
  *
@@ -1058,11 +1081,11 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
           if (media !== null) {
             // Fork the whole media unit of work (download → reply-or-dispatch)
-            // off the poll fiber, mirroring the fire-and-forget handler
-            // dispatch below (which already gives no cross-message ordering
-            // guarantee). Inline it would serialize up-to-60s downloads in
-            // front of getUpdates — one slow CDN or an allowlisted spammer
-            // would starve EVERY chat's inbound, including the pager path.
+            // off the poll fiber, onto the same per-chat FIFO chain as the
+            // handler dispatch below. Inline it would serialize up-to-60s
+            // downloads in front of getUpdates — one slow CDN or an
+            // allowlisted spammer would starve EVERY chat's inbound,
+            // including the pager path.
             // The semaphore bounds concurrent downloads so a flood degrades
             // to queuing, never to poll-loop starvation or unbounded memory.
             const mediaMsg = msg

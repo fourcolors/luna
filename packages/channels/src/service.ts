@@ -6,7 +6,9 @@
  *   2. Call each adapter's start() lifecycle when the service starts.
  *   3. Route inbound ChannelMessages through the pipeline:
  *        dedup → built-in slash commands → session lookupOrCreate →
- *        chat.send → spawn delivery fiber
+ *        chat.send (text + any attachments) → spawn delivery fiber
+ *      Attachment-carrying messages skip the slash-command step: their
+ *      text is a media caption, never a command.
  *   4. Manage delivery fiber lifecycle: one fiber per (threadId, adapterId)
  *      pair; idempotent — a second inbound message on the same thread
  *      reuses the existing fiber (no double-fan-out).

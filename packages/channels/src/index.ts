@@ -7,6 +7,7 @@
  * Key exports:
  *   - `ChannelAdapter`         — interface a platform author implements
  *   - `ChannelMessage`         — normalized inbound message
+ *   - `ChannelAttachment`      — inline binary attachment (image/PDF) on a message
  *   - `DeliveryCapability`     — how a platform accepts output
  *   - `ChannelService`         — orchestrator (Effect Tag + API)
  *   - `ChannelServiceLayer`    — production Layer (inject ChatService et al.)
