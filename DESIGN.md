@@ -570,6 +570,13 @@ Effect.repeat(
    after which the row falls back to its natural cron cadence with
    `retry_attempt` reset. One-shots never retry; success also resets the
    counter.
+8. A successful result's optional `postCommit` effect (deferred delivery,
+   issue #277 - see §5.3.3) runs LAST, strictly after the durable writes in
+   step 7, outside the dispatch backstop and bounded by its own independent
+   30 s timeout. Failures (typed or defect) are logged at WARN, never
+   retried, and never change the recorded run status - delivery is
+   at-most-once, so a slow sink can neither turn a completed turn into
+   `deadline_passed` nor double-deliver through a retry.
 
 Within a tick, due rows are dispatched with bounded concurrency
 (`dispatchConcurrency`, default 4); excess due rows roll into the next tick.
@@ -603,6 +610,13 @@ export interface WorkerContext {
 export interface WorkerResult {
   readonly outputText: string | null
   readonly stepsJson?: string              // workflow only
+  // Deferred side effects, e.g. delivery sinks (issue #277). The ticker runs
+  // this only AFTER the run is durably recorded success, OUTSIDE the dispatch
+  // backstop, bounded by its own independent timeout (30 s). Best-effort and
+  // at-most-once: failures are logged, never retried, and never affect the
+  // run's terminal status. Workers must collapse the error channel to
+  // E=never before returning it.
+  readonly postCommit?: Effect.Effect<void>
 }
 ```
 
@@ -737,6 +751,9 @@ Every tick logs:
 - `[luna/sched] tick claimed=N submitted=N skipped=N` at INFO.
 - `[luna/sched] run id=… kind=… status=…` at INFO per `job_runs` close.
 - `[luna/sched] worker.error kind=… cause=…` at ERROR.
+- `[luna/sched] postCommit failed for job=…` (or `raised a defect`) at WARN
+  when a deferred delivery fails - best-effort, run status unaffected
+  (§5.3.2 step 8).
 
 `obs_session_explain` / `obs_sessions_search` continue to work since each
 `prompt`-kind job spawns a SDK session whose events flow through the

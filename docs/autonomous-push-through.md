@@ -90,6 +90,11 @@ filing or by the operator).
   kind default 20 min + grace) that interrupts a hung dispatch, and due jobs
   dispatch with bounded concurrency (default 4) so one slow job no longer
   stalls the tick (see SYSTEM.md "Deadlines, retries & concurrency").
+  Shell steps are also abort-wired to their dispatch (issue #277): an
+  interrupted or timed-out step kills its whole process group, so a hung
+  command - or a grandchild like `ssh` under `git push` - cannot outlive the
+  run and race a retry (previously only this workflow's own lock guarded
+  that).
 - No per-action attempt cap: an action the agent can never complete is
   re-selected each cycle. Recommended fast-follow: an attempt counter that flips
   a stuck action to `status='blocked'`.
