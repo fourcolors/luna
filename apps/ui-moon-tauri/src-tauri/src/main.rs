@@ -1860,6 +1860,92 @@ fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
+/// Fold a drawer-spawned thread window back into its owner (drag-IN redock).
+/// Called on a native-drag release by a floater carrying `?redockTo=<owner>`:
+/// if the floater's center now sits over the owner window, tell the owner to
+/// re-adopt the thread (a `redock-thread` event → the drawer opens it in place)
+/// and close the floater. Returns `true` when it redocked, so the caller skips
+/// its snap-on-release; `false` falls through to the normal snap.
+#[tauri::command]
+async fn redock_thread(
+    window: tauri::WebviewWindow,
+    thread_id: String,
+    owner_label: String,
+    draft: Option<String>,
+) -> Result<bool, String> {
+    // Caller identity is the INVOKING window (trust-bound via window.label()),
+    // never a page-supplied label — same discipline as begin_cluster_drag. A
+    // grantee page therefore cannot name a sibling as the window to close.
+    let app = window.app_handle().clone();
+    let caller_label = window.label().to_string();
+    // Only a widget-family window may be closed this way, and a window can never
+    // redock into itself.
+    if !is_closable_widget_label(&caller_label) || owner_label == caller_label {
+        return Ok(false);
+    }
+    let caller = window;
+    let owner = match app.get_webview_window(&owner_label) {
+        Some(w) => w,
+        None => return Ok(false), // owner gone → let the floater just snap
+    };
+    // Physical global coordinates for both windows → a scale-independent
+    // center-in-rect test (both come from the same OS coordinate space).
+    let cp = caller.outer_position().map_err(|e| e.to_string())?;
+    let cs = caller.outer_size().map_err(|e| e.to_string())?;
+    let op = owner.outer_position().map_err(|e| e.to_string())?;
+    let os = owner.outer_size().map_err(|e| e.to_string())?;
+    let ccx = f64::from(cp.x) + f64::from(cs.width) / 2.0;
+    let ccy = f64::from(cp.y) + f64::from(cs.height) / 2.0;
+    // Redock target is the owner's LEFT drawer strip, NOT the whole window —
+    // dropping a floater anywhere over the owner was too easy to trigger by
+    // accident. ~320 logical px (drawer width + card inset), in the owner's
+    // physical px, clamped to the window width.
+    let strip = (320.0 * owner.scale_factor().unwrap_or(1.0)).min(f64::from(os.width));
+    if !center_in_rect(
+        ccx,
+        ccy,
+        f64::from(op.x),
+        f64::from(op.y),
+        strip,
+        f64::from(os.height),
+    ) {
+        return Ok(false);
+    }
+    // Owner re-adopts the thread (opens it in place, carrying any unsent draft);
+    // then the floater closes.
+    app.emit_to(
+        tauri::EventTarget::labeled(owner_label.as_str()),
+        "redock-thread",
+        serde_json::json!({ "threadId": thread_id, "draft": draft }),
+    )
+    .map_err(|e| e.to_string())?;
+    caller.close().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Pure center-in-rect test (testable without a webview). `(px,py)` is the
+/// floater's center; `(rx,ry,rw,rh)` the owner rect — all in the same px space.
+/// Edges are inclusive so a drop exactly on the border still redocks.
+fn center_in_rect(px: f64, py: f64, rx: f64, ry: f64, rw: f64, rh: f64) -> bool {
+    px >= rx && px <= rx + rw && py >= ry && py <= ry + rh
+}
+
+#[cfg(test)]
+mod redock_geometry_tests {
+    use super::center_in_rect;
+
+    #[test]
+    fn center_in_rect_inside_outside_and_edges() {
+        // Owner at (100,100), 400x300 → spans x[100,500], y[100,400].
+        assert!(center_in_rect(300.0, 250.0, 100.0, 100.0, 400.0, 300.0)); // dead center
+        assert!(center_in_rect(100.0, 100.0, 100.0, 100.0, 400.0, 300.0)); // top-left corner (inclusive)
+        assert!(center_in_rect(500.0, 400.0, 100.0, 100.0, 400.0, 300.0)); // bottom-right corner (inclusive)
+        assert!(!center_in_rect(99.0, 250.0, 100.0, 100.0, 400.0, 300.0)); // just left
+        assert!(!center_in_rect(300.0, 401.0, 100.0, 100.0, 400.0, 300.0)); // just below
+        assert!(!center_in_rect(600.0, 250.0, 100.0, 100.0, 400.0, 300.0)); // far right
+    }
+}
+
 // ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
 //
 // The moon orb (window "main") and the widget windows (panel-* / widget-*) are
@@ -3172,7 +3258,8 @@ fn main() {
         voice_list_voices,
         voice_set_voice,
         voice_set_config,
-        voice_ensure_model
+        voice_ensure_model,
+        redock_thread
     ]);
     #[cfg(not(feature = "voice"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -3220,7 +3307,8 @@ fn main() {
         end_cluster_drag,
         monitor_work_areas,
         dock_self,
-        dock_move_cluster
+        dock_move_cluster,
+        redock_thread
     ]);
 
     builder

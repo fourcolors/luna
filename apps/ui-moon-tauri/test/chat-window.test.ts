@@ -4138,4 +4138,159 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'chat-test' })
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Thread drawer (left slide-out thread switcher)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Thread drawer', () => {
+    const M = () => (window as any).__MoonInternals
+    const sampleThreads = [
+      { id: 'a', title: 'Alpha', lastMessagePreview: 'first',  lastMessageAt: 3000 },
+      { id: 'b', title: 'Beta',  lastMessagePreview: 'second', lastMessageAt: 2000 },
+      { id: 'c', title: 'Gamma', lastMessagePreview: 'third',  lastMessageAt: 1000 },
+    ]
+    // Route a thread-list frame through the REAL handler → drawer applyList.
+    const seed = () => M().handleFrame({ type: 'thread-list', threads: sampleThreads })
+    // Cross-Ctor pointer factory (jsdom may lack PointerEvent → MouseEvent has
+    // every prop the gesture reads except pointerId, which the code guards).
+    const pointer = (type: string, props: any) => {
+      const Ctor = (window as any).PointerEvent || (window as any).MouseEvent
+      return new Ctor(type, { bubbles: true, ...props })
+    }
+
+    it('Scenario: opening the drawer flips .open + aria-hidden and requests the thread list', () => {
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} } // WebSocket.OPEN
+      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const drawer = document.getElementById('thread-drawer')!
+      expect(drawer.classList.contains('open')).toBe(false)
+      m.ThreadDrawerEngine.openPanel()
+      expect(m.State.threadDrawerOpen).toBe(true)
+      expect(drawer.classList.contains('open')).toBe(true)
+      expect(drawer.getAttribute('aria-hidden')).toBe('false')
+      expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    it('Scenario: a thread-list frame renders one row per thread, sorted newest-first', () => {
+      M().State.activeThreadId = 'keep' // handler early-returns (no auto-subscribe)
+      seed()
+      const rows = [...document.querySelectorAll('#thread-drawer-list .thread-row')]
+      expect(rows.length).toBe(3)
+      expect(rows.map((r) => r.querySelector('.thread-row-title')!.textContent)).toEqual(['Alpha', 'Beta', 'Gamma'])
+      expect((document.getElementById('thread-drawer-empty') as HTMLElement).style.display).toBe('none')
+    })
+
+    it('Scenario: search filters rows by title/preview', () => {
+      M().State.activeThreadId = 'keep'
+      seed()
+      M().ThreadDrawerEngine.setSearch('bet')
+      const rows = [...document.querySelectorAll('#thread-drawer-list .thread-row')]
+      expect(rows.length).toBe(1)
+      expect(rows[0].querySelector('.thread-row-title')!.textContent).toBe('Beta')
+    })
+
+    it('Scenario: the active row is highlighted and popped threads are greyed', () => {
+      const m = M()
+      m.State.activeThreadId = 'b'
+      m.ThreadDrawerEngine.markPopped('c')
+      seed()
+      const rowB = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')!
+      const rowC = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="c"]')!
+      expect(rowB.classList.contains('active')).toBe(true)
+      expect(rowC.classList.contains('popped')).toBe(true)
+    })
+
+    it('Scenario: clicking a row subscribes to that thread and closes the drawer', () => {
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} }
+      m.State.activeThreadId = 'other'
+      m.ThreadDrawerEngine.openPanel()
+      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      m.ThreadDrawerEngine.onRowClick('b')
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
+      expect(m.State.threadDrawerOpen).toBe(false)
+      expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+    })
+
+    it('Scenario: clicking the already-active thread just closes the drawer (no re-subscribe)', () => {
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} }
+      m.State.activeThreadId = 'b'
+      m.ThreadDrawerEngine.openPanel()
+      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      m.ThreadDrawerEngine.onRowClick('b')
+      expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
+      expect(m.State.threadDrawerOpen).toBe(false)
+    })
+
+    it('Scenario: dragging a row OUT (release outside the drawer) spawns a window pinned to that thread at the drop point', () => {
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      const m = M()
+      m.State.activeThreadId = 'keep'
+      m.State.winLabel = 'chat-test'
+      seed()
+      const row = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]') as HTMLElement
+      row.dispatchEvent(pointer('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 }))
+      row.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: 140, clientY: 100 })) // past 6px threshold
+      row.dispatchEvent(pointer('pointerup',   { pointerId: 1, clientX: 900, clientY: 100, screenX: 940, screenY: 160 }))
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'a', redockTo: 'chat-test' },
+        x: 940, y: 160,
+      })
+      expect(document.querySelector('.thread-drag-ghost')).toBeNull() // ghost cleaned up
+    })
+
+    it('Scenario: a redock-thread event adopts the thread (subscribe), un-greys its row, and carries the unsent draft', () => {
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} }
+      m.State.activeThreadId = 'other'
+      m.ThreadDrawerEngine.markPopped('b')
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = ''
+      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      expect(windowEventHandlers['redock-thread']).toBeTypeOf('function')
+      windowEventHandlers['redock-thread']({ payload: { threadId: 'b', draft: 'half-typed idea' } })
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
+      expect(m.State.poppedThreads.has('b')).toBe(false)
+      expect(input.value).toBe('half-typed idea') // draft carried, not lost
+    })
+
+    it('Scenario: a redock draft does NOT clobber an existing composer draft', () => {
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} }
+      m.State.activeThreadId = 'other'
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = 'my own draft'
+      windowEventHandlers['redock-thread']({ payload: { threadId: 'b', draft: 'incoming' } })
+      expect(input.value).toBe('my own draft') // owner's draft preserved
+    })
+
+    it('Scenario: a floater-closed event for OUR floater un-greys its row', () => {
+      const m = M()
+      m.ThreadDrawerEngine.markPopped('b')
+      expect(m.State.poppedThreads.has('b')).toBe(true)
+      expect(windowEventHandlers['floater-closed']).toBeTypeOf('function')
+      windowEventHandlers['floater-closed']({ payload: { threadId: 'b', owner: 'chat-test' } })
+      expect(m.State.poppedThreads.has('b')).toBe(false)
+    })
+
+    it('Scenario: a floater-closed event for a DIFFERENT owner is ignored', () => {
+      const m = M()
+      m.ThreadDrawerEngine.markPopped('b')
+      windowEventHandlers['floater-closed']({ payload: { threadId: 'b', owner: 'someone-else' } })
+      expect(m.State.poppedThreads.has('b')).toBe(true)
+    })
+
+    it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {
+      const m = M()
+      m.State.pinnedThread = 't-pinned'
+      m.ThreadDrawerEngine.openPanel()
+      expect(m.State.threadDrawerOpen).toBe(false)
+      expect(document.getElementById('thread-drawer')!.classList.contains('open')).toBe(false)
+    })
+  })
 })
