@@ -18,15 +18,18 @@
  * that lands after the ticker already closed the run is a no-op: the
  * store's `updateRunStatus` refuses rows whose `finished_at` is set.
  *
- * DEADLINE INTERACTION (why the default wait is 5 minutes): the ticker's
- * `workerDeadline` (default 5 min) is ADVISORY ONLY — V1 never interrupts an
- * overrunning worker — so a long wait cannot be killed by it. The REAL
- * ceiling is the worker's own SDK wall-clock (`runBoundedQuery`, payload
- * `timeout_ms`, default 10 min): the wait happens INSIDE the model turn, so
- * a 5-minute wait fits the default budget with the same 2× margin the
- * secret tool gets, but a payload that lowers `timeout_ms` below the wait
- * will abort the subprocess mid-wait (the ticker then closes the run as
- * failed — the `waiting` status is overwritten by `recordRunEnd`).
+ * DEADLINE INTERACTION (why the default wait is 5 minutes): since
+ * job-ticker-oban-deadlines the ticker's per-dispatch deadline is ENFORCED
+ * (`Effect.timeoutFail`), not advisory — but the prompt worker registers a
+ * `defaultTimeoutMs` of 10 min, so its enforced outer backstop (10 min +
+ * grace) sits ABOVE the inner SDK wall-clock rather than undercutting it.
+ * The binding ceiling for the wait is therefore still the worker's own SDK
+ * wall-clock (`runBoundedQuery`, payload `timeout_ms`, default 10 min): the
+ * wait happens INSIDE the model turn, so a 5-minute wait fits the default
+ * budget with the same 2× margin the secret tool gets, but a payload that
+ * lowers `timeout_ms` below the wait will abort the subprocess mid-wait
+ * (the ticker then closes the run as failed — the `waiting` status is
+ * overwritten by `recordRunEnd`).
  */
 import { Effect } from "effect"
 import { z } from "zod"
