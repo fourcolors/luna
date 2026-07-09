@@ -1467,6 +1467,9 @@
          while dragging (.sidebar-resizing) so the grabber stays under the cursor. */
       transition: left 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
+    /* Pinned windows hide the divider via [hidden]; the display:flex above would
+       otherwise beat the UA [hidden] rule (same guard as #toggle-threads). */
+    #thread-divider[hidden] { display: none !important; }
     .thread-divider-grip {
       width: 4px; height: 46px; border-radius: 3px;
       background: color-mix(in oklab, var(--ink) 22%, transparent);

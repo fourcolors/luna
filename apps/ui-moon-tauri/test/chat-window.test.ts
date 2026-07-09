@@ -4448,5 +4448,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sidebarWidth).toBe(0)
     })
 
+    it('divider: #thread-divider[hidden] forces display:none over its own display:flex', () => {
+      // Same cascade trap as .newthread-btn/.mic-btn: initSidebar hides the
+      // divider in pinned windows via the hidden PROPERTY, but the class's
+      // display:flex beats the UA [hidden]{display:none} rule, so the
+      // !important override must exist or a phantom col-resize strip paints.
+      expect(htmlContent).toMatch(/#thread-divider\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
+
   })
 })
