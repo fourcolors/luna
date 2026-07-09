@@ -800,6 +800,44 @@ export const JobTickerLayer = (
             })
             .pipe(Effect.catchAll(() => Effect.void))
 
+          // issue #277 - postCommit (deferred delivery) runs LAST, strictly
+          // AFTER every durable job-state write above (recordRunEnd, the
+          // retry-reset/exhaustion setV2Fields, and touch). A slow or hung
+          // delivery must never delay the writes that make the run's
+          // terminal status visible - those are what a retry/observer relies
+          // on. Bounded with an INDEPENDENT timeout (not the dispatch
+          // backstop above, which has already fired/passed by now - delivery
+          // legitimately runs after it) because the ticker cannot assume a
+          // delivery sink is self-bounding (e.g. a chat-server WS post is
+          // typed E=never but can still hang on a stuck connection). Both
+          // catchAll (typed TimeoutException) and catchAllDefect (an
+          // uncaught throw the worker failed to collapse) are best-effort:
+          // logged, never retried, never affect job_runs/jobs state already
+          // written above.
+          //
+          // ACCEPTED RESIDUAL: if the layer's Scope tears down between the
+          // touch() above and postCommit completing, that one delivery is
+          // lost - the run is already recorded success (or failed, with no
+          // retry queued), so nothing re-fires it. This is deliberate: the
+          // alternative (running postCommit BEFORE the durable writes, or
+          // retrying it) reintroduces the double-delivery race #277 exists
+          // to kill. At-most-once here beats at-least-once.
+          if (result._tag === "Right" && result.right.postCommit) {
+            yield* result.right.postCommit.pipe(
+              Effect.timeout(Duration.seconds(30)),
+              Effect.catchAll((err) =>
+                Effect.logWarning(
+                  `[luna/sched] postCommit failed for job=${job.id}: ${String(err)}`,
+                ),
+              ),
+              Effect.catchAllDefect((defect) =>
+                Effect.logWarning(
+                  `[luna/sched] postCommit raised a defect for job=${job.id}: ${String(defect)}`,
+                ),
+              ),
+            )
+          }
+
           return outcome({
             claimed: 1,
             succeeded: result._tag === "Right" ? 1 : 0,

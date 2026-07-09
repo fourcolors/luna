@@ -33,13 +33,22 @@
  * The `file` sink remains deferred; its dispatch shape can land later without
  * API churn.
  *
+ * issue #277: an obs_note/chat_thread delivery is built as a `WorkerResult.
+ * postCommit` effect, NOT run inline during the turn - the ticker defers it
+ * until AFTER the run is durably recorded success, outside its dispatch
+ * backstop, so delivery can never race a `deadline_passed` timeout into a
+ * double-delivered retry. See `worker-registry.ts`'s `WorkerResult.postCommit`
+ * doc and `job-ticker.ts`'s handleJob for the ordering guarantee.
+ *
  * Failure modes:
  *   - bad payload                 → WorkerError(reason:"bad_payload")
  *   - SDK stream errors           → WorkerError(reason:"worker_failed", cause)
  *   - turn exceeds timeout_ms     → WorkerError(reason:"worker_failed") + subprocess aborted
  *   - SDK yields no success msg   → WorkerError(reason:"worker_failed")
- *   - delivery write fails        → logged at WARN, worker still returns success
- *                                   (the result text is preserved in job_runs.output_text)
+ *   - delivery (postCommit) fails → logged at WARN by the ticker after the run
+ *                                   is already recorded success; the result
+ *                                   text is preserved in job_runs.output_text
+ *                                   regardless of whether delivery ever runs
  */
 import { Effect, Layer, Option } from "effect"
 import {
@@ -309,21 +318,30 @@ export const buildPromptWorker = (
         parsed.timeout_ms ?? DEFAULT_QUERY_TIMEOUT_MS,
       )
 
-      // Delivery sink — V1: obs_note + log. Failures are non-fatal: the
-      // result text still lands in job_runs.output_text below.
+      // Delivery sink - V1: obs_note + log. issue #277: delivery is no
+      // longer run inline here (that put it INSIDE the ticker's dispatch
+      // backstop - a slow write could commit successfully yet still lose the
+      // Effect.timeoutFail race, discarding this success value and letting a
+      // retry re-run the whole turn and re-deliver). Instead it is built as
+      // a `postCommit` effect the ticker runs only AFTER the run is durably
+      // recorded success. A missing service is a deterministic, in-the-moment
+      // condition (not a delivery outcome) so it is still warned inline -
+      // there is nothing to defer, and postCommit is simply left undefined.
+      let postCommit: Effect.Effect<void> | undefined
       if (parsed.deliver_to?.kind === "obs_note") {
         if (!notes) {
           yield* Effect.logWarning(
             `[luna/prompt-worker] deliver_to=obs_note requested but AgentNotesService not available; dropping delivery for job=${ctx.jobId}`,
           )
         } else {
-          yield* notes
+          const deliverTo = parsed.deliver_to
+          // .asVoid collapses the success channel too (notes.record resolves
+          // an AgentNote, but WorkerResult.postCommit requires A=void) -
+          // catchAll alone would leave an `AgentNote | void` success type.
+          postCommit = notes
             .record({
-              sessionId:
-                parsed.deliver_to.session_id ??
-                `prompt-worker:${ctx.jobId}`,
-              kind:
-                (parsed.deliver_to.kind_tag as never) ?? ("prompt_result" as never),
+              sessionId: deliverTo.session_id ?? `prompt-worker:${ctx.jobId}`,
+              kind: (deliverTo.kind_tag as never) ?? ("prompt_result" as never),
               summary: resultText.slice(0, 1024),
               payload: { jobId: ctx.jobId, runId: ctx.runId },
             })
@@ -333,20 +351,23 @@ export const buildPromptWorker = (
                   `[luna/prompt-worker] obs_note delivery failed for job=${ctx.jobId}: ${err.message}`,
                 ),
               ),
+              Effect.asVoid,
             )
         }
       } else if (parsed.deliver_to?.kind === "chat_thread") {
         // Post the finished result back INTO a chat thread as an assistant
         // message (issue #124). Best-effort: a missing/closed thread is
-        // logged-and-dropped inside the poster, and the result text still
-        // lands in job_runs.output_text below.
+        // logged-and-dropped inside the poster (its error channel is already
+        // `never`), and the result text still lands in job_runs.output_text
+        // regardless of whether this postCommit ever runs.
         if (!chatPoster) {
           yield* Effect.logWarning(
             `[luna/prompt-worker] deliver_to=chat_thread requested but ChatThreadPoster not available; dropping delivery for job=${ctx.jobId}`,
           )
         } else {
-          yield* chatPoster.post({
-            threadId: parsed.deliver_to.thread_id,
+          const deliverTo = parsed.deliver_to
+          postCommit = chatPoster.post({
+            threadId: deliverTo.thread_id,
             text: resultText,
             source: sourceOf(rawPayload) ?? "background-job",
             label: jobNameFrom(rawPayload, ctx.jobId),
@@ -354,7 +375,10 @@ export const buildPromptWorker = (
         }
       }
 
-      return { outputText: resultText } satisfies WorkerResult
+      return {
+        outputText: resultText,
+        ...(postCommit ? { postCommit } : {}),
+      } satisfies WorkerResult
     })
 }
 

@@ -182,14 +182,19 @@ describe("buildPromptWorker", () => {
     )
   })
 
-  it("deliver_to=obs_note writes an AgentNote with the result", async () => {
+  // issue #277: obs_note delivery is now returned as WorkerResult.postCommit
+  // - the ticker runs it only AFTER the run is durably recorded success, so
+  // this asserts BOTH halves of the contract: (1) the note is NOT written
+  // during the worker's own run, and (2) executing the returned postCommit
+  // writes it.
+  it("deliver_to=obs_note returns delivery as postCommit - NOT written during the run, written once postCommit executes", async () => {
     const sdkLayer = fakeClientWithText("Brief body.")
     const prog = Effect.gen(function* () {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildPromptWorker(sdk, notes)
 
-      yield* worker(
+      const result = yield* worker(
         {
           user_prompt: "what's new?",
           deliver_to: {
@@ -200,6 +205,13 @@ describe("buildPromptWorker", () => {
         },
         ctx,
       )
+
+      expect(result.postCommit).toBeDefined()
+      // Not delivered yet - the worker's own run must not have written it.
+      const before = yield* notes.getRecent("brief-session", 5)
+      expect(before.length).toBe(0)
+
+      yield* result.postCommit!
 
       const recent = yield* notes.getRecent("brief-session", 5)
       expect(recent.length).toBe(1)
@@ -229,7 +241,10 @@ describe("buildPromptWorker", () => {
     )
   })
 
-  it("deliver_to=chat_thread posts the result to the poster (#124)", async () => {
+  // issue #277: chat_thread delivery is now returned as WorkerResult.
+  // postCommit instead of posted inline during the run - asserts the poster
+  // sees nothing until postCommit is explicitly executed.
+  it("deliver_to=chat_thread returns delivery as postCommit - NOT posted during the run, posted once postCommit executes (#124)", async () => {
     const sdkLayer = fakeClientWithText("Done — found 3 options.")
     const captured: ChatThreadDelivery[] = []
     const poster: ChatThreadPoster = {
@@ -251,8 +266,12 @@ describe("buildPromptWorker", () => {
         },
         ctx,
       )
-      // The worker still returns the text (delivery is a side effect).
+      // The worker still returns the text (delivery is now deferred).
       expect(result.outputText).toBe("Done — found 3 options.")
+      expect(result.postCommit).toBeDefined()
+      expect(captured).toEqual([])
+
+      yield* result.postCommit!
     })
     await Effect.runPromise(
       prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
@@ -265,6 +284,45 @@ describe("buildPromptWorker", () => {
         label: "Research flights",
       },
     ])
+  })
+
+  it("deliver_to=chat_thread: a poster that defects inside postCommit is caught by catchAllDefect, logged, effect completes (mirrors the ticker's wrapping)", async () => {
+    const sdkLayer = fakeClientWithText("Body.")
+    // Simulates a poster that violates its own `never`-fails contract (a
+    // runtime bug, not a typed error) - proves postCommit is still safe to
+    // wrap the way job-ticker.ts wraps it (catchAll + catchAllDefect), even
+    // though prompt-worker.ts itself does not (and should not) swallow a
+    // defect on the worker's behalf.
+    const brokenPoster: ChatThreadPoster = {
+      post: () => Effect.die(new Error("poster blew up")),
+    }
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildPromptWorker(sdk, notes, null, brokenPoster)
+      const result = yield* worker(
+        {
+          user_prompt: "x",
+          deliver_to: { kind: "chat_thread", thread_id: "thr_main" },
+        },
+        ctx,
+      )
+      expect(result.postCommit).toBeDefined()
+
+      let loggedDefect: unknown
+      yield* result.postCommit!.pipe(
+        Effect.catchAll(() => Effect.void),
+        Effect.catchAllDefect((defect) =>
+          Effect.sync(() => {
+            loggedDefect = defect
+          }),
+        ),
+      )
+      expect(loggedDefect).toBeDefined()
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+    )
   })
 
   it("deliver_to=chat_thread without a poster logs-and-drops, still returns text (#124)", async () => {

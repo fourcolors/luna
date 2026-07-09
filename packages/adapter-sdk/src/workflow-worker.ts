@@ -29,7 +29,11 @@
  *   - Each step gets a default wall-clock deadline (shell 5 min, prompt
  *     10 min) that either kind can override via `timeout_ms`. A prompt step
  *     that exceeds it is recorded `status:"timeout"` and its SDK subprocess
- *     is aborted — a hung turn cannot wedge the single-fiber V2 ticker.
+ *     is aborted - a hung turn cannot wedge the single-fiber V2 ticker. A
+ *     shell step past its deadline, OR whose dispatch is interrupted
+ *     (ticker backstop), is killed by process GROUP (issue #277 Seam B,
+ *     `detached: true` + `process.kill(-pid, …)`) so a grandchild it spawned
+ *     (e.g. `ssh` under `git push`) cannot outlive it.
  *
  * Security note: shell steps execute arbitrary commands via the
  * chat-server's own privileges. Operators MUST treat workflow payloads as
@@ -218,30 +222,90 @@ const SHELL_MAX_BYTES = 1_048_576 // 1 MB per stream
 // overrides this at dispatch time (job-ticker.ts's Seam-1 resolution).
 const WORKFLOW_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000 // 20 min
 
-function runShellStep(step: ShellStep): Promise<ShellStepResult> {
+/**
+ * issue #277 (Seam B): `signal`, when passed, aborts the shell step in
+ * response to the caller's dispatch being interrupted (the ticker backstop,
+ * or a future producer/executor split) - see the `Effect.async` wrapper at
+ * the call site below. Optional (defaults to no signal) so the existing
+ * unit tests that call this function directly keep working unchanged.
+ */
+function runShellStep(
+  step: ShellStep,
+  signal?: AbortSignal,
+): Promise<ShellStepResult> {
   return new Promise((resolve) => {
     const timeoutMs = step.timeout_ms ?? DEFAULT_SHELL_TIMEOUT_MS
     const startMs = Date.now()
     let stdoutBuf = ""
     let stderrBuf = ""
     let timedOut = false
+    let aborted = false
+    // `settled` guards every kill path (timeout timer, escalation timer,
+    // abort listener) against firing AFTER the child has already been
+    // reaped ('close'/'error'). Without it, a kill scheduled just before
+    // reap can run just after - and `-pid` targets a process GROUP id that
+    // the OS is free to recycle onto an unrelated process the instant ours
+    // exits, so a late group-kill risks signalling a stranger, not just
+    // throwing ESRCH.
+    let settled = false
 
     // shell=true via /bin/sh -c so the operator's quoting works.
+    // detached:true gives the shell its OWN process group (pgid === its own
+    // pid), which is what makes `process.kill(-child.pid, sig)` below safe:
+    // a grandchild spawned by the shell (e.g. `ssh` under `git push`) is a
+    // member of that group and dies with it. LOUD WARNING: `-pid` group-kill
+    // is correct ONLY because of `detached: true` here - WITHOUT it the
+    // child shares node's OWN process group, and a `-pid` kill would signal
+    // the ticker's own group (suicide). Never issue a `-pid` kill on a
+    // non-detached child.
     const child = spawn("/bin/sh", ["-c", step.cmd], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...step.env },
+      detached: true,
     })
+
+    // Signal the whole process group, not just the immediate child, so a
+    // long-lived grandchild (git's ssh, a pushed-through subprocess) cannot
+    // outlive a killed/timed-out/aborted step. Guarded by `settled` and
+    // wrapped in try/catch: ESRCH (already reaped) is expected and benign; on
+    // ANY throw we fall back to `child.kill()` rather than propagate, since
+    // this always runs from a timer or abort callback with no caller to
+    // report to.
+    const killGroup = (sig: NodeJS.Signals) => {
+      if (settled) return
+      if (child.pid === undefined) {
+        try { child.kill(sig) } catch { /* already dead */ }
+        return
+      }
+      try {
+        process.kill(-child.pid, sig)
+      } catch {
+        try { child.kill(sig) } catch { /* already dead */ }
+      }
+    }
 
     const killTimer = setTimeout(() => {
       timedOut = true
-      try {
-        child.kill("SIGTERM")
-        setTimeout(() => {
-          try { child.kill("SIGKILL") } catch { /* dead */ }
-        }, 2000).unref()
-      } catch { /* already dead */ }
+      killGroup("SIGTERM")
+      const escalate = setTimeout(() => killGroup("SIGKILL"), 2000)
+      escalate.unref()
     }, timeoutMs)
     killTimer.unref()
+
+    // Abort wiring (issue #277 Seam B): when the caller's dispatch is
+    // interrupted (ticker backstop / Fiber.interrupt), kill the group the
+    // same way the timeout path does - mirroring bounded-query.ts's
+    // onInterrupt→abort pattern so a hung shell command cannot outlive its
+    // dispatch the way it could before this seam (only push-through's own
+    // LOCK_DIR saved it).
+    const onAbort = () => {
+      if (settled) return
+      aborted = true
+      killGroup("SIGTERM")
+      const escalate = setTimeout(() => killGroup("SIGKILL"), 2000)
+      escalate.unref()
+    }
+    signal?.addEventListener("abort", onAbort)
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8")
@@ -257,10 +321,25 @@ function runShellStep(step: ShellStep): Promise<ShellStepResult> {
     })
 
     child.once("close", (code) => {
+      settled = true
       clearTimeout(killTimer)
+      signal?.removeEventListener("abort", onAbort)
       const exitCode = code
       const duration = Date.now() - startMs
-      if (timedOut) {
+      if (aborted) {
+        // Keep the wire shape stable (no new status value) so existing
+        // steps_json consumers (the UI gallery) keep rendering it - a
+        // failed step with a distinguishing stderr prefix.
+        resolve({
+          kind: "shell",
+          status: "failed",
+          cmd: step.cmd,
+          exit_code: null,
+          duration_ms: duration,
+          stdout: stdoutBuf,
+          stderr: `aborted: dispatch interrupted\n${stderrBuf}`,
+        })
+      } else if (timedOut) {
         resolve({
           kind: "shell",
           status: "timeout",
@@ -294,7 +373,9 @@ function runShellStep(step: ShellStep): Promise<ShellStepResult> {
     })
 
     child.once("error", (err) => {
+      settled = true
       clearTimeout(killTimer)
+      signal?.removeEventListener("abort", onAbort)
       resolve({
         kind: "shell",
         status: "failed",
@@ -434,7 +515,36 @@ export const buildWorkflowWorker = (
         const step = parsed.steps[i]!
         let result: StepResult
         if (step.kind === "shell") {
-          result = yield* Effect.promise(() => runShellStep(step))
+          // issue #277 (Seam B): `Effect.promise` is a plain, uninterruptible
+          // Promise wrapper - the Effect runtime cannot cancel it, so a
+          // ticker backstop interrupting THIS dispatch left the shell
+          // running headless in the background (a retry could then start
+          // while the orphan still ran; only push-through's own LOCK_DIR
+          // saved it). `Effect.async` gives the runtime a canceler: on
+          // interruption it fires `controller.abort()`, which `runShellStep`
+          // wires to a process-GROUP kill (see its `onAbort`/`killGroup`).
+          // The inner promise never rejects (runShellStep always resolves,
+          // even on spawn error) - the `.catch` below is defensive only, so
+          // a future edit that introduces a reject path can't hang this fiber.
+          result = yield* Effect.async<ShellStepResult>((resume) => {
+            const controller = new AbortController()
+            void runShellStep(step, controller.signal)
+              .then((r) => resume(Effect.succeed(r)))
+              .catch((err: unknown) =>
+                resume(
+                  Effect.succeed({
+                    kind: "shell",
+                    status: "failed",
+                    cmd: step.cmd,
+                    exit_code: null,
+                    duration_ms: 0,
+                    stdout: "",
+                    stderr: `internal error: ${String(err)}`,
+                  } satisfies ShellStepResult),
+                ),
+              )
+            return Effect.sync(() => controller.abort())
+          })
         } else {
           result = yield* runPromptStep(step, sdk, binding)
         }
