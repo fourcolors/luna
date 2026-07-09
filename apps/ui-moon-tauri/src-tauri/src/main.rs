@@ -3157,9 +3157,7 @@ fn main() {
                 // and a seam halo pointing at nothing (the "ghost weld").
                 // Guarded on the hub like the layout write — during hub-owned
                 // shutdown everything is dying anyway.
-                if is_dock_label(window.label())
-                    && app.get_webview_window("main").is_some()
-                {
+                if is_dock_label(window.label()) && app.get_webview_window("main").is_some() {
                     broadcast_dock_geometry_settled(&app, window.label());
                 }
                 // Don't strand the user with nothing on screen: while the
