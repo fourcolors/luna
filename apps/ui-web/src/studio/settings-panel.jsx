@@ -103,12 +103,11 @@ export function SettingsPanel({ ctx }) {
       // Server may have gone down before responding to the restart call —
       // that's the expected happy path, not a failure to surface.
       disconnect();
-    } finally {
-      setTimeout(() => {
-        setRestarting(false);
-        connect();
-      }, 3000);
     }
+    setTimeout(() => {
+      setRestarting(false);
+      connect();
+    }, 3000);
   };
 
   return (

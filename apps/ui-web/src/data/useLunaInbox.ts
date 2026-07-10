@@ -395,6 +395,19 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
     })
   }, [onServerFrame, clearPending, sendProjectionPrompt, state.threads])
 
+  // Re-subscribe the inbox thread whenever the connection reopens — server
+  // subscriptions are per-socket, so a transparent reconnect lands on a fresh
+  // connection with an empty subscription set and an in-flight projection's
+  // turn-complete would otherwise never arrive.
+  const wasConnectedRef = useRef(false)
+  useEffect(() => {
+    const reopened = connected && !wasConnectedRef.current
+    wasConnectedRef.current = connected
+    if (reopened && threadIdRef.current) {
+      send({ type: "subscribe", threadId: threadIdRef.current })
+    }
+  }, [connected, send])
+
   // Auto-run once connectors become available (covers "already connected at
   // boot" and "just finished OAuth connect mid-session"); never on a bare
   // transport reconnect while availability was already known.

@@ -76,6 +76,7 @@ describe("Studio regression coverage", () => {
   });
 
   it("shows an explicit restart refusal instead of disconnecting anyway", async () => {
+    vi.useFakeTimers();
     const refusal = Object.assign(new Error("restart unavailable: no supervisor"), {
       name: "RestartRefusedError",
     });
@@ -89,7 +90,34 @@ describe("Studio regression coverage", () => {
     await act(async () => restart.click());
 
     expect(container.textContent).toContain("restart unavailable: no supervisor");
+
+    // A refused restart must never schedule the delayed reconnect — advance
+    // past the 3s reconnect window to prove no timer was left behind.
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+
     expect(ctx.disconnect).not.toHaveBeenCalled();
     expect(ctx.connect).not.toHaveBeenCalled();
+  });
+
+  it("schedules the delayed reconnect after an accepted restart", async () => {
+    vi.useFakeTimers();
+    const ctx = settingsCtx({ restartServer: vi.fn().mockResolvedValue(undefined) });
+    const container = mount(<SettingsPanel ctx={ctx} />);
+    const restart = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent.includes("Restart Server"),
+    );
+
+    await act(async () => restart.click());
+
+    expect(ctx.disconnect).toHaveBeenCalled();
+    expect(ctx.connect).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(ctx.connect).toHaveBeenCalled();
   });
 });

@@ -44,6 +44,12 @@ export function createReconnectingLunaTransport(
       const adapter = makeAdapter({ routeKey: "studio", endpoints: [url], tokenRef: token })
       let disconnected = false
       let terminalStatePublished = false
+      // The adapter drops sendFrame silently while its socket isn't OPEN, so
+      // the bridge owns the send buffer (as browserWebSocketTransport did):
+      // frames sent before the handshake completes, or during a transparent
+      // recovery window, queue here and flush once the adapter reports ready.
+      let ready = false
+      const sendBuffer: ClientFrame[] = []
 
       const unsubscribeFrames = adapter.subscribeFrames((frame) => {
         if (disconnected) return
@@ -59,7 +65,11 @@ export function createReconnectingLunaTransport(
           "identity-failed",
           "route-missing",
         ].includes(state.status)
+        ready = state.status === "ready"
         onStatus(toStudioStatus(state))
+        if (ready && !disconnected) {
+          for (const buffered of sendBuffer.splice(0)) adapter.sendFrame(buffered)
+        }
       })
 
       void adapter.attach().catch((error: unknown) => {
@@ -71,7 +81,13 @@ export function createReconnectingLunaTransport(
       })
 
       return {
-        send: (frame: ClientFrame) => adapter.sendFrame(frame),
+        send: (frame: ClientFrame) => {
+          if (ready) {
+            adapter.sendFrame(frame)
+          } else {
+            sendBuffer.push(frame)
+          }
+        },
         disconnect: () => {
           if (disconnected) return
           disconnected = true

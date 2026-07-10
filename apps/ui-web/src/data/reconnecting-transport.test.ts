@@ -63,4 +63,55 @@ describe("Studio reconnecting transport bridge", () => {
     handle.disconnect()
     await vi.waitFor(() => expect(adapter.disposed).toBe(true))
   })
+
+  it("buffers frames sent before ready and flushes them on open", async () => {
+    const adapter = new FakeAdapter()
+    let releaseAttach: () => void = () => {}
+    adapter.attach = async () => {
+      adapter.stateListener?.({ status: "connecting" })
+      await new Promise<void>((resolve) => { releaseAttach = resolve })
+      adapter.stateListener?.({ status: "ready" })
+    }
+    const statuses: string[] = []
+    const transport = createReconnectingLunaTransport(() => adapter)
+    const handle = transport.connect({
+      url: "ws://127.0.0.1:4753/ui",
+      token: "1234567890abcdef",
+      onFrame: () => {},
+      onStatus: (status) => statuses.push(status.kind),
+    })
+
+    const early = { type: "list-threads" } as ClientFrame
+    handle.send(early)
+    expect(adapter.sent).toEqual([])
+
+    releaseAttach()
+    await vi.waitFor(() => expect(statuses).toContain("open"))
+    expect(adapter.sent).toEqual([early])
+
+    handle.disconnect()
+  })
+
+  it("buffers frames during transparent recovery and flushes on re-open", async () => {
+    const adapter = new FakeAdapter()
+    const statuses: string[] = []
+    const transport = createReconnectingLunaTransport(() => adapter)
+    const handle = transport.connect({
+      url: "ws://127.0.0.1:4753/ui",
+      token: "1234567890abcdef",
+      onFrame: () => {},
+      onStatus: (status) => statuses.push(status.kind),
+    })
+    await vi.waitFor(() => expect(statuses).toContain("open"))
+
+    adapter.stateListener?.({ status: "recovering", reason: "server restart" })
+    const midRecovery = { type: "list-threads" } as ClientFrame
+    handle.send(midRecovery)
+    expect(adapter.sent).toEqual([])
+
+    adapter.stateListener?.({ status: "ready" })
+    expect(adapter.sent).toEqual([midRecovery])
+
+    handle.disconnect()
+  })
 })

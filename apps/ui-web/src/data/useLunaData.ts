@@ -463,11 +463,19 @@ export function useLunaData(): LunaData {
   }, [status.kind, state.threadList, state.selectedThreadId, dispatch, send])
 
   // Subscribe whenever the selection lands on an unsubscribed thread (covers
-  // server auto-select on thread-created). Idempotent server-side.
+  // server auto-select on thread-created). Idempotent server-side. The set is
+  // per-connection state — the server scopes subscriptions to the socket, so
+  // it must clear whenever the connection leaves "open" (mirrors
+  // widgetDirSentRef) or a transparent reconnect would leave the active
+  // thread unsubscribed and assistant output would never render.
   const subscribedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
+    if (status.kind !== "open") {
+      subscribedRef.current.clear()
+      return
+    }
     const id = state.selectedThreadId
-    if (id && status.kind === "open" && !subscribedRef.current.has(id)) {
+    if (id && !subscribedRef.current.has(id)) {
       subscribedRef.current.add(id)
       send({ type: "subscribe", threadId: id })
     }
