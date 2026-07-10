@@ -6,7 +6,6 @@
   <title>Luna Panel</title>
   <script src="vendor/moon-protocol.js"></script>
   <script src="vendor/moon-ws.js"></script>
-  <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
   <script src="vendor/moon-resize.js"></script>
   <!-- Google Fonts: Albert Sans (body) + Caveat (handwritten accent) -->
@@ -22,7 +21,6 @@
   <link rel="stylesheet" href="vendor/moon-theme.css">
   <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html> pre-paint -->
   <script src="vendor/moon-appearance.js"></script>
-  <script src="vendor/moon-native-titlebar.js"></script>
   <!-- Honors the "Always on Top" setting for this panel (default: not floating). -->
   <script src="vendor/moon-window-float.js"></script>
   <!-- Phase 2 C3 route module: MoonSession.resolveBootRoute / setPanelRoute /
@@ -100,15 +98,7 @@
 </svg>
 <div class="widget-shell">
   <div class="title-bar" id="title-bar">
-    <!-- Classic skin only: CSS faux traffic lights. studio/aqua use native
-         macOS buttons (always visible, positioned via moon-native-titlebar.js). -->
-    <div class="bar-start">
-      <div class="dock-lights">
-        <button class="light light-close" id="close-btn" type="button" title="Close" aria-label="Close panel"></button>
-        <button class="light light-min" id="min-btn" type="button" title="Minimize" aria-label="Minimize panel"></button>
-        <button class="light light-zoom" id="zoom-btn" type="button" title="Zoom" aria-label="Zoom panel"></button>
-      </div>
-    </div>
+    <div class="bar-start" aria-hidden="true"></div>
     <span class="bar-title" id="bar-title">Loading…</span>
     <!-- Right cluster balances the lights so the title stays centered; also
          houses the collapse-to-moon glyph (on the right, clear of native
@@ -123,8 +113,6 @@
       </button>
     </div>
   </div>
-  <div id="seam" aria-hidden="true"></div>
-  <div id="outline" aria-hidden="true"></div>
   <div class="content-area" id="content-area"></div>
 </div>
 
@@ -147,35 +135,8 @@
 
   var contentArea = document.getElementById('content-area');
   var barTitle = document.getElementById('bar-title');
-  var closeBtn = document.getElementById('close-btn');
-
-  closeBtn && closeBtn.addEventListener('click', function () {
-    try {
-      if (window.__TAURI__ && window.__TAURI__.core && label) {
-        window.__TAURI__.core.invoke('close_widget', { label: label }).catch(function () {});
-      }
-    } catch (_) { /* best-effort */ }
-  });
-
-  // ── Traffic-light minimize / zoom (best-effort; inert in non-Tauri) ────────
-  // Minimize collapses the WHOLE workspace into the moon (every widget hides,
-  // the orb returns) rather than dropping this one window to the OS dock — the
-  // moon is the minimized form of all of Luna.
-  var minBtn = document.getElementById('min-btn');
-  var zoomBtn = document.getElementById('zoom-btn');
-  minBtn && minBtn.addEventListener('click', function () {
-    try {
-      if (window.__TAURI__ && window.__TAURI__.core) {
-        window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {});
-      }
-    } catch (_) { /* best-effort */ }
-  });
-  zoomBtn && zoomBtn.addEventListener('click', function () {
-    if (W && W.toggleMaximize) { try { W.toggleMaximize().catch(function () {}); } catch (_) {} }
-  });
-
-  // Collapse-into-moon glyph (right side of title bar) — same gesture as
-  // min-btn but always visible in studio/aqua where the faux lights are hidden.
+  // Collapse-into-moon is a Luna-specific workspace action, intentionally
+  // separate from the native yellow button's per-window minimize behavior.
   var collapseMoonBtn = document.getElementById('collapse-moon-btn');
   collapseMoonBtn && collapseMoonBtn.addEventListener('click', function () {
     try {
@@ -343,7 +304,7 @@
     bootModule(null);
   }
 
-  // ── Dock/snap wiring (shared vendor module) ────────────────────────────
+  // Hand title-bar gestures directly to the native window drag.
   if (window.LunaDock) LunaDock.wire({ win: W, label: label });
 })();
 </script>

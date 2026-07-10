@@ -1,5 +1,11 @@
 # Luna Widget System — Design v3
 
+> **Window-management update (2026-07-10):** the magnetic snap, weld, and
+> cluster-tow design recorded below has been retired. Widgets remain independent
+> OS windows, but macOS now owns their placement and movement. The current
+> contract is in `docs/window-drag-snap.md`; snapping sections below are design
+> history only.
+
 _Status: accepted direction · Date: 2026-06-11_
 _v3 (same day, post-probe verdict): **widgets become the main interaction mode.**
 Settings panels become widgets, every widget gets a registry name + trust tier,

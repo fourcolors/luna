@@ -7,7 +7,7 @@
  * the server behind the protocol remains swappable.
  *
  * Plain-script IIFE (no build step) — attaches `LunaProtocol` to globalThis,
- * same convention as deck-snap.js / widget-sandbox.js.
+ * same convention as the other dependency-free vendor modules.
  */
 (function (g) {
   'use strict';

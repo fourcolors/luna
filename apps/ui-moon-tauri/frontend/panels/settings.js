@@ -61,8 +61,8 @@
           btn.addEventListener('click', function () {
             // Best-effort: off-Tauri (browser dev / jsdom) the invoke rejects
             // and the launcher simply stays put. opener=this launcher so the
-            // sub-panel docks NEXT TO the launcher the user just clicked,
-            // rather than the nearest cluster to its OS-default spawn point.
+            // sub-panel can use the launcher as its placement origin rather
+            // than an unrelated OS-default spawn point.
             ctx.invoke('open_widget', { kind: p.kind, opener: ctx.label }).catch(function () {});
           });
           list.appendChild(btn);

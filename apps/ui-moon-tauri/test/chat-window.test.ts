@@ -56,6 +56,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
       outerSize: vi.fn(async () => ({ width: 560, height: 520 })),
       setPosition: vi.fn(async () => {}),
+      startDragging: vi.fn(async () => {}),
     }
     ;(window as any).__TAURI__ = {
       window: {
@@ -69,7 +70,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
-    loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'moon-dock.js')
 
     // Clean localStorage so persisted-prefs tests don't leak across cases.
@@ -112,7 +112,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     delete (window as any).LunaProtocol
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
-    delete (window as any).LunaDeckSnap
     delete (window as any).LunaDock
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
@@ -3309,13 +3308,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       popBtn.click()
 
       // Widget windows render PINNED artifacts: popping out a session row
-      // pins it first (artifact-pin rides the WS), then opens — snap-on-open
-      // (Rust) tiles it flush against the nearest open panel.
+      // pins it first (artifact-pin rides the WS), then opens a native window.
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'msg-pop:0',
         title: 'snippet.py',
       })
-      // No deck census IPC — snap-on-open positions it, not cascade math.
+      // No deck census IPC — AppKit owns independent window placement.
       expect(invokeMock).not.toHaveBeenCalledWith('list_widget_windows')
 
       // Part 2 — without Tauri (browser env): clicking must NOT throw.
@@ -3461,8 +3459,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: widget-window chrome + the hub-event return channel. The window
-  // follows panel.html's conventions (close_widget, LunaDock.wire) and acts on
-  // window-targeted hub-events with the dock-group `for:` discipline.
+  // follows panel.html's native-drag convention and acts on targeted events.
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: widget-window chrome + hub-event return channel', () => {
     const M = () => (window as any).__MoonInternals
@@ -3471,13 +3468,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
       ;(window as any).cancelAnimationFrame = () => {}
       M().ChatState.reset()
-    })
-
-    it('✕ closes via close_widget with this window label', () => {
-      const invoke = vi.fn(async () => null)
-      ;(window as any).__TAURI__.core = { invoke }
-      document.getElementById('close-btn')!.click()
-      expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'chat-test' })
     })
 
     it('the GEAR opens the settings launcher widget', () => {
@@ -3519,11 +3509,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await Promise.resolve()
     })
 
-    it('dock wiring is live: LunaDock.wire hooked this window (dock-link listener)', () => {
-      // The emergent-weld model drives dragging from a pointerdown handler (no
-      // onMoved/settle) and computes welds locally; the observable window-scoped
-      // wire() signal is the dock-link seam-flash listener.
-      expect(windowEventHandlers['dock-link']).toBeTypeOf('function')
+    it('window wiring hands title-bar gestures directly to native dragging', () => {
+      document.getElementById('title-bar')!.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true, button: 0 }),
+      )
+      expect(mockMe.startDragging).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -4122,25 +4112,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: window chrome — close + minimize. Minimize is NOT a per-window
-  // OS-dock minimize: it collapses the WHOLE workspace into the moon
-  // (collapse_to_moon), the same gesture as a panel's yellow light.
+  // Feature: the Luna-specific workspace-collapse action remains separate from
+  // AppKit's native per-window controls.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: window chrome (close / minimize-into-moon)', () => {
-    it('Scenario: the minimize disk invokes collapse_to_moon (tuck everything into the orb)', () => {
+  describe('Feature: window chrome (collapse into moon)', () => {
+    it('Scenario: the moon action invokes collapse_to_moon', () => {
       const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
-      const minBtn = document.getElementById('min-btn')
-      expect(minBtn).not.toBeNull()
-      minBtn!.click()
+      document.getElementById('collapse-moon-btn')!.click()
       expect(invoke).toHaveBeenCalledWith('collapse_to_moon')
-    })
-
-    it('Scenario: the close disk still closes only this window (close_widget with its label)', () => {
-      const invoke = vi.fn(async () => null)
-      ;(window as any).__TAURI__.core = { invoke }
-      document.getElementById('close-btn')!.click()
-      expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'chat-test' })
     })
   })
 

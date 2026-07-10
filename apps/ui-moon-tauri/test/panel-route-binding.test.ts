@@ -93,7 +93,6 @@ function bootPanel(opts: {
   // in panel.html — we load it here manually since jsdom doesn't fetch scripts).
   loadVendorInto(window, 'moon-protocol.js')
   loadVendorInto(window, 'moon-ws.js')   // sets window.LunaWS with real impl
-  loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
   loadVendorInto(window, 'moon-session.js')
 
@@ -147,7 +146,6 @@ afterEach(() => {
   delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
-  delete (window as any).LunaDeckSnap
   delete (window as any).LunaDock
   delete (window as any).MoonSession
   vi.restoreAllMocks()

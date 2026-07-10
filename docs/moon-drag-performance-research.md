@@ -1,5 +1,9 @@
 # Live Magnetic Window Snapping — Optimization Research
 
+> **Historical (superseded 2026-07-10):** Moon no longer performs magnetic
+> snapping or cluster towing. Each panel now uses a direct native macOS drag.
+> See `apps/ui-moon-tauri/docs/window-drag-snap.md` for the active behavior.
+
 > Research output (2026-06-19) for the Moon card-drag performance question:
 > "can we optimize this for high performance, maybe Rust? is anyone else doing this already?"
 > Method: 7 parallel research streams (Tauri/tao internals, all-Rust drag loop, macOS

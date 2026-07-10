@@ -55,7 +55,6 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
-    loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'moon-dock.js')
 
     localStorage.clear()
@@ -89,7 +88,6 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
     delete (window as any).LunaProtocol
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
-    delete (window as any).LunaDeckSnap
     delete (window as any).LunaDock
     vi.restoreAllMocks()
     vi.unstubAllGlobals()

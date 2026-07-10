@@ -41,7 +41,6 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
 
   loadVendorInto(window, 'moon-protocol.js')
   loadVendorInto(window, 'moon-ws.js')
-  loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
   // Preload moon-appearance.js so LunaAppearance is available during render().
   loadVendorInto(window, 'moon-appearance.js')
@@ -70,7 +69,6 @@ afterEach(() => {
   delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
-  delete (window as any).LunaDeckSnap
   delete (window as any).LunaDock
   delete (window as any).LunaAppearance
   localStorage.clear()
@@ -369,7 +367,6 @@ describe('settings.appearance panel', () => {
 
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
-    loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'moon-dock.js')
     // Intentionally do NOT load moon-appearance.js.
 

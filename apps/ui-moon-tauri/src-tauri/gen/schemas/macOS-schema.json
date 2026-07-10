@@ -345,12 +345,6 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Allows the begin_cluster_drag command",
-          "type": "string",
-          "const": "allow-begin-cluster-drag",
-          "markdownDescription": "Allows the begin_cluster_drag command"
-        },
-        {
           "description": "Allows the begin_native_resize command",
           "type": "string",
           "const": "allow-begin-native-resize",
@@ -367,24 +361,6 @@
           "type": "string",
           "const": "allow-collapse-to-moon",
           "markdownDescription": "Allows the collapse_to_moon command"
-        },
-        {
-          "description": "Allows the dock_move_cluster command",
-          "type": "string",
-          "const": "allow-dock-move-cluster",
-          "markdownDescription": "Allows the dock_move_cluster command"
-        },
-        {
-          "description": "Allows the dock_self command",
-          "type": "string",
-          "const": "allow-dock-self",
-          "markdownDescription": "Allows the dock_self command"
-        },
-        {
-          "description": "Allows the end_cluster_drag command",
-          "type": "string",
-          "const": "allow-end-cluster-drag",
-          "markdownDescription": "Allows the end_cluster_drag command"
         },
         {
           "description": "Allows the expand_from_moon command",
@@ -429,12 +405,6 @@
           "markdownDescription": "Allows listing all routes from ~/.luna/client.toml (Phase-2 C3)"
         },
         {
-          "description": "Allows the list_widget_windows command",
-          "type": "string",
-          "const": "allow-list-widget-windows",
-          "markdownDescription": "Allows the list_widget_windows command"
-        },
-        {
           "description": "Allows reading the mode-600 WS connection file",
           "type": "string",
           "const": "allow-load-connection",
@@ -463,12 +433,6 @@
           "type": "string",
           "const": "allow-migrate-legacy-connection",
           "markdownDescription": "Allows migrating moon-connection.json to client.toml (idempotent boot-time migration)"
-        },
-        {
-          "description": "Allows the monitor_work_areas command",
-          "type": "string",
-          "const": "allow-monitor-work-areas",
-          "markdownDescription": "Allows the monitor_work_areas command"
         },
         {
           "description": "Allows raising a native OS notification (title + body) via the notify command",
@@ -537,12 +501,6 @@
           "markdownDescription": "Allows writing the last active thread id so a restart re-tethers to the same thread"
         },
         {
-          "description": "Allows the set_native_controls_visible command",
-          "type": "string",
-          "const": "allow-set-native-controls-visible",
-          "markdownDescription": "Allows the set_native_controls_visible command"
-        },
-        {
           "description": "Allows writing a panel's per-route last-thread pointer to moon-session.json (Phase-2 last-thread)",
           "type": "string",
           "const": "allow-set-panel-last-thread",
@@ -559,12 +517,6 @@
           "type": "string",
           "const": "allow-speak-text",
           "markdownDescription": "Allows enqueueing one sentence for client-side TTS playback"
-        },
-        {
-          "description": "Allows the sync_traffic_light_position command",
-          "type": "string",
-          "const": "allow-sync-traffic-light-position",
-          "markdownDescription": "Allows the sync_traffic_light_position command"
         },
         {
           "description": "Allows SYSTEM windows to participate in the staged self-update flow (the steps are split across the main, chat, and settings windows): check for an update, download/verify/stage it, read the current update state, apply (install + relaunch) a staged build, and consume the one-shot post-restart reopen marker.",
@@ -631,12 +583,6 @@
           "type": "string",
           "const": "allow-voice-stop-speaking",
           "markdownDescription": "Allows stopping TTS playback and clearing the sentence queue"
-        },
-        {
-          "description": "Allows the watch_drag_release command",
-          "type": "string",
-          "const": "allow-watch-drag-release",
-          "markdownDescription": "Allows the watch_drag_release command"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

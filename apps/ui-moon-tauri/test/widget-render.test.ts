@@ -71,7 +71,6 @@ describe('widget.html — kind-aware render', () => {
 
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
-    loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'moon-dock.js')
     loadVendorInto(window, 'widget-sandbox.js')
     loadVendorInto(window, 'moon-markdown.js')

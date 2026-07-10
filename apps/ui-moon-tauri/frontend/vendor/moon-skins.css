@@ -4,8 +4,7 @@
  * (the hand-crafted "Luna Dock" design prototype).
  *
  * A "skin" is a bundle of --dk-* custom properties (radius, paper, border,
- * shadow, header tint + fill, title typography, blur, and the per-edge shadow
- * pieces the dock weld assembles). moon-theme.css consumes these tokens for the
+ * shadow, header tint + fill, title typography, and blur). moon-theme.css consumes these tokens for the
  * window chrome (.widget-shell / .widget-shell::before / .title-bar /
  * .bar-title); switching data-skin on <html> re-skins the window with no
  * markup change.
@@ -41,13 +40,7 @@ html {
   --dk-tint-bleed: 64px;          /* design: 64px */
   --dk-blur: 0px;                 /* no frost in studio (blur(0) = no-op) */
 
-  /* Edge ring carried as a box-shadow on ::before (NEVER a CSS border — the
-     wobble filter would split a real border into a doubled wavy line).
-     transparent = invisible ring (design studio: 1px solid transparent). */
-  --dk-win-border: transparent;
-
-  /* Solo-window halo (design studio --dk-win-shadow). The dock client overrides
-     this inline with the per-edge silhouette while welded. */
+  /* Solo-window halo (design studio --dk-win-shadow). */
   /* Soft drop only — the tight 1–2px layers hugged the card edge and read as a
      spurious light highlight ring around the window (especially on dark paper). */
   --dk-win-shadow:
@@ -67,36 +60,14 @@ html {
   --dk-title-color: color-mix(in oklab, var(--ink) 76%, transparent);
   --dk-title-color-anchor: var(--ink);
 
-  /* ── Per-edge silhouette shadow pieces (Phase 4 weld shadow) ───────────
-     The dock client assembles a welded window's box-shadow PURELY from the
-     directional pieces for its NON-welded (free) edges, so a welded seam casts
-     no interior lip. There is deliberately NO symmetric ambient piece: a spread-0
-     ambient radiates on all four sides and bled onto welded seams (read as a ring
-     INSIDE the cluster). Design studio --dk-edge-* values. */
-  --dk-edge-t: 0 -5px 14px -12px rgba(60, 45, 35, 0.09);
-  --dk-edge-b:
-    0 5px 9px -6px rgba(60, 45, 35, 0.09),
-    0 16px 32px -14px rgba(60, 45, 35, 0.20);
-  --dk-edge-b-anchor:
-    0 7px 12px -6px rgba(60, 45, 35, 0.10),
-    0 22px 44px -16px rgba(60, 45, 35, 0.26);
-  --dk-edge-l: -7px 0 18px -14px rgba(60, 45, 35, 0.12);
-  --dk-edge-r: 7px 0 18px -14px rgba(60, 45, 35, 0.12);
 }
 
-/* studio · dark — night paper base + black silhouette pieces. The design's
-   studio skin keeps the SAME 30% tint in dark (the night paper darkens it
-   naturally), so no --dk-tint-amt bump here. The dark .widget-shell halo
-   itself stays a hard-coded theme rule in moon-theme.css. */
+/* studio · dark — the design keeps the SAME 30% tint in dark (the night paper
+   darkens it naturally), so no --dk-tint-amt bump here. */
 html[data-theme='dark'] {
-  /* Design studio has NO dark paper override — the card stays on var(--paper)
-     (the darker night paper); only the halo goes black. Match that exactly. */
+  /* Design studio has NO dark paper override — the card stays on the darker
+     night paper. */
   --dk-win-paper: var(--paper);
-  --dk-edge-t: 0 -5px 18px -8px rgba(0, 0, 0, 0.45);
-  --dk-edge-b: 0 6px 20px -6px rgba(0, 0, 0, 0.62);
-  --dk-edge-l: -5px 0 18px -8px rgba(0, 0, 0, 0.45);
-  --dk-edge-r: 5px 0 18px -8px rgba(0, 0, 0, 0.45);
-  --dk-edge-b-anchor: 0 7px 22px -6px rgba(0, 0, 0, 0.66);
 }
 
 /* ═══ classic — winamp-retro: tight 4px corners, NO watercolor wash, crisp ══
@@ -109,7 +80,6 @@ html[data-skin='classic'] {
   --dk-tint-amt: 0%;
   --dk-tint-bleed: 0px;
 
-  --dk-win-border: color-mix(in oklab, var(--ink) 24%, transparent);
   --dk-win-shadow:
     0 2px 0 rgba(60, 45, 35, 0.04),
     0 8px 18px -10px rgba(40, 30, 25, 0.40);
@@ -136,20 +106,6 @@ html[data-skin='classic'] {
   --dk-title-color: color-mix(in oklab, var(--ink) 64%, transparent);
   --dk-title-color-anchor: #ffffff;
 
-  /* Crisp welded edges (derived to match the tight classic --dk-win-shadow). */
-  --dk-edge-t: 0 -4px 12px -10px rgba(40, 30, 25, 0.30);
-  --dk-edge-b: 0 8px 18px -10px rgba(40, 30, 25, 0.40);
-  --dk-edge-l: -4px 0 12px -10px rgba(40, 30, 25, 0.30);
-  --dk-edge-r: 4px 0 12px -10px rgba(40, 30, 25, 0.30);
-  --dk-edge-b-anchor: 0 12px 24px -12px rgba(40, 30, 25, 0.48);
-}
-
-/* classic skin — restore CSS traffic lights (native hidden by
-   set_native_controls_visible; the CSS cluster is the only control affordance).
-   chat.html's #close-btn / #min-btn are also restored. */
-html[data-skin='classic'] #title-bar #close-btn,
-html[data-skin='classic'] #title-bar #min-btn {
-  display: flex !important;
 }
 
 /* ═══ aqua — glass: big 18px corners, frosted blur, translucent paper, sans ══
@@ -160,7 +116,6 @@ html[data-skin='aqua'] {
   --dk-win-paper: color-mix(in oklab, var(--paper) 60%, transparent);
   --dk-tint-amt: 26%;
   --dk-tint-bleed: 116px;
-  --dk-win-border: color-mix(in oklab, #ffffff 55%, transparent);
   --dk-win-shadow:
     0 2px 6px rgba(40, 40, 60, 0.06),
     0 18px 50px -16px rgba(40, 40, 70, 0.30);
@@ -172,16 +127,9 @@ html[data-skin='aqua'] {
   --dk-title-transform: none;
   --dk-title-color: color-mix(in oklab, var(--ink) 68%, transparent);
 
-  /* Airy welded edges (derived to match the soft aqua --dk-win-shadow). */
-  --dk-edge-t: 0 -8px 26px -14px rgba(40, 40, 70, 0.22);
-  --dk-edge-b: 0 8px 28px -14px rgba(40, 40, 70, 0.30);
-  --dk-edge-l: -8px 0 26px -14px rgba(40, 40, 70, 0.22);
-  --dk-edge-r: 8px 0 26px -14px rgba(40, 40, 70, 0.22);
-  --dk-edge-b-anchor: 0 12px 34px -16px rgba(40, 40, 80, 0.36);
 }
 html[data-theme='dark'][data-skin='aqua'] {
   --dk-win-paper: color-mix(in oklab, var(--paper) 52%, transparent);
-  --dk-win-border: color-mix(in oklab, #ffffff 18%, transparent);
 }
 
 /* ╔═══════════════════════════════════════════════════════════════════════╗
@@ -192,6 +140,5 @@ html[data-theme='dark'][data-skin='aqua'] {
    .widget-shell(::before) traces the rounded rectangle and reads as an unwanted
    outline around the window. ONLY the soft, blurred `--dk-win-shadow` halo is
    allowed on the card. There is NO skin/chrome exception. Removed here: the
-   classic/aqua `0 0 0 1.5px var(--dk-win-border)` ring (`--dk-win-border` is now
-   unused; do not re-wire it into a ring). A regression test enforces this:
+   classic/aqua edge ring. A regression test enforces this:
    apps/ui-moon-tauri/test/no-window-outline.test.ts. */

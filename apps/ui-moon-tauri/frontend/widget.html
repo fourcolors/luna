@@ -8,7 +8,6 @@
   <script src="vendor/moon-markdown.js"></script>
   <script src="vendor/moon-protocol.js"></script>
   <script src="vendor/moon-ws.js"></script>
-  <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
   <script src="vendor/moon-resize.js"></script>
   <script src="vendor/widget-sandbox.js"></script>
@@ -26,7 +25,6 @@
   <link rel="stylesheet" href="vendor/moon-theme.css">
   <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html> pre-paint -->
   <script src="vendor/moon-appearance.js"></script>
-  <script src="vendor/moon-native-titlebar.js"></script>
   <!-- Honors the "Always on Top" setting for this widget (default: not floating). -->
   <script src="vendor/moon-window-float.js"></script>
   <style>
@@ -44,7 +42,7 @@
       color: var(--text);
     }
 
-    /* Title bar, grip, close/pin buttons, #seam, #outline: vendor/moon-theme.css */
+    /* Title bar and window chrome: vendor/moon-theme.css */
 
     /* ── Outer layout ────────────────────────────────────────────────────── */
     /* width/height managed by moon-theme.css (.widget-shell card shell).
@@ -126,15 +124,7 @@
   <!-- TITLE BAR — on the outer container enables
        native window drag. The close button is intentionally NOT drag-region. -->
   <div class="title-bar" id="title-bar">
-    <!-- Classic skin only: CSS faux traffic lights. studio/aqua use native
-         macOS buttons (always visible, positioned via moon-native-titlebar.js). -->
-    <div class="bar-start">
-      <div class="dock-lights">
-        <button class="light light-close" id="close-btn" type="button" title="Close" aria-label="Close widget"></button>
-        <button class="light light-min" id="min-btn" type="button" title="Minimize" aria-label="Minimize widget"></button>
-        <button class="light light-zoom" id="zoom-btn" type="button" title="Zoom" aria-label="Zoom widget"></button>
-      </div>
-    </div>
+    <div class="bar-start" aria-hidden="true"></div>
     <span class="bar-title" id="bar-title">Loading…</span>
     <!-- Right cluster balances the lights so the title stays centered; also
          houses the collapse-to-moon glyph (on the right, clear of native
@@ -149,8 +139,6 @@
       </button>
     </div>
   </div>
-  <div id="seam" aria-hidden="true"></div>
-  <div id="outline" aria-hidden="true"></div>
   <!-- CONTENT AREA — pre/code populated by JS -->
   <div class="content-area" id="content-area">
     <pre><code id="code-block"></code></pre>
@@ -177,41 +165,10 @@
   // ── DOM refs ──────────────────────────────────────────────────────────────
   var barTitle = document.getElementById('bar-title');
   var codeEl = document.getElementById('code-block');
-  var closeBtn = document.getElementById('close-btn');
   var contentArea = document.getElementById('content-area');
 
-  // ── Close button ──────────────────────────────────────────────────────────
-  closeBtn.addEventListener('click', function () {
-    if (window.__TAURI__ && window.__TAURI__.core && label) {
-      window.__TAURI__.core.invoke('close_widget', { label: label }).catch(function () {});
-    } else {
-      window.close();
-    }
-  });
-
-  // ── Traffic-light minimize / zoom (best-effort; inert in non-Tauri) ────────
-  function currentWin() {
-    try {
-      return window.__TAURI__ && window.__TAURI__.window &&
-        window.__TAURI__.window.getCurrentWindow();
-    } catch (_) { return null; }
-  }
-  var minBtn = document.getElementById('min-btn');
-  var zoomBtn = document.getElementById('zoom-btn');
-  // Minimize collapses the WHOLE workspace into the moon (the orb is the
-  // minimized form of all of Luna), not just this one widget to the OS dock.
-  minBtn && minBtn.addEventListener('click', function () {
-    if (window.__TAURI__ && window.__TAURI__.core) {
-      try { window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {}); } catch (_) {}
-    }
-  });
-  zoomBtn && zoomBtn.addEventListener('click', function () {
-    var w = currentWin();
-    if (w && w.toggleMaximize) { try { w.toggleMaximize().catch(function () {}); } catch (_) {} }
-  });
-
-  // Collapse-into-moon glyph (right side of title bar) — same gesture as
-  // min-btn but always visible in studio/aqua where the faux lights are hidden.
+  // Collapse-into-moon is a Luna-specific workspace action, intentionally
+  // separate from the native yellow button's per-window minimize behavior.
   var collapseMoonBtn = document.getElementById('collapse-moon-btn');
   collapseMoonBtn && collapseMoonBtn.addEventListener('click', function () {
     if (window.__TAURI__ && window.__TAURI__.core) {
@@ -601,10 +558,7 @@
 
   init();
 
-  // ── Self-snap + dock groups: shared wiring in vendor/moon-dock.js
-  //    (snap-on-release, flat symmetric groups from Rust dock-group events,
-  //    pin-to-detach, seam flash, perimeter outline). Best-effort in non-Tauri
-  //    environments. OPERATOR-VERIFY: real snap APIs need a real build.
+  // Hand title-bar gestures directly to the native window drag.
   if (window.LunaDock) LunaDock.wire({ win: W, label: label });
 })();
 </script>

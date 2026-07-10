@@ -101,7 +101,6 @@ describe('moon-resize.js', () => {
     await micro()
 
     expect(invoke).toHaveBeenCalledWith('begin_native_resize', { direction: 'se' })
-    expect((window as any).__LUNA_NATIVE_RESIZING__).toBe(true)
     expect(document.documentElement.style.cursor).toBe('nwse-resize')
 
     // Simulate Rust's teardown emit — no pointerup is dispatched.
@@ -109,7 +108,6 @@ describe('moon-resize.js', () => {
     releaseResize!()
     await micro()
 
-    expect((window as any).__LUNA_NATIVE_RESIZING__).toBe(false)
     expect(document.documentElement.style.cursor).toBe('')
     expect(unlisten).toHaveBeenCalled()
   })

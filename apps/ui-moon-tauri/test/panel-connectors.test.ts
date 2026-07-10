@@ -82,7 +82,6 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
 
   loadVendorInto(window, 'moon-protocol.js')
   loadVendorInto(window, 'moon-ws.js')
-  loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
 
   // Preload the panel module (jsdom never fetches the loader's injected <script src>)
@@ -165,7 +164,6 @@ afterEach(() => {
   delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
-  delete (window as any).LunaDeckSnap
   delete (window as any).LunaDock
   delete (window as any).WebSocket
   vi.restoreAllMocks()

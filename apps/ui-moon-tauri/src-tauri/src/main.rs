@@ -1456,15 +1456,6 @@ fn is_dock_label(label: &str) -> bool {
     label.starts_with("widget-") || label.starts_with("panel-")
 }
 
-/// A caller-supplied window position is honoured only when BOTH coordinates are
-/// present — the window builders apply `.position()` solely on `(Some, Some)`.
-/// A partial position is therefore treated as "no position": the window snaps
-/// to the cluster instead of free-floating at the OS default. Keeps the
-/// snap-on-open gate in lockstep with the builder. Pure for tests.
-fn has_explicit_position(x: Option<f64>, y: Option<f64>) -> bool {
-    x.is_some() && y.is_some()
-}
-
 /// ~/.luna/layout.json — positions of OPEN system panels (and nothing else:
 /// pin state for content widgets stays server-side; design doc Persistence).
 fn layout_path() -> Option<std::path::PathBuf> {
@@ -1490,7 +1481,7 @@ fn write_panel_layout(app: &tauri::AppHandle) {
         let Some(kind) = panel_kind_from_label(&label) else {
             continue;
         };
-        if let Some((x, y, w, h)) = dock_logical_rect(&win) {
+        if let Some((x, y, w, h)) = window_logical_rect(&win) {
             entries.push(serde_json::json!({
                 "kind": kind, "x": x, "y": y, "w": w, "h": h
             }));
@@ -1526,15 +1517,11 @@ fn spawn_panel(
         y,
         width,
         height,
-        true,
     )
     .map(|w| w.label().to_string())
 }
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
-/// `visible: false` defers the first paint until a snap-on-open caller has
-/// positioned the window (so it never flashes from the OS-default spot to the
-/// cluster seam); that caller MUST then show() it.
 #[allow(clippy::too_many_arguments)]
 fn spawn_panel_at(
     app: &tauri::AppHandle,
@@ -1545,7 +1532,6 @@ fn spawn_panel_at(
     y: Option<f64>,
     width: Option<f64>,
     height: Option<f64>,
-    visible: bool,
 ) -> Result<tauri::WebviewWindow, String> {
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
@@ -1572,33 +1558,30 @@ fn spawn_panel_at(
     // (index.html) keeps its own default-on behavior independently.
     .always_on_top(false)
     .skip_taskbar(true)
-    .visible(visible)
-    // Zoom (green) stays DISABLED, the native treatment for auxiliary/utility
-    // windows: AppKit greys the button and ignores clicks. An enabled zoom
-    // would fullscreen the transparent borderless card (floating content on a
-    // black desktop) and persist that broken frame into layout.json.
-    .maximizable(false)
+    .visible(true)
+    // Zoom is useful for the browser-like chat, but misleading on compact
+    // utility/settings panels where it only creates empty space.
+    .maximizable(desc.kind == "chat")
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
     .min_inner_size(220.0, 120.0);
-    // macOS overlay title bar: hidden_title drops the window title text;
-    // exact traffic-light placement is synced from #title-bar via
-    // sync_traffic_light_position (wry's static inset cannot move the cluster
-    // down into the card — only horizontal nudge).
+    // Tauri/Wry owns the native controls for the full window lifetime. A static
+    // builder position keeps them aligned with the CSS header without the old
+    // focus/resize/hover AppKit bridge.
     #[cfg(target_os = "macos")]
     {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
+            .hidden_title(true)
+            // x=36 matches the reserved .bar-start content edge, keeping the
+            // close light inside the opaque header instead of the rounded cutout.
+            .traffic_light_position(tauri::LogicalPosition::new(36.0, 12.0));
     }
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
-    // Return the built window so callers reveal it via the handle they already
-    // hold — no re-fetch that could miss (and strand a hidden window).
-    let win = builder.build().map_err(|e| e.to_string())?;
-    // Antinote-style: native lights stay hidden until the title bar is hovered.
-    let _ = apply_native_controls_visible(&win, false);
-    Ok(win)
+    let window = builder.build().map_err(|e| e.to_string())?;
+    finalize_native_window_chrome(&window, desc.kind == "chat")?;
+    Ok(window)
 }
 
 /// Allowlisted hub actions a settings panel may request. Panels own their
@@ -1644,15 +1627,15 @@ fn hub_event(app: tauri::AppHandle, name: String) -> Result<(), String> {
 }
 
 /// Open a SYSTEM widget by registry kind: singleton focus, panel-* label
-/// namespace, optional opener-edge placement + dock-group join (a panel
-/// opened from another widget/panel spawns docked to it — stacks). Unknown
-/// kinds are rejected; the registry is the trust boundary.
+/// namespace. A caller may provide an explicit position; otherwise macOS owns
+/// initial placement. Unknown kinds are rejected; the registry is the trust
+/// boundary.
 #[tauri::command]
 async fn open_widget(
     app: tauri::AppHandle,
     kind: String,
     params: Option<serde_json::Value>,
-    opener: Option<String>,
+    _opener: Option<String>,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<String, String> {
@@ -1680,53 +1663,8 @@ async fn open_widget(
         let _ = win.set_focus();
         return Ok(label);
     }
-    // An explicit opener must be a dock-namespace window that actually exists;
-    // the hub ("main") deliberately does NOT qualify (the moon is never a group
-    // member). A gear-opened panel passes no opener and instead snaps to the
-    // nearest existing cluster below — so it still never docks TO the moon.
-    let opener = opener.filter(|o| is_dock_label(o) && app.get_webview_window(o).is_some());
-
-    // Snap-on-open: an explicit opener wins (the "stacks" mechanic — a panel
-    // launched from another panel docks to it); otherwise, unless the caller
-    // pinned an explicit position, the panel accretes onto the chat anchor's /
-    // nearest open cluster — "panels open stuck together", default-on. The
-    // moon/hub is never a dock member, so the first panel (opened from the gear
-    // with no neighbours) still free-floats. When it WILL snap, build HIDDEN;
-    // the panel's moon-dock.js then computes the flush dock position in JS and
-    // calls `dock_self` to position + reveal it, so it never flashes at the
-    // OS-default spot. The opener (if any) rides the URL so JS knows its anchor.
-    // "Positioned" = BOTH coords (exactly what the builder honours); a partial
-    // position counts as none, so the window snaps rather than free-floating.
-    let will_snap = opener.is_some() || !has_explicit_position(x, y);
-    let url = match &opener {
-        Some(o) => {
-            let sep = if url.contains('?') { '&' } else { '?' };
-            format!("{url}{sep}__dockOpener={o}")
-        }
-        None => url,
-    };
-    let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None, !will_snap)?;
+    let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
     let win_label = win.label().to_string();
-
-    if will_snap {
-        // SAFETY NET: JS (dock_self) reveals the hidden window almost immediately;
-        // if it never does (page load failure), reveal it anyway so a snap-on-open
-        // panel can't strand itself hidden.
-        let app2 = app.clone();
-        let label2 = win_label.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            let app3 = app2.clone();
-            let label3 = label2.clone();
-            let _ = app2.run_on_main_thread(move || {
-                if let Some(w) = app3.get_webview_window(&label3) {
-                    if !w.is_visible().unwrap_or(true) {
-                        let _ = w.show();
-                    }
-                }
-            });
-        });
-    }
     // A new panel is layout-relevant immediately (a crash before the first
     // Moved event must not lose it).
     write_panel_layout(&app);
@@ -1773,51 +1711,24 @@ async fn open_artifact_widget(
             // when luna_always_on_top === "true".
             .always_on_top(false)
             .skip_taskbar(true)
-            // Zoom disabled — same auxiliary-window treatment as spawn_panel_at.
-            .maximizable(false)
+            .maximizable(true)
             .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
             .min_inner_size(220.0, 160.0);
-    // macOS overlay title bar — position synced from the page (spawn_panel_at).
+    // Match system panels: Tauri/Wry owns the native controls for the window
+    // lifetime, including focus, hover, resize and hit testing.
     #[cfg(target_os = "macos")]
     {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(36.0, 12.0));
     }
-    // When it will snap (no explicit position), build hidden and reveal flush
-    // after positioning so the window never flashes at the OS-default spot. A
-    // partial position counts as none (the builder honours only both coords).
-    let will_snap = !has_explicit_position(x, y);
-    builder = builder.visible(!will_snap);
+    builder = builder.visible(true);
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
-    // Keep the built window handle so reveal can never miss it (a re-fetch
-    // could return None and strand a hidden window).
-    let win = builder.build().map_err(|e| e.to_string())?;
-    let _ = apply_native_controls_visible(&win, false);
-    // Snap-on-open: with no explicit position, the artifact / MCP-app window
-    // accretes onto the chat / nearest open dock cluster, exactly like a system
-    // panel. widget.html loads moon-dock.js, so the page computes its flush dock
-    // position in JS and calls `dock_self` to position + reveal itself. An
-    // explicit (x, y) — e.g. a restored pop-out — was honoured at build time.
-    if will_snap {
-        // SAFETY NET: reveal the hidden window if JS never calls dock_self.
-        let app2 = app.clone();
-        let label2 = label.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            let app3 = app2.clone();
-            let label3 = label2.clone();
-            let _ = app2.run_on_main_thread(move || {
-                if let Some(w2) = app3.get_webview_window(&label3) {
-                    if !w2.is_visible().unwrap_or(true) {
-                        let _ = w2.show();
-                    }
-                }
-            });
-        });
-    }
+    let window = builder.build().map_err(|e| e.to_string())?;
+    finalize_native_window_chrome(&window, true)?;
     Ok(label)
 }
 
@@ -1844,18 +1755,6 @@ async fn close_widget(app: tauri::AppHandle, label: String) -> Result<(), String
 /// widget-* AND panel-* close; the hub never does.
 fn is_closable_widget_label(label: &str) -> bool {
     is_dock_label(label)
-}
-
-/// Labels of every currently-open widget-family window (widget-* content
-/// windows AND panel-* system windows) — snap candidates for the dock wiring
-/// and the cascade counter for pop-outs.
-#[tauri::command]
-fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
-    app.webview_windows()
-        .keys()
-        .filter(|l| is_dock_label(l))
-        .cloned()
-        .collect()
 }
 
 // ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
@@ -1967,27 +1866,70 @@ fn with_appkit_main_thread<R>(
     f(&window)
 }
 
-/// Show or hide the macOS native traffic-light buttons (close / miniaturize /
-/// zoom) on a card window. Used at spawn (hidden until title-bar hover) and by
-/// the `set_native_controls_visible` command from the frontend skin/hover layer.
+/// Finish the native macOS title bar once, immediately after construction.
+///
+/// `TitleBarStyle::Overlay` keeps the standard AppKit buttons in the title-bar
+/// hierarchy, but on transparent accessory windows they can be left hidden by
+/// the initial layout pass. Explicitly revealing those existing NSButtons is a
+/// one-time native-window setup — there is no webview IPC, hover choreography,
+/// resize observer, or replacement control model. Utility panels keep the
+/// standard disabled zoom treatment; chat and artifact windows allow zoom.
 #[cfg(target_os = "macos")]
-fn apply_native_controls_visible(
+fn configure_native_window_chrome(
     window: &tauri::WebviewWindow,
-    visible: bool,
+    zoom_enabled: bool,
 ) -> Result<(), String> {
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{NSWindow, NSWindowButton};
+        use objc2_app_kit::{NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton};
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
         unsafe {
             let ns_win: &NSWindow = &*ns_win_ptr.cast();
-            for btn_kind in [
-                NSWindowButton::CloseButton,
-                NSWindowButton::MiniaturizeButton,
-                NSWindowButton::ZoomButton,
-            ] {
-                if let Some(btn) = ns_win.standardWindowButton(btn_kind) {
-                    btn.setHidden(!visible);
+            ns_win.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
+
+            let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
+                return Ok(());
+            };
+            let Some(minimize) = ns_win.standardWindowButton(NSWindowButton::MiniaturizeButton)
+            else {
+                return Ok(());
+            };
+            let zoom = ns_win.standardWindowButton(NSWindowButton::ZoomButton);
+
+            // Revealing a standard button makes AppKit restore the cluster's
+            // default frame, so reapply the builder inset after the reveal.
+            // This is the same native hierarchy Tauri/Wry configures, finalized
+            // once after the transparent overlay window is actually alive.
+            let Some(group) = close.superview() else {
+                return Ok(());
+            };
+            let Some(container) = group.superview() else {
+                return Ok(());
+            };
+            group.setHidden(false);
+            group.setAlphaValue(1.0);
+            container.setHidden(false);
+            container.setAlphaValue(1.0);
+            let close_rect = NSView::frame(&close);
+            let spacing = NSView::frame(&minimize).origin.x - close_rect.origin.x;
+            let title_bar_height = close_rect.size.height + 12.0;
+            let mut container_rect = NSView::frame(&container);
+            container_rect.size.height = title_bar_height;
+            container_rect.origin.y = ns_win.frame().size.height - title_bar_height;
+            container.setFrame(container_rect);
+
+            let mut buttons = vec![close, minimize];
+            if let Some(zoom) = zoom {
+                buttons.push(zoom);
+            }
+            for (index, button) in buttons.into_iter().enumerate() {
+                button.setHidden(false);
+                button.setAlphaValue(1.0);
+                let mut rect = NSView::frame(&button);
+                rect.origin.x = 36.0 + (index as f64) * spacing;
+                button.setFrameOrigin(rect.origin);
+                if index == 2 {
+                    button.setEnabled(zoom_enabled);
                 }
             }
         }
@@ -1995,110 +1937,36 @@ fn apply_native_controls_visible(
     })
 }
 
+/// AppKit performs one deferred title-bar layout after a transparent overlay
+/// window is shown. Apply the native chrome immediately, then once more after
+/// that construction-only pass so AppKit cannot restore the hidden/default
+/// button frames. This is bounded setup work, not a runtime sync loop.
+#[cfg(target_os = "macos")]
+fn finalize_native_window_chrome(
+    window: &tauri::WebviewWindow,
+    zoom_enabled: bool,
+) -> Result<(), String> {
+    configure_native_window_chrome(window, zoom_enabled)?;
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let _ = configure_native_window_chrome(&window, zoom_enabled);
+    });
+    Ok(())
+}
+
 #[cfg(not(target_os = "macos"))]
-fn apply_native_controls_visible(
+fn configure_native_window_chrome(
     _window: &tauri::WebviewWindow,
-    _visible: bool,
+    _zoom_enabled: bool,
 ) -> Result<(), String> {
     Ok(())
 }
 
-/// Align the native traffic-light cluster with the CSS `#title-bar`.
-///
-/// `x` / `y_top` are logical px from the webview top-left (same space as
-/// `getBoundingClientRect`): `x` is the close-button left edge, `y_top` is the
-/// close-button top edge. The webview is full-bleed (TitleBarStyle::Overlay), so
-/// these are equivalently the inset from the window's own top-left.
-///
-/// We mirror wry's own `inset_traffic_lights`: GROW the NSTitlebarContainerView
-/// (the standard buttons' grandparent) so its bounds enclose the lowered buttons
-/// BEFORE offsetting them. This is load-bearing for CLICKABILITY, not just looks.
-/// AppKit clips a view's `hitTest:` to its superview's bounds, so buttons shoved
-/// below the default (~28pt) container's bounds still PAINT but stop receiving
-/// mouse events — the pointer falls through to the full-bleed WKWebView beneath,
-/// so no native hover glyph is drawn and clicks do nothing. That was the "lights
-/// visible but dead" bug: the previous code moved the bare buttons via
-/// `setFrameOrigin` but never resized their container. The resize MUST re-run on
-/// every sync (AppKit re-pins + shrinks the container on reveal/resize/zoom/
-/// focus), which the JS hover/resize/weld syncs already guarantee.
-#[cfg(target_os = "macos")]
-fn apply_traffic_light_layout(
-    window: &tauri::WebviewWindow,
-    x: f64,
-    y_top: f64,
-) -> Result<(), String> {
-    if !x.is_finite() || !y_top.is_finite() {
-        return Ok(());
-    }
-    with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton};
-
-        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
-
-        unsafe {
-            let ns_win: &NSWindow = &*ns_win_ptr.cast();
-
-            // Kill AppKit's titlebar separator (default `.automatic`). With
-            // TitleBarStyle::Overlay it draws a focus-reactive hairline at the
-            // BOTTOM of the NSTitlebarContainerView we grow below — and that
-            // container is sized to the traffic-light CENTER (close_h + y_top ≈
-            // 24px), which lands ~8px ABOVE the CSS header's bottom (4px inset +
-            // 28px `.title-bar` min-height = 32px). So the native line floats
-            // *inside* the header, offset from where the eye expects the seam.
-            // The CSS `.title-bar` border-bottom is the only header seam we
-            // want; `.None` removes the native line AND that 8px offset in one
-            // move. Idempotent + re-applied on every focus/hover/resize sync.
-            ns_win.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
-
-            let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
-                return Ok(());
-            };
-            let Some(mini) = ns_win.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
-                return Ok(());
-            };
-            let zoom = ns_win.standardWindowButton(NSWindowButton::ZoomButton);
-
-            // The standard buttons live inside the (short) NSTitlebarContainerView,
-            // reached two levels up from the close button — exactly as wry does.
-            let Some(group) = close.superview() else {
-                return Ok(());
-            };
-            let Some(container) = group.superview() else {
-                return Ok(());
-            };
-
-            let close_rect = NSView::frame(&close);
-            let space = NSView::frame(&mini).origin.x - close_rect.origin.x;
-
-            // Grow the container so its bounds enclose the lowered buttons (else
-            // they paint but stop hit-testing — see the doc comment). Pin its top
-            // to the window top: height = close height + y_top, origin.y flipped
-            // into AppKit's bottom-left space.
-            let title_bar_h = close_rect.size.height + y_top;
-            let mut container_rect = NSView::frame(&container);
-            container_rect.size.height = title_bar_h;
-            container_rect.origin.y = ns_win.frame().size.height - title_bar_h;
-            container.setFrame(container_rect);
-
-            let mut buttons = vec![close, mini];
-            if let Some(zoom) = zoom {
-                buttons.push(zoom);
-            }
-            for (i, button) in buttons.into_iter().enumerate() {
-                let mut rect = NSView::frame(&button);
-                rect.origin.x = x + (i as f64) * space;
-                button.setFrameOrigin(rect.origin);
-            }
-        }
-        Ok(())
-    })
-}
-
 #[cfg(not(target_os = "macos"))]
-fn apply_traffic_light_layout(
+fn finalize_native_window_chrome(
     _window: &tauri::WebviewWindow,
-    _x: f64,
-    _y_top: f64,
+    _zoom_enabled: bool,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -2275,14 +2143,13 @@ fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Resul
         }));
 
         // Tear down: remove BOTH monitors (once — guarded by `ended`), then run
-        // the settle (re-square welds + persist layout). Runs on the main
-        // thread (we're always called from a monitor handler, which AppKit
+        // the settle and persist layout. Runs on the main thread (we're always
+        // called from a monitor handler, which AppKit
         // delivers on the main thread).
         let end = {
             let state = state.clone();
             let win = win.clone();
             let app = win.app_handle().clone();
-            let label = win.label().to_string();
             move || {
                 let (local, global) = {
                     let mut s = state.borrow_mut();
@@ -2306,7 +2173,6 @@ fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Resul
                 // override and __LUNA_NATIVE_RESIZING__ — the webview never sees a
                 // pointerup when the button is released outside the window.
                 let _ = win.emit("luna-resize-ended", ());
-                broadcast_dock_geometry_settled(&app, &label);
                 write_panel_layout(&app);
             }
         };
@@ -2369,388 +2235,6 @@ fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Resul
 fn begin_native_resize(_window: tauri::WebviewWindow, _direction: String) -> Result<(), String> {
     // No native path off macOS — the JS grip falls back to the emulated loop.
     Ok(())
-}
-
-// ── Native drag-release watcher (macOS) ──────────────────────────────────────
-//
-// A native single-window drag hands the whole gesture to the OS window server
-// via `startDragging()`, which swallows the WKWebView's pointermove/up events.
-// The JS side used to detect "released" with a 140ms motion-stopped timer on the
-// window's own Moved events — but that fires PREMATURELY when the user pauses
-// mid-drag (button still held) near a snap target, so the snap-on-release ran
-// while the button was still down and the OS drag then overrode it.
-//
-// This installs the SAME dual NSEvent-monitor pattern as `begin_native_resize`
-// to get a RELIABLE real mouse-button-release signal: a LOCAL monitor
-// (LeftMouseUp, release over our own app) AND a GLOBAL monitor (LeftMouseUp,
-// release over another app), on the MAIN thread. The first LeftMouseUp (or a
-// left button already up) tears down BOTH monitors once and emits
-// `luna-drag-released` to the dragging window, which drives the JS `finish()`
-// (and thus snap-on-release) exactly once, on the true release.
-
-/// Holds the two live monitor tokens for one drag-release watch. Lives in an
-/// `Rc<RefCell<…>>` created and used ENTIRELY on the main thread (mirrors
-/// `ResizeMonitors`): the monitors and handler blocks only ever run there, so
-/// `Rc`/`RefCell` is correct (no `Send`). `ended` guards teardown so the local
-/// + global monitors firing don't double-remove.
-#[cfg(target_os = "macos")]
-struct DragReleaseMonitors {
-    local: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
-    global: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
-    ended: bool,
-}
-
-/// Watch for the real left-mouse-button release during a native window drag and
-/// emit `luna-drag-released` to the dragging window when it fires. The JS side
-/// (moon-dock.js startNativeDrag) calls this right after `startDragging()`.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn watch_drag_release(window: tauri::WebviewWindow) -> Result<(), String> {
-    // Everything below is set up and lives ENTIRELY on the main thread: the
-    // Rc/RefCell state, the handler blocks, and the monitor tokens. The closure
-    // captures only Send data (the `WebviewWindow`); the non-Send pieces are
-    // created inside and never cross threads, so it stays `Send + 'static`.
-    with_appkit_main_thread(window.clone(), move |win| {
-        use objc2::rc::Retained;
-        use objc2::runtime::AnyObject;
-        use objc2_app_kit::{NSEvent, NSEventMask};
-        use std::cell::RefCell;
-        use std::ptr::NonNull;
-        use std::rc::Rc;
-        use tauri::Emitter;
-
-        // Edge case: the button was already released before we set up (a very
-        // short drag where the up beat our IPC). Emit immediately, install
-        // nothing — there is no release left to watch for.
-        if NSEvent::pressedMouseButtons() & 1 == 0 {
-            let _ = win.emit("luna-drag-released", ());
-            return Ok(());
-        }
-
-        // Shared monitor state. Cloned into each handler block BEFORE the
-        // monitors exist; the tokens are stored back once `add*Monitor` returns
-        // (chicken-and-egg: the block must be able to remove the monitors, but
-        // they don't exist until after the block is built).
-        let state = Rc::new(RefCell::new(DragReleaseMonitors {
-            local: None,
-            global: None,
-            ended: false,
-        }));
-
-        // Tear down: remove BOTH monitors (once — guarded by `ended`), then emit
-        // the release event to the dragging window. Runs on the main thread (a
-        // monitor handler, which AppKit delivers on the main thread).
-        let end = {
-            let state = state.clone();
-            let win = win.clone();
-            move || {
-                let (local, global) = {
-                    let mut s = state.borrow_mut();
-                    if s.ended {
-                        return;
-                    }
-                    s.ended = true;
-                    (s.local.take(), s.global.take())
-                };
-                unsafe {
-                    if let Some(tok) = local.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                    if let Some(tok) = global.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                }
-                let _ = win.emit("luna-drag-released", ());
-            }
-        };
-
-        // Local monitor: a LeftMouseUp delivered to our app → end. Returns the
-        // event unchanged (does NOT consume it).
-        let local_block = {
-            let end = end.clone();
-            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-                end();
-                event.as_ptr()
-            })
-        };
-
-        // Global monitor: a LeftMouseUp delivered to ANOTHER app (the local
-        // monitor never sees those). Just end — keeps the monitors from getting
-        // stuck if the release lands over a different window.
-        let global_block = {
-            let end = end.clone();
-            block2::RcBlock::new(move |_event: NonNull<NSEvent>| {
-                end();
-            })
-        };
-
-        unsafe {
-            let local: Option<Retained<AnyObject>> =
-                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseUp,
-                    &local_block,
-                );
-            let global: Option<Retained<AnyObject>> =
-                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseUp,
-                    &global_block,
-                );
-            let mut s = state.borrow_mut();
-            s.local = local;
-            s.global = global;
-        }
-
-        Ok(())
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn watch_drag_release(_window: tauri::WebviewWindow) -> Result<(), String> {
-    // No native drag-release watch off macOS — the emulated drag path doesn't
-    // use this (it tracks pointermove/up directly).
-    Ok(())
-}
-
-// ── Native cluster drag: AppKit child windows (macOS) ────────────────────────
-//
-// A native `startDragging()` hands the gesture to the OS window server, which
-// moves ONLY the grabbed window — so since the native-drag rewrite a welded
-// cluster stopped moving as one (the towing code lived solely in the now-dead
-// emulated path). The native mechanism for "windows that move together" is
-// `NSWindow addChildWindow:ordered:`: the window server moves child windows in
-// the SAME transaction as their parent — 1:1 with the cursor, zero per-frame
-// IPC, mixed-DPI handled by the OS. Division of labor: JS (the weld graph in
-// moon-dock.js) decides WHO tows; AppKit is only the muscle. The attachment is
-// TRANSIENT — attached right before start_dragging, detached after the
-// snap-on-release settle — so none of the long-lived child-window quirks
-// (miniaturize misbehavior, Spaces coupling) ever apply.
-
-/// Attach `members` as native child windows of the calling card, then start
-/// the OS drag. Only dock-namespace labels are honored (never the hub, never
-/// self), so a compromised page cannot kidnap arbitrary windows.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn begin_cluster_drag(window: tauri::WebviewWindow, members: Vec<String>) -> Result<(), String> {
-    let app = window.app_handle().clone();
-    let self_label = window.label().to_string();
-    with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
-        let parent_ptr = win.ns_window().map_err(|e| e.to_string())?;
-        unsafe {
-            let parent: &NSWindow = &*parent_ptr.cast();
-            for label in &members {
-                if !is_dock_label(label) || *label == self_label {
-                    continue;
-                }
-                let Some(child) = app.get_webview_window(label) else {
-                    continue;
-                };
-                let Ok(child_ptr) = child.ns_window() else {
-                    continue;
-                };
-                let child_ns: &NSWindow = &*child_ptr.cast();
-                parent.addChildWindow_ordered(child_ns, NSWindowOrderingMode::Above);
-            }
-        }
-        Ok(())
-    })?;
-    // Start the native drag AFTER the children are attached. Same
-    // main-thread-dispatch path the old JS `W.startDragging()` used, so the
-    // gesture pickup latency is unchanged.
-    window.start_dragging().map_err(|e| e.to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn begin_cluster_drag(window: tauri::WebviewWindow, _members: Vec<String>) -> Result<(), String> {
-    // No child-window towing off macOS — degrade to the plain native drag.
-    window.start_dragging().map_err(|e| e.to_string())
-}
-
-/// Detach the members attached by `begin_cluster_drag`. Called from JS
-/// `finish()` AFTER snap-on-release has placed the lead — children ride that
-/// final `setPosition`, so the cluster stays rigid through the settle. Only
-/// children actually parented to the calling window are detached (a member
-/// closed mid-drag was already auto-detached by AppKit and is skipped).
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn end_cluster_drag(window: tauri::WebviewWindow, members: Vec<String>) -> Result<(), String> {
-    let app = window.app_handle().clone();
-    let self_label = window.label().to_string();
-    with_appkit_main_thread(window, move |win| {
-        use objc2_app_kit::NSWindow;
-        let parent_ptr = win.ns_window().map_err(|e| e.to_string())?;
-        unsafe {
-            let parent: &NSWindow = &*parent_ptr.cast();
-            for label in &members {
-                // Same trust boundary as begin_cluster_drag: only
-                // dock-namespace siblings, never the hub, never self.
-                if !is_dock_label(label) || *label == self_label {
-                    continue;
-                }
-                let Some(child) = app.get_webview_window(label) else {
-                    continue;
-                };
-                let Ok(child_ptr) = child.ns_window() else {
-                    continue;
-                };
-                let child_ns: &NSWindow = &*child_ptr.cast();
-                let attached = child_ns
-                    .parentWindow()
-                    .is_some_and(|p| std::ptr::eq::<NSWindow>(&*p, parent));
-                if attached {
-                    parent.removeChildWindow(child_ns);
-                }
-            }
-        }
-        Ok(())
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn end_cluster_drag(_window: tauri::WebviewWindow, _members: Vec<String>) -> Result<(), String> {
-    Ok(())
-}
-
-/// Per-display WORK AREA (screen minus menu bar and Dock) in LOGICAL top-left
-/// coordinates, straight from `NSScreen.visibleFrame` — AppKit's ground truth.
-/// Replaces the JS MENU_BAR_INSET=37 heuristic, which over-inset non-notched
-/// displays (a ~12px dead band where top-of-screen snaps were discarded — the
-/// "magnet line off") and never inset vertically-offset secondary displays at
-/// all. Cocoa frames are bottom-left-origin in the primary screen's space; we
-/// flip into the top-left-origin logical space Tauri/JS use.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn monitor_work_areas(window: tauri::WebviewWindow) -> Result<Vec<serde_json::Value>, String> {
-    with_appkit_main_thread(window, move |_win| {
-        use objc2::MainThreadMarker;
-        use objc2_app_kit::NSScreen;
-        let Some(mtm) = MainThreadMarker::new() else {
-            return Ok(Vec::new());
-        };
-        let screens = NSScreen::screens(mtm);
-        // The primary screen (index 0) anchors the global flip: its Cocoa frame
-        // origin is (0,0) and its height converts bottom-left y to top-left y.
-        let Some(primary) = screens.iter().next() else {
-            return Ok(Vec::new());
-        };
-        let primary_h = primary.frame().size.height;
-        let flip = |origin_y: f64, h: f64| primary_h - (origin_y + h);
-        let mut out = Vec::new();
-        for s in screens.iter() {
-            let f = s.frame();
-            let v = s.visibleFrame();
-            out.push(serde_json::json!({
-                "frame": {
-                    "x": f.origin.x, "y": flip(f.origin.y, f.size.height),
-                    "w": f.size.width, "h": f.size.height,
-                },
-                "work": {
-                    "x": v.origin.x, "y": flip(v.origin.y, v.size.height),
-                    "w": v.size.width, "h": v.size.height,
-                },
-            }));
-        }
-        Ok(out)
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn monitor_work_areas(_window: tauri::WebviewWindow) -> Result<Vec<serde_json::Value>, String> {
-    // No AppKit work areas off macOS — JS falls back to its full-monitor rects.
-    Ok(Vec::new())
-}
-
-/// Sync native traffic-light layout to the CSS title bar (see
-/// `apply_traffic_light_layout`). Called from moon-native-titlebar.js on hover,
-/// resize, and after dock weld geometry changes.
-#[tauri::command]
-fn sync_traffic_light_position(window: tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
-    apply_traffic_light_layout(&window, x, y)
-}
-
-/// Show or hide the macOS native traffic-light buttons (close / miniaturize /
-/// zoom) on the CALLING card window. Invoked by moon-native-titlebar.js for
-/// Antinote-style hover reveal (studio/aqua) and by moon-appearance.js when
-/// switching skins. Each card window calls this on itself.
-///
-/// Non-macOS: compiles to a no-op that returns `Ok(())` immediately.
-#[tauri::command]
-fn set_native_controls_visible(window: tauri::WebviewWindow, visible: bool) -> Result<(), String> {
-    apply_native_controls_visible(&window, visible)
-}
-
-/// Snap-on-open placement, owned by the frontend. A freshly-opened panel is
-/// built HIDDEN; its moon-dock.js computes the flush dock position (in card-face
-/// space, via LunaDeckSnap.dockOnOpenPosition) and calls this to position +
-/// reveal itself — so it never flashes at the OS-default spot. `x`/`y` are the
-/// logical-px frame top-left (both present = position; absent = reveal in place,
-/// e.g. the first panel with no cluster). `anchor`/`edge` (when present) flash
-/// the anchor's side of the new seam. Replaces the old Rust dock graph
-/// (group_bbox_of / dock_components / dock_rects_touch / dock_new_panel).
-#[tauri::command]
-fn dock_self(
-    window: tauri::WebviewWindow,
-    x: Option<f64>,
-    y: Option<f64>,
-    anchor: Option<String>,
-    edge: Option<String>,
-) -> Result<(), String> {
-    if let (Some(px), Some(py)) = (x, y) {
-        let _ = window.set_position(tauri::LogicalPosition::new(px, py));
-    }
-    let _ = window.show();
-    let app = window.app_handle();
-    if let (Some(a), Some(e)) = (anchor, edge) {
-        let _ = app.emit_to(
-            tauri::EventTarget::labeled(&a),
-            "dock-link",
-            serde_json::json!({ "for": a, "from": window.label(), "edge": e }),
-        );
-    }
-    broadcast_dock_geometry_settled(app, window.label());
-    Ok(())
-}
-
-/// One window's target in a live-drag batch. `x`/`y` are f64 so the logical
-/// path keeps sub-pixel precision; the physical path rounds to whole device px.
-#[derive(serde::Deserialize)]
-struct DockMove {
-    label: String,
-    x: f64,
-    y: f64,
-}
-
-/// Move a whole welded cluster in ONE call. The live drag (moon-dock.js) used to
-/// fire a separate `set_position` IPC PER member PER pointer-move — N round trips
-/// a frame, which is what made a dragged card trail the cursor. The frontend now
-/// coalesces to one rAF per frame and hands the whole batch here, so a cluster
-/// moves in a single hop. `physical` selects the coordinate space: true =
-/// PhysicalPosition (mixed-DPI safe — the frontend already resolved each target
-/// to its destination monitor's pixels), false = LogicalPosition (single
-/// display). Only dock labels (widget-* / panel-*) are honored — never the hub —
-/// so a compromised page can't shove arbitrary windows around. Best-effort: a
-/// vanished window or a failed move is silently skipped, exactly like the old
-/// per-window path.
-#[tauri::command]
-fn dock_move_cluster(app: tauri::AppHandle, moves: Vec<DockMove>, physical: bool) {
-    for m in moves {
-        if !is_dock_label(&m.label) {
-            continue;
-        }
-        if let Some(w) = app.get_webview_window(&m.label) {
-            if physical {
-                let _ = w.set_position(tauri::PhysicalPosition::new(m.x as i32, m.y as i32));
-            } else {
-                let _ = w.set_position(tauri::LogicalPosition::new(m.x, m.y));
-            }
-        }
-    }
 }
 
 // ── Phase-2 C3: client route config + session state ──────────────────────────
@@ -2929,41 +2413,19 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
-// ── widget dock geometry (open-time clustering) ─────────────────────────────
-//
-// Welding is emergent JS now (moon-dock.js + deck-snap.js): each window squares
-// its own seams from live geometry on every move/resize, and there is no Rust
-// membership graph. Rust keeps only the pure-geometry helpers below, used at
-// OPEN time to place a freshly-spawned panel flush against the cluster nearest
-// its spawn point — the connected component (flush-touching rects) is unioned
-// into a bounding box the new panel appends against.
-
-/// A window's outer rect in LOGICAL px (its own monitor's scale) — all dock
-/// geometry runs in logical units so mixed-DPI setups compare coherently.
-fn dock_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+/// A window's outer rect in logical points for layout persistence.
+fn window_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
     let p = w.outer_position().ok()?;
     let s = w.outer_size().ok()?;
     let sf = w.scale_factor().unwrap_or(1.0);
-    // .round(), NOT truncation: on a 2x display a pixel-exact seam frequently
-    // sits at n.5 logical (odd physical px). `as i32` floored that half point
-    // away, so the layout persist/restore cycle reopened flush seams as
-    // 1-logical-px hairline gaps after every relaunch.
+    // Round instead of truncating so saved positions remain stable on Retina
+    // displays where a physical pixel can land at n.5 logical points.
     Some((
         (f64::from(p.x) / sf).round() as i32,
         (f64::from(p.y) / sf).round() as i32,
         (f64::from(s.width) / sf).round() as i32,
         (f64::from(s.height) / sf).round() as i32,
     ))
-}
-
-/// Broadcast a settled geometry tick so every dock window recomputes weld +
-/// per-side inset collapse. Emitted after snap-on-open positioning so panels
-/// that booted hidden at the OS-default spot repaint flush at the seam.
-fn broadcast_dock_geometry_settled(app: &tauri::AppHandle, from: &str) {
-    let _ = app.emit(
-        "dock-geometry-changed",
-        serde_json::json!({ "from": from, "settled": true }),
-    );
 }
 
 /// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
@@ -3063,14 +2525,6 @@ fn main() {
                     // already gone) so quitting never wipes the layout.
                     write_panel_layout(app);
                 }
-                // A destroyed dock window leaves a hole in the weld graph: tell
-                // the survivors to recompute NOW, or they keep squared corners
-                // and a seam halo pointing at nothing (the "ghost weld").
-                // Guarded on the hub like the layout write — during hub-owned
-                // shutdown everything is dying anyway.
-                if is_dock_label(window.label()) && app.get_webview_window("main").is_some() {
-                    broadcast_dock_geometry_settled(app, window.label());
-                }
                 // Don't strand the user with nothing on screen: while the
                 // workspace is EXPANDED the moon is hidden, so closing (×) the
                 // LAST widget would leave an empty desktop. When a widget is
@@ -3146,18 +2600,9 @@ fn main() {
         open_widget,
         hub_event,
         close_widget,
-        list_widget_windows,
         collapse_to_moon,
         expand_from_moon,
-        set_native_controls_visible,
-        sync_traffic_light_position,
         begin_native_resize,
-        watch_drag_release,
-        begin_cluster_drag,
-        end_cluster_drag,
-        monitor_work_areas,
-        dock_self,
-        dock_move_cluster,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -3204,18 +2649,9 @@ fn main() {
         open_widget,
         hub_event,
         close_widget,
-        list_widget_windows,
         collapse_to_moon,
         expand_from_moon,
-        set_native_controls_visible,
-        sync_traffic_light_position,
-        begin_native_resize,
-        watch_drag_release,
-        begin_cluster_drag,
-        end_cluster_drag,
-        monitor_work_areas,
-        dock_self,
-        dock_move_cluster
+        begin_native_resize
     ]);
 
     builder
@@ -3267,11 +2703,8 @@ fn main() {
                 if let Some(path) = layout_path() {
                     if let Ok(raw) = std::fs::read_to_string(&path) {
                         if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
-                            // Restore each panel at its saved (clamped) rect. The
-                            // welding is emergent now: each restored panel's
-                            // moon-dock.js re-welds against its neighbours on its
-                            // first boot geometry event, so there is no Rust-side
-                            // re-link to perform here.
+                            // Restore each panel independently at its saved,
+                            // clamped rect. No dock graph is reconstructed.
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
                                 let Some(kind) = p["kind"].as_str() else {
                                     continue;
@@ -3519,16 +2952,6 @@ mod panel_registry_tests {
         assert!(!is_dock_label("settings"));
         assert!(is_closable_widget_label("panel-settings-updates"));
         assert!(!is_closable_widget_label("main"));
-    }
-
-    #[test]
-    fn explicit_position_requires_both_coordinates() {
-        assert!(has_explicit_position(Some(10.0), Some(20.0)));
-        // A partial position is NOT honoured by the builder → counts as none,
-        // so the window snaps instead of free-floating at the OS default.
-        assert!(!has_explicit_position(Some(10.0), None));
-        assert!(!has_explicit_position(None, Some(20.0)));
-        assert!(!has_explicit_position(None, None));
     }
 
     // ── staged-update DTO projection (no network) ────────────────────────────

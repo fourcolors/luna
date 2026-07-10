@@ -14,7 +14,7 @@
  *    hosts the inputs).
  *
  * Plain-script IIFE (no build step) — attaches `LunaWS` to globalThis, same
- * convention as deck-snap.js / widget-sandbox.js.
+ * convention as the other dependency-free vendor modules.
  */
 (function (g) {
   'use strict';

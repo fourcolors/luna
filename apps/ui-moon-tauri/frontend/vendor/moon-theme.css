@@ -1,9 +1,8 @@
 /**
  * moon-theme.css — shared WATERCOLOR chrome for the widget-page family
  * (widget.html / panel.html / chat.html). Holds the window chrome every
- * widget window shares: title bar, grip, wash dot, close/pin buttons, dock
- * seam flash, group perimeter outline, scrollbar base, the shared settings
- * form controls, paper grain, and the highlight.js palettes.
+ * widget window shares: title bar, wash dot, scrollbar base, the shared
+ * settings form controls, paper grain, and the highlight.js palettes.
  *
  * Palette TOKENS live in vendor/moon-palette.css (link it FIRST) — that file
  * is selector-free so the hub (index.html) shares it too. This file is NOT
@@ -27,8 +26,7 @@
    --card-inset is the single source of truth for the transparent margin: it
    must be ≥ the shadow's visible reach, or body's overflow:hidden + the OS
    window bounds shear the halo off SQUARE at the corners (the "clipped
-   corner" bug). The card shell, grain, seam-flash, and group outline all
-   derive their geometry from it.
+   corner" bug). The card shell and grain both derive their geometry from it.
 
    Pages previously set `background: var(--bg); border: 1px solid
    var(--border); border-radius: var(--radius)` on html/body — those lines
@@ -38,7 +36,7 @@
   --card-inset: 22px;
   /* The TOP inset is trimmed so the card header rises to meet the native
      traffic lights, which AppKit pins to the window's top-left corner. The
-     full --card-inset still applies left/right/bottom for the halo + weld seam;
+     full --card-inset still applies left/right/bottom for the halo;
      only the top buffer (the dead gap above the card under the lights) shrinks. */
   --card-inset-top: 4px;
   --card-radius: 16px;
@@ -53,29 +51,15 @@ html, body {
    .widget-shell (the outer flex column in all three widget pages) becomes
    the CARD: inset --card-inset per side from the OS window frame, giving the
    box-shadow halo room to cast freely without clipping. Visible content shrinks
-   by 2×inset in each dimension vs the registered window size; flush-docked
-   windows show a 2×inset paper gap at the seam on FREE (non-welded) sides.
-   On WELDED sides applyWeldVisuals (moon-dock.js) squares the welded corners and
-   suppresses the halo (silhouette shadow) on those sides; the card's margin/size
-   are NOT collapsed. Cards meet flush via face-aligned positioning (frame
-   overlap), not a per-side margin collapse — so no bleed clipping at the seam. */
+   by 2×inset in each dimension vs the registered window size. */
 .widget-shell {
   position: relative;
   margin: var(--card-inset-top) var(--card-inset) var(--card-inset);
   height: calc(100% - var(--card-inset-top) - var(--card-inset));
   width: calc(100% - var(--card-inset) * 2);
   /* Corner radius comes from the active skin (vendor/moon-skins.css); studio
-     resolves --dk-radius to --card-radius, so the default is unchanged. The
-     dock client zeroes individual corners at a welded seam. */
+     resolves --dk-radius to --card-radius. */
   border-radius: var(--dk-radius, var(--card-radius));
-  /* Ease corner squaring at dock settle (weld recomputes corners on settle,
-     not per drag-frame) so they don't pop. */
-  transition: border-radius 0.2s ease;
-  /* NOTE: the weld (applyWeldVisuals, moon-dock.js) deliberately NEVER touches
-     this card's margin or size — magnetic docking squares the welded corners
-     only, leaving the shape fixed (the old per-side inset collapse that reflowed
-     the card on docking was removed). Only border-radius changes on weld, and it
-     eases via the transition above so corners don't pop. */
   isolation: isolate;
   /* The SOFT paper halo lives HERE, on the unfiltered shell — NOT on the
      wobbled ::before. The wc-wobble filter displaces everything it's applied
@@ -89,15 +73,12 @@ html, body {
      (shadow:false in tauri.conf.json) so it can't stack a second, square-
      cornered, focus-reactive shadow on top of this rounded one.
      The studio --dk-win-shadow (vendor/moon-skins.css) IS this 3-layer warm
-     halo, so the default is unchanged; the dock client overrides this inline
-     with a per-edge silhouette while welded. */
+     halo, so the default is unchanged. */
   box-shadow: var(--dk-win-shadow);
 }
 
 /* Paper-wash layer — sits behind all content via z-index:-1.
-   No displacement filter here — the window outline must be crisp so that
-   squared seam corners read as a clean weld (reference: dock.css §8, zero
-   filter on the window outline). The watercolor character comes from the
+   The watercolor character comes from the
    paper fill + head-tint gradient and the soft halo on .widget-shell above.
    The head-tint gradient pools the panel's watercolor wash at the top.
    NO box-shadow here — see .widget-shell above for why the halo moved. */
@@ -127,50 +108,6 @@ html, body {
      crisp ring reads as the "outline tracing the window" that is explicitly
      unwanted. Enforced by test/no-window-outline.test.ts. */
   box-shadow: none;
-}
-
-/* Drag affordance (ported from the design's .dock-win.dragging state).
-   moon-dock.js toggles .dragging during the native drag: a deeper lift while a
-   loose window is being dragged.
-   !important so the lift overrides a GROUPED window's INLINE welded silhouette
-   (applyWeldVisuals sets shellEl.style.boxShadow) while towing a cluster — without
-   clearing the inline value, so the welded shadow snaps back instantly on drop. */
-.widget-shell.dragging {
-  box-shadow:
-    0 6px 12px rgba(60, 45, 35, 0.10),
-    0 32px 60px -18px rgba(60, 45, 35, 0.32) !important;
-}
-html[data-theme='dark'] .widget-shell.dragging {
-  box-shadow:
-    0 6px 12px rgba(0, 0, 0, 0.40),
-    0 36px 64px -18px rgba(0, 0, 0, 0.60) !important;
-}
-/* While dragging, hide the weld-accent perimeter line (#outline.gl/.gr/.gt/.gb).
-   It is frozen from the last settled weld state (drag start never clears it), so
-   a previously-welded card otherwise paints a faint 2px accent hairline on its
-   edge throughout the drag — the "invisible line" in the gap. */
-.widget-shell.dragging #outline { opacity: 0; }
-/* Drag-time snap PREVIEW removed (user request). `.widget-shell.snapping::after`
-   used to paint a 2px accent RING + a lift the instant a dragged window came
-   within EDGE_SNAP_THRESHOLD (30px) of a neighbour — i.e. a crisp accent
-   tint/border around the window BEFORE the cards were flush ("it snaps before
-   they're flushed together" / "a border with a slight tint as I'm dragging").
-   It is the same crisp accent-ring look that is unwanted (see no-window-outline.md),
-   just transient. `.snapping` was a PURE VISUAL preview — the real magnet runs in
-   snapOnRelease — so dropping it changes nothing about docking: a window now glides
-   freely and snaps flush on release with no preview ring. The class and the drag
-   code that toggled it have both been removed. */
-
-/* Snap-on-open settle (reference `.dock-win.entering` / dock-pop). */
-.widget-shell.entering {
-  animation: dock-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1);
-}
-@keyframes dock-pop {
-  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
-  to { opacity: 1; transform: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .widget-shell.entering { animation: none; }
 }
 
 /* Dark theme: soft drop halo only — no 0-spread edge ring. The old
@@ -207,15 +144,10 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
     var(--paper-2);
 }
 
-/* Title bar top corners must round to match the card so the wash gradient
-   never pokes square corners past the wobble-roughened card edge. Tracks the
-   skin radius; the dock client zeroes a top corner at a welded seam. */
+/* Title bar top corners match the card so the wash gradient never pokes square
+   corners past the watercolor surface. */
 .title-bar {
   border-radius: var(--dk-radius, var(--card-radius)) var(--dk-radius, var(--card-radius)) 0 0;
-  /* Ease the top-corner squaring in lockstep with the shell (which also has this
-     0.2s ease) so a weld/unweld doesn't snap the bar's corner past the still-
-     rounding card corner. moon-dock.js zeroes both top radii in the same call. */
-  transition: border-radius 0.2s ease;
 }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
@@ -231,7 +163,7 @@ html[data-grain='on'] body::after {
   right:  var(--card-inset);
   bottom: var(--card-inset);
   left:   var(--card-inset);
-  /* Track the SKIN radius (like the shell + #outline) so grain clips to the card
+  /* Track the skin radius so grain clips to the card
      corner exactly — a fixed --card-radius bleeds past the 4px classic / under the
      18px aqua corner. */
   border-radius: var(--dk-radius, var(--card-radius));
@@ -287,10 +219,7 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Title-bar side clusters (balance .bar-title centering) ───────────────
-   studio/aqua: native macOS traffic lights only (hover-revealed via
-   moon-native-titlebar.js) — the CSS .dock-lights cluster is classic-only.
-   classic: faux traffic lights live in .bar-start > .dock-lights (panel/widget)
-   or chat's own #close-btn / #min-btn (see moon-skins.css). */
+   Native macOS controls own the left side on every skin. */
 .bar-start,
 .bar-end {
   display: flex;
@@ -301,22 +230,10 @@ html[data-chrome='ink'] .title-bar {
 .bar-end {
   justify-content: flex-end;
 }
-/* Classic-only faux lights — never paint under studio/aqua (no double lights). */
-.dock-lights {
-  display: none !important;
-  align-items: center;
-  gap: 7px;
-  flex: 0 0 auto;
-}
-html[data-skin='classic'] .dock-lights {
-  display: flex !important;
-  opacity: 1;
-}
-
 /* ── Collapse-into-moon glyph (right side of every card titlebar) ──────────
    Subtle affordance for the Luna-specific "tuck workspace back into the orb"
    gesture. Sits in .bar-end so it stays right, clear of the native traffic
-   lights at top-left (trafficLightPosition ~x40 y42). Theme-aware via --muted
+   lights at top-left. Theme-aware via --muted
    / --accent; hover nudges the accent without being loud. */
 .collapse-moon-btn {
   background: none;
@@ -339,32 +256,6 @@ html[data-skin='classic'] .dock-lights {
   color: var(--accent, #7b9);
   background: color-mix(in oklab, var(--accent, #7b9) 10%, transparent);
 }
-.light {
-  width: 11px;
-  height: 11px;
-  padding: 0;
-  border: 0.5px solid rgba(0, 0, 0, 0.16);
-  border-radius: 50%;
-  cursor: pointer;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  line-height: 1;
-  color: rgba(0, 0, 0, 0.55);
-}
-.light-close { background: #ff5f57; }
-.light-min { background: #febc2e; }
-.light-zoom { background: #28c840; }
-/* Glyphs appear only on hover (macOS pattern). */
-.light::before { opacity: 0; transition: opacity 0.12s ease; }
-.title-bar:hover .light::before,
-.light:focus-visible::before { opacity: 1; }
-.light-close::before { content: '\00d7'; }   /* × */
-.light-min::before { content: '\2013'; }      /* – */
-.light-zoom::before { content: '\002b'; }     /* + */
-
 /* Watercolor blot beside the title — takes the window's tint. The slightly
    irregular radius reads hand-painted; the wobble filter (when the page
    carries the #wc-wobble defs) roughs the edge. */
@@ -429,60 +320,6 @@ html[data-anchor='true'] .bar-title {
 }
 
 
-/* ── Seam glow: the link animation when two windows click together ───── */
-/* Offset bars by the card inset from each OS-window edge so they hug the card
-   face (the transparent margin sits outside the painted card). The top uses
-   --card-inset-top to track the trimmed header inset; the others use the full
-   --card-inset. (The weld no longer collapses these per-side — it squares
-   corners only — so the old --seam-* override layer is gone.) */
-#seam {
-  position: fixed;
-  pointer-events: none;
-  opacity: 0;
-  z-index: 50;
-}
-#seam.flash-l { left: var(--card-inset); top: var(--card-inset-top); bottom: var(--card-inset); width: 7px;
-  background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-r { right: var(--card-inset); top: var(--card-inset-top); bottom: var(--card-inset); width: 7px;
-  background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-t { top: var(--card-inset-top); left: var(--card-inset); right: var(--card-inset); height: 7px;
-  background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-b { bottom: var(--card-inset); left: var(--card-inset); right: var(--card-inset); height: 7px;
-  background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.on { animation: seam-flash 0.7s ease-out; }
-@keyframes seam-flash {
-  0% { opacity: 0; }
-  25% { opacity: 1; }
-  100% { opacity: 0; }
-}
-
-/* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
-/* Must trace the card edge EXACTLY. The shell uses --card-inset-top (4px) on top
-   (the native traffic-lights trim) + the skin radius (--dk-radius), so a symmetric
-   inset/fixed radius here would float the top accent ~18px below the card edge and
-   round its corners wrong. Mirror the shell's geometry instead. */
-#outline {
-  position: fixed;
-  top: var(--card-inset-top);
-  right: var(--card-inset);
-  bottom: var(--card-inset);
-  left: var(--card-inset);
-  pointer-events: none;
-  z-index: 49;
-  border-radius: var(--dk-radius, var(--card-radius));
-  border: 0 solid transparent;
-}
-/* Weld-accent perimeter border REMOVED (user request). Docked panels used to get
-   a crisp 2px accent ring around the welded cluster's perimeter (border-left/right/
-   top/bottom on the free sides). It read as an unwanted hard "border" around
-   grouped panels — the thing that made a docked cluster look bordered/shifted
-   instead of clean — and it conflicts with the no-window-outline rule
-   (docs/no-window-outline.md). The weld itself is unchanged: it still squares the
-   seam corners and suppresses the seam-side halo, so cards dock pixel-flush and
-   read as one surface. The .gl/.gr/.gt/.gb classes are still toggled by
-   applyWeldVisuals (and asserted by the weld tests) but now paint nothing. */
-#outline.gl, #outline.gr, #outline.gt, #outline.gb { border-color: transparent; }
-
 /* ── Resize grips (moon-resize.js) ─────────────────────────────────────────
    Custom resize for transparent card windows: 8-direction hit targets on the
    card face (.widget-shell). Only the SE corner shows the L-bracket indicator;
@@ -544,25 +381,6 @@ html[data-anchor='true'] .bar-title {
 html[data-theme='dark'] .resize-se::after {
   border-right-color: color-mix(in oklab, var(--ink) 58%, transparent);
   border-bottom-color: color-mix(in oklab, var(--ink) 58%, transparent);
-}
-
-/* Weld-aware resize: a side flush against a welded neighbour can't be resized
-   without tearing the shared seam, so disable that edge's hit strip + its two
-   adjacent corner grips. data-weld (set by moon-dock.js from weldStyle.weld) lists
-   the WELDED side letters — this is its consumer (previously the marker was unused). */
-.widget-shell[data-weld*="t"] .resize-n,
-.widget-shell[data-weld*="t"] .resize-ne,
-.widget-shell[data-weld*="t"] .resize-nw,
-.widget-shell[data-weld*="b"] .resize-s,
-.widget-shell[data-weld*="b"] .resize-se,
-.widget-shell[data-weld*="b"] .resize-sw,
-.widget-shell[data-weld*="l"] .resize-w,
-.widget-shell[data-weld*="l"] .resize-nw,
-.widget-shell[data-weld*="l"] .resize-sw,
-.widget-shell[data-weld*="r"] .resize-e,
-.widget-shell[data-weld*="r"] .resize-ne,
-.widget-shell[data-weld*="r"] .resize-se {
-  pointer-events: none;
 }
 
 /* ── Scroll-container / mouse-focus ring suppression ─────────────────────

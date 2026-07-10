@@ -9,12 +9,11 @@
        (graceful degrade to plain monospace if missing). -->
   <script src="vendor/highlight.min.js"></script>
   <!-- Shared protocol constants + WS frame registry + markdown pipeline +
-       dock/snap wiring. Loaded synchronously BEFORE the app script, which
+       native window dragging. Loaded synchronously BEFORE the app script, which
        uses LunaProtocol/LunaWS/LunaMarkdown at definition time. -->
   <script src="vendor/moon-protocol.js"></script>
   <script src="vendor/moon-ws.js"></script>
   <script src="vendor/moon-markdown.js"></script>
-  <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
   <script src="vendor/moon-resize.js"></script>
   <!-- Watercolor font families: Albert Sans (body) + Caveat (handwritten accents). -->
@@ -33,7 +32,6 @@
        so palette tokens resolve on the first frame; also live-updates on
        cross-window storage events. -->
   <script src="vendor/moon-appearance.js"></script>
-  <script src="vendor/moon-native-titlebar.js"></script>
   <!-- Honors the "Always on Top" setting for this panel (default: not floating). -->
   <script src="vendor/moon-window-float.js"></script>
   <!-- Transport layer (C6a): browser-safe @luna/ui-transport bundle.
@@ -490,71 +488,9 @@
       gap: 8px;
     }
 
-    /* ── Title-bar rearrange: parallel-thread panels ───────────────────────
-       Close moves OFF the bar to a hover-revealed disk at the top-LEFT corner
-       (macOS-notification pattern); the left edge is left clear for the native
-       macOS traffic lights. The new-thread + owns the right. All scoped to
-       #title-bar so the shared moon-theme.css .close-btn (other panels) and the
-       .chat-panel header-action buttons stay exactly as they were. */
+    /* Native controls own the left cluster; New thread and Collapse own the
+       right. The title remains centered between those balanced zones. */
     #title-bar { position: relative; }
-
-    /* Faux close/min — classic skin only (studio/aqua use native traffic lights,
-       always visible via moon-native-titlebar.js). Handlers stay wired for classic. */
-    #title-bar #close-btn {
-      position: absolute;
-      top: 5px;
-      left: 6px;
-      z-index: 6;
-      display: none !important;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.15s ease, background 0.1s, color 0.1s;
-    }
-    /* classic skin only: hover-reveal (moon-skins.css sets display:flex, so
-       these rules then take effect). */
-    #title-bar:hover #close-btn,
-    #title-bar #close-btn:focus-visible {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    /* Minimize disk — neutral twin of the close-×, parked just to its right and
-       sharing the same hover-reveal. Close is the only red affordance. */
-    .min-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--ink-soft);
-      font-size: 17px;
-      line-height: 1;
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.1s, color 0.1s;
-    }
-    .min-btn:hover {
-      background: color-mix(in oklab, var(--ink-faint, #888) 16%, transparent);
-      color: var(--ink, #333);
-    }
-    #title-bar #min-btn {
-      position: absolute;
-      top: 5px;
-      left: 30px;
-      z-index: 6;
-      display: none !important;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.15s ease, background 0.1s, color 0.1s;
-    }
-    #title-bar:hover #min-btn,
-    #title-bar #min-btn:focus-visible {
-      opacity: 1;
-      pointer-events: auto;
-    }
 
     /* New-thread button — the promoted action, accent-tinted to invite. Sits at
        the right (the flex:1 bar-title pushes it there). */
@@ -2490,14 +2426,8 @@
   <!-- TITLE BAR — on the outer container enables
        native window drag. The close button is intentionally NOT drag-region. -->
   <div class="title-bar" id="title-bar">
-    <!-- Balances .bar-end so the title stays centered when native lights are hidden. -->
+    <!-- Reserves the exact native traffic-light footprint. -->
     <div class="bar-start" aria-hidden="true"></div>
-    <!-- Classic skin only: faux close/min (studio/aqua use native traffic lights). -->
-    <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
-    <!-- Minimize tucks the WHOLE workspace back into the moon (invoke
-         collapse_to_moon), parked just right of the hover-× and revealed with
-         it. NOT a drag region so the click lands. -->
-    <button class="min-btn" id="min-btn" title="Minimize into the moon" aria-label="Minimize into the moon">–</button>
     <span class="bar-title" id="bar-title">Luna</span>
     <!-- New thread — the promoted action, alone on the right. Mints a fresh
          thread in THIS window (single-window model; same as the sidebar's
@@ -2521,8 +2451,6 @@
       </svg>
     </button>
   </div>
-  <div id="seam" aria-hidden="true"></div>
-  <div id="outline" aria-hidden="true"></div>
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
     <div class="chat-header">
@@ -2884,7 +2812,7 @@
     // "extraction-as-new-page"). The chat half of index.html, copied: this
     // window OWNS the conversation thread now (one-window-per-thread). The
     // moon/wizard/settings-modal choreography stays in the hub; window
-    // chrome (title bar, dock/snap, close) follows panel.html's conventions.
+    // native title-bar chrome follows panel.html's conventions.
     //
     // Everything below boots cleanly when __TAURI__ is absent (jsdom /
     // plain-browser dev) — the same guards the monolith carries.
@@ -9895,34 +9823,8 @@
       }
     } catch (_) { /* not in Tauri (tests/browser) */ }
 
-    const winCloseBtn = document.getElementById('close-btn');
-    if (winCloseBtn) {
-      winCloseBtn.addEventListener('click', () => {
-        try {
-          if (window.__TAURI__ && window.__TAURI__.core && winLabel) {
-            window.__TAURI__.core.invoke('close_widget', { label: winLabel }).catch(() => {});
-          }
-        } catch (_) { /* best-effort */ }
-      });
-    }
-
-    // Minimize → collapse the WHOLE workspace into the moon (every widget hides,
-    // the orb returns). The moon is the minimized form of all of Luna, so this
-    // is a global gesture, not a per-window OS-dock minimize.
-    const winMinBtn = document.getElementById('min-btn');
-    if (winMinBtn) {
-      winMinBtn.addEventListener('click', () => {
-        try {
-          if (window.__TAURI__ && window.__TAURI__.core) {
-            window.__TAURI__.core.invoke('collapse_to_moon').catch(() => {});
-          }
-        } catch (_) { /* best-effort */ }
-      });
-    }
-
-    // Collapse-into-moon glyph — right-side affordance for the same gesture.
-    // Present on all skins so studio/aqua users (no faux min-btn) can still
-    // tuck the workspace into the orb without reaching for the menu.
+    // Collapse-into-moon is a Luna-specific workspace action, intentionally
+    // separate from the native yellow button's per-window minimize behavior.
     const collapseMoonBtn = document.getElementById('collapse-moon-btn');
     if (collapseMoonBtn) {
       collapseMoonBtn.addEventListener('click', () => {
@@ -9970,13 +9872,12 @@
       if (DOM.threadDrawerSearch) DOM.threadDrawerSearch.addEventListener('input', (e) => ThreadDrawerEngine.setSearch(e.target.value));
     }
 
-    // Dock/snap wiring (shared vendor module): snap-on-release, dock groups,
-    // pin-to-detach, seam flash, perimeter outline, grab_dock re-rooting.
+    // Hand title-bar gestures directly to the native macOS window drag.
     if (window.LunaDock) LunaDock.wire({ win: W, label: winLabel });
 
     // ── hub-event return channel ────────────────────────────────────────────
-    // Rust delivers window-targeted hub-events with the same `for:` discipline
-    // as dock-group. 'fresh-thread' (from settings.general) starts a new
+    // Rust delivers window-targeted hub-events with strict `for:` discipline.
+    // 'fresh-thread' (from settings.general) starts a new
     // conversation in THIS window — it owns the thread now.
     try {
       if (W && typeof W.listen === 'function') {
