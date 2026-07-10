@@ -42,7 +42,6 @@ import {
 import type * as Scope from "effect/Scope"
 import * as http from "node:http"
 import { randomUUID } from "node:crypto"
-import { execFileSync } from "node:child_process"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import { WebSocketServer, type WebSocket } from "ws"
@@ -67,9 +66,12 @@ import {
   type ClientFrame,
   type ServerFrame,
   type PtyOutputFrame,
-  type SmartBarItem,
 } from "./protocol.js"
 import { projectLunaDescriptor } from "./descriptor.js"
+import {
+  createSmartBarContextModule,
+  type SmartBarContext,
+} from "./smart-bar-context.js"
 import type { SurveyItem, SurveyVerdict } from "@luna/core"
 
 /**
@@ -720,218 +722,6 @@ const send = (ws: WebSocket, frame: ServerFrame): void => {
   }
 }
 
-/* ── Smart Bar item assembly ─────────────────────────────────────────────────
- *
- * Assembles a `SmartBarFrame` from current server-side context. Called on:
- *   - thread subscribe/snapshot (connection subscribes)
- *   - turn-complete (a turn just finished)
- *   - local-shell-capability change (cwd may have changed)
- *   - low-frequency interval (~20s)
- *
- * Git context: resolved server-side via child_process (this deployment runs
- * chat-server and local-shell in the same container where the worktrees live).
- * Fallback order for <cwd>:
- *   1. Active local-shell client's first root for this thread (most accurate).
- *   2. LUNA_REPO_ROOT env var.
- *   3. process.cwd().
- * If git commands fail for any reason the git items are omitted — the bar
- * must never show a wrong branch. All git calls are wrapped in try/catch with
- * a short timeout.
- */
-
-const GIT_TIMEOUT_MS = 3000
-
-/**
- * Run a git command in <cwd>.
- *
- * Returns stdout trimmed on success, null on failure (non-zero exit / timeout).
- * When `preserveEmpty` is true, empty stdout is returned as `""` rather than
- * collapsed to null — necessary for `git status --porcelain` where empty
- * stdout means "clean repo" (a meaningful, distinct result from a git error).
- */
-const gitOut = (
-  cwd: string,
-  args: ReadonlyArray<string>,
-  opts: { readonly preserveEmpty?: boolean } = {},
-): string | null => {
-  try {
-    const out = execFileSync("git", ["-C", cwd, ...args], {
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: GIT_TIMEOUT_MS,
-    })
-      .toString()
-      .trim()
-    return out || (opts.preserveEmpty ? out : null)
-  } catch {
-    return null
-  }
-}
-
-/** Resolve the cwd to use for git queries.
- *  Uses the local-shell capability for the thread when available; otherwise
- *  falls back to LUNA_REPO_ROOT / process.cwd(). */
-const resolveGitCwd = (
-  threadId: string,
-  localShellBridge: LocalShellBridge | null,
-): string => {
-  if (localShellBridge !== null) {
-    const cap = localShellBridge.getCapability(threadId)
-    if (cap !== null) {
-      const roots = cap.roots ?? [cap.cwd]
-      if (roots.length > 0 && roots[0]) return roots[0]
-    }
-  }
-  return process.env["LUNA_REPO_ROOT"]?.trim() || process.cwd()
-}
-
-interface SmartBarContext {
-  readonly threadId: string
-  readonly model: string | undefined
-  readonly accountLabel: string | undefined
-  readonly workspaceSlug: string | undefined
-  readonly localShellBridge: LocalShellBridge | null
-}
-
-/**
- * Injectable git runner for testability.
- * Each call receives the cwd and git args; returns trimmed stdout or null on
- * failure. The status call preserves empty-string output (clean repo signal).
- */
-export interface GitRunner {
-  readonly toplevel: (cwd: string) => string | null
-  readonly branch: (cwd: string) => string | null
-  /** Returns `""` for a clean repo, a non-empty string when dirty, null on error. */
-  readonly status: (cwd: string) => string | null
-}
-
-/** Default git runner using execFileSync. */
-const defaultGitRunner: GitRunner = {
-  toplevel: (cwd) => gitOut(cwd, ["rev-parse", "--show-toplevel"]),
-  branch: (cwd) => gitOut(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
-  status: (cwd) => gitOut(cwd, ["status", "--porcelain"], { preserveEmpty: true }),
-}
-
-/**
- * Build the SmartBar item list for the given context.
- * Exported for unit testing; `gitRunner` defaults to the real execFileSync
- * runner and should only be overridden in tests.
- */
-export const buildSmartBarItems = (
-  ctx: SmartBarContext,
-  gitRunner: GitRunner = defaultGitRunner,
-): ReadonlyArray<SmartBarItem> => {
-  const items: SmartBarItem[] = []
-
-  // ── git context (flagship items) ──────────────────────────────────────────
-  const cwd = resolveGitCwd(ctx.threadId, ctx.localShellBridge)
-  const toplevel = gitRunner.toplevel(cwd)
-  const branch = gitRunner.branch(cwd)
-  const statusOut = gitRunner.status(cwd)
-
-  if (toplevel !== null) {
-    items.push({
-      id: "git.worktree",
-      kind: "info",
-      label: "worktree",
-      value: path.basename(toplevel),
-      icon: "⎇",  // ⎇ branch symbol
-      group: "git",
-      priority: 0,
-      tooltip: toplevel,
-    })
-  }
-  if (branch !== null && branch !== "HEAD") {
-    items.push({
-      id: "git.branch",
-      kind: "info",
-      label: "branch",
-      value: branch,
-      icon: "⎇",
-      group: "git",
-      priority: 1,
-    })
-  }
-  if (toplevel !== null || branch !== null) {
-    // Emit git.status only when we successfully read the repo.
-    // statusOut === null means git error / non-repo — omit the chip.
-    // statusOut === "" means clean repo (git status --porcelain produced no output).
-    // statusOut is non-empty when there are staged/unstaged changes (dirty).
-    if (statusOut !== null) {
-      const isClean = statusOut.length === 0
-      items.push({
-        id: "git.status",
-        kind: "info",
-        label: "git",
-        value: isClean ? "clean" : "dirty",
-        icon: "●",  // ●
-        tone: isClean ? "good" : "warn",
-        group: "git",
-        priority: 2,
-      })
-    }
-  }
-
-  // ── workspace ─────────────────────────────────────────────────────────────
-  if (ctx.workspaceSlug) {
-    items.push({
-      id: "workspace",
-      kind: "info",
-      label: "workspace",
-      value: ctx.workspaceSlug,
-      icon: "▫",  // ◫ (approximation)
-      group: "context",
-      priority: 0,
-    })
-  }
-
-  // ── model ─────────────────────────────────────────────────────────────────
-  if (ctx.model) {
-    items.push({
-      id: "model",
-      kind: "info",
-      label: "model",
-      value: ctx.model,
-      icon: "✶",  // ✦
-      group: "context",
-      priority: 1,
-    })
-  }
-
-  // ── account ───────────────────────────────────────────────────────────────
-  if (ctx.accountLabel) {
-    items.push({
-      id: "account",
-      kind: "info",
-      label: "account",
-      value: ctx.accountLabel,
-      icon: "◴",  // ◴
-      group: "context",
-      priority: 2,
-    })
-  }
-
-  return items
-}
-
-/** Push a SmartBarFrame to `ws` for the given thread. Fire-and-forget. */
-const pushSmartBar = (
-  ws: WebSocket,
-  ctx: SmartBarContext,
-): void => {
-  if (ws.readyState !== ws.OPEN) return
-  try {
-    const items = buildSmartBarItems(ctx)
-    send(ws, {
-      type: "smart-bar",
-      threadId: ctx.threadId,
-      version: 1,
-      items,
-    })
-  } catch {
-    // Non-fatal — smart bar is best-effort.
-  }
-}
-
 /**
  * Validate inbound user-message attachments. The wire types narrow `mediaType`
  * to a literal union, but a malicious client can send arbitrary strings — TS
@@ -1212,6 +1002,10 @@ export const startUIWebSocketServer = (
     const buildSha = config.buildSha
     const serverVersion = config.serverVersion
     const availableModels = config.availableModels
+    // One server-owned Module shares Git work across every connection/thread.
+    // Its Interface hides async process execution, freshness, single-flight,
+    // and graceful degradation from the WebSocket routing Implementation.
+    const smartBarContext = createSmartBarContextModule()
 
     const httpServer = http.createServer((req, res) => {
       // Match on the pathname only — req.url includes the query string, so an
@@ -1871,6 +1665,7 @@ export const startUIWebSocketServer = (
           workspaceSlug: undefined,
           localShellBridge,
         })
+        const smartBarGeneration = new Map<string, number>()
 
         // Push a fresh SmartBarFrame for `threadId` to this connection.
         // Uses a 250ms delay so smart-bar frames arrive well after the
@@ -1880,12 +1675,25 @@ export const startUIWebSocketServer = (
         // In production the delay is imperceptible.
         // Fire-and-forget: errors must never tear down the connection.
         const sendSmartBarFor = (threadId: string): void => {
+          const generation = (smartBarGeneration.get(threadId) ?? 0) + 1
+          smartBarGeneration.set(threadId, generation)
           setTimeout(() => {
-            try {
-              pushSmartBar(ws, makeSmartBarCtx(threadId))
-            } catch {
-              // Non-fatal.
-            }
+            const context = makeSmartBarCtx(threadId)
+            void smartBarContext.getItems(context).then((items) => {
+              // Git sampling is asynchronous. A cwd/model change can request a
+              // newer frame while an older sample is still running; only the
+              // latest requested generation may publish.
+              if (smartBarGeneration.get(threadId) !== generation) return
+              if (ws.readyState !== ws.OPEN) return
+              send(ws, {
+                type: "smart-bar",
+                threadId,
+                version: 1,
+                items,
+              })
+            }).catch(() => {
+              // Smart Bar context is best-effort and must never affect chat delivery.
+            })
           }, 250)
         }
 
