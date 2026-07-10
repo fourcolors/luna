@@ -1,5 +1,10 @@
 # Plan — align Moon's window border/drag/resize to the Luna Dock reference
 
+> **Historical (superseded 2026-07-10):** the snap, weld, and cluster system
+> this plan aligned has been retired. Moon panels are now independent native
+> macOS windows with no magnetic snapping, and `deck-snap.js` no longer exists.
+> See `apps/ui-moon-tauri/docs/window-drag-snap.md` for the active behavior.
+
 **Companion to** `docs/luna-dock-window-system.md` (the extracted rules).
 **Goal (Mr. Cobb's ask):** make the Moon Tauri dock match the reference border
 system — (1) **remove** the jagged-edge overlay, (2) get windows **aligned**

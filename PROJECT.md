@@ -1,5 +1,10 @@
 # Project: Luna Dock and Workspace Verification
 
+> **Historical (superseded 2026-07-10):** the docking system described below
+> was retired. Moon panels are now independent native macOS windows with no
+> snapping, and `deck-snap.js` / `deck-weld.test.ts` no longer exist.
+> See `apps/ui-moon-tauri/docs/window-drag-snap.md` for the active behavior.
+
 ## Architecture
 - **Docking System**: Manages window snapping, group docking, and seam/weld styles for webviews in Tauri. Primarily implemented in `deck-snap.js`, `moon-dock.js`, `moon-skins.css`, and `moon-theme.css`.
 - **Chat Window**: The frontend application for user chat interfaces, defined in `apps/ui-moon-tauri/frontend/chat.html` and tested in `chat-window.test.ts`.

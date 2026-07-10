@@ -1,5 +1,10 @@
 # Luna Dock — Window Drag / Resize / Magnet / Border System (extraction)
 
+> **Historical (superseded 2026-07-10):** Moon retired the magnet, weld, and
+> cluster-tow system these rules were extracted for. Panels are now independent
+> native macOS windows with no snapping.
+> See `apps/ui-moon-tauri/docs/window-drag-snap.md` for the active behavior.
+
 **Status:** canonical extraction from the reference design.
 **Source of truth:** `~/Downloads/Luna Dock (standalone).html` (modified 2026-06-15).
 The HTML is a React + in-browser-Babel bundle; the relevant module decodes to
