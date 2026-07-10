@@ -1521,6 +1521,16 @@ fn spawn_panel(
     .map(|w| w.label().to_string())
 }
 
+/// Traffic-light inset shared by the window builders and the AppKit re-apply
+/// in `configure_native_window_chrome` — a single source of truth so the two
+/// placements cannot drift apart. x=36 matches the reserved .bar-start content
+/// edge, keeping the close light inside the opaque header instead of the
+/// rounded cutout; y=12 vertically centers the cluster in the CSS header.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_INSET_X: f64 = 36.0;
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_INSET_Y: f64 = 12.0;
+
 /// spawn_panel with an explicit label + url (non-singleton instances).
 #[allow(clippy::too_many_arguments)]
 fn spawn_panel_at(
@@ -1572,15 +1582,16 @@ fn spawn_panel_at(
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            // x=36 matches the reserved .bar-start content edge, keeping the
-            // close light inside the opaque header instead of the rounded cutout.
-            .traffic_light_position(tauri::LogicalPosition::new(36.0, 12.0));
+            .traffic_light_position(tauri::LogicalPosition::new(
+                TRAFFIC_LIGHT_INSET_X,
+                TRAFFIC_LIGHT_INSET_Y,
+            ));
     }
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
-    finalize_native_window_chrome(&window, desc.kind == "chat")?;
+    finalize_native_window_chrome(&window, desc.kind == "chat");
     Ok(window)
 }
 
@@ -1635,7 +1646,6 @@ async fn open_widget(
     app: tauri::AppHandle,
     kind: String,
     params: Option<serde_json::Value>,
-    _opener: Option<String>,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<String, String> {
@@ -1721,14 +1731,17 @@ async fn open_artifact_widget(
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(36.0, 12.0));
+            .traffic_light_position(tauri::LogicalPosition::new(
+                TRAFFIC_LIGHT_INSET_X,
+                TRAFFIC_LIGHT_INSET_Y,
+            ));
     }
     builder = builder.visible(true);
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
-    finalize_native_window_chrome(&window, true)?;
+    finalize_native_window_chrome(&window, true);
     Ok(label)
 }
 
@@ -1814,7 +1827,7 @@ fn expand_out_of_moon(app: &tauri::AppHandle) {
         // (the global-shortcut closure and the sync command wrapper).
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = open_widget(app2, "chat".to_string(), None, None, None, None).await;
+            let _ = open_widget(app2, "chat".to_string(), None, None, None).await;
         });
     }
 }
@@ -1874,18 +1887,29 @@ fn with_appkit_main_thread<R>(
 /// one-time native-window setup — there is no webview IPC, hover choreography,
 /// resize observer, or replacement control model. Utility panels keep the
 /// standard disabled zoom treatment; chat and artifact windows allow zoom.
+///
+/// Zoom means ZOOM, never native fullscreen: `FullScreenNone` opts the window
+/// out of the fullscreen Space, so a plain green-button click resizes within
+/// the current screen. A transparent, shadowless card on a fullscreen Space
+/// would sit on a black backdrop with dead transparent margins.
 #[cfg(target_os = "macos")]
 fn configure_native_window_chrome(
     window: &tauri::WebviewWindow,
     zoom_enabled: bool,
 ) -> Result<(), String> {
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton};
+        use objc2_app_kit::{
+            NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton,
+            NSWindowCollectionBehavior,
+        };
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
         unsafe {
             let ns_win: &NSWindow = &*ns_win_ptr.cast();
             ns_win.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
+            ns_win.setCollectionBehavior(
+                ns_win.collectionBehavior() | NSWindowCollectionBehavior::FullScreenNone,
+            );
 
             let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
                 return Ok(());
@@ -1912,7 +1936,7 @@ fn configure_native_window_chrome(
             container.setAlphaValue(1.0);
             let close_rect = NSView::frame(&close);
             let spacing = NSView::frame(&minimize).origin.x - close_rect.origin.x;
-            let title_bar_height = close_rect.size.height + 12.0;
+            let title_bar_height = close_rect.size.height + TRAFFIC_LIGHT_INSET_Y;
             let mut container_rect = NSView::frame(&container);
             container_rect.size.height = title_bar_height;
             container_rect.origin.y = ns_win.frame().size.height - title_bar_height;
@@ -1926,7 +1950,7 @@ fn configure_native_window_chrome(
                 button.setHidden(false);
                 button.setAlphaValue(1.0);
                 let mut rect = NSView::frame(&button);
-                rect.origin.x = 36.0 + (index as f64) * spacing;
+                rect.origin.x = TRAFFIC_LIGHT_INSET_X + (index as f64) * spacing;
                 button.setFrameOrigin(rect.origin);
                 if index == 2 {
                     button.setEnabled(zoom_enabled);
@@ -1940,36 +1964,34 @@ fn configure_native_window_chrome(
 /// AppKit performs one deferred title-bar layout after a transparent overlay
 /// window is shown. Apply the native chrome immediately, then once more after
 /// that construction-only pass so AppKit cannot restore the hidden/default
-/// button frames. This is bounded setup work, not a runtime sync loop.
+/// button frames. Focus re-applies it as a safety net: if a slow boot lets
+/// the deferred pass land after the timed retry, the first click on the
+/// window heals its chrome instead of leaving it without a close affordance.
+/// Best-effort by design — the window is already built and visible, so a
+/// chrome failure must never fail the command that opened it.
 #[cfg(target_os = "macos")]
-fn finalize_native_window_chrome(
-    window: &tauri::WebviewWindow,
-    zoom_enabled: bool,
-) -> Result<(), String> {
-    configure_native_window_chrome(window, zoom_enabled)?;
-    let window = window.clone();
+fn finalize_native_window_chrome(window: &tauri::WebviewWindow, zoom_enabled: bool) {
+    if let Err(e) = configure_native_window_chrome(window, zoom_enabled) {
+        eprintln!(
+            "[moon] native chrome setup failed for {}: {e}",
+            window.label()
+        );
+    }
+    let retry = window.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let _ = configure_native_window_chrome(&window, zoom_enabled);
+        let _ = configure_native_window_chrome(&retry, zoom_enabled);
     });
-    Ok(())
+    let on_focus = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Focused(true)) {
+            let _ = configure_native_window_chrome(&on_focus, zoom_enabled);
+        }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn configure_native_window_chrome(
-    _window: &tauri::WebviewWindow,
-    _zoom_enabled: bool,
-) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn finalize_native_window_chrome(
-    _window: &tauri::WebviewWindow,
-    _zoom_enabled: bool,
-) -> Result<(), String> {
-    Ok(())
-}
+fn finalize_native_window_chrome(_window: &tauri::WebviewWindow, _zoom_enabled: bool) {}
 
 // ── Native-speed window resize (macOS) ──────────────────────────────────────
 //

@@ -60,10 +60,9 @@
           btn.textContent = p.label + ' ↗';
           btn.addEventListener('click', function () {
             // Best-effort: off-Tauri (browser dev / jsdom) the invoke rejects
-            // and the launcher simply stays put. opener=this launcher so the
-            // sub-panel can use the launcher as its placement origin rather
-            // than an unrelated OS-default spawn point.
-            ctx.invoke('open_widget', { kind: p.kind, opener: ctx.label }).catch(function () {});
+            // and the launcher simply stays put. macOS owns the placement of
+            // the new panel window.
+            ctx.invoke('open_widget', { kind: p.kind }).catch(function () {});
           });
           list.appendChild(btn);
         });

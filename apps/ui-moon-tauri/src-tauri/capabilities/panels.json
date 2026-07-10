@@ -46,8 +46,6 @@
     "allow-open-widget",
     "allow-open-artifact-widget",
     "allow-collapse-to-moon",
-    "allow-begin-native-resize",
-    "core:window:allow-maximize",
-    "core:window:allow-unmaximize"
+    "allow-begin-native-resize"
   ]
 }

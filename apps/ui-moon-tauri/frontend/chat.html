@@ -9754,9 +9754,7 @@
     if (DOM.toggleSettings) {
       DOM.toggleSettings.addEventListener('click', () => {
         if (window.__TAURI__ && window.__TAURI__.core) {
-          const args = { kind: 'settings' };
-          if (winLabel) args.opener = winLabel;
-          window.__TAURI__.core.invoke('open_widget', args)
+          window.__TAURI__.core.invoke('open_widget', { kind: 'settings' })
             .catch((e) => Logger.warn('open_widget failed:', e));
         }
       });

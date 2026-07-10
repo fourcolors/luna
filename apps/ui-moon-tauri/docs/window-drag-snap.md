@@ -13,7 +13,17 @@ Moon panels and artifact cards are independent native macOS windows.
 - Chat and artifact windows allow native zoom. Compact utility and settings
   panels disable zoom because their fixed-purpose layouts do not gain useful
   space when maximized.
+- Zoom always means zoom, never native fullscreen: every card window carries
+  `NSWindowCollectionBehaviorFullScreenNone`, so the green button resizes
+  within the current screen instead of moving the transparent card onto a
+  black fullscreen Space.
+- The chrome finalize runs at construction, once more after AppKit's deferred
+  title-bar layout pass, and again on window focus as a self-healing fallback.
+  It is best-effort and never fails the command that opened the window.
 - There is no JavaScript-to-Rust traffic-light visibility or positioning IPC.
+- Non-macOS builds keep these windows borderless and chrome-less by design
+  (decorations are macOS-only); collapse-to-moon is the only window control
+  there. Moon ships on macOS only today.
 
 ## Dragging
 

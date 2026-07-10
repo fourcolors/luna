@@ -17,13 +17,23 @@ const pages = ['chat.html', 'panel.html', 'widget.html'].map((name) =>
 
 describe('native macOS titlebar ownership', () => {
   it('configures AppKit traffic lights once when each native window is created', () => {
-    const placements = main.match(/\.traffic_light_position\(tauri::LogicalPosition::new\(36\.0, 12\.0\)\)/g)
+    const placements = main.match(
+      /\.traffic_light_position\(tauri::LogicalPosition::new\(\s*TRAFFIC_LIGHT_INSET_X,\s*TRAFFIC_LIGHT_INSET_Y,?\s*\)\)/g,
+    )
     expect(placements).toHaveLength(2)
+    // One source of truth for the inset — builders and the AppKit re-apply
+    // share these consts so the two placements cannot drift apart.
+    expect(main).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 36.0')
+    expect(main).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 12.0')
     expect(main).toContain('.maximizable(desc.kind == "chat")')
     expect(main.match(/\.maximizable\(true\)/g)).toHaveLength(1)
     expect(main).toContain('fn configure_native_window_chrome(')
     expect(main).toContain('button.setHidden(false)')
     expect(main).toContain('button.setEnabled(zoom_enabled)')
+  })
+
+  it('zoom means zoom: card windows opt out of the native fullscreen Space', () => {
+    expect(main).toContain('NSWindowCollectionBehavior::FullScreenNone')
   })
 
   it('has no runtime traffic-light commands or appearance IPC', () => {
