@@ -216,8 +216,10 @@ describe("UIWebSocketServer", () => {
   })
 
   it("reaps a half-open connection (no pong) but spares a live one", async () => {
-    // Small ping interval so the liveness check runs fast in-test.
-    rig = await startRig(undefined, { pingIntervalMs: 40 })
+    // Small ping interval so the liveness check runs fast in-test — but not
+    // so small that an event-loop stall on a loaded CI box delays the live
+    // client's pong past a full interval and falsely reaps it (seen at 40ms).
+    rig = await startRig(undefined, { pingIntervalMs: 200 })
     const headers = { authorization: `Bearer ${TOKEN}` }
 
     // Live client: a normal ws client auto-pongs (browser-like), so the
@@ -261,7 +263,7 @@ describe("UIWebSocketServer", () => {
       const timer = setTimeout(() => {
         sock.destroy()
         resolve(false)
-      }, 1500)
+      }, 4000)
       sock.on("close", () => {
         clearTimeout(timer)
         resolve(upgraded) // upgraded then closed by the server = reaped

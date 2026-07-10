@@ -499,8 +499,11 @@ describe("buildWorkflowWorker - shell step process-group kill (issue #277 Seam B
         const notes = yield* AgentNotesService
         const worker = buildWorkflowWorker(sdk, notes)
         const cmd = shellCmdPublishingGrandchildPid(pidFile)
+        // timeout_ms must outlast shell startup: on a loaded box, 100ms killed
+        // the group before `echo $! > pidFile` ran, so the pidfile read below
+        // hit ENOENT. 1500ms still fires long before the 30s grandchild exits.
         const result = yield* Effect.either(
-          worker({ steps: [{ kind: "shell", cmd, timeout_ms: 100 }] }, ctx),
+          worker({ steps: [{ kind: "shell", cmd, timeout_ms: 1500 }] }, ctx),
         )
         expect(result._tag).toBe("Left")
         if (result._tag === "Left") {
