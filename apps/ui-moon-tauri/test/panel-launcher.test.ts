@@ -53,7 +53,6 @@ function bootLauncher(opts: { invoke?: (cmd: string, args?: any) => any } = {}) 
 
   loadVendorInto(window, 'moon-protocol.js')
   loadVendorInto(window, 'moon-ws.js')
-  loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
 
   // Preload the module (the FILE is settings.js; it registers the
@@ -77,7 +76,6 @@ afterEach(() => {
   delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
-  delete (window as any).LunaDeckSnap
   delete (window as any).LunaDock
   vi.restoreAllMocks()
 })
@@ -129,13 +127,6 @@ describe('settings-launcher panel (kind "settings")', () => {
     const btn = document.querySelector('button[data-panel-kind="settings.updates"]') as HTMLButtonElement
     expect(() => btn.click()).not.toThrow()
     await Promise.resolve() // the rejection is caught inside the module
-  })
-
-  it('✕ closes via close_widget with this window label', async () => {
-    const { invoke } = bootLauncher()
-    document.getElementById('close-btn')!.click()
-    await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'panel-settings' }))
   })
 
   it('registers under BOTH the widget kind and the file-name type (loader compatibility)', () => {

@@ -68,9 +68,8 @@ optional = true
 [target.'cfg(target_os = "macos")'.dependencies.objc2]
 version = "0.6.4"
 
-# AppKit bindings used by set_native_controls_visible: NSWindow +
-# standardWindowButton: + NSButton setHidden:. NSEvent is added for the
-# event-driven native resize (begin_native_resize), driven by NSEvent monitors
+# AppKit bindings for the event-driven native resize (begin_native_resize),
+# driven by NSEvent monitors
 # (no polling pacer): NSEvent::mouseLocation() (screen coords) +
 # NSEvent::pressedMouseButtons() (left-button bitmask) drive the gesture.
 [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
@@ -78,10 +77,7 @@ version = "0.3.2"
 default-features = false
 # `block2` enables addLocal/GlobalMonitorForEventsMatchingMask:handler: — the
 # event-driven native resize installs NSEvent monitors instead of polling.
-# `NSGraphics` provides NSWindowOrderingMode for addChildWindow:ordered: (the
-# native cluster-drag towing); `NSScreen` provides visibleFrame (per-display
-# work areas replacing the JS MENU_BAR_INSET heuristic).
-features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSEvent", "NSGraphics", "NSScreen", "block2"]
+features = ["NSWindow", "NSEvent", "block2"]
 
 # Block (Obj-C closure) support for the NSEvent monitor handlers that drive the
 # event-driven native window resize (begin_native_resize). macOS-gated like the

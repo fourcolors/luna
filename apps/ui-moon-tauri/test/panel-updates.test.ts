@@ -66,7 +66,6 @@ function bootPanel(opts: BootOpts = {}) {
 
   loadVendorInto(window, 'moon-protocol.js')
   loadVendorInto(window, 'moon-ws.js')
-  loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
 
   const moduleFile = path.resolve(__dirname, '../frontend/panels/settings-updates.js')
@@ -106,7 +105,6 @@ afterEach(() => {
   delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
-  delete (window as any).LunaDeckSnap
   delete (window as any).LunaDock
   const style = document.getElementById('luna-updates-style')
   if (style) style.remove()

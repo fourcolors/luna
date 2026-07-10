@@ -79,44 +79,6 @@
     el.setAttribute('data-grain', read('grain') === 'true' ? 'on' : 'off');
     el.setAttribute('data-font', read('font'));
     el.setAttribute('data-fontsize', read('fontSize'));
-    // Native lights are ALWAYS VISIBLE on studio/aqua (native-window model;
-    // moon-native-titlebar.js positions them in the card header) and hidden on
-    // classic, which uses the CSS faux controls instead. Deferred via
-    // syncNativeControls because apply() can run before __TAURI__ is injected.
-    // Inert on the orb window (no native buttons).
-    syncNativeControls(skin);
-    if (g.LunaNativeTitlebar && g.LunaNativeTitlebar.sync) {
-      g.LunaNativeTitlebar.sync();
-    }
-  }
-
-  // Native lights track the skin: visible on studio/aqua (always-on, the
-  // native-window model — moon-native-titlebar.js owns positioning), hidden on
-  // classic (CSS faux cluster). window.__TAURI__ is injected slightly after
-  // the first-paint apply(), so fire immediately if the API is live, else poll
-  // briefly until it is.
-  var nativeCtlTimer = null;
-  function syncNativeControls(skin) {
-    var visible = skin !== 'classic';
-    function fire() {
-      try {
-        if (g.__TAURI__ && g.__TAURI__.core) {
-          g.__TAURI__.core.invoke('set_native_controls_visible', { visible: visible }).catch(function () {});
-          return true;
-        }
-      } catch (e) { /* never throw from a stamp */ }
-      return false;
-    }
-    if (nativeCtlTimer) { g.clearInterval(nativeCtlTimer); nativeCtlTimer = null; }
-    if (fire()) return;
-    // __TAURI__ injects shortly after this first-paint stamp, so poll until it
-    // is live. Skip the poll only under jsdom (unit tests) so no timer is left
-    // running there — real Tauri/WKWebView is never reported as jsdom.
-    try { if (/jsdom/i.test((g.navigator && g.navigator.userAgent) || '')) return; } catch (e) {}
-    var tries = 0;
-    nativeCtlTimer = g.setInterval(function () {
-      if (fire() || ++tries > 100) { g.clearInterval(nativeCtlTimer); nativeCtlTimer = null; }
-    }, 50);
   }
 
   function set(name, value) {

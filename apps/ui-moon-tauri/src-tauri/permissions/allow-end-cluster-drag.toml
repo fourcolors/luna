@@ -1,7 +1,0 @@
-# Detach the child windows attached by begin_cluster_drag, after the
-# snap-on-release settle. See main.rs (end_cluster_drag) and
-# frontend/vendor/moon-dock.js (startNativeDrag finish()).
-[[permission]]
-identifier = "allow-end-cluster-drag"
-description = "Allows the end_cluster_drag command"
-commands.allow = ["end_cluster_drag"]

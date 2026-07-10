@@ -112,21 +112,11 @@
     if (core && core.invoke && isMac) {
       active = { native: true }; // re-entry guard (onDown returns early if active)
       g.document.documentElement.style.cursor = cursorFor(dir);
-      // Suppress per-frame traffic-light sync while the native resize drives
-      // setFrame: (moon-native-titlebar.js syncPosition checks this). Sync once
-      // on release so the lights settle to the final geometry.
-      g.__LUNA_NATIVE_RESIZING__ = true;
       var endUnlisten = null, endDone = false;
       var reset = function () {
         endDone = true;
         g.document.documentElement.style.cursor = '';
         active = null;
-        g.__LUNA_NATIVE_RESIZING__ = false;
-        try {
-          if (g.LunaNativeTitlebar && g.LunaNativeTitlebar.syncPosition) {
-            g.LunaNativeTitlebar.syncPosition();
-          }
-        } catch (_) { /* best-effort */ }
         g.removeEventListener('pointerup', reset, true);
         g.removeEventListener('blur', reset, true);
         if (endUnlisten) { try { endUnlisten(); } catch (_) {} endUnlisten = null; }
@@ -159,8 +149,8 @@
 
     var TW = g.__TAURI__.window;
     var win = TW.getCurrentWindow();
-    var snap;
-    try { snap = await readLogical(win); } catch (_) { return; }
+    var startRect;
+    try { startRect = await readLogical(win); } catch (_) { return; }
 
     active = {
       dir: dir,
@@ -168,11 +158,11 @@
       TW: TW,
       startX: e.screenX,
       startY: e.screenY,
-      x: snap.x,
-      y: snap.y,
-      w: snap.w,
-      h: snap.h,
-      sf: snap.sf,
+      x: startRect.x,
+      y: startRect.y,
+      w: startRect.w,
+      h: startRect.h,
+      sf: startRect.sf,
       handle: hit,
       pid: e.pointerId,
       // rAF coalescing: pointermove only stashes the latest screen coords + arms

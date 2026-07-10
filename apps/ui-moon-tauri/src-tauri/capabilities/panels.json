@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "panels",
-  "description": "Permission set for SYSTEM widget windows (panel-* — settings panels and prebuilt rails; design/widget-system.md 'First-Class Widgets'). System tier: pages shipped in the app bundle, never agent/user-authored content (that's widget-* + the sandbox). Inherits the widget windows' dock/snap surface plus the Tauri commands each panel type needs (updates today; more arrive with the Phase 3 settings migration).",
+  "description": "Permission set for SYSTEM widget windows (panel-* — settings panels and prebuilt rails; design/widget-system.md 'First-Class Widgets'). System tier: pages shipped in the app bundle, never agent/user-authored content (that's widget-* + the sandbox). Windows use native independent dragging plus the Tauri commands each panel type needs.",
   "windows": [
     "panel-*"
   ],
@@ -30,7 +30,6 @@
     "allow-set-panel-last-thread",
     "allow-get-platform",
     "allow-close-widget",
-    "allow-list-widget-windows",
     "allow-updater",
     "allow-hub-event",
     "allow-voice-status",
@@ -47,14 +46,8 @@
     "allow-open-widget",
     "allow-open-artifact-widget",
     "allow-collapse-to-moon",
-    "allow-set-native-controls-visible",
-    "allow-sync-traffic-light-position",
     "allow-begin-native-resize",
-    "allow-watch-drag-release",
-    "allow-dock-self",
-    "allow-dock-move-cluster",
-    "allow-begin-cluster-drag",
-    "allow-end-cluster-drag",
-    "allow-monitor-work-areas"
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize"
   ]
 }

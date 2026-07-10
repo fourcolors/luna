@@ -38,7 +38,6 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
 
   loadVendorInto(window, 'moon-protocol.js')
   loadVendorInto(window, 'moon-ws.js')
-  loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
 
   // Preload the panel module the way the harness must (jsdom never fetches
@@ -70,7 +69,6 @@ afterEach(() => {
   delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
-  delete (window as any).LunaDeckSnap
   delete (window as any).LunaDock
   vi.restoreAllMocks()
 })
@@ -153,18 +151,9 @@ describe('panel.html system-widget host', () => {
     expect(restartBtn.disabled).toBe(false)
   })
 
-  it('✕ closes via close_widget with this window label', async () => {
+  it('the Luna collapse action tucks the workspace into the moon', async () => {
     const { invoke } = bootPanel({ type: 'settings.updates' })
-    document.getElementById('close-btn')!.click()
-    await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'panel-settings-updates' }))
-  })
-
-  it('– (minimize) collapses the whole workspace into the moon via collapse_to_moon', async () => {
-    // The yellow light no longer drops THIS window to the OS dock; it tucks the
-    // entire workspace into the orb (collapse_to_moon), the global gesture.
-    const { invoke } = bootPanel({ type: 'settings.updates' })
-    document.getElementById('min-btn')!.click()
+    document.getElementById('collapse-moon-btn')!.click()
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('collapse_to_moon'))
   })
 })

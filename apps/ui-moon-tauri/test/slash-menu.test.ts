@@ -42,7 +42,6 @@ describe('SlashMenu (chat.html)', () => {
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
-    loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'moon-dock.js')
     loadVendorInto(window, 'capabilities.js') // exposes window.LunaCapabilities
 
@@ -64,7 +63,6 @@ describe('SlashMenu (chat.html)', () => {
     delete (window as any).LunaProtocol
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
-    delete (window as any).LunaDeckSnap
     delete (window as any).LunaDock
     delete (window as any).LunaCapabilities
     vi.restoreAllMocks()

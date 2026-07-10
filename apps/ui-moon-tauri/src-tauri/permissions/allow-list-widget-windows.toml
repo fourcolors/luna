@@ -1,5 +1,0 @@
-# Generated for the deck — artifact widget windows (PRD Part C / W2). See main.rs.
-[[permission]]
-identifier = "allow-list-widget-windows"
-description = "Allows the list_widget_windows command"
-commands.allow = ["list_widget_windows"]

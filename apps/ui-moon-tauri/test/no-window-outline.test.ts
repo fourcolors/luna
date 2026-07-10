@@ -15,9 +15,8 @@ import { describe, it, expect } from 'vitest'
  *   - a `border: …` (anything but none/0), or
  *   - an `outline: …` (anything but none/0).
  *
- * Transient affordances are exempt (they are not the persistent window edge):
- * .dragging / .entering / .resize-* grips. (The drag-time .snapping ::after
- * preview ring was removed; windows snap flush on release with no preview ring.)
+ * Resize grips are exempt because they are transient affordances, not a
+ * persistent window edge.
  *
  * If this test fails: you brought the window outline back. Remove the offending
  * declaration — do NOT weaken this test.
@@ -40,8 +39,8 @@ describe('no window outline (docs/no-window-outline.md)', () => {
       const offenders: string[] = []
       for (const { selector, body } of ruleBlocks(css)) {
         if (!selector.includes('.widget-shell')) continue
-        // Exempt the transient affordances + resize grips + the ::after snap ring.
-        if (/\.(snapping|dragging|entering|resize)|::after/.test(selector)) continue
+        // Exempt resize affordances and pseudo-element content layers.
+        if (/\.resize|::after/.test(selector)) continue
         if (/box-shadow:[^;]*\b0\s+0\s+0\s+[\d.]/.test(body)) offenders.push(`${selector}  →  crisp 0 0 0 Npx box-shadow ring`)
         if (/\bborder:\s*(?!none\b|0\b)/.test(body)) offenders.push(`${selector}  →  border`)
         if (/\boutline:\s*(?!none\b|0\b)/.test(body)) offenders.push(`${selector}  →  outline`)
