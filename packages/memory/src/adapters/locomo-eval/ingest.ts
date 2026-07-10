@@ -51,11 +51,11 @@ export function ingestSample(
         tags: [turn.sampleId, `session:${turn.sessionNum}`, turn.speaker],
       })
       yield* router.put(rec).pipe(
+        Effect.tap(() => Effect.sync(() => { count++ })),
         Effect.catchAll((cause) =>
           Effect.logWarning(`locomo-eval: put failed for ${rec.id}: ${String(cause)}`),
         ),
       )
-      count++
     }
     return count
   })

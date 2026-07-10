@@ -133,11 +133,22 @@ const here = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = resolve(here, ".out")
 
 const DRY_RUN = process.argv.includes("--dry-run")
-const SAMPLE_LIMIT = Number(process.env["LUNA_LOCOMO_SAMPLE_LIMIT"] ?? "10")
+/** Parse and validate a numeric env var — throws if NaN to prevent silent guard failures. */
+function parseNumericEnv(key: string, defaultValue: string): number {
+  const raw = process.env[key] ?? defaultValue
+  const parsed = Number(raw)
+  if (Number.isNaN(parsed)) {
+    console.error(`[locomo-eval] invalid numeric env var ${key}="${raw}" (not a number)`)
+    process.exit(2)
+  }
+  return parsed
+}
+
+const SAMPLE_LIMIT = parseNumericEnv("LUNA_LOCOMO_SAMPLE_LIMIT", "10")
 const QA_LIMIT = process.env["LUNA_LOCOMO_QA_LIMIT"]
-  ? Number(process.env["LUNA_LOCOMO_QA_LIMIT"])
+  ? parseNumericEnv("LUNA_LOCOMO_QA_LIMIT", process.env["LUNA_LOCOMO_QA_LIMIT"]!)
   : undefined
-const TOP_K = Number(process.env["LUNA_LOCOMO_TOPK"] ?? "10")
+const TOP_K = parseNumericEnv("LUNA_LOCOMO_TOPK", "10")
 // Retrieval strategy — see retrieval-modes.ts module docstring for the
 // diagnosis this is built on (topK/result-count budget is the dominant
 // category-1 failure mode; decompose/hierarchical are two independent,
@@ -145,13 +156,13 @@ const TOP_K = Number(process.env["LUNA_LOCOMO_TOPK"] ?? "10")
 // budget" mechanism). Default "flat" preserves today's behavior exactly —
 // nothing changes unless this env var is set.
 const RETRIEVAL_MODE = parseRetrievalMode(process.env["LUNA_LOCOMO_RETRIEVAL_MODE"])
-const HIERARCHICAL_TOP_SESSIONS = Number(process.env["LUNA_LOCOMO_HIERARCHICAL_TOP_SESSIONS"] ?? "3")
+const HIERARCHICAL_TOP_SESSIONS = parseNumericEnv("LUNA_LOCOMO_HIERARCHICAL_TOP_SESSIONS", "3")
 // Widened candidate pool hierarchical mode pulls from before re-ranking by
 // session priority and trimming to TOP_K — must be >= TOP_K to have room to
 // widen at all.
 const HIERARCHICAL_CANDIDATE_K = Math.max(
   TOP_K,
-  Number(process.env["LUNA_LOCOMO_HIERARCHICAL_CANDIDATE_K"] ?? String(TOP_K * 5)),
+  parseNumericEnv("LUNA_LOCOMO_HIERARCHICAL_CANDIDATE_K", String(TOP_K * 5)),
 )
 // Task 3 — deterministic per-session date index injected into the answer
 // prompt (see answer-model.ts's buildDateIndexBlock). Default OFF so the
@@ -169,9 +180,9 @@ const DATE_INDEX_ENABLED = (process.env["LUNA_LOCOMO_DATE_INDEX"] ?? "0") === "1
 // flag existed.
 const CATEGORY_FILTER_RAW = process.env["LUNA_LOCOMO_CATEGORY_FILTER"]
 const CATEGORY_FILTER: ReadonlySet<number> | undefined = CATEGORY_FILTER_RAW
-  ? new Set(CATEGORY_FILTER_RAW.split(",").map((s) => Number(s.trim())))
+  ? new Set(CATEGORY_FILTER_RAW.split(",").map((s) => { const n = Number(s.trim()); if (Number.isNaN(n)) throw new Error(`Invalid category: ${s}`); return n; }))
   : undefined
-const MAX_MINUTES = Number(process.env["LUNA_LOCOMO_MAX_MINUTES"] ?? "55")
+const MAX_MINUTES = parseNumericEnv("LUNA_LOCOMO_MAX_MINUTES", "55")
 const ANSWER_BACKEND = (process.env["LUNA_LOCOMO_ANSWER_BACKEND"] ?? "ollama").toLowerCase()
 const DEFAULT_MODEL_BY_BACKEND: Record<string, string | undefined> = {
   ollama: "llama3.1:8b",
@@ -274,12 +285,16 @@ async function main(): Promise<void> {
     }
   }
 
-  if (process.env["LUNA_EMBEDDER"]?.toLowerCase() === "ollama") {
-    const reachable = await probeOllama()
-    if (!reachable) {
-      console.error("[locomo-eval] Ollama unreachable — start the daemon or unset LUNA_EMBEDDER.")
-      process.exit(2)
-    }
+  // Require ollama embedder — stub produces meaningless results
+  if (process.env["LUNA_EMBEDDER"]?.toLowerCase() !== "ollama") {
+    console.error('[locomo-eval] LUNA_EMBEDDER=ollama is required (stub embedder produces meaningless results)')
+    process.exit(2)
+  }
+
+  const reachable = await probeOllama()
+  if (!reachable) {
+    console.error("[locomo-eval] Ollama unreachable — start the daemon first.")
+    process.exit(2)
   }
 
   let dataset: ReadonlyArray<LocomoSample>
@@ -431,9 +446,11 @@ async function main(): Promise<void> {
             // — the constraint that matters here is operator wall-clock
             // time, not spend.
             const elapsedSec = (Date.now() - answerStartedAt) / 1000
+            // Use total elapsed time per QA (retrieval + answer + overhead),
+            // not just answer-model time, so projection accounts for all per-QA costs
             const avgAnswerSecPerQa =
               qaAnswered > 0
-                ? answerElapsedMs / 1000 / qaAnswered
+                ? elapsedSec / qaAnswered
                 : (FALLBACK_SEC_PER_QA_BY_BACKEND[ANSWER_BACKEND] ?? 60)
             const avgIngestSecPerSample =
               samplesIngested > 0 ? ingestionElapsedMs / 1000 / samplesIngested : 0
