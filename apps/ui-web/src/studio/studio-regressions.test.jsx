@@ -4,6 +4,83 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "react-dom/client";
 import { FinalInbox } from "./final-inbox.jsx";
 import { SettingsPanel } from "./settings-panel.jsx";
+import { StudioApp } from "./final-app.jsx";
+
+const { mockLuna } = vi.hoisted(() => {
+  const noop = () => undefined;
+  const state = {
+    capabilities: {},
+    threadList: [],
+    threads: new Map(),
+    selectedThreadId: null,
+    events: [],
+    seenKinds: [],
+    advertisedKinds: [],
+    droppedTotal: 0,
+    lastDrop: null,
+    lastPingAt: null,
+    connectorCatalog: [],
+    connectorInstances: [],
+    connectorError: null,
+    skills: [],
+    skillError: null,
+    vaultItems: [],
+    vaultSync: null,
+    vaultStorage: null,
+    workflows: [],
+    workflowRuns: new Map(),
+    pinnedArtifacts: [],
+    suggestedActions: new Map(),
+    accounts: [],
+    selectedAccountId: null,
+    availableModels: null,
+  };
+  return {
+    mockLuna: {
+      store: {
+        getState: () => state,
+        dispatch: noop,
+        subscribe: () => noop,
+      },
+      status: { kind: "idle" },
+      connected: false,
+      threads: [],
+      activeThread: null,
+      pinnedArtifacts: [],
+      suggestedActions: [],
+      state,
+      config: {
+        url: "ws://127.0.0.1:4753/ui",
+        token: "1234567890abcdef",
+        model: "claude-sonnet-5",
+        enterToSend: false,
+        selectedAccountId: null,
+      },
+      obsEvents: [],
+      focusArtifact: null,
+      widgetOpen: null,
+      mcp: undefined,
+      openThread: noop,
+      newThread: noop,
+      appendMsg: noop,
+      threadNote: noop,
+      respondToAction: noop,
+      send: noop,
+      onServerFrame: () => noop,
+      updateConfig: noop,
+      reconnect: noop,
+      disconnect: noop,
+      restartServer: async () => undefined,
+      selectAccount: noop,
+      model: "claude-sonnet-5",
+    },
+  };
+});
+
+vi.mock("../data/useLunaData", () => ({ useLunaData: () => mockLuna }));
+vi.mock("../data/useLunaInbox", () => ({
+  useLunaInbox: () => ({ items: null, available: false, loading: false, refresh: () => undefined }),
+}));
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -50,6 +127,23 @@ function settingsCtx(overrides = {}) {
 }
 
 describe("Studio regression coverage", () => {
+  it("actually hides closed panels and restores them from the shelf", () => {
+    const container = mount(<StudioApp />);
+    const panel = container.querySelector('[data-screen-label="settings"]');
+    expect(panel).not.toBeNull();
+
+    act(() => panel.querySelector(".panel-close").click());
+
+    expect(panel.style.display).toBe("none");
+    const restore = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent.trim() === "settings",
+    );
+    expect(restore).not.toBeUndefined();
+
+    act(() => restore.click());
+    expect(panel.style.display).not.toBe("none");
+  });
+
   it("does not present seed/demo inbox messages as real data", () => {
     const container = mount(
       <FinalInbox items={null} connected={false} projectionAvailable={false} />,

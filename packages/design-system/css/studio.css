@@ -122,6 +122,13 @@
 }
 .ws-add:hover { border-color: var(--accent); color: var(--accent); }
 
+/* Board geometry changes at animation-frame cadence. Layout containment keeps
+   a moved or resized panel from invalidating the rest of the Studio canvas
+   while preserving the watercolor SVG filter. */
+.luna-root.studio .panel {
+  contain: layout;
+}
+
 /* workspace cross-fade when switching scenes */
 @keyframes wsFade {
   from { opacity: 0; transform: translateY(6px) scale(0.992); filter: blur(3px); }

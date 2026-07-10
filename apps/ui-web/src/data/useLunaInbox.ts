@@ -23,16 +23,20 @@
  *     the last valid projection rather than replacing it with fabricated data.
  *
  * This hook does NOT own a transport/socket — it rides useLunaData's single
- * connection via the `state`/`send`/`onServerFrame` escape hatch, so the
+ * connection via the selector store plus `send`/`onServerFrame`, so the
  * inbox projection and the user's live chat share one WebSocket.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { ClientFrame, ServerFrame, UIState } from "@luna/ui-shared/core"
+import type {
+  ClientFrame,
+  ConnectorInstanceItem,
+  ServerFrame,
+  SessionSummary,
+  UIState,
+} from "@luna/ui-shared/core"
+import { useUiSelector, type UiStore } from "./useUiStore"
+import { SYSTEM_THREAD_TAG } from "./studio-thread-projection"
 
-/** Mirrors data/useLunaData.ts's SYSTEM_THREAD_TAG — that hub filters any
- *  thread carrying this tag out of the design's thread list/sidebar and
- *  never auto-selects it as the active conversation. */
-const SYSTEM_THREAD_TAG = "system"
 const INBOX_THREAD_TAG = "inbox-projection"
 const REQUEST_TIMEOUT_MS = 45_000
 
@@ -130,7 +134,7 @@ export interface InboxItem {
 }
 
 export interface UseLunaInboxParams {
-  readonly state: UIState
+  readonly store: UiStore
   readonly send: (frame: ClientFrame) => void
   readonly onServerFrame: (listener: (frame: ServerFrame) => void) => () => void
   readonly connected: boolean
@@ -148,6 +152,11 @@ export interface LunaInbox {
    *  or the transport isn't connected). */
   readonly refresh: () => void
 }
+
+const selectThreadList = (state: UIState): ReadonlyArray<SessionSummary> => state.threadList
+const selectConnectorInstances = (
+  state: UIState,
+): ReadonlyArray<ConnectorInstanceItem> => state.connectorInstances
 
 const DEFAULT_ATTENDEE_COLORS = ["var(--wash-0)", "var(--wash-2)", "var(--wash-3)", "var(--wash-4)"]
 
@@ -301,7 +310,9 @@ function parseProjection(text: string): ReadonlyArray<InboxItem> | null {
 }
 
 export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
-  const { state, send, onServerFrame, connected, model } = params
+  const { store, send, onServerFrame, connected, model } = params
+  const threadList = useUiSelector(store, selectThreadList)
+  const connectorInstances = useUiSelector(store, selectConnectorInstances)
 
   const [items, setItems] = useState<ReadonlyArray<InboxItem> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -315,13 +326,13 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
   // — the server keeps the session row; only our in-memory ref is gone).
   useEffect(() => {
     if (threadIdRef.current) return
-    const found = state.threadList.find((s) => s.tags.includes(INBOX_THREAD_TAG))
+    const found = threadList.find((s) => s.tags.includes(INBOX_THREAD_TAG))
     if (found) threadIdRef.current = found.id
-  }, [state.threadList])
+  }, [threadList])
 
   const connectorsAvailable = useMemo(
-    () => state.connectorInstances.some((i) => i.status === "connected"),
-    [state.connectorInstances],
+    () => connectorInstances.some((instance) => instance.status === "connected"),
+    [connectorInstances],
   )
 
   const clearPending = useCallback(() => {
@@ -381,7 +392,7 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
       }
       if (!pendingRef.current || !threadIdRef.current) return
       if (frame.type === "turn-complete" && frame.threadId === threadIdRef.current) {
-        const view = state.threads.get(threadIdRef.current)
+        const view = store.getState().threads.get(threadIdRef.current)
         const last = view?.messages[view.messages.length - 1]
         const text = last && last.role === "assistant" ? last.text : ""
         clearPending()
@@ -394,7 +405,7 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
         clearPending()
       }
     })
-  }, [onServerFrame, clearPending, sendProjectionPrompt, state.threads])
+  }, [onServerFrame, clearPending, sendProjectionPrompt, store])
 
   // Re-subscribe the inbox thread whenever the connection reopens — server
   // subscriptions are per-socket, so a transparent reconnect lands on a fresh
