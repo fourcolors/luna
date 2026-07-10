@@ -33,6 +33,9 @@ export const BRAIN_ORDER = ["luna", "hermes", "openclaw"];
 /* ---------------- inbox seed (Today) ---------------- */
 // Each item can carry a `lead` (rich intro) + `rich` blocks + `options` (choice
 // cards) so Focus can open it "in full", and `prio` for the needs-you tag.
+// Demo-only: FinalInbox no longer falls back to this seed (it shows honest
+// empty states instead); kept as the reference shape for useLunaInbox's
+// InboxItem projection.
 export const INBOX_SEED = [
   { id: "i1", kind: "email", from: "Priya", title: "Re: studio launch — can we move the date?", sub: "…thinking the 14th gives us room to breathe", time: "9:02a", prio: "act",
     lead: "<b>Priya</b> · to you · Studio",

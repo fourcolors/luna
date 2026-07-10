@@ -25,6 +25,10 @@ it can push. So a real token cannot reach a public branch by accident.
   unlike the interactive `claude-code:login`, which lapses after a few idle hours
   and 401s mid-session).
 - **`UI_WS_TOKEN`** — the WebSocket bearer token clients pass in the `ws://` URL.
+  On first run the native Luna Studio app reads it (or `LUNA_UI_WS_TOKEN`) directly
+  from `~/.luna/.env` via its `load_local_connection` Tauri command to
+  auto-provision its loopback connection; the browser build keeps the manual
+  Settings flow.
 
 ## Making durable auth the install default (without leaking)
 

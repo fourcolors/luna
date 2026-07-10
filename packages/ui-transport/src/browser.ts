@@ -15,6 +15,10 @@
  * In the Moon WebKit frontend this is bundled as vendor/ui-transport.js
  * and exposed as window.LunaTransport via an IIFE wrapper.
  * Regen: `bun run bundle:ui-transport` (from repo root).
+ *
+ * Studio (ui-web) also imports this entry directly: its reconnecting
+ * transport bridge (apps/ui-web/src/data/reconnecting-transport.ts) wraps
+ * LunaWsAdapter to get bounded exponential reconnect.
  */
 
 // Contract types

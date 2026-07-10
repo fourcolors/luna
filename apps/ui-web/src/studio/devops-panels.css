@@ -37,6 +37,7 @@ select.stg-input { cursor: pointer; }
 
 .stg-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink); cursor: pointer; padding-bottom: 5px; }
 .stg-toggle input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+.stg-status.error { flex-basis: 100%; color: var(--danger, #a84242); font-size: 12px; }
 
 /* Connect/Disconnect/Restart reuse .ghost-btn; it had no disabled treatment
    yet (Connect is disabled below the 16-char token floor; Restart is

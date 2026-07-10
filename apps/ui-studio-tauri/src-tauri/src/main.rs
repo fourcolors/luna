@@ -8,6 +8,63 @@
 // until the OS-level bundle swap takes effect on the next launch.
 use tauri_plugin_updater::UpdaterExt;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalConnection {
+    url: String,
+    token: String,
+}
+
+fn unquote_env_value(raw: &str) -> &str {
+    let value = raw.trim();
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
+fn local_ui_token(env_text: &str) -> Option<String> {
+    for key in ["UI_WS_TOKEN", "LUNA_UI_WS_TOKEN"] {
+        if let Some(value) = env_text.lines().find_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (name, raw) = line.split_once('=')?;
+            (name.trim() == key).then(|| unquote_env_value(raw).to_owned())
+        }) {
+            if value.len() >= 16 {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// First-run native provisioning for the local Luna server. The browser build
+/// cannot call this command and keeps its manual Settings flow. The token is
+/// returned only to Studio's bundled `tauri://` webview, then persisted through
+/// the existing connection config path.
+#[tauri::command]
+fn load_local_connection() -> Result<LocalConnection, String> {
+    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is unavailable".to_string())?;
+    let env_path = std::path::PathBuf::from(home).join(".luna").join(".env");
+    let env_text = std::fs::read_to_string(&env_path)
+        .map_err(|e| format!("cannot read {}: {e}", env_path.display()))?;
+    let token = local_ui_token(&env_text).ok_or_else(|| {
+        "~/.luna/.env has no UI_WS_TOKEN or LUNA_UI_WS_TOKEN of at least 16 characters".to_string()
+    })?;
+    Ok(LocalConnection {
+        url: "ws://127.0.0.1:4753/ui".to_string(),
+        token,
+    })
+}
+
 /// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
 /// IndexedDB. WKWebView caches the `tauri://` asset responses (the embedded
 /// frontend) and keeps serving them ACROSS app updates — so a user on a fresh
@@ -71,6 +128,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![load_local_connection])
         .setup(|app| {
             clear_webview_cache_if_updated();
 
@@ -125,4 +183,24 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Luna Studio");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_ui_token;
+
+    #[test]
+    fn local_token_prefers_canonical_key_and_unquotes_it() {
+        let env = "LUNA_UI_WS_TOKEN=legacy-token-123456\nUI_WS_TOKEN=\"canonical-token-123456\"\n";
+        assert_eq!(
+            local_ui_token(env).as_deref(),
+            Some("canonical-token-123456")
+        );
+    }
+
+    #[test]
+    fn local_token_rejects_short_or_missing_values() {
+        assert_eq!(local_ui_token("UI_WS_TOKEN=short\n"), None);
+        assert_eq!(local_ui_token("OTHER=value\n"), None);
+    }
 }
