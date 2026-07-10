@@ -21,11 +21,10 @@ real culprit was a **skin/chrome edge ring**, not a focus ring.
 - ✅ A **blurred** halo only, via `box-shadow: var(--dk-win-shadow)` on
   `.widget-shell` — i.e. shadows with a blur radius and offset, no `0 0 0 Npx`
   spread ring.
-- ✅ Transient drag affordances are exempt because they are not the
-  persistent window edge: `.widget-shell.dragging`, `.widget-shell.entering`,
-  and the `.resize-*` grips. (The drag-time `.widget-shell.snapping::after`
-  predictive snap ring was removed — windows now snap flush on release with no
-  preview ring — so do not re-add it.)
+- ✅ The `.resize-*` grips are exempt because they are transient affordances,
+  not a persistent window edge. (The old `.dragging` / `.entering` /
+  `.snapping::after` drag affordances were removed along with magnetic
+  snapping - macOS owns drags natively now - so do not re-add them.)
 
 ## Sources that were removed (do not re-add)
 

@@ -558,7 +558,8 @@ against the live layout.
 
 ## Snap / Stick
 
-> ✅ **As-built (current — supersedes the trigger + group-drag notes below):**
+> ✅ **As-built (2026-06, itself retired by the 2026-07-10 native-window update
+> at the top of this file - supersedes the trigger + group-drag notes below):**
 > the drag/snap/resize overhaul replaced the emulated live-magnet path. Every
 > drag now goes native via `W.startDragging()` and snaps ONCE on release (release
 > detected by the `watch_drag_release` AppKit monitor → `luna-drag-released`), so
