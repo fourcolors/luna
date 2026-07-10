@@ -2,6 +2,20 @@
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live in GitHub Issues for `fourcolors/luna`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Engineering skills use the canonical five-role triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Luna uses a single root context with root-level ADRs when they exist. See `docs/agents/domain.md`.
+
 - Build/test: `bun run install:safe`, then `bun run test` (vitest), `bun run test:bun`, `bun run typecheck` - see root `package.json` scripts.
 - Run the chat server locally: `bun run --filter '@luna/ui-web' server:chat` (`apps/ui-web/scripts/chat-server.ts`).
 - Thread lifecycle: the idle reaper releases only a thread's RUNTIME; recovery on next touch goes through `ensureThreadLive` and the per-thread PubSub map in `packages/chat-service/src/chat-service.ts` (must stay outside the thread scope so pre-reap subscribers keep receiving frames).

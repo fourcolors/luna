@@ -16,22 +16,18 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  type ChatMessage,
   type ClientFrame,
   type ConnectionStatus,
-  type ObsEvent,
-  type PinnedArtifactItem,
   type ServerFrame,
-  type SessionSummary,
   type SuggestedActionStatus,
   type SuggestedActionWire,
-  type ThreadView,
   type TransportHandle,
   type UIState,
 } from "@luna/ui-shared/core"
 import { loadConfig, saveConfig, type PersistedConfig } from "./config"
 import { loadNativeLocalConnection, shouldHydrateNativeLocal } from "./native-connection"
-import { useUiStore } from "./useUiStore"
+import { isSystemThread } from "./studio-thread-projection"
+import { useUiSelector, useUiStore, type UiStore } from "./useUiStore"
 import { useTransport } from "./useTransport"
 
 export type StudioStatus = "needs" | "active" | "running" | "quiet" | "done"
@@ -55,62 +51,11 @@ export interface StudioThread {
   readonly awaiting: boolean
 }
 
-const WASHES = [
-  "var(--wash-0)",
-  "var(--wash-1)",
-  "var(--wash-2)",
-  "var(--wash-3)",
-  "var(--wash-4)",
-] as const
-
-/** Stable tint per thread id (deterministic hash → palette wash). */
-function tintFor(id: string): string {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
-  return WASHES[Math.abs(h) % WASHES.length] ?? "var(--wash-2)"
-}
-
-function mapThread(
-  summary: SessionSummary,
-  view: ThreadView | undefined,
-  selectedId: string | null,
-): StudioThread {
-  const awaiting = view?.inFlight != null
-  const msgs: StudioMsg[] = (view?.messages ?? []).map((m: ChatMessage) => ({
-    who: m.role === "assistant" ? "luna" : "user",
-    text: m.text,
-  }))
-  // Live streaming text for the in-flight turn (not yet a finalized message).
-  if (view?.inFlight && view.inFlight.text) {
-    msgs.push({ who: "luna", text: view.inFlight.text })
-  }
-  const status: StudioStatus = awaiting
-    ? "running"
-    : summary.id === selectedId
-      ? "active"
-      : "quiet"
-  return {
-    id: summary.id,
-    name: summary.title ?? "new thread",
-    tint: tintFor(summary.id),
-    brain: "luna",
-    status,
-    note: summary.lastMessagePreview ?? "",
-    msgs,
-    awaiting,
-  }
-}
-
 const CLIENT_INFO = { name: "luna-web", version: "0.0.1", platform: "browser" } as const
-
-/**
- * Threads carrying this tag are hub-internal (e.g. useLunaInbox's inbox-sync
- * thread) — never a user conversation. Filtered out of the design's thread
- * list/sidebar and never auto-selected as the "first" thread on a fresh boot.
- * Keep in sync with data/useLunaInbox.ts's SYSTEM_THREAD_TAG.
- */
-const SYSTEM_THREAD_TAG = "system"
-const isSystemThread = (s: SessionSummary): boolean => s.tags.includes(SYSTEM_THREAD_TAG)
+const selectThreadList = (state: UIState) => state.threadList
+const selectSelectedThreadId = (state: UIState) => state.selectedThreadId
+const selectSuggestedActions = (state: UIState) => state.suggestedActions
+const selectMcpCapable = (state: UIState): boolean => state.capabilities.mcpApps === true
 
 /**
  * P4 vibe-coded widgets — the board panels this web client can summon by
@@ -166,10 +111,11 @@ export class RestartRefusedError extends Error {
 }
 
 export interface LunaData {
+  /** Selector-capable reducer store. Live panels subscribe to owned slices
+   *  instead of receiving the entire UIState through the Studio board. */
+  readonly store: UiStore
   readonly status: ConnectionStatus
   readonly connected: boolean
-  readonly threads: StudioThread[]
-  readonly activeThread: string | null
   readonly openThread: (id: string) => void
   readonly newThread: () => void
   readonly appendMsg: (threadId: string, msg: StudioMsg) => void
@@ -185,12 +131,6 @@ export interface LunaData {
   readonly suggestedActions: ReadonlyArray<SuggestedActionWire>
   /** Accept (auto-executes server-side) or dismiss one suggested action. */
   readonly respondToAction: (actionId: string, decision: "accept" | "dismiss") => void
-  /**
-   * Escape hatch for seams that need the raw reducer state or to send a
-   * frame type this hub doesn't wrap (e.g. useLunaInbox minting its own
-   * system thread + turn). Prefer the narrow handlers above where they exist.
-   */
-  readonly state: UIState
   readonly send: (frame: ClientFrame) => void
   /** Subscribe to every raw ServerFrame as it arrives, in addition to the
    *  reducer dispatch. For frame types the reducer intentionally no-ops
@@ -207,23 +147,10 @@ export interface LunaData {
   /** The default model new threads are created with (persisted config). */
   readonly model: string
 
-  /**
-   * P4 vibe-coded widgets — durable pinned artifacts (agent-authored `widget`/
-   * `mcp-app` kinds are the ones final-app renders as board panels; `code`/
-   * `html`/`markdown` kinds are content previews it doesn't summon here). The
-   * server resends this after every hello, so rebuilding a widget panel from
-   * it on each connect is what makes a summoned widget survive a reload —
-   * nothing is cached client-side; the server's artifact store IS the
-   * persistence.
-   */
-  readonly pinnedArtifacts: ReadonlyArray<PinnedArtifactItem>
   /** The MCP Apps relay for kind="mcp-app" widgets — undefined until the
    *  server advertises `capabilities.mcpApps` (WidgetFrame then falls back to
    *  a static source view instead of a dead iframe). */
   readonly mcp: WebMcpRelay | undefined
-  /** Live obs-event stream, forwarded (cap-gated) into a kind="widget"
-   *  iframe's luna.subscribe() callers. */
-  readonly obsEvents: ReadonlyArray<ObsEvent>
   /** An `open-artifact-widget` frame landed (widget_write/mcp_app_write just
    *  created one, or the user asked to reopen one) — final-app spawns/focuses
    *  a widget panel for it. Nonce forces re-focus on a repeat open. */
@@ -234,7 +161,12 @@ export interface LunaData {
 }
 
 export function useLunaData(): LunaData {
-  const { state, dispatch } = useUiStore()
+  const store = useUiStore()
+  const threadList = useUiSelector(store, selectThreadList)
+  const selectedThreadId = useUiSelector(store, selectSelectedThreadId)
+  const suggestedActionsByThread = useUiSelector(store, selectSuggestedActions)
+  const mcpCapable = useUiSelector(store, selectMcpCapable)
+  const dispatch = store.dispatch
   // Reactive persisted config (the Settings panel edits url/token/model/account);
   // cfgRef mirrors it so the stable newThread()/bootstrap closures read the latest.
   const [config, setConfig] = useState<PersistedConfig>(loadConfig)
@@ -449,10 +381,10 @@ export function useLunaData(): LunaData {
   const mintedRef = useRef(false)
   useEffect(() => {
     if (status.kind !== "open") return
-    if (state.selectedThreadId) return
+    if (selectedThreadId) return
     // Skip hub-internal threads (e.g. useLunaInbox's inbox-sync thread) —
     // they must never become the auto-selected "active" conversation.
-    const first = state.threadList.find((s) => !isSystemThread(s))
+    const first = threadList.find((summary) => !isSystemThread(summary))
     if (first) {
       dispatch({ tag: "select-thread", threadId: first.id })
       send({ type: "subscribe", threadId: first.id })
@@ -460,7 +392,7 @@ export function useLunaData(): LunaData {
       mintedRef.current = true
       send({ type: "new-thread", model: cfgRef.current.model })
     }
-  }, [status.kind, state.threadList, state.selectedThreadId, dispatch, send])
+  }, [status.kind, threadList, selectedThreadId, dispatch, send])
 
   // Subscribe whenever the selection lands on an unsubscribed thread (covers
   // server auto-select on thread-created). Idempotent server-side. The set is
@@ -474,12 +406,12 @@ export function useLunaData(): LunaData {
       subscribedRef.current.clear()
       return
     }
-    const id = state.selectedThreadId
+    const id = selectedThreadId
     if (id && !subscribedRef.current.has(id)) {
       subscribedRef.current.add(id)
       send({ type: "subscribe", threadId: id })
     }
-  }, [state.selectedThreadId, status.kind, send])
+  }, [selectedThreadId, status.kind, send])
 
   // Selection guard: the reducer auto-selects ANY newly-created thread, incl.
   // useLunaInbox's hidden "system" inbox-sync thread — which would hijack the
@@ -489,29 +421,21 @@ export function useLunaData(): LunaData {
   // selection so a hijack can be undone.
   const lastUserThreadRef = useRef<string | null>(null)
   useEffect(() => {
-    const id = state.selectedThreadId
+    const id = selectedThreadId
     if (!id) return
-    const summary = state.threadList.find((s) => s.id === id)
+    const summary = threadList.find((candidate) => candidate.id === id)
     if (!summary) return
     if (isSystemThread(summary)) {
       const prev = lastUserThreadRef.current
       const restore =
-        prev && state.threadList.some((s) => s.id === prev && !isSystemThread(s))
+        prev && threadList.some((candidate) => candidate.id === prev && !isSystemThread(candidate))
           ? prev
-          : (state.threadList.find((s) => !isSystemThread(s))?.id ?? null)
+          : (threadList.find((candidate) => !isSystemThread(candidate))?.id ?? null)
       if (restore && restore !== id) dispatch({ tag: "select-thread", threadId: restore })
     } else {
       lastUserThreadRef.current = id
     }
-  }, [state.selectedThreadId, state.threadList, dispatch])
-
-  const threads = useMemo<StudioThread[]>(
-    () =>
-      state.threadList
-        .filter((s: SessionSummary) => !isSystemThread(s))
-        .map((s: SessionSummary) => mapThread(s, state.threads.get(s.id), state.selectedThreadId)),
-    [state.threadList, state.threads, state.selectedThreadId],
-  )
+  }, [selectedThreadId, threadList, dispatch])
 
   const openThread = useCallback(
     (id: string): void => {
@@ -556,7 +480,7 @@ export function useLunaData(): LunaData {
       let changed = false
       for (const [id] of overrides) {
         let found = false
-        for (const actions of state.suggestedActions.values()) {
+        for (const actions of suggestedActionsByThread.values()) {
           const action = actions.find((a) => a.id === id)
           if (action) {
             found = true
@@ -569,22 +493,22 @@ export function useLunaData(): LunaData {
       }
       return changed ? next : overrides
     })
-  }, [state.suggestedActions])
+  }, [suggestedActionsByThread])
 
   const suggestedActions = useMemo<ReadonlyArray<SuggestedActionWire>>(() => {
-    const threadId = state.selectedThreadId
+    const threadId = selectedThreadId
     if (!threadId) return []
-    const actions = state.suggestedActions.get(threadId) ?? []
+    const actions = suggestedActionsByThread.get(threadId) ?? []
     if (optimisticActions.size === 0) return actions
     return actions.map((a) => {
       const override = optimisticActions.get(a.id)
       return override !== undefined ? { ...a, status: override } : a
     })
-  }, [state.selectedThreadId, state.suggestedActions, optimisticActions])
+  }, [selectedThreadId, suggestedActionsByThread, optimisticActions])
 
   const respondToAction = useCallback(
     (actionId: string, decision: "accept" | "dismiss"): void => {
-      const threadId = state.selectedThreadId
+      const threadId = selectedThreadId
       if (!threadId) return
       const optimistic: SuggestedActionStatus = decision === "accept" ? "accepted" : "dismissed"
       setOptimisticActions((prev) => new Map(prev).set(actionId, optimistic))
@@ -598,27 +522,24 @@ export function useLunaData(): LunaData {
         })
       }, OPTIMISTIC_ROLLBACK_MS)
     },
-    [state.selectedThreadId, send],
+    [selectedThreadId, send],
   )
 
-  const mcpCapable = state.capabilities.mcpApps === true
   const mcp = useMemo<WebMcpRelay | undefined>(
     () => (mcpCapable ? { readResource: mcpReadResource, callTool: mcpCallTool } : undefined),
     [mcpCapable, mcpReadResource, mcpCallTool],
   )
 
   return {
+    store,
     status,
     connected: status.kind === "open",
-    threads,
-    activeThread: state.selectedThreadId,
     openThread,
     newThread,
     appendMsg,
     threadNote,
     suggestedActions,
     respondToAction,
-    state,
     send,
     onServerFrame,
     config,
@@ -628,13 +549,8 @@ export function useLunaData(): LunaData {
     selectAccount,
     restartServer,
     model: cfgRef.current.model,
-    pinnedArtifacts: state.pinnedArtifacts,
     mcp,
-    obsEvents: state.events,
     focusArtifact,
     widgetOpen,
   }
 }
-
-// Keep UIState referenced for the type-only import above (documentation aid).
-export type { UIState }

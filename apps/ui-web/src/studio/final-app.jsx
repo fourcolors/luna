@@ -1,27 +1,18 @@
 // final-app.jsx — Luna Studio (final): Home space with inbox + threads,
 // City and Build spaces, keyboard jumping, and threads woven through chat.
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { LUNA_PALETTES, PipApp, TimerApp, WeatherApp, MusicApp, HabitApp, StickyApp, SecureApp } from "./luna-mini-apps.jsx";
 import { TASK_DEFS, BRAINS } from "./studio-data.jsx";
 import { BrainBadge } from "./studio-brain.jsx";
-import { GeneratedWidget } from "./studio-widget.jsx";
-import { WidgetFrame } from "./WidgetFrame.jsx";
 import { TaskRunner } from "./studio-task.jsx";
 import { MapApp } from "./studio-map.jsx";
-import { makeTaskDef } from "./studio-chat.jsx";
+import { taskDefFromDelegation } from "./task-defs.js";
 import { AmbientLuna, VoiceScene } from "./studio-voice.jsx";
-import { ThreadsApp } from "./final-threads.jsx";
-import { ThreadChat } from "./final-chat.jsx";
-import { FinalInbox } from "./final-inbox.jsx";
 import { useLunaData } from "../data/useLunaData";
-import { useLunaInbox } from "../data/useLunaInbox";
-import { SettingsPanel } from "./settings-panel.jsx";
-import ConnectorsPanel from "./connectors-panel.jsx";
-import { ObsPanel } from "./obs-panel.jsx";
-import { ArtifactsPanel } from "./artifacts-panel.jsx";
-import { SkillsPanel } from "./skills-panel.jsx";
-import { VaultPanel } from "./vault-panel.jsx";
-import { WorkflowGallery } from "./workflows-panel.jsx";
+import { useStudioActiveThreadName } from "../data/useStudioThreads";
+import { useUiSelector } from "../data/useUiStore";
+import { createFrameCoalescer } from "../data/frame-coalescer";
+import { STUDIO_LIVE_PANELS } from "./studio-live-panels.jsx";
 
 // Dev-ops panels reachable from the topbar settings-gear launcher. Settings +
 // Events always show; the rest gate on the hello capability.
@@ -50,12 +41,25 @@ function useTweaks(defaults) {
   return [values, setTweak];
 }
 
+// React 18 has no useEffectEvent. This keeps board commands stable for memoized
+// panels while always dispatching through the newest implementation/state.
+function useStableEvent(callback) {
+  const callbackRef = useRef(callback);
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+  return useCallback((...args) => callbackRef.current(...args), []);
+}
+
 const RAIL_W = 78;
 const EDGE_MARGIN = 24;
 const LEFT_EDGE = RAIL_W + EDGE_MARGIN;
 const SNAP_GAP = 16;
 const TOP_MIN = 64;
 const HEAD_H = 40;
+
+const selectCapabilities = (state) => state.capabilities;
+const selectPinnedArtifacts = (state) => state.pinnedArtifacts;
 
 /* ---------------- workspaces ---------------- */
 const WS_ICONS = {
@@ -119,24 +123,12 @@ function buildPanels(vw, vh) {
 }
 
 const DEFS = {
-  chat:    { title: "luna", render: (ctx) => <ThreadChat threads={ctx.threads} activeId={ctx.activeThread} onSwitch={ctx.openThread} onNew={ctx.newThread} onAppend={ctx.appendMsg} onThreadNote={ctx.threadNote} onSpawn={ctx.spawn} onVoice={ctx.openVoice} onFocus={ctx.focusInbox} brain={ctx.chatBrain} setBrain={ctx.setChatBrain} suggestedActions={ctx.suggestedActions} onAcceptAction={ctx.acceptAction} onDismissAction={ctx.dismissAction} /> },
-  threads: { title: "threads", render: (ctx) => <ThreadsApp threads={ctx.threads} activeId={ctx.activeThread} onOpen={ctx.openThread} /> },
-  inbox:   { title: "inbox", render: (ctx) => <FinalInbox items={ctx.inboxItems} connected={ctx.connected} projectionAvailable={ctx.inboxProjectionAvailable} loading={ctx.inboxLoading} onDelegate={ctx.delegate} onToast={ctx.toast} onOpenThread={ctx.openThread} /> },
+  chat:    { title: "luna", Content: STUDIO_LIVE_PANELS.chat },
+  threads: { title: "threads", Content: STUDIO_LIVE_PANELS.threads },
+  inbox:   { title: "inbox", Content: STUDIO_LIVE_PANELS.inbox },
   map:     { title: "the city", render: (ctx) => <MapApp onToast={ctx.toast} /> },
   task:    { title: "task", render: (ctx, p) => <TaskRunner def={p.def} startedAt={p.startedAt} /> },
-  widget:  { title: "widget", render: (ctx, p) => {
-    // Real vibe-coded widget: p.artifactId names a pinned widget/mcp-app
-    // artifact the agent authored (widget_write/mcp_app_write) -> render it
-    // in the real sandboxed cage. Fall back to the mock GeneratedWidget for
-    // the Build/VoiceScene demo path, which spawns a local spec, not a
-    // server artifact.
-    if (!p.artifactId) return <GeneratedWidget spec={p.spec} fresh={p.fresh} />;
-    const artifact = ctx.widgetArtifacts.get(p.artifactId);
-    if (!artifact) {
-      return <div className="gw-wrap widget-frame-host"><div className="gw-stat-note">this widget isn't pinned anymore.</div></div>;
-    }
-    return <WidgetFrame artifact={artifact} mcp={ctx.mcp} fresh={p.fresh} />;
-  } },
+  widget:  { title: "widget", Content: STUDIO_LIVE_PANELS.widget },
   pip:     { title: "pip", render: () => <PipApp /> },
   timer:   { title: "focus timer", w: 240, h: 200, render: () => <TimerApp /> },
   weather: { title: "weather", w: 260, h: 250, render: () => <WeatherApp /> },
@@ -144,13 +136,13 @@ const DEFS = {
   habit:   { title: "habits", w: 300, h: 230, render: () => <HabitApp /> },
   sticky:  { title: "sticky note", w: 250, h: 220, render: (ctx, p) => <StickyApp initial={p.request} /> },
   secure:  { title: "secure", w: 300, h: 290, render: (ctx, p) => <SecureApp request={p.request} kind={p.kind} onSubmit={(pl) => ctx.submitSecure(p.id, pl)} onCancel={() => ctx.close(p.id)} /> },
-  settings:   { title: "settings",   render: (ctx) => <SettingsPanel ctx={ctx} /> },
-  connectors: { title: "connectors", render: (ctx) => <ConnectorsPanel enabled={ctx.state.capabilities.connectors === true} catalog={ctx.state.connectorCatalog} instances={ctx.state.connectorInstances} lastError={ctx.state.connectorError} disabled={!ctx.connected} onConnectApiKey={(definitionId, secretRef, capabilityIds, label) => ctx.send({ type: "connector-connect", requestId: "conn_" + Date.now(), definitionId, label: label ?? definitionId, secretRef, capabilityIds })} onDisconnect={(instanceId) => ctx.send({ type: "connector-disconnect", instanceId })} onSetClient={(definitionId, clientId, clientSecret) => ctx.send({ type: "connector-set-client", requestId: "setclient_" + Date.now(), definitionId, clientId, ...(clientSecret ? { clientSecret } : {}) })} /> },
-  obs:        { title: "events",     render: (ctx) => <ObsPanel events={ctx.state.events} seenKinds={ctx.state.seenKinds} advertisedKinds={ctx.state.advertisedKinds} lastDrop={ctx.state.lastDrop} droppedTotal={ctx.state.droppedTotal} lastPingAt={ctx.state.lastPingAt} /> },
-  artifacts:  { title: "artifacts",  render: (ctx) => <ArtifactsPanel artifacts={ctx.activeThreadArtifacts} pinned={ctx.pinnedArtifacts} artifactsCapable={ctx.artifactsCapable} focusSignal={ctx.focusArtifact} mcp={ctx.mcp} onPin={ctx.pinArtifact} onUnpin={ctx.unpinArtifact} /> },
-  skills:     { title: "skills",     render: (ctx) => <SkillsPanel skills={ctx.state.skills} lastError={ctx.state.skillError} disabled={!ctx.connected} onToggle={(id, enabled) => ctx.send({ type: "skill-toggle", id, enabled })} /> },
-  vault:      { title: "vault",      render: (ctx) => <VaultPanel items={ctx.state.vaultItems} sync={ctx.state.vaultSync} storage={ctx.state.vaultStorage} disabled={!ctx.connected} onServerFrame={ctx.onServerFrame} onPut={(params) => ctx.send({ type: "vault-put", ...params })} onDelete={(params) => ctx.send({ type: "vault-delete", ...params })} onSyncConfig={(params) => ctx.send({ type: "vault-sync-config", ...params })} onImport={(params) => ctx.send({ type: "vault-import", ...params })} /> },
-  workflows:  { title: "workflows",  render: (ctx) => <WorkflowGallery workflows={ctx.state.workflows} runs={ctx.state.workflowRuns} onSelectRuns={(jobId) => ctx.send({ type: "workflow-runs-request", jobId })} onRefresh={() => ctx.send({ type: "workflow-refresh" })} /> },
+  settings:   { title: "settings",   Content: STUDIO_LIVE_PANELS.settings },
+  connectors: { title: "connectors", Content: STUDIO_LIVE_PANELS.connectors },
+  obs:        { title: "events",     Content: STUDIO_LIVE_PANELS.obs },
+  artifacts:  { title: "artifacts",  Content: STUDIO_LIVE_PANELS.artifacts },
+  skills:     { title: "skills",     Content: STUDIO_LIVE_PANELS.skills },
+  vault:      { title: "vault",      Content: STUDIO_LIVE_PANELS.vault },
+  workflows:  { title: "workflows",  Content: STUDIO_LIVE_PANELS.workflows },
 };
 const DEFAULT_SIZE = { task: { w: 304, h: 330 }, widget: { w: 262, h: 244 }, map: { w: 440, h: 360 }, inbox: { w: 340, h: 420 }, chat: { w: 420, h: 460 }, threads: { w: 260, h: 380 }, settings: { w: 340, h: 540 }, connectors: { w: 380, h: 480 }, obs: { w: 560, h: 400 }, artifacts: { w: 360, h: 500 }, skills: { w: 400, h: 460 }, vault: { w: 400, h: 560 }, workflows: { w: 380, h: 460 } };
 
@@ -163,31 +155,123 @@ function snapAxis(raw, candidates, thresh) {
   return best;
 }
 
+function sameGuides(a, b) {
+  return a.length === b.length && a.every((guide, index) => (
+    guide.type === b[index].type && guide.at === b[index].at
+  ));
+}
+
+function StudioDate() {
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const next = new Date(today);
+    next.setHours(24, 0, 0, 25);
+    const timer = setTimeout(() => setToday(new Date()), next.getTime() - Date.now());
+    return () => clearTimeout(timer);
+  }, [today]);
+  return (
+    <span className="date">
+      {today.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+    </span>
+  );
+}
+
+const PanelWindow = React.memo(function PanelWindow({
+  panel,
+  active,
+  switching,
+  snapped,
+  dragging,
+  title,
+  brain,
+  live,
+  ctx,
+  onBringToFront,
+  onStartDrag,
+  onToggleMin,
+  onClose,
+}) {
+  const def = DEFS[panel.type];
+  const Content = def.Content;
+  return (
+    <div
+      className={"panel" + (panel.entering ? " entering" : "") + (active && switching ? " wsenter" : "") + (snapped ? " snapped" : "") + (panel.min ? " minimized" : "") + (dragging ? " dragging" : "")}
+      data-screen-label={title}
+      style={{
+        left: panel.x,
+        top: panel.y,
+        width: panel.w,
+        height: panel.min ? HEAD_H : panel.h,
+        zIndex: panel.z,
+        display: active && !panel.closed ? undefined : "none",
+        "--panel-tint": brain ? "var(--brain-" + brain + ")" : "var(--wash-2)",
+      }}
+      onPointerDown={() => onBringToFront(panel.id)}
+    >
+      <div className="panel-wash"></div>
+      <div className="panel-head" onPointerDown={(event) => onStartDrag(event, panel.id, "move")}>
+        <span className="wash-dot"></span>
+        <span className="panel-title">{title}</span>
+        {brain && <BrainBadge brain={brain} live={live} showName={panel.w >= 320} />}
+        <button className="panel-min" title={panel.min ? "expand" : "minimize"} onClick={() => onToggleMin(panel.id)} onPointerDown={(event) => event.stopPropagation()}>{panel.min ? "+" : "–"}</button>
+        <button className="panel-close" title="close" onClick={() => onClose(panel.id)} onPointerDown={(event) => event.stopPropagation()}>✕</button>
+      </div>
+      <div className="panel-body">
+        {Content ? <Content ctx={ctx} panel={panel} /> : def.render(ctx, panel)}
+      </div>
+      {!panel.min && <div className="resize-handle" onPointerDown={(event) => { event.stopPropagation(); onStartDrag(event, panel.id, "resize"); }}></div>}
+    </div>
+  );
+});
+
 export function StudioApp() {
+  const luna = useLunaData();
+  const client = useMemo(() => ({
+    store: luna.store,
+    status: luna.status,
+    connected: luna.connected,
+    openThread: luna.openThread,
+    newThread: luna.newThread,
+    appendMsg: luna.appendMsg,
+    threadNote: luna.threadNote,
+    suggestedActions: luna.suggestedActions,
+    respondToAction: luna.respondToAction,
+    send: luna.send,
+    onServerFrame: luna.onServerFrame,
+    config: luna.config,
+    updateConfig: luna.updateConfig,
+    reconnect: luna.reconnect,
+    disconnect: luna.disconnect,
+    selectAccount: luna.selectAccount,
+    restartServer: luna.restartServer,
+    model: luna.model,
+    mcp: luna.mcp,
+    focusArtifact: luna.focusArtifact,
+    widgetOpen: luna.widgetOpen,
+  }), [
+    luna.store, luna.status, luna.connected, luna.openThread, luna.newThread,
+    luna.appendMsg, luna.threadNote, luna.suggestedActions, luna.respondToAction,
+    luna.send, luna.onServerFrame, luna.config, luna.updateConfig, luna.reconnect,
+    luna.disconnect, luna.selectAccount, luna.restartServer, luna.model, luna.mcp,
+    luna.focusArtifact, luna.widgetOpen,
+  ]);
+  return <StudioBoard luna={client} />;
+}
+
+const StudioBoard = React.memo(function StudioBoard({ luna }) {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [workspaces, setWorkspaces] = useState(WORKSPACES_SEED);
   const [ws, setWs] = useState("home");
   const [panels, setPanels] = useState(() => buildPanels(window.innerWidth, window.innerHeight));
-  // Real Luna data (threads + chat) via the transport/reducer hub. Shaped to
-  // match the design's mock so ThreadsApp/ThreadChat render unchanged.
-  const luna = useLunaData();
-  const threads = luna.threads;
-  const activeThread = luna.activeThread;
-  // P4 vibe-coded widgets: pinned widget/mcp-app artifacts, keyed by id so
-  // DEFS.widget's render can look one up in O(1) per panel.
+  const pinnedArtifacts = useUiSelector(luna.store, selectPinnedArtifacts);
+  const capabilities = useUiSelector(luna.store, selectCapabilities);
+  const activeThreadName = useStudioActiveThreadName(luna.store);
+  // P4 vibe-coded widgets: pinned artifacts keyed for board-level focus/open
+  // effects. The widget panel owns its separate live selector projection.
   const widgetArtifacts = useMemo(
-    () => new Map(luna.pinnedArtifacts.map((a) => [a.id, a])),
-    [luna.pinnedArtifacts],
+    () => new Map(pinnedArtifacts.map((artifact) => [artifact.id, artifact])),
+    [pinnedArtifacts],
   );
-  // P3 inbox seam: agent-mediated connector projection, rides luna's single
-  // transport (state/send/onServerFrame) — see data/useLunaInbox.ts.
-  const inbox = useLunaInbox({
-    state: luna.state,
-    send: luna.send,
-    onServerFrame: luna.onServerFrame,
-    connected: luna.connected,
-    model: luna.model,
-  });
   const [guides, setGuides] = useState([]);
   const [snappedId, setSnappedId] = useState(null);
   const [dragId, setDragId] = useState(null);
@@ -205,6 +289,26 @@ export function StudioApp() {
   const dragRef = useRef(null);
   const toastTimer = useRef(null);
   const wsCount = useRef(0);
+  const applyPointerPosition = useStableEvent(({ clientX, clientY }) => {
+    applyPointerMove(clientX, clientY);
+  });
+  const pointerFrames = useMemo(
+    () => createFrameCoalescer(applyPointerPosition),
+    [applyPointerPosition],
+  );
+  const pointerMoveListener = useStableEvent((event) => {
+    pointerFrames.push({ clientX: event.clientX, clientY: event.clientY });
+  });
+  const pointerUpListener = useStableEvent(() => {
+    pointerFrames.flush();
+    finishPointerDrag();
+  });
+
+  useEffect(() => () => {
+    pointerFrames.cancel();
+    window.removeEventListener("pointermove", pointerMoveListener);
+    window.removeEventListener("pointerup", pointerUpListener);
+  }, [pointerFrames, pointerMoveListener, pointerUpListener]);
 
   /* live tick — only while a task is running (anywhere) */
   const anyRunning = panels.some((p) => p.type === "task" && !p.closed && p.startedAt != null && (now - p.startedAt) / 1000 < p.def.dur);
@@ -223,12 +327,15 @@ export function StudioApp() {
         const seed = buildPanels(vw, vh);
         const byId = {};
         seed.forEach((s) => { byId[s.id] = s; });
-        return prev.map((p) => {
+        let changed = false;
+        const next = prev.map((p) => {
           if (p.userMoved || !byId[p.id]) return p;
           const s = byId[p.id];
           if (p.x === s.x && p.y === s.y && p.w === s.w && p.h === s.h) return p;
+          changed = true;
           return { ...p, x: s.x, y: s.y, w: s.w, h: s.h };
         });
+        return changed ? next : prev;
       });
       clearTimeout(revealT);
       revealT = setTimeout(() => setReady(true), 140);
@@ -335,12 +442,12 @@ export function StudioApp() {
   // don't already have (every time the pinned list changes) is what makes a
   // summoned widget survive a reload with zero client-side caching.
   useEffect(() => {
-    for (const a of luna.pinnedArtifacts) {
+    for (const a of pinnedArtifacts) {
       if (a.kind === "widget" || a.kind === "mcp-app") {
         ensureWidgetPanel(a.id, { title: a.title, fresh: false });
       }
     }
-  }, [luna.pinnedArtifacts]);
+  }, [pinnedArtifacts]);
 
   // An open-artifact-widget frame: widget_write/mcp_app_write just created
   // one (auto-open), or the user asked Luna to reopen a closed one. Focus an
@@ -399,37 +506,58 @@ export function StudioApp() {
     if (e.button !== 0) return;
     e.preventDefault();
     const p = panelsRef.current.find((q) => q.id === id);
+    if (!p) return;
     dragRef.current = { id, mode, startX: e.clientX, startY: e.clientY, ox: p.x, oy: p.y, ow: p.w, oh: p.h, ws: p.ws };
     bringToFront(id);
     setDragId(id);
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointermove", pointerMoveListener);
+    window.addEventListener("pointerup", pointerUpListener);
   }
-  function onPointerMove(e) {
+  function applyPointerMove(clientX, clientY) {
     const d = dragRef.current; if (!d) return;
     if (!d.moved) {
       d.moved = true;
       setPanels((ps) => ps.map((p) => (p.id === d.id ? { ...p, userMoved: true } : p)));
     }
-    const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
+    const dx = clientX - d.startX, dy = clientY - d.startY;
     if (d.mode === "move") {
       const p = panelsRef.current.find((q) => q.id === d.id);
+      if (!p) return;
       const res = computeSnap(d.id, d.ox + dx, d.oy + dy, p.w, p.min ? HEAD_H : p.h, d.ws);
-      setGuides(res.guides);
-      setSnappedId(res.snapped ? d.id : null);
-      setPanels((ps) => ps.map((q) => (q.id === d.id ? { ...q, x: res.x, y: res.y } : q)));
+      setGuides((current) => sameGuides(current, res.guides) ? current : res.guides);
+      setSnappedId((current) => {
+        const next = res.snapped ? d.id : null;
+        return current === next ? current : next;
+      });
+      setPanels((ps) => {
+        let changed = false;
+        const next = ps.map((q) => {
+          if (q.id !== d.id || (q.x === res.x && q.y === res.y)) return q;
+          changed = true;
+          return { ...q, x: res.x, y: res.y };
+        });
+        return changed ? next : ps;
+      });
     } else {
       const w = Math.max(200, d.ow + dx), h = Math.max(140, d.oh + dy);
-      setPanels((ps) => ps.map((q) => (q.id === d.id ? { ...q, w, h } : q)));
+      setPanels((ps) => {
+        let changed = false;
+        const next = ps.map((q) => {
+          if (q.id !== d.id || (q.w === w && q.h === h)) return q;
+          changed = true;
+          return { ...q, w, h };
+        });
+        return changed ? next : ps;
+      });
     }
   }
-  function onPointerUp() {
+  function finishPointerDrag() {
     dragRef.current = null;
     setDragId(null);
     setGuides([]);
     setTimeout(() => setSnappedId(null), 240);
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointermove", pointerMoveListener);
+    window.removeEventListener("pointerup", pointerUpListener);
   }
 
   /* ---------- spawn / close / restore / tidy ---------- */
@@ -501,9 +629,7 @@ export function StudioApp() {
 
   function delegate(item, brain) {
     // delegating spins up a live run in Build AND opens a thread for it
-    const variant = brain === "openclaw" ? "computer" : "dev";
-    const def = makeTaskDef(brain === "hermes" ? "research" : variant, item.title, brain);
-    def.brain = brain;
+    const def = taskDefFromDelegation(brain, item.title);
     setPanels((ps) => {
       const vw = window.innerWidth, vh = window.innerHeight;
       const colH = Math.max(260, vh - TOP_MIN - EDGE_MARGIN);
@@ -539,24 +665,48 @@ export function StudioApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [luna.connected, luna.status.kind]);
 
-  const ctx = {
-    spawn, close,
-    openVoice: () => setVoiceOpen(true),
-    chatBrain, setChatBrain,
-    focusInbox, toast: showToast, delegate,
-    threads, activeThread, openThread, newThread, appendMsg, threadNote,
-    inboxItems: inbox.items,
-    inboxProjectionAvailable: inbox.available,
-    inboxLoading: inbox.loading,
+  const spawnCommand = useStableEvent(spawn);
+  const closeCommand = useStableEvent(close);
+  const openVoiceCommand = useStableEvent(() => setVoiceOpen(true));
+  const focusInboxCommand = useStableEvent(focusInbox);
+  const toastCommand = useStableEvent(showToast);
+  const delegateCommand = useStableEvent(delegate);
+  const openThreadCommand = useStableEvent(openThread);
+  const newThreadCommand = useStableEvent(newThread);
+  const acceptActionCommand = useStableEvent((id) => luna.respondToAction(id, "accept"));
+  const dismissActionCommand = useStableEvent((id) => luna.respondToAction(id, "dismiss"));
+  const submitSecureCommand = useStableEvent((id) => {
+    close(id);
+    showToast("sent securely ✦", "luna");
+  });
+  const pinArtifactCommand = useStableEvent((artifact) => luna.send({
+    type: "artifact-pin",
+    id: artifact.id,
+    title: artifact.title,
+    content: artifact.content,
+    lang: artifact.lang,
+    origin: artifact.path ?? luna.store.getState().selectedThreadId ?? null,
+  }));
+  const unpinArtifactCommand = useStableEvent((id) => luna.send({ type: "artifact-unpin", id }));
+  const ctx = useMemo(() => ({
+    store: luna.store,
+    spawn: spawnCommand,
+    close: closeCommand,
+    openVoice: openVoiceCommand,
+    chatBrain,
+    setChatBrain,
+    focusInbox: focusInboxCommand,
+    toast: toastCommand,
+    delegate: delegateCommand,
+    openThread: openThreadCommand,
+    newThread: newThreadCommand,
+    appendMsg,
+    threadNote,
     suggestedActions: luna.suggestedActions,
-    acceptAction: (id) => luna.respondToAction(id, "accept"),
-    dismissAction: (id) => luna.respondToAction(id, "dismiss"),
-    submitSecure: (id, pl) => { close(id); showToast("sent securely ✦", "luna"); },
-    // P4 vibe-coded widgets: real artifact lookup + the MCP relay + the obs
-    // event stream, handed to DEFS.widget's WidgetFrame.
-    widgetArtifacts, mcp: luna.mcp, obsEvents: luna.obsEvents,
-    // dev-ops panels (settings/connectors/obs/artifacts/skills/vault/workflows)
-    state: luna.state,
+    acceptAction: acceptActionCommand,
+    dismissAction: dismissActionCommand,
+    submitSecure: submitSecureCommand,
+    mcp: luna.mcp,
     send: luna.send,
     connected: luna.connected,
     status: luna.status,
@@ -567,21 +717,30 @@ export function StudioApp() {
     disconnect: luna.disconnect,
     restartServer: luna.restartServer,
     selectAccount: luna.selectAccount,
+    model: luna.model,
     tweaks: t,
     setTweak,
-    pinnedArtifacts: luna.pinnedArtifacts,
     focusArtifact: luna.focusArtifact,
-    artifactsCapable: luna.state.capabilities.artifacts === true,
-    activeThreadArtifacts: luna.activeThread ? (luna.state.threads.get(luna.activeThread)?.artifacts ?? []) : [],
-    pinArtifact: (a) => luna.send({ type: "artifact-pin", id: a.id, title: a.title, content: a.content, lang: a.lang, origin: a.path ?? luna.activeThread ?? null }),
-    unpinArtifact: (id) => luna.send({ type: "artifact-unpin", id }),
-  };
+    pinArtifact: pinArtifactCommand,
+    unpinArtifact: unpinArtifactCommand,
+  }), [
+    luna.store, spawnCommand, closeCommand, openVoiceCommand, chatBrain, setChatBrain,
+    focusInboxCommand, toastCommand, delegateCommand, openThreadCommand,
+    newThreadCommand, appendMsg, threadNote, luna.suggestedActions,
+    acceptActionCommand, dismissActionCommand, submitSecureCommand, luna.mcp,
+    luna.send, luna.connected, luna.status,
+    luna.onServerFrame, luna.config, luna.updateConfig, luna.reconnect,
+    luna.disconnect, luna.restartServer, luna.selectAccount, luna.model, t, setTweak,
+    luna.focusArtifact,
+    pinArtifactCommand, unpinArtifactCommand,
+  ]);
 
-  const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const bringToFrontCommand = useStableEvent(bringToFront);
+  const startDragCommand = useStableEvent(startDrag);
+  const toggleMinCommand = useStableEvent(toggleMin);
   const closed = panels.filter((p) => p.closed && p.ws === ws);
   const wsRunning = {};
   for (const p of panels) if (p.type === "task" && !p.closed && p.startedAt != null && (now - p.startedAt) / 1000 < p.def.dur) wsRunning[p.ws] = true;
-  const activeThreadObj = threads.find((x) => x.id === activeThread);
 
   return (
     <div className="luna-root studio" data-palette={t.palette} data-theme={t.theme} data-chrome={t.chrome} data-grain={t.grain ? "on" : "off"} data-motion={t.motion} data-ready={ready ? "true" : "false"}>
@@ -634,7 +793,7 @@ export function StudioApp() {
             </button>
             {menuOpen && (
               <div className="shelf-pop settings-menu">
-                {LAUNCHER_ITEMS.filter((it) => it.show(luna.state.capabilities)).map((it) => (
+                {LAUNCHER_ITEMS.filter((it) => it.show(capabilities)).map((it) => (
                   <button key={it.type} className="shelf-chip" onClick={() => summonPanel(it.type)}>
                     <span className="wash-dot" style={{ "--panel-tint": "var(--wash-2)" }}></span>
                     <span className="shelf-name">{it.label}</span>
@@ -648,37 +807,34 @@ export function StudioApp() {
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="2"></rect><rect x="13" y="3" width="8" height="8" rx="2"></rect><rect x="3" y="13" width="8" height="8" rx="2"></rect><rect x="13" y="13" width="8" height="8" rx="2"></rect></svg>
             </button>
           </div>
-          <span className="date">{dateStr}</span>
+          <StudioDate />
         </div>
       </div>
 
       {/* panels */}
       {panels.map((p) => {
-        const def = DEFS[p.type];
         const active = p.ws === ws;
         const live = p.type === "task" && p.startedAt != null && (now - p.startedAt) / 1000 < p.def.dur;
         const brain = p.type === "chat" ? chatBrain : p.brain;
-        let title = p.title || def.title;
-        if (p.type === "chat" && activeThreadObj) title = activeThreadObj.name;
+        let title = p.title || DEFS[p.type].title;
+        if (p.type === "chat" && activeThreadName) title = activeThreadName;
         return (
-          <div
+          <PanelWindow
             key={p.id}
-            className={"panel" + (p.entering ? " entering" : "") + (active && switching ? " wsenter" : "") + (snappedId === p.id ? " snapped" : "") + (p.min ? " minimized" : "") + (dragId === p.id ? " dragging" : "")}
-            data-screen-label={title}
-            style={{ left: p.x, top: p.y, width: p.w, height: p.min ? HEAD_H : p.h, zIndex: p.z, display: active ? undefined : "none", "--panel-tint": brain ? "var(--brain-" + brain + ")" : "var(--wash-2)" }}
-            onPointerDown={() => bringToFront(p.id)}
-          >
-            <div className="panel-wash"></div>
-            <div className="panel-head" onPointerDown={(e) => startDrag(e, p.id, "move")}>
-              <span className="wash-dot"></span>
-              <span className="panel-title">{title}</span>
-              {brain && <BrainBadge brain={brain} live={live} showName={p.w >= 320} />}
-              <button className="panel-min" title={p.min ? "expand" : "minimize"} onClick={() => toggleMin(p.id)} onPointerDown={(e) => e.stopPropagation()}>{p.min ? "+" : "–"}</button>
-              <button className="panel-close" title="close" onClick={() => close(p.id)} onPointerDown={(e) => e.stopPropagation()}>✕</button>
-            </div>
-            <div className="panel-body">{def.render(ctx, p)}</div>
-            {!p.min && <div className="resize-handle" onPointerDown={(e) => { e.stopPropagation(); startDrag(e, p.id, "resize"); }}></div>}
-          </div>
+            panel={p}
+            active={active}
+            switching={switching}
+            snapped={snappedId === p.id}
+            dragging={dragId === p.id}
+            title={title}
+            brain={brain}
+            live={live}
+            ctx={ctx}
+            onBringToFront={bringToFrontCommand}
+            onStartDrag={startDragCommand}
+            onToggleMin={toggleMinCommand}
+            onClose={closeCommand}
+          />
         );
       })}
 
@@ -698,4 +854,4 @@ export function StudioApp() {
 
     </div>
   );
-}
+});
