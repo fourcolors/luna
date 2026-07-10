@@ -1899,8 +1899,7 @@ fn configure_native_window_chrome(
 ) -> Result<(), String> {
     with_appkit_main_thread(window.clone(), move |win| {
         use objc2_app_kit::{
-            NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton,
-            NSWindowCollectionBehavior,
+            NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior,
         };
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
