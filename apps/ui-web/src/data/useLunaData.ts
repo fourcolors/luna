@@ -30,6 +30,7 @@ import {
   type UIState,
 } from "@luna/ui-shared/core"
 import { loadConfig, saveConfig, type PersistedConfig } from "./config"
+import { loadNativeLocalConnection, shouldHydrateNativeLocal } from "./native-connection"
 import { useUiStore } from "./useUiStore"
 import { useTransport } from "./useTransport"
 
@@ -158,6 +159,10 @@ export interface WebMcpRelay {
 export interface FocusArtifactSignal {
   readonly id: string
   readonly nonce: number
+}
+
+export class RestartRefusedError extends Error {
+  override readonly name = "RestartRefusedError"
 }
 
 export interface LunaData {
@@ -352,6 +357,24 @@ export function useLunaData(): LunaData {
   const { status, connect, send, disconnect } = useTransport({ onFrame, onOpen })
   sendRef.current = send
 
+  // Native first-run: the local server installer already owns the credential
+  // in ~/.luna/.env. Provision it into Studio when the loopback config has no
+  // usable token, then connect immediately. Browser Studio has no Tauri invoke
+  // surface and keeps the manual Settings flow.
+  useEffect(() => {
+    const current = cfgRef.current
+    if (!shouldHydrateNativeLocal(current)) return
+    let cancelled = false
+    void loadNativeLocalConnection().then((native) => {
+      if (cancelled || native === null) return
+      updateConfig(native)
+      connect(native.url, native.token)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [connect, updateConfig])
+
   // Connection controls for the Settings panel.
   const reconnect = useCallback(
     (): void => connect(cfgRef.current.url, cfgRef.current.token),
@@ -389,7 +412,7 @@ export function useLunaData(): LunaData {
     } catch {
       // Non-JSON / transport oddities: keep prior fire-and-forget behavior.
     }
-    if (refusal !== undefined) throw new Error(refusal)
+    if (refusal !== undefined) throw new RestartRefusedError(refusal)
   }, [])
   // Seed the reducer's selected account from persisted config once on mount.
   useEffect(() => {

@@ -16,13 +16,13 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
-  browserWebSocketTransport,
   type ClientFrame,
   type ConnectionStatus,
   type ServerFrame,
   type Transport,
   type TransportHandle,
 } from "@luna/ui-shared/core"
+import { reconnectingLunaTransport } from "./reconnecting-transport"
 
 export interface UseTransportParams {
   readonly transport?: Transport
@@ -38,7 +38,7 @@ export interface TransportApi {
 }
 
 export function useTransport(params: UseTransportParams): TransportApi {
-  const transport = params.transport ?? browserWebSocketTransport
+  const transport = params.transport ?? reconnectingLunaTransport
   const [status, setStatus] = useState<ConnectionStatus>({ kind: "idle" })
   const handleRef = useRef<TransportHandle | null>(null)
 

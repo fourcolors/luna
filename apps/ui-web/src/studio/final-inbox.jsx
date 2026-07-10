@@ -1,7 +1,7 @@
 // final-inbox.jsx — the natural inbox: priority-ordered list + one-at-a-time
 // Focus triage that opens each item in full, with thread links back to chat.
 import React from "react";
-import { INBOX_SEED, BRAINS, BRAIN_ORDER } from "./studio-data.jsx";
+import { BRAINS, BRAIN_ORDER } from "./studio-data.jsx";
 import { BrainBadge, BrainIcon } from "./studio-brain.jsx";
 const FbReact = React;
 
@@ -99,14 +99,12 @@ function FbChoiceCards({ options, onPick }) {
   );
 }
 
-// `itemsProp` is the P3 real-data seam (useLunaInbox): the agent-mediated
-// connector projection, shaped exactly like INBOX_SEED. `undefined`/`null`/`[]`
-// (no connectors connected, or a projection turn that came back empty/
-// unparsable) all fall back to the INBOX_SEED demo so the panel is never
-// empty. Block renderers below are unchanged either way.
-export function FinalInbox({ items: itemsProp, onDelegate, onToast, onOpenThread }) {
+// `itemsProp` is the P3 real-data seam (useLunaInbox). Demo seed data must not
+// appear in the production Studio: null means no projection yet; [] means the
+// connected accounts genuinely returned inbox-zero.
+export function FinalInbox({ items: itemsProp, connected = true, projectionAvailable = true, loading = false, onDelegate, onToast, onOpenThread }) {
   const { useState, useRef, useEffect } = FbReact;
-  const [items, setItems] = useState(() => fbSeed(itemsProp && itemsProp.length ? itemsProp : INBOX_SEED));
+  const [items, setItems] = useState(() => fbSeed(itemsProp ?? []));
   const [draft, setDraft] = useState("");
   const [focus, setFocus] = useState(false);
   const [done, setDone] = useState(false);
@@ -116,16 +114,15 @@ export function FinalInbox({ items: itemsProp, onDelegate, onToast, onOpenThread
   const nextId = useRef(1);
 
   // Real projection arriving/refreshing (useLunaInbox): replace the working
-  // list once per new non-empty batch. Only re-seeds on an actual new array
+  // list once per new batch, including a valid empty result. Only re-seeds on
+  // an actual new array
   // (not every parent re-render), so in-flight local triage (done/snooze/
   // capture) isn't clobbered by an unrelated re-render.
   const lastItemsPropRef = useRef(itemsProp);
   useEffect(() => {
-    if (itemsProp && itemsProp !== lastItemsPropRef.current && itemsProp.length) {
+    if (itemsProp !== lastItemsPropRef.current) {
       lastItemsPropRef.current = itemsProp;
-      setItems(fbSeed(itemsProp));
-    } else {
-      lastItemsPropRef.current = itemsProp;
+      setItems(fbSeed(itemsProp ?? []));
     }
   }, [itemsProp]);
 
@@ -239,7 +236,17 @@ export function FinalInbox({ items: itemsProp, onDelegate, onToast, onOpenThread
             </button>
           </div>
         ))}
-        {items.length === 0 && <div className="map-empty" style={{ marginTop: 16 }}>inbox zero ✦ go make something</div>}
+        {items.length === 0 && (
+          <div className="map-empty" style={{ marginTop: 16 }}>
+            {loading
+              ? "checking connected accounts…"
+              : !connected
+                ? "connect Luna to load your inbox"
+                : !projectionAvailable
+                  ? "connect an account in Settings to bring its inbox here"
+                  : "inbox zero ✦ go make something"}
+          </div>
+        )}
       </div>
 
       <div className="inbox-capture">

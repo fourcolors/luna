@@ -53,6 +53,7 @@ const PALETTE_SWATCHES = {
 export function SettingsPanel({ ctx }) {
   const { config, updateConfig, connected, status, selectAccount, connect, disconnect, restartServer } = ctx;
   const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState("");
 
   const isConnecting = status?.kind === "connecting";
 
@@ -87,12 +88,18 @@ export function SettingsPanel({ ctx }) {
 
   const onRestart = async () => {
     setRestarting(true);
+    setRestartError("");
     try {
       await restartServer();
       // Disconnect — the server is going down. The reconnect attempt below
       // picks it back up once launchd respawns it.
       disconnect();
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === "RestartRefusedError") {
+        setRestartError(error.message);
+        setRestarting(false);
+        return;
+      }
       // Server may have gone down before responding to the restart call —
       // that's the expected happy path, not a failure to surface.
       disconnect();
@@ -135,7 +142,10 @@ export function SettingsPanel({ ctx }) {
             value={isCustomModel ? "__custom" : config.model}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "__custom") return;
+              if (v === "__custom") {
+                updateConfig({ model: "" });
+                return;
+              }
               updateConfig({ model: v });
             }}
           >
@@ -192,6 +202,7 @@ export function SettingsPanel({ ctx }) {
         >
           {restarting ? "⟳ Restarting…" : "↺ Restart Server"}
         </button>
+        {restartError && <div className="stg-status error" role="alert">{restartError}</div>}
       </div>
 
       {/* Appearance — palette, theme, chrome, grain. Purely client-side via

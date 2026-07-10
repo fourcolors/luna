@@ -121,7 +121,7 @@ function buildPanels(vw, vh) {
 const DEFS = {
   chat:    { title: "luna", render: (ctx) => <ThreadChat threads={ctx.threads} activeId={ctx.activeThread} onSwitch={ctx.openThread} onNew={ctx.newThread} onAppend={ctx.appendMsg} onThreadNote={ctx.threadNote} onSpawn={ctx.spawn} onVoice={ctx.openVoice} onFocus={ctx.focusInbox} brain={ctx.chatBrain} setBrain={ctx.setChatBrain} suggestedActions={ctx.suggestedActions} onAcceptAction={ctx.acceptAction} onDismissAction={ctx.dismissAction} /> },
   threads: { title: "threads", render: (ctx) => <ThreadsApp threads={ctx.threads} activeId={ctx.activeThread} onOpen={ctx.openThread} /> },
-  inbox:   { title: "inbox", render: (ctx) => <FinalInbox items={ctx.inboxItems} onDelegate={ctx.delegate} onToast={ctx.toast} onOpenThread={ctx.openThread} /> },
+  inbox:   { title: "inbox", render: (ctx) => <FinalInbox items={ctx.inboxItems} connected={ctx.connected} projectionAvailable={ctx.inboxProjectionAvailable} loading={ctx.inboxLoading} onDelegate={ctx.delegate} onToast={ctx.toast} onOpenThread={ctx.openThread} /> },
   map:     { title: "the city", render: (ctx) => <MapApp onToast={ctx.toast} /> },
   task:    { title: "task", render: (ctx, p) => <TaskRunner def={p.def} startedAt={p.startedAt} /> },
   widget:  { title: "widget", render: (ctx, p) => {
@@ -544,6 +544,8 @@ export function StudioApp() {
     focusInbox, toast: showToast, delegate,
     threads, activeThread, openThread, newThread, appendMsg, threadNote,
     inboxItems: inbox.items,
+    inboxProjectionAvailable: inbox.available,
+    inboxLoading: inbox.loading,
     suggestedActions: luna.suggestedActions,
     acceptAction: (id) => luna.respondToAction(id, "accept"),
     dismissAction: (id) => luna.respondToAction(id, "dismiss"),

@@ -9,7 +9,7 @@
  * How it works:
  *  1. If no connector instance is `connected` (state.connectorInstances),
  *     there is nothing to project — `items` stays `null` and FinalInbox
- *     renders its own INBOX_SEED demo unchanged.
+ *     renders an honest connection empty-state.
  *  2. Otherwise, on first availability (and on manual `refresh()`), this hub
  *     mints (once) or rediscovers a hidden, tagged "system" thread and sends
  *     it one instruction turn asking Luna to call whatever connector tools
@@ -19,10 +19,8 @@
  *     `assistant-done` alone fires per intermediate tool step too, so it
  *     cannot mark "the answer is ready") — is what tells us the turn settled;
  *     we then read the thread's last assistant message and parse it.
- *  4. A parse failure, an empty `[]` reply (the prompt's own instruction for
- *     "nothing needs attention" / "no connected tools"), or a timeout all
- *     leave `items` at `null` — FinalInbox's own INBOX_SEED fallback keeps
- *     the panel from ever being empty.
+ *  4. A valid empty `[]` reply clears the inbox. Parse failures/timeouts retain
+ *     the last valid projection rather than replacing it with fabricated data.
  *
  * This hook does NOT own a transport/socket — it rides useLunaData's single
  * connection via the `state`/`send`/`onServerFrame` escape hatch, so the
@@ -139,10 +137,10 @@ export interface UseLunaInboxParams {
 }
 
 export interface LunaInbox {
-  /** `null` = no real projection yet (or it came back empty/unparsable) —
-   *  callers should pass this straight through to FinalInbox's `items` prop,
-   *  which itself falls back to INBOX_SEED on `null`/empty. */
+  /** `null` = no real projection yet. An empty array is a valid inbox-zero. */
   readonly items: ReadonlyArray<InboxItem> | null
+  /** At least one connected account can supply an inbox projection. */
+  readonly available: boolean
   /** True while a projection turn is in flight. */
   readonly loading: boolean
   /** Kick off a fresh projection turn (no-op while one is already in flight
@@ -366,7 +364,7 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
   // is the only true end-of-turn signal (assistant-done alone fires per
   // intermediate tool step too — reading the thread on that would race a
   // still-running tool call); assistant-error/thread-create-error give up
-  // gracefully and leave whatever `items` already had (or the seed fallback).
+  // gracefully and leave whatever valid `items` already existed.
   useEffect(() => {
     return onServerFrame((frame: ServerFrame) => {
       if (frame.type === "thread-created" && creatingRef.current && frame.thread.tags.includes(INBOX_THREAD_TAG)) {
@@ -387,8 +385,8 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
         const text = last && last.role === "assistant" ? last.text : ""
         clearPending()
         const parsed = parseProjection(text)
-        if (parsed && parsed.length) setItems(parsed)
-        // else: leave `items` as-is (prior projection, or null -> seed fallback)
+        if (parsed !== null) setItems(parsed)
+        // Parse failure: leave the prior valid projection intact.
         return
       }
       if (frame.type === "assistant-error" && frame.threadId === threadIdRef.current) {
@@ -413,5 +411,5 @@ export function useLunaInbox(params: UseLunaInboxParams): LunaInbox {
     }
   }, [])
 
-  return { items, loading, refresh }
+  return { items, available: connectorsAvailable, loading, refresh }
 }
