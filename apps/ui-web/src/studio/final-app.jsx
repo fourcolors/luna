@@ -527,7 +527,9 @@ export function StudioApp() {
   }
 
   // First run: the Studio has no other connect UI — auto-open Settings once
-  // while disconnected so the user can enter the server URL + token.
+  // while disconnected so the user can enter the server URL + token. (Native
+  // Studio may auto-provision the loopback token via load_local_connection
+  // and connect on its own; the panel still opens once as the status surface.)
   const settingsAutoOpenedRef = useRef(false);
   useEffect(() => {
     if (!settingsAutoOpenedRef.current && !luna.connected && luna.status.kind !== "connecting") {

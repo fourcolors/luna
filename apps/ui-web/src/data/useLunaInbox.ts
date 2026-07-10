@@ -113,7 +113,8 @@ export interface InboxOption {
   readonly meta: string
 }
 
-/** Shaped to match final-inbox.jsx's INBOX_SEED item exactly (studio-data.jsx). */
+/** Shaped to match studio-data.jsx's INBOX_SEED demo item exactly - the shape
+ *  FinalInbox's block renderers consume (the seed itself no longer renders). */
 export interface InboxItem {
   readonly id: string
   readonly kind: InboxItemKind
