@@ -865,7 +865,9 @@ export interface VaultDeleteFrame {
 /**
  * Client→server: configure the 1Password two-way sync (slice V3). Enables or
  * disables the sync, and optionally sets the account label + vault name and
- * poll interval. `requestId` correlates the `vault-status` reply.
+ * poll interval. The server type-checks the optional fields (string labels,
+ * finite `pollSeconds`) and rejects a malformed frame with a `vault-status`
+ * error. `requestId` correlates the `vault-status` reply.
  */
 export interface VaultSyncConfigFrame {
   readonly type: "vault-sync-config"

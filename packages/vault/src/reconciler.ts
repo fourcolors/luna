@@ -68,7 +68,7 @@ export const reconcileVaultItems = ({
   /**
    * Resolve the display name for an adopted item, uniquifying on name
    * collision with a DIFFERENT ref (deterministic: appends the raw origin
-   * in parentheses so reruns are idempotent).
+   * in parentheses, then numbered `#2`/`#3` forms, so reruns are idempotent).
    */
   const resolveName = (candidate: string, ref: string, rawOrigin: string): string =>
     uniqueVaultName(existingNameLower, candidate, ref, rawOrigin)
