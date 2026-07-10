@@ -55,8 +55,6 @@
     "allow-close-widget",
     "allow-collapse-to-moon",
     "allow-expand-from-moon",
-    "allow-begin-native-resize",
-    "core:window:allow-maximize",
-    "core:window:allow-unmaximize"
+    "allow-begin-native-resize"
   ]
 }

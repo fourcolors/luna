@@ -96,8 +96,7 @@ describe('settings-launcher panel (kind "settings")', () => {
       const btn = document.querySelector(`button[data-panel-kind="${kind}"]`) as HTMLButtonElement
       expect(btn).not.toBeNull()
       btn.click()
-      // opener = this launcher's own label, so the sub-panel docks next to it.
-      expect(invoke).toHaveBeenCalledWith('open_widget', { kind, opener: 'panel-settings' })
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind })
     }
     // One invoke per click — nothing double-fires.
     expect(invoke.mock.calls.filter((c) => c[0] === 'open_widget')).toHaveLength(EXPECTED_KINDS.length)

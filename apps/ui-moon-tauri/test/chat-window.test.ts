@@ -3474,7 +3474,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
       document.getElementById('toggle-settings')!.click()
-      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings', opener: 'chat-test' })
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings' })
     })
 
     it('the GEAR degrades to a no-op off-Tauri (no core) without throwing', () => {
