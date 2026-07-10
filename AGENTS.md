@@ -27,6 +27,7 @@ Luna uses a single root context with root-level ADRs when they exist. See `docs/
   `selectEmbedderLayer` in `packages/memory-tools/src/layer.ts` always passes `degradeOnProbeFailure: true` for the chat-server deploy path; other callers of `makeOllamaEmbedderLayer` fail fast on exhausted retries unless they opt in too.
   Degrade requires a known dimension - an unknown dimension still fails boot fatally, since a guessed dimension would corrupt the `float32[dim]` vectorlite table sizing in `packages/memory/src/backends/sqlite-vector.ts`.
   A declared-vs-probed dimension mismatch is a config error and is never retried or degraded.
+- Vault is a metadata registry plus tiered value storage; `vault_items` never contains values. `LUNA_VAULT_STORAGE` defaults to `auto` (Darwin Keychain, encrypted Luna vault elsewhere), while `env` is the explicit plaintext escape hatch. Reads, writes, all-tier deletion, integrity behavior, migration, backup, and verification are documented in `docs/audits/luna-vault-keychain-migration.md`; composition lives in `apps/ui-web/scripts/secret-chain.ts`, routing in `vault-secret-store.ts`, and registry/sync logic in `packages/vault/src/`.
 
 ## Maintaining this file
 

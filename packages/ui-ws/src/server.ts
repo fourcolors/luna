@@ -3090,7 +3090,16 @@ export const startUIWebSocketServer = (
                     const syncReqId = String(
                       (frame as { requestId?: unknown }).requestId ?? "",
                     )
-                    if (typeof frame.enabled !== "boolean") {
+                    if (
+                      typeof frame.enabled !== "boolean" ||
+                      (frame.opLabel !== undefined &&
+                        typeof frame.opLabel !== "string") ||
+                      (frame.opVault !== undefined &&
+                        typeof frame.opVault !== "string") ||
+                      (frame.pollSeconds !== undefined &&
+                        (typeof frame.pollSeconds !== "number" ||
+                          !Number.isFinite(frame.pollSeconds)))
+                    ) {
                       send(ws, {
                         type: "vault-status",
                         requestId: syncReqId,

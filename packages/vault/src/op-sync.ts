@@ -28,7 +28,7 @@
 
 import type { VaultItem, VaultSyncConfig } from "./types.js"
 import type { VaultStoreFacade } from "./mutations.js"
-import { makeId } from "./internal.js"
+import { makeId, uniqueVaultName } from "./internal.js"
 
 // ---------------------------------------------------------------------------
 // Dep interfaces
@@ -385,11 +385,7 @@ export const makeVaultOpSync = (deps: VaultOpSyncDeps): VaultOpSync => {
 
         if (existing === undefined) {
           // New 1P item → adopt a registry row.
-          const occupantRef = nameIndex.get(entry.title.toLowerCase())
-          const name =
-            occupantRef === undefined || occupantRef === ref
-              ? entry.title
-              : `${entry.title} (${itemId})`
+          const name = uniqueVaultName(nameIndex, entry.title, ref, itemId)
           await store.upsertByName({
             id: makeId(),
             name,
@@ -412,11 +408,21 @@ export const makeVaultOpSync = (deps: VaultOpSyncDeps): VaultOpSync => {
           continue
         }
 
-        // Existing op-item row: refresh name/updatedAt/ref on change. The
-        // stored name may be the uniquified form — both spellings count as
-        // "unchanged" so a collision-renamed row isn't churned every pass.
-        const nameMatches =
-          existing.name === entry.title || existing.name === `${entry.title} (${itemId})`
+        // Resolve the exact desired name against OTHER rows. Removing this
+        // row's current slot before resolution lets numbered collision names
+        // ("... #2") remain stable instead of being treated as a title change
+        // and rewritten on every poll.
+        const otherNames = new Map(nameIndex)
+        if (otherNames.get(existing.name.toLowerCase()) === existing.ref) {
+          otherNames.delete(existing.name.toLowerCase())
+        }
+        const desiredName = uniqueVaultName(
+          otherNames,
+          entry.title,
+          ref,
+          itemId,
+        )
+        const nameMatches = existing.name === desiredName
         if (nameMatches && existing.updatedAt === entry.updatedAt && existing.ref === ref) {
           continue
         }
@@ -427,15 +433,15 @@ export const makeVaultOpSync = (deps: VaultOpSyncDeps): VaultOpSync => {
           changed += 1
         } else {
           // Title changed in 1P → rename (uniquified against other rows).
-          const occupantRef = nameIndex.get(entry.title.toLowerCase())
-          const name =
-            occupantRef === undefined || occupantRef === existing.ref
-              ? entry.title
-              : `${entry.title} (${itemId})`
           await store.remove(existing.id)
-          await store.upsertByName({ ...existing, name, ref, updatedAt: entry.updatedAt })
+          await store.upsertByName({
+            ...existing,
+            name: desiredName,
+            ref,
+            updatedAt: entry.updatedAt,
+          })
           nameIndex.delete(existing.name.toLowerCase())
-          nameIndex.set(name.toLowerCase(), ref)
+          nameIndex.set(desiredName.toLowerCase(), ref)
           changed += 1
         }
       }
@@ -595,10 +601,10 @@ export const makeVaultOpSync = (deps: VaultOpSyncDeps): VaultOpSync => {
           const ts = now()
           const ref = `luna-op://${cfg.opLabel}/${cfg.opVault}/${res.itemId}/password`
           const all = await store.list()
-          const taken = all.some(
-            (i) => i.name.toLowerCase() === title.toLowerCase() && i.ref !== ref,
+          const nameIndex = new Map(
+            all.map((i) => [i.name.toLowerCase(), i.ref] as const),
           )
-          const name = taken ? `${title} (${res.itemId})` : title
+          const name = uniqueVaultName(nameIndex, title, ref, res.itemId)
           await store.upsertByName({
             id: makeId(),
             name,

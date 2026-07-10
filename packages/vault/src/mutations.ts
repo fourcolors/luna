@@ -16,7 +16,7 @@
  */
 
 import type { VaultItem, VaultItemKind, VaultItemSource } from "./types.js"
-import { makeId, isEnvDenied } from "./internal.js"
+import { makeId, isEnvDenied, uniqueVaultName } from "./internal.js"
 
 // ---------------------------------------------------------------------------
 // Dep interfaces
@@ -232,6 +232,31 @@ export const makeVaultMutations = (deps: VaultMutationDeps): VaultMutations => {
       }
     }
 
+    const ref = refFor(dest)
+
+    // Reject a display-name collision with a different credential BEFORE the
+    // backing value is written. VaultStore.upsertByName intentionally updates
+    // by name; without this guard, renaming env:A to the name already owned by
+    // env:B would overwrite B's registry row while leaving B's backing secret
+    // orphaned. A store-read failure remains best-effort for compatibility;
+    // the post-write check below still prevents registry corruption.
+    try {
+      const nameOwner = (await store.list()).find(
+        (i) => i.name.toLowerCase() === trimmedName.toLowerCase(),
+      )
+      if (nameOwner !== undefined && nameOwner.ref !== ref) {
+        return {
+          ok: false,
+          message: `A vault entry named "${trimmedName}" already exists.`,
+          restartNeeded: false,
+        }
+      }
+    } catch {
+      // Preserve the existing best-effort registry contract. If persistence
+      // succeeds, the fresh check below either proves the write is safe or
+      // returns an honest registry failure without mutating another row.
+    }
+
     // ------------------------------------------------------------------
     // Delegate to registerSecret — reuses all its validation for free:
     // label grammar, env-var grammar, newline rejection, op whoami.
@@ -258,16 +283,26 @@ export const makeVaultMutations = (deps: VaultMutationDeps): VaultMutations => {
     // Same-ref rename guard: a row already pointing at this exact ref but
     // under a DIFFERENT name is the same credential being re-saved — replace
     // it (preserving createdAt) instead of accumulating two rows whose
-    // deletes would race over one backing value. Best-effort: a lookup
-    // failure must not block the upsert.
+    // deletes would race over one backing value. The fresh lookup is required:
+    // a name-keyed upsert without it could overwrite an unrelated row.
     // ------------------------------------------------------------------
     const ts = now()
-    const ref = refFor(dest)
     let createdAt = ts
     // A1: hoist so opItemId is available for item construction below.
     let existingByRef: VaultItem | undefined
     try {
-      existingByRef = (await store.list()).find((i) => i.ref === ref)
+      const current = await store.list()
+      const nameOwner = current.find(
+        (i) => i.name.toLowerCase() === trimmedName.toLowerCase(),
+      )
+      if (nameOwner !== undefined && nameOwner.ref !== ref) {
+        return {
+          ok: false,
+          message: "Credential stored but that vault entry name is already in use.",
+          restartNeeded: kind === "op-token",
+        }
+      }
+      existingByRef = current.find((i) => i.ref === ref)
       if (existingByRef !== undefined) {
         createdAt = existingByRef.createdAt
         if (existingByRef.name.toLowerCase() !== trimmedName.toLowerCase()) {
@@ -275,7 +310,11 @@ export const makeVaultMutations = (deps: VaultMutationDeps): VaultMutations => {
         }
       }
     } catch {
-      // fall through with createdAt = ts, existingByRef = undefined
+      return {
+        ok: false,
+        message: "Credential stored but registry lookup failed.",
+        restartNeeded: kind === "op-token",
+      }
     }
 
     const item: VaultItem = {
@@ -340,28 +379,38 @@ export const makeVaultMutations = (deps: VaultMutationDeps): VaultMutations => {
     // ------------------------------------------------------------------
     if (kind === "env-secret") {
       const parsed = parseRef(ref)
-      if (parsed?.kind === "env-secret") {
-        try {
-          await removeEnvSecret(parsed.varName)
-        } catch {
-          return {
-            ok: false,
-            message: "Failed to remove the env secret from the server.",
-            restartNeeded: false,
-          }
+      if (parsed?.kind !== "env-secret") {
+        return {
+          ok: false,
+          message: "Vault entry has an invalid env-secret ref; backing credential was not changed.",
+          restartNeeded: false,
+        }
+      }
+      try {
+        await removeEnvSecret(parsed.varName)
+      } catch {
+        return {
+          ok: false,
+          message: "Failed to remove the env secret from the server.",
+          restartNeeded: false,
         }
       }
     } else if (kind === "op-token") {
       const parsed = parseRef(ref)
-      if (parsed?.kind === "op-token") {
-        try {
-          await deleteOpToken(parsed.label)
-        } catch {
-          return {
-            ok: false,
-            message: "Failed to delete the op-token from the server.",
-            restartNeeded: false,
-          }
+      if (parsed?.kind !== "op-token") {
+        return {
+          ok: false,
+          message: "Vault entry has an invalid op-token ref; backing credential was not changed.",
+          restartNeeded: false,
+        }
+      }
+      try {
+        await deleteOpToken(parsed.label)
+      } catch {
+        return {
+          ok: false,
+          message: "Failed to delete the op-token from the server.",
+          restartNeeded: false,
         }
       }
     }
@@ -454,10 +503,10 @@ export const makeVaultMutations = (deps: VaultMutationDeps): VaultMutations => {
       // Name-slot collision with a DIFFERENT ref: uniquify deterministically
       // (same scheme as the reconciler) instead of clobbering the other row.
       const rawOrigin = kind === "env-secret" ? varName!.trim() : label!.trim()
-      const taken = all.some(
-        (i) => i.name.toLowerCase() === itemName.toLowerCase(),
+      const nameIndex = new Map(
+        all.map((i) => [i.name.toLowerCase(), i.ref] as const),
       )
-      const finalName = taken ? `${itemName} (${rawOrigin})` : itemName
+      const finalName = uniqueVaultName(nameIndex, itemName, ref, rawOrigin)
 
       await store.upsertByName({
         id: makeId(),

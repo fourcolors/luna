@@ -631,6 +631,36 @@ describe("vault server routing", () => {
     client.close()
   })
 
+  it.each([
+    ["opLabel", 123],
+    ["opVault", { name: "Personal" }],
+    ["pollSeconds", "300"],
+  ])(
+    "vault-sync-config with non-%s field → vault-status(ok:false, malformed)",
+    async (field, value) => {
+      rig = await startVaultRig(makeFakeVaultService([]))
+      const client = await openClient(rig.url)
+      await client.waitFor((f) => f.type === "vault-list")
+
+      client.send({
+        type: "vault-sync-config",
+        requestId: `req-bad-${field}`,
+        enabled: false,
+        [field]: value,
+      })
+
+      const status = await client.waitFor(
+        (f) =>
+          f.type === "vault-status" &&
+          (f as VaultStatusFrame).requestId === `req-bad-${field}`,
+      ) as VaultStatusFrame
+      expect(status.ok).toBe(false)
+      expect(status.message).toMatch(/malformed/i)
+
+      client.close()
+    },
+  )
+
   // ── Finding 6: list() rejects after successful put → exactly ONE vault-status ──
 
   it("list() failing after successful put emits exactly one vault-status(ok:true), no second status", async () => {

@@ -29,3 +29,32 @@ export const makeId = (): string => {
  */
 export const isEnvDenied = (varName: string): boolean =>
   isReservedSecretName(varName)
+
+/**
+ * Pick a deterministic, case-insensitively unique display name without ever
+ * taking a slot owned by a different credential ref.
+ *
+ * The first collision uses the stable origin suffix used throughout Vault;
+ * further collisions add `#2`, `#3`, ... . Checking the suffixed candidate is
+ * load-bearing: blindly returning it lets `upsertByName` overwrite an existing
+ * row that already owns that exact suffix.
+ */
+export const uniqueVaultName = (
+  nameIndex: ReadonlyMap<string, string>,
+  candidate: string,
+  ref: string,
+  rawOrigin: string,
+): string => {
+  const available = (name: string): boolean => {
+    const occupantRef = nameIndex.get(name.toLowerCase())
+    return occupantRef === undefined || occupantRef === ref
+  }
+
+  if (available(candidate)) return candidate
+  const suffixed = `${candidate} (${rawOrigin})`
+  if (available(suffixed)) return suffixed
+  for (let n = 2; ; n += 1) {
+    const numbered = `${suffixed} #${n}`
+    if (available(numbered)) return numbered
+  }
+}
