@@ -57,8 +57,7 @@ fn load_local_connection() -> Result<LocalConnection, String> {
     let env_text = std::fs::read_to_string(&env_path)
         .map_err(|e| format!("cannot read {}: {e}", env_path.display()))?;
     let token = local_ui_token(&env_text).ok_or_else(|| {
-        "~/.luna/.env has no UI_WS_TOKEN or LUNA_UI_WS_TOKEN of at least 16 characters"
-            .to_string()
+        "~/.luna/.env has no UI_WS_TOKEN or LUNA_UI_WS_TOKEN of at least 16 characters".to_string()
     })?;
     Ok(LocalConnection {
         url: "ws://127.0.0.1:4753/ui".to_string(),
@@ -193,7 +192,10 @@ mod tests {
     #[test]
     fn local_token_prefers_canonical_key_and_unquotes_it() {
         let env = "LUNA_UI_WS_TOKEN=legacy-token-123456\nUI_WS_TOKEN=\"canonical-token-123456\"\n";
-        assert_eq!(local_ui_token(env).as_deref(), Some("canonical-token-123456"));
+        assert_eq!(
+            local_ui_token(env).as_deref(),
+            Some("canonical-token-123456")
+        );
     }
 
     #[test]
