@@ -497,6 +497,35 @@ describe("put — registry-upsert-failure restartNeeded", () => {
     // The backing op-token write already succeeded → restart is still needed.
     expect(res.restartNeeded).toBe(true)
   })
+
+  it("does not attempt a name-keyed upsert when the post-write registry read fails", async () => {
+    const base = makeStore()
+    let listCalls = 0
+    const upsert = vi.fn(base.upsertByName)
+    const { deps } = makeDeps({
+      store: {
+        ...base,
+        list: async () => {
+          listCalls += 1
+          if (listCalls === 1) return []
+          throw new Error("db read failed")
+        },
+        upsertByName: upsert,
+      },
+    })
+    const mutations = makeVaultMutations(deps)
+
+    const res = await mutations.put({
+      name: "My Key",
+      kind: "env-secret",
+      varName: "MY_KEY",
+      value: FAKE_ENV_VALUE,
+    })
+
+    expect(res).toMatchObject({ ok: false, restartNeeded: false })
+    expect(res.message).toMatch(/stored.*registry lookup failed/i)
+    expect(upsert).not.toHaveBeenCalled()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -567,6 +596,28 @@ describe("put — same-ref rename dedupe", () => {
     expect(res.ok).toBe(true)
     expect(store._items).toHaveLength(1)
     expect(store._items[0]?.createdAt).toBe(42)
+  })
+
+  it("rejects renaming a ref onto another credential's name before writing the backing secret", async () => {
+    const { deps, store, registerSecret } = makeDeps({}, [
+      seedItem({ id: "a", name: "Alpha", ref: "env:ALPHA" }),
+      seedItem({ id: "b", name: "Beta", ref: "env:BETA" }),
+    ])
+    const mutations = makeVaultMutations(deps)
+
+    const res = await mutations.put({
+      name: "Beta",
+      kind: "env-secret",
+      varName: "ALPHA",
+      value: FAKE_ENV_VALUE,
+    })
+
+    expect(res.ok).toBe(false)
+    expect(res.message).toMatch(/name.*already/i)
+    expect(registerSecret).not.toHaveBeenCalled()
+    expect(store._items).toHaveLength(2)
+    expect(store._items.find((i) => i.id === "a")?.ref).toBe("env:ALPHA")
+    expect(store._items.find((i) => i.id === "b")?.ref).toBe("env:BETA")
   })
 })
 
@@ -639,6 +690,43 @@ describe("remove — restartNeeded on partial-failure paths", () => {
     expect(res.ok).toBe(false)
     expect(res.restartNeeded).toBe(false)
   })
+
+  it("fails closed when an env-secret row has a non-env ref", async () => {
+    const malformed = seedItem({
+      id: "bad-env",
+      name: "Malformed",
+      kind: "env-secret",
+      ref: "luna-op://primary",
+    })
+    const { deps, store, removeEnvSecret, deleteOpToken } = makeDeps({}, [malformed])
+    const mutations = makeVaultMutations(deps)
+
+    const res = await mutations.remove("bad-env")
+
+    expect(res.ok).toBe(false)
+    expect(res.message).toMatch(/invalid.*ref/i)
+    expect(removeEnvSecret).not.toHaveBeenCalled()
+    expect(deleteOpToken).not.toHaveBeenCalled()
+    expect(store._items).toEqual([malformed])
+  })
+
+  it("fails closed when an op-token row has an item-style ref", async () => {
+    const malformed = seedItem({
+      id: "bad-op",
+      name: "Malformed",
+      kind: "op-token",
+      ref: "luna-op://primary/Vault/item/credential",
+    })
+    const { deps, store, deleteOpToken } = makeDeps({}, [malformed])
+    const mutations = makeVaultMutations(deps)
+
+    const res = await mutations.remove("bad-op")
+
+    expect(res.ok).toBe(false)
+    expect(res.message).toMatch(/invalid.*ref/i)
+    expect(deleteOpToken).not.toHaveBeenCalled()
+    expect(store._items).toEqual([malformed])
+  })
 })
 
 describe("recordCapture — collision safety", () => {
@@ -671,6 +759,32 @@ describe("recordCapture — collision safety", () => {
     expect(names).toEqual(["Github Token", "Github Token (GITHUB_TOKEN)"])
     const original = store._items.find((i) => i.name === "Github Token")
     expect(original?.ref).toBe("env:GITHUB_TOKEN_2")
+  })
+
+  it("uses a numbered fallback when both the base and origin-suffixed names are occupied", async () => {
+    const { deps, store } = makeDeps({}, [
+      seedItem({ id: "r1", name: "Github Token", ref: "env:GITHUB_TOKEN_2" }),
+      seedItem({
+        id: "r2",
+        name: "Github Token (GITHUB_TOKEN)",
+        ref: "env:GITHUB_TOKEN_3",
+      }),
+    ])
+    const mutations = makeVaultMutations(deps)
+
+    await mutations.recordCapture({
+      kind: "env-secret",
+      varName: "GITHUB_TOKEN",
+      source: "agent",
+    })
+
+    expect(store._items).toHaveLength(3)
+    expect(store._items.find((i) => i.ref === "env:GITHUB_TOKEN")?.name).toBe(
+      "Github Token (GITHUB_TOKEN) #2",
+    )
+    expect(store._items.find((i) => i.id === "r2")?.ref).toBe(
+      "env:GITHUB_TOKEN_3",
+    )
   })
 })
 

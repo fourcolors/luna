@@ -253,6 +253,25 @@ describe("reconcileVaultItems — name-collision deduplication", () => {
     expect(toAdopt[0]?.ref).toBe("env:GITHUB_TOKEN")
   })
 
+  it("uses a numbered fallback when the deterministic suffix is already occupied", () => {
+    const existing = [
+      existingItem("env:GITHUB_TOKEN_2", { name: "Github Token" }),
+      existingItem("env:GITHUB_TOKEN_3", {
+        name: "Github Token (GITHUB_TOKEN)",
+      }),
+    ]
+
+    const { toAdopt } = reconcileVaultItems({
+      envVarNames: ["GITHUB_TOKEN"],
+      opTokenLabels: [],
+      existing,
+      now: NOW,
+    })
+
+    expect(toAdopt).toHaveLength(1)
+    expect(toAdopt[0]?.name).toBe("Github Token (GITHUB_TOKEN) #2")
+  })
+
   it("two same-pass vars whose humanized names collide produce two distinct rows", () => {
     // GITHUB_TOKEN and GITHUB_TOKEN both humanize to "Github Token"; the
     // second is a duplicate ref so only one adoption row. Use two DIFFERENT

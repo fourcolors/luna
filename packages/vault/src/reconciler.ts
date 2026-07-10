@@ -20,7 +20,7 @@
 
 import type { VaultItem } from "./types.js"
 import { humanizeName } from "./mutations.js"
-import { makeId, isEnvDenied } from "./internal.js"
+import { makeId, isEnvDenied, uniqueVaultName } from "./internal.js"
 
 // ---------------------------------------------------------------------------
 // Denylist
@@ -70,16 +70,8 @@ export const reconcileVaultItems = ({
    * collision with a DIFFERENT ref (deterministic: appends the raw origin
    * in parentheses so reruns are idempotent).
    */
-  const resolveName = (candidate: string, ref: string, rawOrigin: string): string => {
-    const lower = candidate.toLowerCase()
-    const occupantRef = existingNameLower.get(lower)
-    if (occupantRef === undefined || occupantRef === ref) {
-      // Slot is free (or belongs to the same ref — shouldn't happen, but safe).
-      return candidate
-    }
-    // Collision: a DIFFERENT ref owns this name → uniquify deterministically.
-    return `${candidate} (${rawOrigin})`
-  }
+  const resolveName = (candidate: string, ref: string, rawOrigin: string): string =>
+    uniqueVaultName(existingNameLower, candidate, ref, rawOrigin)
 
   /** Register a name slot in the working index so in-flight adoptions don't collide. */
   const claimName = (name: string, ref: string): void => {

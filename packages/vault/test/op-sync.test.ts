@@ -312,6 +312,52 @@ describe("syncOnce — inbound manifest diff", () => {
     expect(store._items.find((i) => i.id === "env-1")?.name).toBe("Service Key")
   })
 
+  it("does not clobber an existing origin-suffixed name during adoption", async () => {
+    const base = opItemRow({
+      id: "env-base",
+      name: "Service Key",
+      kind: "env-secret",
+      ref: "env:SERVICE_KEY",
+      source: "manual",
+      opItemId: null,
+    })
+    const suffixed = opItemRow({
+      id: "env-suffix",
+      name: "Service Key (op-9)",
+      kind: "env-secret",
+      ref: "env:SERVICE_KEY_2",
+      source: "manual",
+      opItemId: null,
+    })
+    const { runOp } = makeRunOp(() =>
+      okList([
+        {
+          id: "op-9",
+          title: "Service Key",
+          category: "API_CREDENTIAL",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+      ]),
+    )
+    const store = makeStore([base, suffixed])
+    const { deps } = makeDeps({ runOp, store })
+
+    const res = await makeVaultOpSync(deps).syncOnce()
+
+    expect(res.ok).toBe(true)
+    expect(store._items).toHaveLength(3)
+    expect(store._items.find((i) => i.opItemId === "op-9")?.name).toBe(
+      "Service Key (op-9) #2",
+    )
+    expect(store._items.find((i) => i.id === "env-suffix")?.ref).toBe(
+      "env:SERVICE_KEY_2",
+    )
+
+    const second = await makeVaultOpSync(deps).syncOnce()
+    expect(second).toMatchObject({ ok: true, changed: 0 })
+    expect(store._items).toHaveLength(3)
+  })
+
   it("refreshes updatedAt in place when the 1P item changed (same title)", async () => {
     const row = opItemRow({ name: "Existing Item" })
     const newUpdated = "2026-06-05T12:00:00Z"
