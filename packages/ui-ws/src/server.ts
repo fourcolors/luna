@@ -2593,7 +2593,11 @@ export const startUIWebSocketServer = (
                     // completion to the exact OAuth flow it started; a shared
                     // connector-status handler otherwise can't tell whose it is,
                     // and an unrelated ack could abort an in-flight consent.
-                    const codeReqId = frame.requestId
+                    // Runtime-validate: requestId is untrusted client input, so
+                    // echo it back only when it is actually a string (a malformed
+                    // non-string value is dropped, never serialized back).
+                    const codeReqId =
+                      typeof frame.requestId === "string" ? frame.requestId : undefined
                     yield* svc
                       .completeAuth({
                         pendingId: String(frame.pendingId),
