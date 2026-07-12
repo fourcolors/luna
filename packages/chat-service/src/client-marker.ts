@@ -1,7 +1,8 @@
 /**
  * client-marker.ts — small formatter that prepends a one-line client-identity
  * hint to a user message so Luna can see which surface the operator is
- * typing through.
+ * typing through, plus the inverse (`stripClientMarker`) for consumers of
+ * stored payloads that need the raw user text back.
  *
  * The marker is intentionally compact and inline so it costs almost no
  * prompt budget and reads naturally to Luna:

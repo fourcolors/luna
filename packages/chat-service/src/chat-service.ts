@@ -305,8 +305,11 @@ export const formatStreamFailureReason = (
  * truncates to 60 characters. Returns null when the result would be empty.
  *
  * Phase 3 — Claude-Code-style naming without a model call.
- * The title is set once on the first turn via ThreadRegistry.upsert; if the
- * thread already has a title this path is skipped.
+ * Two call sites, same heuristic: (1) at ingest, the title is set once on
+ * the first turn via ThreadRegistry.upsert (skipped when the thread is
+ * already titled); (2) at read time, listThreads derives one from the
+ * stored first user message (client marker stripped) for legacy threads
+ * that predate the heuristic, persisted via setTitleIfNull.
  */
 export const deriveTitleFromMessage = (text: string): string | null => {
   const firstLine = text.split("\n")[0] ?? ""
@@ -2261,7 +2264,12 @@ export class ChatService extends Effect.Service<ChatService>()(
        * returns archived threads from the registry (they may not have
        * SessionStore rows if archived before Phase 2, so the registry
        * is the authoritative list). For the default 'active' case the
-       * SessionStore list is used (same as pre-Phase-3 behaviour).
+       * SessionStore list is used, with per-row title resolution layered
+       * on top (the SessionStore title column is write-once at INSERT,
+       * so without it every row would project title=null): SessionStore
+       * title wins, else the ThreadRegistry title (first-turn heuristic),
+       * else derive-on-read from the first user message, persisted back
+       * via setTitleIfNull so legacy threads are derived exactly once.
        */
       const listThreads = (
         limit = 50,
