@@ -248,12 +248,13 @@ export function StudioApp() {
     mcp: luna.mcp,
     focusArtifact: luna.focusArtifact,
     widgetOpen: luna.widgetOpen,
+    deepLinkThread: luna.deepLinkThread,
   }), [
     luna.store, luna.status, luna.connected, luna.openThread, luna.newThread,
     luna.appendMsg, luna.threadNote, luna.suggestedActions, luna.respondToAction,
     luna.send, luna.onServerFrame, luna.config, luna.updateConfig, luna.reconnect,
     luna.disconnect, luna.selectAccount, luna.restartServer, luna.model, luna.mcp,
-    luna.focusArtifact, luna.widgetOpen,
+    luna.focusArtifact, luna.widgetOpen, luna.deepLinkThread,
   ]);
   return <StudioBoard luna={client} />;
 }
@@ -481,6 +482,22 @@ const StudioBoard = React.memo(function StudioBoard({ luna }) {
     if (target.ws !== ws) switchWs(target.ws);
     bringToFront(target.id);
   }, [luna.widgetOpen]);
+
+  // A luna://thread/<id> deep link fired. Selection + subscribe already
+  // happened in useLunaData's bootstrap effect, so this ONLY surfaces the chat
+  // panel: switch to the home workspace and bring the chat panel to front.
+  // Do NOT call openThread here - it would re-select and re-trigger the
+  // stale-selection guard override in useLunaData.
+  useEffect(() => {
+    const d = luna.deepLinkThread;
+    if (!d) return;
+    if (ws !== "home") switchWs("home");
+    const chat = panelsRef.current.find((p) => p.type === "chat" && p.ws === "home");
+    if (chat) {
+      if (chat.closed) restore(chat.id);
+      bringToFront(chat.id);
+    }
+  }, [luna.deepLinkThread]);
 
   /* ---------- magnetic snap ---------- */
   function computeSnap(id, rx, ry, w, h, wsId) {

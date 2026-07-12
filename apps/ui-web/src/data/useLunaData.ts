@@ -25,6 +25,7 @@ import {
   type UIState,
 } from "@luna/ui-shared/core"
 import { loadConfig, saveConfig, type PersistedConfig } from "./config"
+import { onDeepLinkThread, takeLaunchThreadId } from "./deep-link"
 import { loadNativeLocalConnection, shouldHydrateNativeLocal } from "./native-connection"
 import { isSystemThread } from "./studio-thread-projection"
 import { useUiSelector, useUiStore, type UiStore } from "./useUiStore"
@@ -158,6 +159,11 @@ export interface LunaData {
   /** A `widget-open` frame named one of WIDGET_DIRECTORY's kinds — final-app
    *  switches workspace and brings that panel to front. */
   readonly widgetOpen: { readonly kind: string; readonly nonce: number } | null
+  /** A `luna://thread/<id>` deep link fired (cold launch drain or warm
+   *  `studio://deep-link` event). Selection/subscribe already happened in the
+   *  bootstrap effect; final-app just surfaces the chat panel. The nonce forces
+   *  a re-surface even when the same id is deep-linked twice. */
+  readonly deepLinkThread: { readonly id: string; readonly nonce: number } | null
 }
 
 export function useLunaData(): LunaData {
@@ -205,6 +211,26 @@ export function useLunaData(): LunaData {
   const [focusArtifact, setFocusArtifact] = useState<FocusArtifactSignal | null>(null)
   const widgetOpenNonceRef = useRef(0)
   const [widgetOpen, setWidgetOpen] = useState<{ kind: string; nonce: number } | null>(null)
+
+  // ── Deep links (luna://thread/<id>) ────────────────────────────────────
+  // A deep link routes through the bootstrap effect (which owns select +
+  // subscribe + activeThreadId), not directly. pendingDeepLinkRef carries the
+  // target into that effect; deepLinkNonce forces the effect to re-run since a
+  // ref mutation alone would not. routedDeepLinkRef records the id we routed to
+  // so the stale-selection guard never yanks a deep-linked thread that lives
+  // beyond the 50-thread list window. deepLinkThread is the surface signal
+  // final-app watches to bring the chat panel to front.
+  const pendingDeepLinkRef = useRef<string | null>(null)
+  const routedDeepLinkRef = useRef<string | null>(null)
+  const dlNonce = useRef(0)
+  const [deepLinkNonce, setDeepLinkNonce] = useState(0)
+  const [deepLinkDrained, setDeepLinkDrained] = useState(false)
+  const [deepLinkThread, setDeepLinkThread] = useState<{ id: string; nonce: number } | null>(null)
+  const requestDeepLink = useCallback((id: string): void => {
+    pendingDeepLinkRef.current = id
+    setDeepLinkThread({ id, nonce: ++dlNonce.current })
+    setDeepLinkNonce((n) => n + 1)
+  }, [])
 
   // MCP Apps relay: a kind="mcp-app" WidgetFrame asks for resources/tools;
   // stamp a requestId, send the WS frame, and resolve when the matching
@@ -375,6 +401,21 @@ export function useLunaData(): LunaData {
     send({ type: "widget-directory", widgets: WIDGET_DIRECTORY })
   }, [status.kind, send])
 
+  // Deep-link wiring: subscribe to warm activations and drain the cold-launch
+  // URL. deepLinkDrained latches once the cold drain settles so the bootstrap
+  // effect can hold its fallback selection until then (kills the cold-launch
+  // flash of the wrong thread). In the browser build both bridge fns no-op, so
+  // takeLaunchThreadId resolves null immediately and the gate opens at once.
+  useEffect(() => {
+    const un = onDeepLinkThread(requestDeepLink)
+    takeLaunchThreadId()
+      .then((id) => {
+        if (id) requestDeepLink(id)
+      })
+      .finally(() => setDeepLinkDrained(true))
+    return () => un()
+  }, [requestDeepLink])
+
   // Auto-connect on mount when a usable token is present.
   useEffect(() => {
     const cfg = cfgRef.current
@@ -387,14 +428,35 @@ export function useLunaData(): LunaData {
   const mintedRef = useRef(false)
   useEffect(() => {
     if (status.kind !== "open") return
+    // A pending deep link wins over every other selection rule: select +
+    // subscribe the exact thread even if it is absent from the (windowed)
+    // thread-list, and persist it as the active thread so a reload lands back
+    // here. routedDeepLinkRef then shields it from the stale-selection guard.
+    const deepId = pendingDeepLinkRef.current
+    if (deepId) {
+      pendingDeepLinkRef.current = null
+      routedDeepLinkRef.current = deepId
+      dispatch({ tag: "select-thread", threadId: deepId })
+      send({ type: "subscribe", threadId: deepId })
+      if (cfgRef.current.activeThreadId !== deepId) updateConfig({ activeThreadId: deepId })
+      return
+    }
     // Never decide before the first thread-list frame: an empty pre-load list
     // would mint a spurious thread and shadow the saved activeThreadId.
     if (!listReceivedRef.current) return
+    // Hold the fallback selection until the cold-launch deep-link drain settles
+    // so a native launch never flashes the wrong thread first. Browser resolves
+    // this immediately (both bridge fns no-op).
+    if (!deepLinkDrained) return
     // A real, non-system selection stands. A selection MISSING from a received
     // list is stale (its thread was archived/removed while we were away - the
     // transport reconnects across long outages), and a system-thread selection
     // is a hijack; both fall through to pick/mint a real conversation.
     if (selectedThreadId) {
+      // A deep-linked thread stands even when it is absent from the (windowed)
+      // thread-list - the 50-thread list must never yank the selection to the
+      // first thread out from under a deep link.
+      if (selectedThreadId === routedDeepLinkRef.current) return
       const summary = threadList.find((s) => s.id === selectedThreadId)
       if (summary && !isSystemThread(summary)) return
     }
@@ -413,7 +475,16 @@ export function useLunaData(): LunaData {
       mintedRef.current = true
       send({ type: "new-thread", model: cfgRef.current.model })
     }
-  }, [status.kind, threadList, selectedThreadId, dispatch, send])
+  }, [
+    status.kind,
+    threadList,
+    selectedThreadId,
+    dispatch,
+    send,
+    deepLinkNonce,
+    deepLinkDrained,
+    updateConfig,
+  ])
 
   // Subscribe whenever the selection lands on an unsubscribed thread (covers
   // server auto-select on thread-created). Idempotent server-side. The set is
@@ -578,5 +649,6 @@ export function useLunaData(): LunaData {
     mcp,
     focusArtifact,
     widgetOpen,
+    deepLinkThread,
   }
 }

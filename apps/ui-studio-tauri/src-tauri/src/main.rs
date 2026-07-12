@@ -1,12 +1,19 @@
-// Luna Studio native shell — Phase 0: shell only, plus v1 staged-on-boot
+// Luna Studio native shell - Phase 0: shell only, plus v1 staged-on-boot
 // self-update (see update-train-spec.md decision 4). No notifications, no
 // tray (see docs/superpowers/specs/2026-07-08-luna-studio-native-macos.md).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // `app.updater()` (check) + `update.download_and_install()` come from
-// UpdaterExt. v1 has no restart/apply command — the staged bytes just sit
+// UpdaterExt. v1 has no restart/apply command - the staged bytes just sit
 // until the OS-level bundle swap takes effect on the next launch.
 use tauri_plugin_updater::UpdaterExt;
+
+// Deep-link plumbing: Mutex holds the drained-once launch URL, Manager gives
+// state/window access in setup, Emitter powers the warm studio://deep-link
+// event, and DeepLinkExt exposes app.deep_link().get_current/on_open_url.
+use std::sync::Mutex;
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,9 +72,23 @@ fn load_local_connection() -> Result<LocalConnection, String> {
     })
 }
 
+/// Holds the URL Studio was cold-launched with (macOS delivers it before the
+/// webview can subscribe to on_open_url) so the frontend can drain it once on
+/// boot. Warm links go through the studio://deep-link event instead.
+#[derive(Default)]
+struct LaunchDeepLink(Mutex<Option<String>>);
+
+/// Drain the cold-launch deep link exactly once. Returns the raw luna:// URL
+/// the first time the frontend asks, then None on every later call, so a
+/// reload cannot re-route to a stale launch thread.
+#[tauri::command]
+fn take_launch_deep_link(state: tauri::State<LaunchDeepLink>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut g| g.take())
+}
+
 /// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
 /// IndexedDB. WKWebView caches the `tauri://` asset responses (the embedded
-/// frontend) and keeps serving them ACROSS app updates — so a user on a fresh
+/// frontend) and keeps serving them ACROSS app updates - so a user on a fresh
 /// binary kept seeing a months-old frontend (none of the shipped frontend fixes
 /// ran). Purging the cache forces the webview to re-fetch the new embedded
 /// assets. Must run on the main thread.
@@ -86,7 +107,7 @@ fn clear_webview_disk_cache() {
     };
     // The WKWebsiteDataType* constants are NSStrings whose value equals their
     // name, so constructing them directly avoids extra feature gates. Cache types
-    // only — NOT LocalStorage / IndexedDB / Cookies, so user settings survive.
+    // only - NOT LocalStorage / IndexedDB / Cookies, so user settings survive.
     let disk = NSString::from_str("WKWebsiteDataTypeDiskCache");
     let mem = NSString::from_str("WKWebsiteDataTypeMemoryCache");
     let types = NSSet::from_retained_slice(&[disk, mem]);
@@ -126,20 +147,57 @@ fn clear_webview_cache_if_updated() {
 
 fn main() {
     tauri::Builder::default()
+        // single-instance MUST be the first plugin: it forwards a second
+        // process (e.g. one spawned by the OS to open a luna:// URL) into the
+        // running instance and exits before any other plugin initializes.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![load_local_connection])
+        .manage(LaunchDeepLink::default())
+        .invoke_handler(tauri::generate_handler![
+            load_local_connection,
+            take_launch_deep_link
+        ])
         .setup(|app| {
             clear_webview_cache_if_updated();
 
+            // Deep-link wiring. A cold launch (Studio not yet running) delivers
+            // the luna:// URL before the webview exists, so we stash it in
+            // LaunchDeepLink for the frontend to drain once via
+            // take_launch_deep_link. A warm launch (Studio already open) fires
+            // on_open_url, which we relay as the studio://deep-link event AND
+            // also stash, so a frontend reload can still recover the last URL.
+            let dl_handle = app.handle().clone();
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                if let Some(u) = urls.first() {
+                    *app.state::<LaunchDeepLink>().0.lock().unwrap() = Some(u.to_string());
+                }
+            }
+            app.deep_link().on_open_url(move |event| {
+                if let Some(u) = event.urls().first() {
+                    let url = u.to_string();
+                    let _ = dl_handle.emit("studio://deep-link", &url);
+                    if let Some(s) = dl_handle.try_state::<LaunchDeepLink>() {
+                        if let Ok(mut g) = s.0.lock() {
+                            *g = Some(url);
+                        }
+                    }
+                }
+            });
+
             // v1 staged-on-boot update check (design decision 4): one
             // check -> download -> install pass right after boot, held until
-            // the NEXT launch — no mid-session restart, no UI (Moon's
+            // the NEXT launch - no mid-session restart, no UI (Moon's
             // banner/progress UX is a later phase). Runs on Tauri's async
             // runtime so it never blocks the window paint. Every failure
             // path is a soft `[studio-update]` eprintln: a flaky network or
             // a signature mismatch must never crash boot. On staged success
-            // we write nothing extra — the existing webview-version stamp
+            // we write nothing extra - the existing webview-version stamp
             // (above) already handles the cache purge on the NEXT boot,
             // once the new binary is actually running.
             // Dev builds never self-update: `tauri dev` runs a debug binary
