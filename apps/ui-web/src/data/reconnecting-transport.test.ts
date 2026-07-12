@@ -114,4 +114,31 @@ describe("Studio reconnecting transport bridge", () => {
 
     handle.disconnect()
   })
+
+  it("treats auth failure as terminal: disposes the adapter so unbounded retry can't hammer a rejected token", async () => {
+    const adapter = new FakeAdapter()
+    const statuses: string[] = []
+    const transport = createReconnectingLunaTransport(() => adapter)
+    const handle = transport.connect({
+      url: "ws://127.0.0.1:4753/ui",
+      token: "1234567890abcdef",
+      onFrame: () => {},
+      onStatus: (status) => statuses.push(status.kind),
+    })
+    await vi.waitFor(() => expect(statuses).toContain("open"))
+
+    // Server rejects the credential mid-session (1008 -> auth-failed).
+    adapter.stateListener?.({ status: "auth-failed", reason: "authentication failed" })
+    // Surfaced as a terminal closed status (drives the Reconnect prompt)...
+    expect(statuses.at(-1)).toBe("closed")
+    // ...and the adapter is disposed so its unbounded reconnect loop stops.
+    await vi.waitFor(() => expect(adapter.disposed).toBe(true))
+
+    // Any later state the adapter might still emit is ignored (terminal).
+    statuses.length = 0
+    adapter.stateListener?.({ status: "recovering" })
+    expect(statuses).toEqual([])
+
+    handle.disconnect()
+  })
 })

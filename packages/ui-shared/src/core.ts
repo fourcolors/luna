@@ -27,6 +27,7 @@ export {
 export { downloadArtifact } from "./artifact-download.js"
 export { closeOpenFences } from "./streaming.js"
 export {
+  SYSTEM_THREAD_TAG,
   initialState,
   reduce,
   filterEvents,

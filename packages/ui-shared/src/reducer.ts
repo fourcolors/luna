@@ -209,6 +209,15 @@ export const initialState: UIState = {
 
 const MAX_RETAINED = 500
 
+/**
+ * Tag marking hub-internal scratch threads (e.g. the inbox-sync projection)
+ * that must never surface as user conversations or steal selection.
+ * Single source of truth - producers (useLunaInbox) and filters
+ * (studio-thread-projection, useLunaData) import this rather than
+ * re-declaring the literal.
+ */
+export const SYSTEM_THREAD_TAG = "system"
+
 const addKindIfNew = (
   list: ReadonlyArray<string>,
   kind: string,
@@ -340,11 +349,17 @@ export const reduce = (state: UIState, action: Action): UIState => {
         frame.thread,
         ...state.threadList.filter((s) => s.id !== frame.thread.id),
       ]
+      // System-tagged threads (e.g. dream/survey scratch threads the server
+      // mints in the background) must never hijack the user's selection.
+      // Only a thread the user actually opened should become "selected".
+      const isSystemThread = frame.thread.tags.includes(SYSTEM_THREAD_TAG)
       return {
         ...state,
         threads: next,
         threadList: list,
-        selectedThreadId: frame.thread.id,
+        selectedThreadId: isSystemThread
+          ? state.selectedThreadId
+          : frame.thread.id,
         // A thread was created successfully — clear any prior create error.
         threadCreateError: null,
       }

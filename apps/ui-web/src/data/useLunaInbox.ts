@@ -35,7 +35,7 @@ import type {
   UIState,
 } from "@luna/ui-shared/core"
 import { useUiSelector, type UiStore } from "./useUiStore"
-import { SYSTEM_THREAD_TAG } from "./studio-thread-projection"
+import { SYSTEM_THREAD_TAG } from "@luna/ui-shared/core"
 
 const INBOX_THREAD_TAG = "inbox-projection"
 const REQUEST_TIMEOUT_MS = 45_000
