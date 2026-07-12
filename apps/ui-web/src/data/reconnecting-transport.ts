@@ -33,11 +33,18 @@ function toStudioStatus(state: ConnectionState): ConnectionStatus {
   }
 }
 
-/** Adapts the production LunaWsAdapter (bounded exponential reconnect) to the
- * small Transport contract consumed by useLunaData. JSON heartbeat replies
- * live here so every Studio connection answers them, including after retry. */
+/** Adapts the production LunaWsAdapter to the small Transport contract consumed
+ * by useLunaData. JSON heartbeat replies live here so every Studio connection
+ * answers them, including after retry.
+ *
+ * Reconnect is UNBOUNDED for Studio (the default factory raises maxAttempts):
+ * a daily-driver window must self-heal across any-length outage (a long deploy,
+ * a laptop sleep), not give up after the adapter's CLI-tuned 6-attempt default.
+ * Auth failure stays terminal (see the subscribeConnection handler) so a
+ * rejected token is never hammered forever. */
 export function createReconnectingLunaTransport(
-  makeAdapter: AdapterFactory = (route) => new LunaWsAdapter(route),
+  makeAdapter: AdapterFactory = (route) =>
+    new LunaWsAdapter(route, undefined, undefined, { maxAttempts: Number.MAX_SAFE_INTEGER }),
 ): Transport {
   return {
     connect: ({ url, token, onFrame, onStatus }) => {
@@ -67,6 +74,17 @@ export function createReconnectingLunaTransport(
         ].includes(state.status)
         ready = state.status === "ready"
         onStatus(toStudioStatus(state))
+        // Auth failure is terminal for this credential. With unbounded retry
+        // the adapter would otherwise keep hammering a token the server already
+        // rejected (its reconnect path overrides auth-failed with recovering
+        // and reschedules), so dispose here to stop the loop. The surfaced
+        // closed/1008 status drives the UI to prompt for a new token; a fresh
+        // connect() then builds a new adapter with it.
+        if (state.status === "auth-failed") {
+          disconnected = true
+          void adapter.dispose()
+          return
+        }
         if (ready && !disconnected) {
           for (const buffered of sendBuffer.splice(0)) adapter.sendFrame(buffered)
         }
