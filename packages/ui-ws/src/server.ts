@@ -2593,9 +2593,7 @@ export const startUIWebSocketServer = (
                     // completion to the exact OAuth flow it started; a shared
                     // connector-status handler otherwise can't tell whose it is,
                     // and an unrelated ack could abort an in-flight consent.
-                    const rawCodeReqId = (frame as { requestId?: unknown }).requestId
-                    const codeReqId =
-                      typeof rawCodeReqId === "string" ? rawCodeReqId : undefined
+                    const codeReqId = frame.requestId
                     yield* svc
                       .completeAuth({
                         pendingId: String(frame.pendingId),
