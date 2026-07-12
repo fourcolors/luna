@@ -15,6 +15,10 @@ tauri-plugin-clipboard-manager = "2"
 # → download_and_install on a background task in setup, no mid-session
 # restart, no UI. Feed + pubkey live in tauri.conf.json under plugins.updater.
 tauri-plugin-updater = "2"
+# Deep-link (luna://...) registration + runtime on_open_url. Pairs with the
+# single-instance plugin below so a luna:// URL opened while Studio is already
+# running is forwarded into the live process instead of spawning a second one.
+tauri-plugin-deep-link = "2"
 # `tauri::generate_context!` expands code that needs `serde_json` in scope now
 # that tauri.conf.json has a `plugins` block (the updater config parses as raw
 # JSON at compile time). Not used directly in main.rs.
@@ -23,6 +27,13 @@ serde_json = "1"
 # command (main.rs) serializes back to the webview for native first-run
 # provisioning from ~/.luna/.env.
 serde = { version = "1", features = ["derive"] }
+
+# Single-instance guard with the deep-link feature: on the desktop targets a
+# second process launched by a luna:// URL forwards its argv to the first
+# instance (which re-emits on_open_url) and exits, so deep links never spawn a
+# duplicate window. Must be the first plugin registered in the builder chain.
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # Always-on (NOT feature-gated, macOS only): the webview cache-bust
 # (clear_webview_disk_cache, main.rs) needs MainThreadMarker + NSString/NSSet/
