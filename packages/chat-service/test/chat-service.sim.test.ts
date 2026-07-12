@@ -103,6 +103,7 @@ import {
   type ChatFrame,
   type DeliveryNotification,
 } from "../src/index.js"
+import { applyClientMarker } from "../src/client-marker.js"
 
 // No-op MemoryRouter: sim tests never call searchMemory; they just need
 // the tag to be present in the layer graph after MemoryRouterTag was added
@@ -2545,6 +2546,52 @@ describe("ChatService — listThreads auto-titles untitled threads", () => {
           // The persist is clock-neutral: listing the sidebar is a read and
           // must not reset the 14-day auto-archive idle clock.
           expect(regRow?.lastActiveAt).toBe(legacyTs)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "derive-on-read strips the client-identity marker: the title comes from the user's first line, never the marker",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          // A marker-era legacy thread: the stored payload is what send()
+          // persisted — applyClientMarker(text, client) — so its first line
+          // is the '[client: ...]' hint, not the user's message.
+          const markerId = "thr_marker_title"
+          yield* store.create({
+            id: markerId,
+            options: { model: "claude-test" }, // no title anywhere
+            createdAt: 1,
+          })
+          yield* reg.upsert({ id: markerId, nowMs: 1 })
+          const storedText = applyClientMarker(
+            "Tune the retry backoff\nsecond line detail",
+            { name: "luna-moon", version: "0.0.55", platform: "darwin" },
+          )
+          yield* store.appendMessage({
+            sessionId: markerId,
+            messageId: "m-title-marker",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: storedText } },
+          })
+
+          const list = yield* chat.listThreads(50)
+          const row = list.find((s) => s.id === markerId)
+          expect(row?.title).toBe("Tune the retry backoff")
+
+          // The persisted one-shot title must also be the user's line — a
+          // wrong persist here would freeze the marker as the title forever.
+          const regRow = yield* reg.get(markerId)
+          expect(regRow?.title).toBe("Tune the retry backoff")
         }),
       )
     },

@@ -1,8 +1,9 @@
 /**
- * client-marker.test.ts — pure formatting tests for applyClientMarker.
+ * client-marker.test.ts — pure formatting tests for applyClientMarker and
+ * its inverse stripClientMarker.
  */
 import { describe, expect, it } from "vitest"
-import { applyClientMarker } from "./client-marker.js"
+import { applyClientMarker, stripClientMarker } from "./client-marker.js"
 
 describe("applyClientMarker", () => {
   it("returns text unchanged when client is undefined", () => {
@@ -60,5 +61,40 @@ describe("applyClientMarker", () => {
 
   it("works on empty text (still marks)", () => {
     expect(applyClientMarker("", { name: "luna-tui" })).toBe("[client: luna-tui]\n")
+  })
+})
+
+describe("stripClientMarker", () => {
+  it("round-trips applyClientMarker output back to the raw text", () => {
+    const client = { name: "luna-moon", version: "0.0.55", platform: "darwin" }
+    expect(stripClientMarker(applyClientMarker("hi luna", client))).toBe("hi luna")
+    expect(stripClientMarker(applyClientMarker("line 1\nline 2", client))).toBe(
+      "line 1\nline 2",
+    )
+    expect(stripClientMarker(applyClientMarker("", client))).toBe("")
+  })
+
+  it("strips every marker shape the formatter produces", () => {
+    expect(stripClientMarker("[client: luna-tui]\nhi")).toBe("hi")
+    expect(stripClientMarker("[client: luna-moon 0.0.1]\nhi")).toBe("hi")
+    expect(stripClientMarker("[client: luna-web on browser]\nhi")).toBe("hi")
+    expect(stripClientMarker("[client: luna-moon 0.0.1 on darwin]\nhi")).toBe("hi")
+  })
+
+  it("returns text without a marker unchanged", () => {
+    expect(stripClientMarker("hi luna")).toBe("hi luna")
+    expect(stripClientMarker("")).toBe("")
+    expect(stripClientMarker("line 1\nline 2")).toBe("line 1\nline 2")
+  })
+
+  it("leaves a first line that only resembles a marker alone", () => {
+    expect(stripClientMarker("[clients: luna-tui]\nhi")).toBe("[clients: luna-tui]\nhi")
+    expect(stripClientMarker("[client: unterminated\nhi")).toBe(
+      "[client: unterminated\nhi",
+    )
+  })
+
+  it("strips a marker-only line with no trailing newline to empty text", () => {
+    expect(stripClientMarker("[client: luna-tui]")).toBe("")
   })
 })

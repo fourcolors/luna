@@ -327,7 +327,7 @@ export const deriveTitleFromMessage = (text: string): string | null => {
  *   content: string                      (text-only shortcut)
  *   content: Array<ContentBlockParam>    (structured, required for attachments)
  */
-import { applyClientMarker, type ClientMarkerInput } from "./client-marker.js"
+import { applyClientMarker, stripClientMarker, type ClientMarkerInput } from "./client-marker.js"
 
 /** Re-exported for callers that want the same shape. */
 export type ClientHint = ClientMarkerInput
@@ -2294,9 +2294,11 @@ export class ChatService extends Effect.Service<ChatService>()(
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
         // Derive a display title from the thread's FIRST top-level user message
-        // (same heuristic the first-turn path uses). Null when the thread has no
-        // user message yet or the store read fails — the client shows its own
-        // untitled fallback then.
+        // (same heuristic the first-turn path uses). The stored payload carries
+        // the client-identity marker prepended at ingest, which the first-turn
+        // path never saw — strip it so both paths derive from the raw user
+        // text. Null when the thread has no user message yet or the store read
+        // fails — the client shows its own untitled fallback then.
         const deriveFirstMessageTitle = (
           sessionId: string,
         ): Effect.Effect<string | null, never> =>
@@ -2308,7 +2310,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               const first = Chunk.head(chunk)
               if (Option.isNone(first)) return null
               const text = extractText(first.value.payload)
-              return text ? deriveTitleFromMessage(text) : null
+              return text ? deriveTitleFromMessage(stripClientMarker(text)) : null
             }),
             Effect.catchAll(() => Effect.succeed(null)),
           )

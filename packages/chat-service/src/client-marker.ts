@@ -44,3 +44,16 @@ export const applyClientMarker = (
   if (client.name.trim().length === 0) return text
   return `${formatClientMarker(client)}\n${text}`
 }
+
+/**
+ * Inverse of `applyClientMarker`: drop a leading `[client: ...]` line (plus
+ * its newline) so consumers of STORED payloads recover the raw user text.
+ * Text without a marker passes through unchanged. Pure, no IO.
+ */
+export const stripClientMarker = (text: string): string => {
+  if (!text.startsWith("[client: ")) return text
+  const newline = text.indexOf("\n")
+  const firstLine = newline === -1 ? text : text.slice(0, newline)
+  if (!firstLine.endsWith("]")) return text
+  return newline === -1 ? "" : text.slice(newline + 1)
+}
