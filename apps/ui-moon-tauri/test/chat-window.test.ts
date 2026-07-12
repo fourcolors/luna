@@ -2732,6 +2732,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       voiceLive()
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
       M().State.activeThreadId = 'th-voice'
+      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the auto-send delivers, so the composer clears
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3564,6 +3565,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       const m = M()
       m.handleFrame({ type: 'thread-created', thread: { id: 'th-att' } })
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the send delivers, so the bubble paints + composer clears
       const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'see attached'
