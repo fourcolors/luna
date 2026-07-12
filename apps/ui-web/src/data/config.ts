@@ -23,6 +23,10 @@ export interface PersistedConfig {
   readonly enterToSend: boolean
   /** Last-selected account id. null = default broker rotation. */
   readonly selectedAccountId: string | null
+  /** Last thread the user actively opened (openThread), restored on next boot
+   *  so a reload lands back on the conversation they were in. Absent on older
+   *  configs and never written for system-thread hijacks. */
+  readonly activeThreadId?: string | undefined
 }
 
 const STORAGE_KEY = "ui-ws.config"
@@ -53,6 +57,9 @@ export const loadConfig = (): PersistedConfig => {
         token: parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
         model: parsed.model ?? DEFAULT_MODEL,
         ...(parsedEffort !== undefined ? { effort: parsedEffort } : {}),
+        ...(typeof parsed.activeThreadId === "string"
+          ? { activeThreadId: parsed.activeThreadId }
+          : {}),
         enterToSend: parsed.enterToSend ?? false,
         selectedAccountId: parsed.selectedAccountId ?? null,
       }

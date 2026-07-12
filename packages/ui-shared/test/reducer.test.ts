@@ -11,11 +11,15 @@ import type {
 const ev = (kind: string, ts = "2026-04-25T00:00:00.000Z"): ObsEvent =>
   ({ kind, ts, level: "info" }) as unknown as ObsEvent
 
-const summary = (id: string, title = "t"): SessionSummary => ({
+const summary = (
+  id: string,
+  title = "t",
+  tags: ReadonlyArray<string> = [],
+): SessionSummary => ({
   id,
   parentId: null,
   title,
-  tags: [],
+  tags,
   createdAt: 0,
   endedAt: null,
   model: "m",
@@ -114,6 +118,44 @@ describe("reducer", () => {
     expect(s.selectedThreadId).toBe("new")
     expect(s.threadList[0]!.id).toBe("new")
     expect(s.threads.has("new")).toBe(true)
+  })
+
+  it("thread-created for a system-tagged thread does not steal selection when nothing was selected", () => {
+    const s = reduce(
+      { ...initialState, threadList: [summary("old")] },
+      { type: "thread-created", thread: summary("sys-1", "t", ["system"]) },
+    )
+    // Still installed into threads/threadList so it can receive its snapshot...
+    expect(s.threads.has("sys-1")).toBe(true)
+    expect(s.threadList[0]!.id).toBe("sys-1")
+    // ...but selection is left alone.
+    expect(s.selectedThreadId).toBeNull()
+  })
+
+  it("thread-created for a system-tagged thread does not steal selection from a real thread", () => {
+    let s = reduce(initialState, {
+      type: "thread-created",
+      thread: summary("real-1"),
+    })
+    expect(s.selectedThreadId).toBe("real-1")
+    s = reduce(s, {
+      type: "thread-created",
+      thread: summary("sys-1", "t", ["system"]),
+    })
+    expect(s.threads.has("sys-1")).toBe(true)
+    expect(s.selectedThreadId).toBe("real-1")
+  })
+
+  it("thread-created for a non-system thread still selects it (no regression)", () => {
+    let s = reduce(initialState, {
+      type: "thread-created",
+      thread: summary("real-1"),
+    })
+    s = reduce(s, {
+      type: "thread-created",
+      thread: summary("real-2"),
+    })
+    expect(s.selectedThreadId).toBe("real-2")
   })
 
   it("thread-snapshot installs messages + throughSeq watermark", () => {

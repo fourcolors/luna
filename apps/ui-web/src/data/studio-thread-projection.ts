@@ -1,3 +1,4 @@
+import { SYSTEM_THREAD_TAG } from "@luna/ui-shared/core"
 import type { SessionSummary, ThreadView } from "@luna/ui-shared/core"
 import type { StudioStatus, StudioThread, StudioMsg } from "./useLunaData"
 
@@ -17,8 +18,6 @@ function tintFor(id: string): string {
   }
   return WASHES[Math.abs(hash) % WASHES.length] ?? "var(--wash-2)"
 }
-
-export const SYSTEM_THREAD_TAG = "system"
 
 export function isSystemThread(summary: SessionSummary): boolean {
   return summary.tags.includes(SYSTEM_THREAD_TAG)

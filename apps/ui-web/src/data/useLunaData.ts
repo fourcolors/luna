@@ -265,8 +265,14 @@ export function useLunaData(): LunaData {
     [onServerFrame],
   )
 
+  // Latched true once any thread-list frame has arrived; the bootstrap effect
+  // refuses to select/mint until then (an empty pre-load list must not be
+  // mistaken for a truly empty account).
+  const listReceivedRef = useRef(false)
+
   const onFrame = useCallback(
     (frame: ServerFrame): void => {
+      if (frame.type === "thread-list") listReceivedRef.current = true
       dispatch(frame)
       frameListenersRef.current.forEach((listener) => listener(frame))
       // Sidebar freshness: server orders threads by lastMessageAt, so re-list
@@ -381,10 +387,25 @@ export function useLunaData(): LunaData {
   const mintedRef = useRef(false)
   useEffect(() => {
     if (status.kind !== "open") return
-    if (selectedThreadId) return
-    // Skip hub-internal threads (e.g. useLunaInbox's inbox-sync thread) —
-    // they must never become the auto-selected "active" conversation.
-    const first = threadList.find((summary) => !isSystemThread(summary))
+    // Never decide before the first thread-list frame: an empty pre-load list
+    // would mint a spurious thread and shadow the saved activeThreadId.
+    if (!listReceivedRef.current) return
+    // A real, non-system selection stands. A selection MISSING from a received
+    // list is stale (its thread was archived/removed while we were away - the
+    // transport reconnects across long outages), and a system-thread selection
+    // is a hijack; both fall through to pick/mint a real conversation.
+    if (selectedThreadId) {
+      const summary = threadList.find((s) => s.id === selectedThreadId)
+      if (summary && !isSystemThread(summary)) return
+    }
+    // Prefer the last thread the user actively opened (persisted activeThreadId),
+    // then fall back to the first real thread. Skip hub-internal threads (e.g.
+    // useLunaInbox's inbox-sync thread) - they must never auto-select.
+    const savedId = cfgRef.current.activeThreadId
+    const first =
+      (savedId != null
+        ? threadList.find((s) => s.id === savedId && !isSystemThread(s))
+        : undefined) ?? threadList.find((s) => !isSystemThread(s))
     if (first) {
       dispatch({ tag: "select-thread", threadId: first.id })
       send({ type: "subscribe", threadId: first.id })
@@ -441,8 +462,13 @@ export function useLunaData(): LunaData {
     (id: string): void => {
       dispatch({ tag: "select-thread", threadId: id })
       send({ type: "subscribe", threadId: id })
+      // Last-thread restore: persist ONLY explicit user opens so a reload lands
+      // back here. System-thread hijacks never call openThread, so this can
+      // never persist a hub-internal thread. Skip the write when re-selecting
+      // the already-persisted thread.
+      if (cfgRef.current.activeThreadId !== id) updateConfig({ activeThreadId: id })
     },
-    [dispatch, send],
+    [dispatch, send, updateConfig],
   )
 
   const newThread = useCallback((): void => {
