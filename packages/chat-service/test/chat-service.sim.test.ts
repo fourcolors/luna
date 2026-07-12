@@ -2513,9 +2513,20 @@ describe("ChatService — listThreads auto-titles untitled threads", () => {
           const reg = yield* ThreadRegistryService
           const store = yield* SessionStore
 
-          const t = yield* chat.createThread({ model: "claude-test" }) // no title anywhere
+          // A legacy thread predating the first-turn heuristic: session and
+          // registry rows exist, neither has a title. Seed the registry row at
+          // an OLD timestamp (the test clock is frozen at 1_700_000_000_000)
+          // so any last_active_at bump by the persist would be detectable.
+          const legacyId = "thr_legacy_title"
+          const legacyTs = 1_600_000_000_000
+          yield* store.create({
+            id: legacyId,
+            options: { model: "claude-test" }, // no title anywhere
+            createdAt: legacyTs,
+          })
+          yield* reg.upsert({ id: legacyId, nowMs: legacyTs })
           yield* store.appendMessage({
-            sessionId: t.id,
+            sessionId: legacyId,
             messageId: "m-title-1",
             ts: 1,
             parentId: null,
@@ -2524,13 +2535,16 @@ describe("ChatService — listThreads auto-titles untitled threads", () => {
           })
 
           const list = yield* chat.listThreads(50)
-          const row = list.find((s) => s.id === t.id)
+          const row = list.find((s) => s.id === legacyId)
           // First line of the first user message, per deriveTitleFromMessage.
           expect(row?.title).toBe("Fix the Ollama boot probe")
 
           // Derivation is one-shot: the title is persisted to the registry.
-          const regRow = yield* reg.get(t.id)
+          const regRow = yield* reg.get(legacyId)
           expect(regRow?.title).toBe("Fix the Ollama boot probe")
+          // The persist is clock-neutral: listing the sidebar is a read and
+          // must not reset the 14-day auto-archive idle clock.
+          expect(regRow?.lastActiveAt).toBe(legacyTs)
         }),
       )
     },

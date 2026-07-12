@@ -2363,10 +2363,14 @@ export class ChatService extends Effect.Service<ChatService>()(
           const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
           const visible = sessions.filter((s) => !archivedIds.has(s.id))
           // Persist derived titles so legacy threads are derived exactly once.
-          // upsert only touches `title` for an existing row (CASE WHEN guard) and
-          // mints a minimal row otherwise; never changes archival status.
+          // setTitleIfNull is clock-neutral: listing the sidebar is a read, so it
+          // must never bump last_active_at (that would reset the 14-day
+          // auto-archive idle clock for exactly the stale threads it retires).
+          // It also never inserts and never changes archival status.
           const persist = (id: string, title: string) =>
-            reg.upsert({ id, title }).pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
+            reg
+              .setTitleIfNull(id, title)
+              .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
           return yield* resolveTitles(visible, regTitles, persist)
         })
       }

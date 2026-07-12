@@ -109,6 +109,45 @@ describe("ThreadRegistryService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  it("setTitleIfNull writes the title when null and never bumps lastActiveAt", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const row0 = yield* reg.upsert({ id: "thr_9_title", nowMs: 1_000 })
+      expect(row0.title).toBeNull()
+      expect(row0.lastActiveAt).toBe(1_000)
+      const wrote = yield* reg.setTitleIfNull("thr_9_title", "First message")
+      expect(wrote).toBe(true)
+      const row1 = yield* reg.get("thr_9_title")
+      expect(row1?.title).toBe("First message")
+      expect(row1?.lastActiveAt).toBe(1_000) // clock-neutral: no bump
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("setTitleIfNull no-ops when the thread already has a title", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_10_titled", title: "Existing", nowMs: 1_000 })
+      const wrote = yield* reg.setTitleIfNull("thr_10_titled", "Other")
+      expect(wrote).toBe(false)
+      const row = yield* reg.get("thr_10_titled")
+      expect(row?.title).toBe("Existing")
+      expect(row?.lastActiveAt).toBe(1_000)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("setTitleIfNull no-ops for a missing thread and never inserts", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const wrote = yield* reg.setTitleIfNull("thr_999_ghost", "Nope")
+      expect(wrote).toBe(false)
+      const row = yield* reg.get("thr_999_ghost")
+      expect(row).toBeNull()
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   it("touch updates lastActiveAt and returns true", async () => {
     const program = Effect.gen(function* () {
       const reg = yield* ThreadRegistryService
