@@ -2588,6 +2588,14 @@ export const startUIWebSocketServer = (
                     // broadcast the refreshed instance list to ALL clients.
                     if (connectorService === null) return
                     const svc = connectorService
+                    // Echo the client's requestId (when present) on BOTH the
+                    // success and failure status so the panel can attribute the
+                    // completion to the exact OAuth flow it started; a shared
+                    // connector-status handler otherwise can't tell whose it is,
+                    // and an unrelated ack could abort an in-flight consent.
+                    const rawCodeReqId = (frame as { requestId?: unknown }).requestId
+                    const codeReqId =
+                      typeof rawCodeReqId === "string" ? rawCodeReqId : undefined
                     yield* svc
                       .completeAuth({
                         pendingId: String(frame.pendingId),
@@ -2597,7 +2605,12 @@ export const startUIWebSocketServer = (
                       .pipe(
                         Effect.flatMap((instance) =>
                           Effect.gen(function* () {
-                            send(ws, { type: "connector-status", ok: true, instance })
+                            send(ws, {
+                              type: "connector-status",
+                              ...(codeReqId !== undefined ? { requestId: codeReqId } : {}),
+                              ok: true,
+                              instance,
+                            })
                             const instances = yield* svc.list()
                             const sockets = yield* Ref.get(activeSockets)
                             for (const sock of sockets) {
@@ -2609,6 +2622,7 @@ export const startUIWebSocketServer = (
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
+                              ...(codeReqId !== undefined ? { requestId: codeReqId } : {}),
                               ok: false,
                               message: failureMessage(cause),
                             })

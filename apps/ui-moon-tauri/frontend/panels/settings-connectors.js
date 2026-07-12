@@ -163,6 +163,7 @@
           .then(function (captured) {
             client.send({
               type: 'connector-oauth-code',
+              requestId: frame.requestId,   // == oauthRequestId; echoed on the completeAuth status for attribution
               pendingId: frame.pendingId,
               code: captured.code,
               state: captured.state,
@@ -238,17 +239,36 @@
           return;
         }
 
-        // Path 2: oauth status frame
-        if (beginTimer) { clearTimeout(beginTimer); beginTimer = null; }
+        // Path 2: a connector-status frame that is NOT a tracked plain connect.
+        // It may (a) belong to OUR in-flight OAuth flow, or (b) be an ack for a
+        // DIFFERENT flow (another account's disconnect/set-client, a late
+        // completion) that merely shares this handler. Only (a) may tear down
+        // OAuth state; otherwise an unrelated ack silently aborts a consent
+        // flow the user is still completing in the browser.
+        var attributableToOurOauth = oauthRequestId !== null && (
+          // Begin/redirect/timeout failures echo our requestId; the server now
+          // also echoes it on completeAuth success + failure.
+          (frame.requestId && frame.requestId === oauthRequestId) ||
+          // Success completion carries the freshly-created instance for our def.
+          (frame.instance && frame.instance.definitionId === oauthDefinitionId) ||
+          // completeAuth FAILURE on an OLDER server carries neither requestId
+          // nor instance; while mid-flow, an unattributed failure is ours. (A
+          // bare ok:true with no instance is NOT ours: our success always
+          // carries an instance, so another account's disconnect-ok never
+          // matches here.)
+          (!frame.ok && !frame.requestId && !frame.instance)
+        );
 
-        if (!frame.ok && oauthRequestId !== null) {
-          cancelOauth(frame.message || 'Connector request failed.');
-          return;
+        if (attributableToOurOauth) {
+          if (beginTimer) { clearTimeout(beginTimer); beginTimer = null; }
+          if (!frame.ok) {
+            cancelOauth(frame.message || 'Connector request failed.');
+            return;
+          }
+          if (oauthDefinitionId) clearBusy(oauthDefinitionId);
+          oauthRequestId = null;
+          oauthDefinitionId = null;
         }
-
-        if (oauthDefinitionId) clearBusy(oauthDefinitionId);
-        oauthRequestId = null;
-        oauthDefinitionId = null;
         if (frame.instance) {
           clearBusy(frame.instance.definitionId);
           delete consentDraft[frame.instance.definitionId];
