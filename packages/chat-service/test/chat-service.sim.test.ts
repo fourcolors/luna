@@ -2425,6 +2425,37 @@ describe("ChatService — listThreads excludes archived threads", () => {
     },
     { timeout: 15_000 },
   )
+
+  it(
+    "an explicit creation title is seeded into the registry so the archived list shows it",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          const t = yield* chat.createThread({ model: "claude-test", title: "Incident review" })
+          // A first user message that would derive a DIFFERENT title if it won.
+          yield* store.appendMessage({
+            sessionId: t.id,
+            messageId: "m-arch-1",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "Summarize the logs" } },
+          })
+          yield* reg.archive(t.id)
+
+          // Archived list is registry-only — it must show the explicit title,
+          // not the derived "Summarize the logs".
+          const archived = yield* chat.listThreads(50, "archived")
+          expect(archived.find((s) => s.id === t.id)?.title).toBe("Incident review")
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
 })
 
 // ── listThreads auto-title tests ──────────────────────────────────────────────

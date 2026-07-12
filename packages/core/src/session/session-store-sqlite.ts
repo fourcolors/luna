@@ -320,6 +320,13 @@ export const makeSessionStoreSqlite = (
       const messagesAll = db.query(
         `SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC`,
       )
+      // Bounded lookup for the thread's first top-level user message — used by
+      // sidebar title derivation. LIMIT 1 so it never materializes the whole
+      // message log (the reason readMessages was too costly for derive-on-read).
+      const firstUserMessage = db.query(
+        `SELECT * FROM messages WHERE session_id = ? AND kind = 'user' ` +
+          `AND parent_id IS NULL ORDER BY seq ASC LIMIT 1`,
+      )
       const sessionsList = db.query(`SELECT * FROM sessions`)
 
       const create = (input: {
@@ -604,6 +611,16 @@ export const makeSessionStoreSqlite = (
           }),
         )
 
+      // First top-level user message, or null (also null for an unknown
+      // session — callers treat "no first message" the same as "not found").
+      const readFirstUserMessage = (
+        sessionId: string,
+      ): Effect.Effect<StoredMessage | null, never> =>
+        Effect.sync(() => {
+          const row = firstUserMessage.get(sessionId) as MessageDbRow | undefined
+          return row ? rowToMessage(row) : null
+        })
+
       const list = (
         q: SessionQuery = {},
       ): Stream.Stream<SessionSummary, never> =>
@@ -641,6 +658,7 @@ export const makeSessionStoreSqlite = (
         setStatus,
         appendMessage,
         readMessages,
+        readFirstUserMessage,
         list,
       })
     }),

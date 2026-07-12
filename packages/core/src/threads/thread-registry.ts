@@ -196,6 +196,16 @@ export interface ThreadRegistryApi {
   listStale: (cutoffMs: number) => Effect.Effect<ReadonlyArray<ThreadRow>, never>
 }
 
+/**
+ * Normalize a title for storage: a blank / whitespace-only title becomes null.
+ * Applied at every registry write so the `title` column is never the empty
+ * string — the read side treats "" as "no title", so storing "" would make a
+ * row derive-on-read forever while never accepting a backfill (the two title
+ * emptiness notions must agree).
+ */
+const normalizeTitle = (title: string | null | undefined): string | null =>
+  title != null && title.trim().length > 0 ? title : null
+
 // ── ThreadRegistryError ──────────────────────────────────────────────────────
 
 export class ThreadRegistryError extends Error {
@@ -293,7 +303,7 @@ export class ThreadRegistryService extends Effect.Tag(
                 ? { sdkSessionId: input.sdkSessionId }
                 : {}),
               ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-              ...(input.title !== undefined ? { title: input.title } : {}),
+              ...(input.title !== undefined ? { title: normalizeTitle(input.title) } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
               ...(input.effort !== undefined ? { effort: input.effort } : {}),
               lastActiveAt: clockTs,
@@ -309,7 +319,7 @@ export class ThreadRegistryService extends Effect.Tag(
             id: input.id,
             sdkSessionId: input.sdkSessionId ?? null,
             cwd: input.cwd ?? null,
-            title: input.title ?? null,
+            title: normalizeTitle(input.title),
             model: input.model ?? null,
             effort: input.effort ?? null,
             createdAt: ts,
@@ -353,11 +363,14 @@ export class ThreadRegistryService extends Effect.Tag(
       const setTitleIfNull: ThreadRegistryApi["setTitleIfNull"] = (id, title) =>
         Ref.modify(store, (m) => {
           const existing = m.get(id)
-          if (!existing || existing.title !== null) {
+          const next = normalizeTitle(title)
+          // Writable only when the row exists, is currently untitled (null OR a
+          // legacy blank), and we actually have a non-blank title to set.
+          if (!existing || normalizeTitle(existing.title) !== null || next === null) {
             return [false, m] as [boolean, typeof m]
           }
           const n = new Map(m)
-          n.set(id, { ...existing, title })
+          n.set(id, { ...existing, title: next })
           return [true, n] as [boolean, typeof m]
         })
 
@@ -524,7 +537,10 @@ export class ThreadRegistryService extends Effect.Tag(
             WHERE id = ?`,
         )
         const setTitleIfNullStmt = db.query(
-          `UPDATE threads SET title = ? WHERE id = ? AND title IS NULL`,
+          // Cover legacy blank rows too — the read side treats '' as untitled,
+          // so a '' row must remain writable (normalizeTitle now prevents new
+          // '' writes, but pre-existing rows may hold it).
+          `UPDATE threads SET title = ? WHERE id = ? AND (title IS NULL OR title = '')`,
         )
         const touchStmt = db.query(
           `UPDATE threads SET last_active_at = ? WHERE id = ?`,
@@ -596,7 +612,7 @@ export class ThreadRegistryService extends Effect.Tag(
                 input.cwd !== undefined ? 1 : 0,
                 input.cwd ?? null,
                 input.title !== undefined ? 1 : 0,
-                input.title ?? null,
+                normalizeTitle(input.title),
                 input.model !== undefined ? 1 : 0,
                 input.model ?? null,
                 input.effort !== undefined ? 1 : 0,
@@ -609,7 +625,7 @@ export class ThreadRegistryService extends Effect.Tag(
                 input.id,
                 input.sdkSessionId ?? null,
                 input.cwd ?? null,
-                input.title ?? null,
+                normalizeTitle(input.title),
                 input.model ?? null,
                 input.effort ?? null,
                 insertTs,
@@ -622,7 +638,7 @@ export class ThreadRegistryService extends Effect.Tag(
                 id: input.id,
                 sdkSessionId: input.sdkSessionId ?? null,
                 cwd: input.cwd ?? null,
-                title: input.title ?? null,
+                title: normalizeTitle(input.title),
                 model: input.model ?? null,
                 effort: input.effort ?? null,
                 createdAt: insertTs,
@@ -656,7 +672,11 @@ export class ThreadRegistryService extends Effect.Tag(
           })
 
         const setTitleIfNull: ThreadRegistryApi["setTitleIfNull"] = (id, title) =>
-          Effect.sync(() => setTitleIfNullStmt.run(title, id).changes > 0)
+          Effect.sync(() => {
+            const next = normalizeTitle(title)
+            if (next === null) return false // never persist a blank title
+            return setTitleIfNullStmt.run(next, id).changes > 0
+          })
 
         const touch: ThreadRegistryApi["touch"] = (id) =>
           Effect.gen(function* () {
