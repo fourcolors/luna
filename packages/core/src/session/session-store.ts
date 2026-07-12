@@ -269,6 +269,22 @@ export class SessionStore extends Effect.Service<SessionStore>()(
           ),
         )
 
+      // First top-level user message, or null (also null for an unknown
+      // session). Bounded — the SQLite twin runs a LIMIT 1 query; here the
+      // in-memory list is already small so a find() is equivalent.
+      const readFirstUserMessage = (
+        sessionId: string,
+      ): Effect.Effect<StoredMessage | null, never> =>
+        Ref.get(ref).pipe(
+          Effect.map((state) => {
+            const msgs = state.messages.get(sessionId)
+            if (!msgs) return null
+            return (
+              msgs.find((m) => m.kind === "user" && m.parentId === null) ?? null
+            )
+          }),
+        )
+
       const list = (
         q: SessionQuery = {},
       ): Stream.Stream<SessionSummary, never> =>
@@ -338,6 +354,7 @@ export class SessionStore extends Effect.Service<SessionStore>()(
         setStatus,
         appendMessage,
         readMessages,
+        readFirstUserMessage,
         list,
       } as const
     }),

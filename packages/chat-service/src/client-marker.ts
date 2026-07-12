@@ -22,13 +22,30 @@ export interface ClientMarkerInput {
   readonly platform?: string
 }
 
+/**
+ * Keep a marker field on ONE clean line: drop the bracket characters that
+ * delimit the marker and collapse any newline/whitespace run to a single
+ * space. Without this an adversarial or malformed `ClientInfo` (a name with a
+ * newline or `]`) could inject a second line or a premature `]`, which
+ * `stripClientMarker` could then only partially remove.
+ */
+const sanitizeField = (s: string): string =>
+  s.replace(/[[\]\r\n]+/g, " ").replace(/\s+/g, " ").trim()
+
 const formatClientMarker = (c: ClientMarkerInput): string => {
+  const name = sanitizeField(c.name)
   const tail: string[] = []
-  if (c.version !== undefined && c.version.length > 0) tail.push(c.version)
-  if (c.platform !== undefined && c.platform.length > 0) tail.push(`on ${c.platform}`)
+  if (c.version !== undefined) {
+    const v = sanitizeField(c.version)
+    if (v.length > 0) tail.push(v)
+  }
+  if (c.platform !== undefined) {
+    const p = sanitizeField(c.platform)
+    if (p.length > 0) tail.push(`on ${p}`)
+  }
   return tail.length === 0
-    ? `[client: ${c.name}]`
-    : `[client: ${c.name} ${tail.join(" ")}]`
+    ? `[client: ${name}]`
+    : `[client: ${name} ${tail.join(" ")}]`
 }
 
 /**
@@ -40,9 +57,9 @@ export const applyClientMarker = (
   client: ClientMarkerInput | undefined,
 ): string => {
   if (client === undefined) return text
-  // Defensive: an empty name field would produce `[client: ]` which is just
-  // noise. Treat empty-name as "no client info" — same as undefined.
-  if (client.name.trim().length === 0) return text
+  // Defensive: an empty (or bracket/whitespace-only) name would produce
+  // `[client: ]` which is just noise. Treat it as "no client info".
+  if (sanitizeField(client.name).length === 0) return text
   return `${formatClientMarker(client)}\n${text}`
 }
 

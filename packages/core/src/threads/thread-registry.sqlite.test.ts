@@ -119,6 +119,22 @@ describe("ThreadRegistryService (SQLite layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(layer)))
   })
 
+  test("upsert normalizes a blank title to null; setTitleIfNull rejects a blank input", async () => {
+    const layer = makeTestLayer(":memory:")
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const row = yield* reg.upsert({ id: "thr_sqlite_blank", title: "   ", nowMs: 1_000 })
+      expect(row.title).toBeNull() // never stored as ""
+      // A blank derived title is never persisted; a real one backfills.
+      expect(yield* reg.setTitleIfNull("thr_sqlite_blank", "  ")).toBe(false)
+      expect(yield* reg.setTitleIfNull("thr_sqlite_blank", "Real")).toBe(true)
+      const after = yield* reg.get("thr_sqlite_blank")
+      expect(after?.title).toBe("Real")
+      expect(after?.lastActiveAt).toBe(1_000) // clock-neutral
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(layer)))
+  })
+
   test("list returns all rows (3 inserted)", async () => {
     const layer = makeTestLayer(":memory:")
     const program = Effect.gen(function* () {

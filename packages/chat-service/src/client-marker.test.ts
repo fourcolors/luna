@@ -98,3 +98,25 @@ describe("stripClientMarker", () => {
     expect(stripClientMarker("[client: luna-tui]")).toBe("")
   })
 })
+
+describe("applyClientMarker field sanitization", () => {
+  it("keeps the marker on ONE line when a field contains a newline", () => {
+    const out = applyClientMarker("hi", { name: "luna-moon\nevil", version: "1.0" })
+    // Marker is a single line; stripping recovers exactly the user's text.
+    expect(out.split("\n")[0]).toBe("[client: luna-moon evil 1.0]")
+    expect(stripClientMarker(out)).toBe("hi")
+  })
+
+  it("drops bracket characters that would break the marker delimiters", () => {
+    const out = applyClientMarker("hi", {
+      name: "luna]moon",
+      platform: "dar[win]",
+    })
+    expect(out.split("\n")[0]).toBe("[client: luna moon on dar win]")
+    expect(stripClientMarker(out)).toBe("hi")
+  })
+
+  it("treats a bracket/whitespace-only name as no client info", () => {
+    expect(applyClientMarker("hi", { name: "[]  \n" })).toBe("hi")
+  })
+})

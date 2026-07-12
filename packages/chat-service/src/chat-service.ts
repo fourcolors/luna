@@ -944,6 +944,11 @@ export class ChatService extends Effect.Service<ChatService>()(
                     (opts as { cwd?: string }).cwd ??
                     process.env["LUNA_REPO_ROOT"] ??
                     process.cwd(),
+                  // Seed an explicit creation title into the registry so the
+                  // archived list (registry-only) shows it rather than a later
+                  // derived title. Blank titles normalize to null in the
+                  // registry, so this is a no-op for the common no-title case.
+                  ...(opts.title !== undefined ? { title: opts.title } : {}),
                   ...(opts.model !== undefined ? { model: opts.model } : {}),
                   ...(persistEffort !== undefined
                     ? { effort: persistEffort }
@@ -2310,14 +2315,13 @@ export class ChatService extends Effect.Service<ChatService>()(
         const deriveFirstMessageTitle = (
           sessionId: string,
         ): Effect.Effect<string | null, never> =>
-          store.readMessages(sessionId).pipe(
-            Stream.filter((m) => m.kind === "user" && m.parentId === null),
-            Stream.take(1),
-            Stream.runCollect,
-            Effect.map((chunk) => {
-              const first = Chunk.head(chunk)
-              if (Option.isNone(first)) return null
-              const text = extractText(first.value.payload)
+          // Bounded LIMIT-1 lookup — never materializes the whole message log,
+          // so an un-titleable thread (no user message, marker-only, blank) is
+          // cheap to re-check on every sidebar open.
+          store.readFirstUserMessage(sessionId).pipe(
+            Effect.map((first) => {
+              if (first === null) return null
+              const text = extractText(first.payload)
               return text ? deriveTitleFromMessage(stripClientMarker(text)) : null
             }),
             Effect.catchAll(() => Effect.succeed(null)),

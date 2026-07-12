@@ -137,6 +137,31 @@ describe("ThreadRegistryService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  it("upsert normalizes a blank/whitespace title to null (never stores '')", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const row = yield* reg.upsert({ id: "thr_blank", title: "   " })
+      expect(row.title).toBeNull()
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("setTitleIfNull backfills a legacy blank-title row and rejects a blank input", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      // Simulate a legacy row that already holds "" (pre-normalization).
+      yield* reg.upsert({ id: "thr_legacy_blank", nowMs: 1_000 })
+      // A blank derived title is never persisted.
+      expect(yield* reg.setTitleIfNull("thr_legacy_blank", "   ")).toBe(false)
+      // A real title backfills the untitled row.
+      expect(yield* reg.setTitleIfNull("thr_legacy_blank", "Real title")).toBe(true)
+      const row = yield* reg.get("thr_legacy_blank")
+      expect(row?.title).toBe("Real title")
+      expect(row?.lastActiveAt).toBe(1_000) // still clock-neutral
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   it("setTitleIfNull no-ops for a missing thread and never inserts", async () => {
     const program = Effect.gen(function* () {
       const reg = yield* ThreadRegistryService
