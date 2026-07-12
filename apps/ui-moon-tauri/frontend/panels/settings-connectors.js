@@ -251,11 +251,18 @@
           (frame.requestId && frame.requestId === oauthRequestId) ||
           // Success completion carries the freshly-created instance for our def.
           (frame.instance && frame.instance.definitionId === oauthDefinitionId) ||
-          // completeAuth FAILURE on an OLDER server carries neither requestId
-          // nor instance; while mid-flow, an unattributed failure is ours. (A
-          // bare ok:true with no instance is NOT ours: our success always
-          // carries an instance, so another account's disconnect-ok never
-          // matches here.)
+          // completeAuth FAILURE on an OLDER server (no requestId echo) carries
+          // neither requestId nor instance; while mid-flow, an unattributed
+          // failure is treated as ours (favor teardown over a stuck spinner). A
+          // bare ok:true with no instance is NOT ours (our success always
+          // carries an instance), so another account's disconnect-ok never
+          // matches. KNOWN, ACCEPTED COLLISION: another account's disconnect
+          // FAILURE ({ok:false} with no requestId/instance) is byte-identical to
+          // our own old-server OAuth failure and would also tear us down. This is
+          // far narrower than the prior bug (ANY not-ok frame tore us down): a
+          // connector-status is delivered only to the client that sent the
+          // request, so it fires only if THIS client both started an OAuth and
+          // had a disconnect fail concurrently.
           (!frame.ok && !frame.requestId && !frame.instance)
         );
 

@@ -8930,10 +8930,16 @@
         Attachments.clear();
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
 
-        // Show typing indicator
-        this.showTypingIndicator();
-        MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
-        WebSocketEngine.startTurnTimeout();
+        // Show the typing indicator + arm the turn watchdog only when the send
+        // actually went out. An offline new-thread message is stashed in
+        // State.pendingUserMessage and fires on reconnect, so there is no
+        // in-flight turn to indicate (or time out) yet. The offline +
+        // existing-thread case already returned above.
+        if (_connected) {
+          this.showTypingIndicator();
+          MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
+          WebSocketEngine.startTurnTimeout();
+        }
       }
     };
 

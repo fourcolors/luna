@@ -138,6 +138,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       chatPanel!.classList.add('active')
       expect(chatMessages).not.toBeNull()
 
+      // Connected session so the submit actually sends and the turn watchdog
+      // arms (the watchdog is a "sent but no reply" safety net; an un-sent /
+      // offline message no longer shows a phantom typing indicator).
+      const mi = (window as any).__MoonInternals
+      mi.State.activeThreadId = 'th-watchdog'
+      mi.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+
       // 1. User types "How does this look?" and submits
       messageInput.value = 'How does this look?'
       const submitEvent = new Event('submit', { bubbles: true, cancelable: true })
