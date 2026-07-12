@@ -89,6 +89,36 @@ describe("ThreadRegistryService (SQLite layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(layer)))
   })
 
+  test("setTitleIfNull writes only when title is NULL and never bumps last_active_at", async () => {
+    const layer = makeTestLayer(":memory:")
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const row0 = yield* reg.upsert({ id: "thr_sqlite_title", nowMs: 1_000 })
+      expect(row0.title).toBeNull()
+      expect(row0.lastActiveAt).toBe(1_000)
+
+      const wrote = yield* reg.setTitleIfNull("thr_sqlite_title", "Derived title")
+      expect(wrote).toBe(true)
+      const row1 = yield* reg.get("thr_sqlite_title")
+      expect(row1?.title).toBe("Derived title")
+      expect(row1?.lastActiveAt).toBe(1_000) // clock-neutral: no bump
+
+      // Already titled → no-op
+      const again = yield* reg.setTitleIfNull("thr_sqlite_title", "Other")
+      expect(again).toBe(false)
+      const row2 = yield* reg.get("thr_sqlite_title")
+      expect(row2?.title).toBe("Derived title")
+      expect(row2?.lastActiveAt).toBe(1_000)
+
+      // Missing row → no-op, never inserts
+      const ghost = yield* reg.setTitleIfNull("thr_sqlite_ghost", "Nope")
+      expect(ghost).toBe(false)
+      const ghostRow = yield* reg.get("thr_sqlite_ghost")
+      expect(ghostRow).toBeNull()
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(layer)))
+  })
+
   test("list returns all rows (3 inserted)", async () => {
     const layer = makeTestLayer(":memory:")
     const program = Effect.gen(function* () {

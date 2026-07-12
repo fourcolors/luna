@@ -108,8 +108,12 @@ export function extractTextPreview(payload: unknown): string | null {
  * string-content shortcut and the structured content-block array. Returns
  * null only when the shape is unrecognized; returns empty string for
  * tool-use-only assistant turns (callers can distinguish).
+ *
+ * Exported for the thread-title derivation in chat-service, which needs the
+ * RAW text (newlines intact) so its first-line heuristic matches the
+ * ingest-time title path — extractTextPreview collapses whitespace first.
  */
-function extractText(payload: unknown): string | null {
+export function extractText(payload: unknown): string | null {
   if (!isObj(payload)) return null
   const msg = payload["message"]
   if (!isObj(msg)) return null

@@ -151,6 +151,16 @@ export interface ThreadRegistryApi {
     config: { model?: string; effort?: string },
   ) => Effect.Effect<boolean, never>
 
+  /**
+   * Set the title of an EXISTING thread only when it has none yet.
+   * The deliberate clock-neutral exception to upsert's "last_active_at is
+   * always bumped on updates" rule: read-driven title backfill (listThreads
+   * derive-on-read) must never reset the auto-archive idle clock.
+   * No-ops when the row is missing (never inserts) or already titled.
+   * Returns true only when a title was actually written.
+   */
+  setTitleIfNull: (id: string, title: string) => Effect.Effect<boolean, never>
+
   /** Bump last_active_at to now. Best-effort — off the hot path. */
   touch: (id: string) => Effect.Effect<boolean, never>
 
@@ -340,6 +350,17 @@ export class ThreadRegistryService extends Effect.Tag(
           return [true, n] as [boolean, typeof m]
         })
 
+      const setTitleIfNull: ThreadRegistryApi["setTitleIfNull"] = (id, title) =>
+        Ref.modify(store, (m) => {
+          const existing = m.get(id)
+          if (!existing || existing.title !== null) {
+            return [false, m] as [boolean, typeof m]
+          }
+          const n = new Map(m)
+          n.set(id, { ...existing, title })
+          return [true, n] as [boolean, typeof m]
+        })
+
       const touch: ThreadRegistryApi["touch"] = (id) =>
         Effect.gen(function* () {
           const ts = yield* nowMs()
@@ -409,6 +430,7 @@ export class ThreadRegistryService extends Effect.Tag(
         get,
         setSid,
         setConfig,
+        setTitleIfNull,
         touch,
         list,
         archive,
@@ -500,6 +522,9 @@ export class ThreadRegistryService extends Effect.Tag(
               SET model  = CASE WHEN ? = 1 THEN ? ELSE model END,
                   effort = CASE WHEN ? = 1 THEN ? ELSE effort END
             WHERE id = ?`,
+        )
+        const setTitleIfNullStmt = db.query(
+          `UPDATE threads SET title = ? WHERE id = ? AND title IS NULL`,
         )
         const touchStmt = db.query(
           `UPDATE threads SET last_active_at = ? WHERE id = ?`,
@@ -630,6 +655,9 @@ export class ThreadRegistryService extends Effect.Tag(
             return result.changes > 0
           })
 
+        const setTitleIfNull: ThreadRegistryApi["setTitleIfNull"] = (id, title) =>
+          Effect.sync(() => setTitleIfNullStmt.run(title, id).changes > 0)
+
         const touch: ThreadRegistryApi["touch"] = (id) =>
           Effect.gen(function* () {
             const ts = yield* clock.nowMs()
@@ -677,6 +705,7 @@ export class ThreadRegistryService extends Effect.Tag(
           get,
           setSid,
           setConfig,
+          setTitleIfNull,
           touch,
           list,
           archive,

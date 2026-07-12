@@ -58,6 +58,7 @@ import {
   Clock as CoreClock,
   ObservabilityService,
   TelemetryService,
+  extractText,
   projectChatMessages,
   projectOne,
   SuggestedActions,
@@ -304,8 +305,11 @@ export const formatStreamFailureReason = (
  * truncates to 60 characters. Returns null when the result would be empty.
  *
  * Phase 3 — Claude-Code-style naming without a model call.
- * The title is set once on the first turn via ThreadRegistry.upsert; if the
- * thread already has a title this path is skipped.
+ * Two call sites, same heuristic: (1) at ingest, the title is set once on
+ * the first turn via ThreadRegistry.upsert (skipped when the thread is
+ * already titled); (2) at read time, listThreads derives one from the
+ * stored first user message (client marker stripped) for legacy threads
+ * that predate the heuristic, persisted via setTitleIfNull.
  */
 export const deriveTitleFromMessage = (text: string): string | null => {
   const firstLine = text.split("\n")[0] ?? ""
@@ -326,7 +330,7 @@ export const deriveTitleFromMessage = (text: string): string | null => {
  *   content: string                      (text-only shortcut)
  *   content: Array<ContentBlockParam>    (structured, required for attachments)
  */
-import { applyClientMarker, type ClientMarkerInput } from "./client-marker.js"
+import { applyClientMarker, stripClientMarker, type ClientMarkerInput } from "./client-marker.js"
 
 /** Re-exported for callers that want the same shape. */
 export type ClientHint = ClientMarkerInput
@@ -2260,7 +2264,12 @@ export class ChatService extends Effect.Service<ChatService>()(
        * returns archived threads from the registry (they may not have
        * SessionStore rows if archived before Phase 2, so the registry
        * is the authoritative list). For the default 'active' case the
-       * SessionStore list is used (same as pre-Phase-3 behaviour).
+       * SessionStore list is used, with per-row title resolution layered
+       * on top (the SessionStore title column is write-once at INSERT,
+       * so without it every row would project title=null): SessionStore
+       * title wins, else the ThreadRegistry title (first-turn heuristic),
+       * else derive-on-read from the first user message, persisted back
+       * via setTitleIfNull so legacy threads are derived exactly once.
        */
       const listThreads = (
         limit = 50,
@@ -2292,19 +2301,87 @@ export class ChatService extends Effect.Service<ChatService>()(
         const sessionList = store
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+        // Derive a display title from the thread's FIRST top-level user message
+        // (same heuristic the first-turn path uses). The stored payload carries
+        // the client-identity marker prepended at ingest, which the first-turn
+        // path never saw — strip it so both paths derive from the raw user
+        // text. Null when the thread has no user message yet or the store read
+        // fails — the client shows its own untitled fallback then.
+        const deriveFirstMessageTitle = (
+          sessionId: string,
+        ): Effect.Effect<string | null, never> =>
+          store.readMessages(sessionId).pipe(
+            Stream.filter((m) => m.kind === "user" && m.parentId === null),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.map((chunk) => {
+              const first = Chunk.head(chunk)
+              if (Option.isNone(first)) return null
+              const text = extractText(first.value.payload)
+              return text ? deriveTitleFromMessage(stripClientMarker(text)) : null
+            }),
+            Effect.catchAll(() => Effect.succeed(null)),
+          )
+        // Overlay display titles onto summaries that lack one. The SessionStore
+        // `title` column is write-once at INSERT (Moon never sends one), while
+        // the first-turn heuristic writes derived titles to the ThreadRegistry —
+        // so without this overlay every active row projects title=null and the
+        // sidebar renders "untitled". Preference order per row:
+        //   1. the SessionStore title (explicitly set at creation);
+        //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
+        //   3. derive-on-read from the first user message (threads predating the
+        //      heuristic), persisted back to the registry so it runs once.
+        const resolveTitles = (
+          sessions: ReadonlyArray<SessionSummary>,
+          regTitles: ReadonlyMap<string, string | null>,
+          persist: ((id: string, title: string) => Effect.Effect<void, never>) | null,
+        ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
+          Effect.forEach(
+            sessions,
+            (s) => {
+              if (s.title !== null && s.title !== "") return Effect.succeed(s)
+              const regTitle = regTitles.get(s.id)
+              if (regTitle) return Effect.succeed({ ...s, title: regTitle })
+              return deriveFirstMessageTitle(s.id).pipe(
+                Effect.tap((derived) =>
+                  derived && persist ? persist(s.id, derived) : Effect.void,
+                ),
+                Effect.map((derived) => (derived ? { ...s, title: derived } : s)),
+              )
+            },
+            { concurrency: 4 },
+          )
         if (Option.isNone(threadRegistry)) {
-          return sessionList
+          return sessionList.pipe(
+            Effect.flatMap((sessions) => resolveTitles(sessions, new Map(), null)),
+          )
         }
         const reg = threadRegistry.value
         return Effect.gen(function* () {
-          const [sessions, archivedRows] = yield* Effect.all([
+          const [sessions, archivedRows, activeRows] = yield* Effect.all([
             sessionList,
             reg.listByStatus("archived").pipe(
               Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
             ),
+            reg.listByStatus("active").pipe(
+              Effect.catchAllCause(() =>
+                Effect.succeed([] as readonly { readonly id: string; readonly title: string | null }[]),
+              ),
+            ),
           ])
           const archivedIds = new Set(archivedRows.map((r) => r.id))
-          return sessions.filter((s) => !archivedIds.has(s.id))
+          const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
+          const visible = sessions.filter((s) => !archivedIds.has(s.id))
+          // Persist derived titles so legacy threads are derived exactly once.
+          // setTitleIfNull is clock-neutral: listing the sidebar is a read, so it
+          // must never bump last_active_at (that would reset the 14-day
+          // auto-archive idle clock for exactly the stale threads it retires).
+          // It also never inserts and never changes archival status.
+          const persist = (id: string, title: string) =>
+            reg
+              .setTitleIfNull(id, title)
+              .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
+          return yield* resolveTitles(visible, regTitles, persist)
         })
       }
 

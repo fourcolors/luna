@@ -103,6 +103,7 @@ import {
   type ChatFrame,
   type DeliveryNotification,
 } from "../src/index.js"
+import { applyClientMarker } from "../src/client-marker.js"
 
 // No-op MemoryRouter: sim tests never call searchMemory; they just need
 // the tag to be present in the layer graph after MemoryRouterTag was added
@@ -2419,6 +2420,223 @@ describe("ChatService — listThreads excludes archived threads", () => {
           const archivedIds = archivedList.map((s) => s.id)
           expect(archivedIds).toContain(t2.id)
           expect(archivedIds).not.toContain(t1.id)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+})
+
+// ── listThreads auto-title tests ──────────────────────────────────────────────
+// The SessionStore `title` column is write-once at INSERT and Moon never sends
+// one, while the first-turn heuristic writes derived titles to ThreadRegistry.
+// listThreads must overlay those (and derive-on-read for threads predating the
+// heuristic) or every sidebar row renders "untitled".
+describe("ChatService — listThreads auto-titles untitled threads", () => {
+  const noopFakeLayer = SDKClient.fake((p) => {
+    let done = false
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        if (!done) {
+          done = true
+          yield {
+            type: "result",
+            session_id: `sdk-title-test-${Math.random().toString(36).slice(2)}`,
+            content: [],
+            stop_reason: "end_turn",
+          }
+        }
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").Query
+  })
+
+  const baseLayerWithRegistry = Layer.mergeAll(
+    SessionStore.Default,
+    testClock,
+    obsLayer,
+    telemetryLayer,
+    Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+    ThreadRegistryService.Memory.pipe(Layer.provide(testClock)),
+  )
+
+  const fullLayerWithRegistry = () =>
+    Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(noopFakeLayer, baseLayerWithRegistry),
+      ),
+    )
+
+  const run = <A, E>(
+    eff: Effect.Effect<
+      A,
+      E,
+      | ChatService
+      | SessionStore
+      | CoreClock
+      | ObservabilityService
+      | Scope.Scope
+      | TelemetryService
+      | ThreadRegistryService
+    >,
+  ) =>
+    Effect.runPromise(
+      Effect.scoped(eff).pipe(Effect.provide(fullLayerWithRegistry())),
+    )
+
+  it(
+    "a ThreadRegistry title (first-turn heuristic) surfaces on an untitled session row",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+
+          const t = yield* chat.createThread({ model: "claude-test" }) // no title
+          yield* reg.upsert({ id: t.id, title: "Deploy plan for the router" })
+
+          const list = yield* chat.listThreads(50)
+          const row = list.find((s) => s.id === t.id)
+          expect(row?.title).toBe("Deploy plan for the router")
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "an untitled thread derives its title from the first user message and persists it to the registry",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          // A legacy thread predating the first-turn heuristic: session and
+          // registry rows exist, neither has a title. Seed the registry row at
+          // an OLD timestamp (the test clock is frozen at 1_700_000_000_000)
+          // so any last_active_at bump by the persist would be detectable.
+          const legacyId = "thr_legacy_title"
+          const legacyTs = 1_600_000_000_000
+          yield* store.create({
+            id: legacyId,
+            options: { model: "claude-test" }, // no title anywhere
+            createdAt: legacyTs,
+          })
+          yield* reg.upsert({ id: legacyId, nowMs: legacyTs })
+          yield* store.appendMessage({
+            sessionId: legacyId,
+            messageId: "m-title-1",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "Fix the Ollama boot probe\nand more detail" } },
+          })
+
+          const list = yield* chat.listThreads(50)
+          const row = list.find((s) => s.id === legacyId)
+          // First line of the first user message, per deriveTitleFromMessage.
+          expect(row?.title).toBe("Fix the Ollama boot probe")
+
+          // Derivation is one-shot: the title is persisted to the registry.
+          const regRow = yield* reg.get(legacyId)
+          expect(regRow?.title).toBe("Fix the Ollama boot probe")
+          // The persist is clock-neutral: listing the sidebar is a read and
+          // must not reset the 14-day auto-archive idle clock.
+          expect(regRow?.lastActiveAt).toBe(legacyTs)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "derive-on-read strips the client-identity marker: the title comes from the user's first line, never the marker",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          // A marker-era legacy thread: the stored payload is what send()
+          // persisted — applyClientMarker(text, client) — so its first line
+          // is the '[client: ...]' hint, not the user's message.
+          const markerId = "thr_marker_title"
+          yield* store.create({
+            id: markerId,
+            options: { model: "claude-test" }, // no title anywhere
+            createdAt: 1,
+          })
+          yield* reg.upsert({ id: markerId, nowMs: 1 })
+          const storedText = applyClientMarker(
+            "Tune the retry backoff\nsecond line detail",
+            { name: "luna-moon", version: "0.0.55", platform: "darwin" },
+          )
+          yield* store.appendMessage({
+            sessionId: markerId,
+            messageId: "m-title-marker",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: storedText } },
+          })
+
+          const list = yield* chat.listThreads(50)
+          const row = list.find((s) => s.id === markerId)
+          expect(row?.title).toBe("Tune the retry backoff")
+
+          // The persisted one-shot title must also be the user's line — a
+          // wrong persist here would freeze the marker as the title forever.
+          const regRow = yield* reg.get(markerId)
+          expect(regRow?.title).toBe("Tune the retry backoff")
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "an explicit creation title is never overridden by registry or derivation",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          const t = yield* chat.createThread({ model: "claude-test", title: "Explicit title" })
+          yield* reg.upsert({ id: t.id, title: "registry noise" })
+          yield* store.appendMessage({
+            sessionId: t.id,
+            messageId: "m-title-2",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "derived noise" } },
+          })
+
+          const list = yield* chat.listThreads(50)
+          const row = list.find((s) => s.id === t.id)
+          expect(row?.title).toBe("Explicit title")
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "a thread with no user messages stays untitled (client fallback)",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({ model: "claude-test" })
+          const list = yield* chat.listThreads(50)
+          const row = list.find((s) => s.id === t.id)
+          expect(row?.title ?? null).toBeNull()
         }),
       )
     },

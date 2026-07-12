@@ -1,7 +1,8 @@
 /**
  * client-marker.ts — small formatter that prepends a one-line client-identity
  * hint to a user message so Luna can see which surface the operator is
- * typing through.
+ * typing through, plus the inverse (`stripClientMarker`) for consumers of
+ * stored payloads that need the raw user text back.
  *
  * The marker is intentionally compact and inline so it costs almost no
  * prompt budget and reads naturally to Luna:
@@ -43,4 +44,17 @@ export const applyClientMarker = (
   // noise. Treat empty-name as "no client info" — same as undefined.
   if (client.name.trim().length === 0) return text
   return `${formatClientMarker(client)}\n${text}`
+}
+
+/**
+ * Inverse of `applyClientMarker`: drop a leading `[client: ...]` line (plus
+ * its newline) so consumers of STORED payloads recover the raw user text.
+ * Text without a marker passes through unchanged. Pure, no IO.
+ */
+export const stripClientMarker = (text: string): string => {
+  if (!text.startsWith("[client: ")) return text
+  const newline = text.indexOf("\n")
+  const firstLine = newline === -1 ? text : text.slice(0, newline)
+  if (!firstLine.endsWith("]")) return text
+  return newline === -1 ? "" : text.slice(newline + 1)
 }
