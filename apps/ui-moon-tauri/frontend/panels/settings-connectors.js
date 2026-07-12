@@ -46,6 +46,7 @@
       var plainRequests = {}; // requestId → definitionId for in-flight connector-connect
       var oauthRequestId = null;
       var oauthDefinitionId = null;
+      var oauthCodeSent = false; // true only AFTER connector-oauth-code is sent (the completeAuth redemption window)
       var beginTimer = null;
 
       // ── DOM skeleton ───────────────────────────────────────────────────────
@@ -101,6 +102,7 @@
         if (oauthDefinitionId) clearBusy(oauthDefinitionId);
         oauthRequestId = null;
         oauthDefinitionId = null;
+        oauthCodeSent = false;
         if (message) setError(message);
         render();
       }
@@ -133,6 +135,7 @@
           );
           oauthRequestId = requestId;
           oauthDefinitionId = def.id;
+          oauthCodeSent = false;   // fresh flow: not yet in the redemption window
           if (beginTimer) clearTimeout(beginTimer);
           beginTimer = setTimeout(function () {
             cancelOauth('Timed out starting the connection — please try again.');
@@ -168,6 +171,12 @@
               code: captured.code,
               state: captured.state,
             });
+            // Now redeeming the code: an unattributed failure (no requestId /
+            // instance) on an OLDER server is our completeAuth failing. This
+            // flag gates the fallback attribution below so a foreign
+            // disconnect-failure during the long consent phase is no longer
+            // misread as ours - only during this brief redemption round-trip.
+            oauthCodeSent = true;
           })
           .catch(function (e) {
             var msg = typeof e === 'string' ? e : 'The consent flow did not complete.';
@@ -253,17 +262,17 @@
           (frame.instance && frame.instance.definitionId === oauthDefinitionId) ||
           // completeAuth FAILURE on an OLDER server (no requestId echo) carries
           // neither requestId nor instance; while mid-flow, an unattributed
-          // failure is treated as ours (favor teardown over a stuck spinner). A
-          // bare ok:true with no instance is NOT ours (our success always
-          // carries an instance), so another account's disconnect-ok never
-          // matches. KNOWN, ACCEPTED COLLISION: another account's disconnect
-          // FAILURE ({ok:false} with no requestId/instance) is byte-identical to
-          // our own old-server OAuth failure and would also tear us down. This is
-          // far narrower than the prior bug (ANY not-ok frame tore us down): a
-          // connector-status is delivered only to the client that sent the
-          // request, so it fires only if THIS client both started an OAuth and
-          // had a disconnect fail concurrently.
-          (!frame.ok && !frame.requestId && !frame.instance)
+          // failure is treated as ours (favor teardown over a stuck spinner),
+          // but ONLY once we have actually sent connector-oauth-code
+          // (oauthCodeSent) - i.e. inside the brief completeAuth redemption
+          // window. That phase-gate keeps a foreign disconnect FAILURE
+          // ({ok:false}, no requestId/instance) during the long consent phase
+          // from being misread as ours. A bare ok:true with no instance is never
+          // ours (our success always carries an instance). Residual, now-tiny
+          // ambiguity remains only if a foreign disconnect fails during that
+          // redemption round-trip on an OLDER server that does not echo our
+          // requestId; new servers echo it, so our own failure matches (i).
+          (oauthCodeSent && !frame.ok && !frame.requestId && !frame.instance)
         );
 
         if (attributableToOurOauth) {
@@ -275,6 +284,7 @@
           if (oauthDefinitionId) clearBusy(oauthDefinitionId);
           oauthRequestId = null;
           oauthDefinitionId = null;
+          oauthCodeSent = false;
         }
         if (frame.instance) {
           clearBusy(frame.instance.definitionId);

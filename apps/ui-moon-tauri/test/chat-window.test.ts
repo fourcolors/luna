@@ -177,6 +177,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(lastMsg!.classList.contains('assistant')).toBe(true)
       expect(lastMsg!.textContent).toContain('No response from the server')
     })
+
+    it('Scenario: submitting with no thread while OFFLINE stashes the message and marks pendingFreshThread (reconnect mints a thread + flushes it)', () => {
+      const mi = (window as any).__MoonInternals
+      // Offline: no open socket, no active thread.
+      mi.State.ws = null
+      mi.State.activeThreadId = null
+      mi.State.pendingFreshThread = false
+      const messageInput = document.getElementById('message-input') as HTMLTextAreaElement
+      messageInput.value = 'queued while offline'
+      document.getElementById('chat-form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }))
+
+      // The message is stashed, not lost...
+      expect(mi.State.pendingUserMessage).not.toBeNull()
+      expect(mi.State.pendingUserMessage.text).toContain('queued while offline')
+      // ...and a fresh thread is requested on reconnect so thread-created fires
+      // and flushes it (without this the message strands on a resubscribe).
+      expect(mi.State.pendingFreshThread).toBe(true)
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────

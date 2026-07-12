@@ -8901,12 +8901,20 @@
             ...(wire ? { attachments: wire } : {})
           });
         } else {
-          // No thread subscribed yet: create one, then the thread-created handler
-          // flushes State.pendingUserMessage. This path SURVIVES a disconnect
-          // (the text is stashed), so it is safe to clear the composer below.
+          // No thread subscribed yet: stash the message and create a thread; the
+          // thread-created handler flushes State.pendingUserMessage. When online
+          // we mint immediately. When OFFLINE, sendNewThread() is a no-op, so we
+          // set pendingFreshThread (mirroring newConversation) - otherwise
+          // syncThread() resubscribes to a PRIOR thread on reconnect, no
+          // thread-created fires, and the pending message is stranded (or later
+          // sent into an unexpected thread).
           Logger.warn("No active thread subscribed; queuing message and creating new thread");
-          WebSocketEngine.sendNewThread();
           State.pendingUserMessage = { text: wireText, attachments: wire };
+          if (_connected) {
+            WebSocketEngine.sendNewThread();
+          } else {
+            State.pendingFreshThread = true;
+          }
         }
 
         // Silent-data-loss guard: on an EXISTING thread while the socket is down,
