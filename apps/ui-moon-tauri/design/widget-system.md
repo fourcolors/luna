@@ -139,7 +139,8 @@ widget windows (one each)
   ├─ settings panels     panel.html?type=settings.updates | .voice | …  [phases 2-3]
   ├─ now rail            panel.html?type=now
   ├─ briefing            panel.html?type=briefing
-  ├─ workflow            panel.html?type=flow&id=…
+  ├─ workflows gallery   panel.html?type=workflows
+  ├─ workflow            panel.html?type=flow&jobId=…
   ├─ agent line          chat.html?thread=…    [phase 8]
   └─ mini-apps           widget.html?id=…      (already shipped: artifact widgets)
 ```
@@ -229,7 +230,8 @@ Ship with Luna; designed UI; live data subscriptions. Opened from the moon
 | Chat (main widget) | `chat.html` | own thread subscription | owns interactive frames; voice UI; the snap anchor |
 | NOW rail | `panel.html?type=now` | `workflow-list` broadcast + obs | live job list, mini-moon phases |
 | Briefing | `panel.html?type=briefing` | workflow runs + obs digest | "while you were away" |
-| Workflow inspector | `panel.html?type=flow&id=…` | `workflow-runs` (+ request frame) | per-job step view |
+| Workflows gallery | `panel.html?type=workflows` | `workflow-list` (+ `workflow-refresh`) | full catalog; rows open the inspector; opened via `/workflows`, the launcher, or agent summon |
+| Workflow inspector | `panel.html?type=flow&jobId=…` | `workflow-runs` (+ request frame) | per-job step view |
 | Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pinned to another thread (spawned via `open_widget kind:chat, params:{thread}`); its thread sidebar is hidden (one-thread-forever) |
 
 ### System widgets: settings panels (v3)

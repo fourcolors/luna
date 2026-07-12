@@ -143,6 +143,16 @@
       "description": "While-you-were-away digest: jobs needing attention, recent runs, upcoming schedules"
     },
     {
+      "kind": "workflows",
+      "title": "Workflows",
+      "page": "panel.html?type=workflows",
+      "trust": "system",
+      "singleton": true,
+      "width": 380,
+      "height": 480,
+      "description": "The workflow gallery: every scheduled and on-demand job with status, schedule and last/next run — click one for its run history"
+    },
+    {
       "kind": "flow",
       "title": "Run history",
       "page": "panel.html?type=flow",

@@ -134,4 +134,16 @@ describe('settings-launcher panel (kind "settings")', () => {
     expect(types['settings']).toBeDefined()
     expect(types['settings-launcher']).toBe(types['settings'])
   })
+
+  it('the ambient-widgets section lists Now, Briefing and Workflows, each opening via open_widget', () => {
+    const { invoke } = bootLauncher()
+    const kinds = [...document.querySelectorAll('#launcher-widgets button[data-panel-kind]')]
+      .map((b) => b.getAttribute('data-panel-kind'))
+    expect(kinds).toEqual(['now', 'briefing', 'workflows'])
+    const workflowsBtn = document.querySelector(
+      'button[data-panel-kind="workflows"]'
+    ) as HTMLButtonElement
+    workflowsBtn.click()
+    expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'workflows' })
+  })
 })

@@ -79,8 +79,8 @@
     /* ── Chat panel — fills the window below the title bar ───────────────────
        The WINDOW is the envelope now: no collapsed/expanded states, no glass
        card floating in a transparent canvas (the hub keeps those). position:
-       relative anchors the absolute artifacts/workflows overlays exactly as
-       the hub's panel did; the flex column matches its inner layout. */
+       relative anchors the absolute artifacts overlay exactly as the hub's
+       panel did; the flex column matches its inner layout. */
     .chat-panel {
       flex: 1;
       min-height: 0;
@@ -563,7 +563,7 @@
     /* (Mouse/scroll focus-ring suppression now lives in vendor/moon-theme.css:
        the global `:focus:not(:focus-visible)` rule kills the UA ring on these
        overflow:auto containers everywhere, so the old per-class allow-list here
-       — .chat-messages / .artifacts-* / .workflows-* — is no longer needed.) */
+       — .chat-messages / .artifacts-* — is no longer needed.) */
 
     /* Every message / timeline is a flex item in this column. Default
        flex-shrink is 1, so when the combined content is taller than the panel,
@@ -1608,124 +1608,9 @@
       padding: 16px 0; font-style: italic;
     }
 
-    /* ── Workflows panel (PRD Part C W3) — sibling to .artifacts-panel.
-       Same watercolor palette; hidden until WorkflowsEngine opens it.
-       The panel slides over the chat area as an absolute overlay. ── */
-    .workflows-panel {
-      position: absolute;
-      top: 48px; /* below the chat header */
-      left: 0; right: 0; bottom: 0;
-      background: var(--paper);
-      border-top: 1px solid color-mix(in oklab, var(--accent) 18%, transparent);
-      display: flex; flex-direction: column;
-      z-index: 61; /* one above artifacts-panel so they stack correctly */
-      overflow: hidden;
-      animation: msgAppear 0.18s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
-    }
-    .workflows-panel[hidden] { display: none !important; }
-    .workflows-panel-header {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--ink-faint);
-      flex-shrink: 0;
-    }
-    .workflows-panel-title {
-      flex: 1; margin: 0;
-      font-family: var(--font-hand); font-weight: 600; font-size: 0.85rem;
-      color: var(--ink); letter-spacing: 0.01em;
-    }
-    .workflows-panel-close {
-      background: transparent; border: none;
-      color: var(--ink-soft); font-size: 1.1rem; line-height: 1;
-      cursor: pointer; padding: 2px 6px; border-radius: 6px;
-      transition: background 0.15s ease, color 0.15s ease;
-    }
-    .workflows-panel-close:hover { background: color-mix(in oklab, var(--ink) 9%, transparent); color: var(--ink); }
-    .workflows-panel-refresh {
-      background: transparent; border: 1px solid var(--ink-faint);
-      color: var(--ink-soft); font-size: 0.68rem; cursor: pointer;
-      padding: 2px 8px; border-radius: 6px;
-      transition: background 0.15s ease, color 0.15s ease;
-    }
-    .workflows-panel-refresh:hover { background: color-mix(in oklab, var(--accent) 12%, transparent); color: var(--ink); border-color: color-mix(in oklab, var(--accent) 30%, transparent); }
-    .workflows-panel-body {
-      flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
-      padding: 10px 12px;
-    }
-    .workflows-panel-body::-webkit-scrollbar { width: 6px; }
-    .workflows-panel-body::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 3px; }
-    /* Workflow tile — the clickable card for a single workflow */
-    .workflow-tile {
-      display: flex; flex-direction: column; gap: 4px;
-      background: color-mix(in oklab, var(--ink) 3%, transparent); border: 1px solid var(--ink-faint);
-      border-radius: 10px; padding: 8px 10px;
-      cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease;
-    }
-    .workflow-tile:hover { border-color: color-mix(in oklab, var(--accent) 22%, transparent); background: color-mix(in oklab, var(--accent) 5%, transparent); }
-    .workflow-tile.selected { border-color: color-mix(in oklab, var(--accent) 45%, transparent); background: color-mix(in oklab, var(--accent) 9%, transparent); }
-    .workflow-tile-header { display: flex; align-items: center; gap: 6px; }
-    .workflow-tile-label {
-      flex: 1; font-size: 0.78rem; font-weight: 600; color: var(--ink);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .workflow-tile-badge {
-      flex-shrink: 0; font-size: 0.60rem; font-weight: 600;
-      padding: 1px 6px; border-radius: 8px; line-height: 1.5;
-      letter-spacing: 0.02em;
-    }
-    .workflow-tile-badge.scheduled {
-      background: color-mix(in oklab, var(--accent) 15%, transparent); color: var(--accent);
-      border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
-    }
-    .workflow-tile-badge.on-demand {
-      background: rgba(148, 163, 184, 0.10); color: #94a3b8;
-      border: 1px solid rgba(148, 163, 184, 0.20);
-    }
-    .workflow-tile-badge.paused {
-      background: rgba(239, 68, 68, 0.10); color: #fca5a5;
-      border: 1px solid rgba(239, 68, 68, 0.22);
-    }
-    .workflow-tile-meta {
-      font-size: 0.63rem; color: var(--ink-soft);
-      display: flex; align-items: center; gap: 6px;
-    }
-    .workflow-tile-status {
-      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .workflow-tile-status.ok   { background: #34d399; }
-    .workflow-tile-status.fail { background: #f87171; }
-    .workflow-tile-status.run  { background: #facc15; }
-    /* Run history list inside an expanded tile */
-    .workflow-runs {
-      margin-top: 4px; display: flex; flex-direction: column; gap: 3px;
-      padding-left: 4px;
-      border-left: 2px solid color-mix(in oklab, var(--accent) 15%, transparent);
-    }
-    .workflow-run-row {
-      display: flex; align-items: baseline; gap: 6px;
-      font-size: 0.63rem; color: var(--ink-soft);
-    }
-    .workflow-run-status {
-      flex-shrink: 0; font-weight: 600; min-width: 42px;
-    }
-    .workflow-run-status.ok   { color: #34d399; }
-    .workflow-run-status.fail { color: #f87171; }
-    .workflow-run-status.run  { color: #facc15; }
-    .workflow-run-time { flex-shrink: 0; color: var(--ink-soft); }
-    .workflow-run-dur  { flex-shrink: 0; color: var(--ink-soft); }
-    .workflow-run-err  { flex: 1; color: #fca5a5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .workflow-runs-empty { font-size: 0.63rem; color: var(--ink-soft); padding: 2px 0; font-style: italic; }
-    /* Workflows empty state */
-    .workflows-empty {
-      font-size: 0.76rem; color: var(--ink-soft); text-align: center;
-      padding: 16px 0; font-style: italic;
-    }
-    /* Workflows header button — hidden until server advertises `workflows` capability */
-    .workflows-header-btn {
-      position: relative; display: flex; align-items: center; gap: 4px;
-    }
-    .workflows-header-btn[hidden] { display: none !important; }
+    /* (The in-chat Workflows overlay — PRD Part C W3 — moved into its own
+       system panel window: panel.html?type=workflows, panels/workflows.js.
+       The /workflows slash command and the settings launcher open it.) */
 
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
     .msg.assistant .msg-body > :first-child { margin-top: 0; }
@@ -2701,22 +2586,9 @@
       </div>
     </div>
 
-    <!-- Workflows panel (PRD Part C W3). Hidden until toggled open via
-         WorkflowsEngine.openPanel(). Position:absolute fills the chat body
-         area so it slides over the messages without reflowing the layout. -->
-    <div class="workflows-panel" id="workflows-panel" hidden>
-      <div class="workflows-panel-header">
-        <h3 class="workflows-panel-title">Workflows</h3>
-        <button type="button" class="workflows-panel-refresh" id="workflows-panel-refresh" aria-label="Refresh workflows">↻ Refresh</button>
-        <button type="button" class="workflows-panel-close" id="workflows-panel-close" aria-label="Close workflows panel">×</button>
-      </div>
-      <div class="workflows-panel-body" id="workflows-panel-body">
-        <!-- Tiles populated by WorkflowsEngine.render() -->
-        <div id="workflows-list"></div>
-        <!-- Empty state when there are no workflows -->
-        <div id="workflows-empty" class="workflows-empty" hidden>No workflows yet. Workflows will appear here once the server provides them.</div>
-      </div>
-    </div>
+    <!-- The Workflows gallery (PRD Part C W3) lives in its own system
+         panel window now: open_widget kind 'workflows'. Opened via the
+         /workflows slash command, the settings launcher, or agent summon. -->
 
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
@@ -2948,14 +2820,6 @@
       artifactsPreviewTitle: document.getElementById('artifacts-preview-title'),
       artifactsPreviewCopy: document.getElementById('artifacts-preview-copy'),
       artifactsPreviewBody: document.getElementById('artifacts-preview-body'),
-      // PRD Part C W3: Workflows panel handles.
-      workflowsBtn: document.getElementById('workflows-btn'),
-      workflowsBtnInner: document.getElementById('workflows-btn-inner'),
-      workflowsPanel: document.getElementById('workflows-panel'),
-      workflowsPanelClose: document.getElementById('workflows-panel-close'),
-      workflowsPanelRefresh: document.getElementById('workflows-panel-refresh'),
-      workflowsList: document.getElementById('workflows-list'),
-      workflowsEmpty: document.getElementById('workflows-empty'),
       // Thread drawer (slide-out thread switcher) handles.
       threadDrawer:        document.getElementById('thread-drawer'),
       threadDrawerList:    document.getElementById('thread-drawer-list'),
@@ -3110,12 +2974,9 @@
       pinnedArtifacts: [],    // PinnedArtifactItem[] — from artifact-list / artifact-update
       sessionArtifacts: [],   // Artifact[] — deduped ephemeral per-turn artifacts
       artifactsPanelOpen: false,
-      // PRD Part C W3: workflow gallery + run history.
+      // PRD Part C W3: gates the /workflows command (the gallery itself is
+      // the 'workflows' system panel window, not an in-chat overlay).
       serverSupportsWorkflows: false,
-      workflows: [],        // WorkflowGalleryItem[] — from workflow-list frame
-      workflowRuns: {},     // { [jobId: string]: WorkflowRunItem[] }
-      selectedWorkflowId: null,  // currently-expanded tile id (string|null)
-      workflowsPanelOpen: false,
       // Thread sidebar (Things-3-style resizable split pane).
       threadDrawerOpen: false,  // width > 0
       sidebarWidth: 0,          // current sidebar width in px (0 = collapsed)
@@ -4493,268 +4354,10 @@
       },
     };
 
-    // ── WorkflowsEngine — the Workflows gallery panel (PRD Part C W3) ─────────
-    //
-    // Surfaces the server's scheduled/on-demand workflow catalog as a tiled
-    // gallery. Selecting a tile requests + shows its run history. Modeled
-    // on ArtifactsEngine (object-literal, State.xxx, DOM guards, render()).
-    //
-    // Wire protocol (server→client):
-    //   workflow-list  → applyList()   (full replacement from server)
-    //   workflow-runs  → applyRuns()   (run history for a specific job)
-    //
-    // Wire protocol (client→server):
-    //   workflow-runs-request  → select()   (request history for a tile)
-    //   workflow-refresh       → refresh()  (pull fresh catalog)
-    //
-    // Defined BEFORE WebSocketEngine — same TDZ-avoidance requirement as
-    // ArtifactsEngine above.
-    const WorkflowsEngine = {
-
-      // ── helpers ──────────────────────────────────────────────────────────────
-
-      _fmtTime(epochMs) {
-        if (!epochMs) return '—';
-        // new Date(NaN | out-of-range).toLocaleTimeString() returns the literal
-        // 'Invalid Date' WITHOUT throwing — guard via getTime() (review G3).
-        var d = new Date(epochMs);
-        if (Number.isNaN(d.getTime())) return '—';
-        try {
-          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        } catch (_) { return '—'; }
-      },
-
-      _fmtDur(startMs, endMs) {
-        if (!startMs || !endMs) return null;
-        const s = Math.round((endMs - startMs) / 1000);
-        if (s < 60) return s + 's';
-        return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
-      },
-
-      // ── capability ───────────────────────────────────────────────────────────
-
-      applyCapability(supported) {
-        if (DOM.workflowsBtn) DOM.workflowsBtn.hidden = !supported;
-        if (!supported) {
-          // Clear state when connecting to a server without workflow support.
-          State.workflows = [];
-          State.workflowRuns = {};
-          State.selectedWorkflowId = null;
-          if (State.workflowsPanelOpen) this.closePanel();
-        }
-        this.render();
-      },
-
-      // ── data ─────────────────────────────────────────────────────────────────
-
-      applyList(list) {
-        State.workflows = Array.isArray(list) ? list : [];
-        // If the selected id is no longer in the list, deselect.
-        if (State.selectedWorkflowId &&
-            !State.workflows.some((w) => w.id === State.selectedWorkflowId)) {
-          State.selectedWorkflowId = null;
-        }
-        this.render();
-      },
-
-      applyRuns(jobId, runs) {
-        if (!jobId) return;
-        State.workflowRuns = Object.assign({}, State.workflowRuns, { [jobId]: Array.isArray(runs) ? runs : [] });
-        // Only re-render if this is the currently expanded tile.
-        if (jobId === State.selectedWorkflowId) this.render();
-      },
-
-      // ── panel lifecycle ───────────────────────────────────────────────────────
-
-      togglePanel() {
-        if (State.workflowsPanelOpen) {
-          this.closePanel();
-        } else {
-          this.openPanel();
-        }
-      },
-
-      openPanel() {
-        State.workflowsPanelOpen = true;
-        if (DOM.workflowsPanel) DOM.workflowsPanel.hidden = false;
-        this.render();
-      },
-
-      closePanel() {
-        State.workflowsPanelOpen = false;
-        if (DOM.workflowsPanel) DOM.workflowsPanel.hidden = true;
-      },
-
-      // ── actions ───────────────────────────────────────────────────────────────
-
-      select(jobId) {
-        // Mirror the web gallery: re-clicking the selected tile collapses it
-        // (and avoids a redundant run-history re-fetch — review G3).
-        if (State.selectedWorkflowId === jobId) {
-          State.selectedWorkflowId = null;
-          this.render();
-          return;
-        }
-        State.selectedWorkflowId = jobId;
-        WebSocketEngine.send({ type: 'workflow-runs-request', jobId });
-        this.render();
-      },
-
-      refresh() {
-        WebSocketEngine.send({ type: 'workflow-refresh' });
-      },
-
-      // ── render ────────────────────────────────────────────────────────────────
-
-      render() {
-        if (!DOM.workflowsPanel) return;
-        if (!State.workflowsPanelOpen) return;
-
-        const workflows = State.workflows;
-        const isEmpty = workflows.length === 0;
-
-        if (DOM.workflowsEmpty) DOM.workflowsEmpty.hidden = !isEmpty;
-
-        if (!DOM.workflowsList) return;
-
-        const tiles = workflows.map((wf) => {
-          const tile = document.createElement('div');
-          tile.className = 'workflow-tile' + (State.selectedWorkflowId === wf.id ? ' selected' : '');
-          tile.addEventListener('click', () => this.select(wf.id));
-
-          // ── header row ──────────────────────────────────────────────────────
-          const hdr = document.createElement('div');
-          hdr.className = 'workflow-tile-header';
-
-          const label = document.createElement('div');
-          label.className = 'workflow-tile-label';
-          label.textContent = wf.label || wf.id;
-
-          // schedule/on-demand badge
-          const badge = document.createElement('span');
-          badge.className = 'workflow-tile-badge';
-          if (!wf.enabled) {
-            badge.className += ' paused';
-            badge.textContent = 'paused';
-          } else if (wf.schedule) {
-            badge.className += ' scheduled';
-            badge.textContent = 'scheduled · ' + wf.schedule;
-          } else if (wf.onDemand) {
-            badge.className += ' on-demand';
-            badge.textContent = 'on-demand';
-          } else {
-            badge.className += ' on-demand';
-            badge.textContent = wf.kind || 'workflow';
-          }
-
-          hdr.appendChild(label);
-          hdr.appendChild(badge);
-
-          // ── meta row ────────────────────────────────────────────────────────
-          const meta = document.createElement('div');
-          meta.className = 'workflow-tile-meta';
-
-          // last status dot
-          if (wf.lastStatus) {
-            const dot = document.createElement('span');
-            dot.className = 'workflow-tile-status';
-            const s = String(wf.lastStatus).toLowerCase();
-            if (s === 'success' || s === 'ok' || s === 'completed') {
-              dot.className += ' ok';
-            } else if (s === 'running' || s === 'started') {
-              dot.className += ' run';
-            } else {
-              dot.className += ' fail';
-            }
-            meta.appendChild(dot);
-          }
-
-          const kindSpan = document.createElement('span');
-          kindSpan.textContent = wf.kind || '';
-          meta.appendChild(kindSpan);
-
-          if (wf.nextRunAt) {
-            const sep = document.createElement('span');
-            sep.textContent = '·';
-            const next = document.createElement('span');
-            next.textContent = 'next ' + this._fmtTime(wf.nextRunAt);
-            meta.appendChild(sep);
-            meta.appendChild(next);
-          } else if (wf.lastRun) {
-            const sep = document.createElement('span');
-            sep.textContent = '·';
-            const last = document.createElement('span');
-            last.textContent = 'last ' + this._fmtTime(wf.lastRun);
-            meta.appendChild(sep);
-            meta.appendChild(last);
-          }
-
-          tile.appendChild(hdr);
-          tile.appendChild(meta);
-
-          // ── run history (only for the selected tile) ─────────────────────────
-          if (State.selectedWorkflowId === wf.id) {
-            const runsContainer = document.createElement('div');
-            runsContainer.className = 'workflow-runs';
-
-            const runs = (State.workflowRuns && State.workflowRuns[wf.id]) || [];
-            if (runs.length === 0) {
-              const emptyNote = document.createElement('div');
-              emptyNote.className = 'workflow-runs-empty';
-              emptyNote.textContent = 'No runs yet.';
-              runsContainer.appendChild(emptyNote);
-            } else {
-              runs.slice(0, 10).forEach((run) => {
-                const row = document.createElement('div');
-                row.className = 'workflow-run-row';
-
-                const statusEl = document.createElement('span');
-                statusEl.className = 'workflow-run-status';
-                const rs = String(run.status || '').toLowerCase();
-                if (rs === 'success' || rs === 'ok' || rs === 'completed') {
-                  statusEl.className += ' ok';
-                  statusEl.textContent = '✓ ok';
-                } else if (rs === 'running' || rs === 'started') {
-                  statusEl.className += ' run';
-                  statusEl.textContent = '⟳ running';
-                } else {
-                  statusEl.className += ' fail';
-                  statusEl.textContent = '✗ ' + (run.status || 'fail');
-                }
-
-                const timeEl = document.createElement('span');
-                timeEl.className = 'workflow-run-time';
-                timeEl.textContent = this._fmtTime(run.startedAt);
-
-                const durEl = document.createElement('span');
-                durEl.className = 'workflow-run-dur';
-                const dur = this._fmtDur(run.startedAt, run.finishedAt);
-                if (dur) durEl.textContent = dur;
-
-                row.appendChild(statusEl);
-                row.appendChild(timeEl);
-                if (dur) row.appendChild(durEl);
-
-                if (run.error) {
-                  const errEl = document.createElement('span');
-                  errEl.className = 'workflow-run-err';
-                  // Truncate long errors for the compact view.
-                  errEl.textContent = String(run.error).slice(0, 80);
-                  row.appendChild(errEl);
-                }
-
-                runsContainer.appendChild(row);
-              });
-            }
-            tile.appendChild(runsContainer);
-          }
-
-          return tile;
-        });
-
-        DOM.workflowsList.replaceChildren(...tiles);
-      },
-    };
+    // (WorkflowsEngine was retired: the Workflows gallery lives in its own
+    // system panel window now — open_widget kind 'workflows', rendered by
+    // panels/workflows.js. chat.html only gates the /workflows command on
+    // the hello `workflows` capability via State.serverSupportsWorkflows.)
 
     const WebSocketEngine = {
       // registerCloseHook seam (design doc, Monolith Decomposition): code
@@ -5882,7 +5485,7 @@
     // Manages the compact right-aligned config cluster below the composer row:
     // model label button + effort label button, each opening an upward popover.
     // Logic kept inline (no separate JS file) — same pattern as ArtifactsEngine /
-    // WorkflowsEngine / SurveyEngine above. Exposed via __MoonInternals for tests.
+    // SurveyEngine above. Exposed via __MoonInternals for tests.
     //
     // Available-models list: from applyAvailableModels() (called during hello).
     // Each entry: { id: string, label: string, efforts: string[] }
@@ -6513,9 +6116,9 @@
       // PRD Part C W1: additive gating for the Artifacts panel.
       State.serverSupportsArtifacts = caps.artifacts;
       ArtifactsEngine.applyCapability(State.serverSupportsArtifacts);
-      // PRD Part C W3: additive gating for the Workflows gallery.
+      // PRD Part C W3: additive gating for the /workflows command (the
+      // gallery itself is the 'workflows' system panel window).
       State.serverSupportsWorkflows = caps.workflows;
-      WorkflowsEngine.applyCapability(State.serverSupportsWorkflows);
       // Model + effort switcher: server advertises effort selection support.
       // applyAvailableModels (called above) has already refreshed the model
       // list in ComposerConfig; now apply the effort capability gate.
@@ -6573,15 +6176,9 @@
       ArtifactsEngine.applySession(frame);
     });
 
-    MoonFrames.register('workflow-list', (frame) => {
-      // Full replacement list of workflows from the server.
-      WorkflowsEngine.applyList(frame.workflows || []);
-    });
-
-    MoonFrames.register('workflow-runs', (frame) => {
-      // Run history for a specific workflow job.
-      WorkflowsEngine.applyRuns(frame.jobId, frame.runs || []);
-    });
+    // (workflow-list / workflow-runs frames are consumed by the 'workflows'
+    // and 'flow' panel windows, not the chat window — unregistered frame
+    // types are ignored by MoonFrames.dispatch.)
 
     MoonFrames.register('thread-config', (frame) => {
       // Server ack for a set-thread-config client frame. Reconcile applied /
@@ -7349,17 +6946,6 @@
     }
     if (DOM.artifactsBtnInner) {
       DOM.artifactsBtnInner.addEventListener('click', () => ArtifactsEngine.togglePanel());
-    }
-
-    // Wire the Workflows panel buttons (PRD Part C W3).
-    if (DOM.workflowsPanelClose) {
-      DOM.workflowsPanelClose.addEventListener('click', () => WorkflowsEngine.closePanel());
-    }
-    if (DOM.workflowsBtnInner) {
-      DOM.workflowsBtnInner.addEventListener('click', () => WorkflowsEngine.togglePanel());
-    }
-    if (DOM.workflowsPanelRefresh) {
-      DOM.workflowsPanelRefresh.addEventListener('click', () => WorkflowsEngine.refresh());
     }
 
     // Wire the secure secret-entry panel buttons (Submit / Cancel / × ).
@@ -9399,6 +8985,11 @@
             ui.push({ kind: 'command', id: 'effort', title: 'Effort', argHint: '[level]', description: 'Set effort level (no arg opens picker)', executor: 'client', schemaVersion: 1 });
           }
         }
+        // Gated on the hello `workflows` capability — servers without the
+        // gallery never advertise a command that would open an empty panel.
+        if (State.serverSupportsWorkflows) {
+          ui.push({ kind: 'command', id: 'workflows', title: 'Workflows', description: 'Open the workflows panel', executor: 'client', schemaVersion: 1 });
+        }
         ui.push({ kind: 'command', id: 'help', title: 'Help', description: 'Show available commands', executor: 'client', schemaVersion: 1 });
 
         const toItem = (cap, source) => ({ kind: 'command', id: cap.id, arghint: cap.argHint || '', desc: cap.description || '', executor: cap.executor || 'client', source });
@@ -9555,6 +9146,15 @@
             break;
           case 'model':  _dispatchModel((args || '').trim()); break;
           case 'effort': _dispatchEffort((args || '').trim()); break;
+          case 'workflows':
+            // The gallery is its own system panel window (singleton — Rust
+            // focuses it if already open). Off-Tauri (browser dev / jsdom)
+            // the invoke is absent or rejects; stay silent like other openers.
+            if (window.__TAURI__ && window.__TAURI__.core) {
+              window.__TAURI__.core.invoke('open_widget', { kind: 'workflows' })
+                .catch((e) => Logger.warn('open workflows panel failed:', e));
+            }
+            break;
           case 'help':   ChatEngine.appendMessage('assistant', helpText()); break;
         }
       }
@@ -9990,7 +9590,6 @@
       window.__MoonInternals.MoonBar = MoonBar;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
-      window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.SmartBarEngine = SmartBarEngine;
