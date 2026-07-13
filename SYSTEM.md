@@ -151,8 +151,12 @@ scheduler and is always wired (boot log: `[luna/sched] V2 ticker active`).
 
 ### Deadlines, retries & concurrency
 
-Within a tick, due jobs dispatch with **bounded concurrency** (default 4
-at a time), not sequentially - one slow job cannot stall the rest of a tick.
+The tick loop is a fast **producer**: it claims each due job and **forks** the
+dispatch onto its own executor fiber, then returns without waiting, so a slow
+job (a 15-min dream) never stalls the tick loop or delays other jobs that come
+due meanwhile. `dispatchConcurrency` (default 4) now caps the total number of
+**in-flight** executors at once - excess due rows stay claimed-free and retry
+next tick - rather than the per-tick concurrency it used to bound.
 
 **Per-dispatch deadline.** Every dispatch is interrupted (a `deadline_passed`
 failure in `job_runs`) once its backstop deadline passes. The deadline

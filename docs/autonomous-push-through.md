@@ -87,9 +87,10 @@ filing or by the operator).
   ticker dispatches inline on a single fiber, so a hung agent turn can stall
   other V2 jobs.~~ Resolved: prompt steps carry a `timeout_ms` (default
   10 min), the ticker enforces a per-dispatch backstop deadline (workflow
-  kind default 20 min + grace) that interrupts a hung dispatch, and due jobs
-  dispatch with bounded concurrency (default 4) so one slow job no longer
-  stalls the tick (see SYSTEM.md "Deadlines, retries & concurrency").
+  kind default 20 min + grace) that interrupts a hung dispatch, and the ticker
+  now forks each dispatch onto its own executor fiber (producer/executor split,
+  bounded to `dispatchConcurrency` in-flight, default 4) so a slow job no longer
+  stalls the tick loop (see SYSTEM.md "Deadlines, retries & concurrency").
   Shell steps are also abort-wired to their dispatch (issue #277): an
   interrupted or timed-out step kills its whole process group, so a hung
   command - or a grandchild like `ssh` under `git push` - cannot outlive the

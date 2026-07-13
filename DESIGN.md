@@ -530,28 +530,55 @@ Effect.repeat(
 )
 ```
 
+**Producer/executor split** (job-ticker-producer-executor-276, Oban's model):
+the tick loop is a fast **producer** only. Per due row it does the synchronous
+SQLite work (claim + the guard checks + `claimAndStartRun`) and **forks** the
+slow part - the worker dispatch and its aftermath (steps 6-8 below) - onto a
+supervised **executor** fiber tracked in a `FiberMap<jobId>` created in the
+layer Scope, then moves on to the next row without awaiting. `drainDueJobs()`
+returns as soon as every due row this tick has been claimed or forked, never
+once the dispatches have fully run. A long dispatch (a 15-min dream) therefore
+no longer blocks the tick loop or delays other jobs that become due meanwhile.
+
 `drainDueJobs()`:
 
 1. Compute `now`.
 2. `SELECT id, kind, payload_json, schedule, last_run_at FROM jobs
     WHERE enabled = 1 AND (next_run_at IS NULL OR next_run_at <= ?)`
-3. For each row, recompute `next_run_at = Cron.next(schedule, lastRunAt ?? now)`.
-4. **Atomic claim** (single UPDATE; SQLite gives us the row-level lock via
-   the transaction):
+3. For each row, recompute `next_run_at = Cron.next(schedule, lastRunAt ?? now)`,
+   then skip it if its `jobId` is already in-flight in the `FiberMap` (a
+   dispatch that outlives its cron period must not be re-claimed while its
+   executor is still running - the uniqueness guarantee the old await-all loop
+   got for free).
+4. **Atomic claim + run-start.** A real dispatch commits the claim CAS and the
+   `job_runs` insert as ONE transaction via `claimAndStartRun` (BEGIN IMMEDIATE
+   in SQLite; a single synchronous `Ref.modify` in Memory):
    ```sql
+   -- inside one transaction, rolled back together on any failure:
    UPDATE jobs SET last_run_at = ?, last_status = 'running',
                    next_run_at = ?
                 WHERE id = ?
                   AND (last_run_at IS NULL OR last_run_at < ?)  -- watchdog: drop stragglers older than this tick boundary
+   INSERT INTO job_runs (job_id, started_at, attempt, status) VALUES (?, ?, ?, 'running')
    ```
-   If the UPDATE reports 0 rows changed, another ticker already claimed it
-   (shouldn't happen single-process today; we'll harden when we add
-   distributed coordination in Phase 13).
-5. INSERT a `job_runs` row with `status='running'`.
-6. Dispatch the row directly through `WorkerRegistry.dispatch(kind, payload)`
-   inside its OWN per-job Scope, bounded by a per-dispatch backstop deadline
-   (`Effect.timeoutFail`) so a stuck worker is interrupted rather than blocking
-   the loop. The backstop resolves per dispatch (job-ticker-oban-deadlines):
+   Committing both together closes the orphan-run window a separate claim +
+   `recordRunStart` would reopen now that dispatch is forked: there is no state
+   where `last_run_at` advanced but no `job_runs` row exists for boot reconcile
+   to reap. If the claim CAS reports 0 rows changed, another producer
+   invocation already claimed it (shouldn't happen single-process today; we'll
+   harden when we add distributed coordination in Phase 13). Guard paths
+   (one-shot re-encounter, quarantine of an unschedulable cron, unknown-kind)
+   still use a plain `claim` (no run row) or `claim` + `recordRunStart` inline,
+   since they have nothing to fork.
+5. Admission: a real dispatch consumes one of `dispatchConcurrency` slots,
+   snapshotted at the top of the tick as `dispatchConcurrency - FiberMap.size`.
+   A row that finds no free slot is left due and UNCLAIMED (its `next_run_at`
+   is untouched) and retried next tick - never dropped.
+6. **Fork** the dispatch onto its executor fiber and move on. The executor runs
+   `WorkerRegistry.dispatch(kind, payload)` inside its OWN per-job Scope,
+   bounded by a per-dispatch backstop deadline (`Effect.timeoutFail`) so a stuck
+   worker is interrupted rather than blocking its executor indefinitely (it can
+   no longer block the tick loop at all). The backstop resolves per dispatch (job-ticker-oban-deadlines):
    a payload-level `timeout_ms` wins, else the kind's registered
    `defaultTimeoutMs` (see §5.3.3), else the ticker's global `workerDeadline`
    (default 5 min). The first two sources are clamped to a 1 s floor, get a
@@ -578,11 +605,21 @@ Effect.repeat(
    at-most-once, so a slow sink can neither turn a completed turn into
    `deadline_passed` nor double-deliver through a retry.
 
-Within a tick, due rows are dispatched with bounded concurrency
-(`dispatchConcurrency`, default 4); excess due rows roll into the next tick.
-A job that runs longer than its deadline does not block subsequent ticks —
-only its OWN re-fire (the row's `next_run_at` won't be `≤ now` while the
-previous attempt is still in flight, since the claim already advanced it).
+`dispatchConcurrency` (default 4) caps the total number of IN-FLIGHT executor
+fibers - a start-of-tick snapshot (`dispatchConcurrency - FiberMap.size`), not
+a per-tick `forEach` concurrency. It is an upper bound: the producer can
+under-admit (a slot freed mid-tick isn't reused until the next tick) but never
+over-admits, and a saturated tick leaves the excess rows due for the next tick
+(worst case ~one tick interval of delay). Because dispatch is forked, a job
+that runs longer than its deadline blocks neither the tick loop nor other
+jobs - only its OWN re-fire (its `jobId` stays in the in-flight `FiberMap`, and
+the claim already advanced `next_run_at`, so it is not re-claimed until the
+executor completes). `TickSummary` is a producer summary: it reports
+`claimed` / `forked` / `skippedInFlight` / `skippedNoCapacity` /
+`failedInline`, not per-run success/failure (unknowable at producer return -
+those land in `job_runs`, readable via `listRuns` after `awaitIdle`, the
+`FiberMap.awaitEmpty` handle that resolves once every in-flight executor has
+finished).
 
 #### 5.3.3 WorkerRegistry contract
 
