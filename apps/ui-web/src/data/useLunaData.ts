@@ -514,6 +514,13 @@ export function useLunaData(): LunaData {
       if (shield.action === "clear-and-fallthrough") {
         routedDeepLinkRef.current = null
         deepLinkConfirmedRef.current = false
+        // Drop any pending grace timer so a late fire cannot bump deepLinkNonce
+        // and re-run bootstrap after we already fell through.
+        if (deepLinkGraceTimerRef.current !== null) {
+          clearTimeout(deepLinkGraceTimerRef.current)
+          deepLinkGraceTimerRef.current = null
+        }
+        deepLinkGraceUntilRef.current = 0
         // Fall through to saved/first/mint below (do not early-return).
       } else {
         const summary = threadList.find((s) => s.id === selectedThreadId)
