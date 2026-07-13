@@ -79,6 +79,8 @@ const SCHEMA_V1 = `
     ON sessions(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_sessions_status
     ON sessions(status);
+  CREATE INDEX IF NOT EXISTS idx_messages_toplevel_user
+    ON messages(session_id) WHERE kind = 'user' AND parent_id IS NULL;
 `
 
 // ── Row shapes (mirror SQL columns 1:1) ────────────────────────────────────
@@ -328,12 +330,16 @@ export const makeSessionStoreSqlite = (
           `AND parent_id IS NULL ORDER BY seq ASC LIMIT 1`,
       )
       const sessionsList = db.query(`SELECT * FROM sessions`)
-      // Session ids that have a top-level user message - mirrors the
-      // `firstUserMessage` predicate. Used by list()'s `hasUserMessage` filter
-      // to drop empty/probe threads BEFORE the limit is applied.
-      const sessionsWithUserMessage = db.query(
-        `SELECT DISTINCT session_id FROM messages ` +
-          `WHERE kind = 'user' AND parent_id IS NULL`,
+      // Same as `sessionsList` but restricted to threads that have a top-level
+      // user message - mirrors the `firstUserMessage` predicate. Used by
+      // list()'s `hasUserMessage` filter to drop empty/probe threads BEFORE the
+      // limit is applied. The correlated EXISTS is served by the partial index
+      // `idx_messages_toplevel_user`, so it is a per-session index seek that
+      // stops at the first match rather than a full scan of `messages`.
+      const sessionsListWithUser = db.query(
+        `SELECT * FROM sessions s WHERE EXISTS (` +
+          `SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
+          `AND m.kind = 'user' AND m.parent_id IS NULL)`,
       )
 
       const create = (input: {
@@ -633,7 +639,9 @@ export const makeSessionStoreSqlite = (
       ): Stream.Stream<SessionSummary, never> =>
         Stream.unwrap(
           Effect.sync(() => {
-            let rows = sessionsList.all() as SessionDbRow[]
+            const rows = (
+              q.hasUserMessage ? sessionsListWithUser : sessionsList
+            ).all() as SessionDbRow[]
             const summaries = rows.map(rowToSummary)
             let filtered = summaries
             if (q.status)
@@ -642,14 +650,6 @@ export const makeSessionStoreSqlite = (
               filtered = filtered.filter((r) => r.parentId === q.parentId)
             if (q.tag)
               filtered = filtered.filter((r) => r.tags.includes(q.tag!))
-            if (q.hasUserMessage) {
-              const withUser = new Set(
-                (
-                  sessionsWithUserMessage.all() as { session_id: string }[]
-                ).map((r) => r.session_id),
-              )
-              filtered = filtered.filter((r) => withUser.has(r.id))
-            }
             if (q.orderBy === "lastMessageAt") {
               filtered.sort(
                 (a, b) =>
