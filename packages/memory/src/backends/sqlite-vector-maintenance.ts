@@ -119,7 +119,9 @@ export const MEMORY_VECTOR_SCHEMA_MIGRATION = `
     schema_version  INTEGER NOT NULL,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
-    tags_json       TEXT NOT NULL
+    tags_json       TEXT NOT NULL,
+    scope_json      TEXT,
+    provenance_json TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_memory_ns ON memory_keyed(namespace);
   CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory_keyed(kind);
@@ -179,6 +181,17 @@ const METADATA_COLUMNS = [
   {
     name: "embedded_at",
     sql: "ALTER TABLE memory_vectors ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
+  },
+] as const
+
+const RECORD_METADATA_COLUMNS = [
+  {
+    name: "scope_json",
+    sql: "ALTER TABLE memory_keyed ADD COLUMN scope_json TEXT",
+  },
+  {
+    name: "provenance_json",
+    sql: "ALTER TABLE memory_keyed ADD COLUMN provenance_json TEXT",
   },
 ] as const
 
@@ -251,6 +264,14 @@ function keyedTextForRow(row: VectorAuditRow): string | null {
 
 export function ensureMemoryVectorSchema(db: BunDatabase): void {
   db.run(MEMORY_VECTOR_SCHEMA_MIGRATION)
+  const keyedCols = new Set(
+    (db.query("PRAGMA table_info(memory_keyed)").all() as TableInfoRow[]).map(
+      (row) => row.name,
+    ),
+  )
+  for (const col of RECORD_METADATA_COLUMNS) {
+    if (!keyedCols.has(col.name)) db.run(col.sql)
+  }
   const cols = new Set(
     (db.query("PRAGMA table_info(memory_vectors)").all() as TableInfoRow[]).map(
       (row) => row.name,

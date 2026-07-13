@@ -70,6 +70,43 @@ describe.skipIf(!hasBunSqlite)("SqliteBackend (bun:sqlite)", () => {
     expect(out).toEqual({ n: 1, content: "hi" })
   })
 
+  it("persists scope and provenance metadata", async () => {
+    const got = await run(
+      Effect.gen(function* () {
+        const be = yield* SqliteBackend
+        yield* be.put(
+          makeRecord({
+            id: "scoped",
+            namespace: "notes",
+            kind: "semantic",
+            content: { text: "private" },
+            scope: {
+              observerId: "luna",
+              subjectId: "operator",
+              visibility: "private",
+            },
+            provenance: {
+              source: "turn-extraction",
+              sessionId: "session-1",
+              messageIds: ["message-1"],
+            },
+          }),
+        )
+        return yield* be.get("scoped")
+      }),
+    )
+    expect(got?.scope).toEqual({
+      observerId: "luna",
+      subjectId: "operator",
+      visibility: "private",
+    })
+    expect(got?.provenance).toEqual({
+      source: "turn-extraction",
+      sessionId: "session-1",
+      messageIds: ["message-1"],
+    })
+  })
+
   it("survives the migration being idempotent", async () => {
     // Second Layer over same :memory: is a new DB so we can't exactly test
     // persistence here; this just ensures re-construction succeeds.

@@ -92,6 +92,42 @@ describe("InMemoryBackend", () => {
     expect(out).toEqual({ d1: true, d2: false, gone: true })
   })
 
+  it("applies compatibility scope to legacy records without metadata", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const be = yield* InMemoryBackend
+        yield* be.put(
+          makeRecord({
+            id: "legacy-note",
+            namespace: "notes",
+            kind: "semantic",
+            content: { text: "shared legacy note" },
+          }),
+        )
+        yield* be.put(
+          makeRecord({
+            id: "legacy-belief",
+            namespace: "operator",
+            kind: "belief",
+            content: { statement: "private legacy belief" },
+          }),
+        )
+        const luna = yield* Stream.runCollect(
+          be.query({ scope: { observerId: "luna", subjectId: "operator" } }),
+        )
+        const helper = yield* Stream.runCollect(
+          be.query({ scope: { observerId: "helper", subjectId: "operator" } }),
+        )
+        return {
+          luna: Array.from(luna, (record) => record.id).sort(),
+          helper: Array.from(helper, (record) => record.id).sort(),
+        }
+      }),
+    )
+    expect(out.luna).toEqual(["legacy-belief", "legacy-note"])
+    expect(out.helper).toEqual(["legacy-note"])
+  })
+
   it("exportAll + importAll roundtrip preserves records", async () => {
     const out = await run(
       Effect.gen(function* () {

@@ -265,6 +265,7 @@ describe("memory tools search mode", () => {
         topK: 3,
         namespace: "diagnostics",
         mode: "hybrid",
+        scope: { observerId: "luna", subjectId: "operator" },
       },
     ])
   })
@@ -319,6 +320,44 @@ describe("memory tools search mode", () => {
     // Over-fetch heuristic: kind filter → max(limit*4, 20) = 20.
     expect(calls).toHaveLength(1)
     expect(calls[0]!.topK).toBe(20)
+  })
+})
+
+describe("memory tools scope isolation", () => {
+  it("does not delete a private record owned by another observer", async () => {
+    let deleted = false
+    const foreign = makeRecord({
+      id: "foreign",
+      namespace: "notes",
+      kind: "semantic",
+      content: { text: "private helper memory" },
+      scope: {
+        observerId: "helper",
+        subjectId: "operator",
+        visibility: "private",
+      },
+    })
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(foreign),
+      query: () => Stream.empty,
+      delete: () =>
+        Effect.sync(() => {
+          deleted = true
+          return true
+        }),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: () => Stream.empty,
+    } satisfies MemoryRouter
+    const [, , deleteTool] = makeMemoryTools(router)
+    const result = parseTextResult<{ deleted: boolean }>(
+      await deleteTool.handler({ id: "foreign" }, undefined),
+    )
+    expect(result.deleted).toBe(false)
+    expect(deleted).toBe(false)
   })
 })
 

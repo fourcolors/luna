@@ -35,6 +35,7 @@ import {
   ObservabilityService,
   TelemetryService,
   ThreadRegistryService,
+  extractText,
   type ChatMessage,
   type SessionOptions,
 } from "@luna/core"
@@ -100,8 +101,10 @@ const makeStreamEvent = (
   }) as unknown as SDKMessage
 import {
   ChatService,
+  ThreadToolsProviderTag,
   type ChatFrame,
   type DeliveryNotification,
+  type ThreadToolsProvider,
 } from "../src/index.js"
 import { applyClientMarker } from "../src/client-marker.js"
 
@@ -244,6 +247,76 @@ const runScoped = <A, E>(
   )
 
 describe("ChatService (Tier-2 sim)", () => {
+  it("injects recall only into the SDK copy and observes once after result", async () => {
+    let sdkUserText = ""
+    const observed: Array<{
+      userText: string
+      assistantText: string
+      isError: boolean
+    }> = []
+    const fakeLayer = SDKClient.fake((p) =>
+      makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: (p as { sessionId?: string }).sessionId ?? "thr-hooks",
+        responseFor: (text) => {
+          sdkUserText = text
+          return "assistant final"
+        },
+      }),
+    )
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        onBound: () => {},
+        recallMemory: () =>
+          Effect.succeed(
+            "<memory_context>historical preference</memory_context>",
+          ),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    const layer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          fakeLayer,
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+
+    const storedText = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.send(thread.id, "original user text")
+          yield* Effect.sleep("100 millis")
+          const messages = yield* store
+            .readMessages(thread.id)
+            .pipe(Stream.runCollect)
+          const user = Array.from(messages).find((m) => m.kind === "user")
+          return user === undefined ? null : extractText(user.payload)
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(storedText).toBe("original user text")
+    expect(sdkUserText).toContain("historical preference")
+    expect(sdkUserText).toContain("original user text")
+    expect(observed).toEqual([
+      {
+        userText: "original user text",
+        assistantText: "assistant final",
+        isError: false,
+      },
+    ])
+  })
+
   it(
     "fan-out: two subscribers on the same thread see every frame; another thread's subscriber stays untouched",
     async () => {

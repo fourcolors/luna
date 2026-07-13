@@ -1,5 +1,5 @@
 import type { MemoryRecord } from "@luna/memory"
-import { makeRecord } from "@luna/memory"
+import { makeRecord, OPERATOR_MEMORY_SCOPE } from "@luna/memory"
 
 /** Beliefs live in the operator namespace as kind:"belief" memory records. */
 export const BELIEF_KIND = "belief"
@@ -78,6 +78,8 @@ export function makeBeliefRecord(input: {
     kind: BELIEF_KIND,
     content,
     tags: [input.domain],
+    scope: OPERATOR_MEMORY_SCOPE,
+    provenance: { source: "dream", messageIds: input.evidence ?? [] },
     ...(input.now !== undefined ? { now: input.now } : {}),
   })
 }

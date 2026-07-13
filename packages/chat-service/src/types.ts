@@ -9,6 +9,7 @@
  * stream without depending on ui-ws.
  */
 import type { ChatMessage, SessionSummary, SuggestedActionView } from "@luna/core"
+import type { Effect } from "effect"
 import type { Artifact } from "./artifacts.js"
 
 /**
@@ -317,6 +318,26 @@ export interface ThreadToolsBinding {
    *  per historical thread. Optional for back-compat: providers that hold
    *  no per-session state omit it. */
   readonly onUnbound?: (sessionId: string) => void
+  /**
+   * Optional query-time recall hook. ChatService persists the original user
+   * payload first, then prepends this context only to the SDK-bound copy.
+   */
+  readonly recallMemory?: (input: {
+    readonly sessionId: string
+    readonly userMessageId: string
+    readonly userText: string
+  }) => Effect.Effect<string | null, never>
+  /**
+   * Optional post-turn observer. Invoked in a supervised background fiber
+   * from the SDK's exactly-once result event, so it cannot delay chat.
+   */
+  readonly observeTurn?: (input: {
+    readonly sessionId: string
+    readonly userMessageId: string
+    readonly userText: string
+    readonly assistantText: string
+    readonly isError: boolean
+  }) => Effect.Effect<void, never>
 }
 
 /**

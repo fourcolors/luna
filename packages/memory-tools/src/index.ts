@@ -1,4 +1,6 @@
 export * from "./errors.js"
 export * from "./tools.js"
+export * from "./turn-memory.js"
+export * from "./eval.js"
 export * from "./layer.js"
 export * from "./server.js"

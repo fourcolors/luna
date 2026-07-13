@@ -78,6 +78,7 @@ import {
   type ChatErrorKind,
   type CreateThreadOptions,
   type DeliveryNotification,
+  type ThreadToolsBinding,
   type ThreadToolsProvider,
 } from "./types.js"
 import { extractArtifacts } from "./artifacts.js"
@@ -123,6 +124,13 @@ interface ThreadEntry {
    *  idle reaper that releases the thread's `claude` subprocess after a quiet
    *  period — see the reaper near the service tail. */
   readonly lastActivity: Ref.Ref<number>
+  readonly pendingTurns: Queue.Queue<{
+    readonly userMessageId: string
+    readonly userText: string
+  }>
+  readonly assistantText: Ref.Ref<string>
+  readonly recallMemory?: ThreadToolsBinding["recallMemory"]
+  readonly observeTurn?: ThreadToolsBinding["observeTurn"]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -374,6 +382,34 @@ const buildUserMessage = (
     message: { role: "user", content },
     parent_tool_use_id: null,
   } as SDKUserMessage
+}
+
+/** Add ephemeral context to the SDK-bound copy, never the stored payload. */
+export const prependSdkContext = (
+  payload: SDKUserMessage,
+  context: string,
+): SDKUserMessage => {
+  const message = (payload as { message: { role: "user"; content: unknown } })
+    .message
+  if (typeof message.content === "string") {
+    return {
+      ...payload,
+      message: {
+        ...message,
+        content: `${context}\n\n${message.content}`,
+      },
+    } as SDKUserMessage
+  }
+  if (Array.isArray(message.content)) {
+    return {
+      ...payload,
+      message: {
+        ...message,
+        content: [{ type: "text", text: context }, ...message.content],
+      },
+    } as SDKUserMessage
+  }
+  return payload
 }
 
 const LUNA_ALLOWED_MCP_TOOLS = [
@@ -902,6 +938,11 @@ export class ChatService extends Effect.Service<ChatService>()(
           const inFlightTurnId = yield* Ref.make<string | null>(null)
           const inFlightText = yield* Ref.make<string>("")
           const lastActivity = yield* Ref.make<number>(yield* clock.nowMs())
+          const pendingTurns = yield* Queue.unbounded<{
+            readonly userMessageId: string
+            readonly userText: string
+          }>()
+          const assistantText = yield* Ref.make("")
 
           // Per-thread sub-scope. `Scope.fork` makes a child that we can
           // close independently of the service scope. The service scope
@@ -1053,6 +1094,14 @@ export class ChatService extends Effect.Service<ChatService>()(
                 inFlightTurnId,
                 inFlightText,
                 lastActivity,
+                pendingTurns,
+                assistantText,
+                ...(Option.getOrUndefined(binding)?.observeTurn !== undefined
+                  ? {
+                      observeTurn: Option.getOrUndefined(binding)!.observeTurn!,
+                    }
+                  : {}),
+                threadScope,
               }),
             ),
             Effect.catchAllCause((cause) => {
@@ -1098,6 +1147,18 @@ export class ChatService extends Effect.Service<ChatService>()(
             inFlightTurnId,
             inFlightText,
             lastActivity,
+            pendingTurns,
+            assistantText,
+            ...(Option.getOrUndefined(binding)?.recallMemory !== undefined
+              ? {
+                  recallMemory: Option.getOrUndefined(binding)!.recallMemory!,
+                }
+              : {}),
+            ...(Option.getOrUndefined(binding)?.observeTurn !== undefined
+              ? {
+                  observeTurn: Option.getOrUndefined(binding)!.observeTurn!,
+                }
+              : {}),
           }
           yield* Ref.update(threads, (m) => {
             const next = new Map(m)
@@ -1141,6 +1202,13 @@ export class ChatService extends Effect.Service<ChatService>()(
         readonly inFlightTurnId: Ref.Ref<string | null>
         readonly inFlightText: Ref.Ref<string>
         readonly lastActivity: Ref.Ref<number>
+        readonly pendingTurns: Queue.Queue<{
+          readonly userMessageId: string
+          readonly userText: string
+        }>
+        readonly assistantText: Ref.Ref<string>
+        readonly observeTurn?: ThreadToolsBinding["observeTurn"]
+        readonly threadScope: Scope.CloseableScope
       }): Effect.Effect<void, never> =>
         Effect.gen(function* () {
           // Any SDK traffic counts as activity — keeps a thread "warm" during
@@ -1318,6 +1386,13 @@ export class ChatService extends Effect.Service<ChatService>()(
                 artifacts,
               })
             }
+            if (projected.text.length > 0) {
+              yield* Ref.update(args.assistantText, (current) =>
+                current.length === 0
+                  ? projected.text
+                  : `${current}\n${projected.text}`,
+              )
+            }
             return
           }
           if (t === "result") {
@@ -1377,6 +1452,22 @@ export class ChatService extends Effect.Service<ChatService>()(
               sessionId: args.threadId,
               durationMs: m.duration_ms ?? 0,
             })
+            const pending = yield* Queue.poll(args.pendingTurns)
+            const assistantText = yield* Ref.getAndSet(args.assistantText, "")
+            if (Option.isSome(pending) && args.observeTurn !== undefined) {
+              yield* args
+                .observeTurn({
+                  sessionId: args.threadId,
+                  userMessageId: pending.value.userMessageId,
+                  userText: pending.value.userText,
+                  assistantText,
+                  isError: m.is_error === true,
+                })
+                .pipe(
+                  Effect.catchAllCause(() => Effect.void),
+                  Effect.forkIn(args.threadScope),
+                )
+            }
             return
           }
           if (t === "user") {
@@ -1689,9 +1780,30 @@ export class ChatService extends Effect.Service<ChatService>()(
             })
           }
 
-          // Offer is fire-and-forget; if the queue was shutdown (thread
-          // closed mid-send), we silently drop.
-          yield* Queue.offer(entry.inbox, userPayload).pipe(
+          // Recall runs after persistence so the canonical transcript never
+          // contains injected context. A provider failure is required to
+          // degrade to null; ChatService then sends the original payload.
+          const recalled =
+            entry.recallMemory !== undefined
+              ? yield* entry.recallMemory({
+                  sessionId: threadId,
+                  userMessageId: messageId,
+                  userText: text,
+                })
+              : null
+          const sdkPayload =
+            recalled !== null && recalled.length > 0
+              ? prependSdkContext(userPayload, recalled)
+              : userPayload
+
+          // Keep observation metadata in a parallel FIFO. SDK turns are
+          // sequential per thread, so each exactly-once result consumes the
+          // corresponding user seed. Queue shutdowns remain best-effort.
+          yield* Queue.offer(entry.pendingTurns, {
+            userMessageId: messageId,
+            userText: text,
+          }).pipe(Effect.catchAllCause(() => Effect.void))
+          yield* Queue.offer(entry.inbox, sdkPayload).pipe(
             Effect.catchAllCause(() => Effect.void),
           )
 
@@ -1867,6 +1979,26 @@ export class ChatService extends Effect.Service<ChatService>()(
           // append to this turn's leftover text under the stale turnId.
           yield* Ref.set(entry.inFlightTurnId, null)
           yield* Ref.set(entry.inFlightText, "")
+          // Interrupted SDK turns normally emit no terminal result. Consume
+          // the matching observation seed here so the next successful result
+          // cannot be paired with stale user text. Candidate capture remains
+          // useful for an interrupted turn and stays off the interrupt path.
+          const pending = yield* Queue.poll(entry.pendingTurns)
+          const assistantText = yield* Ref.getAndSet(entry.assistantText, "")
+          if (Option.isSome(pending) && entry.observeTurn !== undefined) {
+            yield* entry
+              .observeTurn({
+                sessionId: threadId,
+                userMessageId: pending.value.userMessageId,
+                userText: pending.value.userText,
+                assistantText,
+                isError: true,
+              })
+              .pipe(
+                Effect.catchAllCause(() => Effect.void),
+                Effect.forkIn(entry.scope),
+              )
+          }
           yield* inc("luna.chat.interrupts.total")
         })
 

@@ -143,6 +143,44 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
     expect(arr.map((r) => r.record.id)).toContain("h1")
   })
 
+  it("filters private vector hits by observer and subject scope", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const vec = yield* SqliteVectorBackend
+        const router = makeRouter([{ pattern: "*", backend: vec }])
+        for (const [id, observerId, subjectId, visibility] of [
+          ["mine", "luna", "operator", "private"],
+          ["other-observer", "helper", "operator", "private"],
+          ["other-subject", "luna", "teammate", "private"],
+          ["shared", "shared", "operator", "shared"],
+        ] as const) {
+          yield* router.put(
+            makeRecord({
+              id,
+              namespace: "notes",
+              kind: "semantic",
+              content: { text: `release checklist ${id}` },
+              scope: { observerId, subjectId, visibility },
+            }),
+          )
+        }
+        return yield* Stream.runCollect(
+          router.search({
+            queryText: "release checklist",
+            namespace: "notes",
+            mode: "hybrid",
+            topK: 10,
+            scope: { observerId: "luna", subjectId: "operator" },
+          }),
+        )
+      }),
+    )
+    expect(Array.from(out).map((hit) => hit.record.id).sort()).toEqual([
+      "mine",
+      "shared",
+    ])
+  })
+
   it("fan-out fails cleanly when no vector backends are registered", async () => {
     const keyed = new InMemoryBackend()
     const router = makeRouter([{ pattern: "*", backend: keyed }])
