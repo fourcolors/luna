@@ -359,20 +359,23 @@ class LunaWsAdapter {
       threadId,
       messages,
       async send(input) {
-        if (!ws || ws.readyState !== ws.OPEN) {
+        const live = adapter.#ws;
+        if (!live || live.readyState !== live.OPEN) {
           throw new Error("Cannot send: connection not open");
         }
-        ws.send(JSON.stringify({ type: "user-message", threadId, text: input.text }));
+        live.send(JSON.stringify({ type: "user-message", threadId, text: input.text }));
       },
       async stop() {
-        if (ws && ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: "interrupt", threadId }));
+        const live = adapter.#ws;
+        if (live && live.readyState === live.OPEN) {
+          live.send(JSON.stringify({ type: "interrupt", threadId }));
         }
       },
       close() {
         drainClose();
-        if (ws && ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: "unsubscribe", threadId }));
+        const live = adapter.#ws;
+        if (live && live.readyState === live.OPEN) {
+          live.send(JSON.stringify({ type: "unsubscribe", threadId }));
         }
         adapter.#sessions.delete(sessionId);
       }
@@ -549,6 +552,9 @@ class LunaWsAdapter {
         return;
       this.#reconnectAttempts = 0;
       this.#lastAttach = result;
+      for (const [, session] of this.#sessions) {
+        this.sendFrame({ type: "subscribe", threadId: session.threadId });
+      }
       this.#publishConnectionState({ status: "ready" });
       this.#descriptorBroadcast.publish(result);
     } catch {

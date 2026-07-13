@@ -34,6 +34,7 @@ interface TestServer {
   close(): Promise<void>
   dropClients(): void
   lastNewThreadFrame?: Record<string, unknown>
+  sessionFrames: Array<Record<string, unknown>>
 }
 
 async function startTestServer(opts: {
@@ -46,6 +47,8 @@ async function startTestServer(opts: {
   handleNewThread?: boolean
   /** If true, records the last new-thread frame received into server.lastNewThreadFrame. */
   recordFrames?: boolean
+  /** If true, records subscribe/user-message/interrupt/unsubscribe frames into server.sessionFrames. */
+  recordSessionFrames?: boolean
 }): Promise<TestServer> {
   return new Promise((resolve, reject) => {
     const wss = new WebSocketServer({ port: 0 })
@@ -99,12 +102,22 @@ async function startTestServer(opts: {
         ws.send(JSON.stringify(hello))
 
         // Handle new-thread protocol if requested.
-        if (opts.handleNewThread || opts.recordFrames) {
+        if (opts.handleNewThread || opts.recordFrames || opts.recordSessionFrames) {
           ws.on("message", (data) => {
             let frame: Record<string, unknown>
             try {
               frame = JSON.parse(String(data)) as Record<string, unknown>
             } catch { return }
+
+            if (
+              opts.recordSessionFrames &&
+              (frame["type"] === "subscribe" ||
+                frame["type"] === "user-message" ||
+                frame["type"] === "interrupt" ||
+                frame["type"] === "unsubscribe")
+            ) {
+              serverHandle.sessionFrames.push(frame)
+            }
 
             if (frame["type"] === "new-thread") {
               // Record the frame if requested.
@@ -152,6 +165,7 @@ async function startTestServer(opts: {
       const serverHandle: TestServer = {
         url: `ws://127.0.0.1:${port}/ui`,
         lastNewThreadFrame: undefined,
+        sessionFrames: [],
         dropClients: () => {
           for (const client of wss.clients) {
             client.close(1001, "drop")
@@ -634,6 +648,84 @@ describe("LunaWsAdapter", () => {
       expect(states).toContain("recovering")
       expect(states).toContain("ready")
 
+      await adapter.dispose()
+    }, 10_000)
+
+    it("re-subscribes open sessions and sends on the LIVE socket after reconnect", async () => {
+      const waitFor = async (pred: () => boolean, timeoutMs = 2500) => {
+        const start = Date.now()
+        while (!pred()) {
+          if (Date.now() - start > timeoutMs) throw new Error("waitFor timeout")
+          await new Promise((r) => setTimeout(r, 10))
+        }
+      }
+
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        recordSessionFrames: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "resubscribe-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        10_000,
+      )
+      await adapter.attach()
+
+      // Open a session on an existing thread: sends the initial subscribe.
+      const session = await adapter.openSession({ threadId: "t-persist" })
+      await waitFor(() =>
+        server!.sessionFrames.some(
+          (f) => f["type"] === "subscribe" && f["threadId"] === "t-persist",
+        ),
+      )
+      const subsBefore = server.sessionFrames.filter(
+        (f) => f["type"] === "subscribe",
+      ).length
+
+      // Await the reconnect via the connection-state stream.
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+      const stateCollection = (async () => {
+        for await (const st of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(st.status)
+          if (st.status === "ready" && states.includes("recovering")) break
+          if (states.length > 20) break
+        }
+      })()
+
+      // Drop the socket; the server stays up so the reconnect succeeds.
+      server.dropClients()
+      await Promise.race([
+        stateCollection,
+        new Promise<void>((_, rej) =>
+          setTimeout(() => rej(new Error("timeout waiting for reconnect")), 3000),
+        ),
+      ])
+      expect(states).toContain("ready")
+
+      // #6: the open session is re-subscribed on the FRESH socket.
+      await waitFor(
+        () =>
+          server!.sessionFrames.filter((f) => f["type"] === "subscribe").length >
+          subsBefore,
+      )
+      const lastSubscribe = [...server.sessionFrames]
+        .reverse()
+        .find((f) => f["type"] === "subscribe")
+      expect(lastSubscribe?.["threadId"]).toBe("t-persist")
+
+      // #5: session.send() reaches the LIVE (post-reconnect) socket, not the
+      // dead captured one.
+      await session.send({ text: "after reconnect" })
+      await waitFor(() =>
+        server!.sessionFrames.some(
+          (f) => f["type"] === "user-message" && f["text"] === "after reconnect",
+        ),
+      )
+
+      session.close()
       await adapter.dispose()
     }, 10_000)
 
