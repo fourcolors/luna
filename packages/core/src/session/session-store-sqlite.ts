@@ -339,24 +339,21 @@ export const makeSessionStoreSqlite = (
           `AND parent_id IS NULL ORDER BY seq ASC LIMIT 1`,
       )
       const sessionsList = db.query(`SELECT * FROM sessions`)
-      // Same as `sessionsList` but restricted to threads that have a top-level
-      // user message - mirrors the `firstUserMessage` predicate. Used by
-      // list()'s `hasUserMessage` filter to drop empty/probe threads BEFORE the
-      // limit is applied. The correlated EXISTS is served by the partial index
+      // Single source of truth for the "real thread" predicate: a session with
+      // a top-level user message - mirrors `firstUserMessage`. Both list filters
+      // (the `hasUserMessage` plain path and the `excludeIds` path) compose this
+      // exact string so they can never drift on what counts as a real thread.
+      // The correlated EXISTS is served by the partial index
       // `idx_messages_toplevel_user`, so it is a per-session index seek that
       // stops at the first match rather than a full scan of `messages`.
-      const sessionsListWithUser = db.query(
-        `SELECT * FROM sessions s WHERE EXISTS (` +
-          `SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
-          `AND m.kind = 'user' AND m.parent_id IS NULL)`,
-      )
-      // Mirrors the `hasUserMessage` EXISTS predicate so both filters run in
-      // SQL BEFORE the limit. The NOT IN placeholders vary by exclude count, so
-      // this is built per call (bun:sqlite caches prepared statements by SQL
-      // text, so a given exclude count is only prepared once).
       const hasUserExists =
         `EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
         `AND m.kind = 'user' AND m.parent_id IS NULL)`
+      // Same as `sessionsList` but restricted to real threads, so list()'s
+      // `hasUserMessage` filter drops empty/probe threads BEFORE the limit.
+      const sessionsListWithUser = db.query(
+        `SELECT * FROM sessions s WHERE ${hasUserExists}`,
+      )
 
       const create = (input: {
         readonly id: string
@@ -661,6 +658,9 @@ export const makeSessionStoreSqlite = (
               ? (() => {
                   const clauses: string[] = []
                   if (q.hasUserMessage) clauses.push(hasUserExists)
+                  // One bound parameter per excluded id, so the count is capped
+                  // by SQLite's SQLITE_MAX_VARIABLE_NUMBER (~32766). Callers pass
+                  // only archived thread ids, which never reach that scale.
                   clauses.push(
                     `s.id NOT IN (${excludeIds.map(() => "?").join(", ")})`,
                   )
