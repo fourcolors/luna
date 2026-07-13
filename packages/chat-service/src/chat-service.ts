@@ -42,6 +42,7 @@ import {
   Cause,
   Chunk,
   Context,
+  Duration,
   Effect,
   Exit,
   Layer,
@@ -152,6 +153,27 @@ export const parseIdleReapMs = (raw: string | undefined): number => {
   if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_REAP_MS
   const n = Number(raw)
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_IDLE_REAP_MS
+}
+
+/**
+ * Default ceiling on inline query-time recall: 2.5s. Recall must inject before
+ * the SDK turn, so it cannot be fully backgrounded like `observeTurn`. A slow or
+ * hung embedder / vector search would otherwise stall the whole turn - the user's
+ * message never reaches the SDK and the chat appears frozen. On expiry we degrade
+ * to no recalled context and send the original payload.
+ */
+export const DEFAULT_RECALL_TIMEOUT_MS = 2_500
+
+/**
+ * Parse the LUNA_CHAT_RECALL_TIMEOUT_MS env override.
+ *  - absent / empty / non-numeric / negative → DEFAULT_RECALL_TIMEOUT_MS
+ *  - `0` → 0 (disables the bound; recall may block the turn indefinitely)
+ *  - any positive number → that many ms
+ */
+export const parseRecallTimeoutMs = (raw: string | undefined): number => {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_RECALL_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_TIMEOUT_MS
 }
 
 /**
@@ -459,6 +481,11 @@ export class ChatService extends Effect.Service<ChatService>()(
       const obs = yield* ObservabilityService
       const tel = yield* TelemetryService
       const memoryRouter = yield* MemoryRouterTag
+      // Ceiling on inline query-time recall so a hung embedder/vector search
+      // can never stall a turn (0 disables). Read once at construction.
+      const recallTimeoutMs: number = parseRecallTimeoutMs(
+        process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"],
+      )
       // Optional — when the app provides it, EVERY thread (new or resumed)
       // gets its MCP servers + merged system prompt + post-create binding.
       // Omitted in tests/headless that don't need tools.
@@ -1781,16 +1808,29 @@ export class ChatService extends Effect.Service<ChatService>()(
           }
 
           // Recall runs after persistence so the canonical transcript never
-          // contains injected context. A provider failure is required to
-          // degrade to null; ChatService then sends the original payload.
+          // contains injected context. A provider failure OR a timeout is
+          // required to degrade to null; ChatService then sends the original
+          // payload. The bound matters because recall must inject before the
+          // SDK turn (it cannot be backgrounded like `observeTurn`), so a hung
+          // embedder / vector search would otherwise freeze the whole turn.
           const recalled =
-            entry.recallMemory !== undefined
-              ? yield* entry.recallMemory({
-                  sessionId: threadId,
-                  userMessageId: messageId,
-                  userText: text,
-                })
-              : null
+            entry.recallMemory === undefined
+              ? null
+              : yield* (() => {
+                  const recall = entry.recallMemory({
+                    sessionId: threadId,
+                    userMessageId: messageId,
+                    userText: text,
+                  })
+                  return recallTimeoutMs > 0
+                    ? recall.pipe(
+                        Effect.timeout(Duration.millis(recallTimeoutMs)),
+                        Effect.catchAll(() =>
+                          inc("luna.chat.recall.timeouts").pipe(Effect.as(null)),
+                        ),
+                      )
+                    : recall
+                })()
           const sdkPayload =
             recalled !== null && recalled.length > 0
               ? prependSdkContext(userPayload, recalled)

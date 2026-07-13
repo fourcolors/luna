@@ -317,6 +317,68 @@ describe("ChatService (Tier-2 sim)", () => {
     ])
   })
 
+  it("a hung recall hook is bounded by the timeout and degrades to the original payload", async () => {
+    const prev = process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"]
+    process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"] = "50"
+    try {
+      let sdkUserText = ""
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-hang",
+          responseFor: (text) => {
+            sdkUserText = text
+            return "assistant final"
+          },
+        }),
+      )
+      // recallMemory never resolves - without the bound, the turn would hang
+      // and the user's message would never reach the SDK.
+      const provider: ThreadToolsProvider = {
+        decorate: () => ({
+          mcpServers: {},
+          onBound: () => {},
+          recallMemory: () => Effect.never,
+        }),
+      }
+      const layer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(
+            fakeLayer,
+            baseLayer,
+            Layer.succeed(ThreadToolsProviderTag, provider),
+          ),
+        ),
+      )
+
+      const storedText = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const store = yield* SessionStore
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.send(thread.id, "original user text")
+            yield* Effect.sleep("300 millis")
+            const messages = yield* store
+              .readMessages(thread.id)
+              .pipe(Stream.runCollect)
+            const user = Array.from(messages).find((m) => m.kind === "user")
+            return user === undefined ? null : extractText(user.payload)
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(storedText).toBe("original user text")
+      // The turn still reached the SDK with the unmodified payload.
+      expect(sdkUserText).toBe("original user text")
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"]
+      else process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"] = prev
+    }
+  })
+
   it(
     "fan-out: two subscribers on the same thread see every frame; another thread's subscriber stays untouched",
     async () => {
