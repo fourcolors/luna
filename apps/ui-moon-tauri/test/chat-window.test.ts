@@ -138,6 +138,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       chatPanel!.classList.add('active')
       expect(chatMessages).not.toBeNull()
 
+      // Connected session so the submit actually sends and the turn watchdog
+      // arms (the watchdog is a "sent but no reply" safety net; an un-sent /
+      // offline message no longer shows a phantom typing indicator).
+      const mi = (window as any).__MoonInternals
+      mi.State.activeThreadId = 'th-watchdog'
+      mi.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+
       // 1. User types "How does this look?" and submits
       messageInput.value = 'How does this look?'
       const submitEvent = new Event('submit', { bubbles: true, cancelable: true })
@@ -169,6 +176,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const lastMsg = chatMessages!.lastElementChild
       expect(lastMsg!.classList.contains('assistant')).toBe(true)
       expect(lastMsg!.textContent).toContain('No response from the server')
+    })
+
+    it('Scenario: submitting with no thread while OFFLINE stashes the message and marks pendingFreshThread (reconnect mints a thread + flushes it)', () => {
+      const mi = (window as any).__MoonInternals
+      // Offline: no open socket, no active thread.
+      mi.State.ws = null
+      mi.State.activeThreadId = null
+      mi.State.pendingFreshThread = false
+      const messageInput = document.getElementById('message-input') as HTMLTextAreaElement
+      messageInput.value = 'queued while offline'
+      document.getElementById('chat-form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }))
+
+      // The message is stashed, not lost...
+      expect(mi.State.pendingUserMessage).not.toBeNull()
+      expect(mi.State.pendingUserMessage.text).toContain('queued while offline')
+      // ...and a fresh thread is requested on reconnect so thread-created fires
+      // and flushes it (without this the message strands on a resubscribe).
+      expect(mi.State.pendingFreshThread).toBe(true)
     })
   })
 
@@ -2732,6 +2758,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       voiceLive()
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
       M().State.activeThreadId = 'th-voice'
+      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the auto-send delivers, so the composer clears
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3564,6 +3591,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       const m = M()
       m.handleFrame({ type: 'thread-created', thread: { id: 'th-att' } })
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the send delivers, so the bubble paints + composer clears
       const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'see attached'

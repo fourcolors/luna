@@ -563,12 +563,15 @@ pub(crate) fn migrate_legacy_to_client_toml_in(luna_dir: &std::path::Path) -> Re
         None => return Ok(()),
     };
 
-    // Build TOML string.
-    let mut lines: Vec<String> = vec![
-        r#"kind = "bootstrap""#.to_string(),
-        "fileFormatVersion = 3".to_string(),
-        format!(r#"default = "{}""#, active_profile),
-    ];
+    // Build the document with toml_edit so every key + value is ESCAPED
+    // correctly. A raw format!() interpolation lets a `"`, backslash, or
+    // newline in a ws_url or profile name corrupt or inject TOML; and since the
+    // write-verify below deletes an unparseable file, that corruption would
+    // re-trigger identically on every boot (never producing a usable config).
+    let mut doc = toml_edit::DocumentMut::new();
+    doc["kind"] = toml_edit::value("bootstrap");
+    doc["fileFormatVersion"] = toml_edit::value(3_i64);
+    doc["default"] = toml_edit::value(active_profile.as_str());
 
     let mut wrote_any = false;
     // Stable sort for deterministic output (active profile first, then alpha).
@@ -579,25 +582,32 @@ pub(crate) fn migrate_legacy_to_client_toml_in(luna_dir: &std::path::Path) -> Re
         b_is_active.cmp(&a_is_active).then_with(|| a.cmp(b))
     });
 
+    // `[route.<name>]` tables live under an implicit `route` parent so the
+    // output carries no bare `[route]` header (matching the prior format).
+    let mut routes = toml_edit::Table::new();
+    routes.set_implicit(true);
     for name in profile_names {
         let ws_url = &profiles[name];
         if ws_url.is_empty() {
             continue;
         }
-        lines.push(String::new());
-        lines.push(format!("[route.{}]", name));
-        lines.push(format!(r#"endpoints = ["{}"]"#, ws_url));
-        lines.push(format!(r#"label = "{}""#, name));
-        lines.push(r#"tokenRef = "legacy""#.to_string());
+        let mut endpoints = toml_edit::Array::new();
+        endpoints.push(ws_url.as_str());
+        let mut route = toml_edit::Table::new();
+        route["endpoints"] = toml_edit::value(endpoints);
+        route["label"] = toml_edit::value(name.as_str());
+        route["tokenRef"] = toml_edit::value("legacy");
+        routes.insert(name.as_str(), toml_edit::Item::Table(route));
         wrote_any = true;
     }
+    doc["route"] = toml_edit::Item::Table(routes);
 
     if !wrote_any {
         // All profiles had empty wsUrl — nothing useful to migrate.
         return Ok(());
     }
 
-    let body = lines.join("\n") + "\n";
+    let body = doc.to_string();
 
     // Atomic write (F10 write-verify pattern).
     write_atomic_0600(&client_toml, &body)?;

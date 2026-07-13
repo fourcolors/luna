@@ -531,6 +531,9 @@ export interface ConnectorOauthRedirectFrame {
 /** Client→server: the captured authorization code + echoed state. */
 export interface ConnectorOauthCodeFrame {
   readonly type: "connector-oauth-code"
+  /** Echoed back on the completeAuth `connector-status` so the panel can
+   *  attribute the completion to the exact OAuth flow it started. */
+  readonly requestId?: string
   readonly pendingId: string
   readonly code: string
   readonly state: string

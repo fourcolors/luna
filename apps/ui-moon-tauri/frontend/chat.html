@@ -4188,6 +4188,13 @@
         State.activeTurnId = null;
         State.pendingUserMessage = null;
         try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
+        // Drop the outgoing thread's in-memory turns so a late assistant-delta
+        // or tool frame for the OLD thread can't re-render into the NEW one
+        // before its snapshot arrives (the streaming handlers also gate on
+        // frame.threadId). Reset the transient "thinking" face too; the new
+        // thread re-arms it if it streams.
+        try { ChatState.reset(); } catch (_) {}
+        try { MoonFace.setBusy(false); } catch (_) {}
         if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';   // instant feedback; snapshot rebuilds
         if (WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'subscribe', threadId: id });
@@ -6727,6 +6734,10 @@
     });
 
     MoonFrames.register('assistant-delta', (frame) => {
+      // Thread isolation: drop deltas for any thread that isn't in view. A
+      // mid-stream thread switch would otherwise stream the OLD thread's
+      // tokens into the NEW thread until its snapshot lands.
+      if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       // Append delta to the active assistant turn. The reducer creates
       // a fresh text segment if the last segment is a closed text or a
       // tool card; otherwise it extends the in-progress text segment.
@@ -6741,21 +6752,30 @@
     });
 
     MoonFrames.register('assistant-done', (frame) => {
-      // Finalize the active turn. flush() forces an immediate render so
-      // a still-pending rAF frame can't overwrite the closed state.
-      WebSocketEngine.clearTurnTimeout();
+      // Thread isolation: only finalize/flush into the thread in view. The
+      // background-delivery case below still notifies for ANY thread, but
+      // renders only when the delivered message belongs to the active thread.
+      const sameThread = !frame.threadId || !State.activeThreadId || frame.threadId === State.activeThreadId;
       // #124: a background-delivered result arrives as a complete assistant-done
       // with NO preceding deltas (so there is no in-flight turn to finish).
       // Detect it by the delivery marker and push a complete turn directly.
       if (frame.message && frame.message.delivery) {
-        State.activeTurnId = null;
-        ChatState.appendDelivered(frame.message);
-        ChatLoop.flush();
-        // Raise an OS notification: this result arrived from a background/
-        // scheduled task, so the user is likely not watching the window.
+        if (sameThread) {
+          WebSocketEngine.clearTurnTimeout();
+          State.activeTurnId = null;
+          ChatState.appendDelivered(frame.message);
+          ChatLoop.flush();
+        }
+        // Raise an OS notification even for a non-active thread: this result
+        // arrived from a background/scheduled task, so the user is likely not
+        // watching (and may be on a different thread entirely).
         Notifier.notifyDelivered(frame.message);
         return;
       }
+      if (!sameThread) return;   // streamed done for another thread -> ignore
+      // Finalize the active turn. flush() forces an immediate render so a
+      // still-pending rAF frame can't overwrite the closed state.
+      WebSocketEngine.clearTurnTimeout();
       const doneTurnId = frame.turnId || State.activeTurnId;
       State.activeTurnId = null;
       ChatState.finishTurn(
@@ -6770,6 +6790,7 @@
     });
 
     MoonFrames.register('assistant-error', (frame) => {
+      if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       WebSocketEngine.clearTurnTimeout();
       const errTurnId = frame.turnId || State.activeTurnId;
       State.activeTurnId = null;
@@ -6779,6 +6800,7 @@
     });
 
     MoonFrames.register('turn-complete', (frame) => {
+      if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       // The whole agentic turn ended (SDK `result`). Settle the trailing
       // assistant run so its grouped activity timeline auto-collapses to
       // the "Worked for N steps" pill. This is the ONLY end-of-turn
@@ -6808,6 +6830,7 @@
     });
 
     MoonFrames.register('tool-call', (frame) => {
+      if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       // Tool the assistant is invoking. Reducer appends a tool segment
       // to the active turn (closing any open text segment first).
       // parentToolUseId is present when the activity occurred inside a subagent.
@@ -6816,6 +6839,7 @@
     });
 
     MoonFrames.register('tool-result', (frame) => {
+      if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       // Pair with the previously-emitted tool-call by toolCallId.
       ChatState.applyToolResult(
         frame.toolCallId,
@@ -8863,17 +8887,9 @@
         // voice is off/unavailable.
         VoiceEngine.onUserSend();
 
-        Logger.info(`Appended user message: "${typed}" (+${previews.length} attachment(s))`);
-        this.appendMessage('user', typed, false, previews);
-        DOM.messageInput.value = '';
-        this.autoGrowMessageInput(); // snap back to the one-line floor after send
-        Attachments.clear();
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-
-        // Show typing indicator
-        this.showTypingIndicator();
-        MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
-        WebSocketEngine.startTurnTimeout();
+        // Attempt the send FIRST, then decide whether to mutate the composer, so
+        // an offline no-op can't destroy the user's input.
+        const _connected = WebSocketEngine.isConnected();
 
         // Send user message over the real WebSocket!
         if (State.activeThreadId) {
@@ -8885,10 +8901,52 @@
             ...(wire ? { attachments: wire } : {})
           });
         } else {
-          // If we don't have a thread subscribed yet, we create a thread first, then send
+          // No thread subscribed yet: stash the message and create a thread; the
+          // thread-created handler flushes State.pendingUserMessage. When online
+          // we mint immediately. When OFFLINE, sendNewThread() is a no-op, so we
+          // set pendingFreshThread (mirroring newConversation) - otherwise
+          // syncThread() resubscribes to a PRIOR thread on reconnect, no
+          // thread-created fires, and the pending message is stranded (or later
+          // sent into an unexpected thread).
           Logger.warn("No active thread subscribed; queuing message and creating new thread");
-          WebSocketEngine.sendNewThread();
           State.pendingUserMessage = { text: wireText, attachments: wire };
+          if (_connected) {
+            WebSocketEngine.sendNewThread();
+          } else {
+            State.pendingFreshThread = true;
+          }
+        }
+
+        // Silent-data-loss guard: on an EXISTING thread while the socket is down,
+        // the send above was a no-op and nothing queues it (unlike the new-thread
+        // path). Keep the composer + staged attachments and tell the user instead
+        // of clearing them and painting a phantom "sent" bubble.
+        if (!_connected && State.activeThreadId) {
+          Logger.warn('Send while disconnected: preserving composer input for retry');
+          const _last = DOM.chatMessages && DOM.chatMessages.lastElementChild;
+          if (!(_last && _last.textContent && _last.textContent.indexOf("wasn't sent") !== -1)) {
+            this.appendMessage('assistant', "⚠️ Not connected. Your message wasn't sent; it's still in the box. Try again once you reconnect.");
+            if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+          }
+          return;
+        }
+
+        Logger.info(`Appended user message: "${typed}" (+${previews.length} attachment(s))`);
+        this.appendMessage('user', typed, false, previews);
+        DOM.messageInput.value = '';
+        this.autoGrowMessageInput(); // snap back to the one-line floor after send
+        Attachments.clear();
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+
+        // Show the typing indicator + arm the turn watchdog only when the send
+        // actually went out. An offline new-thread message is stashed in
+        // State.pendingUserMessage and fires on reconnect, so there is no
+        // in-flight turn to indicate (or time out) yet. The offline +
+        // existing-thread case already returned above.
+        if (_connected) {
+          this.showTypingIndicator();
+          MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
+          WebSocketEngine.startTurnTimeout();
         }
       }
     };

@@ -46,6 +46,7 @@
       var plainRequests = {}; // requestId → definitionId for in-flight connector-connect
       var oauthRequestId = null;
       var oauthDefinitionId = null;
+      var oauthCodeSent = false; // true only AFTER connector-oauth-code is sent (the completeAuth redemption window)
       var beginTimer = null;
 
       // ── DOM skeleton ───────────────────────────────────────────────────────
@@ -101,6 +102,7 @@
         if (oauthDefinitionId) clearBusy(oauthDefinitionId);
         oauthRequestId = null;
         oauthDefinitionId = null;
+        oauthCodeSent = false;
         if (message) setError(message);
         render();
       }
@@ -133,6 +135,7 @@
           );
           oauthRequestId = requestId;
           oauthDefinitionId = def.id;
+          oauthCodeSent = false;   // fresh flow: not yet in the redemption window
           if (beginTimer) clearTimeout(beginTimer);
           beginTimer = setTimeout(function () {
             cancelOauth('Timed out starting the connection — please try again.');
@@ -163,10 +166,17 @@
           .then(function (captured) {
             client.send({
               type: 'connector-oauth-code',
+              requestId: frame.requestId,   // == oauthRequestId; echoed on the completeAuth status for attribution
               pendingId: frame.pendingId,
               code: captured.code,
               state: captured.state,
             });
+            // Now redeeming the code: an unattributed failure (no requestId /
+            // instance) on an OLDER server is our completeAuth failing. This
+            // flag gates the fallback attribution below so a foreign
+            // disconnect-failure during the long consent phase is no longer
+            // misread as ours - only during this brief redemption round-trip.
+            oauthCodeSent = true;
           })
           .catch(function (e) {
             var msg = typeof e === 'string' ? e : 'The consent flow did not complete.';
@@ -238,17 +248,44 @@
           return;
         }
 
-        // Path 2: oauth status frame
-        if (beginTimer) { clearTimeout(beginTimer); beginTimer = null; }
+        // Path 2: a connector-status frame that is NOT a tracked plain connect.
+        // It may (a) belong to OUR in-flight OAuth flow, or (b) be an ack for a
+        // DIFFERENT flow (another account's disconnect/set-client, a late
+        // completion) that merely shares this handler. Only (a) may tear down
+        // OAuth state; otherwise an unrelated ack silently aborts a consent
+        // flow the user is still completing in the browser.
+        var attributableToOurOauth = oauthRequestId !== null && (
+          // Begin/redirect/timeout failures echo our requestId; the server now
+          // also echoes it on completeAuth success + failure.
+          (frame.requestId && frame.requestId === oauthRequestId) ||
+          // Success completion carries the freshly-created instance for our def.
+          (frame.instance && frame.instance.definitionId === oauthDefinitionId) ||
+          // completeAuth FAILURE on an OLDER server (no requestId echo) carries
+          // neither requestId nor instance; while mid-flow, an unattributed
+          // failure is treated as ours (favor teardown over a stuck spinner),
+          // but ONLY once we have actually sent connector-oauth-code
+          // (oauthCodeSent) - i.e. inside the brief completeAuth redemption
+          // window. That phase-gate keeps a foreign disconnect FAILURE
+          // ({ok:false}, no requestId/instance) during the long consent phase
+          // from being misread as ours. A bare ok:true with no instance is never
+          // ours (our success always carries an instance). Residual, now-tiny
+          // ambiguity remains only if a foreign disconnect fails during that
+          // redemption round-trip on an OLDER server that does not echo our
+          // requestId; new servers echo it, so our own failure matches (i).
+          (oauthCodeSent && !frame.ok && !frame.requestId && !frame.instance)
+        );
 
-        if (!frame.ok && oauthRequestId !== null) {
-          cancelOauth(frame.message || 'Connector request failed.');
-          return;
+        if (attributableToOurOauth) {
+          if (beginTimer) { clearTimeout(beginTimer); beginTimer = null; }
+          if (!frame.ok) {
+            cancelOauth(frame.message || 'Connector request failed.');
+            return;
+          }
+          if (oauthDefinitionId) clearBusy(oauthDefinitionId);
+          oauthRequestId = null;
+          oauthDefinitionId = null;
+          oauthCodeSent = false;
         }
-
-        if (oauthDefinitionId) clearBusy(oauthDefinitionId);
-        oauthRequestId = null;
-        oauthDefinitionId = null;
         if (frame.instance) {
           clearBusy(frame.instance.definitionId);
           delete consentDraft[frame.instance.definitionId];
