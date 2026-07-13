@@ -2659,15 +2659,45 @@ describe("ChatService — listThreads auto-titles untitled threads", () => {
   )
 
   it(
-    "a thread with no user messages stays untitled (client fallback)",
+    "an empty thread (no title, no user message) is hidden from the sidebar list",
     async () => {
       await run(
         Effect.gen(function* () {
           const chat = yield* ChatService
-          const t = yield* chat.createThread({ model: "claude-test" })
+          const store = yield* SessionStore
+          // Empty probe thread: created, never used.
+          const empty = yield* chat.createThread({ model: "claude-test" })
+          // Real thread: has a first user message.
+          const real = yield* chat.createThread({ model: "claude-test" })
+          yield* store.appendMessage({
+            sessionId: real.id,
+            messageId: "m-real-1",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "Ship the release" } },
+          })
+
           const list = yield* chat.listThreads(50)
-          const row = list.find((s) => s.id === t.id)
-          expect(row?.title ?? null).toBeNull()
+          const ids = list.map((s) => s.id)
+          expect(ids).not.toContain(empty.id) // empty probe hidden
+          expect(ids).toContain(real.id)
+          expect(list.find((s) => s.id === real.id)?.title).toBe("Ship the release")
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "an explicitly-titled thread is kept even with no user message",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({ model: "claude-test", title: "Named but empty" })
+          const list = yield* chat.listThreads(50)
+          expect(list.find((s) => s.id === t.id)?.title).toBe("Named but empty")
         }),
       )
     },

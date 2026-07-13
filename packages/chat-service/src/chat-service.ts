@@ -2306,35 +2306,20 @@ export class ChatService extends Effect.Service<ChatService>()(
         const sessionList = store
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
-        // Derive a display title from the thread's FIRST top-level user message
-        // (same heuristic the first-turn path uses). The stored payload carries
-        // the client-identity marker prepended at ingest, which the first-turn
-        // path never saw — strip it so both paths derive from the raw user
-        // text. Null when the thread has no user message yet or the store read
-        // fails — the client shows its own untitled fallback then.
-        const deriveFirstMessageTitle = (
-          sessionId: string,
-        ): Effect.Effect<string | null, never> =>
-          // Bounded LIMIT-1 lookup — never materializes the whole message log,
-          // so an un-titleable thread (no user message, marker-only, blank) is
-          // cheap to re-check on every sidebar open.
-          store.readFirstUserMessage(sessionId).pipe(
-            Effect.map((first) => {
-              if (first === null) return null
-              const text = extractText(first.payload)
-              return text ? deriveTitleFromMessage(stripClientMarker(text)) : null
-            }),
-            Effect.catchAll(() => Effect.succeed(null)),
-          )
-        // Overlay display titles onto summaries that lack one. The SessionStore
-        // `title` column is write-once at INSERT (Moon never sends one), while
-        // the first-turn heuristic writes derived titles to the ThreadRegistry —
-        // so without this overlay every active row projects title=null and the
-        // sidebar renders "untitled". Preference order per row:
+        // Resolve a display title AND filter empty/probe threads out of the
+        // sidebar. Preference order per row:
         //   1. the SessionStore title (explicitly set at creation);
         //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
         //   3. derive-on-read from the first user message (threads predating the
         //      heuristic), persisted back to the registry so it runs once.
+        // A thread that has NO title from any source AND no first top-level user
+        // message is an empty/probe thread (spawned but never used) — it is
+        // dropped entirely (returns null) so the sidebar shows only real
+        // conversations. Titled threads are always kept. The stored payload
+        // carries the client-identity marker prepended at ingest, which the
+        // first-turn path never saw — strip it so both derive paths agree.
+        // readFirstUserMessage is a bounded LIMIT-1 query (never materializes
+        // the whole log), so the empty-check + derive is cheap.
         const resolveTitles = (
           sessions: ReadonlyArray<SessionSummary>,
           regTitles: ReadonlyMap<string, string | null>,
@@ -2342,18 +2327,33 @@ export class ChatService extends Effect.Service<ChatService>()(
         ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
           Effect.forEach(
             sessions,
-            (s) => {
+            (s): Effect.Effect<SessionSummary | null, never> => {
               if (s.title !== null && s.title !== "") return Effect.succeed(s)
               const regTitle = regTitles.get(s.id)
               if (regTitle) return Effect.succeed({ ...s, title: regTitle })
-              return deriveFirstMessageTitle(s.id).pipe(
-                Effect.tap((derived) =>
-                  derived && persist ? persist(s.id, derived) : Effect.void,
+              return store.readFirstUserMessage(s.id).pipe(
+                Effect.catchAll(() => Effect.succeed(null)),
+                Effect.flatMap(
+                  (first): Effect.Effect<SessionSummary | null, never> => {
+                    if (first === null) return Effect.succeed(null) // empty → hide
+                    const text = extractText(first.payload)
+                    const derived = text
+                      ? deriveTitleFromMessage(stripClientMarker(text))
+                      : null
+                    const persistEff =
+                      derived && persist ? persist(s.id, derived) : Effect.void
+                    return persistEff.pipe(
+                      Effect.as(derived ? { ...s, title: derived } : s),
+                    )
+                  },
                 ),
-                Effect.map((derived) => (derived ? { ...s, title: derived } : s)),
               )
             },
             { concurrency: 4 },
+          ).pipe(
+            Effect.map((rows) =>
+              rows.filter((r): r is SessionSummary => r !== null),
+            ),
           )
         if (Option.isNone(threadRegistry)) {
           return sessionList.pipe(
