@@ -7,6 +7,7 @@ import {
   emitNotification,
   isWindowFocused,
   notificationsEnabled,
+  processNotifyHit,
   shouldSuppress,
   type NotifyHit,
 } from "./useStudioNotifier"
@@ -412,14 +413,114 @@ describe("focus-suppression gate", () => {
     expect(shouldSuppress(threadHit, null, true)).toBe(false)
   })
 
-  it("needs-input suppressed on plain focus", () => {
-    expect(shouldSuppress(needsHit, "t1", true)).toBe(true)
-    expect(shouldSuppress(needsHit, null, true)).toBe(true)
+  it("needs-input is never focus-suppressed (banner is the only Studio cue)", () => {
+    expect(shouldSuppress(needsHit, "t1", true)).toBe(false)
+    expect(shouldSuppress(needsHit, null, true)).toBe(false)
     expect(shouldSuppress(needsHit, "t1", false)).toBe(false)
   })
 
   it("isWindowFocused is false with no DOM", () => {
     expect(isWindowFocused()).toBe(false)
+  })
+})
+
+describe("processNotifyHit gate order", () => {
+  const needsHit: NotifyHit = {
+    kind: "needs-input",
+    title: "Luna needs your input",
+    body: "Paste key",
+    threadId: null,
+    seenKey: "secret:s-order",
+    ts: null,
+  }
+  const doneHit: NotifyHit = {
+    kind: "done",
+    title: "Luna",
+    body: "done body",
+    threadId: "t1",
+    seenKey: "done:t1:99",
+    ts: 99,
+  }
+
+  it("emits needs-input even when the window is focused", () => {
+    const seen = new Set<string>()
+    const emits: NotifyHit[] = []
+    const result = processNotifyHit(needsHit, {
+      seen,
+      selectedThreadId: "t1",
+      focused: true,
+      storage: mockStorage(),
+      emit: (h) => {
+        emits.push(h)
+        return "native"
+      },
+    })
+    expect(result).toBe("emitted")
+    expect(emits).toHaveLength(1)
+    expect(seen.has(needsHit.seenKey)).toBe(true)
+  })
+
+  it("does NOT burn seenKey when focus-suppressed (done on the open thread)", () => {
+    const seen = new Set<string>()
+    const emits: NotifyHit[] = []
+    const result = processNotifyHit(doneHit, {
+      seen,
+      selectedThreadId: "t1",
+      focused: true,
+      storage: mockStorage(),
+      emit: (h) => {
+        emits.push(h)
+        return "native"
+      },
+    })
+    expect(result).toBe("dropped")
+    expect(emits).toHaveLength(0)
+    expect(seen.has(doneHit.seenKey)).toBe(false)
+  })
+
+  it("allows a later emit of a previously focus-suppressed done hit", () => {
+    const seen = new Set<string>()
+    const storage = mockStorage()
+    // First pass: focused on the thread → suppress, no mark.
+    expect(
+      processNotifyHit(doneHit, {
+        seen,
+        selectedThreadId: "t1",
+        focused: true,
+        storage,
+        emit: () => "native",
+      }),
+    ).toBe("dropped")
+    // Second pass: user switched away / backgrounded → emit + mark.
+    const emits: NotifyHit[] = []
+    expect(
+      processNotifyHit(doneHit, {
+        seen,
+        selectedThreadId: "t2",
+        focused: true,
+        storage,
+        emit: (h) => {
+          emits.push(h)
+          return "native"
+        },
+      }),
+    ).toBe("emitted")
+    expect(emits).toHaveLength(1)
+    expect(seen.has(doneHit.seenKey)).toBe(true)
+  })
+
+  it("does not mark seen when emit returns none", () => {
+    const seen = new Set<string>()
+    expect(
+      processNotifyHit(needsHit, {
+        seen,
+        selectedThreadId: null,
+        focused: false,
+        storage: mockStorage(),
+        emit: () => "none",
+      }),
+    ).toBe("dropped")
+    expect(seen.has(needsHit.seenKey)).toBe(false)
   })
 })
 

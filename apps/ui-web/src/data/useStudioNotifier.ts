@@ -12,9 +12,12 @@
  *   1. GLOBAL opt-out (localStorage `luna_notifications_enabled`, fail OPEN).
  *   2. classify -> null means "not notify-worthy".
  *   3. reconnect-replay seen-guard (stable per-frame identity, bounded set).
- *   4. thread-aware focus suppression.
+ *      Check only here — mark-as-seen happens AFTER a successful emit so a
+ *      focus-suppressed hit can still banner later (e.g. after backgrounding).
+ *   4. thread-aware focus suppression (needs-input is never focus-suppressed;
+ *      Studio has no in-app job-input/secret UI, so the banner is the only cue).
  *   5. per-kind localStorage dedupe claim (fail OPEN).
- *   6. emit + record pending-attention (native, thread-carrying kinds only).
+ *   6. emit + mark seen + record pending-attention (native, thread-carrying only).
  *
  * classify(), the gate predicates, and the emit bridge are exported as pure
  * functions so the unit test can exercise them without a DOM.
@@ -172,16 +175,22 @@ export function isWindowFocused(): boolean {
 }
 
 /**
- * GATE 4: thread-aware focus suppression. A thread-carrying kind is suppressed
- * only when the window is focused AND that exact thread is on screen; a
- * needs-input kind (no threadId) is suppressed on plain focus.
+ * GATE 4: thread-aware focus suppression.
+ *
+ * Thread-carrying kinds (done / suggested) suppress only when the window is
+ * focused AND that exact thread is on screen (the user already sees the
+ * transcript / chips).
+ *
+ * needs-input is NEVER focus-suppressed: Studio has no in-app job-input or
+ * secret-answer UI yet, so the banner is the only awareness channel. Suppressing
+ * while focused would silently drop prompts until the job times out.
  */
 export function shouldSuppress(
   hit: NotifyHit,
   selectedThreadId: string | null,
   focused: boolean,
 ): boolean {
-  if (hit.kind === "needs-input") return focused
+  if (hit.kind === "needs-input") return false
   return focused && hit.threadId !== null && selectedThreadId === hit.threadId
 }
 
@@ -301,6 +310,44 @@ function rememberSeen(seen: Set<string>, key: string): void {
   }
 }
 
+export type ProcessNotifyResult = "emitted" | "dropped"
+
+/**
+ * Pure gate pipeline (exported for unit tests). Order is load-bearing:
+ *   3. drop if already seen (do NOT mark yet)
+ *   4. drop if focus-suppressed (do NOT mark — a later background delivery
+ *      or un-suppress must still be able to banner)
+ *   5. drop if per-kind dedupe claim fails
+ *   6. emit; only on a real surface (`native` | `web`) mark seen + pending
+ *
+ * Marking seen before suppress/emit permanently burns one-shot frames
+ * (needs-input requestIds) that were suppressed while focused.
+ */
+export function processNotifyHit(
+  hit: NotifyHit,
+  opts: {
+    readonly seen: Set<string>
+    readonly selectedThreadId: string | null
+    readonly focused: boolean
+    readonly storage?: Storage
+    readonly emit: (hit: NotifyHit) => EmitResult
+    readonly onNativePending?: (hit: NotifyHit) => void
+  },
+): ProcessNotifyResult {
+  // 3. reconnect-replay seen-guard (check only).
+  if (opts.seen.has(hit.seenKey)) return "dropped"
+  // 4. thread-aware focus suppression (no mark — allow a later emit).
+  if (shouldSuppress(hit, opts.selectedThreadId, opts.focused)) return "dropped"
+  // 5. per-kind dedupe claim (fail OPEN).
+  if (!claimDedupe(hit, opts.storage)) return "dropped"
+  // 6. emit; only burn the seen key after a real surface handled it.
+  const result = opts.emit(hit)
+  if (result === "none") return "dropped"
+  rememberSeen(opts.seen, hit.seenKey)
+  if (result === "native" && hit.threadId !== null) opts.onNativePending?.(hit)
+  return "emitted"
+}
+
 const selectSelectedThreadId = (state: UIState): string | null => state.selectedThreadId
 
 /**
@@ -316,7 +363,8 @@ export function useStudioNotifier(luna: LunaData): void {
   selectedThreadIdRef.current = selectedThreadId
 
   // Reconnect-replay seen-guard (GATE 3). Bounded so a long session cannot grow
-  // it without limit; a replayed frame's stable identity must never re-banner.
+  // it without limit; a replayed frame's stable identity must never re-banner
+  // after a successful emit.
   const seenRef = useRef<Set<string>>(new Set())
 
   // Native banners awaiting a focus-regain route (Slice 3). Keyed by threadId;
@@ -331,23 +379,21 @@ export function useStudioNotifier(luna: LunaData): void {
         // 2. classify.
         const hit = classify(frame)
         if (hit === null) return
-        // 3. reconnect-replay seen-guard.
-        if (seenRef.current.has(hit.seenKey)) return
-        rememberSeen(seenRef.current, hit.seenKey)
-        // 4. thread-aware focus suppression.
-        if (shouldSuppress(hit, selectedThreadIdRef.current, isWindowFocused())) return
-        // 5. per-kind dedupe claim (fail OPEN).
-        if (!claimDedupe(hit)) return
-        // 6. emit + record pending-attention (native, thread-carrying only).
-        const result = emitNotification(hit, luna.requestDeepLink)
-        if (result === "native" && hit.threadId !== null) {
-          pendingAttentionRef.current.set(hit.threadId, {
-            threadId: hit.threadId,
-            kind: hit.kind,
-            title: hit.title,
-            ts: hit.ts ?? Date.now(),
-          })
-        }
+        processNotifyHit(hit, {
+          seen: seenRef.current,
+          selectedThreadId: selectedThreadIdRef.current,
+          focused: isWindowFocused(),
+          emit: (h) => emitNotification(h, luna.requestDeepLink),
+          onNativePending: (h) => {
+            if (h.threadId === null) return
+            pendingAttentionRef.current.set(h.threadId, {
+              threadId: h.threadId,
+              kind: h.kind,
+              title: h.title,
+              ts: h.ts ?? Date.now(),
+            })
+          },
+        })
       }),
     [luna.onServerFrame, luna.requestDeepLink],
   )
