@@ -143,6 +143,14 @@ export interface SessionQuery {
    * sidebar, where a thread is not a real conversation until the user types.
    */
   readonly hasUserMessage?: boolean
+  /**
+   * Session ids to omit from the result. Applied BEFORE `limit` so excluded
+   * sessions never occupy a page slot and evict rows that would otherwise be
+   * returned. Used by the chat sidebar to drop archived threads in the store
+   * query rather than post-filtering the already-limited page. An empty (or
+   * omitted) list is a no-op.
+   */
+  readonly excludeIds?: ReadonlyArray<string>
 }
 
 /**

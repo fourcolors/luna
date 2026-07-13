@@ -344,6 +344,61 @@ d("SessionStore.fromPath (sqlite)", () => {
     expect(ids).toEqual(["real"])
   })
 
+  it("list excludeIds drops sessions in SQL BEFORE the limit", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        // Two "excluded" (e.g. archived) threads with the NEWEST activity so
+        // they would fill the top `limit` slots if filtered after the limit,
+        // plus two real threads that must survive.
+        const seedUser = (id: string, ts: number) =>
+          store.appendMessage({
+            sessionId: id,
+            messageId: `u-${id}`,
+            ts,
+            parentId: null,
+            kind: "user",
+            payload: { text: "hi" },
+          })
+        for (const [id, ts] of [
+          ["ex-0", 100],
+          ["ex-1", 101],
+          ["keep-0", 50],
+          ["keep-1", 51],
+        ] as const) {
+          yield* store.create({ id, options: { model: "m" }, createdAt: ts })
+          yield* seedUser(id, ts)
+        }
+        const rows = yield* Stream.runCollect(
+          store.list({
+            orderBy: "lastMessageAt",
+            limit: 2,
+            hasUserMessage: true,
+            excludeIds: ["ex-0", "ex-1"],
+          }),
+        )
+        return Array.from(rows).map((s) => s.id)
+      }),
+    )
+    // limit=2: both kept threads returned; neither excluded id occupies a slot.
+    expect(ids.sort()).toEqual(["keep-0", "keep-1"])
+  })
+
+  it("list excludeIds empty/omitted is a no-op", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({ id: "s-0", options: { model: "m" }, createdAt: 1 })
+        yield* store.create({ id: "s-1", options: { model: "m" }, createdAt: 2 })
+        const rows = yield* Stream.runCollect(
+          store.list({ orderBy: "createdAt", excludeIds: [] }),
+        )
+        return Array.from(rows).map((s) => s.id)
+      }),
+    )
+    expect(ids.sort()).toEqual(["s-0", "s-1"])
+  })
+
   it("preview tracks user/assistant text only; lastMessageAt bumps on every kind", async () => {
     const summary = await provideMem(
       Effect.gen(function* () {

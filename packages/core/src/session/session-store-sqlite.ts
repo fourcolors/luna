@@ -350,6 +350,13 @@ export const makeSessionStoreSqlite = (
           `SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
           `AND m.kind = 'user' AND m.parent_id IS NULL)`,
       )
+      // Mirrors the `hasUserMessage` EXISTS predicate so both filters run in
+      // SQL BEFORE the limit. The NOT IN placeholders vary by exclude count, so
+      // this is built per call (bun:sqlite caches prepared statements by SQL
+      // text, so a given exclude count is only prepared once).
+      const hasUserExists =
+        `EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
+        `AND m.kind = 'user' AND m.parent_id IS NULL)`
 
       const create = (input: {
         readonly id: string
@@ -648,9 +655,25 @@ export const makeSessionStoreSqlite = (
       ): Stream.Stream<SessionSummary, never> =>
         Stream.unwrap(
           Effect.sync(() => {
-            const rows = (
-              q.hasUserMessage ? sessionsListWithUser : sessionsList
-            ).all() as SessionDbRow[]
+            const excludeIds =
+              q.excludeIds && q.excludeIds.length > 0 ? q.excludeIds : null
+            const rawRows = excludeIds
+              ? (() => {
+                  const clauses: string[] = []
+                  if (q.hasUserMessage) clauses.push(hasUserExists)
+                  clauses.push(
+                    `s.id NOT IN (${excludeIds.map(() => "?").join(", ")})`,
+                  )
+                  return db
+                    .query(
+                      `SELECT * FROM sessions s WHERE ${clauses.join(" AND ")}`,
+                    )
+                    .all(...excludeIds)
+                })()
+              : (
+                  q.hasUserMessage ? sessionsListWithUser : sessionsList
+                ).all()
+            const rows = rawRows as SessionDbRow[]
             const summaries = rows.map(rowToSummary)
             let filtered = summaries
             if (q.status)

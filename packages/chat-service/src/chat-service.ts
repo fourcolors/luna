@@ -2309,10 +2309,16 @@ export class ChatService extends Effect.Service<ChatService>()(
         // conversations that would then never be fetched. A real sidebar thread
         // is one with at least one top-level user message; a thread is not a
         // conversation until the user types, so even explicitly-titled empties
-        // are hidden.
-        const sessionList = store
-          .list({ orderBy: "lastMessageAt", limit, hasUserMessage: true })
-          .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+        // are hidden. Archived threads are excluded the same way via
+        // `excludeIds` - filtering them here (before the limit) rather than
+        // post-filtering the limited page keeps the page from under-filling
+        // when archived threads land in the top `limit` slots.
+        const listActive = (
+          excludeIds: ReadonlyArray<string>,
+        ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
+          store
+            .list({ orderBy: "lastMessageAt", limit, hasUserMessage: true, excludeIds })
+            .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
         // Resolve a display title for each (already-real) row. Preference order:
         //   1. the SessionStore title (explicitly set at creation);
         //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
@@ -2353,26 +2359,28 @@ export class ChatService extends Effect.Service<ChatService>()(
             { concurrency: 4 },
           )
         if (Option.isNone(threadRegistry)) {
-          return sessionList.pipe(
+          return listActive([]).pipe(
             Effect.flatMap((sessions) => resolveTitles(sessions, new Map(), null)),
           )
         }
         const reg = threadRegistry.value
         return Effect.gen(function* () {
-          const [sessions, archivedRows, activeRows] = yield* Effect.all([
-            sessionList,
-            reg.listByStatus("archived").pipe(
-              Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
-            ),
+          // Archived ids must resolve BEFORE the store list so they can be
+          // excluded in-query (before the limit). The active-titles fetch has
+          // no such dependency, so it still runs in parallel with store.list.
+          const archivedRows = yield* reg.listByStatus("archived").pipe(
+            Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
+          )
+          const archivedIds = new Set(archivedRows.map((r) => r.id))
+          const [sessions, activeRows] = yield* Effect.all([
+            listActive([...archivedIds]),
             reg.listByStatus("active").pipe(
               Effect.catchAllCause(() =>
                 Effect.succeed([] as readonly { readonly id: string; readonly title: string | null }[]),
               ),
             ),
           ])
-          const archivedIds = new Set(archivedRows.map((r) => r.id))
           const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
-          const visible = sessions.filter((s) => !archivedIds.has(s.id))
           // Persist derived titles so legacy threads are derived exactly once.
           // setTitleIfNull is clock-neutral: listing the sidebar is a read, so it
           // must never bump last_active_at (that would reset the 14-day
@@ -2382,7 +2390,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             reg
               .setTitleIfNull(id, title)
               .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
-          return yield* resolveTitles(visible, regTitles, persist)
+          return yield* resolveTitles(sessions, regTitles, persist)
         })
       }
 

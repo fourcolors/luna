@@ -305,6 +305,10 @@ export class SessionStore extends Effect.Service<SessionStore>()(
                     ) ?? false
                   )
                 })
+              if (q.excludeIds && q.excludeIds.length > 0) {
+                const excluded = new Set(q.excludeIds)
+                rows = rows.filter((r) => !excluded.has(r.id))
+              }
               if (q.orderBy === "lastMessageAt") {
                 rows.sort(
                   (a, b) =>

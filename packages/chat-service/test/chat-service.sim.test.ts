@@ -2467,6 +2467,56 @@ describe("ChatService — listThreads excludes archived threads", () => {
     },
     { timeout: 15_000 },
   )
+
+  it(
+    "archived (user-messaged) threads do NOT consume limit slots and evict active ones",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          // Give every thread a first user message so `hasUserMessage` keeps
+          // it — the ONLY reason a real thread should drop out here is the
+          // archived filter, which must run BEFORE the limit.
+          const seedUser = (id: string, ts: number) =>
+            store.appendMessage({
+              sessionId: id,
+              messageId: `m-${id}`,
+              ts,
+              parentId: null,
+              kind: "user",
+              payload: { message: { content: `msg ${id}` } },
+            })
+
+          // Archived threads first so they sort NEWEST (highest lastMessageAt)
+          // and would occupy the top `limit` slots if filtered after the limit.
+          const archivedThreads = []
+          for (let i = 0; i < 3; i++) {
+            const th = yield* chat.createThread({ model: "claude-test", title: `arch-${i}` })
+            yield* seedUser(th.id, 100 + i)
+            yield* reg.archive(th.id)
+            archivedThreads.push(th)
+          }
+          // Two real active threads created after, still real conversations.
+          const a1 = yield* chat.createThread({ model: "claude-test", title: "active-1" })
+          yield* seedUser(a1.id, 200)
+          const a2 = yield* chat.createThread({ model: "claude-test", title: "active-2" })
+          yield* seedUser(a2.id, 201)
+
+          // limit=2: if archived threads consumed slots BEFORE being filtered,
+          // the page would under-fill and drop a1/a2. Both must survive.
+          const list = yield* chat.listThreads(2)
+          const ids = list.map((s) => s.id)
+          expect(ids).toContain(a1.id)
+          expect(ids).toContain(a2.id)
+          for (const th of archivedThreads) expect(ids).not.toContain(th.id)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
 })
 
 // ── listThreads auto-title tests ──────────────────────────────────────────────
