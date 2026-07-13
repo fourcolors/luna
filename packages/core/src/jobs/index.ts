@@ -20,6 +20,7 @@ export {
 } from "./worker-registry.js"
 export {
   JobsStoreError,
+  type CrashReconcileResult,
   type JobKind,
   type JobRun,
   type JobRunStatus,

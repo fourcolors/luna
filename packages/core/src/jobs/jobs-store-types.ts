@@ -312,11 +312,47 @@ export interface JobsStoreApi {
    * `running`/`waiting`) as `cancelled`, stamping `finished_at` and an
    * `error` (only when the row has none). A hard crash between
    * `recordRunStart` and `recordRunEnd` otherwise leaves rows stuck forever.
-   * The ticker calls this ONCE at boot, before the first drain. Returns the
-   * number of rows closed.
+   * Kept for back-compat callers/tests; boot uses `reconcileAfterCrash`
+   * which also repairs sticky job rows.
+   * Returns the number of rows closed.
    */
   readonly closeOrphanedRuns: (args: {
     readonly finishedAt: number
     readonly error?: string
   }) => Effect.Effect<number, JobsStoreError>
+
+  /**
+   * Full crash reconcile (JobTicker boot). Closes every open `job_runs` row
+   * (`finished_at IS NULL`) as `cancelled`, then repairs candidate jobs:
+   *   - distinct job_ids from the just-closed runs UNION jobs whose
+   *     `last_status = 'running'` (sticky running with no open run).
+   *   - sticky `last_status='running'` always becomes `'errored'`.
+   *   - enabled recurring jobs that had a *running* orphan (or sticky
+   *     running with no open run) get `next_run_at` pulled forward to
+   *     `min(next_run_at ?? Infinity, finishedAt + jitter)` so they are
+   *     not stuck behind a far-future claim advance; waiting-only orphans
+   *     never pull-forward; disabled jobs are never re-enabled.
+   * Jitter is deterministic: `hash(jobId) % (rescheduleJitterMs + 1)`
+   * (default rescheduleJitterMs = 60000).
+   */
+  readonly reconcileAfterCrash: (args: {
+    readonly finishedAt: number
+    /** Error stamped on non-waiting open runs (default process-restart). */
+    readonly runningError?: string
+    /** Error stamped on waiting open runs (default waiting-on-restart). */
+    readonly waitingError?: string
+    /** Inclusive upper bound for deterministic reschedule jitter (default 60000). */
+    readonly rescheduleJitterMs?: number
+  }) => Effect.Effect<CrashReconcileResult, JobsStoreError>
+}
+
+/** Result of `JobsStoreApi.reconcileAfterCrash`. */
+export interface CrashReconcileResult {
+  /** Open runs closed whose pre-close status was not `waiting` (running/queued/…). */
+  readonly orphansClosed: number
+  /** Open runs closed whose pre-close status was `waiting`. */
+  readonly waitingClosed: number
+  /** Jobs whose row was patched (sticky status and/or next_run_at). */
+  readonly jobsRepaired: number
+  readonly jobIdsRepaired: ReadonlyArray<string>
 }

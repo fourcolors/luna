@@ -517,28 +517,36 @@ export const JobTickerLayer = (
 
       // Boot reconcile (runs ONCE, before the loop forks): a hard crash
       // between recordRunStart and recordRunEnd leaves job_runs rows stuck
-      // `running`/`waiting` forever. Close them as cancelled so listRuns and
-      // the suggested-actions completion observer don't see phantom in-flight
-      // work. Best-effort — a failure logs and boot continues.
+      // `running`/`waiting` forever, and a claim may leave sticky
+      // last_status='running' with a far-future next_run_at. Close open runs
+      // as cancelled and repair job rows (clear sticky status; pull-forward
+      // next_run_at for enabled recurring jobs that had a running orphan).
+      // Best-effort - a failure logs and boot continues.
       const bootNow = yield* clock.nowMs()
-      const orphansClosed = yield* store
-        .closeOrphanedRuns({
-          finishedAt: bootNow,
-          error: "orphaned: process restarted before completion",
-        })
+      const reconcile = yield* store
+        .reconcileAfterCrash({ finishedAt: bootNow })
         .pipe(
           Effect.catchAll((err) =>
             Effect.as(
               Effect.logWarning(
                 `[luna/sched] boot orphan reconcile failed: ${err.message}`,
               ),
-              0,
+              {
+                orphansClosed: 0,
+                waitingClosed: 0,
+                jobsRepaired: 0,
+                jobIdsRepaired: [] as ReadonlyArray<string>,
+              },
             ),
           ),
         )
-      if (orphansClosed > 0) {
+      if (
+        reconcile.orphansClosed > 0 ||
+        reconcile.waitingClosed > 0 ||
+        reconcile.jobsRepaired > 0
+      ) {
         yield* Effect.logInfo(
-          `[luna/sched] boot reconcile: closed ${orphansClosed} orphaned run(s)`,
+          `[luna/sched] boot reconcile: closed ${reconcile.orphansClosed} orphaned run(s) (${reconcile.waitingClosed} waiting); repaired ${reconcile.jobsRepaired} job(s)`,
         )
       }
 

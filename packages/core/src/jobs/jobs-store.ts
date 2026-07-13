@@ -21,6 +21,7 @@ import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import type {
+  CrashReconcileResult,
   JobKind,
   JobRun,
   JobRunStatus,
@@ -28,6 +29,36 @@ import type {
   PersistedJob,
 } from "./jobs-store-types.js"
 import { JobsStoreError } from "./jobs-store-types.js"
+
+// ── Crash reconcile helpers ──────────────────────────────────────────────────
+
+const DEFAULT_RESCHEDULE_JITTER_MS = 60_000
+const DEFAULT_RUNNING_ORPHAN_ERROR =
+  "orphaned: process restarted before completion"
+const DEFAULT_WAITING_ORPHAN_ERROR =
+  "orphaned: waiting run cancelled on restart"
+
+/** Deterministic non-negative hash of a job id (djb2-style, 32-bit). */
+const jobIdHash = (jobId: string): number => {
+  let h = 5381
+  for (let i = 0; i < jobId.length; i++) {
+    h = (Math.imul(h, 33) + jobId.charCodeAt(i)) | 0
+  }
+  return h >>> 0
+}
+
+/** Inclusive 0..rescheduleJitterMs jitter derived from jobId. */
+const rescheduleJitterForJob = (
+  jobId: string,
+  rescheduleJitterMs: number,
+): number => jobIdHash(jobId) % (rescheduleJitterMs + 1)
+
+/** Recurring = non-empty schedule OR non-empty spec (after trim). */
+const isRecurringJob = (job: {
+  readonly schedule: string | null
+  readonly spec: string
+}): boolean =>
+  (job.schedule ?? "").trim().length > 0 || job.spec.trim().length > 0
 
 // ── Schema DDL ───────────────────────────────────────────────────────────────
 
@@ -409,6 +440,118 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           return closed
         })
 
+      const reconcileAfterCrash: JobsStoreApi["reconcileAfterCrash"] = (args) =>
+        Effect.gen(function* () {
+          const runningError =
+            args.runningError ?? DEFAULT_RUNNING_ORPHAN_ERROR
+          const waitingError =
+            args.waitingError ?? DEFAULT_WAITING_ORPHAN_ERROR
+          const rescheduleJitterMs =
+            args.rescheduleJitterMs ?? DEFAULT_RESCHEDULE_JITTER_MS
+          const finishedAt = args.finishedAt
+
+          // Track per-job whether we closed a *running* (non-waiting) orphan
+          // and/or a waiting orphan for that job.
+          const closedJobIds = new Set<string>()
+          const hadRunningOrphan = new Set<string>()
+          const hadWaitingOrphan = new Set<string>()
+          let orphansClosed = 0
+          let waitingClosed = 0
+
+          for (const [id, run] of runs) {
+            if (run.finishedAt !== null) continue
+            const wasWaiting = run.status === "waiting"
+            runs.set(id, {
+              ...run,
+              status: "cancelled",
+              finishedAt,
+              error:
+                run.error ??
+                (wasWaiting ? waitingError : runningError),
+            })
+            closedJobIds.add(run.jobId)
+            if (wasWaiting) {
+              waitingClosed++
+              hadWaitingOrphan.add(run.jobId)
+            } else {
+              orphansClosed++
+              hadRunningOrphan.add(run.jobId)
+            }
+          }
+
+          // Candidates = closed runs' job ids UNION sticky last_status=running.
+          const map = yield* Ref.get(store)
+          const candidates = new Set<string>(closedJobIds)
+          for (const job of map.values()) {
+            if (job.lastStatus === "running") candidates.add(job.id)
+          }
+
+          const jobIdsRepaired: string[] = []
+          const nextMap = new Map(map)
+          let dirty = false
+
+          for (const jobId of candidates) {
+            const job = nextMap.get(jobId)
+            if (!job) continue
+
+            const stickyRunning = job.lastStatus === "running"
+            // Pull-forward only for enabled recurring jobs that had a running
+            // orphan, OR sticky running with NO open run closed this pass
+            // (not only-waiting).
+            const onlyWaiting =
+              hadWaitingOrphan.has(jobId) && !hadRunningOrphan.has(jobId)
+            const stickyNoOpenRun =
+              stickyRunning && !closedJobIds.has(jobId)
+            const shouldPullForward =
+              job.enabled &&
+              isRecurringJob(job) &&
+              (hadRunningOrphan.has(jobId) || stickyNoOpenRun) &&
+              !onlyWaiting
+
+            let nextStatus = job.lastStatus
+            let nextRunAt = job.nextRunAt
+            let changed = false
+
+            if (stickyRunning) {
+              nextStatus = "errored"
+              changed = true
+            }
+
+            if (shouldPullForward) {
+              const jitter = rescheduleJitterForJob(jobId, rescheduleJitterMs)
+              const pulled = finishedAt + jitter
+              const current = nextRunAt ?? Number.POSITIVE_INFINITY
+              const next = Math.min(current, pulled)
+              if (next !== nextRunAt) {
+                nextRunAt = next
+                changed = true
+              }
+            }
+
+            if (!changed) continue
+
+            nextMap.set(jobId, {
+              ...job,
+              lastStatus: nextStatus,
+              nextRunAt,
+              updatedAt: finishedAt,
+            })
+            dirty = true
+            jobIdsRepaired.push(jobId)
+          }
+
+          if (dirty) {
+            yield* Ref.set(store, nextMap)
+          }
+
+          return {
+            orphansClosed,
+            waitingClosed,
+            jobsRepaired: jobIdsRepaired.length,
+            jobIdsRepaired,
+          } satisfies CrashReconcileResult
+        })
+
       return {
         record,
         listAll,
@@ -425,6 +568,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         listRuns,
         pruneRuns,
         closeOrphanedRuns,
+        reconcileAfterCrash,
       } satisfies JobsStoreApi
     }),
   )
@@ -591,6 +735,30 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                   finished_at = ?,
                   error       = COALESCE(error, ?)
             WHERE finished_at IS NULL`,
+        )
+        // Full crash reconcile: snapshot open runs, close by status class,
+        // then repair sticky last_status + optional next_run_at pull-forward.
+        const listOpenRunsStmt = db.query(
+          `SELECT id, job_id, status, error
+             FROM job_runs
+            WHERE finished_at IS NULL`,
+        )
+        const closeOpenRunStmt = db.query(
+          `UPDATE job_runs
+              SET status      = 'cancelled',
+                  finished_at = ?,
+                  error       = COALESCE(error, ?)
+            WHERE id = ? AND finished_at IS NULL`,
+        )
+        const listStickyRunningStmt = db.query(
+          `SELECT id FROM jobs WHERE last_status = 'running'`,
+        )
+        const repairJobStmt = db.query(
+          `UPDATE jobs
+              SET last_status = CASE WHEN ? = 1 THEN ? ELSE last_status END,
+                  next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+                  updated_at  = ?
+            WHERE id = ?`,
         )
 
         type RawRow = {
@@ -977,6 +1145,140 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               new JobsStoreError({ op: "run_end", message: String(cause), cause }),
           })
 
+        const reconcileAfterCrash: JobsStoreApi["reconcileAfterCrash"] = (
+          args,
+        ) =>
+          Effect.try({
+            try: () => {
+              const runningError =
+                args.runningError ?? DEFAULT_RUNNING_ORPHAN_ERROR
+              const waitingError =
+                args.waitingError ?? DEFAULT_WAITING_ORPHAN_ERROR
+              const rescheduleJitterMs =
+                args.rescheduleJitterMs ?? DEFAULT_RESCHEDULE_JITTER_MS
+              const finishedAt = args.finishedAt
+
+              type OpenRunRow = {
+                id: number
+                job_id: string
+                status: string
+                error: string | null
+              }
+
+              db.run("BEGIN IMMEDIATE")
+              try {
+                const openRuns = listOpenRunsStmt.all() as OpenRunRow[]
+                const closedJobIds = new Set<string>()
+                const hadRunningOrphan = new Set<string>()
+                const hadWaitingOrphan = new Set<string>()
+                let orphansClosed = 0
+                let waitingClosed = 0
+
+                for (const run of openRuns) {
+                  const wasWaiting = run.status === "waiting"
+                  closeOpenRunStmt.run(
+                    finishedAt,
+                    wasWaiting ? waitingError : runningError,
+                    run.id,
+                  )
+                  closedJobIds.add(run.job_id)
+                  if (wasWaiting) {
+                    waitingClosed++
+                    hadWaitingOrphan.add(run.job_id)
+                  } else {
+                    orphansClosed++
+                    hadRunningOrphan.add(run.job_id)
+                  }
+                }
+
+                const candidates = new Set<string>(closedJobIds)
+                for (const row of listStickyRunningStmt.all() as Array<{
+                  id: string
+                }>) {
+                  candidates.add(row.id)
+                }
+
+                const jobIdsRepaired: string[] = []
+                for (const jobId of candidates) {
+                  const raw = byIdStmt.get(jobId) as RawRow | null
+                  if (!raw) continue
+                  const job = rowToJob(raw)
+                  if (!job) continue
+
+                  const stickyRunning = job.lastStatus === "running"
+                  const stickyNoOpenRun =
+                    stickyRunning && !closedJobIds.has(jobId)
+                  const onlyWaiting =
+                    hadWaitingOrphan.has(jobId) &&
+                    !hadRunningOrphan.has(jobId)
+                  const shouldPullForward =
+                    job.enabled &&
+                    isRecurringJob(job) &&
+                    (hadRunningOrphan.has(jobId) || stickyNoOpenRun) &&
+                    !onlyWaiting
+
+                  let setStatus = 0
+                  let statusVal: string | null = job.lastStatus
+                  let setNext = 0
+                  let nextVal: number | null = job.nextRunAt
+
+                  if (stickyRunning) {
+                    setStatus = 1
+                    statusVal = "errored"
+                  }
+
+                  if (shouldPullForward) {
+                    const jitter = rescheduleJitterForJob(
+                      jobId,
+                      rescheduleJitterMs,
+                    )
+                    const pulled = finishedAt + jitter
+                    const current =
+                      job.nextRunAt ?? Number.POSITIVE_INFINITY
+                    const next = Math.min(current, pulled)
+                    if (next !== job.nextRunAt) {
+                      setNext = 1
+                      nextVal = next
+                    }
+                  }
+
+                  if (setStatus === 0 && setNext === 0) continue
+
+                  repairJobStmt.run(
+                    setStatus,
+                    statusVal,
+                    setNext,
+                    nextVal,
+                    finishedAt,
+                    jobId,
+                  )
+                  jobIdsRepaired.push(jobId)
+                }
+
+                db.run("COMMIT")
+                return {
+                  orphansClosed,
+                  waitingClosed,
+                  jobsRepaired: jobIdsRepaired.length,
+                  jobIdsRepaired,
+                } satisfies CrashReconcileResult
+              } catch (e) {
+                try {
+                  db.run("ROLLBACK")
+                } catch {
+                  /* best-effort */
+                }
+                throw e
+              }
+            },
+            catch: (cause) =>
+              new JobsStoreError({
+                op: "boot",
+                message: String(cause),
+                cause,
+              }),
+          })
+
         return {
           record,
           listAll,
@@ -993,6 +1295,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           listRuns,
           pruneRuns,
           closeOrphanedRuns,
+          reconcileAfterCrash,
         } satisfies JobsStoreApi
       }),
     )

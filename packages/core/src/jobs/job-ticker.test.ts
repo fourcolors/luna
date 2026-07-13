@@ -106,6 +106,213 @@ describe("JobTicker", () => {
     )
   })
 
+  it("boot reconcile: running orphan repairs last_status and pulls next_run_at forward", async () => {
+    const noop: Worker = () => Effect.succeed({ outputText: null })
+    const fixedNow = 1_700_000_000_000
+    const farFuture = fixedNow + 86_400_000 * 30
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const clock = yield* Clock
+      yield* store.record({
+        id: "boot-run-orphan",
+        kind: "wake",
+        spec: "*/15 * * * *",
+        payload: { label: "boot-run-orphan" },
+      })
+      yield* store.setV2Fields("boot-run-orphan", {
+        schedule: "*/15 * * * *",
+        enabled: true,
+        nextRunAt: farFuture,
+      })
+      yield* store.touch("boot-run-orphan", {
+        lastStatus: "running",
+        lastRun: fixedNow - 60_000,
+      })
+      yield* store.recordRunStart({
+        jobId: "boot-run-orphan",
+        startedAt: fixedNow - 60_000,
+      })
+
+      const tickerL = JobTickerLayer({ autoStart: false }).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(JobsStoreService, store),
+            makeWorkerRegistry({ wake: noop }),
+            Layer.succeed(Clock, clock),
+          ),
+        ),
+      )
+      yield* Effect.scoped(Layer.build(tickerL)).pipe(Effect.asVoid)
+
+      const rows = yield* store.listRuns("boot-run-orphan", 10)
+      expect(rows[0]?.status).toBe("cancelled")
+      expect(rows[0]?.error ?? "").toContain("process restarted")
+
+      const job = yield* store.getById("boot-run-orphan")
+      expect(job?.lastStatus).toBe("errored")
+      expect(job?.nextRunAt!).toBeGreaterThanOrEqual(fixedNow)
+      expect(job?.nextRunAt!).toBeLessThanOrEqual(fixedNow + 60_000)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+            Clock.Test(fixedNow),
+          ),
+        ),
+      ),
+    )
+  })
+
+  it("boot reconcile: waiting-only orphan does not pull next_run_at earlier", async () => {
+    const noop: Worker = () => Effect.succeed({ outputText: null })
+    const fixedNow = 1_700_000_000_000
+    const farFuture = fixedNow + 86_400_000 * 30
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const clock = yield* Clock
+      yield* store.record({
+        id: "boot-wait-orphan",
+        kind: "prompt",
+        spec: "0 * * * *",
+        payload: { label: "boot-wait-orphan" },
+      })
+      yield* store.setV2Fields("boot-wait-orphan", {
+        schedule: "0 * * * *",
+        enabled: true,
+        nextRunAt: farFuture,
+      })
+      const run = yield* store.recordRunStart({
+        jobId: "boot-wait-orphan",
+        startedAt: fixedNow - 10_000,
+      })
+      yield* store.updateRunStatus(run.id, "waiting")
+
+      const tickerL = JobTickerLayer({ autoStart: false }).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(JobsStoreService, store),
+            makeWorkerRegistry({ prompt: noop }),
+            Layer.succeed(Clock, clock),
+          ),
+        ),
+      )
+      yield* Effect.scoped(Layer.build(tickerL)).pipe(Effect.asVoid)
+
+      const rows = yield* store.listRuns("boot-wait-orphan", 10)
+      expect(rows[0]?.status).toBe("cancelled")
+      expect(rows[0]?.error ?? "").toContain("waiting")
+
+      const job = yield* store.getById("boot-wait-orphan")
+      expect(job?.nextRunAt).toBe(farFuture)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+            Clock.Test(fixedNow),
+          ),
+        ),
+      ),
+    )
+  })
+
+  it("boot reconcile: sticky last_status=running with no open run is repaired", async () => {
+    const noop: Worker = () => Effect.succeed({ outputText: null })
+    const fixedNow = 1_700_000_000_000
+    const farFuture = fixedNow + 86_400_000 * 30
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const clock = yield* Clock
+      yield* store.record({
+        id: "boot-sticky",
+        kind: "dream",
+        spec: "0 3 * * *",
+        payload: { label: "boot-sticky" },
+      })
+      yield* store.setV2Fields("boot-sticky", {
+        schedule: "0 3 * * *",
+        enabled: true,
+        nextRunAt: farFuture,
+      })
+      yield* store.touch("boot-sticky", { lastStatus: "running" })
+
+      const tickerL = JobTickerLayer({ autoStart: false }).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(JobsStoreService, store),
+            makeWorkerRegistry({ dream: noop }),
+            Layer.succeed(Clock, clock),
+          ),
+        ),
+      )
+      yield* Effect.scoped(Layer.build(tickerL)).pipe(Effect.asVoid)
+
+      const job = yield* store.getById("boot-sticky")
+      expect(job?.lastStatus).toBe("errored")
+      expect(job?.nextRunAt!).toBeGreaterThanOrEqual(fixedNow)
+      expect(job?.nextRunAt!).toBeLessThanOrEqual(fixedNow + 60_000)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+            Clock.Test(fixedNow),
+          ),
+        ),
+      ),
+    )
+  })
+
+  it("boot reconcile: disabled one-shot sticky running is cleared but not re-enabled", async () => {
+    const noop: Worker = () => Effect.succeed({ outputText: null })
+    const fixedNow = 1_700_000_000_000
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const clock = yield* Clock
+      yield* store.record({
+        id: "boot-disabled-oneshot",
+        kind: "wake",
+        spec: "",
+        payload: { label: "boot-disabled-oneshot" },
+      })
+      yield* store.setV2Fields("boot-disabled-oneshot", {
+        enabled: false,
+        nextRunAt: fixedNow + 99_000_000,
+      })
+      yield* store.touch("boot-disabled-oneshot", { lastStatus: "running" })
+
+      const tickerL = JobTickerLayer({ autoStart: false }).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(JobsStoreService, store),
+            makeWorkerRegistry({ wake: noop }),
+            Layer.succeed(Clock, clock),
+          ),
+        ),
+      )
+      yield* Effect.scoped(Layer.build(tickerL)).pipe(Effect.asVoid)
+
+      const job = yield* store.getById("boot-disabled-oneshot")
+      expect(job?.lastStatus).toBe("errored")
+      expect(job?.enabled).toBe(false)
+      expect(job?.nextRunAt).toBe(fixedNow + 99_000_000)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+            Clock.Test(fixedNow),
+          ),
+        ),
+      ),
+    )
+  })
+
   it("drain picks up a due row, dispatches the worker, writes job_runs", async () => {
     const seen: Array<{ jobId: string; payload: unknown }> = []
     const probeWorker: Worker = (payload, ctx) =>
