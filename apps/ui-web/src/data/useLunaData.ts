@@ -25,7 +25,12 @@ import {
   type UIState,
 } from "@luna/ui-shared/core"
 import { loadConfig, saveConfig, type PersistedConfig } from "./config"
-import { onDeepLinkThread, takeLaunchThreadId } from "./deep-link"
+import {
+  DEEP_LINK_CONFIRM_GRACE_MS,
+  deepLinkShieldDecision,
+  onDeepLinkThread,
+  takeLaunchThreadId,
+} from "./deep-link"
 import { loadNativeLocalConnection, shouldHydrateNativeLocal } from "./native-connection"
 import { isSystemThread } from "./studio-thread-projection"
 import { useUiSelector, useUiStore, type UiStore } from "./useUiStore"
@@ -222,10 +227,16 @@ export function useLunaData(): LunaData {
   // target into that effect; deepLinkNonce forces the effect to re-run since a
   // ref mutation alone would not. routedDeepLinkRef records the id we routed to
   // so the stale-selection guard never yanks a deep-linked thread that lives
-  // beyond the 50-thread list window. deepLinkThread is the surface signal
-  // final-app watches to bring the chat panel to front.
+  // beyond the 50-thread list window — but only after a thread-snapshot
+  // confirms the thread exists. deepLinkConfirmedRef / graceUntil cover the
+  // missing-thread case (deleted, wrong server, never existed) so selection
+  // is not stranded forever. deepLinkThread is the surface signal final-app
+  // watches to bring the chat panel to front.
   const pendingDeepLinkRef = useRef<string | null>(null)
   const routedDeepLinkRef = useRef<string | null>(null)
+  const deepLinkConfirmedRef = useRef(false)
+  const deepLinkGraceUntilRef = useRef(0)
+  const deepLinkGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dlNonce = useRef(0)
   const [deepLinkNonce, setDeepLinkNonce] = useState(0)
   const [deepLinkDrained, setDeepLinkDrained] = useState(false)
@@ -290,9 +301,32 @@ export function useLunaData(): LunaData {
           }
         } else if (frame.type === "mcp-resource-result" || frame.type === "mcp-tool-result") {
           mcpPendingRef.current.get(frame.requestId)?.(frame)
+        } else if (
+          frame.type === "thread-snapshot" &&
+          routedDeepLinkRef.current !== null &&
+          frame.threadId === routedDeepLinkRef.current
+        ) {
+          // Deep-linked thread is real (subscribe always snapshots known ids).
+          // Clear the grace timer — the top-50 list shield may stay forever.
+          deepLinkConfirmedRef.current = true
+          if (deepLinkGraceTimerRef.current !== null) {
+            clearTimeout(deepLinkGraceTimerRef.current)
+            deepLinkGraceTimerRef.current = null
+          }
         }
       }),
     [onServerFrame],
+  )
+
+  // Drop the grace timer on unmount so a late fire cannot touch a dead store.
+  useEffect(
+    () => () => {
+      if (deepLinkGraceTimerRef.current !== null) {
+        clearTimeout(deepLinkGraceTimerRef.current)
+        deepLinkGraceTimerRef.current = null
+      }
+    },
+    [],
   )
 
   // Latched true once any thread-list frame has arrived; the bootstrap effect
@@ -440,6 +474,15 @@ export function useLunaData(): LunaData {
     if (deepId) {
       pendingDeepLinkRef.current = null
       routedDeepLinkRef.current = deepId
+      deepLinkConfirmedRef.current = false
+      deepLinkGraceUntilRef.current = Date.now() + DEEP_LINK_CONFIRM_GRACE_MS
+      if (deepLinkGraceTimerRef.current !== null) clearTimeout(deepLinkGraceTimerRef.current)
+      // Re-run bootstrap after grace so an unconfirmed (missing) deep link
+      // falls through instead of shielding forever.
+      deepLinkGraceTimerRef.current = setTimeout(() => {
+        deepLinkGraceTimerRef.current = null
+        setDeepLinkNonce((n) => n + 1)
+      }, DEEP_LINK_CONFIRM_GRACE_MS)
       dispatch({ tag: "select-thread", threadId: deepId })
       send({ type: "subscribe", threadId: deepId })
       if (cfgRef.current.activeThreadId !== deepId) updateConfig({ activeThreadId: deepId })
@@ -457,12 +500,32 @@ export function useLunaData(): LunaData {
     // transport reconnects across long outages), and a system-thread selection
     // is a hijack; both fall through to pick/mint a real conversation.
     if (selectedThreadId) {
-      // A deep-linked thread stands even when it is absent from the (windowed)
-      // thread-list - the 50-thread list must never yank the selection to the
-      // first thread out from under a deep link.
-      if (selectedThreadId === routedDeepLinkRef.current) return
-      const summary = threadList.find((s) => s.id === selectedThreadId)
-      if (summary && !isSystemThread(summary)) return
+      // Deep-link shield: keep while confirmed (or grace still open). Clear
+      // and fall through when the grace expired with no thread-snapshot —
+      // that thread does not exist on this server.
+      const shield = deepLinkShieldDecision({
+        selectedThreadId,
+        routedDeepLinkId: routedDeepLinkRef.current,
+        confirmed: deepLinkConfirmedRef.current,
+        nowMs: Date.now(),
+        graceUntilMs: deepLinkGraceUntilRef.current,
+      })
+      if (shield.action === "keep") return
+      if (shield.action === "clear-and-fallthrough") {
+        routedDeepLinkRef.current = null
+        deepLinkConfirmedRef.current = false
+        // Drop any pending grace timer so a late fire cannot bump deepLinkNonce
+        // and re-run bootstrap after we already fell through.
+        if (deepLinkGraceTimerRef.current !== null) {
+          clearTimeout(deepLinkGraceTimerRef.current)
+          deepLinkGraceTimerRef.current = null
+        }
+        deepLinkGraceUntilRef.current = 0
+        // Fall through to saved/first/mint below (do not early-return).
+      } else {
+        const summary = threadList.find((s) => s.id === selectedThreadId)
+        if (summary && !isSystemThread(summary)) return
+      }
     }
     // Prefer the last thread the user actively opened (persisted activeThreadId),
     // then fall back to the first real thread. Skip hub-internal threads (e.g.

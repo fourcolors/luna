@@ -28,6 +28,44 @@ function tauri(): TauriGlobal["__TAURI__"] {
 }
 
 /**
+ * How long bootstrap keeps an unconfirmed deep-linked selection alive while
+ * waiting for a `thread-snapshot` (real threads always emit one on subscribe;
+ * unknown threads return an empty stream and never confirm).
+ */
+export const DEEP_LINK_CONFIRM_GRACE_MS = 4_000
+
+export type DeepLinkShieldDecision =
+  | { readonly action: "keep" }
+  | { readonly action: "clear-and-fallthrough" }
+  | { readonly action: "not-applicable" }
+
+/**
+ * Bootstrap shield for a deep-linked selection that may be absent from the
+ * windowed thread-list (top 50). A real thread confirms via `thread-snapshot`
+ * and keeps the shield forever; a missing/deleted/wrong-server id never
+ * confirms and must fall through after the grace window so selection is not
+ * stranded on an empty thread across reconnects.
+ */
+export function deepLinkShieldDecision(args: {
+  readonly selectedThreadId: string | null
+  readonly routedDeepLinkId: string | null
+  readonly confirmed: boolean
+  readonly nowMs: number
+  readonly graceUntilMs: number
+}): DeepLinkShieldDecision {
+  if (
+    args.selectedThreadId == null ||
+    args.routedDeepLinkId == null ||
+    args.selectedThreadId !== args.routedDeepLinkId
+  ) {
+    return { action: "not-applicable" }
+  }
+  if (args.confirmed) return { action: "keep" }
+  if (args.nowMs < args.graceUntilMs) return { action: "keep" }
+  return { action: "clear-and-fallthrough" }
+}
+
+/**
  * Parse a raw deep-link URL into a thread id, or null if it is not a
  * well-formed `luna://thread/<id>` link. Rejects any other scheme or host
  * (e.g. a future `luna://connect` form) so callers can trust a non-null id.
