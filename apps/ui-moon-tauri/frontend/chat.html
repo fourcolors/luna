@@ -8479,39 +8479,65 @@
 
         // Send user message over the real WebSocket!
         if (State.activeThreadId) {
-          WebSocketEngine.send({
-            type: 'user-message',
-            threadId: State.activeThreadId,
-            text: wireText,
-            client: MoonClient.CLIENT_INFO,
-            ...(wire ? { attachments: wire } : {})
-          });
-        } else {
-          // No thread subscribed yet: stash the message and create a thread; the
-          // thread-created handler flushes State.pendingUserMessage. When online
-          // we mint immediately. When OFFLINE, sendNewThread() is a no-op, so we
-          // set pendingFreshThread (mirroring newConversation) - otherwise
-          // syncThread() resubscribes to a PRIOR thread on reconnect, no
-          // thread-created fires, and the pending message is stranded (or later
-          // sent into an unexpected thread).
+          // Existing thread: only put a frame on the wire when connected.
+          // Offline is a pure no-op here; the guard below keeps the composer.
+          if (_connected) {
+            WebSocketEngine.send({
+              type: 'user-message',
+              threadId: State.activeThreadId,
+              text: wireText,
+              client: MoonClient.CLIENT_INFO,
+              ...(wire ? { attachments: wire } : {})
+            });
+          }
+        } else if (_connected) {
+          // Online, no thread yet: stash + mint; thread-created flushes the stash.
           Logger.warn("No active thread subscribed; queuing message and creating new thread");
           State.pendingUserMessage = { text: wireText, attachments: wire };
-          if (_connected) {
-            WebSocketEngine.sendNewThread();
-          } else {
-            State.pendingFreshThread = true;
+          WebSocketEngine.sendNewThread();
+        } else {
+          // Offline + no thread: queue once for reconnect mint+flush. A second
+          // offline submit must NOT overwrite the first queued payload (single
+          // slot) or paint another phantom "sent" bubble.
+          if (State.pendingUserMessage) {
+            Logger.warn('Send while disconnected: already have a queued offline message; keeping the first');
+            const _lastDup = DOM.chatMessages && DOM.chatMessages.lastElementChild;
+            if (!(_lastDup && _lastDup.textContent && _lastDup.textContent.indexOf("already queued") !== -1)) {
+              this.appendMessage('assistant', "⚠️ Not connected. A message is already queued for reconnect; your new draft is still in the box.");
+              if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            }
+            return;
           }
+          Logger.warn("No active thread subscribed; queuing message for reconnect mint");
+          State.pendingUserMessage = { text: wireText, attachments: wire };
+          // sendNewThread() is a no-op offline; mark pendingFreshThread so
+          // syncThread() mints on reconnect (instead of resubscribing a prior
+          // thread and stranding the queue).
+          State.pendingFreshThread = true;
         }
 
-        // Silent-data-loss guard: on an EXISTING thread while the socket is down,
-        // the send above was a no-op and nothing queues it (unlike the new-thread
-        // path). Keep the composer + staged attachments and tell the user instead
-        // of clearing them and painting a phantom "sent" bubble.
-        if (!_connected && State.activeThreadId) {
-          Logger.warn('Send while disconnected: preserving composer input for retry');
-          const _last = DOM.chatMessages && DOM.chatMessages.lastElementChild;
-          if (!(_last && _last.textContent && _last.textContent.indexOf("wasn't sent") !== -1)) {
-            this.appendMessage('assistant', "⚠️ Not connected. Your message wasn't sent; it's still in the box. Try again once you reconnect.");
+        // Silent-data-loss guard: while offline, never paint a "sent" bubble.
+        //  - Existing thread: nothing was queued — keep composer for retry.
+        //  - No thread: we just stashed pendingUserMessage — clear the box
+        //    (queue is source of truth for reconnect flush) without a phantom
+        //    bubble so the user is not told it already sent.
+        if (!_connected) {
+          if (State.activeThreadId) {
+            Logger.warn('Send while disconnected: preserving composer input for retry');
+            const _last = DOM.chatMessages && DOM.chatMessages.lastElementChild;
+            if (!(_last && _last.textContent && _last.textContent.indexOf("wasn't sent") !== -1)) {
+              this.appendMessage('assistant', "⚠️ Not connected. Your message wasn't sent; it's still in the box. Try again once you reconnect.");
+              if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            }
+            return;
+          }
+          Logger.warn('Send while disconnected (new thread): queued for reconnect; no phantom bubble');
+          DOM.messageInput.value = '';
+          this.autoGrowMessageInput();
+          Attachments.clear();
+          const _lastQ = DOM.chatMessages && DOM.chatMessages.lastElementChild;
+          if (!(_lastQ && _lastQ.textContent && _lastQ.textContent.indexOf("queued") !== -1)) {
+            this.appendMessage('assistant', "⚠️ Not connected. Your message is queued and will send when you reconnect.");
             if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
           }
           return;
@@ -8525,15 +8551,10 @@
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
 
         // Show the typing indicator + arm the turn watchdog only when the send
-        // actually went out. An offline new-thread message is stashed in
-        // State.pendingUserMessage and fires on reconnect, so there is no
-        // in-flight turn to indicate (or time out) yet. The offline +
-        // existing-thread case already returned above.
-        if (_connected) {
-          this.showTypingIndicator();
-          MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
-          WebSocketEngine.startTurnTimeout();
-        }
+        // actually went out (online path only — offline returned above).
+        this.showTypingIndicator();
+        MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
+        WebSocketEngine.startTurnTimeout();
       }
     };
 
