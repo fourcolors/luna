@@ -213,6 +213,37 @@ export interface JobsStoreApi {
     },
   ) => Effect.Effect<boolean, JobsStoreError>
 
+  /**
+   * job-ticker-producer-executor-276 (codex amendment 4) - atomic claim +
+   * run-start, ONE transaction. The producer/executor split forks the worker
+   * dispatch into a separate fiber, so a plain `claim()` followed later by a
+   * separate `recordRunStart()` reopens exactly the window boot reconcile
+   * exists to close: a crash/interrupt between the two writes would advance
+   * `next_run_at` + set `last_status='running'` with NO `job_runs` row for
+   * `closeOrphanedRuns` to find and cancel at next boot - an orphan that
+   * looks "running forever" to any observer, with nothing to reap it. This
+   * method commits the conditional claim CAS (`last_run IS previousLastRun`,
+   * same semantics as `claim`) AND the `job_runs` insert together, or rolls
+   * BOTH back together - there is no observable state where one succeeded
+   * and the other didn't. Returns the started run on success; `null` ONLY
+   * when the claim CAS lost (another producer invocation already claimed the
+   * row - single-process today, but the CAS is what makes this safe for a
+   * future distributed ticker too). This REPLACES the producer's real-dispatch
+   * `claim()` + `recordRunStart()` pair; `claim` and `recordRunStart` stay on
+   * the API for the guard paths (one-shot re-encounter, quarantine, unknown-
+   * kind) and for back-compat callers that don't need the fork.
+   */
+  readonly claimAndStartRun: (
+    id: string,
+    args: {
+      readonly claimAt: number
+      readonly nextRunAt: number | null
+      readonly previousLastRun: number | null
+      readonly startedAt: number
+      readonly attempt: number
+    },
+  ) => Effect.Effect<{ readonly run: JobRun } | null, JobsStoreError>
+
   // ── Phase 12b — JobRuns CRUD (per-fire audit ledger) ────────────────────
 
   /**

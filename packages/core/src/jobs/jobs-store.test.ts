@@ -257,6 +257,83 @@ describe("JobsStoreService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  // ── job-ticker-producer-executor-276 (codex amendment 4) ────────────────
+
+  it("claimAndStartRun atomically claims + starts a run in one call", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "cs-a", kind: "wake", spec: "*", payload: { label: "a" } })
+
+      const started = yield* store.claimAndStartRun("cs-a", {
+        claimAt: 5000,
+        nextRunAt: 5600,
+        previousLastRun: null,
+        startedAt: 5000,
+        attempt: 1,
+      })
+      expect(started).not.toBeNull()
+      expect(started?.run.jobId).toBe("cs-a")
+      expect(started?.run.status).toBe("running")
+      expect(started?.run.attempt).toBe(1)
+      expect(started?.run.finishedAt).toBeNull()
+
+      // The claim CAS landed exactly like a plain claim() would.
+      const after = yield* store.getById("cs-a")
+      expect(after?.lastRun).toBe(5000)
+      expect(after?.lastStatus).toBe("running")
+      expect(after?.nextRunAt).toBe(5600)
+
+      // The run row is independently visible via listRuns.
+      const runs = yield* store.listRuns("cs-a")
+      expect(runs.length).toBe(1)
+      expect(runs[0]?.id).toBe(started?.run.id)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("claimAndStartRun returns null (no run row written) when the claim CAS loses", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "cs-b", kind: "wake", spec: "*", payload: { label: "b" } })
+      // Win the first claim so the row's lastRun is no longer null.
+      yield* store.claim("cs-b", { claimAt: 1000, nextRunAt: 1600, previousLastRun: null })
+
+      // A competing claimAndStartRun using the STALE previousLastRun loses.
+      const started = yield* store.claimAndStartRun("cs-b", {
+        claimAt: 2000,
+        nextRunAt: 2600,
+        previousLastRun: null, // wrong; the row's lastRun is 1000 now
+        startedAt: 2000,
+        attempt: 1,
+      })
+      expect(started).toBeNull()
+
+      // No orphan run row was written for the lost claim.
+      const runs = yield* store.listRuns("cs-b")
+      expect(runs.length).toBe(0)
+      // And the row's state is untouched by the losing call.
+      const after = yield* store.getById("cs-b")
+      expect(after?.lastRun).toBe(1000)
+      expect(after?.nextRunAt).toBe(1600)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("claimAndStartRun returns null on missing job (no row to lock, no run row)", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const started = yield* store.claimAndStartRun("ghost-cs", {
+        claimAt: 1,
+        nextRunAt: null,
+        previousLastRun: null,
+        startedAt: 1,
+        attempt: 1,
+      })
+      expect(started).toBeNull()
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   it("recordRunStart + recordRunEnd round-trip; listRuns returns ordered desc", async () => {
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -495,6 +572,55 @@ dSqlite("JobsStoreService (SQLite layer) — updateRunStatus", () => {
 
       // unknown run id → false
       expect(yield* store.updateRunStatus(999_999, "waiting")).toBe(false)
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
+})
+
+// job-ticker-producer-executor-276 (codex amendment 4) - the SQLite layer's
+// claimAndStartRun wraps the claim CAS AND the job_runs insert in one BEGIN
+// IMMEDIATE. This is the ONLY layer where an insert can actually fail after
+// a successful claim (a Memory Map.set cannot throw), so the "roll back the
+// claim too" guarantee can only be exercised here.
+dSqlite("JobsStoreService (SQLite layer) - claimAndStartRun rollback", () => {
+  it("rolls back the claim when the run_start insert fails, leaving the job unclaimed", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "cs-rollback", kind: "prompt", spec: "*", payload: { label: "r" } })
+
+      // Force the job_runs INSERT to violate its `attempt INTEGER NOT NULL`
+      // constraint (a deliberately invalid runtime value, cast around the
+      // type system to reach the SQL layer). The claim CAS lands FIRST
+      // inside the same BEGIN IMMEDIATE - if it were not rolled back
+      // together with the failed insert, `jobs.last_run` would advance with
+      // no `job_runs` row to show for it, exactly the orphan window this
+      // method exists to close.
+      const result = yield* Effect.either(
+        store.claimAndStartRun("cs-rollback", {
+          claimAt: 5000,
+          nextRunAt: 5600,
+          previousLastRun: null,
+          startedAt: 5000,
+          attempt: null as unknown as number,
+        }),
+      )
+      expect(result._tag).toBe("Left")
+
+      // The claim was rolled back - a subsequent claim with the ORIGINAL
+      // previousLastRun (null) still succeeds, proving jobs.last_run was
+      // never actually advanced by the failed call.
+      const won = yield* store.claim("cs-rollback", {
+        claimAt: 6000,
+        nextRunAt: 6600,
+        previousLastRun: null,
+      })
+      expect(won).toBe(true)
+
+      // No job_runs row was left behind by the rolled-back insert.
+      const runs = yield* store.listRuns("cs-rollback")
+      expect(runs.length).toBe(0)
     })
     await Effect.runPromise(
       Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),

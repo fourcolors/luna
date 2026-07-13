@@ -288,6 +288,61 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           return run
         })
 
+      // job-ticker-producer-executor-276 (codex amendment 3) - atomic
+      // claim + run-start. `jobs` lives in `store` (a Ref<Map>) but `runs`
+      // is a plain (non-Ref) Map - two separate containers, one of which
+      // cannot itself be the atomicity boundary. The critic-mandated
+      // guarantee is NOT "one Ref.modify region" (impossible here) but
+      // "NO yield point between the CAS and the run insert": the entire
+      // read-check-write-insert sequence runs inside Ref.modify's plain
+      // synchronous updater callback (not `yield*`-driven), so a fiber
+      // interrupt cannot land between the claim landing and the run row
+      // existing - the exact gap `claim()` + a separate `recordRunStart()`
+      // would reopen. A Map.set cannot throw, so there is no "insert failed,
+      // roll back the claim" case to model on this layer (that's a SQLite
+      // Layer concern - see makeLayer's claimAndStartRun and its BEGIN
+      // IMMEDIATE / ROLLBACK).
+      const claimAndStartRun: JobsStoreApi["claimAndStartRun"] = (id, args) =>
+        Effect.gen(function* () {
+          const ts = yield* clock.nowMs()
+          let startedRun: JobRun | null = null
+          const won = yield* Ref.modify(store, (map) => {
+            const existing = map.get(id)
+            if (!existing) return [false, map] as [boolean, typeof map]
+            if (existing.lastRun !== args.previousLastRun) {
+              return [false, map] as [boolean, typeof map]
+            }
+            const next: PersistedJob = {
+              ...existing,
+              lastRun: args.claimAt,
+              lastStatus: "running",
+              nextRunAt: args.nextRunAt,
+              updatedAt: ts,
+            }
+            const m2 = new Map(map)
+            m2.set(id, next)
+            // Synchronous, no `yield*` between here and the CAS above - the
+            // atomicity guarantee this method exists for.
+            const runId = nextRunId++
+            const run: JobRun = {
+              id: runId,
+              jobId: id,
+              startedAt: args.startedAt,
+              finishedAt: null,
+              status: "running" as JobRunStatus,
+              attempt: args.attempt,
+              outputText: null,
+              error: null,
+              stepsJson: null,
+            }
+            runs.set(runId, run)
+            startedRun = run
+            return [true, m2] as [boolean, typeof map]
+          })
+          if (!won || !startedRun) return null
+          return { run: startedRun }
+        })
+
       const recordRunEnd: JobsStoreApi["recordRunEnd"] = (runId, end) =>
         Effect.sync(() => {
           const existing = runs.get(runId)
@@ -363,6 +418,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         setV2Fields,
         listDue,
         claim,
+        claimAndStartRun,
         recordRunStart,
         recordRunEnd,
         updateRunStatus,
@@ -807,6 +863,64 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               new JobsStoreError({ op: "run_start", message: String(cause), cause }),
           })
 
+        // job-ticker-producer-executor-276 (codex amendment 4) - one
+        // BEGIN IMMEDIATE wrapping the SAME claim CAS `claim()` uses plus the
+        // `job_runs` insert `recordRunStart()` uses. Mirrors the `claim()`
+        // transaction shape immediately above: on a thrown error (e.g. the
+        // INSERT fails for any reason) the whole transaction - INCLUDING the
+        // claim UPDATE that already landed on this connection - rolls back,
+        // so there is no observable state where `jobs.last_run` advanced but
+        // no `job_runs` row exists for it. A claim-CAS loss (changes===0) is
+        // NOT an error: commit the (no-op) transaction and return null, same
+        // as `claim()` returning false.
+        const claimAndStartRun: JobsStoreApi["claimAndStartRun"] = (id, args) =>
+          Effect.gen(function* () {
+            const ts = yield* clock.nowMs()
+            return yield* Effect.try({
+              try: () => {
+                db.run("BEGIN IMMEDIATE")
+                try {
+                  const claimResult = claimEqStmt.run(
+                    args.claimAt,
+                    args.nextRunAt ?? null,
+                    ts,
+                    id,
+                    args.previousLastRun,
+                  )
+                  if (claimResult.changes === 0) {
+                    db.run("COMMIT")
+                    return null
+                  }
+                  const row = runStartStmt.get(
+                    id,
+                    args.startedAt,
+                    args.attempt,
+                  ) as { id: number } | undefined
+                  if (!row) throw new Error("RETURNING id produced no row")
+                  db.run("COMMIT")
+                  return {
+                    run: {
+                      id: row.id,
+                      jobId: id,
+                      startedAt: args.startedAt,
+                      finishedAt: null,
+                      status: "running" as JobRunStatus,
+                      attempt: args.attempt,
+                      outputText: null,
+                      error: null,
+                      stepsJson: null,
+                    } satisfies JobRun,
+                  }
+                } catch (e) {
+                  try { db.run("ROLLBACK") } catch { /* best-effort */ }
+                  throw e
+                }
+              },
+              catch: (cause) =>
+                new JobsStoreError({ op: "claim", message: String(cause), cause }),
+            })
+          })
+
         const recordRunEnd: JobsStoreApi["recordRunEnd"] = (runId, end) =>
           Effect.try({
             try: () => {
@@ -872,6 +986,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           setV2Fields,
           listDue,
           claim,
+          claimAndStartRun,
           recordRunStart,
           recordRunEnd,
           updateRunStatus,
