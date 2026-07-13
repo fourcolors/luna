@@ -192,6 +192,35 @@ export interface UIWebSocketServerConfig {
    */
   readonly serverVersion?: string
   /**
+   * Optional live JobTicker health for `/readyz.scheduler` (additive).
+   * When provided, /readyz includes a `scheduler` object. Absent → field
+   * omitted (setup-mode and older boots). Default: report-only — overall
+   * status stays `ok` even if scheduler is degraded unless
+   * `LUNA_SCHEDULER_STRICT_READY=1` (read by the caller that supplies this
+   * getter, or by server when `strictSchedulerReady` is true).
+   */
+  readonly getSchedulerHealth?: () => {
+    readonly status: "ok" | "degraded" | "initializing"
+    readonly lastTickAt: number | null
+    readonly lastTickAgeMs: number | null
+    readonly inFlight: number
+    readonly tickIntervalMs: number
+    readonly lastTick: {
+      readonly considered: number
+      readonly claimed: number
+      readonly forked: number
+      readonly skippedInFlight: number
+      readonly skippedNoCapacity: number
+      readonly failedInline: number
+    }
+  } | null
+  /**
+   * When true AND getSchedulerHealth().status === "degraded", /readyz top-level
+   * `status` becomes `"degraded"` (HTTP still 200). Default false — chat stays
+   * ready when only the scheduler is unhealthy.
+   */
+  readonly strictSchedulerReady?: boolean
+  /**
    * Human-readable name for this server instance. Echoed in the hello frame's
    * `descriptor.identity.name` field. Additive — absent = defaults to "luna".
    */
@@ -1002,6 +1031,8 @@ export const startUIWebSocketServer = (
     const buildSha = config.buildSha
     const serverVersion = config.serverVersion
     const availableModels = config.availableModels
+    const getSchedulerHealth = config.getSchedulerHealth
+    const strictSchedulerReady = config.strictSchedulerReady === true
     // One server-owned Module shares Git work across every connection/thread.
     // Its Interface hides async process execution, freshness, single-flight,
     // and graceful degradation from the WebSocket routing Implementation.
@@ -1026,22 +1057,33 @@ export const startUIWebSocketServer = (
         // credential gate). Additive: /healthz keeps returning "ok" for liveness
         // consumers; this endpoint is what luna-update-server's gate inspects.
         const mode = setupPty != null ? "setup" : "normal"
+        let scheduler: ReturnType<NonNullable<typeof getSchedulerHealth>> | undefined
+        if (getSchedulerHealth) {
+          try {
+            const snap = getSchedulerHealth()
+            if (snap != null) scheduler = snap
+          } catch {
+            // Health probe must never take down /readyz — omit field on throw.
+          }
+        }
+        // Report-only by default: top-level status stays "ok" so deploy gates
+        // and chat readiness are not flapped by a degraded scheduler. Opt-in
+        // strictSchedulerReady flips top-level status to "degraded" (HTTP 200).
+        const topStatus =
+          strictSchedulerReady && scheduler?.status === "degraded"
+            ? "degraded"
+            : "ok"
         res.writeHead(200, { "content-type": "application/json" })
-        // `buildSha` is additive: included only when the caller threaded it in
-        // (production does; test rigs don't). Absent → field omitted, so older
-        // /readyz consumers and the existing {status,mode,credentialOk} shape
-        // are unaffected.
+        // `buildSha` / `serverVersion` / `scheduler` are additive: included only
+        // when the caller threaded them in. Absent → field omitted.
         res.end(
           JSON.stringify({
-            status: "ok",
+            status: topStatus,
             mode,
             credentialOk: mode === "normal",
             ...(buildSha !== undefined ? { buildSha } : {}),
-            // `serverVersion` is additive: included only when the caller threaded it
-            // in (production does; test rigs that don't thread it see it omitted).
-            // Older /readyz consumers are unaffected — the existing field list is
-            // unchanged; this is appended after `buildSha` per the same pattern.
             ...(serverVersion !== undefined ? { serverVersion } : {}),
+            ...(scheduler !== undefined ? { scheduler } : {}),
           }),
         )
         return

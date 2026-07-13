@@ -5,6 +5,7 @@ export {
   type JobTickerApi,
   type JobTickerOptions,
   type TickSummary,
+  type SchedulerHealthSnapshot,
 } from "./job-ticker.js"
 export {
   WorkerRegistry,

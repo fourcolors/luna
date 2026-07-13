@@ -126,6 +126,35 @@ export interface JobTickerApi {
    * drain; yield* awaitIdle; const runs = yield* store.listRuns(jobId)`.
    */
   readonly awaitIdle: Effect.Effect<void>
+
+  /**
+   * Live scheduler health snapshot (updated after every drain, including quiet
+   * ticks). Used by `/readyz.scheduler` and ops. Detects a hung/dead producer
+   * loop (lastTickAge), not "all workers healthy" - slots can be full while
+   * ticks stay fresh; `inFlight` is included for that case.
+   */
+  readonly health: Effect.Effect<SchedulerHealthSnapshot>
+}
+
+/**
+ * Additive readiness signal for JobTicker. Report-only by default on /readyz
+ * (process stays ready); `LUNA_SCHEDULER_STRICT_READY=1` may treat degraded
+ * as overall not-ready (chat-server / ui-ws wiring).
+ */
+export interface SchedulerHealthSnapshot {
+  readonly status: "ok" | "degraded" | "initializing"
+  readonly lastTickAt: number | null
+  readonly lastTickAgeMs: number | null
+  readonly inFlight: number
+  readonly tickIntervalMs: number
+  readonly lastTick: {
+    readonly considered: number
+    readonly claimed: number
+    readonly forked: number
+    readonly skippedInFlight: number
+    readonly skippedNoCapacity: number
+    readonly failedInline: number
+  }
 }
 
 export interface TickSummary {
@@ -426,6 +455,7 @@ export const JobTickerLayer = (
   // Seam 3 (retry) — max-attempts ceiling when the payload doesn't specify
   // its own (resolveMaxAttempts clamps a payload override to [1, 10]).
   const defaultMaxAttempts = options?.defaultMaxAttempts ?? 3
+  const tickIntervalMs = Duration.toMillis(tickInterval)
 
   return Layer.scoped(
     JobTicker,
@@ -440,6 +470,50 @@ export const JobTickerLayer = (
       // TestClock pinned at 0 the interval has not elapsed, so unit tests that
       // don't care about retention see `pruned: 0`.
       const lastPruneAt = yield* Ref.make(0)
+
+      // Health snapshot for /readyz. Starts `initializing` until the first
+      // drainOnce completes (auto loop or explicit drain). Degraded when
+      // lastTickAgeMs > 3 * tickIntervalMs after that first tick.
+      const healthRef = yield* Ref.make<SchedulerHealthSnapshot>({
+        status: "initializing",
+        lastTickAt: null,
+        lastTickAgeMs: null,
+        inFlight: 0,
+        tickIntervalMs,
+        lastTick: {
+          considered: 0,
+          claimed: 0,
+          forked: 0,
+          skippedInFlight: 0,
+          skippedNoCapacity: 0,
+          failedInline: 0,
+        },
+      })
+
+      const publishHealth = (
+        summary: TickSummary,
+        inFlight: number,
+        observedAt: number,
+      ): Effect.Effect<void> => {
+        const lastTickAt = summary.tickAt
+        const lastTickAgeMs = Math.max(0, observedAt - lastTickAt)
+        const degraded = lastTickAgeMs > 3 * tickIntervalMs
+        return Ref.set(healthRef, {
+          status: degraded ? "degraded" : "ok",
+          lastTickAt,
+          lastTickAgeMs,
+          inFlight,
+          tickIntervalMs,
+          lastTick: {
+            considered: summary.considered,
+            claimed: summary.claimed,
+            forked: summary.forked,
+            skippedInFlight: summary.skippedInFlight,
+            skippedNoCapacity: summary.skippedNoCapacity,
+            failedInline: summary.failedInline,
+          },
+        })
+      }
 
       // Boot reconcile (runs ONCE, before the loop forks): a hard crash
       // between recordRunStart and recordRunEnd leaves job_runs rows stuck
@@ -1174,7 +1248,7 @@ export const JobTickerLayer = (
             }
           }
 
-          return {
+          const summary = {
             tickAt,
             considered: due.length,
             claimed,
@@ -1187,6 +1261,12 @@ export const JobTickerLayer = (
             failedInline,
             pruned,
           } satisfies TickSummary
+          // Publish health after every drain (including quiet considered=0 ticks)
+          // so /readyz can detect a hung producer via lastTickAge.
+          const inFlightNow = yield* FiberMap.size(executors)
+          const observedAt = yield* clock.nowMs()
+          yield* publishHealth(summary, inFlightNow, observedAt)
+          return summary
         }),
       )
 
@@ -1210,7 +1290,7 @@ export const JobTickerLayer = (
               yield* Effect.logError(
                 `[luna/sched] tick defect (swallowed to keep the loop alive): ${String(defect)}`,
               )
-              return {
+              const empty = {
                 tickAt: yield* EffectClock.currentTimeMillis,
                 considered: 0,
                 claimed: 0,
@@ -1223,6 +1303,11 @@ export const JobTickerLayer = (
                 failedInline: 0,
                 pruned: 0,
               } satisfies TickSummary
+              // Still advance lastTickAt so a one-off defect does not look
+              // like a dead loop; repeated defects still leave a fresh stamp.
+              const inFlightNow = yield* FiberMap.size(executors)
+              yield* publishHealth(empty, inFlightNow, empty.tickAt)
+              return empty
             }),
           ),
         )
@@ -1250,6 +1335,20 @@ export const JobTickerLayer = (
       return {
         drain: drainOnce,
         awaitIdle,
+        health: Effect.gen(function* () {
+          const snap = yield* Ref.get(healthRef)
+          // Refresh lastTickAgeMs on read so /readyz does not need a tick to
+          // age the snapshot (stale lastTickAge from publish time would lag).
+          if (snap.lastTickAt === null) return snap
+          const now = yield* clock.nowMs()
+          const lastTickAgeMs = Math.max(0, now - snap.lastTickAt)
+          const degraded = lastTickAgeMs > 3 * tickIntervalMs
+          return {
+            ...snap,
+            lastTickAgeMs,
+            status: degraded ? ("degraded" as const) : ("ok" as const),
+          }
+        }),
       } satisfies JobTickerApi
     }),
   )

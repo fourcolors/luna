@@ -47,6 +47,23 @@ describe("JobTicker", () => {
     await Effect.runPromise(prog.pipe(Effect.provide(buildStack({}))))
   })
 
+  it("health is initializing before first drain, ok after drain", async () => {
+    const prog = Effect.gen(function* () {
+      const ticker = yield* JobTicker
+      const before = yield* ticker.health
+      expect(before.status).toBe("initializing")
+      expect(before.lastTickAt).toBeNull()
+      yield* ticker.drain
+      const after = yield* ticker.health
+      expect(after.status).toBe("ok")
+      expect(after.lastTickAt).not.toBeNull()
+      expect(after.lastTickAgeMs).not.toBeNull()
+      expect(after.inFlight).toBe(0)
+      expect(after.tickIntervalMs).toBe(60_000)
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(buildStack({}))))
+  })
+
   it("closes orphaned 'running' runs at boot (process-restart recovery)", async () => {
     const noop: Worker = () => Effect.succeed({ outputText: null })
     const prog = Effect.gen(function* () {

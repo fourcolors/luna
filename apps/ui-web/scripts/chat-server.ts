@@ -194,6 +194,7 @@ import {
   AgentNotesService,
   ArtifactStore,
   JobsStoreService,
+  JobTicker,
   JobTickerLayer,
   WorkerRegistry,
   makeWorkerRegistry,
@@ -2761,8 +2762,12 @@ const buildServerLayer = (
       const connectorServiceHandle = yield* ConnectorService // PRD Part A
       const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
+      const jobTicker = yield* JobTicker // /readyz.scheduler health (V2 ticker)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
       const suggestedActionsService = yield* SuggestedActions // suggest_action
+      // Capture Effect runtime so the HTTP /readyz path can sync-read ticker
+      // health without holding an Effect fiber (ui-ws is plain node:http).
+      const effectRuntime = yield* Effect.runtime<JobTicker>()
       // AcceptHandler is always wired (see the merge above), so this resolves.
       // Kept as serviceOption for defensive symmetry with SuggestedActions.respond
       // (absent → accept would leave the action at `accepted`).
@@ -3644,6 +3649,18 @@ const buildServerLayer = (
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
         serverVersion: BUILD_VERSION,
+        // JobTicker health for /readyz.scheduler (additive). Sync read via
+        // captured runtime — HTTP handlers are not Effect fibers.
+        getSchedulerHealth: () => {
+          try {
+            return Runtime.runSync(effectRuntime)(jobTicker.health)
+          } catch {
+            return null
+          }
+        },
+        // Opt-in: LUNA_SCHEDULER_STRICT_READY=1 marks top-level /readyz status
+        // degraded when the ticker is stale (default report-only).
+        strictSchedulerReady: process.env["LUNA_SCHEDULER_STRICT_READY"] === "1",
         // Advertise the operator-configured + built-in model list so the UI
         // dropdown is driven by the server (LUNA_UI_MODELS overrides go first
         // and become the recommended default). Absent on older/setup-mode
