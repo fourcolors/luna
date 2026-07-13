@@ -30,6 +30,8 @@ const buildStack = (
   return JobTickerLayer({
     tickInterval: Duration.seconds(60),
     autoStart: false,
+    // Tests dispose layers often; skip 90s production drain wait.
+    shutdownDrainMs: 0,
     ...tickerOpts,
   }).pipe(Layer.provideMerge(Layer.mergeAll(storeL, regL, Clock.Default)))
 }

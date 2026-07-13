@@ -295,6 +295,14 @@ export interface JobTickerOptions {
    * natural cron cadence (Oban's `max_attempts` analogue). Default 3.
    */
   readonly defaultMaxAttempts?: number
+
+  /**
+   * On Layer/Scope teardown, wait for in-flight executors up to this long
+   * before FiberMap interrupts them (A1b graceful drain). Default 90_000 ms.
+   * Override with env `LUNA_SCHED_DRAIN_MS` when options omit it. `0` skips
+   * the wait (immediate interrupt — useful in unit tests).
+   */
+  readonly shutdownDrainMs?: number
 }
 
 /**
@@ -456,6 +464,10 @@ export const JobTickerLayer = (
   // its own (resolveMaxAttempts clamps a payload override to [1, 10]).
   const defaultMaxAttempts = options?.defaultMaxAttempts ?? 3
   const tickIntervalMs = Duration.toMillis(tickInterval)
+  const envDrain = Number(process.env["LUNA_SCHED_DRAIN_MS"] ?? "")
+  const shutdownDrainMs =
+    options?.shutdownDrainMs ??
+    (Number.isFinite(envDrain) && envDrain >= 0 ? envDrain : 90_000)
 
   return Layer.scoped(
     JobTicker,
@@ -1284,6 +1296,31 @@ export const JobTickerLayer = (
       // `awaitIdle` type exactly (see the `executors` doc above for why
       // E=never was chosen at construction).
       const awaitIdle: Effect.Effect<void> = FiberMap.awaitEmpty(executors)
+
+      // A1b graceful drain: run BEFORE FiberMap's Scope interrupt finalizer
+      // (finalizers are LIFO; we register after FiberMap.make so we run first).
+      // Gives in-flight executors up to shutdownDrainMs to finish so a clean
+      // SIGTERM does not orphan every mid-flight run. Timeout → proceed;
+      // remaining fibers are interrupted by FiberMap teardown; next boot's
+      // reconcileAfterCrash repairs sticky state.
+      // Only when autoStart is on (production). Test stacks use autoStart:false
+      // and often dispose mid-flight on purpose — a 90s drain would hang them.
+      if (shutdownDrainMs > 0 && options?.autoStart !== false) {
+        yield* Effect.addFinalizer(() =>
+          awaitIdle.pipe(
+            Effect.timeout(Duration.millis(shutdownDrainMs)),
+            Effect.matchEffect({
+              onFailure: () =>
+                Effect.logWarning(
+                  `[luna/sched] shutdown drain timed out after ${shutdownDrainMs}ms; remaining executors will be interrupted`,
+                ),
+              onSuccess: () =>
+                Effect.logInfo(`[luna/sched] shutdown drain complete (awaitIdle)`),
+            }),
+            Effect.asVoid,
+          ),
+        )
+      }
 
       // Supervised loop. forkScoped ties the loop to the layer Scope so a
       // Layer.close() during teardown interrupts the loop cleanly - AND
