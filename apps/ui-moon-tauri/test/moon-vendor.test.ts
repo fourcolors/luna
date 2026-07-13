@@ -82,7 +82,7 @@ describe('moon-protocol.js', () => {
       turnComplete: false, skills: false, connectors: false,
       artifacts: false, workflows: false, vault: false, mcpApps: false,
       subagents: false, effortSelection: false, modelRouting: false,
-      commands: false,
+      commands: false, feedback: false,
     })
     expect(P().parseHelloCapabilities(undefined).vault).toBe(false)
     expect(P().parseHelloCapabilities(undefined).effortSelection).toBe(false)

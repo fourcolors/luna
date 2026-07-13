@@ -2709,6 +2709,7 @@ const buildServerLayer = (
       const chat = yield* ChatService
       const broker = yield* AccountBroker
       const surveyService = yield* Survey // Phase 3 D3
+      const agentNotes = yield* AgentNotesService // point-at-UI feedback sink
       const skillRegistryService = yield* SkillRegistry // PRD Part B
       const connectorServiceHandle = yield* ConnectorService // PRD Part A
       const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
@@ -3458,6 +3459,49 @@ const buildServerLayer = (
           }),
       }
 
+      // Point-at-the-UI feedback sink. Persists each note straight into Jax's
+      // ledger (agent_notes, kind='ui_feedback') so `obs_notes_recent` surfaces
+      // it — no new table/DDL. `summary` is truncated for ledger legibility;
+      // the full note + captured target/appearance live in payload_json. The
+      // sessionId threads into the conversation ledger when the frame carries a
+      // threadId, else a synthetic 'ui-feedback' stream (agent_notes.session_id
+      // is NOT NULL). Errors resolve to { ok:false } so the ack is always honest
+      // and never tears down the socket.
+      const feedbackSink = {
+        submit: (input: {
+          readonly note: string
+          readonly target?: unknown
+          readonly page?: string
+          readonly threadId?: string
+          readonly appVersion?: string
+          readonly appearance?: string
+          readonly clientTs?: number
+        }): Effect.Effect<{ readonly ok: boolean; readonly message?: string }> =>
+          agentNotes
+            .record({
+              sessionId: input.threadId ?? "ui-feedback",
+              kind: "ui_feedback",
+              summary: input.note.slice(0, 200),
+              payload: {
+                note: input.note,
+                target: input.target ?? null,
+                page: input.page ?? null,
+                appVersion: input.appVersion ?? null,
+                appearance: input.appearance ?? null,
+                clientTs: input.clientTs ?? null,
+              },
+            })
+            .pipe(
+              Effect.as({ ok: true as const }),
+              Effect.catchAll(() =>
+                Effect.succeed({
+                  ok: false as const,
+                  message: "Could not record feedback.",
+                }),
+              ),
+            ),
+      }
+
       // ── Model Routing Settings (PR 1) ───────────────────────────────────
       // Wire the ProviderSettingsStore to a modelRoutingService handle so the
       // WS server advertises capabilities.modelRouting, pushes model-routing-list
@@ -3604,6 +3648,7 @@ const buildServerLayer = (
         chatService: chat,
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
+        feedbackSink, // point-at-the-UI feedback → agent_notes (kind='ui_feedback')
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         capabilityRegistry: capabilityWsHandle, // Capability layer: backend-advertised commands (static catalog)
         // 14-day auto-archive → broadcast `thread-archived` to live clients.

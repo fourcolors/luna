@@ -45,6 +45,10 @@
       // Absent on older/other servers → false, so the client clears any stale
       // backend catalog (e.g. after attaching to a different machine).
       commands: !!c.commands,
+      // point-at-the-UI feedback: server has a feedbackSink bound — accepts
+      // `feedback-submit` and replies `feedback-ack`. Absent on older servers
+      // → false, so the feedback button stays hidden and no frame is sent.
+      feedback: !!c.feedback,
     };
   }
 

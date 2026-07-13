@@ -1878,6 +1878,67 @@
       color: var(--accent);
     }
 
+    /* Point-at-the-UI feedback — the crosshair button's active (picking) state
+       reuses the accent wash, exactly like .scope-btn.active. The [hidden]
+       guard is load-bearing: .bar-btn sets display:flex, which defeats the UA
+       [hidden]{display:none} rule by cascade. */
+    .feedback-btn.active {
+      background: color-mix(in oklab, var(--accent) 16%, transparent);
+      color: var(--accent);
+    }
+    .feedback-btn.active:hover {
+      background: color-mix(in oklab, var(--accent) 22%, transparent);
+      color: var(--accent);
+    }
+    .bar-btn.feedback-btn[hidden] { display: none !important; }
+
+    /* Picker overlay: a full-window pass-through layer hosting the highlight
+       box + hint chip. pointer-events:none everywhere so elementFromPoint hits
+       the real element and the app keeps its own hover. z-index 200 sits above
+       the composer popovers (scope/slash menus at 80). */
+    #feedback-picker-overlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 200;
+    }
+    #feedback-picker-overlay[hidden] { display: none !important; }
+    #feedback-picker-highlight {
+      position: fixed;
+      top: 0; left: 0; width: 0; height: 0;
+      pointer-events: none;
+      border: 2px solid var(--accent);
+      background: color-mix(in oklab, var(--accent) 14%, transparent);
+      border-radius: 6px;
+      box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent);
+      transition: top 0.06s, left 0.06s, width 0.06s, height 0.06s;
+    }
+    #feedback-picker-hint {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+      background: var(--paper);
+      color: var(--ink-soft);
+      border: 1.3px solid var(--ink-faint);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.25);
+      white-space: nowrap;
+    }
+
+    /* Feedback composer — inherits .user-ask-panel chrome; a read-only mono
+       target chip echoes the picked element, and the textarea is resize-off. */
+    .feedback-panel[hidden] { display: none !important; }
+    .feedback-target-chip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+      word-break: break-all;
+    }
+    .feedback-input { resize: none; min-height: 60px; }
+
     /* Machine-access popover menu, anchored to .chat-input-area's bottom-left
        (position:relative), opening upward above the composer row. */
     .scope-menu {
@@ -2554,6 +2615,37 @@
       </div>
     </div>
 
+    <!-- Point-at-the-UI feedback picker overlay. Hidden by default;
+         FeedbackEngine.enterPicker() reveals it. Both the overlay and the
+         highlight box are pointer-events:none so document.elementFromPoint
+         returns the REAL element under the cursor and the app keeps its own
+         :hover. The hint chip explains how to pick / cancel. -->
+    <div id="feedback-picker-overlay" hidden>
+      <div id="feedback-picker-highlight"></div>
+      <div id="feedback-picker-hint">Click an element to give feedback · Esc to cancel</div>
+    </div>
+
+    <!-- Feedback composer. Hidden by default; opens after the operator picks an
+         element. Reuses the docked .user-ask-panel chrome (where the eye lands).
+         The target chip is read-only; the textarea takes the note. Submit is
+         OPEN-socket-guarded and the server unicasts a `feedback-ack`. -->
+    <div class="user-ask-panel feedback-panel" id="feedback-panel" role="dialog" aria-labelledby="feedback-title" hidden>
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">🎯</span>
+        <h3 class="user-ask-title" id="feedback-title">Give feedback</h3>
+        <button type="button" class="user-ask-dismiss" id="feedback-cancel-x" aria-label="Cancel feedback">×</button>
+      </div>
+      <div class="user-ask-body">
+        <div class="secret-prompt-consent feedback-target-chip" id="feedback-target-chip" hidden></div>
+        <textarea id="feedback-input" class="premium-text-input feedback-input" rows="3" placeholder="What's wrong or could be better?" autocomplete="off" spellcheck="true"></textarea>
+      </div>
+      <div class="user-ask-footer">
+        <span class="user-ask-hint secret-prompt-status feedback-status" id="feedback-status" hidden></span>
+        <button type="button" class="user-ask-dismiss-btn" id="feedback-cancel">Cancel</button>
+        <button type="button" class="user-ask-submit" id="feedback-submit-btn" disabled>Send feedback</button>
+      </div>
+    </div>
+
     <!-- Artifacts panel (PRD Part C W1). Hidden until toggled open via
          ArtifactsEngine.openPanel(). Position:absolute fills the chat body
          area so it slides over the messages without reflowing the layout. -->
@@ -2664,6 +2756,20 @@
               <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
               <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
               <line x1="12" y1="18" x2="12" y2="22"></line>
+            </svg>
+          </button>
+          <!-- Feedback (crosshair) — point at any element in the window and tell
+               Jax what should change. type="button" is REQUIRED (lives in the
+               <form>, else a click submits). Hidden until the server advertises
+               the `feedback` capability (FeedbackEngine.applyCapability). Click
+               toggles picker mode. -->
+          <button type="button" class="bar-btn feedback-btn" id="feedback-btn" aria-label="Send feedback about the UI" title="Point at the UI to give feedback" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <line x1="12" y1="2" x2="12" y2="5.5"></line>
+              <line x1="12" y1="18.5" x2="12" y2="22"></line>
+              <line x1="2" y1="12" x2="5.5" y2="12"></line>
+              <line x1="18.5" y1="12" x2="22" y2="12"></line>
             </svg>
           </button>
         </div>
@@ -2844,6 +2950,18 @@
       secretPromptSubmit:  document.getElementById('secret-prompt-submit'),
       secretPromptCancel:  document.getElementById('secret-prompt-cancel'),
       secretPromptCancelX: document.getElementById('secret-prompt-cancel-x'),
+      // Point-at-the-UI feedback handles.
+      feedbackBtn:             document.getElementById('feedback-btn'),
+      feedbackPickerOverlay:   document.getElementById('feedback-picker-overlay'),
+      feedbackPickerHighlight: document.getElementById('feedback-picker-highlight'),
+      feedbackPickerHint:      document.getElementById('feedback-picker-hint'),
+      feedbackPanel:           document.getElementById('feedback-panel'),
+      feedbackTargetChip:      document.getElementById('feedback-target-chip'),
+      feedbackInput:           document.getElementById('feedback-input'),
+      feedbackStatus:          document.getElementById('feedback-status'),
+      feedbackSubmit:          document.getElementById('feedback-submit-btn'),
+      feedbackCancel:          document.getElementById('feedback-cancel'),
+      feedbackCancelX:         document.getElementById('feedback-cancel-x'),
       // Suggested-actions chip handles.
       suggestedActionPanel:     document.getElementById('suggested-action-panel'),
       suggestedActionType:      document.getElementById('suggested-action-type'),
@@ -3763,6 +3881,351 @@
         if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';  // defensive
         this.setStatus('', null);
         this._reqId = null;
+      },
+    };
+
+    // ── Point-at-the-UI feedback ─────────────────────────────────────────────
+    //
+    // The operator clicks #feedback-btn to enter "picker mode": a pass-through
+    // overlay highlights whatever element is under the cursor (via
+    // document.elementFromPoint — both overlay + highlight are pointer-events:
+    // none so the real element resolves and keeps its own hover). Clicking an
+    // element captures a best-effort description and opens a docked composer;
+    // the note + target go to the server on a `feedback-submit` frame and land
+    // in Jax's ledger. Escape / re-click / Cancel all tear the picker down.
+    //
+    // Everything here is pure DOM (CSP-safe, no external libs) with try/catch
+    // around Tauri access so it also runs in jsdom (the picker test drives it).
+
+    // Best-effort nth-of-type CSS selector path to <html>. Prefers a #id
+    // shortcut (ids are unique) and stops there. Fragile through re-rendered
+    // regions — a human/Jax reads it, so "best-effort" is the contract.
+    function feedbackSelectorPath(el) {
+      try {
+        if (!el || el.nodeType !== 1) return '';
+        const parts = [];
+        let node = el;
+        while (node && node.nodeType === 1 && node.tagName &&
+               node.tagName.toLowerCase() !== 'html') {
+          const tag = node.tagName.toLowerCase();
+          if (node.id) { parts.unshift('#' + node.id); break; }
+          let nth = 1;
+          let sib = node;
+          while ((sib = sib.previousElementSibling)) {
+            if (sib.tagName === node.tagName) nth++;
+          }
+          parts.unshift(tag + ':nth-of-type(' + nth + ')');
+          node = node.parentElement;
+        }
+        return parts.join(' > ');
+      } catch (_) { return ''; }
+    }
+
+    // Nearest ancestor (incl. self) carrying a stable handle: an [id] or any
+    // data-* attribute. Stable containers (#title-bar, .composer-bar, …) survive
+    // re-render, so this is the DURABLE anchor for the note.
+    function feedbackNearestAnchor(el) {
+      try {
+        let node = el;
+        while (node && node.nodeType === 1) {
+          const dataAttrs = {};
+          if (node.attributes) {
+            for (const a of Array.from(node.attributes)) {
+              if (a.name && a.name.indexOf('data-') === 0) dataAttrs[a.name] = a.value;
+            }
+          }
+          if (node.id || Object.keys(dataAttrs).length > 0) {
+            return {
+              tag: node.tagName ? node.tagName.toLowerCase() : '',
+              id: node.id || null,
+              dataAttrs: dataAttrs,
+            };
+          }
+          node = node.parentElement;
+        }
+      } catch (_) { /* fall through */ }
+      return null;
+    }
+
+    // Current appearance (palette/theme/chrome/…). Prefers the live
+    // LunaAppearance API; falls back to the documentElement dataset so it works
+    // before moon-appearance.js runs and in bare jsdom.
+    function feedbackAppearance() {
+      try {
+        if (window.LunaAppearance && typeof window.LunaAppearance.get === 'function') {
+          return window.LunaAppearance.get();
+        }
+      } catch (_) { /* fall through */ }
+      try {
+        const d = (document.documentElement && document.documentElement.dataset) || {};
+        return {
+          palette: d.palette || null, theme: d.theme || null,
+          chrome: d.chrome || null, skin: d.skin || null,
+          grain: d.grain || null, font: d.font || null,
+          fontSize: d.fontSize || null,
+        };
+      } catch (_) { return {}; }
+    }
+
+    // Full JSON-serializable description of the pointed-at element. Every read
+    // is individually tolerant so one missing field never aborts the capture.
+    // textContent only (never innerHTML), truncated — limits transcript leakage.
+    function describeTarget(el) {
+      const t = { selectorStability: 'best-effort', capturedAt: Date.now() };
+      try { t.selector = feedbackSelectorPath(el); } catch (_) { t.selector = ''; }
+      try { t.anchor = feedbackNearestAnchor(el); } catch (_) { t.anchor = null; }
+      try { t.tag = (el && el.tagName) ? el.tagName.toLowerCase() : ''; } catch (_) { t.tag = ''; }
+      try { t.id = (el && el.id) || null; } catch (_) { t.id = null; }
+      try { t.classes = (el && el.classList) ? Array.from(el.classList) : []; } catch (_) { t.classes = []; }
+      try {
+        t.role = (el && (el.getAttribute('role') || el.getAttribute('aria-label'))) || null;
+      } catch (_) { t.role = null; }
+      try {
+        const raw = ((el && el.textContent) ? el.textContent : '').replace(/\s+/g, ' ').trim();
+        t.textLength = raw.length;
+        t.text = raw.length > 120 ? (raw.slice(0, 120) + '…') : raw;
+      } catch (_) { t.text = ''; t.textLength = 0; }
+      try {
+        const r = (el && el.getBoundingClientRect) ? el.getBoundingClientRect() : null;
+        t.rect = r ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } : null;
+      } catch (_) { t.rect = null; }
+      let windowLabel = null;
+      try {
+        if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+          windowLabel = window.__TAURI__.window.getCurrentWindow().label || null;
+        }
+      } catch (_) { windowLabel = null; }
+      try {
+        const path = (location.pathname || '').split('/');
+        t.route = {
+          page: path[path.length - 1] || 'chat.html',
+          windowLabel: windowLabel,
+          threadId: new URLSearchParams(location.search).get('thread') || null,
+          url: location.href,
+        };
+      } catch (_) { t.route = { page: 'chat.html', windowLabel: windowLabel, threadId: null, url: '' }; }
+      try { t.appearance = feedbackAppearance(); } catch (_) { t.appearance = {}; }
+      try {
+        t.viewport = { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
+      } catch (_) { t.viewport = { w: 0, h: 0, dpr: 1 }; }
+      return t;
+    }
+
+    // Short human label for the target chip.
+    function feedbackTargetLabel(t) {
+      if (!t) return '';
+      if (t.id) return '#' + t.id;
+      let s = t.tag || 'element';
+      if (t.classes && t.classes.length) s += '.' + t.classes.slice(0, 2).join('.');
+      if (t.text) s += ' — "' + (t.text.length > 40 ? (t.text.slice(0, 40) + '…') : t.text) + '"';
+      return s;
+    }
+
+    const FeedbackEngine = {
+      _enabled: false,   // server advertises the `feedback` capability
+      _picking: false,   // picker mode active
+      _target: null,     // describeTarget() of the picked element
+      _reqId: null,      // correlates feedback-ack
+      _hideTimer: null,
+      _onMove: null,
+      _onClick: null,
+      _onKey: null,
+
+      applyCapability(on) {
+        this._enabled = !!on;
+        if (!this._enabled) { this.cancelPicker(); this.hidePanel(); }
+        if (DOM.feedbackBtn) DOM.feedbackBtn.hidden = !this._enabled;
+      },
+
+      togglePicker() {
+        if (!this._enabled) return;
+        if (this._picking) { this.cancelPicker(); return; }
+        this.enterPicker();
+      },
+
+      enterPicker() {
+        if (!this._enabled || this._picking) return;
+        this._picking = true;
+        this._target = null;
+        if (DOM.feedbackBtn) DOM.feedbackBtn.classList.add('active');
+        if (DOM.feedbackPickerOverlay) DOM.feedbackPickerOverlay.hidden = false;
+        this.hidePanel();  // a fresh pick supersedes any open composer
+
+        this._onMove = (e) => this._trackHighlight(e);
+        this._onClick = (e) => this._pick(e);
+        this._onKey = (e) => {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.cancelPicker(); }
+        };
+        // window CAPTURE phase: fires before the app's own (bubble) listeners —
+        // including the window-level Escape→VoiceEngine handler — so a pick
+        // pre-empts activation and Escape cancels the picker without leaking to
+        // voice. Torn down precisely in cancelPicker().
+        window.addEventListener('pointermove', this._onMove, true);
+        window.addEventListener('click', this._onClick, true);
+        window.addEventListener('keydown', this._onKey, true);
+      },
+
+      cancelPicker() {
+        this._picking = false;
+        if (DOM.feedbackBtn) DOM.feedbackBtn.classList.remove('active');
+        if (DOM.feedbackPickerOverlay) DOM.feedbackPickerOverlay.hidden = true;
+        if (this._onMove) { window.removeEventListener('pointermove', this._onMove, true); this._onMove = null; }
+        if (this._onClick) { window.removeEventListener('click', this._onClick, true); this._onClick = null; }
+        if (this._onKey) { window.removeEventListener('keydown', this._onKey, true); this._onKey = null; }
+      },
+
+      // Is `el` part of our own picker/composer chrome? Then skip it.
+      _isOwnChrome(el) {
+        if (!el) return true;
+        try {
+          if (DOM.feedbackBtn && (el === DOM.feedbackBtn || DOM.feedbackBtn.contains(el))) return true;
+          if (DOM.feedbackPickerOverlay && (el === DOM.feedbackPickerOverlay || DOM.feedbackPickerOverlay.contains(el))) return true;
+          if (DOM.feedbackPanel && (el === DOM.feedbackPanel || DOM.feedbackPanel.contains(el))) return true;
+        } catch (_) { /* ignore */ }
+        return false;
+      },
+
+      _rawElementAt(e) {
+        try { return document.elementFromPoint(e.clientX, e.clientY); } catch (_) { return null; }
+      },
+
+      _trackHighlight(e) {
+        if (!this._picking) return;
+        const box = DOM.feedbackPickerHighlight;
+        if (!box) return;
+        const raw = this._rawElementAt(e);
+        const el = this._isOwnChrome(raw) ? null : raw;
+        if (!el) { box.style.width = '0px'; box.style.height = '0px'; return; }
+        try {
+          const r = el.getBoundingClientRect();
+          box.style.top = r.top + 'px';
+          box.style.left = r.left + 'px';
+          box.style.width = r.width + 'px';
+          box.style.height = r.height + 'px';
+        } catch (_) { /* ignore */ }
+      },
+
+      _pick(e) {
+        if (!this._picking) return;
+        const raw = this._rawElementAt(e);
+        // Pre-empt the app: this click SELECTS, it must not activate anything.
+        try { e.preventDefault(); e.stopPropagation(); } catch (_) { /* ignore */ }
+        if (typeof e.stopImmediatePropagation === 'function') {
+          try { e.stopImmediatePropagation(); } catch (_) { /* ignore */ }
+        }
+        // Re-click on the feedback button toggles the picker OFF.
+        if (DOM.feedbackBtn && raw && (raw === DOM.feedbackBtn || DOM.feedbackBtn.contains(raw))) {
+          this.cancelPicker();
+          return;
+        }
+        if (this._isOwnChrome(raw)) return;  // overlay/composer — ignore, stay picking
+        this._target = describeTarget(raw);
+        this.cancelPicker();
+        this.openPanel();
+      },
+
+      openPanel() {
+        if (this._hideTimer) { clearTimeout(this._hideTimer); this._hideTimer = null; }
+        this._reqId = null;
+        const label = feedbackTargetLabel(this._target);
+        if (DOM.feedbackTargetChip) {
+          DOM.feedbackTargetChip.textContent = label ? ('Element: ' + label) : '';
+          DOM.feedbackTargetChip.hidden = !label;
+        }
+        this.setStatus('', null);
+        if (DOM.feedbackInput) {
+          DOM.feedbackInput.value = '';
+          try { DOM.feedbackInput.focus(); } catch (_) { /* non-fatal in jsdom */ }
+        }
+        if (DOM.feedbackSubmit) DOM.feedbackSubmit.disabled = true;
+        if (DOM.feedbackPanel) DOM.feedbackPanel.hidden = false;
+      },
+
+      onInput() {
+        if (!DOM.feedbackSubmit) return;
+        const v = ((DOM.feedbackInput && DOM.feedbackInput.value) || '').trim();
+        DOM.feedbackSubmit.disabled = v.length === 0;
+      },
+
+      submit() {
+        const note = ((DOM.feedbackInput && DOM.feedbackInput.value) || '').trim();
+        if (!note) { this.setStatus('Type a note first.', 'error'); return; }
+        if (!this._target) { this.setStatus('Pick an element first.', 'error'); return; }
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setStatus('Not connected.', 'error');
+          return;
+        }
+        const reqId = 'fb-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+        this._reqId = reqId;
+        const t = this._target;
+        WebSocketEngine.send({
+          type: 'feedback-submit',
+          requestId: reqId,
+          ...(State.activeThreadId ? { threadId: State.activeThreadId } : {}),
+          note: note,
+          target: {
+            selector: t.selector || '',
+            tag: t.tag || '',
+            ...(t.id ? { id: t.id } : {}),
+            ...(t.classes && t.classes.length ? { classes: t.classes } : {}),
+            ...(t.text ? { text: t.text } : {}),
+            ...(t.rect ? { rect: t.rect } : {}),
+            context: {
+              anchor: t.anchor || null,
+              route: t.route || null,
+              appearance: t.appearance || null,
+              viewport: t.viewport || null,
+              textLength: t.textLength || 0,
+              selectorStability: t.selectorStability || 'best-effort',
+              capturedAt: t.capturedAt || null,
+            },
+          },
+          page: (t.route && t.route.page) || 'chat.html',
+          ...(State.appVersion ? { appVersion: State.appVersion } : {}),
+          clientTs: Date.now(),
+        });
+        if (DOM.feedbackSubmit) DOM.feedbackSubmit.disabled = true;
+        this.setStatus('Sending…', 'info');
+      },
+
+      cancel() {
+        this._reqId = null;
+        this.hidePanel();
+      },
+
+      setStatus(msg, kind) {
+        const el = DOM.feedbackStatus;
+        if (!el) return;
+        el.textContent = msg || '';
+        el.hidden = !msg;
+        el.classList.remove('error', 'ok');
+        if (kind === 'error') el.classList.add('error');
+        else if (kind === 'ok') el.classList.add('ok');
+      },
+
+      handleAck(frame) {
+        if (!frame || frame.requestId !== this._reqId) return;  // ignore stale/unmatched
+        this._reqId = null;
+        this.setStatus(
+          frame.ok ? (frame.message || 'Thanks — feedback recorded.')
+                   : (frame.message || 'Could not record feedback.'),
+          frame.ok ? 'ok' : 'error',
+        );
+        if (frame.ok) {
+          if (this._hideTimer) clearTimeout(this._hideTimer);
+          this._hideTimer = setTimeout(() => { this._hideTimer = null; this.hidePanel(); }, 1500);
+        } else if (DOM.feedbackSubmit) {
+          DOM.feedbackSubmit.disabled = false;  // leave the note; let them retry
+        }
+      },
+
+      hidePanel() {
+        if (this._hideTimer) { clearTimeout(this._hideTimer); this._hideTimer = null; }
+        if (DOM.feedbackPanel) DOM.feedbackPanel.hidden = true;
+        if (DOM.feedbackInput) DOM.feedbackInput.value = '';
+        this.setStatus('', null);
+        this._reqId = null;
+        this._target = null;
       },
     };
 
@@ -6131,6 +6594,10 @@
       // list in ComposerConfig; now apply the effort capability gate.
       State.serverSupportsEffort = caps.effortSelection;
       ComposerConfig.applyCapability(State.serverSupportsEffort);
+      // Point-at-the-UI feedback: server advertises a feedbackSink. When
+      // absent/false the button stays hidden and no feedback-submit is sent.
+      State.serverSupportsFeedback = caps.feedback;
+      FeedbackEngine.applyCapability(State.serverSupportsFeedback);
       // Suggested actions: raw-fallback pattern (flag added after
       // parseHelloCapabilities was written; do not rely on caps.suggestedActions).
       const hasSuggestedActions = !!(frame && frame.capabilities && frame.capabilities.suggestedActions);
@@ -6470,6 +6937,11 @@
     MoonFrames.register('secret-status', (frame) => {
       // Server ack for a submitted secret. Never carries the secret.
       SecretPromptEngine.handleStatus(frame);
+    });
+
+    MoonFrames.register('feedback-ack', (frame) => {
+      // Server ack for a submitted feedback note (unicast, echoes requestId).
+      FeedbackEngine.handleAck(frame);
     });
 
     MoonFrames.register('suggested-action-set', (frame) => {
@@ -6986,6 +7458,28 @@
     if (DOM.secretPromptInput) {
       DOM.secretPromptInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); SecretPromptEngine.submit(); }
+      });
+    }
+
+    // ── Point-at-the-UI feedback wiring ───────────────────────────────────
+    if (DOM.feedbackBtn) {
+      DOM.feedbackBtn.addEventListener('click', () => FeedbackEngine.togglePicker());
+    }
+    if (DOM.feedbackSubmit) {
+      DOM.feedbackSubmit.addEventListener('click', () => FeedbackEngine.submit());
+    }
+    if (DOM.feedbackCancel) {
+      DOM.feedbackCancel.addEventListener('click', () => FeedbackEngine.cancel());
+    }
+    if (DOM.feedbackCancelX) {
+      DOM.feedbackCancelX.addEventListener('click', () => FeedbackEngine.cancel());
+    }
+    if (DOM.feedbackInput) {
+      DOM.feedbackInput.addEventListener('input', () => FeedbackEngine.onInput());
+      DOM.feedbackInput.addEventListener('keydown', (e) => {
+        // Cmd/Ctrl+Enter submits; Escape closes the composer.
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); FeedbackEngine.submit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); FeedbackEngine.cancel(); }
       });
     }
 
@@ -9649,6 +10143,8 @@
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
+      window.__MoonInternals.FeedbackEngine = FeedbackEngine;
+      window.__MoonInternals.describeTarget = describeTarget;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.SmartBarEngine = SmartBarEngine;
       window.__MoonInternals.ComposerConfig = ComposerConfig;

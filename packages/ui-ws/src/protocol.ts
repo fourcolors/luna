@@ -182,6 +182,14 @@ export interface HelloFrame {
      * command set when the flag is absent/false. Mirrors `skills`.
      */
     readonly commands?: boolean
+    /**
+     * Point-at-the-UI feedback: the server has a feedbackSink bound — it
+     * accepts `feedback-submit` frames and replies with `feedback-ack`.
+     * OPTIONAL/additive (no protocol bump): older servers omit it, and clients
+     * hide the feedback button when the flag is absent/false so a
+     * `feedback-submit` is never sent. Mirrors `commands`/`skills`.
+     */
+    readonly feedback?: boolean
   }
   /**
    * Additive server descriptor (no protocol bump). Built fresh per connection
@@ -451,6 +459,20 @@ export interface CapabilityCatalogFrame {
  */
 export interface CapabilityExecuteResultFrame {
   readonly type: "capability-execute-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message?: string
+}
+
+/**
+ * Server→client RESPONSE to a `feedback-submit`. UNICAST to the requesting
+ * socket only — it echoes the client's `requestId` and is never broadcast.
+ * `ok:false` carries a non-sensitive reason (malformed frame, sink failure).
+ * Shape mirrors `capability-execute-result` (the sole `{requestId, ok,
+ * message?}` precedent). Additive — gated on the `feedback` capability.
+ */
+export interface FeedbackAckFrame {
+  readonly type: "feedback-ack"
   readonly requestId: string
   readonly ok: boolean
   readonly message?: string
@@ -1403,6 +1425,7 @@ export type ServerFrame =
   | SkillStatusFrame
   | CapabilityCatalogFrame
   | CapabilityExecuteResultFrame
+  | FeedbackAckFrame
   | ConnectorCatalogFrame
   | ConnectorListFrame
   | ConnectorOauthRedirectFrame
@@ -1724,6 +1747,44 @@ export interface SetThreadConfigFrame {
   readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
+/**
+ * Client→server: point-at-the-UI feedback. The operator pointed at an element
+ * in the Moon window and typed a note about what should change. `requestId`
+ * correlates the unicast `feedback-ack`; `target` describes the pointed-at
+ * element (best-effort selector + context) so the note is actionable. Additive
+ * — gated on the `feedback` capability; older servers route this to the
+ * unknown-frame log and ignore it. `note` is free text and MUST be length-
+ * capped server-side (unbounded user input). The richer capture context
+ * (anchor / route / appearance / viewport) travels in `target` as-is; only
+ * `target.selector` is hard-required.
+ */
+export interface FeedbackSubmitFrame {
+  readonly type: "feedback-submit"
+  readonly requestId: string
+  readonly threadId?: string
+  readonly note: string
+  readonly target: {
+    readonly selector: string
+    readonly tag?: string
+    readonly id?: string
+    readonly classes?: ReadonlyArray<string>
+    readonly text?: string
+    readonly rect?: {
+      readonly x: number
+      readonly y: number
+      readonly w: number
+      readonly h: number
+    }
+    /** Full best-effort capture context (anchor/route/appearance/viewport),
+     * stored verbatim; not validated beyond `selector`. */
+    readonly context?: Record<string, unknown>
+  }
+  readonly page: string
+  readonly appVersion?: string
+  readonly appearance?: string
+  readonly clientTs: number
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -1767,3 +1828,4 @@ export type ClientFrame =
   | ModelRoutingSaveFrame
   | ArchiveThreadFrame
   | UnarchiveThreadFrame
+  | FeedbackSubmitFrame
