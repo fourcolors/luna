@@ -14,6 +14,10 @@ use tauri_plugin_updater::UpdaterExt;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
+// Native OS notification banners (Phase 2). `app.notification().builder()...
+// show()` lives on NotificationExt; PermissionState is the first-run gate the
+// setup() hook checks before requesting notification permission.
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +74,54 @@ fn load_local_connection() -> Result<LocalConnection, String> {
         url: "ws://127.0.0.1:4753/ui".to_string(),
         token,
     })
+}
+
+/// Raise a native OS notification banner (macOS Notification Center / Linux
+/// libnotify / Windows toast). Called from the Studio webview
+/// (useStudioNotifier) when a background/scheduled result lands, a suggested
+/// action arrives, or the agent needs input while the user is not watching the
+/// relevant thread. Thin wrapper over the notification plugin, mirroring
+/// Moon's `notify` command, so the webview only needs core:default, not the
+/// plugin's own notification IPC surface.
+///
+/// `kind` and `thread_id` are part of the pinned Phase 2 contract but unused
+/// here: the banner carries no click payload, and thread routing is handled by
+/// the frontend's focus-regain logic. They are kept in the signature for the
+/// later click-to-route phases. `body` is truncated defensively so a long job
+/// result cannot produce a wall-of-text banner. A failed `show()` (e.g. the
+/// user disabled notifications in System Settings) comes back as an error
+/// string instead of panicking, so the caller can log and move on.
+#[tauri::command]
+fn notify_thread(
+    app: tauri::AppHandle,
+    kind: String,
+    title: String,
+    body: String,
+    thread_id: String,
+) -> Result<(), String> {
+    let _ = (kind, thread_id);
+    app.notification()
+        .builder()
+        .title(title)
+        .body(truncate_notification_body(body))
+        .show()
+        .map_err(|e| e.to_string())
+}
+
+/// Cap a notification body at ~140 chars on a char boundary (not a byte
+/// slice - job text can be multi-byte). Takes MAX chars and peeks one
+/// further to detect truncation, so a huge job output is never scanned
+/// end-to-end. Appends an ellipsis when truncated. Ported verbatim from
+/// apps/ui-moon-tauri/src-tauri/src/main.rs.
+fn truncate_notification_body(body: String) -> String {
+    const MAX: usize = 140;
+    let mut chars = body.chars();
+    let head: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_some() {
+        format!("{}…", head.trim_end())
+    } else {
+        body
+    }
 }
 
 /// Holds the URL Studio was cold-launched with (macOS delivers it before the
@@ -157,11 +209,13 @@ fn main() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(LaunchDeepLink::default())
         .invoke_handler(tauri::generate_handler![
             load_local_connection,
-            take_launch_deep_link
+            take_launch_deep_link,
+            notify_thread
         ])
         .setup(|app| {
             clear_webview_cache_if_updated();
@@ -189,6 +243,24 @@ fn main() {
                     }
                 }
             });
+
+            // First-run notification permission (Phase 2). Ask once on boot so
+            // the DONE / suggested / needs-input banners can actually appear.
+            // On desktop the plugin reports Granted and the real gate is the OS
+            // prompt at first show(); on mobile this is the actual request. Every
+            // path is a soft [studio-notify] eprintln: a notification-permission
+            // hiccup must never crash boot (matches the [studio-update] pattern).
+            match app.notification().permission_state() {
+                Ok(PermissionState::Granted) => {}
+                Ok(_) => {
+                    if let Err(e) = app.notification().request_permission() {
+                        eprintln!("[studio-notify] request_permission failed: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[studio-notify] permission_state failed: {e}");
+                }
+            }
 
             // v1 staged-on-boot update check (design decision 4): one
             // check -> download -> install pass right after boot, held until
@@ -246,6 +318,30 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::local_ui_token;
+    use super::truncate_notification_body;
+
+    #[test]
+    fn notification_body_short_text_passes_through_untouched() {
+        assert_eq!(
+            truncate_notification_body("done: 3 items".into()),
+            "done: 3 items"
+        );
+        assert_eq!(truncate_notification_body(String::new()), "");
+    }
+
+    #[test]
+    fn notification_body_long_text_truncates_on_char_boundary_with_ellipsis() {
+        // Multi-byte chars: a byte-slice truncation would panic or split a
+        // char; the char-based cap must keep exactly 140 chars + ellipsis.
+        let long = "é".repeat(200);
+        let out = truncate_notification_body(long);
+        assert_eq!(out.chars().count(), 141); // 140 kept + '…'
+        assert!(out.ends_with('…'));
+
+        // Exactly at the cap: no truncation, no ellipsis.
+        let exact = "x".repeat(140);
+        assert_eq!(truncate_notification_body(exact.clone()), exact);
+    }
 
     #[test]
     fn local_token_prefers_canonical_key_and_unquotes_it() {
