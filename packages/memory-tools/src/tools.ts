@@ -3,8 +3,16 @@
  *
  *   - memory_save(text, kind?, tags?, namespace?) → { id }
  *   - memory_search(query, kind?, limit?, namespace?)
- *       → [{ id, text, score, tags, kind, namespace, createdAt, updatedAt }]
+ *       → [{ id, text, score, tags, kind, namespace, createdAt, updatedAt,
+ *            scope? }]
  *   - memory_delete(id) → { deleted }
+ *
+ * `makeMemoryTools(router, scope?)` binds every tool to a `MemoryScope`
+ * (defaulting to `OPERATOR_MEMORY_SCOPE`, i.e. `luna` observing `operator`):
+ * `memory_save` stamps records with that scope plus `provenance.source =
+ * "manual"`, `memory_search` filters hits to the bound observer/subject (and
+ * echoes each hit's stored scope when present), and `memory_delete` no-ops
+ * (returns `{ deleted: false }`) on records outside the bound scope.
  *
  * Implementation routes through `MemoryRouter` (Phase 25 router Tag) — this
  * keeps the tools agnostic to the underlying backend (sqlite-vector for the

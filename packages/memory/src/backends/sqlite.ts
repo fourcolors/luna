@@ -7,7 +7,11 @@
  *
  * Schema (DESIGN.md §5.1 extended — original `memory_keyed(k,v,ts,tags)` was
  * too flat; we add namespace/kind/id/schema_version so records round-trip
- * through the MemoryExport envelope without lossy encoding):
+ * through the MemoryExport envelope without lossy encoding). `scope_json`
+ * and `provenance_json` are nullable additive columns (portable MemoryScope /
+ * MemoryProvenance metadata); they are backfilled onto pre-existing databases
+ * by an idempotent `ALTER TABLE ... ADD COLUMN` guard at open time, and legacy
+ * rows leave both NULL (interpreted via `effectiveMemoryScope`):
  *
  *   CREATE TABLE memory_keyed (
  *     id              TEXT PRIMARY KEY,
@@ -17,7 +21,9 @@
  *     schema_version  INTEGER NOT NULL,
  *     created_at      INTEGER NOT NULL,
  *     updated_at      INTEGER NOT NULL,
- *     tags_json       TEXT NOT NULL
+ *     tags_json       TEXT NOT NULL,
+ *     scope_json      TEXT,
+ *     provenance_json TEXT
  *   );
  *   CREATE INDEX idx_memory_ns ON memory_keyed(namespace);
  *   CREATE INDEX idx_memory_kind ON memory_keyed(kind);
