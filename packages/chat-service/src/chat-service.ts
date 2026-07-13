@@ -2265,6 +2265,13 @@ export class ChatService extends Effect.Service<ChatService>()(
       /**
        * Read-only sidebar projection. Returns most-recently-active first.
        *
+       * The default 'active' projection only surfaces real conversations:
+       * empty/probe threads (no top-level user message) and archived threads
+       * are dropped in the store query BEFORE the limit (via `hasUserMessage`
+       * and `excludeIds`), so a page never under-fills with threads the user
+       * never typed in. A hidden empty thread reappears the moment its first
+       * user message lands.
+       *
        * Phase 3: when status='archived' and ThreadRegistry is wired,
        * returns archived threads from the registry (they may not have
        * SessionStore rows if archived before Phase 2, so the registry
