@@ -59,7 +59,6 @@ import {
   ObservabilityService,
   TelemetryService,
   extractText,
-  extractTextPreview,
   projectChatMessages,
   projectOne,
   SuggestedActions,
@@ -2357,12 +2356,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               return store.readFirstUserMessage(s.id).pipe(
                 Effect.catchAllCause(() => Effect.succeed(null)),
                 Effect.flatMap((first): Effect.Effect<SessionSummary, never> => {
-                  // Prefer the raw first-line text (newlines intact) for the
-                  // title; fall back to the preview so an image-only first turn
-                  // titles as "[image]" rather than staying untitled.
-                  const text = first
-                    ? extractText(first.payload) ?? extractTextPreview(first.payload)
-                    : null
+                  const text = first ? extractText(first.payload) : null
                   const derived = text
                     ? deriveTitleFromMessage(stripClientMarker(text))
                     : null
