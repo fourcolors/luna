@@ -2,8 +2,9 @@
  * End-to-end scoped-memory baseline. Uses a fresh DB so corpus state is
  * deterministic; set LUNA_EMBEDDER=ollama for semantic quality runs.
  */
-import { readFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Effect, Layer, Stream } from "effect"
 import {
@@ -20,6 +21,7 @@ import {
   scoreRetrievalEval,
 } from "@luna/memory-tools"
 import {
+  getMemoryVectorStatus,
   LunaSqliteBootstrapLive,
   makeRecord,
   MemoryLayer,
@@ -69,17 +71,22 @@ const support = Layer.mergeAll(
   LunaSqliteBootstrapLive,
   ObservabilityService.Default.pipe(Layer.provide(Clock.Default)),
 )
+// On-disk DB (not :memory:) so the preflight can reopen the same file after the
+// backend scope closes and read the ACTUAL stored vector dimensions, rather
+// than echoing the active dimension back at itself.
+const dbDir = mkdtempSync(join(tmpdir(), "luna-pipeline-eval-"))
+const dbPath = join(dbDir, "memory.db")
 const layer = Layer.unwrapEffect(
   Effect.gen(function* () {
     const backend = yield* SqliteVectorBackend
     return MemoryLayer({ rules: [{ pattern: "*", backend }] })
   }),
 ).pipe(
-  Layer.provideMerge(SqliteVectorBackend.fromPath(":memory:")),
+  Layer.provideMerge(SqliteVectorBackend.fromPath(dbPath)),
   Layer.provideMerge(support),
 )
 
-const result = await Effect.runPromise(
+const scored = await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
       const router = yield* MemoryRouterTag
@@ -132,15 +139,7 @@ const result = await Effect.runPromise(
       }))
       return {
         corpusVersion: corpus.version,
-        embedder: {
-          provider: embedder.provider,
-          model: embedder.model,
-          dimension: embedder.dimension,
-        },
-        preflight: checkEmbeddingEvalPreflight({
-          activeDimension: embedder.dimension,
-          storedDimensions: [embedder.dimension],
-        }),
+        embedder,
         retrieval: scoreRetrievalEval(retrieval),
         extraction: scoreExtractionEval(extraction),
       }
@@ -148,12 +147,37 @@ const result = await Effect.runPromise(
   ).pipe(Effect.provide(layer)),
 )
 
-console.log(JSON.stringify(result, null, 2))
-if (
-  !result.preflight.valid ||
-  result.retrieval.recallAtK < 1 ||
-  result.retrieval.forbiddenHitRate > 0 ||
-  result.extraction.recall < 1
-) {
-  process.exitCode = 1
+try {
+  // The backend scope has closed, so the file holds every committed vector.
+  // Read the real per-row dimensions the corpus was embedded at; the preflight
+  // then refuses to score when they disagree with the active embedder.
+  const status = await Effect.runPromise(
+    getMemoryVectorStatus({ dbPath, embedder: scored.embedder }),
+  )
+  const result = {
+    corpusVersion: scored.corpusVersion,
+    embedder: {
+      provider: scored.embedder.provider,
+      model: scored.embedder.model,
+      dimension: scored.embedder.dimension,
+    },
+    preflight: checkEmbeddingEvalPreflight({
+      activeDimension: scored.embedder.dimension,
+      storedDimensions: status.groups.map((group) => group.dimension),
+    }),
+    retrieval: scored.retrieval,
+    extraction: scored.extraction,
+  }
+
+  console.log(JSON.stringify(result, null, 2))
+  if (
+    !result.preflight.valid ||
+    result.retrieval.recallAtK < 1 ||
+    result.retrieval.forbiddenHitRate > 0 ||
+    result.extraction.recall < 1
+  ) {
+    process.exitCode = 1
+  }
+} finally {
+  rmSync(dbDir, { recursive: true, force: true })
 }
