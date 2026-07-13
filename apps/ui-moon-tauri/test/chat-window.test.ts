@@ -3361,126 +3361,60 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Workflows gallery panel (PRD Part C W3)
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Workflows gallery', () => {
+  describe('Feature: Workflows — /workflows command opens the panel window', () => {
+    // The in-chat WorkflowsEngine overlay was retired: the gallery lives in
+    // its own system panel window (open_widget kind 'workflows', rendered by
+    // panels/workflows.js — covered by panel-workflows.test.ts). The chat
+    // window keeps exactly two responsibilities, pinned here: gate the
+    // /workflows slash command on the hello `workflows` capability, and
+    // summon the panel window when the command dispatches.
     const M = () => (window as any).__MoonInternals
-    const sentFrames: any[] = []
 
     beforeEach(() => {
-      sentFrames.length = 0
-      const m = M()
-      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-      m.State.ws = { readyState: WebSocket.OPEN }
-      m.State.serverSupportsWorkflows = false
-      m.State.workflows = []
-      m.State.workflowRuns = {}
-      m.State.selectedWorkflowId = null
-      m.State.workflowsPanelOpen = false
-      // Ensure panel and button are hidden at start of each test.
-      const panel = document.getElementById('workflows-panel')
-      if (panel) panel.hidden = true
-      const btn = document.getElementById('workflows-btn')
-      if (btn) (btn as HTMLElement).hidden = true
+      M().State.serverSupportsWorkflows = false
     })
 
-    it('(a) applyList populates State and render() builds tiles with correct schedule/on-demand badges', () => {
-      const m = M()
-      m.WorkflowsEngine.openPanel()
-
-      m.WorkflowsEngine.applyList([
-        {
-          id: 'job-1', kind: 'cron', label: 'Nightly Digest',
-          source: 'server', schedule: '0 3 * * *', onDemand: false,
-          enabled: true, nextRunAt: Date.now() + 3_600_000, lastRun: null,
-          lastStatus: 'success', createdAt: Date.now(),
-        },
-        {
-          id: 'job-2', kind: 'manual', label: 'On-Demand Report',
-          source: 'server', schedule: null, onDemand: true,
-          enabled: true, nextRunAt: null, lastRun: Date.now() - 60_000,
-          lastStatus: null, createdAt: Date.now(),
-        },
-      ])
-
-      expect(m.State.workflows).toHaveLength(2)
-
-      const tiles = document.querySelectorAll('#workflows-list .workflow-tile')
-      expect(tiles.length).toBe(2)
-
-      // First tile: scheduled badge contains the cron expression.
-      expect(tiles[0]!.textContent).toContain('Nightly Digest')
-      const badge0 = tiles[0]!.querySelector('.workflow-tile-badge') as HTMLElement
-      expect(badge0).not.toBeNull()
-      expect(badge0!.textContent).toContain('scheduled')
-      expect(badge0!.textContent).toContain('0 3 * * *')
-
-      // Second tile: on-demand badge.
-      expect(tiles[1]!.textContent).toContain('On-Demand Report')
-      const badge1 = tiles[1]!.querySelector('.workflow-tile-badge') as HTMLElement
-      expect(badge1!.textContent).toContain('on-demand')
-    })
-
-    it('(b) select(jobId) sets selectedWorkflowId and sends a workflow-runs-request frame', () => {
-      const m = M()
-      m.WorkflowsEngine.openPanel()
-
-      m.WorkflowsEngine.applyList([
-        {
-          id: 'job-x', kind: 'cron', label: 'Daily Job',
-          source: 'server', schedule: '0 8 * * *', onDemand: false,
-          enabled: true, nextRunAt: null, lastRun: null, lastStatus: null,
-          createdAt: Date.now(),
-        },
-      ])
-
-      // Click the tile to select it.
-      const tile = document.querySelector('#workflows-list .workflow-tile') as HTMLElement
-      expect(tile).not.toBeNull()
-      tile.click()
-
-      expect(m.State.selectedWorkflowId).toBe('job-x')
-      expect(sentFrames).toHaveLength(1)
-      expect(sentFrames[0]).toMatchObject({ type: 'workflow-runs-request', jobId: 'job-x' })
-    })
-
-    it('(c) applyCapability(false) clears workflows state and closes the panel', () => {
-      const m = M()
-
-      // Seed state: capability on, some workflows, a selection.
-      m.WorkflowsEngine.applyCapability(true)
-      m.WorkflowsEngine.applyList([
-        {
-          id: 'job-z', kind: 'cron', label: 'Weekly Sync',
-          source: 'server', schedule: '0 0 * * 0', onDemand: false,
-          enabled: true, nextRunAt: null, lastRun: null, lastStatus: 'success',
-          createdAt: Date.now(),
-        },
-      ])
-      m.State.workflowRuns['job-z'] = [
-        { id: 'run-1', startedAt: Date.now() - 5000, finishedAt: Date.now(), status: 'success', attempt: 1, error: null },
-      ]
-      m.State.selectedWorkflowId = 'job-z'
-      m.WorkflowsEngine.openPanel()
-
-      expect(m.State.workflows).toHaveLength(1)
-      expect(m.State.workflowsPanelOpen).toBe(true)
-      // NOTE: the workflows header toggle button was removed in the top-bar
-      // redesign; applyCapability is null-guarded on `DOM.workflowsBtn`, so the
-      // surviving coverage is the engine/panel state transitions below.
-
-      // Drive the capability flag through the REAL path (the hello handler) so
-      // the assertion below is not vacuous (applyCapability itself does not set
-      // serverSupportsWorkflows — review G3).
-      m.WebSocketEngine.handleFrame({
+    const helloWith = (capabilities: Record<string, boolean>) =>
+      M().handleFrame({
         type: 'hello',
         protocolVersion: 2,
         kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, setup: false },
+        capabilities: { chat: true, streamingDeltas: true, setup: false, ...capabilities },
       })
 
-      expect(m.State.serverSupportsWorkflows).toBe(false)
-      expect(m.State.workflows).toHaveLength(0)
-      expect(m.State.selectedWorkflowId).toBeNull()
-      expect(m.State.workflowsPanelOpen).toBe(false)
+    it('(a) hello with the workflows capability surfaces the /workflows command', () => {
+      helloWith({ workflows: true })
+      expect(M().State.serverSupportsWorkflows).toBe(true)
+      const ids = M().SlashMenu.buildCommands().map((c: any) => c.id)
+      expect(ids).toContain('workflows')
+    })
+
+    it('(b) hello without the workflows capability hides the /workflows command', () => {
+      helloWith({})
+      expect(M().State.serverSupportsWorkflows).toBe(false)
+      const ids = M().SlashMenu.buildCommands().map((c: any) => c.id)
+      expect(ids).not.toContain('workflows')
+    })
+
+    it('(c) dispatching /workflows opens the workflows panel window via open_widget', () => {
+      const invoke = vi.fn().mockResolvedValue('panel-workflows')
+      ;(window as any).__TAURI__.core = { invoke }
+      helloWith({ workflows: true })
+
+      M().SlashMenu.dispatch('workflows', '')
+
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'workflows' })
+    })
+
+    it('(d) the retired in-chat overlay is really gone (no engine, no panel DOM)', () => {
+      expect(M().WorkflowsEngine).toBeUndefined()
+      expect(document.getElementById('workflows-panel')).toBeNull()
+    })
+
+    it('(e) dispatching /workflows off-Tauri (no __TAURI__.core) degrades to a no-op without throwing', () => {
+      delete ((window as any).__TAURI__ as any).core
+      helloWith({ workflows: true })
+      expect(() => M().SlashMenu.dispatch('workflows', '')).not.toThrow()
     })
   })
 

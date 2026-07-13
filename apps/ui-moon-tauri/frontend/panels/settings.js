@@ -34,8 +34,9 @@
   // also summons them by itself (needs-input auto-opens Now) and the agent
   // can summon any of them by name.
   var WIDGETS = [
-    { kind: 'now',      label: 'Now' },
-    { kind: 'briefing', label: 'Briefing' },
+    { kind: 'now',       label: 'Now' },
+    { kind: 'briefing',  label: 'Briefing' },
+    { kind: 'workflows', label: 'Workflows' },
   ];
 
   var mod = {
