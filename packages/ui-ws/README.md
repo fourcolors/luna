@@ -36,7 +36,7 @@ switcher list, each model's valid `efforts`, and an optional
 |------|---------|
 | `hello` | sent on connect (carries capabilities) |
 | `event` / `drop` / `ping` / `bye` | obs path (unchanged from v1) |
-| `thread-list` | response to `list-threads`; sidebar projection |
+| `thread-list` | response to `list-threads`; sidebar projection (default view hides empty/probe threads with no user message and archived threads, filtered before the limit) |
 | `thread-created` | server-side new-thread completion (auto-subscribes) |
 | `thread-snapshot` | full replay on first `subscribe(threadId)` (carries `throughSeq`) |
 | `user-accepted` | echo of an accepted user-message with persisted `seq` |

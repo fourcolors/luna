@@ -81,6 +81,16 @@ const SCHEMA_V1 = `
     ON sessions(status);
 `
 
+// Version 2: partial index backing the `hasUserMessage` correlated EXISTS in
+// list(). Must ship as its own migration version, not appended to SCHEMA_V1:
+// applyMigration early-returns once (sessions, 1) is recorded, so any DDL added
+// to SCHEMA_V1 never reaches a pre-existing database. A new version advances an
+// already-v1 DB to v2 and creates the index there too.
+const SCHEMA_V2 = `
+  CREATE INDEX IF NOT EXISTS idx_messages_toplevel_user
+    ON messages(session_id) WHERE kind = 'user' AND parent_id IS NULL;
+`
+
 // ── Row shapes (mirror SQL columns 1:1) ────────────────────────────────────
 interface SessionDbRow {
   id: string
@@ -275,6 +285,7 @@ export const makeSessionStoreSqlite = (
       // applied_at column (it's an audit timestamp, not a domain time).
       ensureSchemaVersions(db)
       applyMigration(db, "sessions", 1, SCHEMA_V1, Date.now())
+      applyMigration(db, "sessions", 2, SCHEMA_V2, Date.now())
 
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -328,6 +339,21 @@ export const makeSessionStoreSqlite = (
           `AND parent_id IS NULL ORDER BY seq ASC LIMIT 1`,
       )
       const sessionsList = db.query(`SELECT * FROM sessions`)
+      // Single source of truth for the "real thread" predicate: a session with
+      // a top-level user message - mirrors `firstUserMessage`. Both list filters
+      // (the `hasUserMessage` plain path and the `excludeIds` path) compose this
+      // exact string so they can never drift on what counts as a real thread.
+      // The correlated EXISTS is served by the partial index
+      // `idx_messages_toplevel_user`, so it is a per-session index seek that
+      // stops at the first match rather than a full scan of `messages`.
+      const hasUserExists =
+        `EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
+        `AND m.kind = 'user' AND m.parent_id IS NULL)`
+      // Same as `sessionsList` but restricted to real threads, so list()'s
+      // `hasUserMessage` filter drops empty/probe threads BEFORE the limit.
+      const sessionsListWithUser = db.query(
+        `SELECT * FROM sessions s WHERE ${hasUserExists}`,
+      )
 
       const create = (input: {
         readonly id: string
@@ -618,7 +644,15 @@ export const makeSessionStoreSqlite = (
       ): Effect.Effect<StoredMessage | null, never> =>
         Effect.sync(() => {
           const row = firstUserMessage.get(sessionId) as MessageDbRow | undefined
-          return row ? rowToMessage(row) : null
+          if (!row) return null
+          // rowToMessage does JSON.parse(content_json); a corrupt row must not
+          // throw a defect that bubbles up and bricks the sidebar list — the
+          // caller treats an unreadable first message the same as "none".
+          try {
+            return rowToMessage(row)
+          } catch {
+            return null
+          }
         })
 
       const list = (
@@ -626,7 +660,29 @@ export const makeSessionStoreSqlite = (
       ): Stream.Stream<SessionSummary, never> =>
         Stream.unwrap(
           Effect.sync(() => {
-            let rows = sessionsList.all() as SessionDbRow[]
+            const excludeIds =
+              q.excludeIds && q.excludeIds.length > 0 ? q.excludeIds : null
+            const rawRows = excludeIds
+              ? (() => {
+                  const clauses: string[] = []
+                  if (q.hasUserMessage) clauses.push(hasUserExists)
+                  // One bound parameter per excluded id, so the count is capped
+                  // by SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766 on older
+                  // builds, 65535 on the current bun:sqlite bundle). Callers
+                  // pass only archived thread ids, which never reach that scale.
+                  clauses.push(
+                    `s.id NOT IN (${excludeIds.map(() => "?").join(", ")})`,
+                  )
+                  return db
+                    .query(
+                      `SELECT * FROM sessions s WHERE ${clauses.join(" AND ")}`,
+                    )
+                    .all(...excludeIds)
+                })()
+              : (
+                  q.hasUserMessage ? sessionsListWithUser : sessionsList
+                ).all()
+            const rows = rawRows as SessionDbRow[]
             const summaries = rows.map(rowToSummary)
             let filtered = summaries
             if (q.status)

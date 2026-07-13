@@ -302,6 +302,103 @@ d("SessionStore.fromPath (sqlite)", () => {
     expect(ids).toEqual(["new", "old"])
   })
 
+  it("list hasUserMessage filters empty threads BEFORE the limit", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        // A real thread created FIRST (oldest), then many empty probes that
+        // sort ahead of it by createdAt.
+        yield* store.create({ id: "real", options: { model: "m" }, createdAt: 1 })
+        yield* store.appendMessage({
+          sessionId: "real",
+          messageId: "u1",
+          ts: 1,
+          parentId: null,
+          kind: "user",
+          payload: { text: "hi" },
+        })
+        // A thread whose only user message is parented (subagent-internal) must
+        // still count as empty - mirrors the firstUserMessage predicate.
+        yield* store.create({ id: "nested", options: { model: "m" }, createdAt: 2 })
+        yield* store.appendMessage({
+          sessionId: "nested",
+          messageId: "u2",
+          ts: 2,
+          parentId: "some-parent",
+          kind: "user",
+          payload: { text: "sub" },
+        })
+        for (let i = 0; i < 5; i++) {
+          yield* store.create({
+            id: `empty-${i}`,
+            options: { model: "m" },
+            createdAt: 10 + i,
+          })
+        }
+        const rows = yield* Stream.runCollect(
+          store.list({ orderBy: "lastMessageAt", limit: 2, hasUserMessage: true }),
+        )
+        return Array.from(rows).map((s) => s.id)
+      }),
+    )
+    expect(ids).toEqual(["real"])
+  })
+
+  it("list excludeIds drops sessions in SQL BEFORE the limit", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        // Two "excluded" (e.g. archived) threads with the NEWEST activity so
+        // they would fill the top `limit` slots if filtered after the limit,
+        // plus two real threads that must survive.
+        const seedUser = (id: string, ts: number) =>
+          store.appendMessage({
+            sessionId: id,
+            messageId: `u-${id}`,
+            ts,
+            parentId: null,
+            kind: "user",
+            payload: { text: "hi" },
+          })
+        for (const [id, ts] of [
+          ["ex-0", 100],
+          ["ex-1", 101],
+          ["keep-0", 50],
+          ["keep-1", 51],
+        ] as const) {
+          yield* store.create({ id, options: { model: "m" }, createdAt: ts })
+          yield* seedUser(id, ts)
+        }
+        const rows = yield* Stream.runCollect(
+          store.list({
+            orderBy: "lastMessageAt",
+            limit: 2,
+            hasUserMessage: true,
+            excludeIds: ["ex-0", "ex-1"],
+          }),
+        )
+        return Array.from(rows).map((s) => s.id)
+      }),
+    )
+    // limit=2: both kept threads returned; neither excluded id occupies a slot.
+    expect(ids.sort()).toEqual(["keep-0", "keep-1"])
+  })
+
+  it("list excludeIds empty/omitted is a no-op", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({ id: "s-0", options: { model: "m" }, createdAt: 1 })
+        yield* store.create({ id: "s-1", options: { model: "m" }, createdAt: 2 })
+        const rows = yield* Stream.runCollect(
+          store.list({ orderBy: "createdAt", excludeIds: [] }),
+        )
+        return Array.from(rows).map((s) => s.id)
+      }),
+    )
+    expect(ids.sort()).toEqual(["s-0", "s-1"])
+  })
+
   it("preview tracks user/assistant text only; lastMessageAt bumps on every kind", async () => {
     const summary = await provideMem(
       Effect.gen(function* () {
@@ -506,6 +603,61 @@ d("SessionStore.fromPath (sqlite)", () => {
         ),
       )
       expect(id).toBe("after-migrate")
+    } finally {
+      cleanupTmp(dbPath)
+    }
+  })
+
+  it("v2 migration lands the partial index on a pre-existing v1 database", async () => {
+    const dbPath = tmpDb()
+    const { Database } = (await import("bun:sqlite")) as {
+      Database: new (p: string) => {
+        run: (sql: string) => void
+        query: (sql: string) => { get: (...p: unknown[]) => unknown }
+        close: () => void
+      }
+    }
+    const indexRow = (p: string) => {
+      const raw = new Database(p)
+      try {
+        return raw
+          .query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+          )
+          .get("idx_messages_toplevel_user") as
+          | { name: string }
+          | undefined
+          | null
+      } finally {
+        raw.close()
+      }
+    }
+    try {
+      // First open runs both migrations and creates the index.
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* SessionStore
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
+        ),
+      )
+      // Simulate a DB stuck at (sessions, 1): drop the index and forget the v2
+      // ledger row so it looks like it was created before this migration shipped.
+      const raw = new Database(dbPath)
+      raw.run("DROP INDEX IF EXISTS idx_messages_toplevel_user")
+      raw.run("DELETE FROM schema_versions WHERE component = 'sessions' AND version = 2")
+      raw.close()
+      expect(indexRow(dbPath) ?? null).toBeNull()
+
+      // Reopening must advance the existing v1 DB to v2 and recreate the index.
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* SessionStore
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
+        ),
+      )
+      expect(indexRow(dbPath)?.name).toBe("idx_messages_toplevel_user")
     } finally {
       cleanupTmp(dbPath)
     }

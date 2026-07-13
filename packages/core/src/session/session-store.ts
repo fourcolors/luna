@@ -296,6 +296,19 @@ export class SessionStore extends Effect.Service<SessionStore>()(
               if (q.parentId)
                 rows = rows.filter((r) => r.parentId === q.parentId)
               if (q.tag) rows = rows.filter((r) => r.tags.includes(q.tag!))
+              if (q.hasUserMessage)
+                rows = rows.filter((r) => {
+                  const msgs = state.messages.get(r.id)
+                  return (
+                    msgs?.some(
+                      (m) => m.kind === "user" && m.parentId === null,
+                    ) ?? false
+                  )
+                })
+              if (q.excludeIds && q.excludeIds.length > 0) {
+                const excluded = new Set(q.excludeIds)
+                rows = rows.filter((r) => !excluded.has(r.id))
+              }
               if (q.orderBy === "lastMessageAt") {
                 rows.sort(
                   (a, b) =>

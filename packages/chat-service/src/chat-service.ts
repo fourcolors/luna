@@ -2265,6 +2265,13 @@ export class ChatService extends Effect.Service<ChatService>()(
       /**
        * Read-only sidebar projection. Returns most-recently-active first.
        *
+       * The default 'active' projection only surfaces real conversations:
+       * empty/probe threads (no top-level user message) and archived threads
+       * are dropped in the store query BEFORE the limit (via `hasUserMessage`
+       * and `excludeIds`), so a page never under-fills with threads the user
+       * never typed in. A hidden empty thread reappears the moment its first
+       * user message lands.
+       *
        * Phase 3: when status='archived' and ThreadRegistry is wired,
        * returns archived threads from the registry (they may not have
        * SessionStore rows if archived before Phase 2, so the registry
@@ -2303,38 +2310,33 @@ export class ChatService extends Effect.Service<ChatService>()(
         // status when the registry is wired. Archived threads must NOT appear in
         // the default (active) sidebar — they are only returned when status='archived'.
         // Best-effort: if registry is absent, fall through without filtering.
-        const sessionList = store
-          .list({ orderBy: "lastMessageAt", limit })
-          .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
-        // Derive a display title from the thread's FIRST top-level user message
-        // (same heuristic the first-turn path uses). The stored payload carries
-        // the client-identity marker prepended at ingest, which the first-turn
-        // path never saw — strip it so both paths derive from the raw user
-        // text. Null when the thread has no user message yet or the store read
-        // fails — the client shows its own untitled fallback then.
-        const deriveFirstMessageTitle = (
-          sessionId: string,
-        ): Effect.Effect<string | null, never> =>
-          // Bounded LIMIT-1 lookup — never materializes the whole message log,
-          // so an un-titleable thread (no user message, marker-only, blank) is
-          // cheap to re-check on every sidebar open.
-          store.readFirstUserMessage(sessionId).pipe(
-            Effect.map((first) => {
-              if (first === null) return null
-              const text = extractText(first.payload)
-              return text ? deriveTitleFromMessage(stripClientMarker(text)) : null
-            }),
-            Effect.catchAll(() => Effect.succeed(null)),
-          )
-        // Overlay display titles onto summaries that lack one. The SessionStore
-        // `title` column is write-once at INSERT (Moon never sends one), while
-        // the first-turn heuristic writes derived titles to the ThreadRegistry —
-        // so without this overlay every active row projects title=null and the
-        // sidebar renders "untitled". Preference order per row:
+        // Empty/probe threads (spawned but never typed in) are excluded at the
+        // store BEFORE the limit via `hasUserMessage` - otherwise recent probes,
+        // which sort by createdAt, crowd the top `limit` slots and evict real
+        // conversations that would then never be fetched. A real sidebar thread
+        // is one with at least one top-level user message; a thread is not a
+        // conversation until the user types, so even explicitly-titled empties
+        // are hidden. Archived threads are excluded the same way via
+        // `excludeIds` - filtering them here (before the limit) rather than
+        // post-filtering the limited page keeps the page from under-filling
+        // when archived threads land in the top `limit` slots.
+        const listActive = (
+          excludeIds: ReadonlyArray<string>,
+        ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
+          store
+            .list({ orderBy: "lastMessageAt", limit, hasUserMessage: true, excludeIds })
+            .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+        // Resolve a display title for each (already-real) row. Preference order:
         //   1. the SessionStore title (explicitly set at creation);
         //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
         //   3. derive-on-read from the first user message (threads predating the
         //      heuristic), persisted back to the registry so it runs once.
+        // Every listed session is guaranteed to have a first top-level user
+        // message (the store filtered on it), so the derive path always has raw
+        // text to work from. The stored payload carries the client-identity
+        // marker prepended at ingest, which the first-turn path never saw -
+        // strip it so both derive paths agree. readFirstUserMessage is a bounded
+        // LIMIT-1 query (never materializes the whole log), so it is cheap.
         const resolveTitles = (
           sessions: ReadonlyArray<SessionSummary>,
           regTitles: ReadonlyMap<string, string | null>,
@@ -2342,40 +2344,71 @@ export class ChatService extends Effect.Service<ChatService>()(
         ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
           Effect.forEach(
             sessions,
-            (s) => {
+            (s): Effect.Effect<SessionSummary, never> => {
               if (s.title !== null && s.title !== "") return Effect.succeed(s)
               const regTitle = regTitles.get(s.id)
               if (regTitle) return Effect.succeed({ ...s, title: regTitle })
-              return deriveFirstMessageTitle(s.id).pipe(
-                Effect.tap((derived) =>
-                  derived && persist ? persist(s.id, derived) : Effect.void,
-                ),
-                Effect.map((derived) => (derived ? { ...s, title: derived } : s)),
+              // catchAllCause (not catchAll): readFirstUserMessage/rowToMessage
+              // do a JSON.parse in Effect.sync, so a corrupt content_json is a
+              // DEFECT, not a typed failure. catchAll misses defects — one bad
+              // row would then abort the whole forEach and brick the sidebar
+              // list. catchAllCause degrades that row to "untitled" instead.
+              return store.readFirstUserMessage(s.id).pipe(
+                Effect.catchAllCause(() => Effect.succeed(null)),
+                Effect.flatMap((first): Effect.Effect<SessionSummary, never> => {
+                  const text = first ? extractText(first.payload) : null
+                  const derived = text
+                    ? deriveTitleFromMessage(stripClientMarker(text))
+                    : null
+                  const persistEff =
+                    derived && persist ? persist(s.id, derived) : Effect.void
+                  return persistEff.pipe(
+                    Effect.as(derived ? { ...s, title: derived } : s),
+                  )
+                }),
               )
             },
             { concurrency: 4 },
           )
         if (Option.isNone(threadRegistry)) {
-          return sessionList.pipe(
+          return listActive([]).pipe(
             Effect.flatMap((sessions) => resolveTitles(sessions, new Map(), null)),
           )
         }
         const reg = threadRegistry.value
         return Effect.gen(function* () {
-          const [sessions, archivedRows, activeRows] = yield* Effect.all([
-            sessionList,
-            reg.listByStatus("archived").pipe(
-              Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
+          // Archived ids must resolve BEFORE the store list so they can be
+          // excluded in-query (before the limit). The active-titles fetch has
+          // no such dependency, so it still runs in parallel with store.list.
+          // Archived exclusion is now the ONLY gate (in-query, before the
+          // limit) — so treating an archive-read failure as "no archived
+          // threads" would leak EVERY archived thread back into the active
+          // sidebar. Fall back to deriving the archived set from the full
+          // registry list; only if THAT also fails do we accept an empty set
+          // (transient over-inclusion) rather than fail the whole sidebar.
+          const archivedRows = yield* reg.listByStatus("archived").pipe(
+            Effect.map((rows) => rows.map((r) => ({ id: r.id }))),
+            Effect.catchAllCause(() =>
+              reg.list().pipe(
+                Effect.map((all) =>
+                  all.filter((r) => r.status === "archived").map((r) => ({ id: r.id })),
+                ),
+                Effect.catchAllCause(() =>
+                  Effect.succeed([] as ReadonlyArray<{ readonly id: string }>),
+                ),
+              ),
             ),
+          )
+          const archivedIds = new Set(archivedRows.map((r) => r.id))
+          const [sessions, activeRows] = yield* Effect.all([
+            listActive([...archivedIds]),
             reg.listByStatus("active").pipe(
               Effect.catchAllCause(() =>
                 Effect.succeed([] as readonly { readonly id: string; readonly title: string | null }[]),
               ),
             ),
           ])
-          const archivedIds = new Set(archivedRows.map((r) => r.id))
           const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
-          const visible = sessions.filter((s) => !archivedIds.has(s.id))
           // Persist derived titles so legacy threads are derived exactly once.
           // setTitleIfNull is clock-neutral: listing the sidebar is a read, so it
           // must never bump last_active_at (that would reset the 14-day
@@ -2385,7 +2418,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             reg
               .setTitleIfNull(id, title)
               .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
-          return yield* resolveTitles(visible, regTitles, persist)
+          return yield* resolveTitles(sessions, regTitles, persist)
         })
       }
 
