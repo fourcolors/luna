@@ -328,6 +328,13 @@ export const makeSessionStoreSqlite = (
           `AND parent_id IS NULL ORDER BY seq ASC LIMIT 1`,
       )
       const sessionsList = db.query(`SELECT * FROM sessions`)
+      // Session ids that have a top-level user message - mirrors the
+      // `firstUserMessage` predicate. Used by list()'s `hasUserMessage` filter
+      // to drop empty/probe threads BEFORE the limit is applied.
+      const sessionsWithUserMessage = db.query(
+        `SELECT DISTINCT session_id FROM messages ` +
+          `WHERE kind = 'user' AND parent_id IS NULL`,
+      )
 
       const create = (input: {
         readonly id: string
@@ -635,6 +642,14 @@ export const makeSessionStoreSqlite = (
               filtered = filtered.filter((r) => r.parentId === q.parentId)
             if (q.tag)
               filtered = filtered.filter((r) => r.tags.includes(q.tag!))
+            if (q.hasUserMessage) {
+              const withUser = new Set(
+                (
+                  sessionsWithUserMessage.all() as { session_id: string }[]
+                ).map((r) => r.session_id),
+              )
+              filtered = filtered.filter((r) => withUser.has(r.id))
+            }
             if (q.orderBy === "lastMessageAt") {
               filtered.sort(
                 (a, b) =>

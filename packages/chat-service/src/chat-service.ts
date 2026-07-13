@@ -2303,23 +2303,27 @@ export class ChatService extends Effect.Service<ChatService>()(
         // status when the registry is wired. Archived threads must NOT appear in
         // the default (active) sidebar — they are only returned when status='archived'.
         // Best-effort: if registry is absent, fall through without filtering.
+        // Empty/probe threads (spawned but never typed in) are excluded at the
+        // store BEFORE the limit via `hasUserMessage` - otherwise recent probes,
+        // which sort by createdAt, crowd the top `limit` slots and evict real
+        // conversations that would then never be fetched. A real sidebar thread
+        // is one with at least one top-level user message; a thread is not a
+        // conversation until the user types, so even explicitly-titled empties
+        // are hidden.
         const sessionList = store
-          .list({ orderBy: "lastMessageAt", limit })
+          .list({ orderBy: "lastMessageAt", limit, hasUserMessage: true })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
-        // Resolve a display title AND filter empty/probe threads out of the
-        // sidebar. Preference order per row:
+        // Resolve a display title for each (already-real) row. Preference order:
         //   1. the SessionStore title (explicitly set at creation);
         //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
         //   3. derive-on-read from the first user message (threads predating the
         //      heuristic), persisted back to the registry so it runs once.
-        // A thread that has NO title from any source AND no first top-level user
-        // message is an empty/probe thread (spawned but never used) — it is
-        // dropped entirely (returns null) so the sidebar shows only real
-        // conversations. Titled threads are always kept. The stored payload
-        // carries the client-identity marker prepended at ingest, which the
-        // first-turn path never saw — strip it so both derive paths agree.
-        // readFirstUserMessage is a bounded LIMIT-1 query (never materializes
-        // the whole log), so the empty-check + derive is cheap.
+        // Every listed session is guaranteed to have a first top-level user
+        // message (the store filtered on it), so the derive path always has raw
+        // text to work from. The stored payload carries the client-identity
+        // marker prepended at ingest, which the first-turn path never saw -
+        // strip it so both derive paths agree. readFirstUserMessage is a bounded
+        // LIMIT-1 query (never materializes the whole log), so it is cheap.
         const resolveTitles = (
           sessions: ReadonlyArray<SessionSummary>,
           regTitles: ReadonlyMap<string, string | null>,
@@ -2327,33 +2331,26 @@ export class ChatService extends Effect.Service<ChatService>()(
         ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
           Effect.forEach(
             sessions,
-            (s): Effect.Effect<SessionSummary | null, never> => {
+            (s): Effect.Effect<SessionSummary, never> => {
               if (s.title !== null && s.title !== "") return Effect.succeed(s)
               const regTitle = regTitles.get(s.id)
               if (regTitle) return Effect.succeed({ ...s, title: regTitle })
               return store.readFirstUserMessage(s.id).pipe(
                 Effect.catchAll(() => Effect.succeed(null)),
-                Effect.flatMap(
-                  (first): Effect.Effect<SessionSummary | null, never> => {
-                    if (first === null) return Effect.succeed(null) // empty → hide
-                    const text = extractText(first.payload)
-                    const derived = text
-                      ? deriveTitleFromMessage(stripClientMarker(text))
-                      : null
-                    const persistEff =
-                      derived && persist ? persist(s.id, derived) : Effect.void
-                    return persistEff.pipe(
-                      Effect.as(derived ? { ...s, title: derived } : s),
-                    )
-                  },
-                ),
+                Effect.flatMap((first): Effect.Effect<SessionSummary, never> => {
+                  const text = first ? extractText(first.payload) : null
+                  const derived = text
+                    ? deriveTitleFromMessage(stripClientMarker(text))
+                    : null
+                  const persistEff =
+                    derived && persist ? persist(s.id, derived) : Effect.void
+                  return persistEff.pipe(
+                    Effect.as(derived ? { ...s, title: derived } : s),
+                  )
+                }),
               )
             },
             { concurrency: 4 },
-          ).pipe(
-            Effect.map((rows) =>
-              rows.filter((r): r is SessionSummary => r !== null),
-            ),
           )
         if (Option.isNone(threadRegistry)) {
           return sessionList.pipe(

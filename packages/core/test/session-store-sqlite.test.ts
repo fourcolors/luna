@@ -302,6 +302,48 @@ d("SessionStore.fromPath (sqlite)", () => {
     expect(ids).toEqual(["new", "old"])
   })
 
+  it("list hasUserMessage filters empty threads BEFORE the limit", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        // A real thread created FIRST (oldest), then many empty probes that
+        // sort ahead of it by createdAt.
+        yield* store.create({ id: "real", options: { model: "m" }, createdAt: 1 })
+        yield* store.appendMessage({
+          sessionId: "real",
+          messageId: "u1",
+          ts: 1,
+          parentId: null,
+          kind: "user",
+          payload: { text: "hi" },
+        })
+        // A thread whose only user message is parented (subagent-internal) must
+        // still count as empty - mirrors the firstUserMessage predicate.
+        yield* store.create({ id: "nested", options: { model: "m" }, createdAt: 2 })
+        yield* store.appendMessage({
+          sessionId: "nested",
+          messageId: "u2",
+          ts: 2,
+          parentId: "some-parent",
+          kind: "user",
+          payload: { text: "sub" },
+        })
+        for (let i = 0; i < 5; i++) {
+          yield* store.create({
+            id: `empty-${i}`,
+            options: { model: "m" },
+            createdAt: 10 + i,
+          })
+        }
+        const rows = yield* Stream.runCollect(
+          store.list({ orderBy: "lastMessageAt", limit: 2, hasUserMessage: true }),
+        )
+        return Array.from(rows).map((s) => s.id)
+      }),
+    )
+    expect(ids).toEqual(["real"])
+  })
+
   it("preview tracks user/assistant text only; lastMessageAt bumps on every kind", async () => {
     const summary = await provideMem(
       Effect.gen(function* () {

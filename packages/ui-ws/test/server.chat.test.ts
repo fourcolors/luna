@@ -284,6 +284,11 @@ const driveSequence = (
   }>,
   totalFrames: number,
   timeoutMs = 5000,
+  // Optional early-resolve predicate. When provided, the sequence resolves as
+  // soon as a frame matches it (after all steps have fired), independent of the
+  // exact frame count - robust when a driven turn emits a variable number of
+  // interleaved obs frames.
+  resolveWhen?: (f: ServerFrame, all: ReadonlyArray<ServerFrame>) => boolean,
 ): Promise<ServerFrame[]> =>
   new Promise((resolve, reject) => {
     const ws = new WebSocket(url, {
@@ -315,7 +320,11 @@ const driveSequence = (
           }
         }
 
-        if (out.length >= totalFrames) {
+        const done =
+          resolveWhen !== undefined
+            ? stepIdx >= steps.length && out.some((f) => resolveWhen(f, out))
+            : out.length >= totalFrames
+        if (done) {
           clearTimeout(timer)
           ws.close()
           resolve(out)
@@ -444,13 +453,28 @@ describe("UIWebSocketServer (chat routing)", () => {
           ],
         },
         {
+          // A thread is not a real conversation (and stays out of the sidebar
+          // list) until the user types, so send a first user-message before
+          // listing. The explicit "alpha" title still wins over any derived one.
           waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [{ type: "user-message", threadId: snap.threadId, text: "hi" }]
+          },
+        },
+        {
+          // user-accepted is published only after the user message is persisted
+          // to the SessionStore, so by now the thread has a top-level user
+          // message and will survive the sidebar's empty-thread filter.
+          waitFor: (f) => f.type === "user-accepted",
           thenSend: () => [{ type: "list-threads" }],
         },
       ],
-      // hello + thread-created + thread-snapshot + thread-list
-      // + possible SessionStart obs event frame
-      5,
+      // Frame count is not deterministic (a driven turn interleaves obs frames),
+      // so resolve as soon as the thread-list frame arrives.
+      64,
+      5000,
+      (f) => f.type === "thread-list",
     )
     // thread-list can arrive amid obs `event` frames — search by type.
     const list = frames.find((f) => f.type === "thread-list")

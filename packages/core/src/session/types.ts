@@ -136,6 +136,13 @@ export interface SessionQuery {
    * fall back to createdAt to keep brand-new threads visible.
    */
   readonly orderBy?: "createdAt" | "lastMessageAt"
+  /**
+   * When true, only sessions that have at least one top-level user message
+   * (kind='user', parent_id IS NULL) are returned. Applied BEFORE `limit` so
+   * the page never under-fills with empty/probe threads. Used by the chat
+   * sidebar, where a thread is not a real conversation until the user types.
+   */
+  readonly hasUserMessage?: boolean
 }
 
 /**

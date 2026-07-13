@@ -2378,10 +2378,21 @@ describe("ChatService — listThreads excludes archived threads", () => {
         Effect.gen(function* () {
           const chat = yield* ChatService
           const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
 
           // Create two threads. createThread upserts both into ThreadRegistry.
           const t1 = yield* chat.createThread({ model: "claude-test", title: "active-thread" })
           const t2 = yield* chat.createThread({ model: "claude-test", title: "archived-thread" })
+          // t1 must be a real conversation to survive the active-list filter
+          // (titled-but-empty threads are hidden); give it a first user message.
+          yield* store.appendMessage({
+            sessionId: t1.id,
+            messageId: "m-active-1",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "keep me active" } },
+          })
 
           // Archive t2 in the registry.
           const archiveOk = yield* reg.archive(t2.id)
@@ -2523,8 +2534,21 @@ describe("ChatService — listThreads auto-titles untitled threads", () => {
         Effect.gen(function* () {
           const chat = yield* ChatService
           const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
 
           const t = yield* chat.createThread({ model: "claude-test" }) // no title
+          // In production the first-turn heuristic writes the registry title
+          // from the user's first message, so a real thread always has one.
+          // Seed a first user message whose derived title DIFFERS from the
+          // registry title to prove the registry title wins over derive-on-read.
+          yield* store.appendMessage({
+            sessionId: t.id,
+            messageId: "m-reg-1",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "raw first message text" } },
+          })
           yield* reg.upsert({ id: t.id, title: "Deploy plan for the router" })
 
           const list = yield* chat.listThreads(50)
@@ -2690,14 +2714,50 @@ describe("ChatService — listThreads auto-titles untitled threads", () => {
   )
 
   it(
-    "an explicitly-titled thread is kept even with no user message",
+    "an explicitly-titled thread with no user message is hidden from the sidebar list",
     async () => {
       await run(
         Effect.gen(function* () {
           const chat = yield* ChatService
+          // Titled at creation but never typed in - not a conversation yet.
           const t = yield* chat.createThread({ model: "claude-test", title: "Named but empty" })
           const list = yield* chat.listThreads(50)
-          expect(list.find((s) => s.id === t.id)?.title).toBe("Named but empty")
+          expect(list.map((s) => s.id)).not.toContain(t.id)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "empty threads never evict a real thread past the limit",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          // A real thread created FIRST (oldest createdAt).
+          const real = yield* chat.createThread({ model: "claude-test" })
+          yield* store.appendMessage({
+            sessionId: real.id,
+            messageId: "m-real-limit",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "The one real conversation" } },
+          })
+          // Many empty probe threads created AFTER - they sort by createdAt and
+          // would crowd the top of an unfiltered page.
+          for (let i = 0; i < 10; i++) {
+            yield* chat.createThread({ model: "claude-test" })
+          }
+          // Small limit: if empties counted toward the limit, `real` would be
+          // sliced off the page. It must still be returned.
+          const list = yield* chat.listThreads(3)
+          const ids = list.map((s) => s.id)
+          expect(ids).toContain(real.id)
+          // Every empty probe was filtered out, so only the real thread remains.
+          expect(ids).toEqual([real.id])
         }),
       )
     },
