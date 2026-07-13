@@ -644,7 +644,15 @@ export const makeSessionStoreSqlite = (
       ): Effect.Effect<StoredMessage | null, never> =>
         Effect.sync(() => {
           const row = firstUserMessage.get(sessionId) as MessageDbRow | undefined
-          return row ? rowToMessage(row) : null
+          if (!row) return null
+          // rowToMessage does JSON.parse(content_json); a corrupt row must not
+          // throw a defect that bubbles up and bricks the sidebar list — the
+          // caller treats an unreadable first message the same as "none".
+          try {
+            return rowToMessage(row)
+          } catch {
+            return null
+          }
         })
 
       const list = (
@@ -659,8 +667,9 @@ export const makeSessionStoreSqlite = (
                   const clauses: string[] = []
                   if (q.hasUserMessage) clauses.push(hasUserExists)
                   // One bound parameter per excluded id, so the count is capped
-                  // by SQLite's SQLITE_MAX_VARIABLE_NUMBER (~32766). Callers pass
-                  // only archived thread ids, which never reach that scale.
+                  // by SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766 on older
+                  // builds, 65535 on the current bun:sqlite bundle). Callers
+                  // pass only archived thread ids, which never reach that scale.
                   clauses.push(
                     `s.id NOT IN (${excludeIds.map(() => "?").join(", ")})`,
                   )

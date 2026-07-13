@@ -174,6 +174,48 @@ describe("SessionStore (in-memory)", () => {
     expect(ids).toEqual(["real"])
   })
 
+  it("list excludeIds drops excluded sessions BEFORE the limit (no under-fill)", async () => {
+    const ids = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        // A real thread created FIRST (oldest), then excluded threads that sort
+        // ahead of it by createdAt and would eat the limit slots if excluded
+        // only after the limit.
+        yield* store.create({ id: "keep", options: { model: "m" }, createdAt: 1 })
+        yield* store.appendMessage({
+          sessionId: "keep",
+          messageId: "k1",
+          ts: 1,
+          parentId: null,
+          kind: "user",
+          payload: { text: "hi" },
+        })
+        for (let i = 0; i < 5; i++) {
+          const id = `drop-${i}`
+          yield* store.create({ id, options: { model: "m" }, createdAt: 10 + i })
+          yield* store.appendMessage({
+            sessionId: id,
+            messageId: `d${i}`,
+            ts: 10 + i,
+            parentId: null,
+            kind: "user",
+            payload: { text: "x" },
+          })
+        }
+        const chunk = yield* Stream.runCollect(
+          store.list({
+            orderBy: "lastMessageAt",
+            limit: 2,
+            excludeIds: ["drop-0", "drop-1", "drop-2", "drop-3", "drop-4"],
+          }),
+        )
+        return Array.from(chunk).map((s) => s.id)
+      }),
+    )
+    // 'keep' survives even though 5 excluded threads sorted ahead of it.
+    expect(ids).toEqual(["keep"])
+  })
+
   it("sidebar metadata: append updates lastMessageAt + preview for text turns", async () => {
     const summary = await program(
       Effect.gen(function* () {

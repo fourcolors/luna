@@ -59,6 +59,7 @@ import {
   ObservabilityService,
   TelemetryService,
   extractText,
+  extractTextPreview,
   projectChatMessages,
   projectOne,
   SuggestedActions,
@@ -2348,10 +2349,20 @@ export class ChatService extends Effect.Service<ChatService>()(
               if (s.title !== null && s.title !== "") return Effect.succeed(s)
               const regTitle = regTitles.get(s.id)
               if (regTitle) return Effect.succeed({ ...s, title: regTitle })
+              // catchAllCause (not catchAll): readFirstUserMessage/rowToMessage
+              // do a JSON.parse in Effect.sync, so a corrupt content_json is a
+              // DEFECT, not a typed failure. catchAll misses defects — one bad
+              // row would then abort the whole forEach and brick the sidebar
+              // list. catchAllCause degrades that row to "untitled" instead.
               return store.readFirstUserMessage(s.id).pipe(
-                Effect.catchAll(() => Effect.succeed(null)),
+                Effect.catchAllCause(() => Effect.succeed(null)),
                 Effect.flatMap((first): Effect.Effect<SessionSummary, never> => {
-                  const text = first ? extractText(first.payload) : null
+                  // Prefer the raw first-line text (newlines intact) for the
+                  // title; fall back to the preview so an image-only first turn
+                  // titles as "[image]" rather than staying untitled.
+                  const text = first
+                    ? extractText(first.payload) ?? extractTextPreview(first.payload)
+                    : null
                   const derived = text
                     ? deriveTitleFromMessage(stripClientMarker(text))
                     : null
@@ -2375,8 +2386,24 @@ export class ChatService extends Effect.Service<ChatService>()(
           // Archived ids must resolve BEFORE the store list so they can be
           // excluded in-query (before the limit). The active-titles fetch has
           // no such dependency, so it still runs in parallel with store.list.
+          // Archived exclusion is now the ONLY gate (in-query, before the
+          // limit) — so treating an archive-read failure as "no archived
+          // threads" would leak EVERY archived thread back into the active
+          // sidebar. Fall back to deriving the archived set from the full
+          // registry list; only if THAT also fails do we accept an empty set
+          // (transient over-inclusion) rather than fail the whole sidebar.
           const archivedRows = yield* reg.listByStatus("archived").pipe(
-            Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
+            Effect.map((rows) => rows.map((r) => ({ id: r.id }))),
+            Effect.catchAllCause(() =>
+              reg.list().pipe(
+                Effect.map((all) =>
+                  all.filter((r) => r.status === "archived").map((r) => ({ id: r.id })),
+                ),
+                Effect.catchAllCause(() =>
+                  Effect.succeed([] as ReadonlyArray<{ readonly id: string }>),
+                ),
+              ),
+            ),
           )
           const archivedIds = new Set(archivedRows.map((r) => r.id))
           const [sessions, activeRows] = yield* Effect.all([
