@@ -193,13 +193,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       // The message is stashed, not lost...
       expect(mi.State.pendingUserMessage).not.toBeNull()
-      expect(mi.State.pendingUserMessage.text).toContain('queued while offline')
+      expect(mi.State.pendingUserMessage!.text).toContain('queued while offline')
       // ...and a fresh thread is requested on reconnect so thread-created fires
       // and flushes it (without this the message strands on a resubscribe).
       expect(mi.State.pendingFreshThread).toBe(true)
       // No phantom "sent" bubble — only the queued notice.
       expect(chatMessages.querySelector('.msg.user')).toBeNull()
-      expect(chatMessages.textContent).toMatch(/queued/i)
+      const queuedNotice = chatMessages.querySelector('[data-offline-notice="queued"]')
+      expect(queuedNotice).not.toBeNull()
+      expect(queuedNotice!.textContent).toMatch(/queued/i)
       // Composer cleared after a successful queue claim (queue is source of truth).
       expect(messageInput.value).toBe('')
     })
@@ -215,7 +217,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       messageInput.value = 'first offline message'
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      expect(mi.State.pendingUserMessage.text).toContain('first offline message')
+      expect(mi.State.pendingUserMessage).not.toBeNull()
+      expect(mi.State.pendingUserMessage!.text).toContain('first offline message')
 
       // handleSubmit single-fires within a task tick via _submitting + queueMicrotask;
       // yield so the second intentional submit is not dropped by that guard.
@@ -225,11 +228,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
 
       // First payload must survive; second draft stays in the box.
-      expect(mi.State.pendingUserMessage.text).toContain('first offline message')
+      expect(mi.State.pendingUserMessage).not.toBeNull()
+      expect(mi.State.pendingUserMessage!.text).toContain('first offline message')
       expect(messageInput.value).toBe('second offline attempt')
-      expect(document.getElementById('chat-messages')!.textContent).toMatch(/already queued/i)
+      const chatMessages = document.getElementById('chat-messages')!
+      const alreadyQueued = chatMessages.querySelector('[data-offline-notice="already-queued"]')
+      expect(alreadyQueued).not.toBeNull()
+      expect(alreadyQueued!.textContent).toMatch(/already queued/i)
       // Still only one user bubble (none — both offline paths skip the sent bubble).
-      expect(document.getElementById('chat-messages')!.querySelectorAll('.msg.user').length).toBe(0)
+      expect(chatMessages.querySelectorAll('.msg.user').length).toBe(0)
     })
   })
 

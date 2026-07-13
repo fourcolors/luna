@@ -8502,8 +8502,9 @@
           if (State.pendingUserMessage) {
             Logger.warn('Send while disconnected: already have a queued offline message; keeping the first');
             const _lastDup = DOM.chatMessages && DOM.chatMessages.lastElementChild;
-            if (!(_lastDup && _lastDup.textContent && _lastDup.textContent.indexOf("already queued") !== -1)) {
-              this.appendMessage('assistant', "⚠️ Not connected. A message is already queued for reconnect; your new draft is still in the box.");
+            if (!(_lastDup && _lastDup.getAttribute('data-offline-notice') === 'already-queued')) {
+              const _el = this.appendMessage('assistant', "⚠️ Not connected. A message is already queued for reconnect; your new draft is still in the box.");
+              if (_el) _el.setAttribute('data-offline-notice', 'already-queued');
               if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             }
             return;
@@ -8525,8 +8526,9 @@
           if (State.activeThreadId) {
             Logger.warn('Send while disconnected: preserving composer input for retry');
             const _last = DOM.chatMessages && DOM.chatMessages.lastElementChild;
-            if (!(_last && _last.textContent && _last.textContent.indexOf("wasn't sent") !== -1)) {
-              this.appendMessage('assistant', "⚠️ Not connected. Your message wasn't sent; it's still in the box. Try again once you reconnect.");
+            if (!(_last && _last.getAttribute('data-offline-notice') === 'not-sent')) {
+              const _el = this.appendMessage('assistant', "⚠️ Not connected. Your message wasn't sent; it's still in the box. Try again once you reconnect.");
+              if (_el) _el.setAttribute('data-offline-notice', 'not-sent');
               if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             }
             return;
@@ -8536,8 +8538,9 @@
           this.autoGrowMessageInput();
           Attachments.clear();
           const _lastQ = DOM.chatMessages && DOM.chatMessages.lastElementChild;
-          if (!(_lastQ && _lastQ.textContent && _lastQ.textContent.indexOf("queued") !== -1)) {
-            this.appendMessage('assistant', "⚠️ Not connected. Your message is queued and will send when you reconnect.");
+          if (!(_lastQ && _lastQ.getAttribute('data-offline-notice') === 'queued')) {
+            const _el = this.appendMessage('assistant', "⚠️ Not connected. Your message is queued and will send when you reconnect.");
+            if (_el) _el.setAttribute('data-offline-notice', 'queued');
             if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
           }
           return;
