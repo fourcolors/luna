@@ -78,7 +78,15 @@ const buildReleaseStack = (sdkReply: string) => {
     ),
   )
 
-  return JobTickerLayer({ tickInterval: Duration.seconds(60) }).pipe(
+  // job-ticker-producer-executor-276 (critic amendment 5): `autoStart`
+  // defaults to true, and `Effect.repeat(loop, Schedule.fixed)` runs the loop
+  // body once EAGERLY at fork - so a background producer drain would race
+  // this file's explicit `ticker.drain` calls on the shared store. That
+  // latent race got easier to trip once the producer started forking real
+  // dispatches (the auto-loop could claim the armed job before an explicit
+  // drain runs). autoStart:false keeps only the explicit drains live, same
+  // as job-ticker.test.ts's buildStack.
+  return JobTickerLayer({ tickInterval: Duration.seconds(60), autoStart: false }).pipe(
     Layer.provideMerge(Layer.mergeAll(storeL, workersL, Clock.Default)),
   )
 }
@@ -119,8 +127,10 @@ describe("release workflow integration (P8)", () => {
       const summary = yield* ticker.drain
       expect(summary.considered).toBe(1)
       expect(summary.claimed).toBe(1)
-      expect(summary.succeeded).toBe(1)
-      expect(summary.failed).toBe(0)
+      expect(summary.forked).toBe(1)
+      // issue #276: drain returns as soon as the dispatch is FORKED - await
+      // the executor before reading job_runs.
+      yield* ticker.awaitIdle
 
       const runs = yield* store.listRuns("release-test-1")
       expect(runs.length).toBe(1)
@@ -179,9 +189,10 @@ describe("release workflow integration (P8)", () => {
       const summary = yield* ticker.drain
       expect(summary.considered).toBe(1)
       expect(summary.claimed).toBe(1)
-      // Worker raised a WorkerError — ticker counts that as failed.
-      expect(summary.succeeded).toBe(0)
-      expect(summary.failed).toBe(1)
+      expect(summary.forked).toBe(1)
+      // Worker raised a WorkerError - visible in job_runs once the executor
+      // closes it (issue #276: `drain` no longer knows the outcome itself).
+      yield* ticker.awaitIdle
 
       const runs = yield* store.listRuns("release-test-2")
       expect(runs.length).toBe(1)
@@ -228,14 +239,19 @@ describe("release workflow integration (P8)", () => {
 
       const first = yield* ticker.drain
       expect(first.claimed).toBe(1)
-      expect(first.succeeded).toBe(1)
+      expect(first.forked).toBe(1)
 
+      // issue #276: `claimAndStartRun` advances next_run_at SYNCHRONOUSLY in
+      // the producer (before the fork), so the second drain's `considered:0`
+      // doesn't need `awaitIdle` - but the run row itself is only written
+      // once the executor closes it, so await before reading `listRuns`.
       const second = yield* ticker.drain
       // The first drain advanced next_run_at past `now`, so listDue
       // returns nothing on the second pass — no double-fire.
       expect(second.considered).toBe(0)
       expect(second.claimed).toBe(0)
 
+      yield* ticker.awaitIdle
       const runs = yield* store.listRuns("release-test-3")
       expect(runs.length).toBe(1)
     })

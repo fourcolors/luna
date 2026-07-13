@@ -3,7 +3,7 @@
  * WorkerRegistry. No SQLite, no real sleep, no real model calls.
  */
 import { describe, expect, it } from "vitest"
-import { Context, Effect, Layer, Duration } from "effect"
+import { Context, Deferred, Effect, Layer, Duration } from "effect"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "./jobs-store.js"
 import { JobsStoreError, type JobsStoreApi } from "./jobs-store-types.js"
@@ -41,8 +41,8 @@ describe("JobTicker", () => {
       const out = yield* ticker.drain
       expect(out.considered).toBe(0)
       expect(out.claimed).toBe(0)
-      expect(out.succeeded).toBe(0)
-      expect(out.failed).toBe(0)
+      expect(out.forked).toBe(0)
+      expect(out.failedInline).toBe(0)
     })
     await Effect.runPromise(prog.pipe(Effect.provide(buildStack({}))))
   })
@@ -116,8 +116,11 @@ describe("JobTicker", () => {
       const summary = yield* ticker.drain
       expect(summary.considered).toBe(1)
       expect(summary.claimed).toBe(1)
-      expect(summary.succeeded).toBe(1)
-      expect(summary.failed).toBe(0)
+      expect(summary.forked).toBe(1)
+
+      // issue #276: drain returns as soon as the dispatch is FORKED, not once
+      // it finishes - await the executor before reading post-dispatch state.
+      yield* ticker.awaitIdle
 
       // Worker saw the payload.
       expect(seen.length).toBe(1)
@@ -160,8 +163,8 @@ describe("JobTicker", () => {
 
       const summary = yield* ticker.drain
       expect(summary.claimed).toBe(1)
-      expect(summary.failed).toBe(1)
-      expect(summary.succeeded).toBe(0)
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
 
       const runs = yield* store.listRuns("boom")
       expect(runs[0]?.status).toBe("failed")
@@ -189,7 +192,11 @@ describe("JobTicker", () => {
 
       const summary = yield* ticker.drain
       expect(summary.skippedUnknownKind).toBe(1)
-      expect(summary.failed).toBe(1)
+      // issue #276: unknown-kind is closed INLINE by the producer (no worker
+      // to dispatch, nothing to fork) - visible in `drain`'s own summary,
+      // no `awaitIdle` needed.
+      expect(summary.failedInline).toBe(1)
+      expect(summary.forked).toBe(0)
 
       const runs = yield* store.listRuns("no-worker")
       expect(runs[0]?.status).toBe("failed")
@@ -229,6 +236,7 @@ describe("JobTicker", () => {
 
       const summary = yield* ticker.drain
       expect(summary.considered).toBe(1)
+      yield* ticker.awaitIdle
       expect(ran).toEqual(["on"])
     })
     await Effect.runPromise(
@@ -285,9 +293,10 @@ describe("JobTicker", () => {
         nextRunAt: 0,
       })
 
-      // First drain: fires the worker once.
+      // First drain: forks the worker once.
       const s1 = yield* ticker.drain
-      expect(s1.succeeded).toBe(1)
+      expect(s1.forked).toBe(1)
+      yield* ticker.awaitIdle
       expect(count).toBe(1)
 
       // Second drain — TestClock hasn't advanced enough to make next_run_at
@@ -321,12 +330,16 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("oneshot", { enabled: true, nextRunAt: 0 })
 
       const s1 = yield* ticker.drain
-      expect(s1.succeeded).toBe(1)
-      expect(count).toBe(1)
-
-      // The one-shot guard disabled it — listDue no longer returns it.
+      expect(s1.forked).toBe(1)
+      // issue #276: the one-shot's at-most-once disable is written
+      // SYNCHRONOUSLY by the producer (before the fork), so it's already
+      // visible without awaiting the executor - only the worker's own
+      // execution (`count`) needs `awaitIdle`.
       const after = yield* store.getById("oneshot")
       expect(after?.enabled).toBe(false)
+      yield* ticker.awaitIdle
+      expect(count).toBe(1)
+
       const s2 = yield* ticker.drain
       expect(s2.considered).toBe(0)
       expect(count).toBe(1)
@@ -433,6 +446,11 @@ describe("JobTicker", () => {
         const ticker = yield* JobTicker
         yield* ticker.drain
         yield* ticker.drain
+        // issue #276: must await idle INSIDE this scoped block - the layer's
+        // Scope (and its `executors` FiberMap) closes when this Effect.gen
+        // returns, which would interrupt a still-running executor fiber
+        // before it gets to increment `runs`.
+        yield* ticker.awaitIdle
       }).pipe(
         Effect.provide(
           JobTickerLayer({ autoStart: false }).pipe(
@@ -483,9 +501,10 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("ok", { schedule: "0 0 * * *", nextRunAt: 0 })
 
       const s = yield* ticker.drain
-      // The defect was caught (failed=1), the other due job still ran.
-      expect(s.failed).toBe(1)
-      expect(s.succeeded).toBe(1)
+      expect(s.forked).toBe(2)
+      yield* ticker.awaitIdle
+      // The defect was caught, the other due job still ran (a defecting
+      // executor fiber cannot cascade to a sibling - FiberMap isolates them).
       expect(okRan).toBe(true)
       const runs = yield* store.listRuns("boom", 1)
       expect(runs[0]?.status).toBe("failed")
@@ -507,10 +526,11 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("ok", { schedule: "0 0 * * *", nextRunAt: 0 })
 
       const summary = yield* ticker.drain
-      // The hung worker was interrupted at the deadline (failed) and the other
-      // due job still ran — a single stuck worker no longer blocks the tick.
-      expect(summary.failed).toBe(1)
-      expect(summary.succeeded).toBe(1)
+      expect(summary.forked).toBe(2)
+      yield* ticker.awaitIdle
+      // The hung worker was interrupted at the deadline and the other due job
+      // still ran - a single stuck worker no longer blocks the tick (issue
+      // #276: it never blocked the PRODUCER at all, only its own executor).
       const hangRuns = yield* store.listRuns("hang", 1)
       expect(hangRuns[0]?.status).toBe("failed")
       expect(hangRuns[0]?.error ?? "").toMatch(/deadline/i)
@@ -656,14 +676,19 @@ describe("JobTicker", () => {
       const real = yield* JobsStoreService
       // recordRunEnd fails ONLY for "flaky"'s run — simulates a storage blip
       // on its post-dispatch write. Keyed by runId -> jobId (recordRunEnd
-      // itself only receives a runId), captured via a recordRunStart tap.
+      // itself only receives a runId). issue #276: the real-dispatch path now
+      // goes through `claimAndStartRun`, NOT `recordRunStart` - the tap has
+      // to sit on the method the producer actually calls, or `runIdToJobId`
+      // is never populated and this whole test is a no-op silently.
       const runIdToJobId = new Map<number, string>()
       const wrapped: JobsStoreApi = {
         ...real,
-        recordRunStart: (input) =>
-          real.recordRunStart(input).pipe(
-            Effect.tap((run) =>
-              Effect.sync(() => runIdToJobId.set(run.id, input.jobId)),
+        claimAndStartRun: (id, args) =>
+          real.claimAndStartRun(id, args).pipe(
+            Effect.tap((started) =>
+              started
+                ? Effect.sync(() => runIdToJobId.set(started.run.id, id))
+                : Effect.void,
             ),
           ),
         recordRunEnd: (runId, end) =>
@@ -683,6 +708,11 @@ describe("JobTicker", () => {
       yield* Effect.gen(function* () {
         const ticker = yield* JobTicker
         yield* ticker.drain
+        // issue #276: drain only FORKS the two dispatches now - measure
+        // "drain + awaitIdle" for the concurrency assertion below, and await
+        // idle INSIDE this scoped block so the layer's Scope doesn't close
+        // (interrupting the executors) before they finish.
+        yield* ticker.awaitIdle
       }).pipe(
         Effect.provide(
           JobTickerLayer({ autoStart: false, dispatchConcurrency: 2 }).pipe(
@@ -743,7 +773,8 @@ describe("JobTicker", () => {
 
       const beforeMs = yield* clock.nowMs()
       const summary = yield* ticker.drain
-      expect(summary.failed).toBe(1)
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
 
       const after = yield* store.getById("retry-recurring")
       expect(after?.retryAttempt).toBe(1)
@@ -784,7 +815,8 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("recovers", { schedule: "0 0 1 1 *", nextRunAt: 0 })
 
       const s1 = yield* ticker.drain
-      expect(s1.failed).toBe(1)
+      expect(s1.forked).toBe(1)
+      yield* ticker.awaitIdle
       const afterFail = yield* store.getById("recovers")
       expect(afterFail?.retryAttempt).toBe(1)
       expect(afterFail?.nextRunAt).not.toBeNull()
@@ -793,7 +825,8 @@ describe("JobTicker", () => {
       // which is the ticker's business, not this test's) so the retry fires.
       yield* store.setV2Fields("recovers", { nextRunAt: 0 })
       const s2 = yield* ticker.drain
-      expect(s2.succeeded).toBe(1)
+      expect(s2.forked).toBe(1)
+      yield* ticker.awaitIdle
       const afterSuccess = yield* store.getById("recovers")
       expect(afterSuccess?.retryAttempt).toBe(0)
     })
@@ -812,8 +845,8 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("oneshot-fail", { enabled: true, nextRunAt: 0 })
 
       const s1 = yield* ticker.drain
-      expect(s1.failed).toBe(1)
-      expect(s1.succeeded).toBe(0)
+      expect(s1.forked).toBe(1)
+      yield* ticker.awaitIdle
 
       const after = yield* store.getById("oneshot-fail")
       // One-shots never retry: retry_attempt stays 0 and the row is disabled
@@ -825,7 +858,7 @@ describe("JobTicker", () => {
       // rescheduled by the Seam-3 retry path.
       const s2 = yield* ticker.drain
       expect(s2.considered).toBe(0)
-      expect(s2.failed).toBe(0)
+      expect(s2.forked).toBe(0)
     })
     await Effect.runPromise(
       prog.pipe(Effect.provide(buildStack({ wake: angry }))),
@@ -842,9 +875,13 @@ describe("JobTicker", () => {
 
       const startedAt = Date.now()
       const summary = yield* ticker.drain
+      expect(summary.forked).toBe(1)
+      // issue #276: `drain` returns as soon as the dispatch is FORKED, so the
+      // elapsed-time assertion below must measure "drain + awaitIdle", not
+      // `drain` alone (which now returns near-instantly).
+      yield* ticker.awaitIdle
       const elapsedMs = Date.now() - startedAt
 
-      expect(summary.failed).toBe(1)
       const runs = yield* store.listRuns("graced", 1)
       expect(runs[0]?.error ?? "").toMatch(/deadline/i)
       // defaultTimeoutMs(1100) is chosen ABOVE MIN_RESOLVED_TIMEOUT_MS(1000)
@@ -892,7 +929,8 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("self-timeout", { schedule: "0 0 * * *", nextRunAt: 0 })
 
       const summary = yield* ticker.drain
-      expect(summary.failed).toBe(1)
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
       const runs = yield* store.listRuns("self-timeout", 1)
       // The worker's OWN error must win: `worker_failed`, not the ticker's
       // `deadline_passed` backstop — proving the grace window (defaultTimeoutMs
@@ -926,6 +964,9 @@ describe("JobTicker", () => {
 
       const startedAt = Date.now()
       yield* ticker.drain
+      // issue #276: measure "drain + awaitIdle" - `drain` alone now returns
+      // near-instantly (it only forks the dispatch).
+      yield* ticker.awaitIdle
       const elapsedMs = Date.now() - startedAt
 
       // Even with a large `grace` configured, a bare-function registration
@@ -962,9 +1003,10 @@ describe("JobTicker", () => {
 
       const startedAt = Date.now()
       const summary = yield* ticker.drain
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
       const elapsedMs = Date.now() - startedAt
 
-      expect(summary.failed).toBe(1)
       // If the worker's defaultTimeoutMs(10) had won, this would fire in
       // well under 100ms — asserting >=1100 proves the payload override
       // (1200) was the effective timeout, not the worker default.
@@ -997,9 +1039,10 @@ describe("JobTicker", () => {
 
       const startedAt = Date.now()
       const summary = yield* ticker.drain
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
       const elapsedMs = Date.now() - startedAt
 
-      expect(summary.failed).toBe(1)
       // An unbounded payload override would hang far past any reasonable
       // test duration; maxWorkerDeadline(150ms) must still cap it.
       expect(elapsedMs).toBeLessThan(500)
@@ -1035,9 +1078,10 @@ describe("JobTicker", () => {
 
       const startedAt = Date.now()
       const summary = yield* ticker.drain
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
       const elapsedMs = Date.now() - startedAt
 
-      expect(summary.failed).toBe(1)
       // A negative payload.timeout_ms must NOT be honoured (which would
       // otherwise produce a ~0ms or negative backstop) — it falls through to
       // the worker's defaultTimeoutMs(40), which is itself floored at 1s.
@@ -1071,7 +1115,8 @@ describe("JobTicker", () => {
       yield* store.setV2Fields("bad-payload-job", { schedule: "0 0 1 1 *", nextRunAt: 0 })
 
       const summary = yield* ticker.drain
-      expect(summary.failed).toBe(1)
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
 
       const after = yield* store.getById("bad-payload-job")
       expect(after?.retryAttempt).toBe(0)
@@ -1105,7 +1150,8 @@ describe("JobTicker", () => {
 
       // First failure: attempt #1, under the ceiling (defaultMaxAttempts=2) — retried.
       const s1 = yield* ticker.drain
-      expect(s1.failed).toBe(1)
+      expect(s1.forked).toBe(1)
+      yield* ticker.awaitIdle
       const afterFirst = yield* store.getById("exhaust")
       expect(afterFirst?.retryAttempt).toBe(1)
 
@@ -1115,7 +1161,8 @@ describe("JobTicker", () => {
 
       // Second failure: attempt #2 reaches maxAttempts(2) — exhausted.
       const s2 = yield* ticker.drain
-      expect(s2.failed).toBe(1)
+      expect(s2.forked).toBe(1)
+      yield* ticker.awaitIdle
       const afterSecond = yield* store.getById("exhaust")
       expect(afterSecond?.retryAttempt).toBe(0)
       // Well past ANY retry backoff (max 30 min) but comfortably short of
@@ -1152,11 +1199,17 @@ describe("JobTicker", () => {
       })
       yield* store.setV2Fields("attempt-count", { schedule: "0 0 1 1 *", nextRunAt: 0 })
 
+      // issue #276: await idle after EACH drain before forcing the row due
+      // again - otherwise the manual `setV2Fields(nextRunAt:0)` below races
+      // the still-in-flight executor's own retry-scheduling write.
       yield* ticker.drain
+      yield* ticker.awaitIdle
       yield* store.setV2Fields("attempt-count", { nextRunAt: 0 })
       yield* ticker.drain
+      yield* ticker.awaitIdle
       yield* store.setV2Fields("attempt-count", { nextRunAt: 0 })
       yield* ticker.drain
+      yield* ticker.awaitIdle
 
       const runs = yield* store.listRuns("attempt-count", 10)
       // `id` is monotonically assigned at insertion (recordRunStart), so
@@ -1226,10 +1279,20 @@ describe("JobTicker", () => {
             ),
           ),
         )
-        const ctx = yield* Layer.build(tickerL).pipe(Effect.scoped)
-        const ticker = Context.get(ctx, JobTicker)
-        const summary = yield* ticker.drain
-        expect(summary.succeeded).toBe(1)
+        // issue #276: build + drain + awaitIdle all inside ONE Effect.scoped
+        // block - the layer's Scope (and its `executors` FiberMap) must stay
+        // open through `awaitIdle`, or forking into an already-closing
+        // FiberMap could interrupt the executor before postCommit runs.
+        const summary = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const ctx = yield* Layer.build(tickerL)
+            const ticker = Context.get(ctx, JobTicker)
+            const s = yield* ticker.drain
+            yield* ticker.awaitIdle
+            return s
+          }),
+        )
+        expect(summary.forked).toBe(1)
 
         expect(calls).toBe(1)
         expect(observedStatus).toBe("success")
@@ -1288,10 +1351,11 @@ describe("JobTicker", () => {
 
         const summary = yield* ticker.drain
         expect(summary.claimed).toBe(3)
-        expect(summary.succeeded).toBe(3)
-        expect(summary.failed).toBe(0)
+        expect(summary.forked).toBe(3)
+        yield* ticker.awaitIdle
         // The sibling's own dispatch was never touched by the other two
-        // jobs' postCommit blowing up - bounded concurrency isolation holds.
+        // jobs' postCommit blowing up - fiber isolation holds (a defect or
+        // failure inside one executor's fiber cannot cascade to another's).
         expect(seen).toEqual(["sibling-ran"])
 
         const failRun = yield* store.listRuns("pc-fail")
@@ -1332,8 +1396,8 @@ describe("JobTicker", () => {
         })
 
         const summary = yield* ticker.drain
-        expect(summary.failed).toBe(1)
-        expect(summary.succeeded).toBe(0)
+        expect(summary.forked).toBe(1)
+        yield* ticker.awaitIdle
 
         // Seam A adds nothing to the failure path - retry scheduling from
         // #275 fires exactly as it did before postCommit existed.
@@ -1369,8 +1433,8 @@ describe("JobTicker", () => {
         })
 
         const summary = yield* ticker.drain
-        expect(summary.succeeded).toBe(1)
-        expect(summary.failed).toBe(0)
+        expect(summary.forked).toBe(1)
+        yield* ticker.awaitIdle
 
         const runs = yield* store.listRuns("slow-postcommit")
         expect(runs[0]?.status).toBe("success")
@@ -1386,6 +1450,265 @@ describe("JobTicker", () => {
           ),
         ),
       )
+    })
+  })
+
+  // ── job-ticker-producer-executor-276 - the producer/executor split ──────
+  //
+  // These use `Deferred` latches instead of real sleeps to control exactly
+  // when a worker completes: a latched worker blocks on `Deferred.await`
+  // until the test explicitly `Deferred.succeed`s it, which is what makes
+  // "still running" a deterministic, race-free state to assert against
+  // (rather than a timing guess).
+  describe("producer/executor split (issue #276)", () => {
+    it("a long-running dispatch does NOT block a later drain from claiming/forking a different due job", async () => {
+      const latchA = Effect.runSync(Deferred.make<void>())
+      const bDone = Effect.runSync(Deferred.make<void>())
+      const worker: Worker = (_p, ctx) =>
+        ctx.jobId === "long-a"
+          ? Deferred.await(latchA).pipe(Effect.as({ outputText: "a-done" } satisfies WorkerResult))
+          : Effect.gen(function* () {
+              const result = { outputText: "b-done" } satisfies WorkerResult
+              // Signal completion explicitly - proves B's dispatch actually
+              // ran to completion, not merely that it was forked.
+              yield* Deferred.succeed(bDone, undefined)
+              return result
+            })
+
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({ id: "long-a", kind: "wake", spec: "*/5 * * * *", payload: { label: "a" } })
+        yield* store.setV2Fields("long-a", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+        // First drain: forks "long-a", which immediately blocks on its latch.
+        const s1 = yield* ticker.drain
+        expect(s1.forked).toBe(1)
+
+        // "quick-b" becomes due only now (simulating a row that becomes due
+        // WHILE "long-a" is still dispatching).
+        yield* store.record({ id: "quick-b", kind: "wake", spec: "*/5 * * * *", payload: { label: "b" } })
+        yield* store.setV2Fields("quick-b", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+        // Second drain, with "long-a" STILL latched (never released). If the
+        // split regressed to the pre-#276 await-all model, this line would
+        // hang forever (drain would try to await "long-a"'s dispatch) and the
+        // test would time out. It doesn't - the producer only claims/forks.
+        const s2 = yield* ticker.drain
+        expect(s2.forked).toBe(1)
+
+        // "quick-b" runs to completion despite "long-a" still being blocked -
+        // proven via its own Deferred, not a race-prone poll.
+        yield* Deferred.await(bDone).pipe(Effect.timeout(Duration.seconds(2)))
+
+        // Cleanup: release "long-a" too and confirm it eventually finishes.
+        yield* Deferred.succeed(latchA, undefined)
+        yield* ticker.awaitIdle
+        const aRuns = yield* store.listRuns("long-a", 1)
+        expect(aRuns[0]?.status).toBe("success")
+      })
+      await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: worker }))))
+    })
+
+    it("in-flight uniqueness: a dispatch that outlives its cron period is not re-claimed while its executor is still running", async () => {
+      const latch = Effect.runSync(Deferred.make<void>())
+      const worker: Worker = () =>
+        Deferred.await(latch).pipe(Effect.as({ outputText: "done" } satisfies WorkerResult))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({ id: "outlives", kind: "wake", spec: "*/5 * * * *", payload: { label: "o" } })
+        yield* store.setV2Fields("outlives", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+        const s1 = yield* ticker.drain
+        expect(s1.forked).toBe(1)
+
+        // Force the row due again RIGHT NOW - simulating its cron period
+        // having elapsed - while the FIRST dispatch is still latched/running.
+        yield* store.setV2Fields("outlives", { nextRunAt: 0 })
+        const s2 = yield* ticker.drain
+        // The in-flight guard (FiberMap.has) skips it: NOT re-claimed, NOT
+        // re-forked. This is the uniqueness the pre-split await-all loop got
+        // for free by construction.
+        expect(s2.considered).toBe(1)
+        expect(s2.skippedInFlight).toBe(1)
+        expect(s2.forked).toBe(0)
+
+        // Exactly ONE open (running) job_runs row - no double-dispatch.
+        const runsWhileRunning = yield* store.listRuns("outlives", 10)
+        expect(runsWhileRunning.length).toBe(1)
+        expect(runsWhileRunning[0]?.status).toBe("running")
+
+        yield* Deferred.succeed(latch, undefined)
+        yield* ticker.awaitIdle
+        const runsAfter = yield* store.listRuns("outlives", 10)
+        expect(runsAfter.length).toBe(1)
+        expect(runsAfter[0]?.status).toBe("success")
+      })
+      await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: worker }))))
+    })
+
+    it("slot bound: dispatchConcurrency caps in-flight forks; the overflow row stays due (unclaimed) and forks next tick", async () => {
+      const latch = Effect.runSync(Deferred.make<void>())
+      const worker: Worker = () =>
+        Deferred.await(latch).pipe(Effect.as({ outputText: "done" } satisfies WorkerResult))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        for (const id of ["slot-a", "slot-b", "slot-c"]) {
+          yield* store.record({ id, kind: "wake", spec: "*/5 * * * *", payload: { label: id } })
+          yield* store.setV2Fields(id, { schedule: "*/5 * * * *", nextRunAt: 0 })
+        }
+
+        const s1 = yield* ticker.drain
+        expect(s1.considered).toBe(3)
+        expect(s1.forked).toBe(2)
+        expect(s1.skippedNoCapacity).toBe(1)
+
+        // The overflow row was NOT claimed - `lastRun` is still null (claim()
+        // would have set it), so it stays due for the next tick, no loss.
+        const all = yield* store.listAll()
+        const unclaimed = all.filter((j) => j.lastRun === null)
+        expect(unclaimed.length).toBe(1)
+
+        // Release the two in-flight dispatches, freeing their slots.
+        yield* Deferred.succeed(latch, undefined)
+        yield* ticker.awaitIdle
+
+        // Next drain: the overflow row is claimed + forked now that a slot
+        // freed up.
+        const s2 = yield* ticker.drain
+        expect(s2.considered).toBe(1)
+        expect(s2.forked).toBe(1)
+        expect(s2.skippedNoCapacity).toBe(0)
+        expect(s2.skippedClaimLost).toBe(0)
+      })
+      await Effect.runPromise(
+        prog.pipe(Effect.provide(buildStack({ wake: worker }, { dispatchConcurrency: 2 }))),
+      )
+    })
+
+    it("teardown interrupts every in-flight executor; boot reconcile on the next start closes the orphaned run", async () => {
+      const latch = Effect.runSync(Deferred.make<void>())
+      const startedRunning = Effect.runSync(Deferred.make<void>())
+      const worker: Worker = () =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(startedRunning, undefined)
+          // Never released within this test's own scope - the dispatch MUST
+          // be INTERRUPTED by the Layer's Scope closing, not completed.
+          yield* Deferred.await(latch)
+          return { outputText: "should never get here" } satisfies WorkerResult
+        })
+
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const clock = yield* Clock
+        yield* store.record({
+          id: "teardown-victim",
+          kind: "wake",
+          spec: "*/5 * * * *",
+          payload: { label: "t" },
+        })
+        yield* store.setV2Fields("teardown-victim", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+        const tickerL = JobTickerLayer({ autoStart: false }).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(JobsStoreService, store),
+              makeWorkerRegistry({ wake: worker }),
+              Layer.succeed(Clock, clock),
+            ),
+          ),
+        )
+
+        // Build, drain (forks the executor), wait until the worker has
+        // GENUINELY started (not merely claimed), then let this
+        // Effect.scoped block end - closing the layer's Scope (and its
+        // `executors` FiberMap) WITHOUT ever releasing the latch.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const ctx = yield* Layer.build(tickerL)
+            const ticker = Context.get(ctx, JobTicker)
+            const summary = yield* ticker.drain
+            expect(summary.forked).toBe(1)
+            yield* Deferred.await(startedRunning).pipe(Effect.timeout(Duration.seconds(2)))
+          }),
+        )
+        // `Effect.scoped` does not return until every finalizer (including
+        // the FiberMap's own teardown, which interrupts every live entry)
+        // has completed - so by this point the executor is DEFINITELY gone.
+
+        // Teardown interruption does NOT itself close the run row - that's
+        // boot reconcile's job (verified next). It is left 'running'.
+        const orphanedRuns = yield* store.listRuns("teardown-victim", 1)
+        expect(orphanedRuns[0]?.status).toBe("running")
+
+        // Booting a FRESH ticker against the SAME store reconciles it.
+        const secondTickerL = JobTickerLayer({ autoStart: false }).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(JobsStoreService, store),
+              makeWorkerRegistry({ wake: worker }),
+              Layer.succeed(Clock, clock),
+            ),
+          ),
+        )
+        yield* Effect.scoped(Layer.build(secondTickerL)).pipe(Effect.asVoid)
+        const reconciled = yield* store.listRuns("teardown-victim", 1)
+        expect(reconciled[0]?.status).toBe("cancelled")
+        expect(reconciled[0]?.finishedAt).not.toBeNull()
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              JobsStoreService.Memory.pipe(Layer.provide(Clock.Default)),
+              Clock.Default,
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("awaitIdle resolves only once EVERY forked executor has completed, not just one of several", async () => {
+      const latchA = Effect.runSync(Deferred.make<void>())
+      const latchB = Effect.runSync(Deferred.make<void>())
+      const worker: Worker = (_p, ctx) =>
+        ctx.jobId === "idle-a"
+          ? Deferred.await(latchA).pipe(Effect.as({ outputText: "a" } satisfies WorkerResult))
+          : Deferred.await(latchB).pipe(Effect.as({ outputText: "b" } satisfies WorkerResult))
+
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({ id: "idle-a", kind: "wake", spec: "*/5 * * * *", payload: { label: "a" } })
+        yield* store.setV2Fields("idle-a", { schedule: "*/5 * * * *", nextRunAt: 0 })
+        yield* store.record({ id: "idle-b", kind: "wake", spec: "*/5 * * * *", payload: { label: "b" } })
+        yield* store.setV2Fields("idle-b", { schedule: "*/5 * * * *", nextRunAt: 0 })
+
+        const s1 = yield* ticker.drain
+        expect(s1.forked).toBe(2)
+
+        // Release only "a" - awaitIdle must NOT resolve yet ("b" is still
+        // in-flight). A short real timeout race is the deterministic way to
+        // prove "did not resolve" (an unresolved Effect has no other signal).
+        yield* Deferred.succeed(latchA, undefined)
+        const raced = yield* ticker.awaitIdle.pipe(
+          Effect.timeout(Duration.millis(150)),
+          Effect.either,
+        )
+        expect(raced._tag).toBe("Left")
+
+        // Now release "b" too - awaitIdle resolves promptly.
+        yield* Deferred.succeed(latchB, undefined)
+        yield* ticker.awaitIdle.pipe(Effect.timeout(Duration.seconds(2)))
+
+        const runsA = yield* store.listRuns("idle-a", 1)
+        const runsB = yield* store.listRuns("idle-b", 1)
+        expect(runsA[0]?.status).toBe("success")
+        expect(runsB[0]?.status).toBe("success")
+      })
+      await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: worker }))))
     })
   })
 })
