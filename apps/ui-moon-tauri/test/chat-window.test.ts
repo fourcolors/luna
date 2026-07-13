@@ -1953,7 +1953,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     const setActiveThread = (id: string) => {
-      // thread-created sets activeThreadId without needing a live ws.
+      // Model the real new-thread → thread-created acknowledgement sequence.
+      M().State.threadCreateIntent = 'attach'
       M().handleFrame({ type: 'thread-created', thread: { id } })
     }
 
@@ -2640,6 +2641,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('thread-list with threads and no active thread subscribes to the most recent', () => {
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-new' }, { id: 'th-old' }] })
       expect(M().State.activeThreadId).toBe('th-new')
       expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-new' })
@@ -2647,6 +2649,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('thread-list with NO threads auto-creates one (new-thread frame)', () => {
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [] })
       expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread' })
     })
@@ -2654,6 +2657,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('the new-thread frame carries the persisted model pick (luna_model)', () => {
       localStorage.setItem('luna_model', 'gemini-3-flash')
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [] })
       expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread', model: 'gemini-3-flash' })
     })
@@ -2669,10 +2673,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('thread-created subscribes and flushes the queued user message after the settle delay', () => {
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
       M().State.pendingUserMessage = { text: 'queued hello', attachments: undefined }
+      M().State.threadCreateIntent = 'attach'
       M().handleFrame({ type: 'thread-created', thread: { id: 'th-fresh' } })
       expect(M().State.activeThreadId).toBe('th-fresh')
       expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-fresh' })
       expect(M().State.pendingUserMessage).toBeNull()  // claimed before the delay
+      // A newer selection during the 100ms settle delay must not retarget the
+      // queued message away from the thread whose creation it triggered.
+      M().State.activeThreadId = 'newer-selection'
       vi.advanceTimersByTime(100)
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
         type: 'user-message',
@@ -3524,6 +3532,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(strip.textContent).toContain('snippet.ts')
 
       const m = M()
+      m.State.threadCreateIntent = 'attach'
       m.handleFrame({ type: 'thread-created', thread: { id: 'th-att' } })
       m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the send delivers, so the bubble paints + composer clears
       const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
@@ -4123,16 +4132,87 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(false)
     })
 
-    it('Scenario: the online + arms the subscribe watchdog so a stalled mint self-heals', () => {
+    it('Scenario: the online + waits for thread-created before arming the snapshot watchdog', () => {
       const m = M()
       m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
       const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
 
       document.getElementById('new-thread-btn')!.click()
 
+      expect(watchdog).not.toHaveBeenCalled()
+      m.handleFrame({ type: 'thread-created', thread: { id: 'fresh-thread' } })
       expect(watchdog).toHaveBeenCalledTimes(1)
       expect(m.State.subscribeTimeout).not.toBeNull()
+    })
+
+    it('Scenario: an in-flight informational thread-list cannot attach the previous latest thread while + is minting', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'current-thread'
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+      m.handleFrame({ type: 'thread-list', threads: [{ id: 'previous-latest' }] })
+
+      expect(m.State.activeThreadId).toBeNull()
+      expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'previous-latest' })
+    })
+
+    it('Scenario: thread-create-error stays on the fresh surface and never falls back to the previous latest thread', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+      m.handleFrame({ type: 'thread-create-error', message: 'Could not create the thread. Please try again.' })
+      m.handleFrame({ type: 'thread-list', threads: [{ id: 'previous-latest' }] })
+
+      expect(m.State.activeThreadId).toBeNull()
+      expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'previous-latest' })
+      expect(document.getElementById('chat-messages')!.textContent).toContain('Could not create the thread')
+    })
+
+    it('Scenario: double-clicking + emits only one new-thread request while creation is pending', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('new-thread-btn')!.click()
+
+      const creates = send.mock.calls.filter(([frame]) => frame.type === 'new-thread')
+      expect(creates).toHaveLength(1)
+    })
+
+    it('Scenario: choosing an existing row while creation is pending wins over the late thread-created ack', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+      m.ThreadDrawerEngine.onRowClick('chosen-thread')
+      m.handleFrame({ type: 'thread-created', thread: { id: 'late-fresh-thread' } })
+
+      expect(m.State.activeThreadId).toBe('chosen-thread')
+      expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'late-fresh-thread' })
+    })
+
+    it('Scenario: a stale snapshot from a previous subscription cannot overwrite the newly active thread', () => {
+      const m = M()
+      m.State.activeThreadId = 'fresh-thread'
+      m.ChatState.reset()
+      m.ChatState.appendBanner('fresh surface')
+      m.ChatLoop.flush()
+
+      m.handleFrame({
+        type: 'thread-snapshot',
+        threadId: 'previous-latest',
+        messages: [{ role: 'assistant', text: 'old thread history' }],
+      })
+
+      expect(m.State.activeThreadId).toBe('fresh-thread')
+      expect(document.getElementById('chat-messages')!.textContent).toContain('fresh surface')
+      expect(document.getElementById('chat-messages')!.textContent).not.toContain('old thread history')
     })
 
     it('Scenario: under the PoolEngine dark flag a connected + mints immediately (engine-aware gate)', () => {
@@ -4157,6 +4237,30 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       expect(mint).toHaveBeenCalledTimes(1)
       expect(m.State.pendingFreshThread).toBe(false)
+      localStorage.removeItem('luna_pool_engine')
+    })
+
+    it('Scenario: the PoolEngine path shares the one-create-at-a-time intent guard and adopts its ack', () => {
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      m.PoolEngine._isConnected = true
+      const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('new-thread-btn')!.click()
+      expect(send.mock.calls.filter(([frame]) => frame.type === 'new-thread')).toHaveLength(1)
+
+      m.handleFrame({ type: 'thread-created', thread: { id: 'pool-fresh' } })
+      expect(m.State.activeThreadId).toBe('pool-fresh')
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'pool-fresh' })
+      expect(m.State.subscribeTimeout).not.toBeNull()
       localStorage.removeItem('luna_pool_engine')
     })
 

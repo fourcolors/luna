@@ -2921,6 +2921,16 @@
       isManuallyClosing: false,
       pendingUserMessage: null,
       pendingFreshThread: false,
+      // A transmitted new-thread request has three states: null (none),
+      // "attach" (adopt its thread-created ack), or "background" (the user
+      // picked another row while creation was in flight; keep the new row but
+      // do not let its late ack steal selection). Only one request is allowed
+      // per connection at a time because thread-created has no request id.
+      threadCreateIntent: null,
+      // A thread-list selects its first row ONLY when an explicit bootstrap /
+      // recovery request armed this flag. Sidebar refreshes are informational
+      // and must never infer selection from activeThreadId === null.
+      threadListAutoSelectPending: false,
       // Set true when the connection profile changes so the next syncThread()
       // ignores the (non-server-scoped) last-thread file and lists fresh.
       skipLastThreadFile: false,
@@ -4045,6 +4055,8 @@
         // sidebar open (Things-3 behavior), just moving the active highlight.
         if (id === State.activeThreadId) return;    // already here
         State.pendingFreshThread = false;           // newer intent beats a deferred "+ New"
+        State.threadListAutoSelectPending = false;  // newer explicit selection beats list recovery
+        ThreadCreateState.moveToBackground();       // a late create ack must not steal selection
         State.activeThreadId = id;
         State.activeTurnId = null;
         State.pendingUserMessage = null;
@@ -4366,6 +4378,56 @@
     // panels/workflows.js. chat.html only gates the /workflows command on
     // the hello `workflows` capability via State.serverSupportsWorkflows.)
 
+    // ── New-thread intent state ──────────────────────────────────────────────
+    // Creation and subscription are separate protocol phases. A new-thread
+    // request first waits for thread-created; only after that exact id is known
+    // do we subscribe and arm the thread-snapshot watchdog. Keeping this state
+    // explicit prevents an unrelated thread-list from treating the temporary
+    // activeThreadId=null as permission to attach the previous latest thread.
+    const ThreadCreateState = {
+      begin() {
+        State.threadListAutoSelectPending = false;
+        if (State.threadCreateIntent !== null) {
+          // A second "+" means "stay with the fresh-thread intent", not "mint
+          // another concurrent thread". Re-adopt a request that had been moved
+          // to the background by an intervening row click.
+          State.threadCreateIntent = 'attach';
+          return false;
+        }
+        State.threadCreateIntent = 'attach';
+        return true;
+      },
+
+      moveToBackground() {
+        if (State.threadCreateIntent === 'attach') State.threadCreateIntent = 'background';
+      },
+
+      settle() {
+        const shouldAttach = State.threadCreateIntent === 'attach';
+        State.threadCreateIntent = null;
+        State.threadListAutoSelectPending = false;
+        return shouldAttach;
+      },
+
+      fail() {
+        const shouldSurface = State.threadCreateIntent === 'attach';
+        State.threadCreateIntent = null;
+        State.threadListAutoSelectPending = false;
+        return shouldSurface;
+      },
+
+      onDisconnect() {
+        // The outcome of an in-flight create is unknowable after a socket drop.
+        // Preserve the user's stronger "fresh thread" intent on reconnect; an
+        // extra empty row is preferable to silently attaching an old thread.
+        if (State.threadCreateIntent === 'attach' && !State.activeThreadId) {
+          State.pendingFreshThread = true;
+        }
+        State.threadCreateIntent = null;
+        State.threadListAutoSelectPending = false;
+      },
+    };
+
     const WebSocketEngine = {
       // registerCloseHook seam (design doc, Monolith Decomposition): code
       // that must run when the socket drops — secret wipes today — registers
@@ -4388,6 +4450,7 @@
         // ignored once a newer connect() has incremented State.connGen.
         const myGen = ++State.connGen;
         this.clearSubscribeTimeout();   // a fresh connect owns its own subscribe watchdog
+        State.threadListAutoSelectPending = false;
         State.reattachRound = 0;           // and its own bounded stall self-heal budget
         State.pendingReattachId = null;    // clear any in-flight advisory validation
         State.stalledThreadId = null;      // clear tombstone tracker
@@ -4435,6 +4498,7 @@
           this.updateStatus('disconnected', 'Disconnected');
           this.clearTurnTimeout();                         // fix-3 — no leaked timer across reconnects
           this.clearSubscribeTimeout();                    // socket gone → the close path owns recovery now
+          ThreadCreateState.onDisconnect();                // preserve an in-flight fresh-thread intent
           // Close hooks (registerCloseHook seam): secret/Vault wipe policies
           // live with the engines that own those inputs, so they can travel
           // to whichever window hosts them after the panel split. Runs at
@@ -4474,6 +4538,7 @@
         // new server. Any caller of disconnect() now cancels the timer.
         this.clearTurnTimeout();
         this.clearSubscribeTimeout();
+        ThreadCreateState.onDisconnect();
         // A turn abandoned by a drop/teardown never gets a turn-complete frame;
         // settle the face here so it doesn't resurface as "thinking" on reconnect.
         MoonFace.setBusy(false);
@@ -4668,6 +4733,7 @@
        * for the chosen model. Old servers ignore unknown fields (additive).
        */
       sendNewThread() {
+        if (!ThreadCreateState.begin()) return;
         const model = localStorage.getItem('luna_model') || '';
         const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
         // Include effort only when: (a) server supports effortSelection cap,
@@ -4773,6 +4839,7 @@
           State.stalledThreadId = State.activeThreadId;
         }
         State.activeThreadId = null;          // unset so thread-list drives the next subscribe
+        State.threadListAutoSelectPending = true;
         Logger.warn(`Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
         this.updateStatus('connecting', 'Recovering…');
         this.send({ type: 'list-threads' });
@@ -4823,7 +4890,6 @@
           if (!State.activeThreadId) {
             Logger.info('Pending new-conversation request: minting a fresh thread');
             this.sendNewThread();
-            this.startSubscribeTimeout();
             return;
           }
         }
@@ -4835,7 +4901,6 @@
         if (SPAWN_FRESH && !State.activeThreadId) {
           Logger.info('Fresh-spawn panel: minting its own new thread');
           this.sendNewThread();
-          this.startSubscribeTimeout();
           return;
         }
         // The last-thread file (~/.luna/.last-thread-default) is NOT scoped per
@@ -4904,6 +4969,7 @@
         } else {
           // No known thread → list threads (subscribes to most-recent or mints fresh).
           Logger.info("No known thread; listing threads instead");
+          State.threadListAutoSelectPending = true;
           this.send({ type: 'list-threads' });
         }
         this.startSubscribeTimeout();
@@ -4973,6 +5039,7 @@
         State.reattachRound = 0;
         State.pendingReattachId = null;
         State.stalledIdSet = new Set();
+        State.threadListAutoSelectPending = false;
 
         MoonFace.setBusy(false);
         this.updateStatus('connecting', 'Connecting…');
@@ -5164,6 +5231,7 @@
       _fireDisconnect(reason) {
         if (!this._hooksArmed) return; // not connected since last disconnect — skip
         this._hooksArmed = false;
+        ThreadCreateState.onDisconnect();
         for (const hook of this._closeHooks) {
           try { hook(); } catch (e) { Logger.warn('[PoolEngine] close hook failed:', e); }
         }
@@ -5197,6 +5265,7 @@
       disconnect() {
         this.clearTurnTimeout();
         this.clearSubscribeTimeout();
+        ThreadCreateState.onDisconnect();
         MoonFace.setBusy(false);
         if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
         this._teardownAdapter();
@@ -5297,6 +5366,7 @@
           State.stalledThreadId = State.activeThreadId;
         }
         State.activeThreadId = null;
+        State.threadListAutoSelectPending = true;
         Logger.warn(`[PoolEngine] Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
         this.updateStatus('connecting', 'Recovering…');
         this.send({ type: 'list-threads' });
@@ -5327,14 +5397,12 @@
           if (!State.activeThreadId) {
             Logger.info('[PoolEngine] Pending new-conversation request: minting a fresh thread');
             this.sendNewThread();
-            this.startSubscribeTimeout();
             return;
           }
         }
         if (SPAWN_FRESH && !State.activeThreadId) {
           Logger.info('[PoolEngine] Fresh-spawn panel: minting its own new thread');
           this.sendNewThread();
-          this.startSubscribeTimeout();
           return;
         }
         const skipFile = State.skipLastThreadFile;
@@ -5381,6 +5449,7 @@
           this.send({ type: 'subscribe', threadId: fileThreadId });
         } else {
           Logger.info('[PoolEngine] No known thread; listing threads instead');
+          State.threadListAutoSelectPending = true;
           this.send({ type: 'list-threads' });
         }
         this.startSubscribeTimeout();
@@ -5388,6 +5457,7 @@
 
       // ── Helpers mirroring WebSocketEngine seams ────────────────────────
       sendNewThread() {
+        if (!ThreadCreateState.begin()) return;
         const model = localStorage.getItem('luna_model') || '';
         const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
         if (State.serverSupportsEffort) {
@@ -6207,6 +6277,12 @@
       // Guarded so a drawer error can never break reattach self-heal.
       try { ThreadDrawerEngine.applyList(threads); } catch (_) { /* drawer never blocks reattach */ }
 
+      // Only a list explicitly requested for bootstrap/recovery may select a
+      // thread. Sidebar refreshes can race with new-thread and are data-only.
+      const shouldAutoSelect = State.threadListAutoSelectPending;
+      State.threadListAutoSelectPending = false;
+      if (!shouldAutoSelect) return;
+
       // ── Tombstone-advance: stall self-heal round ──────────────────────────
       // onReattachStalled() cleared activeThreadId and added the stalled id(s)
       // to stalledIdSet. Pick the first thread NOT in that set so we skip every
@@ -6244,6 +6320,7 @@
       // thread, clear it and refresh so we pick up another.
       Logger.info(`Thread archived: ${frame.threadId}`);
       if (frame.threadId === State.activeThreadId) {
+        State.threadListAutoSelectPending = true;
         WebSocketEngine.send({ type: 'list-threads' });
         State.activeThreadId = null;
       }
@@ -6259,11 +6336,16 @@
       if (frame.thread) {
         ComposerConfig.recordThreadConfig(frame.thread.id, frame.thread.model, frame.thread.effort);
       }
-      // A new thread was created (either by us or elsewhere)
-      if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
-        State.activeThreadId = frame.thread.id;
-        Logger.info(`Auto-subscribing to newly created thread "${frame.thread.id}"`);
-        WebSocketEngine.send({ type: 'subscribe', threadId: frame.thread.id });
+      // thread-created is the acknowledgement for this connection's one
+      // in-flight create request. If the user selected another row after the
+      // request, settle it without stealing that newer selection.
+      const shouldAttach = ThreadCreateState.settle();
+      if (shouldAttach) {
+        const createdThreadId = frame.thread.id;
+        State.activeThreadId = createdThreadId;
+        Logger.info(`Auto-subscribing to newly created thread "${createdThreadId}"`);
+        WebSocketEngine.send({ type: 'subscribe', threadId: createdThreadId });
+        WebSocketEngine.startSubscribeTimeout();
         // Now that this thread is active, reflect ITS model/effort in the
         // composer (recorded above, before activeThreadId was set).
         ComposerConfig.refreshComposer();
@@ -6277,7 +6359,7 @@
           setTimeout(() => {
             WebSocketEngine.send({
               type: 'user-message',
-              threadId: State.activeThreadId,
+              threadId: createdThreadId,
               text: pending.text,
               client: MoonClient.CLIENT_INFO,
               ...(pending.attachments ? { attachments: pending.attachments } : {})
@@ -6287,7 +6369,26 @@
       }
     });
 
+    MoonFrames.register('thread-create-error', (frame) => {
+      // The server already converted the full defect into a short safe message.
+      // Do not run reattach recovery or list/select an old thread: creation and
+      // subscription are distinct phases, and no thread id exists to recover.
+      if (!ThreadCreateState.fail()) return;
+      WebSocketEngine.clearTurnTimeout();
+      State.activeTurnId = null;
+      ChatState.dropPendingAssistant();
+      MoonFace.setBusy(false);
+      ChatEngine.appendMessage(
+        'assistant',
+        `⚠️ ${frame && frame.message ? frame.message : 'Could not create the thread. Please try again.'}`
+      );
+    });
+
     MoonFrames.register('thread-snapshot', (frame) => {
+      // This connection may still have forwarders for previously viewed
+      // threads. A late snapshot must never replace the transcript for the
+      // newly selected/created thread (or the fresh surface while no id exists).
+      if (frame && frame.threadId && frame.threadId !== State.activeThreadId) return;
       // Whole-history replay from the server. Build state from scratch
       // and flush a single render — ChatRenderer reconciles the entire
       // chat-messages container against ChatState in one pass.
@@ -8410,7 +8511,6 @@
         if (WebSocketEngine.isConnected()) {
           State.pendingFreshThread = false;
           WebSocketEngine.sendNewThread();
-          WebSocketEngine.startSubscribeTimeout();
         } else {
           State.pendingFreshThread = true;
           Logger.warn("Not connected; cleared locally. A new thread is created on next connect.");
@@ -9648,6 +9748,7 @@
       window.__MoonInternals.MoonBar = MoonBar;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
+      window.__MoonInternals.ThreadCreateState = ThreadCreateState;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.SmartBarEngine = SmartBarEngine;
