@@ -184,17 +184,59 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       mi.State.ws = null
       mi.State.activeThreadId = null
       mi.State.pendingFreshThread = false
+      mi.State.pendingUserMessage = null
       const messageInput = document.getElementById('message-input') as HTMLTextAreaElement
+      const chatMessages = document.getElementById('chat-messages')!
       messageInput.value = 'queued while offline'
       document.getElementById('chat-form')!.dispatchEvent(
         new Event('submit', { bubbles: true, cancelable: true }))
 
       // The message is stashed, not lost...
       expect(mi.State.pendingUserMessage).not.toBeNull()
-      expect(mi.State.pendingUserMessage.text).toContain('queued while offline')
+      expect(mi.State.pendingUserMessage!.text).toContain('queued while offline')
       // ...and a fresh thread is requested on reconnect so thread-created fires
       // and flushes it (without this the message strands on a resubscribe).
       expect(mi.State.pendingFreshThread).toBe(true)
+      // No phantom "sent" bubble — only the queued notice.
+      expect(chatMessages.querySelector('.msg.user')).toBeNull()
+      const queuedNotice = chatMessages.querySelector('[data-offline-notice="queued"]')
+      expect(queuedNotice).not.toBeNull()
+      expect(queuedNotice!.textContent).toMatch(/queued/i)
+      // Composer cleared after a successful queue claim (queue is source of truth).
+      expect(messageInput.value).toBe('')
+    })
+
+    it('Scenario: second offline no-thread submit does not overwrite the first queued message', async () => {
+      const mi = (window as any).__MoonInternals
+      mi.State.ws = null
+      mi.State.activeThreadId = null
+      mi.State.pendingFreshThread = false
+      mi.State.pendingUserMessage = null
+      const messageInput = document.getElementById('message-input') as HTMLTextAreaElement
+      const form = document.getElementById('chat-form')!
+
+      messageInput.value = 'first offline message'
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      expect(mi.State.pendingUserMessage).not.toBeNull()
+      expect(mi.State.pendingUserMessage!.text).toContain('first offline message')
+
+      // handleSubmit single-fires within a task tick via _submitting + queueMicrotask;
+      // yield so the second intentional submit is not dropped by that guard.
+      await Promise.resolve()
+
+      messageInput.value = 'second offline attempt'
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+      // First payload must survive; second draft stays in the box.
+      expect(mi.State.pendingUserMessage).not.toBeNull()
+      expect(mi.State.pendingUserMessage!.text).toContain('first offline message')
+      expect(messageInput.value).toBe('second offline attempt')
+      const chatMessages = document.getElementById('chat-messages')!
+      const alreadyQueued = chatMessages.querySelector('[data-offline-notice="already-queued"]')
+      expect(alreadyQueued).not.toBeNull()
+      expect(alreadyQueued!.textContent).toMatch(/already queued/i)
+      // Still only one user bubble (none — both offline paths skip the sent bubble).
+      expect(chatMessages.querySelectorAll('.msg.user').length).toBe(0)
     })
   })
 
