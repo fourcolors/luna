@@ -4158,13 +4158,19 @@
         const reqId = 'fb-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
         this._reqId = reqId;
         const t = this._target;
+        // Copilot review finding: reject empty selector (no actionable pointer)
+        const selector = (t.selector || '').trim();
+        if (!selector) {
+          this.setStatus('Failed to identify element — try clicking a different one.', 'error');
+          return;
+        }
         WebSocketEngine.send({
           type: 'feedback-submit',
           requestId: reqId,
           ...(State.activeThreadId ? { threadId: State.activeThreadId } : {}),
           note: note,
           target: {
-            selector: t.selector || '',
+            selector: selector,
             tag: t.tag || '',
             ...(t.id ? { id: t.id } : {}),
             ...(t.classes && t.classes.length ? { classes: t.classes } : {}),

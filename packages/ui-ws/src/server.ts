@@ -2512,8 +2512,8 @@ export const startUIWebSocketServer = (
                       noteVal.length > NOTE_MAX ||
                       typeof targetVal !== "object" ||
                       targetVal === null ||
-                      typeof (targetVal as { selector?: unknown }).selector !==
-                        "string"
+                      typeof (targetVal as { selector?: unknown }).selector !== "string" ||
+                        (targetVal as { selector: string }).selector.trim().length === 0
                     ) {
                       send(ws, {
                         type: "feedback-ack",
