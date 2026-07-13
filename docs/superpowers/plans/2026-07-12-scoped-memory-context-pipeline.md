@@ -73,7 +73,12 @@ per-thread binding asks the service for scoped hybrid hits. The packer:
 - renders a clearly delimited, untrusted `<memory_context>` block.
 
 Search failure degrades to no injected context and emits a warning; it never
-rejects the user turn.
+rejects the user turn. Recall must inject before the SDK turn (unlike
+`observeTurn`, it cannot be backgrounded), so `ChatService` also bounds it with
+a wall-clock ceiling: on timeout it increments `luna.chat.recall.timeouts` and
+degrades to no injected context. The bound defaults to 2.5s and is overridable
+via `LUNA_CHAT_RECALL_TIMEOUT_MS` (`0` disables the bound; recall may then block
+the turn indefinitely).
 
 ### 3. Post-turn candidate capture
 

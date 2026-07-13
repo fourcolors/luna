@@ -1067,12 +1067,18 @@ the export/import envelope:
 
 - `sqlite.ts:11-22` — `memory_keyed` carries the full record columns
   (`id`, `namespace`, `kind`, `content_json`, `schema_version`,
-  `created_at`, `updated_at`, `tags_json`) plus per-column indexes. The
+  `created_at`, `updated_at`, `tags_json`) plus the nullable additive
+  columns `scope_json` and `provenance_json` (the portable `MemoryScope` /
+  `MemoryProvenance` metadata; legacy rows leave both `NULL` and are
+  interpreted via `effectiveMemoryScope`), plus per-column indexes. The
   original §5.1 `(k, v, ts, tags)` skeleton was too flat to support
-  `MemoryQuery` filters.
+  `MemoryQuery` filters. Both nullable columns are also backfilled onto
+  pre-existing databases by an idempotent `ALTER TABLE ... ADD COLUMN` guard
+  at open time.
 - `sqlite-vector.ts:19-27` — `memory_vectors` adds `namespace`, `dimension`,
   drops `meta_json` (no current consumer), and a `FOREIGN KEY ... ON DELETE
-  CASCADE` to `memory_keyed`.
+  CASCADE` to `memory_keyed`. Its `memory_keyed` table carries the same
+  `scope_json` / `provenance_json` columns and open-time `ADD COLUMN` guard.
 
 These extensions are governed by §5.2 migration policy: every schema change
 is a numbered migration, gated by `schema_versions`, with the §5.1 column
@@ -1096,6 +1102,13 @@ the current drift.
   not detect them — backend authors should namespace their ids.
 - `query({namespace})` dispatches by pattern; `query({})` (no namespace) fans
   out across every backend via `Stream.mergeAll` and merges results.
+- `query({scope})` / `search({scope})` filter to a scope selector
+  (`observerId` + `subjectId`) via `matchesMemoryScope`: a `shared` record
+  matches any observer of the same subject, a `private` record only its own
+  observer. Scope filtering runs **after** backend ranking, so vector
+  `search` over-fetches (`max(topK * 4, 20)`) before filtering (legacy
+  vector rows have no scope columns), then re-truncates to the requested
+  `topK`.
 
 ### 10.5 Forward-pointers
 
