@@ -79,6 +79,14 @@ const SCHEMA_V1 = `
     ON sessions(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_sessions_status
     ON sessions(status);
+`
+
+// Version 2: partial index backing the `hasUserMessage` correlated EXISTS in
+// list(). Must ship as its own migration version, not appended to SCHEMA_V1:
+// applyMigration early-returns once (sessions, 1) is recorded, so any DDL added
+// to SCHEMA_V1 never reaches a pre-existing database. A new version advances an
+// already-v1 DB to v2 and creates the index there too.
+const SCHEMA_V2 = `
   CREATE INDEX IF NOT EXISTS idx_messages_toplevel_user
     ON messages(session_id) WHERE kind = 'user' AND parent_id IS NULL;
 `
@@ -277,6 +285,7 @@ export const makeSessionStoreSqlite = (
       // applied_at column (it's an audit timestamp, not a domain time).
       ensureSchemaVersions(db)
       applyMigration(db, "sessions", 1, SCHEMA_V1, Date.now())
+      applyMigration(db, "sessions", 2, SCHEMA_V2, Date.now())
 
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 

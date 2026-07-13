@@ -552,4 +552,59 @@ d("SessionStore.fromPath (sqlite)", () => {
       cleanupTmp(dbPath)
     }
   })
+
+  it("v2 migration lands the partial index on a pre-existing v1 database", async () => {
+    const dbPath = tmpDb()
+    const { Database } = (await import("bun:sqlite")) as {
+      Database: new (p: string) => {
+        run: (sql: string) => void
+        query: (sql: string) => { get: (...p: unknown[]) => unknown }
+        close: () => void
+      }
+    }
+    const indexRow = (p: string) => {
+      const raw = new Database(p)
+      try {
+        return raw
+          .query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+          )
+          .get("idx_messages_toplevel_user") as
+          | { name: string }
+          | undefined
+          | null
+      } finally {
+        raw.close()
+      }
+    }
+    try {
+      // First open runs both migrations and creates the index.
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* SessionStore
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
+        ),
+      )
+      // Simulate a DB stuck at (sessions, 1): drop the index and forget the v2
+      // ledger row so it looks like it was created before this migration shipped.
+      const raw = new Database(dbPath)
+      raw.run("DROP INDEX IF EXISTS idx_messages_toplevel_user")
+      raw.run("DELETE FROM schema_versions WHERE component = 'sessions' AND version = 2")
+      raw.close()
+      expect(indexRow(dbPath) ?? null).toBeNull()
+
+      // Reopening must advance the existing v1 DB to v2 and recreate the index.
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* SessionStore
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
+        ),
+      )
+      expect(indexRow(dbPath)?.name).toBe("idx_messages_toplevel_user")
+    } finally {
+      cleanupTmp(dbPath)
+    }
+  })
 })
