@@ -164,6 +164,10 @@ export interface LunaData {
    *  bootstrap effect; final-app just surfaces the chat panel. The nonce forces
    *  a re-surface even when the same id is deep-linked twice. */
   readonly deepLinkThread: { readonly id: string; readonly nonce: number } | null
+  /** Route to a thread by id (#298 primitive): selects + subscribes via the
+   *  bootstrap effect and fires deepLinkThread so final-app surfaces the chat
+   *  panel. Used by useStudioNotifier's focus-regain + web-click routing. */
+  readonly requestDeepLink: (id: string) => void
 }
 
 export function useLunaData(): LunaData {
@@ -650,5 +654,6 @@ export function useLunaData(): LunaData {
     focusArtifact,
     widgetOpen,
     deepLinkThread,
+    requestDeepLink,
   }
 }

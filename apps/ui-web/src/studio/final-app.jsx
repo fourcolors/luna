@@ -9,6 +9,7 @@ import { MapApp } from "./studio-map.jsx";
 import { taskDefFromDelegation } from "./task-defs.js";
 import { AmbientLuna, VoiceScene } from "./studio-voice.jsx";
 import { useLunaData } from "../data/useLunaData";
+import { useStudioNotifier } from "../data/useStudioNotifier";
 import { useStudioActiveThreadName } from "../data/useStudioThreads";
 import { useUiSelector } from "../data/useUiStore";
 import { createFrameCoalescer } from "../data/frame-coalescer";
@@ -226,6 +227,9 @@ const PanelWindow = React.memo(function PanelWindow({
 
 export function StudioApp() {
   const luna = useLunaData();
+  // Phase 2 notifications: self-subscribes to the raw frame side-channel and
+  // owns focus-regain routing. StudioApp holds the full LunaData.
+  useStudioNotifier(luna);
   const client = useMemo(() => ({
     store: luna.store,
     status: luna.status,

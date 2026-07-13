@@ -11,6 +11,10 @@ tauri = { version = "2", features = [] }
 # Clipboard write-text only (capabilities/default.json grants exactly
 # clipboard-manager:allow-write-text) — see phase0-spike-spec.md decision 8.
 tauri-plugin-clipboard-manager = "2"
+# Native OS notification banners (Phase 2). The notify_thread command wraps
+# app.notification().builder()...show(); core:default already covers Studio's
+# own commands, so no allow-notify capability is added. Mirrors Moon.
+tauri-plugin-notification = "2"
 # v1 staged-on-boot self-update (see update-train-spec.md decision 4): check
 # → download_and_install on a background task in setup, no mid-session
 # restart, no UI. Feed + pubkey live in tauri.conf.json under plugins.updater.
