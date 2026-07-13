@@ -1,5 +1,0 @@
-{
-  "extends": "./apps/ui-web/tsconfig.json",
-  "compilerOptions": { "types": ["node"], "noEmit": true },
-  "include": ["apps/ui-web/scripts/chat-server.ts"]
-}
