@@ -27,8 +27,9 @@
  */
 import { readFileSync } from "node:fs"
 import * as path from "node:path"
-import type { McpAppHostDeps } from "@luna/ui-ws"
+import type { McpAppHostDeps, MemorySearchErrorKind } from "@luna/ui-ws"
 import type { CounterSnapshot } from "@luna/core"
+import type { MemoryRecord, MemoryVisibility } from "@luna/memory"
 
 /** The mimeType every MCP-app template is served under (SEP-1865). */
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
@@ -175,8 +176,8 @@ export const createCoreAppRegistry = (
  * inline HTML. Its identity uri is DERIVED from the artifact id —
  * `ui://luna/app/<encodeURIComponent(id)>` — so the host can stamp tools/call
  * and the server can route + gate them. These apps cannot ship server-side JS,
- * so their tools are a fixed CURATED, read-only allowlist shared by all of them
- * (buildCuratedAppTools), NOT per-app handlers. */
+ * so their tools come from a fixed CURATED registry (buildCuratedAppTools),
+ * with an optional per-app gate for destructive capabilities. */
 
 /** The uri prefix for a store-backed app. The artifact id is percent-encoded
  *  into the uri (mirrors widget.html's derivation). */
@@ -205,51 +206,244 @@ export interface CuratedArtifactRow {
   readonly updatedAt: number
 }
 
+/* ── memory-list / memory-search / memory-delete: memory-browser curated
+ * tools ───────────────────────────────────────────────────────────────────
+ * Backs the Moon "memory browser" MCP app (Chairman-facing, ships alongside
+ * this module). Three surfaces on top of the SAME MemoryRouter the memory_*
+ * SDK tools already use (@luna/memory-tools tools.ts):
+ *   - `memory-list`   → MemoryRouter.query() exact-filter listing, paginated
+ *                        via limit/offset (MemoryQuery has no native offset,
+ *                        so chat-server over-fetches offset+limit+1 rows and
+ *                        slices — see the memoryList dep it injects below).
+ *   - `memory-search` → MemoryRouter.search() hybrid BM25+vector top-K. On
+ *                        backend failure (e.g. no vector backend configured)
+ *                        the injected dep sets `error` on the returned page
+ *                        instead of throwing, so the app can detect
+ *                        "no-vector-backend" and fall back to memory-list.
+ *   - `memory-delete` → MemoryRouter.get() + delete(), mirroring
+ *                        memory_delete's scope re-check exactly. The ONLY
+ *                        mutation exposed to the app surface — no edit/flag/
+ *                        tag-patch (that needs a primitive that doesn't
+ *                        exist; deliberately out of scope for v1).
+ * Args arrive as `unknown` over the wire (an app is agent/user HTML, never
+ * trusted) — validateMemoryListArgs/validateMemorySearchArgs/
+ * validateMemoryDeleteArgs are the ONE validation choke point per tool, pure
+ * + exported so they're unit-testable without a router. */
+
+const MEMORY_LIST_DEFAULT_LIMIT = 25
+const MEMORY_LIST_MAX_LIMIT = 100
+const MEMORY_LIST_MAX_OFFSET = 2000
+const MEMORY_SEARCH_DEFAULT_TOP_K = 10
+const MEMORY_SEARCH_MAX_TOP_K = 50
+const MEMORY_SEARCH_QUERY_MAX_LEN = 500
+const MEMORY_DELETE_ID_MAX_LEN = 200
+
+/** The wire shape of one memory record surfaced to a curated app tool —
+ *  mirrors the memory_search SDK tool's projection (id/tags/kind/namespace/
+ *  createdAt/updatedAt/scope) plus the raw `content` (a detail view can
+ *  render non-text records, e.g. beliefs, without a second round trip). */
+export interface CuratedMemoryRow {
+  readonly id: string
+  readonly namespace: string
+  readonly kind: string
+  readonly text: string
+  readonly content: unknown
+  readonly tags: ReadonlyArray<string>
+  readonly createdAt: number
+  readonly updatedAt: number
+  readonly scope?: {
+    readonly observerId: string
+    readonly subjectId: string
+    readonly visibility: MemoryVisibility
+  }
+}
+
+export interface CuratedMemorySearchRow extends CuratedMemoryRow {
+  readonly score: number
+}
+
+export interface MemoryListPage {
+  readonly rows: ReadonlyArray<CuratedMemoryRow>
+  readonly limit: number
+  readonly offset: number
+  readonly hasMore: boolean
+}
+
+export interface MemorySearchPage {
+  readonly rows: ReadonlyArray<CuratedMemorySearchRow>
+  readonly query: string
+  readonly topK: number
+  /** Set instead of throwing when the underlying search failed (e.g. no
+   *  vector backend configured) — mirrors @luna/ui-ws's MemorySearchErrorKind
+   *  so the memory-browser app can detect "no-vector-backend" specifically
+   *  and fall back to memory-list rather than showing a dead-end error. rows
+   *  is [] whenever error is set. */
+  readonly error?: {
+    readonly kind: MemorySearchErrorKind
+    readonly message: string
+  }
+}
+
+export interface ValidatedMemoryListArgs {
+  readonly namespace?: string
+  readonly kind?: string
+  readonly tag?: string
+  readonly since?: number
+  readonly limit: number
+  readonly offset: number
+}
+
+export interface ValidatedMemorySearchArgs {
+  readonly query: string
+  readonly namespace?: string
+  readonly kind?: string
+  readonly topK: number
+}
+
+export interface ValidatedMemoryDeleteArgs {
+  readonly id: string
+}
+
+/** Result of the `memory-delete` curated tool. `deleted:false` covers both
+ *  "no such record" and "record exists but is outside the bound scope" —
+ *  the caller can't distinguish a missing id from a scope refusal, which is
+ *  the point (no oracle for cross-scope record existence). */
+export interface MemoryDeleteResult {
+  readonly deleted: boolean
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v)
+
+const asOptionalString = (v: unknown): string | undefined => {
+  if (typeof v !== "string") return undefined
+  const trimmed = v.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+const asOptionalFiniteNumber = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) ? v : undefined
+
+const asClampedInt = (
+  v: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number => {
+  const n = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+/** Validate/clamp raw `memory-list` args off the wire. Never throws — every
+ *  field falls back to a safe default so a malformed call degrades to "list
+ *  the first page" rather than failing closed. */
+export const validateMemoryListArgs = (args: unknown): ValidatedMemoryListArgs => {
+  const a = isPlainObject(args) ? args : {}
+  return {
+    namespace: asOptionalString(a["namespace"]),
+    kind: asOptionalString(a["kind"]),
+    tag: asOptionalString(a["tag"]),
+    since: asOptionalFiniteNumber(a["since"]),
+    limit: asClampedInt(a["limit"], MEMORY_LIST_DEFAULT_LIMIT, 1, MEMORY_LIST_MAX_LIMIT),
+    offset: asClampedInt(a["offset"], 0, 0, MEMORY_LIST_MAX_OFFSET),
+  }
+}
+
+/** Validate/clamp raw `memory-search` args off the wire. A blank/whitespace
+ *  query is normalized to "" — the injected memorySearch dep short-circuits
+ *  to an empty page rather than issuing a vacuous vector search. */
+export const validateMemorySearchArgs = (args: unknown): ValidatedMemorySearchArgs => {
+  const a = isPlainObject(args) ? args : {}
+  const rawQuery = typeof a["query"] === "string" ? a["query"].trim() : ""
+  return {
+    query: rawQuery.slice(0, MEMORY_SEARCH_QUERY_MAX_LEN),
+    namespace: asOptionalString(a["namespace"]),
+    kind: asOptionalString(a["kind"]),
+    topK: asClampedInt(a["topK"], MEMORY_SEARCH_DEFAULT_TOP_K, 1, MEMORY_SEARCH_MAX_TOP_K),
+  }
+}
+
+/** Validate/clamp raw `memory-delete` args off the wire. A missing/non-string
+ *  id (or one that is all whitespace) normalizes to "" — the injected
+ *  memoryDelete dep never sees raw wire input, and an empty id simply won't
+ *  match any record (deleted:false), so this degrades safely rather than
+ *  throwing. Length-capped defensively; real ids are short (`mem_<ts36>_
+ *  <6 chars>`). */
+export const validateMemoryDeleteArgs = (args: unknown): ValidatedMemoryDeleteArgs => {
+  const a = isPlainObject(args) ? args : {}
+  const rawId = typeof a["id"] === "string" ? a["id"].trim() : ""
+  return { id: rawId.slice(0, MEMORY_DELETE_ID_MAX_LEN) }
+}
+
 /**
- * A store-backed MCP-app registry. `readResource` resolves a store app uri to
- * its inline HTML (for the rare pointer-mode render — generated apps usually
- * render inline and never read the resource); `callTool` routes EVERY
- * store-app tool call to a fixed CURATED allowlist. Generated/user apps share
- * one allowlist because they carry no server JS — so the spec's same-server
- * rule degenerates to "is this a curated tool?" for this provider. Unknown
- * uris/apps/tools fail closed so a composed registry can try the next provider.
+ * The `memory-delete` scope re-check, extracted as an Effect-free (Promise)
+ * function so it's unit-testable without a real MemoryRouter — mirrors
+ * @luna/memory-tools tools.ts' memory_delete handler (~258-288) exactly:
+ * fetch the record, THEN verify scope, THEN delete. This is DEFENSE IN
+ * DEPTH: chat-server's injected getRecord/deleteRecord are already scope-
+ * bound (memoryBrowserScope), so matchesScope should never actually reject
+ * anything getRecord returned — but deletion is destructive, so we re-check
+ * anyway rather than trust a single layer. An empty id (validateMemory
+ * DeleteArgs' safe default for malformed input) short-circuits to
+ * `{deleted:false}` without calling getRecord at all.
  */
-export const createStoreBackedAppRegistry = (deps: {
-  readonly getAppHtml: (artifactId: string) => Promise<string | null>
-  readonly curatedTools: Readonly<
-    Record<string, (args: unknown) => Promise<unknown> | unknown>
-  >
-}): McpAppHostDeps => ({
-  async readResource(uri) {
-    const id = artifactIdFromAppUri(uri)
-    if (id === null) return { ok: false, message: `unknown app resource: ${uri}` }
-    const html = await deps.getAppHtml(id)
-    if (html === null) return { ok: false, message: `unknown app: ${uri}` }
-    return { ok: true, mimeType: MCP_APP_MIME_TYPE, text: html }
+export const deleteMemoryRecordWithScopeCheck = async (
+  args: ValidatedMemoryDeleteArgs,
+  deps: {
+    readonly getRecord: (id: string) => Promise<MemoryRecord | null>
+    readonly deleteRecord: (id: string) => Promise<boolean>
+    readonly matchesScope: (record: MemoryRecord) => boolean
   },
-  async callTool(appUri, tool, args) {
-    const id = artifactIdFromAppUri(appUri)
-    if (id === null) return { ok: false, message: `unknown app: ${appUri}` }
-    // Object.hasOwn (not a bare index) so prototype names can't resolve into a
-    // tool — same guard as createCoreAppRegistry. The id is recovered above
-    // only to confirm this is a store app; the curated set is shared, not
-    // per-app, so a generated app can call any curated tool but nothing else.
-    if (!Object.hasOwn(deps.curatedTools, tool)) {
-      return { ok: false, message: `tool "${tool}" is not available to apps` }
-    }
-    try {
-      const value = await deps.curatedTools[tool]!(args)
-      return {
-        ok: true,
-        result: {
-          content: [{ type: "text", text: JSON.stringify(value) }],
-          structuredContent: value,
+): Promise<MemoryDeleteResult> => {
+  if (args.id.length === 0) return { deleted: false }
+  const existing = await deps.getRecord(args.id)
+  if (existing === null || !deps.matchesScope(existing)) {
+    return { deleted: false }
+  }
+  const removed = await deps.deleteRecord(args.id)
+  return { deleted: removed }
+}
+
+/** Best-effort preview text for a record: memory_save always writes
+ *  `content: { text }`, but other producers (e.g. beliefs) store structured
+ *  content — fall back to a JSON preview so the list view never shows "". */
+const extractPreviewText = (content: unknown): string => {
+  if (typeof content === "string") return content
+  if (
+    content !== null &&
+    typeof content === "object" &&
+    "text" in content &&
+    typeof (content as { text: unknown }).text === "string"
+  ) {
+    return (content as { text: string }).text
+  }
+  try {
+    return JSON.stringify(content) ?? ""
+  } catch {
+    return ""
+  }
+}
+
+/** Project a MemoryRecord to the curated wire shape. Pure — exported so
+ *  chat-server's memoryList/memorySearch deps (and tests) can reuse it. */
+export const toCuratedMemoryRow = (rec: MemoryRecord): CuratedMemoryRow => ({
+  id: rec.id,
+  namespace: rec.namespace,
+  kind: rec.kind,
+  text: extractPreviewText(rec.content),
+  content: rec.content,
+  tags: rec.tags,
+  createdAt: rec.createdAt,
+  updatedAt: rec.updatedAt,
+  ...(rec.scope !== undefined
+    ? {
+        scope: {
+          observerId: rec.scope.observerId,
+          subjectId: rec.scope.subjectId,
+          visibility: rec.scope.visibility,
         },
       }
-    } catch {
-      return { ok: false, message: `tool "${tool}" failed` }
-    }
-  },
+    : {}),
 })
 
 /**
@@ -290,19 +484,97 @@ export const composeAppRegistries = (
 })
 
 /**
- * The curated, READ-ONLY tool allowlist exposed to store-backed apps. Kept
- * deliberately tiny for v1: workspace `pulse` counters and a metadata-only
- * `list-artifacts`. No tool here writes state or returns secrets. Note the
- * exact read surface: `list-artifacts` is a GLOBAL enumeration of artifact
- * metadata (id/title/kind/version/updatedAt — never content, never origin),
- * which the caller should scope (e.g. to app/widget kinds) before any
- * multi-tenant deployment. Safe in single-tenant Luna (the operator owns every
- * artifact, and the sandboxed app has a strict no-network CSP — display-only).
+ * A store-backed MCP-app registry. `readResource` resolves a store app uri to
+ * its inline HTML (for the rare pointer-mode render — generated apps usually
+ * render inline and never read the resource); `callTool` routes EVERY
+ * store-app tool call to a fixed CURATED allowlist. Generated/user apps share
+ * one registry because they carry no server JS. Read tools are shared; the
+ * optional isToolAllowed hook narrows destructive capabilities to reviewed
+ * app identities. Unknown uris/apps/tools fail closed so a composed registry
+ * can try the next provider.
+ */
+export const createStoreBackedAppRegistry = (deps: {
+  readonly getAppHtml: (artifactId: string) => Promise<string | null>
+  readonly curatedTools: Readonly<
+    Record<string, (args: unknown) => Promise<unknown> | unknown>
+  >
+  /** Optional per-app gate for tools that are not safe to expose to every
+   *  generated app (notably destructive mutations). Reads stay shared. */
+  readonly isToolAllowed?: (artifactId: string, tool: string) => boolean
+}): McpAppHostDeps => ({
+  async readResource(uri) {
+    const id = artifactIdFromAppUri(uri)
+    if (id === null) return { ok: false, message: `unknown app resource: ${uri}` }
+    const html = await deps.getAppHtml(id)
+    if (html === null) return { ok: false, message: `unknown app: ${uri}` }
+    return { ok: true, mimeType: MCP_APP_MIME_TYPE, text: html }
+  },
+  async callTool(appUri, tool, args) {
+    const id = artifactIdFromAppUri(appUri)
+    if (id === null) return { ok: false, message: `unknown app: ${appUri}` }
+    // Object.hasOwn (not a bare index) so prototype names can't resolve into a
+    // tool — same guard as createCoreAppRegistry. The id is recovered above
+    // only to confirm this is a store app; the curated set is shared, not
+    // per-app, so a generated app can call any curated tool but nothing else.
+    if (!Object.hasOwn(deps.curatedTools, tool)) {
+      return { ok: false, message: `tool "${tool}" is not available to apps` }
+    }
+    if (deps.isToolAllowed !== undefined && !deps.isToolAllowed(id, tool)) {
+      return { ok: false, message: `tool "${tool}" is not available to this app` }
+    }
+    try {
+      const value = await deps.curatedTools[tool]!(args)
+      return {
+        ok: true,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(value) }],
+          structuredContent: value,
+        },
+      }
+    } catch {
+      return { ok: false, message: `tool "${tool}" failed` }
+    }
+  },
+})
+
+/**
+ * The curated tool allowlist exposed to store-backed apps: workspace `pulse`
+ * counters, a metadata-only `list-artifacts`, the memory-browser's
+ * `memory-list` (exact-filter, paginated) / `memory-search` (hybrid top-K)
+ * read pair, and `memory-delete` — the ONE mutation in this registry, gated
+ * by chat-server to the reviewed `mcp-app:memory-browser` artifact
+ * (no edit/flag/tag-patch; that needs a tag-patch primitive that doesn't
+ * exist yet, deliberately out of scope for v1). Note the exact read surface:
+ * `list-artifacts` is a GLOBAL enumeration of artifact metadata (id/title/
+ * kind/version/updatedAt — never content, never origin); `memory-list`/
+ * `memory-search`/`memory-delete` are scoped by the injected deps
+ * (chat-server binds them to the OPERATOR_MEMORY_SCOPE, the same scope
+ * memory_save/memory_search/memory_delete already use), which the caller
+ * should keep in mind before any multi-tenant deployment. Safe in
+ * single-tenant Luna (the operator owns every artifact and every memory, and
+ * the sandboxed app has a strict no-network CSP).
+ * Args are validated here (validateMemoryListArgs/validateMemorySearchArgs/
+ * validateMemoryDeleteArgs) before reaching the injected deps — the deps
+ * never see unchecked wire input. `memory-delete` additionally relies on its
+ * injected dep re-checking scope AFTER fetching the record (defense in
+ * depth — see makeMemoryTools' memory_delete in @luna/memory-tools for the
+ * pattern this mirrors), since arg validation alone can't enforce that.
  */
 export const buildCuratedAppTools = (deps: {
   readonly getPulse: () => Promise<PulseCounters>
   readonly listArtifacts: () => Promise<ReadonlyArray<CuratedArtifactRow>>
+  readonly memoryList: (args: ValidatedMemoryListArgs) => Promise<MemoryListPage>
+  readonly memorySearch: (args: ValidatedMemorySearchArgs) => Promise<MemorySearchPage>
+  /** The injected dep is trusted to apply its OWN scope re-check (mirroring
+   *  memory_delete's matchesMemoryScope guard in @luna/memory-tools) even
+   *  though query-scoping should already prevent cross-scope reads from
+   *  reaching here — deletion is destructive, so chat-server re-verifies
+   *  scope defensively before calling router.delete. */
+  readonly memoryDelete: (args: ValidatedMemoryDeleteArgs) => Promise<MemoryDeleteResult>
 }): Readonly<Record<string, (args: unknown) => Promise<unknown> | unknown>> => ({
   pulse: () => deps.getPulse(),
   "list-artifacts": () => deps.listArtifacts(),
+  "memory-list": (args) => deps.memoryList(validateMemoryListArgs(args)),
+  "memory-search": (args) => deps.memorySearch(validateMemorySearchArgs(args)),
+  "memory-delete": (args) => deps.memoryDelete(validateMemoryDeleteArgs(args)),
 })

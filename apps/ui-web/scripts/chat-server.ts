@@ -322,9 +322,11 @@ import {
   createSubagentTreeBridge,
   createWidgetSummonBridge,
   startUIWebSocketServer,
+  type MemorySearchErrorKind,
 } from "@luna/ui-ws"
 import {
   LunaSqliteBootstrapLive,
+  matchesMemoryScope,
   MemoryRouterTag,
   OPERATOR_MEMORY_SCOPE,
 } from "@luna/memory"
@@ -397,7 +399,15 @@ import {
   composeAppRegistries,
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
+  deleteMemoryRecordWithScopeCheck,
   pulseFromSnapshot,
+  toCuratedMemoryRow,
+  type MemoryDeleteResult,
+  type MemoryListPage,
+  type MemorySearchPage,
+  type ValidatedMemoryDeleteArgs,
+  type ValidatedMemoryListArgs,
+  type ValidatedMemorySearchArgs,
 } from "./core-apps.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
@@ -3283,6 +3293,128 @@ const buildServerLayer = (
       // curated `pulse` tool offered to store-backed apps.
       const getPulse = () =>
         Effect.runPromise(telemetry.snapshot).then(pulseFromSnapshot)
+      // Moon memory-browser mcp-app tools (memory-list/memory-search): both
+      // scope reads to OPERATOR_MEMORY_SCOPE — the same observer/subject the
+      // memory_save/memory_search SDK tools already stamp/filter on — so the
+      // curated app surface can never see another scope's records. `mem` is
+      // the MemoryRouter resolved above (refreshBeliefs / recallForTurn).
+      const memoryBrowserScope = {
+        observerId: OPERATOR_MEMORY_SCOPE.observerId,
+        subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+      }
+      const getMemoryListPage = (
+        args: ValidatedMemoryListArgs,
+      ): Promise<MemoryListPage> =>
+        Effect.runPromise(
+          mem
+            .query({
+              ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
+              ...(args.kind !== undefined ? { kind: args.kind } : {}),
+              ...(args.tag !== undefined ? { tag: args.tag } : {}),
+              ...(args.since !== undefined ? { since: args.since } : {}),
+              // MemoryQuery has no native offset — over-fetch one page past the
+              // requested window (+1) so hasMore is exact, then slice below.
+              limit: args.offset + args.limit + 1,
+              scope: memoryBrowserScope,
+            })
+            .pipe(
+              Stream.runCollect,
+              Effect.map((chunk) => {
+                const all = Array.from(chunk).sort((a, b) => b.updatedAt - a.updatedAt)
+                const page = all.slice(args.offset, args.offset + args.limit)
+                return {
+                  rows: page.map(toCuratedMemoryRow),
+                  limit: args.limit,
+                  offset: args.offset,
+                  hasMore: all.length > args.offset + args.limit,
+                }
+              }),
+            ),
+        )
+      const getMemorySearchPage = (
+        args: ValidatedMemorySearchArgs,
+      ): Promise<MemorySearchPage> => {
+        if (args.query.length === 0) {
+          return Promise.resolve({ rows: [], query: args.query, topK: args.topK })
+        }
+        // Over-fetch when a kind filter is set (mirrors memory_search in
+        // @luna/memory-tools tools.ts) so the post-filter still has enough
+        // candidates to return `topK` matches.
+        const fetchTopK =
+          args.kind !== undefined ? Math.max(args.topK * 4, 20) : args.topK
+        return Effect.runPromise(
+          Effect.gen(function* () {
+            // Tag the failure on the result instead of letting it throw
+            // (mirrors ChatService.searchMemory in chat-service.ts
+            // ~2701-2745) so the mcp-app callTool's generic catch-all never
+            // swallows the ONE distinction the memory-browser panel needs:
+            // "no vector backend configured" (safe to silently fall back to
+            // memory-list) vs any other failure (a real error banner).
+            const either = yield* Effect.either(
+              Stream.runCollect(
+                mem.search({
+                  queryText: args.query,
+                  topK: fetchTopK,
+                  ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
+                  mode: "hybrid",
+                  scope: memoryBrowserScope,
+                }),
+              ),
+            )
+            if (either._tag === "Left") {
+              const err = either.left as { cause?: unknown; message?: unknown }
+              const causeMsg =
+                typeof err.cause === "object" && err.cause !== null
+                  ? (err.cause as { message?: string }).message
+                  : typeof err.cause === "string"
+                    ? err.cause
+                    : undefined
+              const msg =
+                causeMsg ??
+                (typeof err.message === "string" ? err.message : String(err))
+              // Substring check on "no vector backend" (singular) so it
+              // matches BOTH router messages: the per-namespace one ("no
+              // vector backend for namespace X") and the fan-out one ("no
+              // vector backends registered") — chat-service.ts's classifier
+              // only checks the plural form and misses the namespaced case.
+              const kind: MemorySearchErrorKind = msg.includes("no vector backend")
+                ? "no-vector-backend"
+                : "internal"
+              return {
+                rows: [],
+                query: args.query,
+                topK: args.topK,
+                error: { kind, message: msg },
+              }
+            }
+            const all = Array.from(either.right)
+            const filtered =
+              args.kind !== undefined
+                ? all.filter((h) => h.record.kind === args.kind)
+                : all
+            const page = filtered.slice(0, args.topK)
+            return {
+              rows: page.map((h) => ({ ...toCuratedMemoryRow(h.record), score: h.score })),
+              query: args.query,
+              topK: args.topK,
+            }
+          }),
+        )
+      }
+      // memory-delete: the ONE mutation exposed to the memory-browser app
+      // surface. deleteMemoryRecordWithScopeCheck (core-apps.ts) fetches
+      // THEN re-checks scope before deleting — the SAME defense-in-depth
+      // pattern memory_delete uses in @luna/memory-tools tools.ts
+      // (~258-288), even though memoryBrowserScope already bounds every
+      // read/write these deps can reach.
+      const getMemoryDelete = (
+        args: ValidatedMemoryDeleteArgs,
+      ): Promise<MemoryDeleteResult> =>
+        deleteMemoryRecordWithScopeCheck(args, {
+          getRecord: (id) => Effect.runPromise(mem.get(id)),
+          deleteRecord: (id) => Effect.runPromise(mem.delete(id)),
+          matchesScope: (record) => matchesMemoryScope(record, memoryBrowserScope),
+        })
       const mcpAppHost = createMcpAppHost(
         composeAppRegistries(
           // Static, compile-time core apps (the Luna server as first provider).
@@ -3322,7 +3454,19 @@ const buildServerLayer = (
                     ),
                   ),
                 ),
+              // memory-list / memory-search / memory-delete: OPERATOR-scoped
+              // memory browsing (+ the one mutation, delete) for the Moon
+              // "memory browser" mcp-app. Args arrive pre-validated
+              // (buildCuratedAppTools validates before dispatch).
+              memoryList: getMemoryListPage,
+              memorySearch: getMemorySearchPage,
+              memoryDelete: getMemoryDelete,
             }),
+            // Reads are useful to generated memory views, but deletion is a
+            // privileged capability of the reviewed memory-browser artifact,
+            // not a mutation every generated app should inherit.
+            isToolAllowed: (artifactId, tool) =>
+              tool !== "memory-delete" || artifactId === "mcp-app:memory-browser",
           }),
         ),
       )

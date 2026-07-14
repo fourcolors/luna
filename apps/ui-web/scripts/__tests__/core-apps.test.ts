@@ -10,6 +10,9 @@
  *   - pulse-snapshot aggregates the EventCounter counter names correctly
  *   - the shipped workspace-pulse app html is a REAL MCP app (handshake +
  *     tools/call, no luna.* bridge usage, no external refs)
+ *   - memory-list/memory-search/memory-delete validate args BEFORE they
+ *     reach the injected router deps (the memory-browser's read+delete
+ *     surface — memory-delete is its ONE mutation)
  */
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -21,9 +24,18 @@ import {
   composeAppRegistries,
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
+  deleteMemoryRecordWithScopeCheck,
   pulseFromSnapshot,
+  toCuratedMemoryRow,
+  validateMemoryDeleteArgs,
+  validateMemoryListArgs,
+  validateMemorySearchArgs,
   type CoreApp,
+  type MemoryDeleteResult,
+  type MemoryListPage,
+  type MemorySearchPage,
 } from "../core-apps.js"
+import type { MemoryRecord } from "@luna/memory"
 
 const PULSE_URI = "ui://luna/workspace-pulse"
 
@@ -249,6 +261,30 @@ describe("createStoreBackedAppRegistry — generated/user apps", () => {
     expect(notStore.ok).toBe(false)
   })
 
+  it("supports a per-app gate for destructive curated tools", async () => {
+    const guarded = createStoreBackedAppRegistry({
+      getAppHtml: async () => "<p>app</p>",
+      curatedTools: { "memory-delete": async () => ({ deleted: true }) },
+      isToolAllowed: (artifactId, tool) =>
+        tool !== "memory-delete" || artifactId === "mcp-app:memory-browser",
+    })
+
+    const browser = await guarded.callTool(
+      "ui://luna/app/mcp-app%3Amemory-browser",
+      "memory-delete",
+      { id: "mem_1" },
+    )
+    expect(browser.ok).toBe(true)
+
+    const otherApp = await guarded.callTool(
+      "ui://luna/app/mcp-app%3Aunrelated",
+      "memory-delete",
+      { id: "mem_1" },
+    )
+    expect(otherApp.ok).toBe(false)
+    expect(otherApp.message).toContain("not available to this app")
+  })
+
   it("prototype-chain tool names never resolve (hasOwn gate)", async () => {
     for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
       expect((await reg().callTool("ui://luna/app/mcp-app%3Ax", name, {})).ok).toBe(false)
@@ -292,17 +328,270 @@ describe("composeAppRegistries — namespace isolation", () => {
   })
 })
 
-describe("buildCuratedAppTools — the read-only allowlist", () => {
-  it("exposes exactly pulse + list-artifacts, wired to the injected getters", async () => {
+const memoryListStub = (): MemoryListPage => ({
+  rows: [],
+  limit: 25,
+  offset: 0,
+  hasMore: false,
+})
+
+const memorySearchStub = (): MemorySearchPage => ({
+  rows: [],
+  query: "",
+  topK: 10,
+})
+
+const memoryDeleteStub = (): MemoryDeleteResult => ({ deleted: false })
+
+describe("buildCuratedAppTools — the read+delete allowlist", () => {
+  it("exposes exactly pulse + list-artifacts + memory-list + memory-search + memory-delete, wired to the injected getters", async () => {
     const getPulse = vi.fn(async () => ({ toolsCalled: 1, errors: 0, estimatedUsd: 0, activeSessions: 0 }))
     const listArtifacts = vi.fn(async () => [
       { id: "widget:a", title: "A", kind: "widget", version: 1, updatedAt: 0 },
     ])
-    const tools = buildCuratedAppTools({ getPulse, listArtifacts })
-    expect(Object.keys(tools).sort()).toEqual(["list-artifacts", "pulse"])
+    const memoryList = vi.fn(async () => memoryListStub())
+    const memorySearch = vi.fn(async () => memorySearchStub())
+    const memoryDelete = vi.fn(async () => memoryDeleteStub())
+    const tools = buildCuratedAppTools({ getPulse, listArtifacts, memoryList, memorySearch, memoryDelete })
+    expect(Object.keys(tools).sort()).toEqual([
+      "list-artifacts",
+      "memory-delete",
+      "memory-list",
+      "memory-search",
+      "pulse",
+    ])
     await tools.pulse!({})
     await tools["list-artifacts"]!({})
+    await tools["memory-list"]!({})
+    await tools["memory-search"]!({ query: "hi" })
+    await tools["memory-delete"]!({ id: "mem_1" })
     expect(getPulse).toHaveBeenCalledTimes(1)
     expect(listArtifacts).toHaveBeenCalledTimes(1)
+    expect(memoryList).toHaveBeenCalledTimes(1)
+    expect(memorySearch).toHaveBeenCalledTimes(1)
+    expect(memoryDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it("memory-list/memory-search/memory-delete VALIDATE args before they reach the injected deps — the deps never see raw wire input", async () => {
+    const memoryList = vi.fn(async () => memoryListStub())
+    const memorySearch = vi.fn(async () => memorySearchStub())
+    const memoryDelete = vi.fn(async () => memoryDeleteStub())
+    const tools = buildCuratedAppTools({
+      getPulse: async () => ({ toolsCalled: 0, errors: 0, estimatedUsd: 0, activeSessions: 0 }),
+      listArtifacts: async () => [],
+      memoryList,
+      memorySearch,
+      memoryDelete,
+    })
+
+    // Wildly out-of-range / wrong-typed args clamp to the safe defaults —
+    // the dep is called with a VALIDATED shape, not the raw payload.
+    await tools["memory-list"]!({ limit: 99999, offset: -50, namespace: 42 })
+    expect(memoryList).toHaveBeenCalledWith({
+      namespace: undefined,
+      kind: undefined,
+      tag: undefined,
+      since: undefined,
+      limit: 100,
+      offset: 0,
+    })
+
+    await tools["memory-search"]!({ query: "  hello  ", topK: -5 })
+    expect(memorySearch).toHaveBeenCalledWith({
+      query: "hello",
+      namespace: undefined,
+      kind: undefined,
+      topK: 1,
+    })
+
+    await tools["memory-delete"]!({ id: "  mem_abc123  " })
+    expect(memoryDelete).toHaveBeenCalledWith({ id: "mem_abc123" })
+
+    // A garbage (non-object) payload never throws — it degrades to defaults.
+    await tools["memory-list"]!(null)
+    await tools["memory-search"]!("not an object")
+    await tools["memory-delete"]!(null)
+    await tools["memory-delete"]!({ id: 12345 })
+    expect(memoryList).toHaveBeenLastCalledWith({
+      namespace: undefined,
+      kind: undefined,
+      tag: undefined,
+      since: undefined,
+      limit: 25,
+      offset: 0,
+    })
+    expect(memorySearch).toHaveBeenLastCalledWith({
+      query: "",
+      namespace: undefined,
+      kind: undefined,
+      topK: 10,
+    })
+    expect(memoryDelete).toHaveBeenLastCalledWith({ id: "" })
+  })
+})
+
+describe("validateMemoryListArgs — the one choke point for memory-list wire input", () => {
+  it("defaults every field when args is missing/garbage", () => {
+    for (const bad of [undefined, null, "nope", 5, []]) {
+      expect(validateMemoryListArgs(bad)).toEqual({
+        namespace: undefined,
+        kind: undefined,
+        tag: undefined,
+        since: undefined,
+        limit: 25,
+        offset: 0,
+      })
+    }
+  })
+
+  it("clamps limit to [1, 100] and offset to [0, 2000]", () => {
+    expect(validateMemoryListArgs({ limit: 0, offset: -1 }).limit).toBe(1)
+    expect(validateMemoryListArgs({ limit: 0, offset: -1 }).offset).toBe(0)
+    expect(validateMemoryListArgs({ limit: 1_000_000, offset: 1_000_000 }).limit).toBe(100)
+    expect(validateMemoryListArgs({ limit: 1_000_000, offset: 1_000_000 }).offset).toBe(2000)
+  })
+
+  it("trims well-formed string filters and drops wrong-typed ones", () => {
+    expect(
+      validateMemoryListArgs({ namespace: "  notes ", kind: " semantic  ", tag: " x ", since: 123 }),
+    ).toEqual({ namespace: "notes", kind: "semantic", tag: "x", since: 123, limit: 25, offset: 0 })
+    expect(
+      validateMemoryListArgs({ namespace: 1, kind: {}, tag: [], since: "nope" }),
+    ).toEqual({ namespace: undefined, kind: undefined, tag: undefined, since: undefined, limit: 25, offset: 0 })
+  })
+})
+
+describe("validateMemorySearchArgs — the one choke point for memory-search wire input", () => {
+  it("trims and length-caps the query, and clamps topK to [1, 50]", () => {
+    expect(validateMemorySearchArgs({ query: "  hi  " }).query).toBe("hi")
+    expect(validateMemorySearchArgs({ query: "hi", namespace: " notes ", kind: " semantic " }))
+      .toMatchObject({ namespace: "notes", kind: "semantic" })
+    expect(validateMemorySearchArgs({ query: "x".repeat(1000) }).query).toHaveLength(500)
+    expect(validateMemorySearchArgs({ query: "hi", topK: 0 }).topK).toBe(1)
+    expect(validateMemorySearchArgs({ query: "hi", topK: 999 }).topK).toBe(50)
+  })
+
+  it("a missing/non-string query becomes an empty string, not a throw", () => {
+    expect(validateMemorySearchArgs({}).query).toBe("")
+    expect(validateMemorySearchArgs(null).query).toBe("")
+    expect(validateMemorySearchArgs({ query: 5 }).query).toBe("")
+  })
+})
+
+describe("validateMemoryDeleteArgs — the one choke point for memory-delete wire input", () => {
+  it("trims a well-formed id", () => {
+    expect(validateMemoryDeleteArgs({ id: "  mem_abc123  " })).toEqual({ id: "mem_abc123" })
+  })
+
+  it("length-caps a pathological id rather than throwing", () => {
+    expect(validateMemoryDeleteArgs({ id: "x".repeat(1000) }).id).toHaveLength(200)
+  })
+
+  it("a missing/non-string/garbage id normalizes to empty string, not a throw", () => {
+    for (const bad of [undefined, null, "nope", 5, [], {}, { id: 5 }, { id: [] }]) {
+      expect(validateMemoryDeleteArgs(bad).id).toBe("")
+    }
+    expect(validateMemoryDeleteArgs({}).id).toBe("")
+    expect(validateMemoryDeleteArgs({ id: "   " }).id).toBe("")
+  })
+})
+
+describe("deleteMemoryRecordWithScopeCheck — the memory-delete defense-in-depth guard", () => {
+  const record = { id: "mem_1", namespace: "notes", kind: "semantic" } as unknown as MemoryRecord
+
+  it("fetches, confirms scope, THEN deletes — deletes exactly once, in order", async () => {
+    const calls: string[] = []
+    const getRecord = vi.fn(async (id: string) => { calls.push(`get:${id}`); return record })
+    const deleteRecord = vi.fn(async (id: string) => { calls.push(`delete:${id}`); return true })
+    const matchesScope = vi.fn(() => true)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_1" },
+      { getRecord, deleteRecord, matchesScope },
+    )
+    expect(result).toEqual({ deleted: true })
+    expect(calls).toEqual(["get:mem_1", "delete:mem_1"])
+    expect(matchesScope).toHaveBeenCalledWith(record)
+    expect(deleteRecord).toHaveBeenCalledTimes(1)
+  })
+
+  it("a record OUTSIDE the bound scope is refused — deleteRecord is NEVER called (defense in depth)", async () => {
+    const getRecord = vi.fn(async () => record)
+    const deleteRecord = vi.fn(async () => true)
+    const matchesScope = vi.fn(() => false)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_1" },
+      { getRecord, deleteRecord, matchesScope },
+    )
+    expect(result).toEqual({ deleted: false })
+    expect(deleteRecord).not.toHaveBeenCalled()
+  })
+
+  it("a missing record (getRecord → null) is a no-op — deleteRecord is NEVER called", async () => {
+    const getRecord = vi.fn(async () => null)
+    const deleteRecord = vi.fn(async () => true)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_ghost" },
+      { getRecord, deleteRecord, matchesScope: () => true },
+    )
+    expect(result).toEqual({ deleted: false })
+    expect(deleteRecord).not.toHaveBeenCalled()
+  })
+
+  it("an empty id (validateMemoryDeleteArgs' safe default) short-circuits — getRecord is NEVER called", async () => {
+    const getRecord = vi.fn(async () => record)
+    const deleteRecord = vi.fn(async () => true)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "" },
+      { getRecord, deleteRecord, matchesScope: () => true },
+    )
+    expect(result).toEqual({ deleted: false })
+    expect(getRecord).not.toHaveBeenCalled()
+    expect(deleteRecord).not.toHaveBeenCalled()
+  })
+
+  it("echoes whatever deleteRecord reports (a race where the record vanished between get and delete)", async () => {
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_1" },
+      { getRecord: async () => record, deleteRecord: async () => false, matchesScope: () => true },
+    )
+    expect(result).toEqual({ deleted: false })
+  })
+})
+
+describe("toCuratedMemoryRow — MemoryRecord → wire shape", () => {
+  const base: MemoryRecord = {
+    id: "mem_1",
+    namespace: "notes",
+    kind: "semantic",
+    content: { text: "hello world" },
+    schemaVersion: 1,
+    createdAt: 10,
+    updatedAt: 20,
+    tags: ["a", "b"],
+  }
+
+  it("extracts content.text as the preview text and keeps the raw content", () => {
+    const row = toCuratedMemoryRow(base)
+    expect(row.text).toBe("hello world")
+    expect(row.content).toEqual({ text: "hello world" })
+    expect(row.scope).toBeUndefined()
+  })
+
+  it("falls back to a JSON preview for non-text (structured) content", () => {
+    const row = toCuratedMemoryRow({ ...base, kind: "belief", content: { status: "active" } })
+    expect(row.text).toBe(JSON.stringify({ status: "active" }))
+  })
+
+  it("preserves legacy string content without adding JSON quotes", () => {
+    const row = toCuratedMemoryRow({ ...base, content: "plain text" })
+    expect(row.text).toBe("plain text")
+  })
+
+  it("echoes the scope when the record carries one", () => {
+    const row = toCuratedMemoryRow({
+      ...base,
+      scope: { observerId: "luna", subjectId: "operator", visibility: "private" },
+    })
+    expect(row.scope).toEqual({ observerId: "luna", subjectId: "operator", visibility: "private" })
   })
 })
