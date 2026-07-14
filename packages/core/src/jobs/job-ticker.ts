@@ -91,6 +91,13 @@
 import { Cron, Duration, Effect, Either, FiberMap, Layer, Ref, Schedule } from "effect"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
+import {
+  handleDoctorWorkflowFailure,
+  isDoctorWorkflowJob,
+  maybeEnqueueDoctor,
+  resolveDoctorEnqueueConfig,
+  type DoctorEnqueueConfig,
+} from "../doctor/doctor-enqueue.js"
 import { JobsStoreService } from "./jobs-store.js"
 import type { JobRun, JobRunTerminalStatus, PersistedJob } from "./jobs-store-types.js"
 import { WorkerRegistry, WorkerError } from "./worker-registry.js"
@@ -126,6 +133,35 @@ export interface JobTickerApi {
    * drain; yield* awaitIdle; const runs = yield* store.listRuns(jobId)`.
    */
   readonly awaitIdle: Effect.Effect<void>
+
+  /**
+   * Live scheduler health snapshot (updated after every drain, including quiet
+   * ticks). Used by `/readyz.scheduler` and ops. Detects a hung/dead producer
+   * loop (lastTickAge), not "all workers healthy" - slots can be full while
+   * ticks stay fresh; `inFlight` is included for that case.
+   */
+  readonly health: Effect.Effect<SchedulerHealthSnapshot>
+}
+
+/**
+ * Additive readiness signal for JobTicker. Report-only by default on /readyz
+ * (process stays ready); `LUNA_SCHEDULER_STRICT_READY=1` may treat degraded
+ * as overall not-ready (chat-server / ui-ws wiring).
+ */
+export interface SchedulerHealthSnapshot {
+  readonly status: "ok" | "degraded" | "initializing"
+  readonly lastTickAt: number | null
+  readonly lastTickAgeMs: number | null
+  readonly inFlight: number
+  readonly tickIntervalMs: number
+  readonly lastTick: {
+    readonly considered: number
+    readonly claimed: number
+    readonly forked: number
+    readonly skippedInFlight: number
+    readonly skippedNoCapacity: number
+    readonly failedInline: number
+  }
 }
 
 export interface TickSummary {
@@ -266,6 +302,38 @@ export interface JobTickerOptions {
    * natural cron cadence (Oban's `max_attempts` analogue). Default 3.
    */
   readonly defaultMaxAttempts?: number
+
+  /**
+   * On Layer/Scope teardown, wait for in-flight executors up to this long
+   * before FiberMap interrupts them (A1b graceful drain). Default 90_000 ms.
+   * Override with env `LUNA_SCHED_DRAIN_MS` when options omit it. `0` skips
+   * the wait (immediate interrupt — useful in unit tests).
+   */
+  readonly shutdownDrainMs?: number
+
+  /**
+   * Phase B1 — auto-enqueue the doctor workflow when a non-exempt job
+   * chronically fails (`fail_streak` / `orphan_streak`). Always enabled
+   * by default; pass `enabled: false` only in tests.
+   */
+  readonly doctor?: {
+    /** Default true. */
+    readonly enabled?: boolean
+    /** Default 5. */
+    readonly failStreakThreshold?: number
+    /** Default 5. */
+    readonly orphanStreakThreshold?: number
+    /** Default 3. */
+    readonly maxHealAttempts?: number
+    /**
+     * Absolute path to `luna-doctor-workflow.ts`. Defaults to
+     * `join(cwd, 'apps/ui-web/scripts/luna-doctor-workflow.ts')` or
+     * `LUNA_DOCTOR_CLI`.
+     */
+    readonly cliPath?: string
+    readonly bunBin?: string
+    readonly lunaHome?: string
+  }
 }
 
 /**
@@ -426,6 +494,15 @@ export const JobTickerLayer = (
   // Seam 3 (retry) — max-attempts ceiling when the payload doesn't specify
   // its own (resolveMaxAttempts clamps a payload override to [1, 10]).
   const defaultMaxAttempts = options?.defaultMaxAttempts ?? 3
+  const tickIntervalMs = Duration.toMillis(tickInterval)
+  const envDrain = Number(process.env["LUNA_SCHED_DRAIN_MS"] ?? "")
+  const shutdownDrainMs =
+    options?.shutdownDrainMs ??
+    (Number.isFinite(envDrain) && envDrain >= 0 ? envDrain : 90_000)
+  // Phase B1 — doctor auto-enqueue config (resolved once at layer build).
+  const doctorCfg: DoctorEnqueueConfig = resolveDoctorEnqueueConfig(
+    options?.doctor,
+  )
 
   return Layer.scoped(
     JobTicker,
@@ -441,30 +518,102 @@ export const JobTickerLayer = (
       // don't care about retention see `pruned: 0`.
       const lastPruneAt = yield* Ref.make(0)
 
+      // Health snapshot for /readyz. Starts `initializing` until the first
+      // drainOnce completes (auto loop or explicit drain). Degraded when
+      // lastTickAgeMs > 3 * tickIntervalMs after that first tick.
+      const healthRef = yield* Ref.make<SchedulerHealthSnapshot>({
+        status: "initializing",
+        lastTickAt: null,
+        lastTickAgeMs: null,
+        inFlight: 0,
+        tickIntervalMs,
+        lastTick: {
+          considered: 0,
+          claimed: 0,
+          forked: 0,
+          skippedInFlight: 0,
+          skippedNoCapacity: 0,
+          failedInline: 0,
+        },
+      })
+
+      const publishHealth = (
+        summary: TickSummary,
+        inFlight: number,
+        observedAt: number,
+      ): Effect.Effect<void> => {
+        const lastTickAt = summary.tickAt
+        const lastTickAgeMs = Math.max(0, observedAt - lastTickAt)
+        const degraded = lastTickAgeMs > 3 * tickIntervalMs
+        return Ref.set(healthRef, {
+          status: degraded ? "degraded" : "ok",
+          lastTickAt,
+          lastTickAgeMs,
+          inFlight,
+          tickIntervalMs,
+          lastTick: {
+            considered: summary.considered,
+            claimed: summary.claimed,
+            forked: summary.forked,
+            skippedInFlight: summary.skippedInFlight,
+            skippedNoCapacity: summary.skippedNoCapacity,
+            failedInline: summary.failedInline,
+          },
+        })
+      }
+
       // Boot reconcile (runs ONCE, before the loop forks): a hard crash
       // between recordRunStart and recordRunEnd leaves job_runs rows stuck
-      // `running`/`waiting` forever. Close them as cancelled so listRuns and
-      // the suggested-actions completion observer don't see phantom in-flight
-      // work. Best-effort — a failure logs and boot continues.
+      // `running`/`waiting` forever, and a claim may leave sticky
+      // last_status='running' with a far-future next_run_at. Close open runs
+      // as cancelled and repair job rows (clear sticky status; pull-forward
+      // next_run_at for enabled recurring jobs that had a running orphan).
+      // Best-effort - a failure logs and boot continues.
       const bootNow = yield* clock.nowMs()
-      const orphansClosed = yield* store
-        .closeOrphanedRuns({
-          finishedAt: bootNow,
-          error: "orphaned: process restarted before completion",
-        })
+      const reconcile = yield* store
+        .reconcileAfterCrash({ finishedAt: bootNow })
         .pipe(
           Effect.catchAll((err) =>
             Effect.as(
               Effect.logWarning(
                 `[luna/sched] boot orphan reconcile failed: ${err.message}`,
               ),
+              {
+                orphansClosed: 0,
+                waitingClosed: 0,
+                jobsRepaired: 0,
+                jobIdsRepaired: [] as ReadonlyArray<string>,
+              },
+            ),
+          ),
+        )
+      if (
+        reconcile.orphansClosed > 0 ||
+        reconcile.waitingClosed > 0 ||
+        reconcile.jobsRepaired > 0
+      ) {
+        yield* Effect.logInfo(
+          `[luna/sched] boot reconcile: closed ${reconcile.orphansClosed} orphaned run(s) (${reconcile.waitingClosed} waiting); repaired ${reconcile.jobsRepaired} job(s)`,
+        )
+      }
+
+      // A4: quarantine enabled rows with unparseable payload_json so they
+      // stop appearing as forever-due ghosts in listDue (skipped by rowToJob).
+      const quarantined = yield* store
+        .quarantineUnparseablePayloads({ finishedAt: bootNow })
+        .pipe(
+          Effect.catchAll((err) =>
+            Effect.as(
+              Effect.logWarning(
+                `[luna/sched] payload quarantine pass failed: ${err.message}`,
+              ),
               0,
             ),
           ),
         )
-      if (orphansClosed > 0) {
-        yield* Effect.logInfo(
-          `[luna/sched] boot reconcile: closed ${orphansClosed} orphaned run(s)`,
+      if (quarantined > 0) {
+        yield* Effect.logWarning(
+          `[luna/sched] boot quarantine: disabled ${quarantined} job(s) with unparseable payload_json`,
         )
       }
 
@@ -659,22 +808,33 @@ export const JobTickerLayer = (
               outputText: result.right.outputText,
               stepsJson: result.right.stepsJson ?? null,
             }).pipe(Effect.catchAll(() => Effect.void))
-            // Seam 3 — clear a stale retry streak on recovery. Only issue the
-            // write when there is something to clear: retry_attempt is
-            // already 0 for the overwhelming majority of ticks (no prior
-            // failure), and an unconditional reset would be a redundant
-            // UPDATE on every successful dispatch of every recurring job.
-            if (job.retryAttempt !== 0) {
+            // Seam 3 + Phase B1 — clear retry + doctor streaks on recovery.
+            // Only write when something is non-zero / non-ok so healthy ticks
+            // stay free of redundant UPDATEs.
+            if (
+              job.retryAttempt !== 0 ||
+              job.failStreak !== 0 ||
+              job.orphanStreak !== 0 ||
+              job.healAttempts !== 0 ||
+              job.healState !== "ok"
+            ) {
               yield* store
-                .setV2Fields(job.id, { retryAttempt: 0 })
+                .setV2Fields(job.id, {
+                  retryAttempt: 0,
+                  failStreak: 0,
+                  orphanStreak: 0,
+                  healAttempts: 0,
+                  healState: "ok",
+                })
                 .pipe(Effect.catchAll(() => Effect.void))
             }
           } else {
             const err = result.left as WorkerError
+            const errMsg = `${err.reason}: ${err.message}`
             yield* store.recordRunEnd(run.id, {
               finishedAt,
               status: "failed",
-              error: `${err.reason}: ${err.message}`,
+              error: errMsg,
               // Workers may pass partial output through WorkerError.stepsJson
               // (e.g. workflow worker on halt) — persist it so the operator
               // can see which step failed without rerunning.
@@ -736,6 +896,32 @@ export const JobTickerLayer = (
               yield* store
                 .setV2Fields(job.id, { retryAttempt: 0 })
                 .pipe(Effect.catchAll(() => Effect.void))
+            }
+
+            // Phase B1 — doctor auto-heal. Doctor workflow jobs never
+            // become patients themselves; failures re-enqueue or escalate
+            // the *patient*. Everyone else bumps fail_streak and may
+            // enqueue a doctor one-shot once the threshold is hit.
+            if (isDoctorWorkflowJob(job)) {
+              yield* handleDoctorWorkflowFailure(
+                store,
+                job,
+                errMsg,
+                doctorCfg,
+                finishedAt,
+              ).pipe(Effect.catchAllDefect(() => Effect.void))
+            } else {
+              const newFailStreak = job.failStreak + 1
+              yield* store
+                .setV2Fields(job.id, { failStreak: newFailStreak })
+                .pipe(Effect.catchAll(() => Effect.void))
+              yield* maybeEnqueueDoctor(
+                store,
+                { ...job, failStreak: newFailStreak },
+                errMsg,
+                doctorCfg,
+                finishedAt,
+              ).pipe(Effect.catchAllDefect(() => Effect.void))
             }
           }
           // recordRunEnd closes the job_runs row but does NOT touch jobs.last_status,
@@ -1174,7 +1360,7 @@ export const JobTickerLayer = (
             }
           }
 
-          return {
+          const summary = {
             tickAt,
             considered: due.length,
             claimed,
@@ -1187,6 +1373,12 @@ export const JobTickerLayer = (
             failedInline,
             pruned,
           } satisfies TickSummary
+          // Publish health after every drain (including quiet considered=0 ticks)
+          // so /readyz can detect a hung producer via lastTickAge.
+          const inFlightNow = yield* FiberMap.size(executors)
+          const observedAt = yield* clock.nowMs()
+          yield* publishHealth(summary, inFlightNow, observedAt)
+          return summary
         }),
       )
 
@@ -1196,6 +1388,31 @@ export const JobTickerLayer = (
       // `awaitIdle` type exactly (see the `executors` doc above for why
       // E=never was chosen at construction).
       const awaitIdle: Effect.Effect<void> = FiberMap.awaitEmpty(executors)
+
+      // A1b graceful drain: run BEFORE FiberMap's Scope interrupt finalizer
+      // (finalizers are LIFO; we register after FiberMap.make so we run first).
+      // Gives in-flight executors up to shutdownDrainMs to finish so a clean
+      // SIGTERM does not orphan every mid-flight run. Timeout → proceed;
+      // remaining fibers are interrupted by FiberMap teardown; next boot's
+      // reconcileAfterCrash repairs sticky state.
+      // Only when autoStart is on (production). Test stacks use autoStart:false
+      // and often dispose mid-flight on purpose — a 90s drain would hang them.
+      if (shutdownDrainMs > 0 && options?.autoStart !== false) {
+        yield* Effect.addFinalizer(() =>
+          awaitIdle.pipe(
+            Effect.timeout(Duration.millis(shutdownDrainMs)),
+            Effect.matchEffect({
+              onFailure: () =>
+                Effect.logWarning(
+                  `[luna/sched] shutdown drain timed out after ${shutdownDrainMs}ms; remaining executors will be interrupted`,
+                ),
+              onSuccess: () =>
+                Effect.logInfo(`[luna/sched] shutdown drain complete (awaitIdle)`),
+            }),
+            Effect.asVoid,
+          ),
+        )
+      }
 
       // Supervised loop. forkScoped ties the loop to the layer Scope so a
       // Layer.close() during teardown interrupts the loop cleanly - AND
@@ -1210,7 +1427,7 @@ export const JobTickerLayer = (
               yield* Effect.logError(
                 `[luna/sched] tick defect (swallowed to keep the loop alive): ${String(defect)}`,
               )
-              return {
+              const empty = {
                 tickAt: yield* EffectClock.currentTimeMillis,
                 considered: 0,
                 claimed: 0,
@@ -1223,6 +1440,11 @@ export const JobTickerLayer = (
                 failedInline: 0,
                 pruned: 0,
               } satisfies TickSummary
+              // Still advance lastTickAt so a one-off defect does not look
+              // like a dead loop; repeated defects still leave a fresh stamp.
+              const inFlightNow = yield* FiberMap.size(executors)
+              yield* publishHealth(empty, inFlightNow, empty.tickAt)
+              return empty
             }),
           ),
         )
@@ -1250,6 +1472,20 @@ export const JobTickerLayer = (
       return {
         drain: drainOnce,
         awaitIdle,
+        health: Effect.gen(function* () {
+          const snap = yield* Ref.get(healthRef)
+          // Refresh lastTickAgeMs on read so /readyz does not need a tick to
+          // age the snapshot (stale lastTickAge from publish time would lag).
+          if (snap.lastTickAt === null) return snap
+          const now = yield* clock.nowMs()
+          const lastTickAgeMs = Math.max(0, now - snap.lastTickAt)
+          const degraded = lastTickAgeMs > 3 * tickIntervalMs
+          return {
+            ...snap,
+            lastTickAgeMs,
+            status: degraded ? ("degraded" as const) : ("ok" as const),
+          }
+        }),
       } satisfies JobTickerApi
     }),
   )

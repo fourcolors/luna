@@ -5,6 +5,7 @@ export {
   type JobTickerApi,
   type JobTickerOptions,
   type TickSummary,
+  type SchedulerHealthSnapshot,
 } from "./job-ticker.js"
 export {
   WorkerRegistry,
@@ -19,6 +20,8 @@ export {
 } from "./worker-registry.js"
 export {
   JobsStoreError,
+  type CrashReconcileResult,
+  type JobHealState,
   type JobKind,
   type JobRun,
   type JobRunStatus,

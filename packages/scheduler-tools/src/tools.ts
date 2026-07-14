@@ -58,6 +58,11 @@ const nextRunAtUtc = (expr: string): number | null => {
 const nextScheduleId = (): string =>
   `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
+/** Default max_turns stamped into schedule_create payloads when omitted.
+ *  PromptWorker defaults omitted max_turns to 1 — too low for real recurring
+ *  agent work (top production failure class). Stamp 15 at create time. */
+export const DEFAULT_SCHEDULE_MAX_TURNS = 15
+
 const createShape = {
   expr: z
     .string()
@@ -82,6 +87,16 @@ const createShape = {
     .string()
     .optional()
     .describe("Optional human-readable label for this schedule."),
+  max_turns: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      `Max agent turns per fire. Defaults to ${DEFAULT_SCHEDULE_MAX_TURNS} when omitted. ` +
+        "Do not set 1 unless the job is truly a single-shot reply.",
+    ),
 }
 
 const listShape = {}
@@ -117,6 +132,7 @@ export const makeSchedulerTools = (
       "Register a recurring schedule. On each cron tick Luna runs an autonomous " +
       "agent turn driven by your `prompt` and delivers the result to the operator " +
       "as a note. Schedules are durable across restarts (persisted in luna.db). " +
+      `Default max_turns is ${DEFAULT_SCHEDULE_MAX_TURNS} (pass max_turns to override). ` +
       "Returns a triggerId you pass to schedule_cancel to stop it. Use standard " +
       "5-field cron syntax interpreted in UTC: minute hour day-of-month month day-of-week.",
     inputSchema: createShape,
@@ -159,6 +175,9 @@ export const makeSchedulerTools = (
         // Durable RECURRING prompt job — the V2 ticker re-fires it each tick
         // (spec is non-empty, so it is NOT a one-shot) and the PromptWorker
         // delivers the turn's result to the operator as an obs_note.
+        // Stamp max_turns into the payload so PromptWorker's ?? 1 default is
+        // never hit for agent-created schedules (A3).
+        const maxTurns = args.max_turns ?? DEFAULT_SCHEDULE_MAX_TURNS
         const job = yield* jobsStore
           .record({
             id,
@@ -168,6 +187,7 @@ export const makeSchedulerTools = (
               label,
               source: "scheduler-tools",
               user_prompt: args.prompt,
+              max_turns: maxTurns,
               deliver_to: { kind: "obs_note", kind_tag: "reminder" },
             },
             enabled: true,

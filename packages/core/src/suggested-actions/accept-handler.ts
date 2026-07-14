@@ -72,10 +72,20 @@ export const executionIdFor = (actionId: string): string => `saj-${actionId}`
  * dead-ending in a job row. `row.threadId` is the originating thread bound at
  * propose() time.
  */
+/** Default max_turns for suggested-action prompt jobs when payload omits it. */
+export const DEFAULT_SUGGESTED_ACTION_MAX_TURNS = 15
+
 export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
   const payload = row.payload as PromptActionPayload
   const preface = PROMPT_PREFACE[row.actionType] ?? ""
   const userPrompt = preface ? `${preface}\n\n${payload.prompt}` : payload.prompt
+  // A3: stamp max_turns so PromptWorker ?? 1 never kills real accept work.
+  const maxTurns =
+    typeof payload.max_turns === "number" &&
+    Number.isFinite(payload.max_turns) &&
+    payload.max_turns >= 1
+      ? Math.trunc(payload.max_turns)
+      : DEFAULT_SUGGESTED_ACTION_MAX_TURNS
   return {
     kind: "prompt",
     spec: "",
@@ -83,6 +93,7 @@ export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
       label: row.title,
       source: "suggested-action",
       user_prompt: userPrompt,
+      max_turns: maxTurns,
       deliver_to: { kind: "chat_thread", thread_id: row.threadId },
       ...(payload.allowedTools && payload.allowedTools.length > 0
         ? { allowed_tools: [...payload.allowedTools] }

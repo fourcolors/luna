@@ -642,6 +642,66 @@ describe("UIWebSocketServer", () => {
     expect(await res.json()).toEqual({ status: "ok", mode: "normal", credentialOk: true })
   })
 
+  it("/readyz includes additive scheduler block when getSchedulerHealth is threaded", async () => {
+    const scheduler = {
+      status: "ok" as const,
+      lastTickAt: 1_700_000_000_000,
+      lastTickAgeMs: 1_200,
+      inFlight: 0,
+      tickIntervalMs: 60_000,
+      lastTick: {
+        considered: 0,
+        claimed: 0,
+        forked: 0,
+        skippedInFlight: 0,
+        skippedNoCapacity: 0,
+        failedInline: 0,
+      },
+    }
+    rig = await startRig(undefined, { getSchedulerHealth: () => scheduler })
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      status: "ok",
+      mode: "normal",
+      credentialOk: true,
+      scheduler,
+    })
+  })
+
+  it("/readyz top-level stays ok when scheduler is degraded unless strictSchedulerReady", async () => {
+    const degraded = {
+      status: "degraded" as const,
+      lastTickAt: 1,
+      lastTickAgeMs: 999_999,
+      inFlight: 2,
+      tickIntervalMs: 60_000,
+      lastTick: {
+        considered: 1,
+        claimed: 1,
+        forked: 1,
+        skippedInFlight: 0,
+        skippedNoCapacity: 0,
+        failedInline: 0,
+      },
+    }
+    rig = await startRig(undefined, { getSchedulerHealth: () => degraded })
+    const soft = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(await soft.json()).toMatchObject({ status: "ok", scheduler: { status: "degraded" } })
+
+    // Restart with strict flag
+    await rig.shutdown()
+    rig = await startRig(undefined, {
+      getSchedulerHealth: () => degraded,
+      strictSchedulerReady: true,
+    })
+    const hard = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(await hard.json()).toMatchObject({
+      status: "degraded",
+      scheduler: { status: "degraded" },
+    })
+  })
+
   it("/readyz reports setup mode when setupPty is set (credential gate not passed)", async () => {
     const setupPty = {
       onConnect: () => ({ write: () => {}, resize: () => {}, close: () => {} }),

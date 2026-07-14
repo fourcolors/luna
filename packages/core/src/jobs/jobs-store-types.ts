@@ -69,7 +69,21 @@ export interface PersistedJob {
    * Defaults to 0 for every existing row via the SCHEMA_V3 migration.
    */
   readonly retryAttempt: number
+
+  /**
+   * Doctor auto-heal counters (Phase B1 / SCHEMA_V4). Consecutive dispatch
+   * failures (`failStreak`) and crash-reconcile pull-forwards
+   * (`orphanStreak`) feed the JobTicker's doctor enqueue threshold.
+   * `healAttempts` / `healState` track in-flight doctor workflow cycles.
+   */
+  readonly failStreak: number
+  readonly orphanStreak: number
+  readonly healAttempts: number
+  readonly healState: JobHealState
 }
+
+/** Patient heal lifecycle for doctor auto-enqueue (SCHEMA_V4). */
+export type JobHealState = "ok" | "healing" | "escalated"
 
 /**
  * JobRun — one row per cron fire (or per oneshot dispatch). Written by the
@@ -186,6 +200,11 @@ export interface JobsStoreApi {
       readonly nextRunAt?: number | null
       /** Oban-style retry counter — see `PersistedJob.retryAttempt`. */
       readonly retryAttempt?: number
+      /** Doctor auto-heal fields (SCHEMA_V4) — see `PersistedJob.failStreak`. */
+      readonly failStreak?: number
+      readonly orphanStreak?: number
+      readonly healAttempts?: number
+      readonly healState?: JobHealState
     },
   ) => Effect.Effect<boolean, JobsStoreError>
 
@@ -312,11 +331,59 @@ export interface JobsStoreApi {
    * `running`/`waiting`) as `cancelled`, stamping `finished_at` and an
    * `error` (only when the row has none). A hard crash between
    * `recordRunStart` and `recordRunEnd` otherwise leaves rows stuck forever.
-   * The ticker calls this ONCE at boot, before the first drain. Returns the
-   * number of rows closed.
+   * Kept for back-compat callers/tests; boot uses `reconcileAfterCrash`
+   * which also repairs sticky job rows.
+   * Returns the number of rows closed.
    */
   readonly closeOrphanedRuns: (args: {
     readonly finishedAt: number
     readonly error?: string
   }) => Effect.Effect<number, JobsStoreError>
+
+  /**
+   * Full crash reconcile (JobTicker boot). Closes every open `job_runs` row
+   * (`finished_at IS NULL`) as `cancelled`, then repairs candidate jobs:
+   *   - distinct job_ids from the just-closed runs UNION jobs whose
+   *     `last_status = 'running'` (sticky running with no open run).
+   *   - sticky `last_status='running'` always becomes `'errored'`.
+   *   - enabled recurring jobs that had a *running* orphan (or sticky
+   *     running with no open run) get `next_run_at` pulled forward to
+   *     `min(next_run_at ?? Infinity, finishedAt + jitter)` so they are
+   *     not stuck behind a far-future claim advance; waiting-only orphans
+   *     never pull-forward; disabled jobs are never re-enabled.
+   * Jitter is deterministic: `hash(jobId) % (rescheduleJitterMs + 1)`
+   * (default rescheduleJitterMs = 60000).
+   */
+  readonly reconcileAfterCrash: (args: {
+    readonly finishedAt: number
+    /** Error stamped on non-waiting open runs (default process-restart). */
+    readonly runningError?: string
+    /** Error stamped on waiting open runs (default waiting-on-restart). */
+    readonly waitingError?: string
+    /** Inclusive upper bound for deterministic reschedule jitter (default 60000). */
+    readonly rescheduleJitterMs?: number
+  }) => Effect.Effect<CrashReconcileResult, JobsStoreError>
+
+  /**
+   * A4: Quarantine enabled jobs whose `payload_json` fails JSON.parse.
+   * Disables the row (`enabled=0`, `last_status='errored'`), inserts a
+   * synthetic failed `job_runs` row with error `bad_payload: unparseable
+   * payload_json`, and returns how many jobs were quarantined.
+   * Dedicated pass (not buried in listDue/rowToJob) so reads stay pure.
+   * Memory backend: always 0 (payloads are already objects).
+   */
+  readonly quarantineUnparseablePayloads: (args: {
+    readonly finishedAt: number
+  }) => Effect.Effect<number, JobsStoreError>
+}
+
+/** Result of `JobsStoreApi.reconcileAfterCrash`. */
+export interface CrashReconcileResult {
+  /** Open runs closed whose pre-close status was not `waiting` (running/queued/…). */
+  readonly orphansClosed: number
+  /** Open runs closed whose pre-close status was `waiting`. */
+  readonly waitingClosed: number
+  /** Jobs whose row was patched (sticky status and/or next_run_at). */
+  readonly jobsRepaired: number
+  readonly jobIdsRepaired: ReadonlyArray<string>
 }

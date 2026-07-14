@@ -62,6 +62,48 @@ const insertRawBadRow = (path: string, id: string, now: number) => {
 }
 
 describe("JobsStoreService (SQLite layer) — payload parse resilience", () => {
+  test("quarantineUnparseablePayloads disables bad rows and writes a failed run (A4)", async () => {
+    const path = join(
+      tmpdir(),
+      `jobs-store-quarantine-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    )
+    const layer = makeTestLayer(path)
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({
+        id: "good-q",
+        kind: "prompt",
+        spec: "0 * * * *",
+        payload: { label: "ok" },
+        enabled: true,
+      })
+      insertRawBadRow(path, "bad-q", Date.now())
+      const n = yield* store.quarantineUnparseablePayloads({
+        finishedAt: Date.now(),
+      })
+      expect(n).toBe(1)
+      // Bad row no longer appears in listAll (disabled + still unparseable —
+      // wait: disabled unparseable still fails rowToJob. listDue only returns
+      // enabled. listAll maps all rows and skips unparseable. So getById raw?
+      // After quarantine enabled=0; listDue should not return bad-q.
+      const due = yield* store.listDue(Date.now() + 86_400_000)
+      expect(due.map((j) => j.id)).not.toContain("bad-q")
+      expect(due.map((j) => j.id)).toContain("good-q")
+      const runs = yield* store.listRuns("bad-q", 5)
+      expect(runs.length).toBeGreaterThanOrEqual(1)
+      expect(runs[0]?.status).toBe("failed")
+      expect(runs[0]?.error ?? "").toContain("unparseable")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        rmSync(path + suffix)
+      } catch {
+        /* best-effort */
+      }
+    }
+  })
+
   test("listAll skips a row with unparseable payload_json instead of throwing", async () => {
     const layer = makeTestLayer(dbPath)
     const program = Effect.gen(function* () {
