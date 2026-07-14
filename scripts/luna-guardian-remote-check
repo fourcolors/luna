@@ -27,7 +27,7 @@ if [[ -z "$ready_url" ]]; then ready_url="http://${host#*@}:4753/readyz"; fi
 [[ "$ready_url" =~ ^https?:// ]] || { echo "--ready-url must use http or https" >&2; exit 2; }
 
 status="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
-  "systemctl show luna-guardian-$profile.service -p LoadState -p ActiveState --no-pager; cat /var/lib/luna-guardian/status-$profile" 2>/dev/null)" || {
+  "systemctl show luna-guardian-$profile.service -p LoadState -p ActiveState --no-pager; cat /var/lib/luna-guardian/status-$profile 2>/dev/null || true" 2>/dev/null)" || {
   echo "guardian-remote: cannot read $profile guardian state from $host" >&2
   exit 1
 }

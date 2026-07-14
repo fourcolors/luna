@@ -12,14 +12,17 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-const setup = (completedAt: number, activeState = "inactive") => {
+const setup = (completedAt: number | undefined, activeState = "inactive") => {
   const temp = mkdtempSync(join(tmpdir(), "luna-guardian-remote-"))
   dirs.push(temp)
   const bin = join(temp, "bin")
   const sha = "a".repeat(40)
+  const heartbeat = completedAt === undefined
+    ? ""
+    : `profile=stable\ncompleted_at=${completedAt}\nrepo_sha=${sha}\nengine_sha=${sha}\noutcome=healthy\nconsecutive_healthy=3\n`
   mkdirSync(bin)
   writeFileSync(join(bin, "ssh"), `#!/usr/bin/env bash
-printf 'LoadState=loaded\nActiveState=${activeState}\nprofile=stable\ncompleted_at=${completedAt}\nrepo_sha=${sha}\nengine_sha=${sha}\noutcome=healthy\nconsecutive_healthy=3\n'
+printf 'LoadState=loaded\nActiveState=${activeState}\n${heartbeat}'
 `)
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
 printf '{"status":"ok","mode":"normal","buildSha":"${sha.slice(0, 8)}"}\n'
@@ -56,6 +59,17 @@ describe("luna-guardian-remote-check", () => {
     const result = spawnSync(
       "bash",
       [probe, "jax-box", "stable", "--max-age", "180"],
+      { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
+    )
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toContain("IN PROGRESS")
+  })
+
+  it("does not page during the first guardian check before a heartbeat exists", () => {
+    const { bin } = setup(undefined, "activating")
+    const result = spawnSync(
+      "bash",
+      [probe, "jax-box", "stable"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status, result.stdout + result.stderr).toBe(0)
