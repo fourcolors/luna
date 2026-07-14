@@ -235,14 +235,12 @@ async function probeOllama(): Promise<boolean> {
 function buildEmbedderLayer() {
   const choice = process.env["LUNA_EMBEDDER"]?.toLowerCase()
   if (choice === "ollama") {
-    const opts: Parameters<typeof makeOllamaEmbedderLayer>[0] = {}
-    if (process.env["LUNA_OLLAMA_EMBED_MODEL"] !== undefined) {
-      opts.model = process.env["LUNA_OLLAMA_EMBED_MODEL"]
-    }
-    if (process.env["LUNA_OLLAMA_BASE_URL"] !== undefined) {
-      opts.baseUrl = process.env["LUNA_OLLAMA_BASE_URL"]
-    }
-    return makeOllamaEmbedderLayer(opts)
+    const model = process.env["LUNA_OLLAMA_EMBED_MODEL"]
+    const baseUrl = process.env["LUNA_OLLAMA_BASE_URL"]
+    return makeOllamaEmbedderLayer({
+      ...(model !== undefined ? { model } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+    })
   }
   return StubEmbedderLayer
 }
