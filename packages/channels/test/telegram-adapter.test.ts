@@ -143,6 +143,9 @@ const makeTextUpdate = (overrides: {
   updateId?: number
   messageId?: number
   date?: number
+  isForum?: boolean
+  isTopicMessage?: boolean
+  messageThreadId?: number
 }) => {
   const updateId = overrides.updateId ?? updateIdCounter++
   return {
@@ -152,6 +155,7 @@ const makeTextUpdate = (overrides: {
       chat: {
         id: overrides.chatId ?? 111,
         type: overrides.chatType ?? "private",
+        ...(overrides.isForum !== undefined ? { is_forum: overrides.isForum } : {}),
       },
       from: {
         id: overrides.fromId ?? 999,
@@ -159,6 +163,8 @@ const makeTextUpdate = (overrides: {
       },
       text: overrides.text ?? "hello luna",
       date: overrides.date ?? Math.floor(Date.now() / 1000),
+      ...(overrides.isTopicMessage !== undefined ? { is_topic_message: overrides.isTopicMessage } : {}),
+      ...(overrides.messageThreadId !== undefined ? { message_thread_id: overrides.messageThreadId } : {}),
     },
   }
 }
@@ -249,10 +255,46 @@ const makeFakeFileTransport = (bytes: Uint8Array | Error = JPEG_BYTES) => {
   return { transport, paths }
 }
 
-/** A non-message update (e.g. callback_query). Should be ignored. */
+/** A non-message update (e.g. callback_query). */
 const makeCallbackUpdate = (updateId = updateIdCounter++) => ({
   update_id: updateId,
   callback_query: { id: "cq-1", data: "some_data" },
+})
+
+/** A "⏹ Stop" inline-button tap. */
+const makeStopCallback = (overrides: {
+  updateId?: number
+  callbackId?: string
+  fromId?: number
+  username?: string
+  chatId?: number
+  chatType?: "private" | "group" | "supergroup" | "channel"
+  isForum?: boolean
+  messageId?: number
+  messageThreadId?: number
+  data?: string
+} = {}) => ({
+  update_id: overrides.updateId ?? updateIdCounter++,
+  callback_query: {
+    id: overrides.callbackId ?? "cq-stop-1",
+    from: {
+      id: overrides.fromId ?? 999,
+      first_name: "Test",
+      ...(overrides.username !== undefined ? { username: overrides.username } : {}),
+    },
+    data: overrides.data ?? "stop",
+    message: {
+      chat: {
+        id: overrides.chatId ?? 111,
+        type: overrides.chatType ?? "private",
+        ...(overrides.isForum !== undefined ? { is_forum: overrides.isForum } : {}),
+      },
+      message_id: overrides.messageId ?? 42,
+      ...(overrides.messageThreadId !== undefined
+        ? { message_thread_id: overrides.messageThreadId }
+        : {}),
+    },
+  },
 })
 
 /* -------------------------------------------------------------------------- */
@@ -405,12 +447,16 @@ describe("inbound: non-ingestible / non-message updates ignored", () => {
     expect(calls.some((c) => c.method === "getFile")).toBe(false)
   })
 
-  it("ignores a callback_query update (no message field)", async () => {
+  it("answers a non-stop callback_query but never turns it into a ChannelMessage", async () => {
+    // callback_query is no longer silently ignored (see the tap-to-stop
+    // describe block below) — but a callback whose data isn't the stop
+    // button must still never reach the handler as an inbound message, and
+    // it must still be answered (Telegram expires unanswered callbacks).
     const receivedMessages: ChannelMessage[] = []
     const cbUpdate = makeCallbackUpdate(400)
     const textUpdate = makeTextUpdate({ updateId: 401 })
 
-    const { transport } = makeFakeTransport([
+    const { transport, calls } = makeFakeTransport([
       { ok: true, result: [cbUpdate, textUpdate] },
     ])
 
@@ -427,8 +473,13 @@ describe("inbound: non-ingestible / non-message updates ignored", () => {
       }),
     )
 
+    // Only the text update produced a ChannelMessage.
     expect(receivedMessages).toHaveLength(1)
     expect(receivedMessages[0]?.platformMessageId).toBe("401")
+    // The callback was still answered (data !== "stop", but every callback
+    // is acknowledged so the tapper's client doesn't spin for ~10s).
+    const answered = calls.find((c) => c.method === "answerCallbackQuery")
+    expect(answered?.params["callback_query_id"]).toBe("cq-1")
   })
 })
 
@@ -2141,5 +2192,425 @@ describe("poll-loop error logging", () => {
     expect(warnings.some((w) => w.includes("getUpdates failed, retrying with backoff"))).toBe(true)
     // A 503 must NOT trip the 409 branch.
     expect(warnings.some((w) => w.includes("409 Conflict"))).toBe(false)
+  })
+})
+
+
+/* -------------------------------------------------------------------------- */
+/* Tap-to-stop inline button (callback_query)                                 */
+/* -------------------------------------------------------------------------- */
+
+describe("tap-to-stop inline button (callback_query)", () => {
+  it("dispatches a synthetic /stop through the existing handleMessage pipeline for an allowed tapper", async () => {
+    const stopCb = makeStopCallback({ updateId: 11000, fromId: 999, chatId: 111, messageId: 42 })
+    const { transport, calls } = makeFakeTransport([{ ok: true, result: [stopCb] }])
+    const adapter = makeTelegramAdapter({ id: "tg-stop-tap", httpTransport: transport })
+    const received: ChannelMessage[] = []
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(1)
+    const msg = received[0]!
+    expect(msg.text).toBe("/stop")
+    expect(msg.channelId).toBe("111")
+    expect(msg.senderId).toBe("999")
+    expect(msg.platformMessageId).toBe("11000")
+
+    const answered = calls.find((c) => c.method === "answerCallbackQuery")
+    expect(answered?.params["callback_query_id"]).toBe("cq-stop-1")
+  })
+
+  it("gates the tap through the SAME allowlist as messages — a non-allowlisted tapper's button never reaches the handler", async () => {
+    const stopCb = makeStopCallback({ updateId: 11100, fromId: 666, chatId: 666 })
+    const { transport, calls } = makeFakeTransport([{ ok: true, result: [stopCb] }])
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({
+      id: "tg-stop-tap-blocked",
+      httpTransport: transport,
+      allowedIds: ["111"],
+    })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(0)
+    // Still answered — never leaves the tapper's client spinning.
+    const answered = calls.find((c) => c.method === "answerCallbackQuery")
+    expect(answered?.params["callback_query_id"]).toBe("cq-stop-1")
+  })
+
+  it("does not treat an unrelated callback_data as a stop tap", async () => {
+    const other = makeStopCallback({ updateId: 11200, data: "not-stop" })
+    const { transport } = makeFakeTransport([{ ok: true, result: [other] }])
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-stop-other-data", httpTransport: transport })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(0)
+  })
+
+  it("reaches the handler immediately, without waiting behind the per-chat FIFO chain it exists to interrupt", async () => {
+    // A slow text message occupies chat 111's FIFO chain; the stop tap for
+    // the SAME chat must bypass it entirely, not queue behind it.
+    const slowText = makeTextUpdate({ chatId: 111, updateId: 11300, text: "long running work" })
+    const stopCb = makeStopCallback({ updateId: 11301, chatId: 111 })
+    const { transport } = makeFakeTransport([{ ok: true, result: [slowText, stopCb] }])
+    const order: string[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-stop-priority", httpTransport: transport })
+    adapter.setMessageHandler((msg) =>
+      Effect.gen(function* () {
+        if (msg.text === "/stop") {
+          order.push("stop")
+          return
+        }
+        // Simulate slow work occupying the FIFO chain for this chat.
+        yield* Effect.sleep("200 millis")
+        order.push("slow-work-done")
+      }),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("60 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    // The stop tap ran (and finished) before the slow chained work — proving
+    // it was dispatched OUTSIDE dispatchChained, not queued behind it.
+    expect(order[0]).toBe("stop")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* deliver: tap-to-stop inline keyboard                                       */
+/* -------------------------------------------------------------------------- */
+
+describe("deliver: tap-to-stop inline keyboard", () => {
+  it("attaches the stop keyboard on partial deliveries, omits it once the turn finalizes", async () => {
+    const { transport, calls } = makeFakeTransport([], {
+      sendMessage: [
+        { ok: true, result: { message_id: 61, chat: { id: 111, type: "private" }, date: 0 } },
+      ],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-stop-kb", httpTransport: transport })
+    const target = makeDeliveryTarget("111", "u-stop-kb-1")
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        // Placeholder — partial.
+        yield* adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false }))
+        // Streamed delta — still partial.
+        yield* adapter.deliver(target, "Hello", makeDeliverOpts({ isPartial: true, isFinal: false }))
+        // Final — turn done.
+        yield* adapter.deliver(target, "Hello world", makeDeliverOpts({ isPartial: false, isFinal: true }))
+      }),
+    )
+
+    const send = calls.find((c) => c.method === "sendMessage")
+    expect(send?.params["reply_markup"]).toEqual({
+      inline_keyboard: [[{ text: "⏹ Stop", callback_data: "stop" }]],
+    })
+
+    const edits = calls.filter((c) => c.method === "editMessageText")
+    expect(edits).toHaveLength(2)
+    expect(edits[0]?.params["reply_markup"]).toEqual({
+      inline_keyboard: [[{ text: "⏹ Stop", callback_data: "stop" }]],
+    })
+    // The final edit omits reply_markup entirely — the button disappears.
+    expect(edits[1]?.params).not.toHaveProperty("reply_markup")
+  })
+
+  it("never attaches the stop keyboard to an interrupt's final edit", async () => {
+    const { transport, calls } = makeFakeTransport([], {
+      sendMessage: [
+        { ok: true, result: { message_id: 62, chat: { id: 111, type: "private" }, date: 0 } },
+      ],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-stop-kb-interrupt", httpTransport: transport })
+    const target = makeDeliveryTarget("111", "u-stop-kb-2")
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false }))
+        yield* adapter.deliver(
+          target,
+          "partial text\n\n⏹ Stopped.",
+          makeDeliverOpts({ isPartial: false, isFinal: true }),
+        )
+      }),
+    )
+
+    const edit = calls.find((c) => c.method === "editMessageText")
+    expect(edit?.params).not.toHaveProperty("reply_markup")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* "Working" reaction glyph (setMessageReaction)                              */
+/* -------------------------------------------------------------------------- */
+
+describe("\"working\" reaction glyph (setMessageReaction)", () => {
+  it("reacts to the inbound message with the working emoji when a turn starts", async () => {
+    const update = makeTextUpdate({ chatId: 555, updateId: 12000, messageId: 77, text: "do a thing" })
+    const { transport, calls } = makeFakeTransport([{ ok: true, result: [update] }])
+    const adapter = makeTelegramAdapter({ id: "tg-reaction", httpTransport: transport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    const reaction = calls.find((c) => c.method === "setMessageReaction")
+    expect(reaction?.params).toMatchObject({
+      chat_id: "555",
+      message_id: 77,
+      reaction: [{ type: "emoji", emoji: "\u{1F440}" }],
+    })
+  })
+
+  it("a failing setMessageReaction (400) never blocks the message reaching the handler", async () => {
+    const update = makeTextUpdate({ chatId: 556, updateId: 12100, text: "still works" })
+    const { transport: base } = makeFakeTransport([{ ok: true, result: [update] }])
+    const flaky: TelegramHttpTransport = (method, params) =>
+      method === "setMessageReaction"
+        ? Effect.succeed({ ok: false, error_code: 400, description: "Bad Request: REACTION_INVALID" })
+        : base(method, params)
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-reaction-fail", httpTransport: flaky })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(1)
+    expect(received[0]?.text).toBe("still works")
+  })
+
+  it("a dying setMessageReaction (defect) never breaks the poll loop", async () => {
+    const update = makeTextUpdate({ chatId: 557, updateId: 12200, text: "survives defect" })
+    const { transport: base } = makeFakeTransport([{ ok: true, result: [update] }])
+    const dying: TelegramHttpTransport = (method, params) =>
+      method === "setMessageReaction" ? Effect.die(new Error("boom")) : base(method, params)
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-reaction-die", httpTransport: dying })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(1)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Forum-topic session scoping                                                */
+/* -------------------------------------------------------------------------- */
+
+describe("forum-topic session scoping", () => {
+  it("keys two different topics in the same forum chat to different threadingKeys", async () => {
+    const topicA = makeTextUpdate({
+      chatId: 700, updateId: 13000, text: "topic A msg",
+      isForum: true, isTopicMessage: true, messageThreadId: 501,
+    })
+    const topicB = makeTextUpdate({
+      chatId: 700, updateId: 13001, text: "topic B msg",
+      isForum: true, isTopicMessage: true, messageThreadId: 502,
+    })
+    const { transport } = makeFakeTransport([{ ok: true, result: [topicA, topicB] }])
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-forum", httpTransport: transport })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received).toHaveLength(2)
+    expect(received[0]?.channelId).toBe("700")
+    expect(received[1]?.channelId).toBe("700")
+    expect(received[0]?.threadingKey).not.toBe(received[1]?.threadingKey)
+    expect(received[0]?.threadingKey).toBe("700:topic:501")
+    expect(received[1]?.threadingKey).toBe("700:topic:502")
+    expect(received[0]?.metadata?.["messageThreadId"]).toBe(501)
+    expect(received[1]?.metadata?.["messageThreadId"]).toBe(502)
+  })
+
+  it("leaves a non-forum group's threadingKey unchanged (plain chat id)", async () => {
+    const update = makeTextUpdate({ chatId: -800, chatType: "supergroup", updateId: 13100, text: "hi" })
+    const { transport } = makeFakeTransport([{ ok: true, result: [update] }])
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-nonforum", httpTransport: transport })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received[0]?.threadingKey).toBe("-800")
+    expect(received[0]?.metadata?.["messageThreadId"]).toBeUndefined()
+  })
+
+  it("leaves a DM's threadingKey unchanged", async () => {
+    const update = makeTextUpdate({ chatId: 111, chatType: "private", updateId: 13200 })
+    const { transport } = makeFakeTransport([{ ok: true, result: [update] }])
+    const received: ChannelMessage[] = []
+    const adapter = makeTelegramAdapter({ id: "tg-dm-unaffected", httpTransport: transport })
+    adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(received[0]?.threadingKey).toBe("111")
+  })
+
+  it("threads message_thread_id through the typing indicator", async () => {
+    const update = makeTextUpdate({
+      chatId: 900, updateId: 13300, text: "topic work",
+      isForum: true, isTopicMessage: true, messageThreadId: 77,
+    })
+    const { transport, calls } = makeFakeTransport([{ ok: true, result: [update] }])
+    const adapter = makeTelegramAdapter({ id: "tg-forum-typing", httpTransport: transport })
+    adapter.setMessageHandler(() => Effect.void)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("60 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    const typing = calls.find((c) => c.method === "sendChatAction")
+    expect(typing?.params).toMatchObject({ chat_id: "900", message_thread_id: 77 })
+  })
+
+  it("continuation-chunk sendMessage calls carry message_thread_id from the delivery target", async () => {
+    const { transport, calls } = makeFakeTransport([], {
+      sendMessage: [
+        { ok: true, result: { message_id: 91, chat: { id: 900, type: "supergroup" }, date: 0 } },
+        { ok: true, result: { message_id: 92, chat: { id: 900, type: "supergroup" }, date: 0 } },
+      ],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-forum-chunks", httpTransport: transport })
+    const target: DeliveryTarget = {
+      inReplyTo: {
+        transport: "telegram",
+        channelId: "900",
+        senderId: "999",
+        threadingKey: "900:topic:77",
+        text: "hello",
+        platformMessageId: "u-forum-1",
+        ts: new Date().toISOString(),
+      },
+      address: {
+        transport: "telegram",
+        channelId: "900",
+        senderId: "999",
+        threadingKey: "900:topic:77",
+        messageThreadId: 77,
+      },
+    }
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false }))
+        yield* adapter.deliver(
+          target,
+          "part two",
+          makeDeliverOpts({ isFinal: true, chunkIndex: 1, totalChunks: 2 }),
+        )
+      }),
+    )
+
+    const sends = calls.filter((c) => c.method === "sendMessage")
+    expect(sends).toHaveLength(2)
+    expect(sends[0]?.params["message_thread_id"]).toBe(77)
+    expect(sends[1]?.params["message_thread_id"]).toBe(77)
+  })
+
+  it("two topics in the same forum chat resolve to two distinct Luna threads end-to-end", async () => {
+    const { service: chatService, getCreateCount } = makeStubChatService()
+    const topicA = makeTextUpdate({
+      chatId: 950, updateId: 13400, text: "topic A",
+      isForum: true, isTopicMessage: true, messageThreadId: 10,
+    })
+    const topicB = makeTextUpdate({
+      chatId: 950, updateId: 13401, text: "topic B",
+      isForum: true, isTopicMessage: true, messageThreadId: 20,
+    })
+    const { transport } = makeFakeTransport([], { getUpdates: [{ ok: true, result: [topicA, topicB] }] })
+    const adapter = makeTelegramAdapter({ id: "tg-forum-e2e", httpTransport: transport })
+
+    const serviceLayer = ChannelServiceLayer.pipe(
+      Layer.provide(ChannelSessionStore.Memory),
+      Layer.provide(InboundDedupStore.Memory),
+      Layer.provide(Layer.succeed(ChatService, chatService as unknown as InstanceType<typeof ChatService>)),
+      Layer.provide(Clock.Default),
+    )
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("80 millis")
+        }),
+        serviceLayer,
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Two topics → two distinct threads (not one shared group thread).
+    expect(getCreateCount()).toBe(2)
   })
 })
