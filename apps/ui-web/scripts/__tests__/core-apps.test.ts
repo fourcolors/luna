@@ -10,6 +10,8 @@
  *   - pulse-snapshot aggregates the EventCounter counter names correctly
  *   - the shipped workspace-pulse app html is a REAL MCP app (handshake +
  *     tools/call, no luna.* bridge usage, no external refs)
+ *   - memory-list/memory-search validate args BEFORE they reach the injected
+ *     router deps (the memory-browser's read-only surface)
  */
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -22,8 +24,14 @@ import {
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
   pulseFromSnapshot,
+  toCuratedMemoryRow,
+  validateMemoryListArgs,
+  validateMemorySearchArgs,
   type CoreApp,
+  type MemoryListPage,
+  type MemorySearchPage,
 } from "../core-apps.js"
+import type { MemoryRecord } from "@luna/memory"
 
 const PULSE_URI = "ui://luna/workspace-pulse"
 
@@ -292,17 +300,169 @@ describe("composeAppRegistries — namespace isolation", () => {
   })
 })
 
+const memoryListStub = (): MemoryListPage => ({
+  rows: [],
+  limit: 25,
+  offset: 0,
+  hasMore: false,
+})
+
+const memorySearchStub = (): MemorySearchPage => ({
+  rows: [],
+  query: "",
+  topK: 10,
+})
+
 describe("buildCuratedAppTools — the read-only allowlist", () => {
-  it("exposes exactly pulse + list-artifacts, wired to the injected getters", async () => {
+  it("exposes exactly pulse + list-artifacts + memory-list + memory-search, wired to the injected getters", async () => {
     const getPulse = vi.fn(async () => ({ toolsCalled: 1, errors: 0, estimatedUsd: 0, activeSessions: 0 }))
     const listArtifacts = vi.fn(async () => [
       { id: "widget:a", title: "A", kind: "widget", version: 1, updatedAt: 0 },
     ])
-    const tools = buildCuratedAppTools({ getPulse, listArtifacts })
-    expect(Object.keys(tools).sort()).toEqual(["list-artifacts", "pulse"])
+    const memoryList = vi.fn(async () => memoryListStub())
+    const memorySearch = vi.fn(async () => memorySearchStub())
+    const tools = buildCuratedAppTools({ getPulse, listArtifacts, memoryList, memorySearch })
+    expect(Object.keys(tools).sort()).toEqual([
+      "list-artifacts",
+      "memory-list",
+      "memory-search",
+      "pulse",
+    ])
     await tools.pulse!({})
     await tools["list-artifacts"]!({})
+    await tools["memory-list"]!({})
+    await tools["memory-search"]!({ query: "hi" })
     expect(getPulse).toHaveBeenCalledTimes(1)
     expect(listArtifacts).toHaveBeenCalledTimes(1)
+    expect(memoryList).toHaveBeenCalledTimes(1)
+    expect(memorySearch).toHaveBeenCalledTimes(1)
+  })
+
+  it("memory-list/memory-search VALIDATE args before they reach the injected deps — the deps never see raw wire input", async () => {
+    const memoryList = vi.fn(async () => memoryListStub())
+    const memorySearch = vi.fn(async () => memorySearchStub())
+    const tools = buildCuratedAppTools({
+      getPulse: async () => ({ toolsCalled: 0, errors: 0, estimatedUsd: 0, activeSessions: 0 }),
+      listArtifacts: async () => [],
+      memoryList,
+      memorySearch,
+    })
+
+    // Wildly out-of-range / wrong-typed args clamp to the safe defaults —
+    // the dep is called with a VALIDATED shape, not the raw payload.
+    await tools["memory-list"]!({ limit: 99999, offset: -50, namespace: 42 })
+    expect(memoryList).toHaveBeenCalledWith({
+      namespace: undefined,
+      kind: undefined,
+      tag: undefined,
+      since: undefined,
+      limit: 100,
+      offset: 0,
+    })
+
+    await tools["memory-search"]!({ query: "  hello  ", topK: -5 })
+    expect(memorySearch).toHaveBeenCalledWith({
+      query: "hello",
+      namespace: undefined,
+      kind: undefined,
+      topK: 1,
+    })
+
+    // A garbage (non-object) payload never throws — it degrades to defaults.
+    await tools["memory-list"]!(null)
+    await tools["memory-search"]!("not an object")
+    expect(memoryList).toHaveBeenLastCalledWith({
+      namespace: undefined,
+      kind: undefined,
+      tag: undefined,
+      since: undefined,
+      limit: 25,
+      offset: 0,
+    })
+    expect(memorySearch).toHaveBeenLastCalledWith({
+      query: "",
+      namespace: undefined,
+      kind: undefined,
+      topK: 10,
+    })
+  })
+})
+
+describe("validateMemoryListArgs — the one choke point for memory-list wire input", () => {
+  it("defaults every field when args is missing/garbage", () => {
+    for (const bad of [undefined, null, "nope", 5, []]) {
+      expect(validateMemoryListArgs(bad)).toEqual({
+        namespace: undefined,
+        kind: undefined,
+        tag: undefined,
+        since: undefined,
+        limit: 25,
+        offset: 0,
+      })
+    }
+  })
+
+  it("clamps limit to [1, 100] and offset to [0, 2000]", () => {
+    expect(validateMemoryListArgs({ limit: 0, offset: -1 }).limit).toBe(1)
+    expect(validateMemoryListArgs({ limit: 0, offset: -1 }).offset).toBe(0)
+    expect(validateMemoryListArgs({ limit: 1_000_000, offset: 1_000_000 }).limit).toBe(100)
+    expect(validateMemoryListArgs({ limit: 1_000_000, offset: 1_000_000 }).offset).toBe(2000)
+  })
+
+  it("passes through well-formed string filters and drops wrong-typed ones", () => {
+    expect(
+      validateMemoryListArgs({ namespace: "notes", kind: "semantic", tag: "x", since: 123 }),
+    ).toEqual({ namespace: "notes", kind: "semantic", tag: "x", since: 123, limit: 25, offset: 0 })
+    expect(
+      validateMemoryListArgs({ namespace: 1, kind: {}, tag: [], since: "nope" }),
+    ).toEqual({ namespace: undefined, kind: undefined, tag: undefined, since: undefined, limit: 25, offset: 0 })
+  })
+})
+
+describe("validateMemorySearchArgs — the one choke point for memory-search wire input", () => {
+  it("trims and length-caps the query, and clamps topK to [1, 50]", () => {
+    expect(validateMemorySearchArgs({ query: "  hi  " }).query).toBe("hi")
+    expect(validateMemorySearchArgs({ query: "x".repeat(1000) }).query).toHaveLength(500)
+    expect(validateMemorySearchArgs({ query: "hi", topK: 0 }).topK).toBe(1)
+    expect(validateMemorySearchArgs({ query: "hi", topK: 999 }).topK).toBe(50)
+  })
+
+  it("a missing/non-string query becomes an empty string, not a throw", () => {
+    expect(validateMemorySearchArgs({}).query).toBe("")
+    expect(validateMemorySearchArgs(null).query).toBe("")
+    expect(validateMemorySearchArgs({ query: 5 }).query).toBe("")
+  })
+})
+
+describe("toCuratedMemoryRow — MemoryRecord → wire shape", () => {
+  const base: MemoryRecord = {
+    id: "mem_1",
+    namespace: "notes",
+    kind: "semantic",
+    content: { text: "hello world" },
+    schemaVersion: 1,
+    createdAt: 10,
+    updatedAt: 20,
+    tags: ["a", "b"],
+  }
+
+  it("extracts content.text as the preview text and keeps the raw content", () => {
+    const row = toCuratedMemoryRow(base)
+    expect(row.text).toBe("hello world")
+    expect(row.content).toEqual({ text: "hello world" })
+    expect(row.scope).toBeUndefined()
+  })
+
+  it("falls back to a JSON preview for non-text (structured) content", () => {
+    const row = toCuratedMemoryRow({ ...base, kind: "belief", content: { status: "active" } })
+    expect(row.text).toBe(JSON.stringify({ status: "active" }))
+  })
+
+  it("echoes the scope when the record carries one", () => {
+    const row = toCuratedMemoryRow({
+      ...base,
+      scope: { observerId: "luna", subjectId: "operator", visibility: "private" },
+    })
+    expect(row.scope).toEqual({ observerId: "luna", subjectId: "operator", visibility: "private" })
   })
 })

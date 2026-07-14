@@ -398,6 +398,11 @@ import {
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
   pulseFromSnapshot,
+  toCuratedMemoryRow,
+  type MemoryListPage,
+  type MemorySearchPage,
+  type ValidatedMemoryListArgs,
+  type ValidatedMemorySearchArgs,
 } from "./core-apps.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
@@ -3283,6 +3288,82 @@ const buildServerLayer = (
       // curated `pulse` tool offered to store-backed apps.
       const getPulse = () =>
         Effect.runPromise(telemetry.snapshot).then(pulseFromSnapshot)
+      // Moon memory-browser mcp-app tools (memory-list/memory-search): both
+      // scope reads to OPERATOR_MEMORY_SCOPE — the same observer/subject the
+      // memory_save/memory_search SDK tools already stamp/filter on — so the
+      // curated app surface can never see another scope's records. `mem` is
+      // the MemoryRouter resolved above (refreshBeliefs / recallForTurn).
+      const memoryBrowserScope = {
+        observerId: OPERATOR_MEMORY_SCOPE.observerId,
+        subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+      }
+      const getMemoryListPage = (
+        args: ValidatedMemoryListArgs,
+      ): Promise<MemoryListPage> =>
+        Effect.runPromise(
+          mem
+            .query({
+              ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
+              ...(args.kind !== undefined ? { kind: args.kind } : {}),
+              ...(args.tag !== undefined ? { tag: args.tag } : {}),
+              ...(args.since !== undefined ? { since: args.since } : {}),
+              // MemoryQuery has no native offset — over-fetch one page past the
+              // requested window (+1) so hasMore is exact, then slice below.
+              limit: args.offset + args.limit + 1,
+              scope: memoryBrowserScope,
+            })
+            .pipe(
+              Stream.runCollect,
+              Effect.map((chunk) => {
+                const all = Array.from(chunk).sort((a, b) => b.updatedAt - a.updatedAt)
+                const page = all.slice(args.offset, args.offset + args.limit)
+                return {
+                  rows: page.map(toCuratedMemoryRow),
+                  limit: args.limit,
+                  offset: args.offset,
+                  hasMore: all.length > args.offset + args.limit,
+                }
+              }),
+            ),
+        )
+      const getMemorySearchPage = (
+        args: ValidatedMemorySearchArgs,
+      ): Promise<MemorySearchPage> => {
+        if (args.query.length === 0) {
+          return Promise.resolve({ rows: [], query: args.query, topK: args.topK })
+        }
+        // Over-fetch when a kind filter is set (mirrors memory_search in
+        // @luna/memory-tools tools.ts) so the post-filter still has enough
+        // candidates to return `topK` matches.
+        const fetchTopK =
+          args.kind !== undefined ? Math.max(args.topK * 4, 20) : args.topK
+        return Effect.runPromise(
+          mem
+            .search({
+              queryText: args.query,
+              topK: fetchTopK,
+              ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
+              mode: "hybrid",
+              scope: memoryBrowserScope,
+            })
+            .pipe(
+              Stream.runCollect,
+              Effect.map((chunk) => {
+                const all = Array.from(chunk)
+                const filtered =
+                  args.kind !== undefined
+                    ? all.filter((h) => h.record.kind === args.kind)
+                    : all
+                const page = filtered.slice(0, args.topK)
+                return {
+                  rows: page.map((h) => ({ ...toCuratedMemoryRow(h.record), score: h.score })),
+                  query: args.query,
+                  topK: args.topK,
+                }
+              }),
+            ),
+        )
+      }
       const mcpAppHost = createMcpAppHost(
         composeAppRegistries(
           // Static, compile-time core apps (the Luna server as first provider).
@@ -3322,6 +3403,11 @@ const buildServerLayer = (
                     ),
                   ),
                 ),
+              // memory-list / memory-search: read-only, OPERATOR-scoped memory
+              // browsing for the Moon "memory browser" mcp-app. Args arrive
+              // pre-validated (buildCuratedAppTools validates before dispatch).
+              memoryList: getMemoryListPage,
+              memorySearch: getMemorySearchPage,
             }),
           }),
         ),

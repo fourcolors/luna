@@ -172,8 +172,15 @@ export const makeMcpAppTools = (
       "MCP Apps protocol. Use this (instead of widget_write) when the panel " +
       "needs to fetch/refresh data rather than render static markup. In the " +
       "HTML, call window.mcp.call('pulse') → {toolsCalled,errors,estimatedUsd," +
-      "activeSessions} or window.mcp.call('list-artifacts') → [{id,title,kind," +
-      "version,updatedAt}]; window.mcp.ready resolves once connected (the helper " +
+      "activeSessions}, window.mcp.call('list-artifacts') → [{id,title,kind," +
+      "version,updatedAt}], window.mcp.call('memory-list', {namespace?,kind?," +
+      "tag?,since?,limit?,offset?}) → {rows:[{id,namespace,kind,text,content," +
+      "tags,createdAt,updatedAt,scope?}],limit,offset,hasMore} (exact-filter, " +
+      "paginated browsing of long-term memory), or window.mcp.call(" +
+      "'memory-search', {query,namespace?,kind?,topK?}) → {rows:[{...same " +
+      "shape as memory-list rows,score}],query,topK} (hybrid BM25+vector " +
+      "top-K search) — both memory tools are READ-ONLY (no save/delete is " +
+      "exposed to apps). window.mcp.ready resolves once connected (the helper " +
       "is injected for you — do not write your own protocol code). Pass a stable " +
       "appId; writing again with the same id iterates it as a new, revertable " +
       "version. Returns the artifact id + version.",
@@ -200,8 +207,10 @@ export const makeMcpAppTools = (
           "A SELF-CONTAINED HTML document (inline <style>/<script> only — no " +
             "network, no external scripts). Use window.mcp.call(toolName, args) " +
             "for live data and window.mcp.ready (a Promise) to wait for connect. " +
-            "Available tools: 'pulse', 'list-artifacts'. Nothing else (no Tauri, " +
-            "no Node, no fetch) is reachable.",
+            "Available tools: 'pulse', 'list-artifacts', 'memory-list' " +
+            "(paginated memory browsing), 'memory-search' (hybrid top-K memory " +
+            "search) — memory-list/memory-search are read-only. Nothing else " +
+            "(no Tauri, no Node, no fetch) is reachable.",
         ),
     },
     alwaysLoad: true,
