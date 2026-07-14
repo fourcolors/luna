@@ -91,9 +91,9 @@ the host-side guardian (see `docs/autodeploy.md` for the authoritative flow). St
 process (per `scripts/seeds/servers.toml`, verified 2026-06-22). The script's logic - pull →
 install-if-lockfile-changed → re-pin claude → restart → readiness probe (is-active +
 NRestarts-not-climbing + /healthz 200) → rollback-to-PREV on failure → CRITICAL/exit 2 if rollback
-also fails - is covered by **23 hermetic tests**:
+also fails - is covered by **26 hermetic tests**:
 ```
-bun run test test/update-server.test.ts        # 23 pass (incl. journal recovery, locking, rollback, crash-loop)
+bun run test test/update-server.test.ts        # 26 pass (incl. journal recovery, locking, rollback, crash-loop)
 ```
 
 ## 5. Automated test suites (the green baseline)

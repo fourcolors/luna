@@ -123,6 +123,7 @@ luna-autodeploy dev --force             # bypass the no-op + connect-aware check
 # guardian (default control plane; one-minute deep-health cadence)
 luna-guardian adopt stable
 luna-guardian accept stable --expected-sha <full-sha> --min-cycles 2
+luna-guardian diagnose stable           # capture a redacted incident bundle now
 luna-guardian uninstall stable
 
 # legacy updater-only timers (interval defaults to deploy.timerInterval:
@@ -155,6 +156,17 @@ healthy count. Deferred unit reconciliation never increments that count. This
 is also the heartbeat surface for an off-host dead-man monitor; a host cannot
 report its own total failure or a disabled timer.
 
+When deep health fails, the guardian captures a redacted incident bundle (git,
+unit, `/readyz`, capacity, and journal snapshots with tokens/secrets stripped)
+and logs its path. Bundles land under `/var/lib/luna-guardian/incidents/<profile>/`.
+Capture one on demand with `luna-guardian diagnose <profile>`, which prints the
+written bundle path:
+
+```sh
+scripts/luna-guardian diagnose stable
+ls -t /var/lib/luna-guardian/incidents/stable/ | head
+```
+
 From another Tailscale machine, run the portable probe under cron or an alerting
 runner (nonzero means page):
 
@@ -167,5 +179,13 @@ It independently reads the Guardian service state and heartbeat over SSH, then
 probes `/readyz`, requiring a fresh healthy attestation, at least two cycles,
 and matching runtime/engine SHA. A service in systemd's `activating` state is a
 bounded in-progress check, not a dead-man failure; `TimeoutStartSec=12min`
-prevents that exception from hiding a hung Guardian. Failed or missing units
-still page immediately.
+prevents that exception from hiding a hung Guardian. The pre-first-run window is
+also suppressed: a freshly installed timer that is active but has never fired
+reports a pending first cycle instead of paging on the absent heartbeat. Failed
+or missing units, a timer that has already fired without writing a heartbeat,
+and stale inactive heartbeats all still page immediately.
+
+Flags: `--expected-sha <full-sha>` pins the accepted SHA, `--max-age <seconds>`
+sets the heartbeat freshness bound (default 180, minimum 60), and `--ready-url
+<url>` overrides the probed readiness endpoint (default
+`http://<host>:4753/readyz`).
