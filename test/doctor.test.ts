@@ -47,7 +47,8 @@ afterEach(() => {
  * Seam variables:
  *   LUNA_TEST_DOCTOR_INCUS_ACTIVE   — "true"/"false" — incus exec is-active result
  *   LUNA_TEST_DOCTOR_HOST_ACTIVE    — "true"/"false" — bare-host is-active result
- *   LUNA_TEST_DOCTOR_TIMER_PRESENT  — "true"/"false" — autodeploy timer presence
+ *   LUNA_TEST_DOCTOR_GUARDIAN_TIMER_STATE — active/inactive/missing
+ *   LUNA_TEST_DOCTOR_LEGACY_TIMER_STATE — active/inactive/missing
  */
 const runDoctor = (
   profile: string | null,
@@ -55,6 +56,8 @@ const runDoctor = (
     incusActive?: boolean
     hostActive?: boolean
     timerPresent?: boolean
+    guardianTimerState?: "active" | "inactive" | "missing"
+    legacyTimerState?: "active" | "inactive" | "missing"
     registryFile?: string
     embedder?: "reachable" | "unreachable"
     extraEnv?: Record<string, string>
@@ -74,9 +77,8 @@ const runDoctor = (
   if (seams.hostActive !== undefined) {
     env.LUNA_TEST_DOCTOR_HOST_ACTIVE = String(seams.hostActive)
   }
-  if (seams.timerPresent !== undefined) {
-    env.LUNA_TEST_DOCTOR_TIMER_PRESENT = String(seams.timerPresent)
-  }
+  env.LUNA_TEST_DOCTOR_GUARDIAN_TIMER_STATE = seams.guardianTimerState ?? ((seams.timerPresent ?? true) ? "active" : "missing")
+  env.LUNA_TEST_DOCTOR_LEGACY_TIMER_STATE = seams.legacyTimerState ?? "missing"
   if (seams.embedder !== undefined) {
     env.LUNA_TEST_DOCTOR_EMBEDDER = seams.embedder
   }
@@ -100,13 +102,13 @@ describe("incus runtime — declared==real → PASS", () => {
     const result = runDoctor("stable", {
       incusActive: true,   // in-container unit IS active
       hostActive: false,   // bare-host unit is NOT active (correct)
-      timerPresent: true,  // autodeploy timer installed (the new default)
+      timerPresent: true,  // guardian timer active (the new default)
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     expect(result.stdout).toContain("All declared==real checks PASSED")
     expect(result.stdout).toContain("in-container unit")
     expect(result.stdout).toContain("correctly inactive")
-    expect(result.stdout).toContain("timer presence not checked")
+    expect(result.stdout).toContain("guardian timer")
   })
 
   it("dev (incus luna-dev): container active + host inactive → exit 0", () => {
@@ -117,6 +119,29 @@ describe("incus runtime — declared==real → PASS", () => {
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     expect(result.stdout).toContain("All declared==real checks PASSED")
+  })
+
+  it("rejects a guardian timer that is installed but inactive", () => {
+    const result = runDoctor("stable", {
+      incusActive: true,
+      hostActive: false,
+      guardianTimerState: "inactive",
+    })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("state=inactive")
+    expect(result.stderr).toContain("need active")
+  })
+
+  it("rejects a legacy timer left behind after guardian adoption", () => {
+    const result = runDoctor("stable", {
+      incusActive: true,
+      hostActive: false,
+      guardianTimerState: "active",
+      legacyTimerState: "active",
+    })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("legacy timer")
+    expect(result.stderr).toContain("state=active")
   })
 })
 
@@ -274,6 +299,7 @@ describe("F5 rail — timer present for timer=false profile", () => {
       incusActive: true,
       hostActive: false,
       timerPresent: true,  // timer is present — this violates the opt-out rail
+      legacyTimerState: "active",
       registryFile: makeTimerOptOutRegistry(),
     })
     expect(result.status).toBe(1)
@@ -315,7 +341,7 @@ describe("embedder reachability probe", () => {
     const result = runDoctor("stable", {
       incusActive: true,
       hostActive: false,
-      timerPresent: false,
+      timerPresent: true,
       embedder: "reachable",
       extraEnv: ollamaEnv,
     })
@@ -374,7 +400,7 @@ describe("embedder reachability probe", () => {
     const result = runDoctor("stable", {
       incusActive: true,
       hostActive: false,
-      timerPresent: false,
+      timerPresent: true,
       extraEnv: { LUNA_EMBEDDER: "ollama" },
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
@@ -405,7 +431,7 @@ describe("all-profiles scan (no profile arg)", () => {
     const result = runDoctor(null, {
       incusActive: true,
       hostActive: false,
-      timerPresent: false,
+      timerPresent: true,
     })
     expect(result.status, `stderr: ${result.stderr}`).toBe(0)
     expect(result.stdout).toContain("All declared==real checks PASSED")

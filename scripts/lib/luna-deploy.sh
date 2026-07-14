@@ -248,12 +248,14 @@ luna_resolve_bind_addr() {
 #                        checking the host would always return 0 and defeat the
 #                        deferral guard.
 #
-# Test seam: if LUNA_TEST_WS_COUNT is set (even to empty), its value is used
-# verbatim instead of shelling out to ss(8). CI environments have no established
-# sockets, so without the seam every test assertion would be comparing against
-# a live (and unpredictable) socket count. This mirrors the LUNA_TAILSCALE_IP /
-# LUNA_TEST_BUN_PATH seams already in this file: set the variable to pin the
-# outcome; leave it unset for production behavior.
+# Returns non-zero when the count cannot be established. This is load-bearing:
+# an unavailable `ss`, a stopped Incus instance, or a failed exec is UNKNOWN,
+# never "zero sessions". Unattended callers must fail closed and defer; an
+# operator can still use their explicit force/allow-active lever.
+#
+# Test seam: if LUNA_TEST_WS_COUNT is set, a decimal value is returned verbatim;
+# the literal `unknown` simulates an unavailable probe. Empty/garbage values are
+# rejected instead of silently becoming zero.
 luna_active_ws_count() {
   local port="$1"
   local incus="${2:-}"
@@ -261,18 +263,59 @@ luna_active_ws_count() {
 
   if [[ "${LUNA_TEST_WS_COUNT+set}" == "set" ]]; then
     n="$LUNA_TEST_WS_COUNT"
-    n="$(printf '%s' "$n" | tr -dc '0-9')"
-    printf '%s' "${n:-0}"
-    return 0
+    [[ "$n" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$n"
+    return
   fi
 
   if [[ -n "$incus" ]]; then
-    n="$(incus exec "$incus" -- sh -c "ss -tnH state established '( sport = :$port )' 2>/dev/null | wc -l" 2>/dev/null || echo 0)"
+    command -v incus >/dev/null 2>&1 || return 1
+    n="$(incus exec "$incus" -- sh -c "command -v ss >/dev/null 2>&1 && ss -tnH state established '( sport = :$port )' 2>/dev/null | wc -l" 2>/dev/null)" || return 1
   else
-    n="$(ss -tnH state established "( sport = :$port )" 2>/dev/null | wc -l || echo 0)"
+    command -v ss >/dev/null 2>&1 || return 1
+    n="$(ss -tnH state established "( sport = :$port )" 2>/dev/null | wc -l)" || return 1
   fi
-  n="$(printf '%s' "$n" | tr -dc '0-9')"
-  printf '%s' "${n:-0}"
+  n="$(printf '%s' "$n" | tr -d '[:space:]')"
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$n"
+}
+
+# Prove that the declared runtime is serving the exact checkout HEAD in normal
+# mode. This is the shared trust gate for deploy verification and control-plane
+# migration: neither may adopt executable code merely because it exists in a
+# mutable checkout.
+#
+# Signature: luna_runtime_matches_checkout <repo> <port> [incus] [service]
+# Returns non-zero on any unknown/mismatch. LUNA_TEST_RUNTIME_MATCHES_CHECKOUT
+# is a boolean test seam.
+luna_runtime_matches_checkout() {
+  local repo="$1" port="$2" incus="${3:-}" service="${4:-luna-chat-server.service}"
+  local expected active ready mode build
+
+  if [[ "${LUNA_TEST_RUNTIME_MATCHES_CHECKOUT+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_RUNTIME_MATCHES_CHECKOUT" == "true" ]]
+    return
+  fi
+
+  expected="$(git -C "$repo" rev-parse HEAD 2>/dev/null)" || return 1
+  if [[ -n "$incus" ]]; then
+    command -v incus >/dev/null 2>&1 || return 1
+    active="$(incus exec "$incus" -- systemctl is-active "$service" 2>/dev/null || true)"
+    [[ "$active" == "active" ]] || return 1
+    incus exec "$incus" -- curl -fsS --max-time 4 \
+      "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || return 1
+    ready="$(incus exec "$incus" -- curl -fsS --max-time 4 \
+      "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 1
+  else
+    active="$(systemctl is-active "$service" 2>/dev/null || true)"
+    [[ "$active" == "active" ]] || return 1
+    curl -fsS --max-time 4 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || return 1
+    ready="$(curl -fsS --max-time 4 "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 1
+  fi
+  mode="$(printf '%s' "$ready" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')"
+  build="$(printf '%s' "$ready" | sed -n 's/.*"buildSha":"\([0-9a-fA-F]*\)".*/\1/p')"
+  [[ "$mode" == "normal" && -n "$build" ]] || return 1
+  [[ "$expected" == "$build"* || "$build" == "$expected"* ]]
 }
 
 luna_find_bun() {

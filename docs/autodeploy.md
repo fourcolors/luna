@@ -7,8 +7,9 @@ branch and, when it has **moved**, runs the existing `scripts/luna-update-server
 (fetch → `reset --hard` → conditional `bun install` → restart → `/healthz`+`/readyz`
 readiness probe → **auto-rollback** on failure).
 
-It's a thin, safe wrapper — all the deploy/rollback logic lives in
-`luna-update-server`; `luna-autodeploy` only decides *whether* to deploy:
+It's a thin, safe wrapper — all deploy/rollback logic lives in
+`luna-update-server`; `luna-autodeploy` decides whether to deploy and lets an
+eligible legacy host hand control to the guardian:
 
 - **No-op when unchanged** — if the channel is already at `origin/<branch>` it
   exits 0 quietly, so a frequent timer only ever restarts the server when the
@@ -19,6 +20,40 @@ It's a thin, safe wrapper — all the deploy/rollback logic lives in
 - **Auditable** — every run logs to the unit journal:
   `journalctl -u luna-autodeploy-stable.service`.
 
+## Guardian is the default host control plane
+
+New installs run `luna-guardian-<profile>.timer` (one-minute checks). The
+guardian is pinned under `/usr/local/lib/luna-guardian`, outside the mutable
+channel checkout. It verifies the unit, `/healthz`, `/readyz`, and the exact
+build SHA; captures redacted incident bundles; resumes interrupted update
+transactions; reconciles unit drift while idle; and invokes the same rollback
+engine described below. After a new Luna SHA passes deep health, the guardian
+installs that checkout's engine into a new immutable directory and atomically
+advances its own pin. systemd's in-process watchdog remains responsible for
+sub-minute hang detection.
+
+`luna-guardian adopt <profile>` verifies that no update transaction is pending
+and that the running normal-mode build exactly matches checkout HEAD before it
+pins the engine and hands off systemd ownership. It enables and proves the
+guardian first, then disables and removes the older updater-only timer. A legacy
+timer automatically calls this interface on its next safe tick; adoption still
+runs when `deploy.autoUpdate=false` because health/repair is independent of
+branch movement. A host whose checkout predates the guardian and already has
+`deploy.autoUpdate=false` needs one manual checkout update before that migration
+code exists locally; after that, the next legacy tick adopts without moving the
+configured branch.
+
+Existing hosts can migrate immediately without interrupting Luna:
+
+```sh
+scripts/luna-guardian adopt stable
+scripts/luna-guardian adopt dev
+```
+
+Adoption exits `10` when a pending transaction or runtime/checkout mismatch
+makes the mutable checkout unsafe. The legacy timer remains in place and retries.
+Hard handoff failures are nonzero and can never print an adopted result.
+
 ## Auto-update is ON by default
 
 Both channels ship with an auto-update timer (owner decision 2026-07; this
@@ -28,47 +63,50 @@ connect-aware deferral is the safety mechanism for the daily driver.
 
 | Channel | Repo (host) | Branch | Target | Cadence |
 |---|---|---|---|---|
-| `dev` | `/root/luna/dev/repo` | `dev` (registry `deploy.trackBranch`) | incus container `luna-dev` (:4753) | every **3min** |
-| `stable` | `/root/luna/stable/repo` | `master` | incus container `luna-stable` (:4753) | every **15min** |
+| `dev` | `/root/luna/dev/repo` | `dev` (registry `deploy.trackBranch`) | incus container `luna-dev` (:4753) | guardian every **1min** |
+| `stable` | `/root/luna/stable/repo` | `master` | incus container `luna-stable` (:4753) | guardian every **1min** |
 
-Stable's 15min cadence trades update latency for calm: `master` moves far less
-often than `dev`, and a quarter-hour worst-case lag is invisible for a daily
-driver while cutting GitHub polling and restart pressure 5×.
+The one-minute cadence is a health cadence, not a restart cadence: unchanged
+branches are no-ops and connected sessions defer updates. The legacy
+updater-only timer retains its registry-configured 3min/15min defaults when an
+operator explicitly installs it instead of the guardian.
 
 Repos and branches come from the registry (`/etc/luna/servers.toml`, seeded
 from `scripts/seeds/servers.toml`); `LUNA_DEV_BRANCH` / `LUNA_STABLE_BRANCH`
 env overrides win when set (e.g. staging a feature branch or a `moon-v*` tag
 on dev).
 
-Provisioning installs the timer automatically: `scripts/luna-container-create`
+Provisioning installs the guardian automatically: `scripts/luna-container-create`
 seeds `/etc/luna/servers.toml` from `scripts/seeds/servers.toml` when absent
-and runs `luna-autodeploy install-timer <profile>` at the end of a successful
+and runs `luna-guardian install <profile>` at the end of a successful
 create (skip with `--no-auto-update`).
 
-The timer unit's `ExecStart` carries `--from-timer`, which marks the run as
-machine-initiated. That flag does exactly two things: it makes the run respect
-the `deploy.autoUpdate` knob, and nothing else — deferral, rollback, and exit
-codes behave exactly like a manual run.
+The guardian timer starts its pinned `check` interface; that interface invokes
+the pinned updater with `--from-timer`. The flag makes branch movement respect
+`deploy.autoUpdate` and grants no restart override — connect-aware deferral and
+rollback behave exactly like a manual run.
 
 ## Opting out
 
 Two levers, in order of reach:
 
-1. **Knob off (timer stays installed, runs no-op):** set
+1. **Branch movement off (guardian health stays on):** set
    `deploy.autoUpdate = false` in the channel's `[[server]]` stanza in
-   `/etc/luna/servers.toml`. Every timer tick then exits 0 with
-   `auto-update is OFF` in the journal. Absent key = `true` — auto-update is
-   the default, the opt-out is explicit.
-2. **Remove the timer entirely:** `luna-autodeploy uninstall-timer stable`.
+   `/etc/luna/servers.toml`. Every timer tick still checks and repairs health;
+   its updater exits 0 with `auto-update is OFF` instead of moving the branch.
+   Absent key = `true` — auto-update is the default, the opt-out is explicit.
+2. **Remove the guardian entirely:** `luna-guardian uninstall stable`.
 
 Manual one-command deploys (`luna-autodeploy stable`) always work regardless of
 the knob — typing the command is the consent the knob exists to gate.
 
-The registry's `deploy.timer` key remains the hard rail: `install-timer`
-refuses any profile whose stanza says `deploy.timer = false` (enforced in code,
-checked by `luna-doctor`). The `LUNA_REGISTRY_DISABLE=1` hardcoded fallback
-still disallows a stable timer — it encodes the legacy bare-host topology;
-default-on auto-update is a registry-path policy.
+The registry's `deploy.timer` key remains the hard rail: both guardian install
+and legacy `install-timer` refuse profiles whose stanza says
+`deploy.timer = false`; an already-running guardian removes its own units on the
+next check (enforced in code, checked by `luna-doctor`). The
+`LUNA_REGISTRY_DISABLE=1` hardcoded fallback still disallows a stable timer —
+it encodes the legacy bare-host topology; default-on auto-update is a
+registry-path policy.
 
 ## Usage
 
@@ -82,8 +120,13 @@ luna-autodeploy dev --dry-run           # show what it would do
 luna-autodeploy stable --allow-active   # deploy even if sessions are connected
 luna-autodeploy dev --force             # bypass the no-op + connect-aware checks
 
-# timers (interval defaults to the registry's deploy.timerInterval:
-# dev 3min, stable 15min)
+# guardian (default control plane; one-minute deep-health cadence)
+luna-guardian adopt stable
+luna-guardian accept stable --expected-sha <full-sha> --min-cycles 2
+luna-guardian uninstall stable
+
+# legacy updater-only timers (interval defaults to deploy.timerInterval:
+# dev 3min, stable 15min). Do not run alongside the guardian.
 luna-autodeploy install-timer stable
 luna-autodeploy install-timer dev --interval 3min
 luna-autodeploy uninstall-timer stable
@@ -100,7 +143,25 @@ needs attention).
 
 ## Check status
 ```sh
-systemctl list-timers 'luna-autodeploy-*.timer'
-journalctl -u luna-autodeploy-stable.service -n 30
-journalctl -u luna-autodeploy-dev.service -n 30
+systemctl list-timers 'luna-guardian-*.timer'
+journalctl -u luna-guardian-stable.service -n 30
+journalctl -u luna-guardian-dev.service -n 30
+cat /var/lib/luna-guardian/status-stable
 ```
+
+The status file is written atomically after every guardian run and records the
+checkout SHA, pinned engine SHA, outcome, completion time, and consecutive fully
+healthy count. Deferred unit reconciliation never increments that count. This
+is also the heartbeat surface for an off-host dead-man monitor; a host cannot
+report its own total failure or a disabled timer.
+
+From another Tailscale machine, run the portable probe under cron or an alerting
+runner (nonzero means page):
+
+```sh
+scripts/luna-guardian-remote-check root@jax-box stable \
+  --expected-sha <full-sha> --max-age 180
+```
+
+It independently reads the heartbeat over SSH and probes `/readyz`, requiring a
+fresh healthy attestation, at least two cycles, and matching runtime/engine SHA.

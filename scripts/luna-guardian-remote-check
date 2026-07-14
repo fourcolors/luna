@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Off-host dead-man probe for a Luna guardian. Intended for cron/monitoring on a
+# different Tailscale machine; exits nonzero so the caller can page.
+set -euo pipefail
+
+host="${1:-}"; profile="${2:-}"
+[[ -n "$host" && -n "$profile" ]] || {
+  echo "usage: luna-guardian-remote-check <ssh-host> <stable|dev> [--expected-sha <sha>] [--max-age <seconds>] [--ready-url <url>]" >&2
+  exit 2
+}
+shift 2
+case "$profile" in stable|dev) ;; *) echo "invalid profile: $profile" >&2; exit 2 ;; esac
+[[ "$host" =~ ^[A-Za-z0-9_.@:-]+$ ]] || { echo "invalid ssh host" >&2; exit 2; }
+
+expected=""; max_age=180; ready_url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expected-sha) expected="${2:?}"; shift 2 ;;
+    --max-age) max_age="${2:?}"; shift 2 ;;
+    --ready-url) ready_url="${2:?}"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+[[ "$max_age" =~ ^[0-9]+$ && "$max_age" -ge 60 ]] || { echo "--max-age must be an integer >= 60" >&2; exit 2; }
+[[ -z "$expected" || "$expected" =~ ^[0-9a-fA-F]{40,64}$ ]] || { echo "--expected-sha must be a full git SHA" >&2; exit 2; }
+if [[ -z "$ready_url" ]]; then ready_url="http://${host#*@}:4753/readyz"; fi
+[[ "$ready_url" =~ ^https?:// ]] || { echo "--ready-url must use http or https" >&2; exit 2; }
+
+status="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
+  "cat /var/lib/luna-guardian/status-$profile" 2>/dev/null)" || {
+  echo "guardian-remote: cannot read $profile heartbeat from $host" >&2
+  exit 1
+}
+value() { printf '%s\n' "$status" | sed -n "s/^$1=//p" | head -1; }
+completed="$(value completed_at)"; repo_sha="$(value repo_sha)"; engine_sha="$(value engine_sha)"
+outcome="$(value outcome)"; count="$(value consecutive_healthy)"; now="$(date +%s)"
+[[ "$completed" =~ ^[0-9]+$ && "$completed" -le "$now" ]] || { echo "guardian-remote: invalid heartbeat timestamp" >&2; exit 1; }
+age=$((now - completed))
+(( age <= max_age )) || { echo "guardian-remote: heartbeat stale (${age}s > ${max_age}s)" >&2; exit 1; }
+[[ "$outcome" == "healthy" && "$count" =~ ^[0-9]+$ && "$count" -ge 2 ]] || {
+  echo "guardian-remote: unhealthy attestation outcome=${outcome:-missing} cycles=${count:-0}" >&2; exit 1;
+}
+[[ -n "$repo_sha" && "$repo_sha" == "$engine_sha" ]] || { echo "guardian-remote: repo/engine SHA mismatch" >&2; exit 1; }
+[[ -z "$expected" || "$repo_sha" == "$expected" ]] || { echo "guardian-remote: heartbeat SHA $repo_sha != expected $expected" >&2; exit 1; }
+
+ready="$(curl -fsS --max-time 5 "$ready_url" 2>/dev/null)" || {
+  echo "guardian-remote: readyz unreachable at $ready_url" >&2; exit 1;
+}
+mode="$(printf '%s' "$ready" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')"
+build="$(printf '%s' "$ready" | sed -n 's/.*"buildSha":"\([0-9a-fA-F]*\)".*/\1/p')"
+[[ "$mode" == "normal" && -n "$build" && ( "$repo_sha" == "$build"* || "$build" == "$repo_sha"* ) ]] || {
+  echo "guardian-remote: readyz does not attest heartbeat SHA (mode=${mode:-missing} build=${build:-missing})" >&2; exit 1;
+}
+printf 'guardian-remote: OK %s %s sha=%s heartbeat_age=%ss cycles=%s\n' \
+  "$host" "$profile" "${repo_sha:0:12}" "$age" "$count"

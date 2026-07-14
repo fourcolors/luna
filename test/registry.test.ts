@@ -237,7 +237,7 @@ describe("luna_load_server — field extraction", () => {
       ].join("\n") + "\n",
     )
     const result = loadServer("stable", { registryFile: reg })
-    expect(result.status).toBe(2)
+    expect(result.status, result.stdout + result.stderr).toBe(2)
     expect(result.stderr).toContain("timerInterval")
   })
 
@@ -642,6 +642,114 @@ describe("deploy.autoUpdate knob (--from-timer runs)", () => {
     expect(result.stdout).toContain("DEFERRED")
     expect(result.stdout).toContain("active session(s)")
     expect(result.stdout).not.toContain("DRY-RUN")
+  })
+
+  it("timer run fails closed when active-session count is unknown", () => {
+    const result = runDryRun("stable", {
+      extraArgs: ["--from-timer"],
+      extraEnv: { LUNA_TEST_WS_COUNT: "unknown" },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stderr).toContain("count UNKNOWN")
+    expect(result.stdout).not.toContain("DRY-RUN")
+  })
+
+  it("an existing legacy timer self-migrates before an up-to-date no-op", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const bin = join(temp, "bin")
+    const marker = join(temp, "guardian-called")
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    mkdirSync(join(repo, "scripts"), { recursive: true })
+    mkdirSync(bin)
+    writeFileSync(
+      join(repo, "scripts", "luna-guardian"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > "$LUNA_TEST_MIGRATION_MARKER"\n`,
+    )
+    writeFileSync(
+      join(bin, "git"),
+      `#!/usr/bin/env bash\ncase "$*" in\n` +
+      `  *"fetch origin"*) exit 0 ;;\n` +
+      `  *"rev-parse HEAD"|*"rev-parse origin/"*) printf 'aaaaaaaaa\\n' ;;\n` +
+      `  *) /usr/bin/git "$@" ;;\n` +
+      `esac\n`,
+    )
+    spawnSync("chmod", ["+x", join(repo, "scripts", "luna-guardian"), join(bin, "git")])
+    const registry = join(temp, "servers.toml")
+    writeFileSync(
+      registry,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "${repo}"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `ports.proxy = 4753`,
+        `deploy.timer = true`,
+        `deploy.autoUpdate = false`,
+      ].join("\n") + "\n",
+    )
+
+    const result = spawnSync("bash", [LUNA_AUTODEPLOY, "stable", "--from-timer"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_MIGRATION_MARKER: marker,
+      },
+    })
+
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toContain("MIGRATING legacy timer")
+    expect(result.stdout).toContain("auto-update is OFF")
+    expect(readFileSync(marker, "utf8").trim()).toBe("adopt stable")
+  })
+
+  it("a failed guardian migration fails loudly and remains retryable", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const bin = join(temp, "bin")
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    mkdirSync(join(repo, "scripts"), { recursive: true })
+    mkdirSync(bin)
+    writeFileSync(join(repo, "scripts", "luna-guardian"), "#!/usr/bin/env bash\nexit 1\n")
+    writeFileSync(
+      join(bin, "git"),
+      `#!/usr/bin/env bash\ncase "$*" in *"rev-parse HEAD"*) printf 'aaaaaaaaa\\n' ;; *) exit 0 ;; esac\n`,
+    )
+    spawnSync("chmod", ["+x", join(repo, "scripts", "luna-guardian"), join(bin, "git")])
+    const registry = join(temp, "servers.toml")
+    writeFileSync(
+      registry,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "${repo}"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `deploy.timer = true`,
+      ].join("\n") + "\n",
+    )
+    const result = spawnSync("bash", [LUNA_AUTODEPLOY, "stable", "--from-timer"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      },
+    })
+
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(result.stderr).toContain("guardian migration failed")
   })
 })
 

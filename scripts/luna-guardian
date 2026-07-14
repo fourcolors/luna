@@ -1,0 +1,550 @@
+#!/usr/bin/env bash
+# Independent host control plane for Luna. systemd owns fast liveness; this
+# timer-driven oneshot owns deep health, evidence capture, repair, and updates.
+set -euo pipefail
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+SCRIPT_DIR="$(dirname "$SELF")"
+source "$SCRIPT_DIR/lib/luna-deploy.sh"
+source "$SCRIPT_DIR/lib/luna-registry.sh"
+
+PIN_BASE="${LUNA_GUARDIAN_PIN_BASE:-/usr/local/lib/luna-guardian}"
+STATE_DIR="${LUNA_GUARDIAN_STATE_DIR:-/var/lib/luna-guardian}"
+SYSTEMD_DIR="${LUNA_TEST_SYSTEMD_DIR:-/etc/systemd/system}"
+
+load_profile() {
+  luna_load_server "$1"
+  [[ -n "$P_SERVICE_NAME" ]] || luna_die "profile '$1' has no service name"
+}
+
+run_runtime() {
+  if [[ -n "$P_INCUS" ]]; then incus exec "$P_INCUS" -- "$@"; else "$@"; fi
+}
+
+redact() {
+  sed -E \
+    -e 's#bot[0-9]+:[A-Za-z0-9_-]+#bot<redacted>#g' \
+    -e 's#([?&](token|access_token|api_key)=)[^&[:space:]]+#\1<redacted>#g' \
+    -e 's#([A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)[A-Za-z0-9_]*[=:][[:space:]]*)[^[:space:]]+#\1<redacted>#gI'
+}
+
+diagnose() {
+  local profile="$1" dir stamp out tmp runtime_repo
+  load_profile "$profile"
+  runtime_repo="$P_REPO"
+  [[ -z "$P_INCUS" ]] || runtime_repo="/root/luna"
+  dir="$STATE_DIR/incidents/$profile"
+  mkdir -p "$dir"; chmod 700 "$STATE_DIR" "$STATE_DIR/incidents" "$dir" 2>/dev/null || true
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"; out="$dir/$stamp.txt"; tmp="$out.tmp.$$"
+  {
+    printf 'profile=%s\ncaptured_at=%s\nrepo=%s\ncontainer=%s\nunit=%s\n' \
+      "$profile" "$stamp" "$P_REPO" "$P_INCUS" "$P_SERVICE_NAME"
+    printf '\n[git]\n'; git -C "$P_REPO" status --short --branch 2>&1 || true
+    git -C "$P_REPO" rev-parse HEAD 2>&1 || true
+    printf '\n[unit]\n'; run_runtime systemctl show "$P_SERVICE_NAME" \
+      -p ActiveState -p SubState -p Result -p Type -p WatchdogUSec \
+      -p NRestarts -p ExecMainStatus --no-pager 2>&1 || true
+    printf '\n[ready]\n'; run_runtime curl -fsS --max-time 4 \
+      "http://127.0.0.1:$P_PORT/readyz" 2>&1 || true
+    printf '\n[capacity]\n'; run_runtime df -h "$runtime_repo" 2>&1 || true
+    printf '\n[journal]\n'; run_runtime journalctl -u "$P_SERVICE_NAME" \
+      --no-pager -n 80 2>&1 || true
+  } | redact > "$tmp"
+  chmod 600 "$tmp"; mv "$tmp" "$out"; printf '%s\n' "$out"
+}
+
+runtime_health() {
+  luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"
+}
+
+unit_hardened() {
+  local type watchdog
+  if [[ "${LUNA_TEST_GUARDIAN_UNIT_HARDENED+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_GUARDIAN_UNIT_HARDENED" == "true" ]]
+    return
+  fi
+  type="$(run_runtime systemctl show "$P_SERVICE_NAME" -p Type --value 2>/dev/null || true)"
+  watchdog="$(run_runtime systemctl show "$P_SERVICE_NAME" -p WatchdogUSec --value 2>/dev/null || true)"
+  [[ "$type" == notify && -n "$watchdog" && "$watchdog" != 0 && "$watchdog" != 0us ]]
+}
+
+host_unit_property() {
+  systemctl show "$1" -p "$2" --value 2>/dev/null || true
+}
+
+installed_engine_sha() {
+  local profile="$1" dir
+  dir="$(cd -P "$PIN_BASE/current-$profile" 2>/dev/null && pwd)" || return 1
+  [[ "${dir##*/}" == engine@* ]] || return 1
+  printf '%s' "${dir##*/engine@}"
+}
+
+guardian_engine_matches_checkout() {
+  local profile="$1" repo_sha engine_sha
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null)" || return 1
+  engine_sha="$(installed_engine_sha "$profile" 2>/dev/null)" || return 1
+  [[ "$repo_sha" == "$engine_sha" ]]
+}
+
+guardian_control_plane_adopted() {
+  local profile="$1"
+  local guardian="luna-guardian-$profile.timer" legacy="luna-autodeploy-$profile.timer"
+  [[ "$(host_unit_property "$guardian" LoadState)" == "loaded" ]] &&
+    [[ "$(host_unit_property "$guardian" UnitFileState)" == "enabled" ]] &&
+    [[ "$(host_unit_property "$guardian" ActiveState)" == "active" ]] &&
+    [[ "$(host_unit_property "$legacy" LoadState)" == "not-found" ]] &&
+    [[ "$(host_unit_property "$legacy" UnitFileState)" != "enabled" ]] &&
+    [[ "$(host_unit_property "$legacy" ActiveState)" != "active" ]]
+}
+
+status_value() {
+  local file="$1" key="$2"
+  [[ -r "$file" ]] || return 1
+  sed -n "s/^${key}=//p" "$file" | head -1
+}
+
+write_guardian_status() {
+  local profile="$1" outcome="$2" file tmp repo_sha engine_sha now previous_sha previous_outcome previous_count count=0
+  file="$STATE_DIR/status-$profile"; tmp="$file.tmp.$$"
+  mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR" 2>/dev/null || true
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null || true)"
+  engine_sha="$(installed_engine_sha "$profile" 2>/dev/null || true)"
+  now="$(date +%s)"
+  previous_sha="$(status_value "$file" repo_sha 2>/dev/null || true)"
+  previous_outcome="$(status_value "$file" outcome 2>/dev/null || true)"
+  previous_count="$(status_value "$file" consecutive_healthy 2>/dev/null || true)"
+  if [[ "$outcome" == "healthy" && "$repo_sha" == "$engine_sha" ]]; then
+    if [[ "$previous_outcome" == "healthy" && "$previous_sha" == "$repo_sha" && "$previous_count" =~ ^[0-9]+$ ]]; then
+      count=$((previous_count + 1))
+    else
+      count=1
+    fi
+  fi
+  ( umask 077; printf 'profile=%s\ncompleted_at=%s\nrepo_sha=%s\nengine_sha=%s\noutcome=%s\nconsecutive_healthy=%s\n' \
+      "$profile" "$now" "$repo_sha" "$engine_sha" "$outcome" "$count" > "$tmp" )
+  mv "$tmp" "$file"
+}
+
+# Guardian installation and the deploy transaction both read executable files
+# from the mutable checkout. Share the updater's mkdir-lock protocol so a manual
+# deploy cannot start between the runtime trust proof and immutable pin
+# publication (and Guardian cannot copy a half-applied checkout).
+GUARDIAN_UPDATE_LOCK=""
+GUARDIAN_UPDATE_LOCK_HELD=false
+
+guardian_process_fingerprint() {
+  local pid="$1"
+  if [[ -r "/proc/$pid/stat" ]]; then
+    sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}'
+  else
+    ps -p "$pid" -o lstart= 2>/dev/null | tr -d '\n'
+  fi
+}
+
+guardian_update_lock_owner_alive() {
+  local lock="$1" pid fingerprint current
+  [[ -r "$lock/owner" ]] || return 1
+  pid="$(sed -n 's/^pid=//p' "$lock/owner" | head -1)"
+  fingerprint="$(sed -n 's/^fingerprint=//p' "$lock/owner" | head -1)"
+  [[ "$pid" =~ ^[0-9]+$ && -n "$fingerprint" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  current="$(guardian_process_fingerprint "$pid")"
+  [[ -n "$current" && "$current" == "$fingerprint" ]]
+}
+
+release_guardian_update_lock() {
+  if [[ "$GUARDIAN_UPDATE_LOCK_HELD" == true ]]; then
+    rm -rf "$GUARDIAN_UPDATE_LOCK" 2>/dev/null || true
+    GUARDIAN_UPDATE_LOCK_HELD=false
+  fi
+}
+
+acquire_guardian_update_lock() {
+  local profile="$1" update_state lock fingerprint
+  update_state="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}"
+  lock="$update_state/lock-$profile"
+  mkdir -p "$update_state"; chmod 700 "$update_state" 2>/dev/null || true
+  if ! mkdir "$lock" 2>/dev/null; then
+    if guardian_update_lock_owner_alive "$lock"; then
+      luna_warn "DEFERRED: update lock is held for profile '$profile'; guardian pin unchanged"
+      return 10
+    fi
+    luna_warn "removing stale update lock for profile '$profile'"
+    rm -rf "$lock"
+    mkdir "$lock" || return 10
+  fi
+  fingerprint="$(guardian_process_fingerprint "$$")"
+  [[ -n "$fingerprint" ]] || { rm -rf "$lock"; return 10; }
+  ( umask 077; printf 'pid=%s\nfingerprint=%s\n' "$$" "$fingerprint" > "$lock/owner" )
+  GUARDIAN_UPDATE_LOCK="$lock"
+  GUARDIAN_UPDATE_LOCK_HELD=true
+  trap release_guardian_update_lock EXIT INT TERM
+}
+
+refresh_guardian_if_needed() {
+  local profile="$1" repo_sha engine_dir engine_sha candidate rc=0
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null)" || return 1
+  engine_dir="$(cd -P "$SCRIPT_DIR" 2>/dev/null && pwd)" || return 1
+  engine_sha="${engine_dir##*/engine@}"
+  [[ "$engine_sha" != "$engine_dir" && "$engine_sha" == "$repo_sha" ]] && return 0
+
+  # The mutable checkout is trusted only after runtime_health proved that this
+  # exact HEAD is the normal, serving build. Installation creates a new
+  # immutable engine directory and atomically flips the profile symlink; this
+  # running process keeps its old files until it exits.
+  candidate="$P_REPO/scripts/luna-guardian"
+  if [[ ! -x "$candidate" ]] || ! bash -n "$candidate"; then
+    luna_warn "healthy repo cannot refresh guardian: invalid $candidate"
+    return 1
+  fi
+  luna_warn "advancing guardian engine ${engine_sha:0:12} -> ${repo_sha:0:12}"
+  "$candidate" install "$profile" || rc=$?
+  if (( rc == 10 )); then
+    luna_warn "guardian engine refresh deferred by update transaction/lock"
+    return 0
+  fi
+  return "$rc"
+}
+
+update_then_refresh() {
+  local profile="$1" update="$2"; shift 2
+  "$update" "$profile" "$@" || return
+  # A deferred update is also successful. Deep health prevents it from
+  # promoting an unverified checkout or a build that does not match HEAD.
+  if runtime_health; then refresh_guardian_if_needed "$profile"; fi
+}
+
+reconcile_unit_if_idle() {
+  local profile="$1" n
+  unit_hardened && return 0
+  if ! n="$(luna_active_ws_count "$P_PORT" "$P_INCUS")"; then
+    luna_warn "unit drift: session count unknown; deferring"; return 1
+  fi
+  if (( n > 0 )); then luna_warn "unit drift: $n active session(s); deferring"; return 1; fi
+  luna_warn "reconciling supervisor unit before repair restart"
+  if [[ -n "$P_INCUS" ]]; then
+    run_runtime /root/luna/scripts/luna-server-install --profile "$profile" \
+      --repo-dir /root/luna --luna-home /root/.luna --units-only --no-enable --no-start
+  else
+    "$P_REPO/scripts/luna-server-install" --profile "$profile" \
+      --repo-dir "$P_REPO" --units-only --no-enable --no-start
+  fi
+}
+
+check_profile() {
+  local profile="$1" runtime_ok=true unit_ok=true update="$SCRIPT_DIR/luna-autodeploy"
+  load_profile "$profile"
+  [[ -x "$update" ]] || luna_die "pinned updater missing: $update"
+  if ! guardian_control_plane_adopted "$profile"; then
+    luna_warn "control-plane drift detected; reconciling pinned guardian units"
+    render_control_plane "$profile" "1min" "$PIN_BASE/current-$profile"
+  fi
+  if ! runtime_health; then
+    runtime_ok=false; luna_warn "deep health failed; incident=$(diagnose "$profile")"
+  fi
+  if ! unit_hardened; then
+    unit_ok=false
+    if ! reconcile_unit_if_idle "$profile"; then
+      # A healthy server with live/unknown sessions stays untouched. Still let
+      # the normal updater check run; its own fail-closed session guard defers.
+      if [[ "$runtime_ok" == true ]]; then
+        update_then_refresh "$profile" "$update" --from-timer
+        return
+      fi
+    fi
+  fi
+  if [[ "$runtime_ok" == true && "$unit_ok" == true ]]; then
+    update_then_refresh "$profile" "$update" --from-timer
+    return
+  fi
+  if "$update" "$profile" --force && runtime_health && unit_hardened; then
+    refresh_guardian_if_needed "$profile"
+    return
+  fi
+  luna_warn "repair failed; incident=$(diagnose "$profile")"; return 2
+}
+
+run_check() {
+  local profile="$1" rc=0 outcome
+  load_profile "$profile"
+  if [[ "$P_TIMER_ALLOWED" != "true" ]]; then
+    luna_warn "deploy.timer=false; removing guardian units for profile '$profile'"
+    uninstall_guardian "$profile"
+    write_guardian_status "$profile" "disabled"
+    return 0
+  fi
+  if check_profile "$profile"; then
+    if runtime_health && unit_hardened && guardian_control_plane_adopted "$profile" &&
+       guardian_engine_matches_checkout "$profile"; then
+      outcome="healthy"
+    else
+      # Connected sessions may safely defer a unit restart. That is not a pager
+      # failure, but it must not advance the release acceptance counter.
+      outcome="deferred"
+    fi
+  else
+    rc=$?; outcome="failed"
+  fi
+  write_guardian_status "$profile" "$outcome"
+  return "$rc"
+}
+
+render_control_plane() {
+  local profile="$1" interval="$2" current="$3"
+  local guardian_timer="luna-guardian-$profile.timer" legacy_timer="luna-autodeploy-$profile.timer"
+  local guardian_service="$SYSTEMD_DIR/luna-guardian-$profile.service"
+  local guardian_alert="$SYSTEMD_DIR/luna-guardian-alert-$profile.service"
+  local legacy_service="$SYSTEMD_DIR/luna-autodeploy-$profile.service"
+  [[ -x "$current/luna-guardian" && -x "$current/luna-pager" ]] ||
+    luna_die "guardian engine is incomplete: $current"
+  cat > "$guardian_service.tmp.$$" <<EOF
+[Unit]
+Description=Luna guardian ($profile) - deep health, recovery, updates
+After=network-online.target incus.service
+Wants=network-online.target
+OnFailure=luna-guardian-alert-$profile.service
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+Environment=LUNA_GUARDIAN_STATE_DIR=$STATE_DIR
+ExecStart=$current/luna-guardian check $profile
+TimeoutStartSec=12min
+EOF
+  mv "$guardian_service.tmp.$$" "$guardian_service"
+  cat > "$guardian_alert.tmp.$$" <<EOF
+[Unit]
+Description=Luna guardian failure pager ($profile)
+[Service]
+Type=oneshot
+Environment=LUNA_HOME=$STATE_DIR
+EnvironmentFile=-$STATE_DIR/pager.env
+ExecStart=$current/luna-pager luna-guardian-$profile
+EOF
+  mv "$guardian_alert.tmp.$$" "$guardian_alert"
+  cat > "$SYSTEMD_DIR/$guardian_timer.tmp.$$" <<EOF
+[Unit]
+Description=Luna guardian ($profile) timer
+[Timer]
+OnActiveSec=90s
+OnUnitInactiveSec=$interval
+AccuracySec=10s
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+  mv "$SYSTEMD_DIR/$guardian_timer.tmp.$$" "$SYSTEMD_DIR/$guardian_timer"
+  systemctl daemon-reload
+  systemctl enable --now "$guardian_timer"
+  [[ "$(host_unit_property "$guardian_timer" LoadState)" == "loaded" &&
+     "$(host_unit_property "$guardian_timer" UnitFileState)" == "enabled" &&
+     "$(host_unit_property "$guardian_timer" ActiveState)" == "active" ]] ||
+    luna_die "guardian timer failed to become loaded, enabled, and active"
+
+  # Handoff is transactional in ordering: prove the guardian first, then retire
+  # the legacy trigger. Never report adoption while both pollers are enabled.
+  if [[ "$(host_unit_property "$legacy_timer" LoadState)" != "not-found" ]]; then
+    systemctl disable --now "$legacy_timer" || luna_die "failed to disable legacy timer $legacy_timer"
+  fi
+  rm -f "$SYSTEMD_DIR/$legacy_timer" "$legacy_service"
+  systemctl daemon-reload
+  guardian_control_plane_adopted "$profile" ||
+    luna_die "guardian handoff verification failed; inspect guardian and legacy timer state"
+}
+
+publish_engine() {
+  local root="$1" sha="$2" pin="$3"
+  local lock="$PIN_BASE/.engine-$sha.lock"
+  local tmp="$pin.tmp.$$" attempt owner
+  [[ -f "$pin/.complete" ]] && return 0
+
+  for ((attempt = 1; attempt <= 50; attempt++)); do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s\n' "$$" > "$lock/pid"
+      rm -rf "$tmp"
+      [[ ! -e "$pin" || -f "$pin/.complete" ]] || rm -rf "$pin"
+      if [[ ! -f "$pin/.complete" ]]; then
+        mkdir -p "$tmp/lib"
+        cp "$root/scripts/luna-guardian" "$root/scripts/luna-autodeploy" \
+          "$root/scripts/luna-update-server" "$root/scripts/luna-server-install" \
+          "$root/scripts/luna-doctor" "$root/scripts/luna-pager" "$tmp/"
+        cp "$root/scripts/lib/"*.sh "$tmp/lib/"
+        chmod +x "$tmp"/luna-*; bash -n "$tmp"/luna-* "$tmp/lib/"*.sh
+        touch "$tmp/.complete"; mv "$tmp" "$pin"
+      fi
+      rm -rf "$lock"
+      return 0
+    fi
+    [[ -f "$pin/.complete" ]] && return 0
+    owner="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ ! "$owner" =~ ^[0-9]+$ ]] || ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$lock"
+      continue
+    fi
+    sleep 0.1
+  done
+  luna_die "timed out waiting for guardian engine publication $pin"
+}
+
+prune_engines() {
+  local keep=5 index=0 dir link target protected=" "
+  for link in "$PIN_BASE"/current-*; do
+    [[ -e "$link" ]] || continue
+    target="$(cd -P "$link" 2>/dev/null && pwd || true)"
+    [[ -n "$target" ]] && protected+="$target "
+  done
+  # shellcheck disable=SC2012
+  for dir in $(ls -dt "$PIN_BASE"/engine@* 2>/dev/null || true); do
+    index=$((index + 1))
+    if (( index <= keep )); then continue; fi
+    if [[ "$protected" == *" $dir "* ]]; then continue; fi
+    rm -rf "$dir"
+  done
+}
+
+install_guardian() {
+  local profile="$1" interval="$2" root sha pin current linktmp pending lock_rc=0
+  load_profile "$profile"
+  [[ "$P_TIMER_ALLOWED" == "true" ]] || luna_die \
+    "guardian is not allowed for profile '$profile' (registry deploy.timer=false)"
+  acquire_guardian_update_lock "$profile" || lock_rc=$?
+  (( lock_rc == 0 )) || return "$lock_rc"
+  pending="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}/transaction-$profile"
+  if [[ -f "$pending" ]]; then
+    luna_warn "DEFERRED: update transaction is pending for profile '$profile'; guardian pin unchanged"
+    return 10
+  fi
+  if ! runtime_health; then
+    luna_warn "DEFERRED: runtime does not prove checkout HEAD for profile '$profile'; guardian pin unchanged"
+    return 10
+  fi
+  root="$(cd "$SCRIPT_DIR/.." && pwd)"
+  sha="$(git -C "$root" rev-parse HEAD 2>/dev/null || shasum "$SELF" | awk '{print $1}')"
+  pin="$PIN_BASE/engine@$sha"; current="$PIN_BASE/current-$profile"
+  mkdir -p "$PIN_BASE" "$STATE_DIR"; chmod 700 "$STATE_DIR"
+  publish_engine "$root" "$sha" "$pin"
+  linktmp="$current.tmp.$$"; ln -s "$pin" "$linktmp"; mv -f "$linktmp" "$current"
+  render_control_plane "$profile" "$interval" "$current"
+  prune_engines
+  printf 'luna-guardian: installed %s (engine %s, interval %s)\n' \
+    "$profile" "$(printf '%s' "$sha" | cut -c1-12)" "$interval"
+}
+
+adopt_profile() {
+  local profile="$1" update_state pending
+  load_profile "$profile"
+  [[ "$P_TIMER_ALLOWED" == "true" ]] || luna_die \
+    "guardian is not allowed for profile '$profile' (registry deploy.timer=false)"
+  if guardian_control_plane_adopted "$profile"; then
+    printf 'luna-guardian: already adopted %s\n' "$profile"
+    return 0
+  fi
+  update_state="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}"
+  pending="$update_state/transaction-$profile"
+  if [[ -f "$pending" ]]; then
+    printf 'luna-guardian: adoption deferred for %s — update transaction pending\n' "$profile"
+    return 10
+  fi
+  if ! runtime_health; then
+    printf 'luna-guardian: adoption deferred for %s — runtime does not prove checkout HEAD\n' "$profile"
+    return 10
+  fi
+  install_guardian "$profile" "1min"
+  guardian_control_plane_adopted "$profile" ||
+    luna_die "adoption did not establish the guardian control plane"
+  printf 'luna-guardian: adopted %s\n' "$profile"
+}
+
+accept_profile() {
+  local profile="$1" expected="$2" min_cycles="$3" repo_sha engine_sha pending doctor status_file guardian_exec
+  local i result status_sha status_engine status_outcome status_count completed now
+  load_profile "$profile"
+  [[ "$expected" =~ ^[0-9a-fA-F]{40,64}$ ]] || luna_die "--expected-sha must be a full immutable git SHA"
+  [[ "$min_cycles" =~ ^[0-9]+$ && "$min_cycles" -ge 2 && "$min_cycles" -le 10 ]] ||
+    luna_die "--min-cycles must be between 2 and 10"
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null)" || luna_die "cannot read checkout HEAD"
+  [[ "$repo_sha" == "$expected" ]] || luna_die "checkout HEAD $repo_sha does not match expected $expected"
+  pending="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}/transaction-$profile"
+  [[ ! -f "$pending" ]] || luna_die "update transaction is still pending: $pending"
+  guardian_control_plane_adopted "$profile" || luna_die "guardian control plane is not fully adopted"
+  guardian_exec="$(host_unit_property "luna-guardian-$profile.service" ExecStart)"
+  [[ "$guardian_exec" == *"$PIN_BASE/current-$profile/luna-guardian check $profile"* ]] ||
+    luna_die "guardian service ExecStart is not pinned to the current $profile engine"
+  engine_sha="$(installed_engine_sha "$profile" 2>/dev/null || true)"
+  [[ "$engine_sha" == "$expected" ]] || luna_die "guardian engine $engine_sha does not match expected $expected"
+
+  for ((i = 1; i <= min_cycles; i++)); do
+    systemctl start "luna-guardian-$profile.service" || luna_die "guardian cycle $i failed to start"
+    result="$(host_unit_property "luna-guardian-$profile.service" Result)"
+    [[ "$result" == "success" ]] || luna_die "guardian cycle $i result=$result"
+    runtime_health || luna_die "guardian cycle $i failed exact runtime health"
+    unit_hardened || luna_die "guardian cycle $i found an unhardened runtime unit"
+  done
+
+  guardian_control_plane_adopted "$profile" || luna_die "guardian control plane drifted during acceptance"
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null)" || luna_die "cannot reread checkout HEAD"
+  engine_sha="$(installed_engine_sha "$profile" 2>/dev/null || true)"
+  [[ "$repo_sha" == "$expected" && "$engine_sha" == "$expected" ]] ||
+    luna_die "accepted SHA changed during guardian cycles"
+  [[ ! -f "$pending" ]] || luna_die "guardian cycles left a pending update transaction"
+
+  doctor="$PIN_BASE/current-$profile/luna-doctor"
+  [[ -x "$doctor" ]] || luna_die "pinned doctor missing: $doctor"
+  "$doctor" "$profile" || luna_die "luna-doctor rejected the live topology"
+
+  status_file="$STATE_DIR/status-$profile"
+  status_sha="$(status_value "$status_file" repo_sha 2>/dev/null || true)"
+  status_engine="$(status_value "$status_file" engine_sha 2>/dev/null || true)"
+  status_outcome="$(status_value "$status_file" outcome 2>/dev/null || true)"
+  status_count="$(status_value "$status_file" consecutive_healthy 2>/dev/null || true)"
+  completed="$(status_value "$status_file" completed_at 2>/dev/null || true)"
+  now="$(date +%s)"
+  [[ "$status_sha" == "$expected" && "$status_engine" == "$expected" && "$status_outcome" == "healthy" ]] ||
+    luna_die "guardian status does not attest the expected healthy SHA"
+  [[ "$status_count" =~ ^[0-9]+$ && "$status_count" -ge "$min_cycles" ]] ||
+    luna_die "guardian has only ${status_count:-0} consecutive healthy cycle(s); need $min_cycles"
+  [[ "$completed" =~ ^[0-9]+$ && "$completed" -le "$now" && $((now - completed)) -le 120 ]] ||
+    luna_die "guardian status heartbeat is stale or invalid"
+  printf 'luna-guardian: ACCEPTED %s at %s (%s consecutive healthy cycles)\n' \
+    "$profile" "$expected" "$status_count"
+}
+
+uninstall_guardian() {
+  local profile="$1"
+  systemctl disable --now "luna-guardian-$profile.timer" 2>/dev/null || true
+  rm -f "$SYSTEMD_DIR/luna-guardian-$profile.service" \
+    "$SYSTEMD_DIR/luna-guardian-$profile.timer" \
+    "$SYSTEMD_DIR/luna-guardian-alert-$profile.service"
+  systemctl daemon-reload
+}
+
+cmd="${1:-}"; profile="${2:-}"
+[[ -n "$cmd" && -n "$profile" ]] || { echo "usage: luna-guardian check|diagnose|adopt|install|accept|uninstall <profile>" >&2; exit 2; }
+luna_validate_profile "$profile"
+case "$cmd" in
+  check) run_check "$profile" ;;
+  diagnose) diagnose "$profile" ;;
+  adopt) adopt_profile "$profile" ;;
+  install)
+    shift 2; interval=1min
+    while [[ $# -gt 0 ]]; do
+      case "$1" in --interval) interval="${2:?}"; shift 2 ;; *) luna_die "unknown option: $1" ;; esac
+    done
+    [[ "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]] || luna_die "invalid interval: $interval"
+    install_guardian "$profile" "$interval"
+    ;;
+  accept)
+    shift 2; expected=""; min_cycles=2
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --expected-sha) expected="${2:?}"; shift 2 ;;
+        --min-cycles) min_cycles="${2:?}"; shift 2 ;;
+        *) luna_die "unknown option: $1" ;;
+      esac
+    done
+    [[ -n "$expected" ]] || luna_die "accept requires --expected-sha <full-sha>"
+    accept_profile "$profile" "$expected" "$min_cycles"
+    ;;
+  uninstall) uninstall_guardian "$profile" ;;
+  *) luna_die "unknown command: $cmd" ;;
+esac

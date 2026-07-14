@@ -140,14 +140,26 @@ This bit us once already (chat-v0.12b briefly held "Latest" on
 - **What the workflow publishes:** only `server-latest.json`. No binaries, no
   signed bundles — the server is updated via `git fetch` + conditional
   `bun install` by `scripts/luna-update-server` (the apply engine).
-- **How servers pick changes up:** the stable channel **auto-updates by
-  default** — a host-side systemd timer (`luna-autodeploy`, every 15min) polls
-  `origin/master` and applies moves while the channel is idle (it defers while
-  WebSocket sessions are active). The manual one-command deploy
-  (`luna-autodeploy stable`) still works, and the opt-out
-  (`deploy.autoUpdate = false` or `uninstall-timer`) is documented in
-  `docs/autodeploy.md`. `luna update` (Phase 1 Slice 4) drives the same apply
-  engine on demand.
+- **How servers pick changes up:** the stable channel uses the host-side
+  `luna-guardian-stable.timer` every minute. It performs deep health/recovery
+  and invokes the same connect-aware apply engine, so branch movement waits
+  while WebSocket sessions are active. Existing legacy autodeploy timers
+  self-adopt the guardian only after the running SHA proves the checkout safe.
+  `deploy.autoUpdate = false` disables branch movement without disabling health
+  and repair. See `docs/autodeploy.md`.
+- **Release completion gate:** publishing `server-v*` is not deployment
+  completion. After stable reaches the release target, run the pinned guardian
+  acceptance interface with the immutable master SHA:
+
+  ```bash
+  /usr/local/lib/luna-guardian/current-stable/luna-guardian accept stable \
+    --expected-sha <full-master-sha> --min-cycles 2
+  ```
+
+  Completion requires two consecutive healthy cycles, exact runtime and engine
+  SHAs, `Type=notify` plus watchdog, a clean update journal, `luna-doctor`, and
+  verified retirement of the legacy timer. A connect-aware defer leaves the
+  release pending; do not force connected sessions merely to turn the gate green.
 - **Discovery contract:** `luna update` and any monitoring script resolve the
   latest server release via the GitHub Releases API **filtered for `server-v*`**
   — never via the `releases/latest` endpoint (reserved for Moon).
