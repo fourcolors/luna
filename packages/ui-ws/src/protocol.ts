@@ -1776,7 +1776,7 @@ export interface FeedbackSubmitFrame {
       readonly h: number
     }
     /** Full best-effort capture context (anchor/route/appearance/viewport),
-     * stored verbatim; not validated beyond `selector`. */
+     * stored verbatim after the server enforces the aggregate target-size cap. */
     readonly context?: Record<string, unknown>
   }
   readonly page: string

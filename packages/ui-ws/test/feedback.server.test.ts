@@ -183,7 +183,7 @@ describe("feedback-only ui-ws server (live)", () => {
     client.close()
   })
 
-  it("rejects malformed frames (blank requestId / non-string note / missing target.selector) without calling the sink", async () => {
+  it("rejects malformed or oversized frames without calling the sink", async () => {
     activeRig = await startFeedbackRig()
     const client = await openClient(activeRig.url)
     await client.waitFor((f) => f.type === "hello")
@@ -213,6 +213,17 @@ describe("feedback-only ui-ws server (live)", () => {
       (f) => f.type === "feedback-ack" && f.requestId === "fb-4",
     )
     expect(d).toMatchObject({ ok: false })
+
+    // Oversized target context must not flow through the 32 MB WS allowance
+    // into the persistent agent-notes ledger.
+    client.send(validSubmit({
+      requestId: "fb-5",
+      target: { selector: "#send-btn", context: { padding: "x".repeat(17_000) } },
+    }))
+    const e = await client.waitFor(
+      (f) => f.type === "feedback-ack" && f.requestId === "fb-5",
+    )
+    expect(e).toMatchObject({ ok: false, message: "malformed feedback-submit frame" })
 
     expect(activeRig.recorded).toHaveLength(0) // sink never touched
     client.close()

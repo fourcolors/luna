@@ -2497,23 +2497,42 @@ export const startUIWebSocketServer = (
                     if (feedbackSink === null) return
                     // Malformed-frame guard: requestId/note/target are
                     // attacker-controlled JSON — reject junk before persisting.
-                    // `note` is unbounded free text, so cap its length too.
+                    // `note` is unbounded free text, and `target.context` can
+                    // contain arbitrary client JSON, so cap both before the
+                    // persistent sink sees them.
                     const NOTE_MAX = 8192
+                    const TARGET_MAX = 16_384
+                    const SELECTOR_MAX = 1024
+                    const REQUEST_ID_MAX = 256
                     const rawReqId = (frame as { requestId?: unknown }).requestId
                     // A non-string requestId collapses to "" and is rejected by
                     // the length guard below (echoed back like skill-toggle).
                     const reqId = typeof rawReqId === "string" ? rawReqId : ""
                     const noteVal = (frame as { note?: unknown }).note
                     const targetVal = (frame as { target?: unknown }).target
+                    let targetSize = Number.POSITIVE_INFINITY
+                    try {
+                      const encoded = JSON.stringify(targetVal)
+                      if (typeof encoded === "string") targetSize = encoded.length
+                    } catch {
+                      // Keep Infinity: malformed/non-serializable targets fail closed.
+                    }
+                    const selectorVal =
+                      typeof targetVal === "object" && targetVal !== null
+                        ? (targetVal as { selector?: unknown }).selector
+                        : undefined
                     if (
                       reqId.length === 0 ||
+                      reqId.length > REQUEST_ID_MAX ||
                       typeof noteVal !== "string" ||
                       noteVal.trim().length === 0 ||
                       noteVal.length > NOTE_MAX ||
                       typeof targetVal !== "object" ||
                       targetVal === null ||
-                      typeof (targetVal as { selector?: unknown }).selector !== "string" ||
-                        (targetVal as { selector: string }).selector.trim().length === 0
+                      targetSize > TARGET_MAX ||
+                      typeof selectorVal !== "string" ||
+                      selectorVal.trim().length === 0 ||
+                      selectorVal.length > SELECTOR_MAX
                     ) {
                       send(ws, {
                         type: "feedback-ack",
