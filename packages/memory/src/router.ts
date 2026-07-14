@@ -22,7 +22,9 @@ import type {
   MemoryExport,
   MemoryQuery,
   MemoryRecord,
+  MemoryScopeQuery,
 } from "./types.js"
+import { matchesMemoryScope } from "./types.js"
 
 export interface Rule {
   readonly pattern: string
@@ -84,6 +86,7 @@ export interface MemoryRouter {
     readonly topK?: number
     readonly namespace?: string
     readonly mode?: "vec" | "hybrid"
+    readonly scope?: MemoryScopeQuery
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
@@ -149,6 +152,14 @@ export function makeRouter(
     })
 
   const search: MemoryRouter["search"] = (args) => {
+    const requestedTopK = args.topK ?? 10
+    // Scope filtering happens after ranking because legacy vector rows have no
+    // scope columns. Over-fetch keeps a few private rows from starving an
+    // otherwise valid result set while preserving backend compatibility.
+    const backendArgs =
+      args.scope !== undefined
+        ? { ...args, topK: Math.max(requestedTopK * 4, 20) }
+        : args
     const inner = ((): Stream.Stream<
       { readonly record: MemoryRecord; readonly score: number },
       MemoryBackendError
@@ -167,7 +178,7 @@ export function makeRouter(
             }),
           )
         }
-        return backend.search(args)
+        return backend.search(backendArgs)
       }
       // No namespace → fan out across every vector-capable backend.
       const vecBackends = rules
@@ -182,11 +193,19 @@ export function makeRouter(
           }),
         )
       }
-      const streams = vecBackends.map((b) => b.search(args))
+      const streams = vecBackends.map((b) => b.search(backendArgs))
       return Stream.mergeAll(streams, { concurrency: vecBackends.length })
     })()
 
-    if (opts === undefined) return inner
+    const scoped =
+      args.scope === undefined
+        ? inner
+        : inner.pipe(
+            Stream.filter((hit) => matchesMemoryScope(hit.record, args.scope!)),
+            Stream.take(requestedTopK),
+          )
+
+    if (opts === undefined) return scoped
 
     // Instrumented path: accumulate per-call stats via Stream.tap, then emit
     // a RetrievalCallEvent once when the stream terminates. Status flips to
@@ -220,7 +239,7 @@ export function makeRouter(
       })
     })
 
-    return inner.pipe(
+    return scoped.pipe(
       Stream.tap((hit) =>
         Effect.sync(() => {
           candidateCount++

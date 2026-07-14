@@ -117,6 +117,8 @@ interface DbRow {
   created_at: number
   updated_at: number
   tags_json: string
+  scope_json: string | null
+  provenance_json: string | null
 }
 
 interface VecRow {
@@ -137,6 +139,20 @@ function rowToRecord(row: DbRow): MemoryRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags: JSON.parse(row.tags_json) as ReadonlyArray<string>,
+    ...(row.scope_json !== null
+      ? {
+          scope: JSON.parse(
+            row.scope_json,
+          ) as NonNullable<MemoryRecord["scope"]>,
+        }
+      : {}),
+    ...(row.provenance_json !== null
+      ? {
+          provenance: JSON.parse(
+            row.provenance_json,
+          ) as NonNullable<MemoryRecord["provenance"]>,
+        }
+      : {}),
   }
 }
 
@@ -452,8 +468,8 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         const putKeyedStmt = db.query(
           `INSERT OR REPLACE INTO memory_keyed
              (id, namespace, kind, content_json, schema_version,
-              created_at, updated_at, tags_json)
-           VALUES (?,?,?,?,?,?,?,?)`,
+              created_at, updated_at, tags_json, scope_json, provenance_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
         )
         // Explicit DELETE + INSERT (rather than INSERT OR REPLACE) so the
         // FTS5 sync triggers fire predictably: the AFTER DELETE trigger
@@ -583,6 +599,10 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                       rec.createdAt,
                       rec.updatedAt,
                       JSON.stringify(rec.tags),
+                      rec.scope !== undefined ? JSON.stringify(rec.scope) : null,
+                      rec.provenance !== undefined
+                        ? JSON.stringify(rec.provenance)
+                        : null,
                     )
                     if (vecBuf === null) {
                       // No text → drop any stale vec row (idempotent).

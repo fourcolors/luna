@@ -19,6 +19,7 @@ import type {
   MemoryExport,
   MemoryQuery,
   MemoryRecord,
+  MemoryScopeQuery,
 } from "./types.js"
 
 export interface MemoryBackend {
@@ -50,6 +51,7 @@ export interface MemoryVectorBackend extends MemoryBackend {
     readonly topK?: number
     readonly namespace?: string
     readonly mode?: "vec" | "hybrid"
+    readonly scope?: MemoryScopeQuery
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError

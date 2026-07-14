@@ -35,6 +35,7 @@ import {
   ObservabilityService,
   TelemetryService,
   ThreadRegistryService,
+  extractText,
   type ChatMessage,
   type SessionOptions,
 } from "@luna/core"
@@ -100,8 +101,10 @@ const makeStreamEvent = (
   }) as unknown as SDKMessage
 import {
   ChatService,
+  ThreadToolsProviderTag,
   type ChatFrame,
   type DeliveryNotification,
+  type ThreadToolsProvider,
 } from "../src/index.js"
 import { applyClientMarker } from "../src/client-marker.js"
 
@@ -180,6 +183,24 @@ const makeChatLoopQuery = (params: {
   } as Partial<Query>) as Query
 }
 
+// A query whose stream fails before emitting a `result`, modelling a fatal
+// adapter failure (e.g. a stale executable) mid-turn.
+const makeFailingQuery = (): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    throw new Error("adapter stream boom")
+  }
+  const it = gen()
+  return Object.assign(it, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    applyFlagSettings: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
 const makeStreamingQuery = (params: {
   readonly prompt: AsyncIterable<SDKUserMessage>
   readonly sessionId: string
@@ -244,6 +265,224 @@ const runScoped = <A, E>(
   )
 
 describe("ChatService (Tier-2 sim)", () => {
+  it("replaces per-turn recall without storing or accumulating it", async () => {
+    const sdkUserTexts: string[] = []
+    const systemPrompts: string[] = []
+    const resumes: Array<string | undefined> = []
+    const observed: Array<{
+      userText: string
+      assistantText: string
+      isError: boolean
+    }> = []
+    const fakeLayer = SDKClient.fake((p) => {
+      systemPrompts.push(String(p.options?.systemPrompt ?? ""))
+      resumes.push(p.options?.resume)
+      return makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: "thr-hooks",
+        responseFor: (text) => {
+          sdkUserTexts.push(text)
+          return "assistant final"
+        },
+      })
+    })
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        systemPrompt: "base identity",
+        onBound: () => {},
+        recallMemory: ({ userText }) =>
+          Effect.succeed(
+            `<memory_context>${userText} memory</memory_context>`,
+          ),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    const layer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          fakeLayer,
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+
+    const storedText = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.send(thread.id, "first user text")
+          yield* Effect.sleep("100 millis")
+          yield* chat.send(thread.id, "second user text")
+          yield* Effect.sleep("100 millis")
+          const messages = yield* store
+            .readMessages(thread.id)
+            .pipe(Stream.runCollect)
+          return Array.from(messages)
+            .filter((m) => m.kind === "user")
+            .map((m) => extractText(m.payload))
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(storedText).toEqual(["first user text", "second user text"])
+    expect(sdkUserTexts).toEqual(["first user text", "second user text"])
+    expect(systemPrompts).toHaveLength(2)
+    expect(systemPrompts[0]).toContain("base identity")
+    expect(systemPrompts[0]).toContain("first user text memory")
+    expect(systemPrompts[0]).not.toContain("second user text memory")
+    expect(systemPrompts[1]).toContain("base identity")
+    expect(systemPrompts[1]).toContain("second user text memory")
+    expect(systemPrompts[1]).not.toContain("first user text memory")
+    expect(resumes).toEqual([undefined, "thr-hooks"])
+    expect(observed).toEqual([
+      {
+        userText: "first user text",
+        assistantText: "assistant final",
+        isError: false,
+      },
+      {
+        userText: "second user text",
+        assistantText: "assistant final",
+        isError: false,
+      },
+    ])
+  })
+
+  it("an adapter stream failure drains its observation seed so later turns stay paired", async () => {
+    const observed: Array<{
+      userText: string
+      assistantText: string
+      isError: boolean
+    }> = []
+    let turn = 0
+    const fakeLayer = SDKClient.fake((p) => {
+      turn += 1
+      // The first turn's stream fails before any `result`; the second turn
+      // succeeds. If the failure does not drain the pendingTurns seed, the
+      // second turn's `result` pairs with the FIRST turn's user text.
+      if (turn === 1) return makeFailingQuery()
+      return makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: "thr-fail",
+        responseFor: () => "assistant final",
+      })
+    })
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        systemPrompt: "base identity",
+        onBound: () => {},
+        // A bound recallMemory routes the thread through the per-turn finite
+        // query path where handleAdapterFailure fires per turn.
+        recallMemory: () => Effect.succeed(null),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    const layer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          fakeLayer,
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.send(thread.id, "first user text")
+          yield* Effect.sleep("150 millis")
+          yield* chat.send(thread.id, "second user text")
+          yield* Effect.sleep("150 millis")
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(observed).toEqual([
+      { userText: "first user text", assistantText: "", isError: true },
+      {
+        userText: "second user text",
+        assistantText: "assistant final",
+        isError: false,
+      },
+    ])
+  })
+
+  it("a hung recall hook is bounded by the timeout and degrades to the original payload", async () => {
+    const prev = process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"]
+    process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"] = "50"
+    try {
+      let sdkUserText = ""
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-hang",
+          responseFor: (text) => {
+            sdkUserText = text
+            return "assistant final"
+          },
+        }),
+      )
+      // recallMemory never resolves - without the bound, the turn would hang
+      // and the user's message would never reach the SDK.
+      const provider: ThreadToolsProvider = {
+        decorate: () => ({
+          mcpServers: {},
+          onBound: () => {},
+          recallMemory: () => Effect.never,
+        }),
+      }
+      const layer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(
+            fakeLayer,
+            baseLayer,
+            Layer.succeed(ThreadToolsProviderTag, provider),
+          ),
+        ),
+      )
+
+      const storedText = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const store = yield* SessionStore
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.send(thread.id, "original user text")
+            yield* Effect.sleep("300 millis")
+            const messages = yield* store
+              .readMessages(thread.id)
+              .pipe(Stream.runCollect)
+            const user = Array.from(messages).find((m) => m.kind === "user")
+            return user === undefined ? null : extractText(user.payload)
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(storedText).toBe("original user text")
+      // The turn still reached the SDK with the unmodified payload.
+      expect(sdkUserText).toBe("original user text")
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"]
+      else process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"] = prev
+    }
+  })
+
   it(
     "fan-out: two subscribers on the same thread see every frame; another thread's subscriber stays untouched",
     async () => {

@@ -3,8 +3,16 @@
  *
  *   - memory_save(text, kind?, tags?, namespace?) → { id }
  *   - memory_search(query, kind?, limit?, namespace?)
- *       → [{ id, text, score, tags, kind, namespace, createdAt, updatedAt }]
+ *       → [{ id, text, score, tags, kind, namespace, createdAt, updatedAt,
+ *            scope? }]
  *   - memory_delete(id) → { deleted }
+ *
+ * `makeMemoryTools(router, scope?)` binds every tool to a `MemoryScope`
+ * (defaulting to `OPERATOR_MEMORY_SCOPE`, i.e. `luna` observing `operator`):
+ * `memory_save` stamps records with that scope plus `provenance.source =
+ * "manual"`, `memory_search` filters hits to the bound observer/subject (and
+ * echoes each hit's stored scope when present), and `memory_delete` no-ops
+ * (returns `{ deleted: false }`) on records outside the bound scope.
  *
  * Implementation routes through `MemoryRouter` (Phase 25 router Tag) — this
  * keeps the tools agnostic to the underlying backend (sqlite-vector for the
@@ -32,7 +40,13 @@
 import { Effect, Stream } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
-import { makeRecord, type MemoryRouter } from "@luna/memory"
+import {
+  makeRecord,
+  matchesMemoryScope,
+  OPERATOR_MEMORY_SCOPE,
+  type MemoryRouter,
+  type MemoryScope,
+} from "@luna/memory"
 
 const DEFAULT_NAMESPACE = "notes"
 const DEFAULT_KIND = "semantic"
@@ -122,7 +136,10 @@ function extractText(content: unknown): string {
  * here so the tool definitions are self-contained at the SDK boundary;
  * Layer wiring happens upstream in `MemoryToolsLayer`.
  */
-export const makeMemoryTools = (router: MemoryRouter) => {
+export const makeMemoryTools = (
+  router: MemoryRouter,
+  scope: MemoryScope = OPERATOR_MEMORY_SCOPE,
+) => {
   const save = defineTool({
     name: "memory_save",
     description:
@@ -144,6 +161,8 @@ export const makeMemoryTools = (router: MemoryRouter) => {
           kind,
           content: { text: args.text },
           tags: args.tags ?? [],
+          scope,
+          provenance: { source: "manual" },
         })
         yield* router.put(rec).pipe(
           Effect.mapError(
@@ -184,6 +203,10 @@ export const makeMemoryTools = (router: MemoryRouter) => {
             topK: fetchTopK,
             namespace,
             mode: "hybrid",
+            scope: {
+              observerId: scope.observerId,
+              subjectId: scope.subjectId,
+            },
           }),
         ).pipe(
           Effect.mapError(
@@ -209,6 +232,15 @@ export const makeMemoryTools = (router: MemoryRouter) => {
           namespace: h.record.namespace,
           createdAt: h.record.createdAt,
           updatedAt: h.record.updatedAt,
+          ...(h.record.scope !== undefined
+            ? {
+                scope: {
+                  observerId: h.record.scope.observerId,
+                  subjectId: h.record.scope.subjectId,
+                  visibility: h.record.scope.visibility,
+                },
+              }
+            : {}),
         }))
       }),
   })
@@ -223,6 +255,25 @@ export const makeMemoryTools = (router: MemoryRouter) => {
     ...MEMORY_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
+        const existing = yield* router.get(args.id).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ToolError({
+                tool: "memory_delete",
+                op: "get",
+                cause,
+              }),
+          ),
+        )
+        if (
+          existing === null ||
+          !matchesMemoryScope(existing, {
+            observerId: scope.observerId,
+            subjectId: scope.subjectId,
+          })
+        ) {
+          return { deleted: false } as const
+        }
         const removed = yield* router.delete(args.id).pipe(
           Effect.mapError(
             (cause) =>

@@ -613,7 +613,7 @@
       <div class="panel span-6">
         <h3><span class="dot"></span>Canonical Record Store</h3>
         <p>
-          <code>memory_keyed</code> owns the durable memory record. This table is the safe migration source because it keeps namespace, kind, opaque JSON content, schema version, timestamps, and tags.
+          <code>memory_keyed</code> owns the durable memory record. This table is the safe migration source because it keeps namespace, kind, opaque JSON content, schema version, timestamps, and tags. The nullable <code>scope_json</code> / <code>provenance_json</code> columns carry portable <code>MemoryScope</code> / <code>MemoryProvenance</code> metadata (added by the scoped-memory pipeline via an idempotent open-time <code>ALTER TABLE ... ADD COLUMN</code> guard); legacy rows leave both NULL.
         </p>
         <pre><code>CREATE TABLE memory_keyed (
   id TEXT PRIMARY KEY,
@@ -623,7 +623,9 @@
   schema_version INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  tags_json TEXT NOT NULL
+  tags_json TEXT NOT NULL,
+  scope_json TEXT,
+  provenance_json TEXT
 );</code></pre>
       </div>
 

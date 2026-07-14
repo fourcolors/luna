@@ -7,7 +7,11 @@
  *
  * Schema (DESIGN.md §5.1 extended — original `memory_keyed(k,v,ts,tags)` was
  * too flat; we add namespace/kind/id/schema_version so records round-trip
- * through the MemoryExport envelope without lossy encoding):
+ * through the MemoryExport envelope without lossy encoding). `scope_json`
+ * and `provenance_json` are nullable additive columns (portable MemoryScope /
+ * MemoryProvenance metadata); they are backfilled onto pre-existing databases
+ * by an idempotent `ALTER TABLE ... ADD COLUMN` guard at open time, and legacy
+ * rows leave both NULL (interpreted via `effectiveMemoryScope`):
  *
  *   CREATE TABLE memory_keyed (
  *     id              TEXT PRIMARY KEY,
@@ -17,7 +21,9 @@
  *     schema_version  INTEGER NOT NULL,
  *     created_at      INTEGER NOT NULL,
  *     updated_at      INTEGER NOT NULL,
- *     tags_json       TEXT NOT NULL
+ *     tags_json       TEXT NOT NULL,
+ *     scope_json      TEXT,
+ *     provenance_json TEXT
  *   );
  *   CREATE INDEX idx_memory_ns ON memory_keyed(namespace);
  *   CREATE INDEX idx_memory_kind ON memory_keyed(kind);
@@ -61,6 +67,8 @@ interface DbRow {
   created_at: number
   updated_at: number
   tags_json: string
+  scope_json: string | null
+  provenance_json: string | null
 }
 
 function rowToRecord(row: DbRow): MemoryRecord {
@@ -73,6 +81,20 @@ function rowToRecord(row: DbRow): MemoryRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags: JSON.parse(row.tags_json) as ReadonlyArray<string>,
+    ...(row.scope_json !== null
+      ? {
+          scope: JSON.parse(
+            row.scope_json,
+          ) as NonNullable<MemoryRecord["scope"]>,
+        }
+      : {}),
+    ...(row.provenance_json !== null
+      ? {
+          provenance: JSON.parse(
+            row.provenance_json,
+          ) as NonNullable<MemoryRecord["provenance"]>,
+        }
+      : {}),
   }
 }
 
@@ -89,7 +111,9 @@ const MIGRATION = `
     schema_version  INTEGER NOT NULL,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
-    tags_json       TEXT NOT NULL
+    tags_json       TEXT NOT NULL,
+    scope_json      TEXT,
+    provenance_json TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_memory_ns ON memory_keyed(namespace);
   CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory_keyed(kind);
@@ -140,13 +164,26 @@ export class SqliteBackend extends Effect.Tag("luna/SqliteBackend")<
 
         const db = new Database(dbPath)
         db.run(MIGRATION)
+        const columns = new Set(
+          (
+            db.query("PRAGMA table_info(memory_keyed)").all() as Array<{
+              name: string
+            }>
+          ).map((row) => row.name),
+        )
+        if (!columns.has("scope_json")) {
+          db.run("ALTER TABLE memory_keyed ADD COLUMN scope_json TEXT")
+        }
+        if (!columns.has("provenance_json")) {
+          db.run("ALTER TABLE memory_keyed ADD COLUMN provenance_json TEXT")
+        }
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
         const putStmt = db.query(
           `INSERT OR REPLACE INTO memory_keyed
              (id, namespace, kind, content_json, schema_version,
-              created_at, updated_at, tags_json)
-           VALUES (?,?,?,?,?,?,?,?)`,
+              created_at, updated_at, tags_json, scope_json, provenance_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
         )
         const getStmt = db.query(`SELECT * FROM memory_keyed WHERE id = ?`)
         const delStmt = db.query(`DELETE FROM memory_keyed WHERE id = ?`)
@@ -166,6 +203,10 @@ export class SqliteBackend extends Effect.Tag("luna/SqliteBackend")<
                 rec.createdAt,
                 rec.updatedAt,
                 JSON.stringify(rec.tags),
+                rec.scope !== undefined ? JSON.stringify(rec.scope) : null,
+                rec.provenance !== undefined
+                  ? JSON.stringify(rec.provenance)
+                  : null,
               )
             },
             catch: (cause) => asError("put", cause),

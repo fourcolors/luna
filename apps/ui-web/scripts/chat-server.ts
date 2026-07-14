@@ -322,11 +322,17 @@ import {
   createWidgetSummonBridge,
   startUIWebSocketServer,
 } from "@luna/ui-ws"
-import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
 import {
+  LunaSqliteBootstrapLive,
+  MemoryRouterTag,
+  OPERATOR_MEMORY_SCOPE,
+} from "@luna/memory"
+import {
+  captureTurnCandidates,
   MemoryRouterLayer,
   MemoryToolsLayer,
   MemoryToolsService,
+  recallForTurn,
   resolveDbPath,
   selectEmbedderLayer,
 } from "@luna/memory-tools"
@@ -811,6 +817,15 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // Net: a belief activated by a survey appears in the NEXT thread
       // WITHOUT a server restart (within ~refreshIntervalMs, default 30s).
       const mem = yield* MemoryRouterTag
+      const autoRecallEnabled =
+        process.env["LUNA_MEMORY_AUTO_RECALL"]?.trim() !== "0"
+      const turnExtractionEnabled =
+        process.env["LUNA_MEMORY_TURN_EXTRACTION"]?.trim() !== "0"
+      console.log(
+        "[luna/memory] turn pipeline:",
+        `recall=${autoRecallEnabled ? "on" : "off"}`,
+        `extraction=${turnExtractionEnabled ? "on" : "off"}`,
+      )
 
       // Plain mutable holder — read synchronously by decorate().
       let beliefsContent = ""
@@ -935,6 +950,39 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           return {
             mcpServers,
             systemPrompt,
+            ...(autoRecallEnabled
+              ? {
+                  recallMemory: ({ userText }: { userText: string }) =>
+                    recallForTurn({
+                      router: mem,
+                      query: userText,
+                      scope: {
+                        observerId: OPERATOR_MEMORY_SCOPE.observerId,
+                        subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+                      },
+                    }).pipe(Effect.map((packed) => packed?.text ?? null)),
+                }
+              : {}),
+            ...(turnExtractionEnabled
+              ? {
+                  observeTurn: ({
+                    sessionId,
+                    userMessageId,
+                    userText,
+                  }: {
+                    sessionId: string
+                    userMessageId: string
+                    userText: string
+                  }) =>
+                    captureTurnCandidates({
+                      router: mem,
+                      sessionId,
+                      userMessageId,
+                      userText,
+                      scope: OPERATOR_MEMORY_SCOPE,
+                    }).pipe(Effect.asVoid),
+                }
+              : {}),
             onBound: (sessionId: string) => {
               obsThreadTools.bindSession(sessionId)
               localShellThreadTools.bindSession(sessionId)

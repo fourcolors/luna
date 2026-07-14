@@ -42,6 +42,7 @@ import {
   Cause,
   Chunk,
   Context,
+  Duration,
   Effect,
   Exit,
   Layer,
@@ -78,6 +79,7 @@ import {
   type ChatErrorKind,
   type CreateThreadOptions,
   type DeliveryNotification,
+  type ThreadToolsBinding,
   type ThreadToolsProvider,
 } from "./types.js"
 import { extractArtifacts } from "./artifacts.js"
@@ -107,8 +109,13 @@ import {
 /* Internal per-thread state                                                  */
 /* -------------------------------------------------------------------------- */
 
+interface TurnPrompt {
+  readonly payload: SDKUserMessage
+  readonly memoryContext: string | null
+}
+
 interface ThreadEntry {
-  readonly inbox: Queue.Queue<SDKUserMessage>
+  readonly inbox: Queue.Queue<TurnPrompt>
   /** Wire-shape ChatFrame fan-out. NOT owned by this entry or its scope: it is
    *  a borrowed reference into the persistent per-thread-id `pubsubs` map, so
    *  subscriptions taken before an idle reap keep receiving frames after the
@@ -123,6 +130,13 @@ interface ThreadEntry {
    *  idle reaper that releases the thread's `claude` subprocess after a quiet
    *  period — see the reaper near the service tail. */
   readonly lastActivity: Ref.Ref<number>
+  readonly pendingTurns: Queue.Queue<{
+    readonly userMessageId: string
+    readonly userText: string
+  }>
+  readonly assistantText: Ref.Ref<string>
+  readonly recallMemory?: ThreadToolsBinding["recallMemory"]
+  readonly observeTurn?: ThreadToolsBinding["observeTurn"]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -144,6 +158,27 @@ export const parseIdleReapMs = (raw: string | undefined): number => {
   if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_REAP_MS
   const n = Number(raw)
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_IDLE_REAP_MS
+}
+
+/**
+ * Default ceiling on inline query-time recall: 2.5s. Recall must inject before
+ * the SDK turn, so it cannot be fully backgrounded like `observeTurn`. A slow or
+ * hung embedder / vector search would otherwise stall the whole turn - the user's
+ * message never reaches the SDK and the chat appears frozen. On expiry we degrade
+ * to no recalled context and send the original payload.
+ */
+export const DEFAULT_RECALL_TIMEOUT_MS = 2_500
+
+/**
+ * Parse the LUNA_CHAT_RECALL_TIMEOUT_MS env override.
+ *  - absent / empty / non-numeric / negative → DEFAULT_RECALL_TIMEOUT_MS
+ *  - `0` → 0 (disables the bound; recall may block the turn indefinitely)
+ *  - any positive number → that many ms
+ */
+export const parseRecallTimeoutMs = (raw: string | undefined): number => {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_RECALL_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_TIMEOUT_MS
 }
 
 /**
@@ -376,6 +411,39 @@ const buildUserMessage = (
   } as SDKUserMessage
 }
 
+/**
+ * Add recall to the system prompt for one SDK query only.
+ *
+ * Recall-enabled threads run one finite SDK query per turn and resume the same
+ * SDK transcript for the next turn. System prompts are query configuration,
+ * not transcript messages, so the next query replaces this suffix instead of
+ * retaining every previous `<memory_context>` block. The canonical user
+ * payload therefore stays clean in both Luna's store and the SDK transcript.
+ */
+export const withTurnMemoryContext = (
+  sessionOptions: SessionOptions,
+  context: string | null,
+): SessionOptions => {
+  if (context === null || context.length === 0) return sessionOptions
+  const sdkOptions = sessionOptions.sdkOptions ?? {}
+  const basePrompt =
+    typeof sdkOptions.systemPrompt === "string"
+      ? sdkOptions.systemPrompt
+      : sessionOptions.systemPrompt
+  const systemPrompt =
+    basePrompt === undefined || basePrompt.length === 0
+      ? context
+      : `${basePrompt}\n\n${context}`
+  return {
+    ...sessionOptions,
+    systemPrompt,
+    sdkOptions: {
+      ...sdkOptions,
+      systemPrompt,
+    },
+  }
+}
+
 const LUNA_ALLOWED_MCP_TOOLS = [
   "mcp__memory__*",
   "mcp__scheduler__*",
@@ -423,6 +491,11 @@ export class ChatService extends Effect.Service<ChatService>()(
       const obs = yield* ObservabilityService
       const tel = yield* TelemetryService
       const memoryRouter = yield* MemoryRouterTag
+      // Ceiling on inline query-time recall so a hung embedder/vector search
+      // can never stall a turn (0 disables). Read once at construction.
+      const recallTimeoutMs: number = parseRecallTimeoutMs(
+        process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"],
+      )
       // Optional — when the app provides it, EVERY thread (new or resumed)
       // gets its MCP servers + merged system prompt + post-create binding.
       // Omitted in tests/headless that don't need tools.
@@ -894,7 +967,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             model: opts.model ?? "unknown",
           })
 
-          const inbox = yield* Queue.unbounded<SDKUserMessage>()
+          const inbox = yield* Queue.unbounded<TurnPrompt>()
           // Persistent fan-out: resume/recovery MUST reuse the thread's
           // original PubSub so subscriptions taken before an idle reap keep
           // receiving frames after the thread is re-created (see `pubsubs`).
@@ -902,6 +975,11 @@ export class ChatService extends Effect.Service<ChatService>()(
           const inFlightTurnId = yield* Ref.make<string | null>(null)
           const inFlightText = yield* Ref.make<string>("")
           const lastActivity = yield* Ref.make<number>(yield* clock.nowMs())
+          const pendingTurns = yield* Queue.unbounded<{
+            readonly userMessageId: string
+            readonly userText: string
+          }>()
+          const assistantText = yield* Ref.make("")
 
           // Per-thread sub-scope. `Scope.fork` makes a child that we can
           // close independently of the service scope. The service scope
@@ -913,8 +991,9 @@ export class ChatService extends Effect.Service<ChatService>()(
             { _tag: "Parallel" },
           )
 
-          const promptStream: Stream.Stream<SDKUserMessage> =
-            Stream.fromQueue(inbox)
+          const promptStream: Stream.Stream<SDKUserMessage> = Stream.fromQueue(
+            inbox,
+          ).pipe(Stream.map((turn) => turn.payload))
 
           // Persist creation-time metadata in ThreadRegistry (when available)
           // so a chat-server restart can resume this thread. The SDK session id
@@ -975,7 +1054,7 @@ export class ChatService extends Effect.Service<ChatService>()(
 
           // onSdkSessionId: fires when the SDK allocates a session UUID.
           // Primary path: persist via ThreadRegistry. Fallback: JSON map.
-          const recordSdkSession: ((sdkSid: string) => void) | undefined = (() => {
+          const persistSdkSession: ((sdkSid: string) => void) | undefined = (() => {
             // ThreadRegistry path (primary)
             if (Option.isSome(threadRegistry)) {
               const reg = threadRegistry.value
@@ -1002,92 +1081,162 @@ export class ChatService extends Effect.Service<ChatService>()(
             }
             return undefined
           })()
+          let activeSdkSessionId = opts.resumeFromSessionId ?? null
+          const recordSdkSession = (sdkSid: string): void => {
+            const changed = sdkSid !== activeSdkSessionId
+            activeSdkSessionId = sdkSid
+            if (changed) persistSdkSession?.(sdkSid)
+          }
 
-          // The adapter.query call is provided with the thread scope so its
-          // AbortController + watchdog tear down when we close threadScope.
-          const replies: Stream.Stream<SDKMessage, unknown> = yield* adapter
-            .query({
-              sessionId: id,
-              prompt: promptStream,
-              sessionOptions,
-              // §0.2 sticky-pin: forward boundAccountId so WithBroker can
-              // route this thread's queries to the caller-selected account.
-              ...(opts.boundAccountId !== undefined
-                ? { boundAccountId: opts.boundAccountId }
-                : {}),
-              ...(recordSdkSession !== undefined
-                ? { onSdkSessionId: recordSdkSession }
-                : {}),
-              ...(opts.resumeFromSessionId !== undefined
-                ? { resumeFromSessionId: opts.resumeFromSessionId }
-                : {}),
-              // §12.2 #2: the adapter mirrors every message to SessionStore
-              // (the authoritative log). A write failure must not kill the
-              // turn, but it must be OBSERVABLE — surface it on the obs stream
-              // (Events tab) + a telemetry counter, not just the logger.
-              onMirrorError: (_msg, cause) =>
-                Effect.gen(function* () {
-                  yield* inc("luna.chat.mirror_failures.total")
-                  yield* obs.emit({
-                    kind: "Error",
-                    ts: new Date().toISOString(),
-                    level: "error",
-                    errorTag: "ChatMirrorAppendFailed",
-                    message: `SessionStore mirror append failed: ${String(cause).slice(0, 200)}`,
-                    context: { threadId: id },
-                  })
-                }).pipe(Effect.catchAllCause(() => Effect.void)),
-            })
-            .pipe(Scope.extend(threadScope), Effect.orDie)
-
-          // Consumer: walk the reply Stream, push ChatFrames into the
-          // per-thread PubSub. Runs forever (until threadScope closes or
-          // the Stream errors out). Forked into the thread scope so it
-          // tears down with the thread.
-          yield* replies.pipe(
-            Stream.runForEach((msg) =>
-              handleSdkMessage({
-                threadId: id,
-                msg,
-                pubsub,
-                inFlightTurnId,
-                inFlightText,
-                lastActivity,
-              }),
-            ),
-            Effect.catchAllCause((cause) => {
-              const message = `adapter stream failed: ${formatStreamFailureReason(cause)}`
-              return Effect.gen(function* () {
-                // Server-side log with the FULL cause (incl. stack) — this path
-                // previously emitted nothing to stdout/stderr, so a fatal
-                // adapter failure (e.g. a stale pathToClaudeCodeExecutable) left
-                // zero diagnostic trail in the logs. The user frame + obs event
-                // carry the bounded reason; the log carries everything.
-                yield* Effect.logError(
-                  `[chat] adapter stream failed for ${id}: ${Cause.pretty(cause)}`,
-                )
-                yield* inc("luna.chat.adapter_stream.errors")
-                yield* obs.emit({
-                  kind: "Error",
-                  ts: new Date().toISOString(),
-                  level: "error",
-                  errorTag: "ChatAdapterStreamFailed",
-                  message,
-                  context: { threadId: id },
-                })
-                yield* PubSub.publish(pubsub, {
-                  type: "assistant-error",
-                  threadId: id,
-                  turnId: null,
-                  error: {
-                    kind: "sdk",
-                    message,
-                  },
-                })
+          const onMirrorError = (_msg: SDKMessage, cause: unknown) =>
+            Effect.gen(function* () {
+              yield* inc("luna.chat.mirror_failures.total")
+              yield* obs.emit({
+                kind: "Error",
+                ts: new Date().toISOString(),
+                level: "error",
+                errorTag: "ChatMirrorAppendFailed",
+                message: `SessionStore mirror append failed: ${String(cause).slice(0, 200)}`,
+                context: { threadId: id },
               })
-            }),
-            Effect.forkIn(threadScope),
-          )
+            }).pipe(Effect.catchAllCause(() => Effect.void))
+
+          const handleAdapterFailure = (cause: Cause.Cause<unknown>) => {
+            const message = `adapter stream failed: ${formatStreamFailureReason(cause)}`
+            return Effect.gen(function* () {
+              // Server-side log with the FULL cause (incl. stack) — this path
+              // previously emitted nothing to stdout/stderr, so a fatal
+              // adapter failure (e.g. a stale pathToClaudeCodeExecutable) left
+              // zero diagnostic trail in the logs. The user frame + obs event
+              // carry the bounded reason; the log carries everything.
+              yield* Effect.logError(
+                `[chat] adapter stream failed for ${id}: ${Cause.pretty(cause)}`,
+              )
+              yield* inc("luna.chat.adapter_stream.errors")
+              yield* obs.emit({
+                kind: "Error",
+                ts: new Date().toISOString(),
+                level: "error",
+                errorTag: "ChatAdapterStreamFailed",
+                message,
+                context: { threadId: id },
+              })
+              yield* PubSub.publish(pubsub, {
+                type: "assistant-error",
+                threadId: id,
+                turnId: null,
+                error: {
+                  kind: "sdk",
+                  message,
+                },
+              })
+              // A failed adapter stream is terminal for the in-flight turn but
+              // emits no `result`, so drain its observation seed here — exactly
+              // as the interrupt path does. Without this poll the pendingTurns
+              // FIFO stays one slot ahead of the terminal events and every
+              // later turn's observeTurn is paired against stale user text.
+              const pending = yield* Queue.poll(pendingTurns)
+              const failedAssistantText = yield* Ref.getAndSet(assistantText, "")
+              const observeTurn = Option.getOrUndefined(binding)?.observeTurn
+              if (Option.isSome(pending) && observeTurn !== undefined) {
+                yield* observeTurn({
+                  sessionId: id,
+                  userMessageId: pending.value.userMessageId,
+                  userText: pending.value.userText,
+                  assistantText: failedAssistantText,
+                  isError: true,
+                }).pipe(
+                  Effect.catchAllCause(() => Effect.void),
+                  Effect.forkIn(threadScope),
+                )
+              }
+            })
+          }
+
+          const consumeReplies = (
+            replies: Stream.Stream<SDKMessage, unknown>,
+          ): Effect.Effect<void, never> =>
+            replies.pipe(
+              Stream.runForEach((msg) =>
+                handleSdkMessage({
+                  threadId: id,
+                  msg,
+                  pubsub,
+                  inFlightTurnId,
+                  inFlightText,
+                  lastActivity,
+                  pendingTurns,
+                  assistantText,
+                  ...(Option.getOrUndefined(binding)?.observeTurn !== undefined
+                    ? {
+                        observeTurn:
+                          Option.getOrUndefined(binding)!.observeTurn!,
+                      }
+                    : {}),
+                  threadScope,
+                }),
+              ),
+              Effect.catchAllCause(handleAdapterFailure),
+            )
+
+          const queryBase = {
+            sessionId: id,
+            // §0.2 sticky-pin: forward boundAccountId so WithBroker can
+            // route this thread's queries to the caller-selected account.
+            ...(opts.boundAccountId !== undefined
+              ? { boundAccountId: opts.boundAccountId }
+              : {}),
+            onSdkSessionId: recordSdkSession,
+            // §12.2 #2: the adapter mirrors every message to SessionStore
+            // (the authoritative log). A write failure must not kill the turn,
+            // but it must be observable.
+            onMirrorError,
+          }
+
+          const recallMemory = Option.getOrUndefined(binding)?.recallMemory
+          if (recallMemory === undefined) {
+            // Ordinary threads retain the existing long-lived SDK query.
+            const replies: Stream.Stream<SDKMessage, unknown> = yield* adapter
+              .query({
+                ...queryBase,
+                prompt: promptStream,
+                sessionOptions,
+                ...(activeSdkSessionId !== null
+                  ? { resumeFromSessionId: activeSdkSessionId }
+                  : {}),
+              })
+              .pipe(Scope.extend(threadScope), Effect.orDie)
+            yield* consumeReplies(replies).pipe(Effect.forkIn(threadScope))
+          } else {
+            // Recall context cannot live in a long-lived prompt stream: every
+            // injected user block would remain in the SDK conversation. Run a
+            // finite query per turn instead. Each query resumes the same clean
+            // transcript and supplies only that turn's memory as system-prompt
+            // configuration, so prior context is replaced rather than retained.
+            yield* Stream.fromQueue(inbox).pipe(
+              Stream.runForEach((turn) =>
+                Effect.scoped(
+                  adapter
+                    .query({
+                      ...queryBase,
+                      prompt: Stream.make(turn.payload),
+                      sessionOptions: withTurnMemoryContext(
+                        sessionOptions,
+                        turn.memoryContext,
+                      ),
+                      ...(activeSdkSessionId !== null
+                        ? { resumeFromSessionId: activeSdkSessionId }
+                        : {}),
+                    })
+                    .pipe(
+                      Effect.flatMap(consumeReplies),
+                      Effect.catchAllCause(handleAdapterFailure),
+                    ),
+                ),
+              ),
+              Effect.forkIn(threadScope),
+            )
+          }
 
           // Track the entry. Removed from the map when the scope closes —
           // we add a finalizer that splices it out.
@@ -1098,6 +1247,18 @@ export class ChatService extends Effect.Service<ChatService>()(
             inFlightTurnId,
             inFlightText,
             lastActivity,
+            pendingTurns,
+            assistantText,
+            ...(Option.getOrUndefined(binding)?.recallMemory !== undefined
+              ? {
+                  recallMemory: Option.getOrUndefined(binding)!.recallMemory!,
+                }
+              : {}),
+            ...(Option.getOrUndefined(binding)?.observeTurn !== undefined
+              ? {
+                  observeTurn: Option.getOrUndefined(binding)!.observeTurn!,
+                }
+              : {}),
           }
           yield* Ref.update(threads, (m) => {
             const next = new Map(m)
@@ -1141,6 +1302,13 @@ export class ChatService extends Effect.Service<ChatService>()(
         readonly inFlightTurnId: Ref.Ref<string | null>
         readonly inFlightText: Ref.Ref<string>
         readonly lastActivity: Ref.Ref<number>
+        readonly pendingTurns: Queue.Queue<{
+          readonly userMessageId: string
+          readonly userText: string
+        }>
+        readonly assistantText: Ref.Ref<string>
+        readonly observeTurn?: ThreadToolsBinding["observeTurn"]
+        readonly threadScope: Scope.CloseableScope
       }): Effect.Effect<void, never> =>
         Effect.gen(function* () {
           // Any SDK traffic counts as activity — keeps a thread "warm" during
@@ -1318,6 +1486,13 @@ export class ChatService extends Effect.Service<ChatService>()(
                 artifacts,
               })
             }
+            if (projected.text.length > 0) {
+              yield* Ref.update(args.assistantText, (current) =>
+                current.length === 0
+                  ? projected.text
+                  : `${current}\n${projected.text}`,
+              )
+            }
             return
           }
           if (t === "result") {
@@ -1377,6 +1552,22 @@ export class ChatService extends Effect.Service<ChatService>()(
               sessionId: args.threadId,
               durationMs: m.duration_ms ?? 0,
             })
+            const pending = yield* Queue.poll(args.pendingTurns)
+            const assistantText = yield* Ref.getAndSet(args.assistantText, "")
+            if (Option.isSome(pending) && args.observeTurn !== undefined) {
+              yield* args
+                .observeTurn({
+                  sessionId: args.threadId,
+                  userMessageId: pending.value.userMessageId,
+                  userText: pending.value.userText,
+                  assistantText,
+                  isError: m.is_error === true,
+                })
+                .pipe(
+                  Effect.catchAllCause(() => Effect.void),
+                  Effect.forkIn(args.threadScope),
+                )
+            }
             return
           }
           if (t === "user") {
@@ -1689,9 +1880,41 @@ export class ChatService extends Effect.Service<ChatService>()(
             })
           }
 
-          // Offer is fire-and-forget; if the queue was shutdown (thread
-          // closed mid-send), we silently drop.
-          yield* Queue.offer(entry.inbox, userPayload).pipe(
+          // Recall runs after persistence so the canonical transcript never
+          // contains injected context. A provider failure OR a timeout is
+          // required to degrade to null; ChatService then sends the original
+          // payload. The bound matters because recall must inject before the
+          // SDK turn (it cannot be backgrounded like `observeTurn`), so a hung
+          // embedder / vector search would otherwise freeze the whole turn.
+          const recalled =
+            entry.recallMemory === undefined
+              ? null
+              : yield* (() => {
+                  const recall = entry.recallMemory({
+                    sessionId: threadId,
+                    userMessageId: messageId,
+                    userText: text,
+                  })
+                  return recallTimeoutMs > 0
+                    ? recall.pipe(
+                        Effect.timeout(Duration.millis(recallTimeoutMs)),
+                        Effect.catchAll(() =>
+                          inc("luna.chat.recall.timeouts").pipe(Effect.as(null)),
+                        ),
+                      )
+                    : recall
+                })()
+          // Keep observation metadata in a parallel FIFO. SDK turns are
+          // sequential per thread, so each exactly-once result consumes the
+          // corresponding user seed. Queue shutdowns remain best-effort.
+          yield* Queue.offer(entry.pendingTurns, {
+            userMessageId: messageId,
+            userText: text,
+          }).pipe(Effect.catchAllCause(() => Effect.void))
+          yield* Queue.offer(entry.inbox, {
+            payload: userPayload,
+            memoryContext: recalled,
+          }).pipe(
             Effect.catchAllCause(() => Effect.void),
           )
 
@@ -1867,6 +2090,26 @@ export class ChatService extends Effect.Service<ChatService>()(
           // append to this turn's leftover text under the stale turnId.
           yield* Ref.set(entry.inFlightTurnId, null)
           yield* Ref.set(entry.inFlightText, "")
+          // Interrupted SDK turns normally emit no terminal result. Consume
+          // the matching observation seed here so the next successful result
+          // cannot be paired with stale user text. Candidate capture remains
+          // useful for an interrupted turn and stays off the interrupt path.
+          const pending = yield* Queue.poll(entry.pendingTurns)
+          const assistantText = yield* Ref.getAndSet(entry.assistantText, "")
+          if (Option.isSome(pending) && entry.observeTurn !== undefined) {
+            yield* entry
+              .observeTurn({
+                sessionId: threadId,
+                userMessageId: pending.value.userMessageId,
+                userText: pending.value.userText,
+                assistantText,
+                isError: true,
+              })
+              .pipe(
+                Effect.catchAllCause(() => Effect.void),
+                Effect.forkIn(entry.scope),
+              )
+          }
           yield* inc("luna.chat.interrupts.total")
         })
 
