@@ -121,6 +121,42 @@
  * The poll loop is wrapped in `Effect.retry(Schedule.exponential(...))` capped
  * at 30 s, so transient errors (network blips, Telegram 429/503) cause a brief
  * back-off rather than killing the adapter.
+ *
+ * ## Tap-to-stop inline button
+ *
+ * `allowed_updates` includes "callback_query". Button taps are handled
+ * OUTSIDE the per-chat FIFO chain (chatChains) — a stop must never queue
+ * behind the turn it interrupts. Every callback is answered immediately
+ * (Telegram expires an unanswered one after ~10s); the tapper is then
+ * re-checked through the SAME allowlist messages use (callback_data is
+ * attacker-controlled) before a synthetic "/stop" ChannelMessage is built
+ * and dispatched straight to the installed messageHandler, reusing dedup +
+ * commands.ts's existing /stop handling rather than a parallel interrupt
+ * path. The "⏹ Stop" reply_markup rides on every deliver() call while
+ * `opts.isPartial` is true and is omitted once the turn finalizes, so the
+ * button disappears with the turn.
+ *
+ * ## "Working" reaction glyph
+ *
+ * setMessageReaction (Bot API 7.0+) reacts to the Chairman's own inbound
+ * message with 👀 when a turn starts (same call site as startTyping).
+ * Fire-and-forget/best-effort — a 400 from a chat with restricted
+ * available_reactions must never break delivery. Deliberately NOT cleared
+ * on turn completion (see reactWorking's doc comment and the PR description
+ * for the DM-notification tradeoff this avoids).
+ *
+ * ## Forum-topic session scoping
+ *
+ * When `chat.is_forum` is true and an inbound message/callback carries
+ * `is_topic_message`/`message_thread_id`, the session threadingKey becomes
+ * `"<chatId>:topic:<messageThreadId>"` instead of plain chatId, so each
+ * forum topic gets its own Luna thread (forumTopicIdFor/threadingKeyFor).
+ * Gated strictly on is_forum: DMs and non-forum groups are byte-identical
+ * to before, so no migration is needed for existing channel_sessions rows.
+ * message_thread_id is threaded through every outbound sendMessage/
+ * sendChatAction for the topic (typing indicators and multi-chunk replies
+ * land in the topic, not "General"); editMessageText needs no such
+ * threading since it targets an existing message_id whose topic is fixed.
  */
 import { Buffer } from "node:buffer"
 import { Cause, Effect, Either, Fiber, Redacted, Ref, Schedule } from "effect"
@@ -167,6 +203,9 @@ interface TelegramMessage {
   readonly video_note?: unknown
   readonly sticker?: unknown
   readonly date: number
+  /** Forum-topic threading (only present in forum supergroups). */
+  readonly is_topic_message?: boolean
+  readonly message_thread_id?: number
 }
 
 /** One size variant of a Telegram photo. Telegram photos are always JPEG. */
@@ -195,6 +234,8 @@ interface TelegramFileInfo {
 interface TelegramChat {
   readonly id: number
   readonly type: "private" | "group" | "supergroup" | "channel"
+  /** True for forum-mode supergroups (topics enabled). */
+  readonly is_forum?: boolean
 }
 
 interface TelegramUser {
@@ -248,10 +289,116 @@ export const normalizeCommandMention = (
   return `${token.slice(0, atIndex)}${rest}`
 }
 
+/**
+ * Minimal reference to the message a callback query's inline keyboard is
+ * attached to. Telegram's real type is `Message | InaccessibleMessage`
+ * (a message can age out of the bot's cache); only `chat`/`message_id`/
+ * `message_thread_id` are used here, so both cases satisfy this shape.
+ */
+interface TelegramCallbackMessageRef {
+  readonly chat: TelegramChat
+  readonly message_id: number
+  readonly message_thread_id?: number
+}
+
+/**
+ * An inline-keyboard button tap. `data` is the button's `callback_data` —
+ * attacker-controlled (any chat member can tap a button in a group), so it
+ * is never trusted without an allowlist check against `from`.
+ */
+interface TelegramCallbackQuery {
+  readonly id: string
+  readonly from: TelegramUser
+  readonly data?: string
+  readonly message?: TelegramCallbackMessageRef
+}
+
+/* -------------------------------------------------------------------------- */
+/* Forum-topic threading                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolve the forum-topic id for an inbound message/callback, or undefined
+ * when the chat is not a forum or the update carries no topic info. Gated
+ * STRICTLY on `chat.is_forum` so DMs and plain (non-forum) groups are never
+ * affected — their session key must keep resolving to plain chat.id with no
+ * migration required for existing `channel_sessions` rows.
+ */
+const forumTopicIdFor = (
+  chat: TelegramChat,
+  isTopicMessage: boolean | undefined,
+  messageThreadId: number | undefined,
+): number | undefined =>
+  chat.is_forum === true && (isTopicMessage === true || messageThreadId !== undefined)
+    ? messageThreadId
+    : undefined
+
+/**
+ * Session threading key for a chat, optionally scoped to a forum topic.
+ * Non-forum chats (the ":topic:" suffix absent) resolve to the plain chat id
+ * — byte-identical to the pre-existing key, so old rows never orphan.
+ */
+const threadingKeyFor = (chatId: string, forumTopicId: number | undefined): string =>
+  forumTopicId !== undefined ? `${chatId}:topic:${forumTopicId}` : chatId
+
+/* -------------------------------------------------------------------------- */
+/* Tap-to-stop inline button                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** callback_data value for the "⏹ Stop" inline button. */
+const STOP_CALLBACK_DATA = "stop"
+
+/**
+ * Inline keyboard attached to partial (in-flight) stream-edit deliveries.
+ * Omitted on the final delivery of a turn so the button disappears once
+ * there is nothing left to interrupt.
+ */
+const STOP_KEYBOARD = {
+  inline_keyboard: [[{ text: "⏹ Stop", callback_data: STOP_CALLBACK_DATA }]],
+} as const
+
+/* -------------------------------------------------------------------------- */
+/* "Working" reaction glyph                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Reaction set on the Chairman's inbound message when a turn starts.
+ * Must come from Telegram's fixed ReactionTypeEmoji allowed set — this is
+ * not a free-form emoji field.
+ */
+const REACTION_EMOJI = "👀"
+
+/**
+ * Best-effort "I'm working on this" reaction on the triggering message.
+ * Fire-and-forget: some chats restrict `available_reactions` and this call
+ * can 400 — that must never break message delivery. The real transport
+ * already folds HTTP failures into `{ ok: false }`; we simply don't inspect
+ * the result, and catchAllCause absorbs any defect from an injected/test
+ * transport.
+ *
+ * Deliberately NOT cleared on turn completion — see telegram-ux-improvements
+ * PR description for the tradeoff (clearing/re-reacting on every turn would
+ * double Telegram's per-reaction notification in DMs).
+ */
+const reactWorking = (
+  transport: TelegramHttpTransport,
+  chatId: string,
+  messageId: number,
+): Effect.Effect<void> =>
+  transport("setMessageReaction", {
+    chat_id: chatId,
+    message_id: messageId,
+    reaction: [{ type: "emoji", emoji: REACTION_EMOJI }],
+  }).pipe(
+    Effect.asVoid,
+    Effect.catchAllCause(() => Effect.void),
+  )
+
 /** A single Telegram update from getUpdates. */
 interface TelegramUpdate {
   readonly update_id: number
   readonly message?: TelegramMessage
+  readonly callback_query?: TelegramCallbackQuery
 }
 
 /* -------------------------------------------------------------------------- */
@@ -761,11 +908,16 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // sender-OR-chat union rationale and the positive/negative id convention.
   const allowedIds: ReadonlySet<string> | null =
     config.allowedIds !== undefined ? new Set(config.allowedIds) : null
-  const isInboundAllowed = (msg: ChannelMessage): boolean =>
+  // Shared by isInboundAllowed (messages) and the callback-query handler
+  // (button taps) — the SAME allowlist gate, not a parallel copy, so a tap
+  // is never trusted on any weaker basis than a typed message would be.
+  const isIdAllowedPair = (senderId: string, channelId: string): boolean =>
     allowedIds === null ||
     allowedIds.size === 0 ||
-    allowedIds.has(msg.senderId) ||
-    allowedIds.has(msg.channelId)
+    allowedIds.has(senderId) ||
+    allowedIds.has(channelId)
+  const isInboundAllowed = (msg: ChannelMessage): boolean =>
+    isIdAllowedPair(msg.senderId, msg.channelId)
   // Rate-limit drop logging to the first hit per (chatId:senderId) so a busy
   // open group or a spammer cannot flood the log.
   const loggedDrops = new Set<string>()
@@ -857,17 +1009,22 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
     if (msg.from === undefined) return null     // channels have no `from`; skip
 
     const chatId = String(msg.chat.id)
+    // Forum-topic scoping: each topic in a forum-mode supergroup gets its
+    // own Luna thread. Gated strictly on chat.is_forum — DMs and plain
+    // (non-forum) groups are byte-identical to before (no migration).
+    const forumTopicId = forumTopicIdFor(msg.chat, msg.is_topic_message, msg.message_thread_id)
 
     const channelMsg: ChannelMessage = {
       transport: "telegram" as const,
       channelId: chatId,
       senderId: String(msg.from.id),
-      // Threading policy: both DMs and groups key on chat.id.
+      // Threading policy: both DMs and groups key on chat.id, EXCEPT forum
+      // topics, which key on (chat.id, message_thread_id) — see
+      // forumTopicIdFor/threadingKeyFor above.
       // - private chat: chat.id === from.id → one thread per user-bot pair.
       // - group/supergroup: chat.id is the group → all members share one thread.
-      // Setting threadingKey explicitly (even though it equals channelId here)
-      // documents the intent and is forward-compatible with sub-topic routing.
-      threadingKey: chatId,
+      // - forum topic: chat.id + topic id → one thread PER TOPIC.
+      threadingKey: threadingKeyFor(chatId, forumTopicId),
       text: msg.text ?? msg.caption ?? "",
       // update_id is monotonically increasing per bot, unique across all chats
       // for this bot token. The dedup store keys on (transport, platformMessageId).
@@ -879,6 +1036,9 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         userId: msg.from?.id,
         username: msg.from?.username,
         firstName: msg.from?.first_name,
+        // Threaded through outbound sends (sendMessage/sendChatAction) so
+        // typing indicators and multi-chunk replies land in the same topic.
+        ...(forumTopicId !== undefined ? { messageThreadId: forumTopicId } : {}),
         ...(media?._tag === "file"
           ? {
               attachmentMediaType: media.mediaType,
@@ -904,29 +1064,48 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
    * when it was the creator — otherwise a failed download would kill the
    * indicator an earlier still-in-flight turn depends on.
    */
-  const startTyping = (transport: TelegramHttpTransport, chatId: string): boolean => {
+  /**
+   * Typing fibers are keyed per (chat, forum-topic) so two topics in the
+   * same forum chat can each show their own indicator instead of one topic
+   * silently suppressing the other's (typingFibers.has(chatId) would
+   * otherwise be true from an unrelated topic's in-flight turn).
+   */
+  const typingKey = (chatId: string, messageThreadId: number | undefined): string =>
+    messageThreadId !== undefined ? `${chatId}:${messageThreadId}` : chatId
+
+  const startTyping = (
+    transport: TelegramHttpTransport,
+    chatId: string,
+    messageThreadId?: number,
+  ): boolean => {
     if (typingSwept) return false
-    if (typingFibers.has(chatId)) return false
+    const key = typingKey(chatId, messageThreadId)
+    if (typingFibers.has(key)) return false
     const loop = Effect.gen(function* () {
       for (let i = 0; i < TYPING_MAX_REFRESHES; i++) {
-        yield* transport("sendChatAction", { chat_id: chatId, action: "typing" })
+        yield* transport("sendChatAction", {
+          chat_id: chatId,
+          action: "typing",
+          ...(messageThreadId !== undefined ? { message_thread_id: messageThreadId } : {}),
+        })
         yield* Effect.sleep(`${TYPING_REFRESH_MS} millis`)
       }
     })
     const fiber = Effect.runFork(loop)
-    typingFibers.set(chatId, fiber)
+    typingFibers.set(key, fiber)
     fiber.addObserver(() => {
-      if (typingFibers.get(chatId) === fiber) typingFibers.delete(chatId)
+      if (typingFibers.get(key) === fiber) typingFibers.delete(key)
     })
     return true
   }
 
-  /** Stop the typing loop for a chat (first reply supersedes it). */
-  const stopTyping = (chatId: string): Effect.Effect<void> =>
+  /** Stop the typing loop for a chat/topic (first reply supersedes it). */
+  const stopTyping = (chatId: string, messageThreadId?: number): Effect.Effect<void> =>
     Effect.suspend(() => {
-      const fiber = typingFibers.get(chatId)
+      const key = typingKey(chatId, messageThreadId)
+      const fiber = typingFibers.get(key)
       if (fiber === undefined) return Effect.void
-      typingFibers.delete(chatId)
+      typingFibers.delete(key)
       return Fiber.interrupt(fiber).pipe(Effect.asVoid)
     })
 
@@ -987,7 +1166,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         const result = yield* transport("getUpdates", {
           offset: currentOffset,
           timeout: POLL_TIMEOUT_SECONDS,
-          allowed_updates: ["message"],
+          allowed_updates: ["message", "callback_query"],
         })
 
         if (!result.ok) {
@@ -1003,6 +1182,64 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           // Advance offset past this update regardless of whether we handle it.
           if (update.update_id >= nextOffset) {
             nextOffset = update.update_id + 1
+          }
+
+          // Inline-button taps (tap-to-stop). Handled OUTSIDE the per-chat
+          // FIFO chain (dispatchChained/chatChains) deliberately: a stop
+          // must reach ChatService.interrupt immediately, never queued
+          // behind the very turn it exists to interrupt.
+          if (update.callback_query !== undefined) {
+            const cb = update.callback_query
+            // Answer every callback query immediately regardless of
+            // allowlist outcome — Telegram expires an unanswered callback
+            // after ~10s ("query is too old") and answering only dismisses
+            // the tapper's client-side loading spinner; it reveals nothing.
+            Effect.runFork(
+              transport("answerCallbackQuery", { callback_query_id: cb.id }).pipe(
+                Effect.asVoid,
+                Effect.catchAllCause(() => Effect.void),
+              ),
+            )
+            const cbMessage = cb.message
+            if (cb.data === STOP_CALLBACK_DATA && cbMessage !== undefined && messageHandler !== null) {
+              const cbChatId = String(cbMessage.chat.id)
+              const cbSenderId = String(cb.from.id)
+              // Gate through the SAME allowlist as messages — callback_data
+              // is attacker-controlled and never trusted on its own, and in
+              // groups any member can tap a button.
+              if (isIdAllowedPair(cbSenderId, cbChatId)) {
+                const cbForumTopicId = forumTopicIdFor(
+                  cbMessage.chat,
+                  undefined,
+                  cbMessage.message_thread_id,
+                )
+                const stopMsg: ChannelMessage = {
+                  transport: "telegram" as const,
+                  channelId: cbChatId,
+                  senderId: cbSenderId,
+                  threadingKey: threadingKeyFor(cbChatId, cbForumTopicId),
+                  // Synthesized /stop reuses the EXISTING commands.ts path
+                  // (dedup, allowlist, "⏹ Stopped." delivery) rather than a
+                  // new interrupt code path.
+                  text: "/stop",
+                  // Derived from the callback's own update_id so dedup
+                  // (keyed on (transport, platformMessageId)) treats this
+                  // consistently with a typed message.
+                  platformMessageId: String(update.update_id),
+                  ts: new Date().toISOString(),
+                  metadata: {
+                    chatType: cbMessage.chat.type,
+                    messageId: cbMessage.message_id,
+                    userId: cb.from.id,
+                    username: cb.from.username,
+                    firstName: cb.from.first_name,
+                    ...(cbForumTopicId !== undefined ? { messageThreadId: cbForumTopicId } : {}),
+                  },
+                }
+                Effect.runFork(messageHandler(stopMsg))
+              }
+            }
+            continue
           }
 
           const built = buildChannelMessage(update)
@@ -1054,11 +1291,17 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             // the next getUpdates offset confirm can repeat one batch.
             const isPrivate = channelMsg.metadata?.["chatType"] === "private"
             if (media.userReply !== null && (isPrivate || !media.dmOnly)) {
+              const unsupportedMsgThreadId = msg.metadata?.["messageThreadId"] as number | undefined
               Effect.runFork(
                 sendFormatted(
                   transport,
                   "sendMessage",
-                  { chat_id: msg.channelId },
+                  {
+                    chat_id: msg.channelId,
+                    ...(unsupportedMsgThreadId !== undefined
+                      ? { message_thread_id: unsupportedMsgThreadId }
+                      : {}),
+                  },
                   media.userReply,
                 ).pipe(
                   Effect.catchAllCause((cause) =>
@@ -1089,22 +1332,32 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             // The semaphore bounds concurrent downloads so a flood degrades
             // to queuing, never to poll-loop starvation or unbounded memory.
             const mediaMsg = msg
+            const mediaMsgThreadId = mediaMsg.metadata?.["messageThreadId"] as number | undefined
             const mediaUnit = Effect.gen(function* () {
               // Typing indicator covers the download — a 20 MB PDF on a slow
               // link takes seconds and the user should see the bot working.
-              const createdTyping = startTyping(transport, mediaMsg.channelId)
+              const createdTyping = startTyping(transport, mediaMsg.channelId, mediaMsgThreadId)
+              // Best-effort "I'm on it" reaction on the Chairman's own
+              // inbound message — fire-and-forget, never blocks the download.
+              const mediaMessageId = mediaMsg.metadata?.["messageId"]
+              if (typeof mediaMessageId === "number") {
+                Effect.runFork(reactWorking(transport, mediaMsg.channelId, mediaMessageId))
+              }
               const outcome = yield* downloadSemaphore.withPermits(1)(
                 fetchTelegramAttachment(transport, resolvedFileTransport, media),
               )
               if (outcome._tag === "failed") {
                 // Only cancel the typing fiber this unit created — an earlier
                 // in-flight turn in the same chat may still own it.
-                if (createdTyping) yield* stopTyping(mediaMsg.channelId)
+                if (createdTyping) yield* stopTyping(mediaMsg.channelId, mediaMsgThreadId)
                 // At-least-once (see unsupported-reply note above).
                 yield* sendFormatted(
                   transport,
                   "sendMessage",
-                  { chat_id: mediaMsg.channelId },
+                  {
+                    chat_id: mediaMsg.channelId,
+                    ...(mediaMsgThreadId !== undefined ? { message_thread_id: mediaMsgThreadId } : {}),
+                  },
                   outcome.userReply,
                 )
                 return
@@ -1121,7 +1374,14 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
           // Loading indication: show "typing…" until the first reply (the
           // placeholder or a step-indicator edit) lands for this chat.
-          startTyping(transport, msg.channelId)
+          const msgThreadId = msg.metadata?.["messageThreadId"] as number | undefined
+          startTyping(transport, msg.channelId, msgThreadId)
+          // Best-effort "I'm on it" reaction on the Chairman's own inbound
+          // message — fire-and-forget, never blocks dispatch.
+          const inboundMessageIdForReaction = msg.metadata?.["messageId"]
+          if (typeof inboundMessageIdForReaction === "number") {
+            Effect.runFork(reactWorking(transport, msg.channelId, inboundMessageIdForReaction))
+          }
 
           if (messageHandler !== null) {
             // Per-chat FIFO dispatch (fire-and-forget relative to the poll
@@ -1308,8 +1568,17 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         const chatId = target.address["channelId"] as string | undefined
         if (chatId === undefined) return
 
+        // Forum-topic routing: service.ts's buildDeliveryTarget spreads
+        // msg.metadata into address, so messageThreadId (set on inbound
+        // forum-topic messages) rides along here. Only sendMessage (new
+        // message) needs it — editMessageText targets an existing
+        // message_id whose topic is already fixed.
+        const deliverThreadId = target.address["messageThreadId"] as number | undefined
+        const threadParams =
+          deliverThreadId !== undefined ? { message_thread_id: deliverThreadId } : {}
+
         // Anything we send supersedes the "typing…" loading indication.
-        yield* stopTyping(chatId)
+        yield* stopTyping(chatId, deliverThreadId)
 
         // The inbound message's update_id is the turn key for stream-edit state.
         const turnKey = target.inReplyTo.platformMessageId
@@ -1337,10 +1606,25 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             ? { reply_parameters: { message_id: inboundMessageId } }
             : {}
 
+        // Tap-to-stop keyboard: attached ONLY while the turn is still
+        // partial. Telegram drops a keyboard on any edit that omits
+        // reply_markup, so this must be threaded through every partial
+        // edit; it is OMITTED on the final chunk / interrupt's final edit
+        // so the button disappears once there's nothing left to stop. A
+        // stale tap after that point still resolves through commands.ts
+        // (interrupt is a no-op on an idle thread) — an accepted minor
+        // edge case, not a blocker.
+        const keyboardParams = opts.isPartial ? { reply_markup: STOP_KEYBOARD } : {}
+
         // Continuation chunks of a long final answer (chunkIndex > 0) are
         // always their own fresh messages — never edits of the placeholder.
         if (opts.chunkIndex > 0) {
-          yield* sendFormatted(transport, "sendMessage", { chat_id: chatId }, content)
+          yield* sendFormatted(
+            transport,
+            "sendMessage",
+            { chat_id: chatId, ...threadParams, ...keyboardParams },
+            content,
+          )
           return
         }
 
@@ -1350,7 +1634,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           const result = yield* sendFormatted(
             transport,
             "sendMessage",
-            { chat_id: chatId, ...replyParams },
+            { chat_id: chatId, ...replyParams, ...threadParams, ...keyboardParams },
             content,
           )
           // Record the message id for follow-up edits — pointless when this
@@ -1366,7 +1650,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           yield* sendFormatted(
             transport,
             "editMessageText",
-            { chat_id: chatId, message_id: existingMsgId },
+            { chat_id: chatId, message_id: existingMsgId, ...keyboardParams },
             content,
           )
         }
