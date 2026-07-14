@@ -26,10 +26,11 @@ Creates a **one-shot** workflow job due now. JobTicker must be running to claim 
 |---|------|------|
 | 0 | diagnose | Classify restart / unstuck / patch / escalate |
 | 1 | backup | Snapshot patient to `~/.luna/doctor-backups/` |
-| 2 | plan | Optional LLM plan (JSON only; no DB writes) |
-| 3 | apply | Backup-gated patch (refuses without backupId) |
-| 4 | verify | Patient still enabled + loadable |
-| 5 | finalize | Success, or rollback from backup |
+| 2 | apply | Heuristic / plan.json patch (refuses without backupId) |
+| 3 | verify | Patient still enabled + loadable |
+| 4 | finalize | Success, or rollback from backup |
+
+Shell-only (no LLM planner) until plan.json handoff is wired end-to-end.
 
 State handoff lives under `~/.luna/doctor-runs/<run-id>/`.
 

@@ -1944,7 +1944,7 @@ describe("JobTicker", () => {
       failStreakThreshold: 2,
       orphanStreakThreshold: 2,
       maxHealAttempts: 3,
-      cliPath: "/tmp/luna-doctor-workflow.ts",
+      cliPath: process.cwd() + "/apps/ui-web/scripts/luna-doctor-workflow.ts",
     } as const
 
     it("after N consecutive failures on a prompt job (max_attempts=1), enqueues doctor and disables patient", async () => {

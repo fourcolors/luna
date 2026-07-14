@@ -132,7 +132,24 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
       // Check if setV2Fields can set payload... only schedule, enabled, nextRunAt, retryAttempt.
       // For B0 we re-record by removing and inserting carefully.
 
+      // resetStreaks clears fail/orphan/retry only — NOT healAttempts/healState.
+      // Heal budget is lifetime-of-streak for chronic failure; clearing it on
+      // every soft doctor "success" would loop forever on unfixable jobs.
+      const streakReset = patch.resetStreaks
+        ? ({
+            retryAttempt: 0,
+            failStreak: 0,
+            orphanStreak: 0,
+          } as const)
+        : {}
+
       if (nextPayload !== undefined) {
+        // Preserve V4 counters across remove+record (record defaults wipe them).
+        const preserveHeal = {
+          healAttempts: job.healAttempts,
+          healState: job.healState,
+          ...streakReset,
+        }
         yield* opts.jobs.remove(jobId).pipe(Effect.mapError((e) => e.message))
         yield* opts.jobs
           .record({
@@ -145,11 +162,15 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
               patch.nextRunAt !== undefined ? patch.nextRunAt : job.nextRunAt,
           })
           .pipe(Effect.mapError((e) => e.message))
-        if (patch.schedule !== undefined && patch.schedule !== job.schedule) {
-          yield* opts.jobs
-            .setV2Fields(jobId, { schedule: patch.schedule })
-            .pipe(Effect.mapError((e) => e.message))
-        }
+        yield* opts.jobs
+          .setV2Fields(jobId, {
+            schedule: patch.schedule ?? job.schedule,
+            enabled: patch.enabled ?? job.enabled,
+            nextRunAt:
+              patch.nextRunAt !== undefined ? patch.nextRunAt : job.nextRunAt,
+            ...preserveHeal,
+          })
+          .pipe(Effect.mapError((e) => e.message))
       } else {
         const fields: {
           schedule?: string
@@ -158,19 +179,10 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
           retryAttempt?: number
           failStreak?: number
           orphanStreak?: number
-          healAttempts?: number
-          healState?: "ok" | "healing" | "escalated"
-        } = {}
+        } = { ...streakReset }
         if (patch.schedule !== undefined) fields.schedule = patch.schedule
         if (patch.enabled !== undefined) fields.enabled = patch.enabled
         if (patch.nextRunAt !== undefined) fields.nextRunAt = patch.nextRunAt
-        if (patch.resetStreaks) {
-          fields.retryAttempt = 0
-          fields.failStreak = 0
-          fields.orphanStreak = 0
-          fields.healAttempts = 0
-          fields.healState = "ok"
-        }
         if (Object.keys(fields).length > 0) {
           yield* opts.jobs
             .setV2Fields(jobId, fields)

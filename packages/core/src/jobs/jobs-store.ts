@@ -667,6 +667,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         db.run("PRAGMA journal_mode = WAL")
         db.run("PRAGMA synchronous = NORMAL")
         db.run("PRAGMA foreign_keys = ON")
+        // Doctor CLI opens a second process on the same DB while the ticker
+        // writes; without busy_timeout the child fails immediately with
+        // SQLITE_BUSY under load.
+        db.run("PRAGMA busy_timeout = 5000")
 
         const nowMs = yield* clock.nowMs()
         ensureSchemaVersions(db)

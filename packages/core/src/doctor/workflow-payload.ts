@@ -74,6 +74,10 @@ export const buildDoctorWorkflowPayload = (
   const runCli = (sub: string, extra = ""): string =>
     `${shellQuote(bun)} ${shellQuote(cli)} ${sub} --state-dir ${shellQuote(stateDir)} --attempt ${attempt}${extra ? ` ${extra}` : ""}`
 
+  // Shell-only pipeline (no LLM planner step). A prior planner wrote plan JSON
+  // to stdout only — workflow-worker never persisted it to plan.json, so apply
+  // always used the heuristic. Keep the path cheap and deterministic until a
+  // real plan.json handoff is wired.
   const steps: DoctorWorkflowStep[] = [
     {
       kind: "shell",
@@ -84,25 +88,6 @@ export const buildDoctorWorkflowPayload = (
       kind: "shell",
       timeout_ms: 60_000,
       cmd: runCli("backup"),
-    },
-    {
-      kind: "prompt",
-      max_turns: 12,
-      timeout_ms: 600_000,
-      allowed_tools: ["Read", "Grep", "Glob", "Bash"],
-      system_prompt:
-        "You are Luna's Job Doctor planner. You do NOT write the jobs database. " +
-        "Read the diagnosis and patient snapshot under the state directory if needed. " +
-        "Output ONLY a single JSON object for the patch plan (no markdown fences): " +
-        '{"intent":"...","diagnosis":"...","patch":{"max_turns"?:number,"timeout_ms"?:number,"user_prompt"?:string,"allowed_tools"?:string[]},"rationale":"..."}. ' +
-        "Preserve the original mission. Prefer fixing max_turns/tools/timeouts over inventing new work. " +
-        "If intent is unclear, set patch to {} and put escalate:true.",
-      user_prompt:
-        `Doctor attempt ${attempt} for patient ${finding.patient.kind}:${finding.patient.id}.\n` +
-        `Summary: ${finding.summary}\n` +
-        `State dir: ${stateDir}\n` +
-        `Read ${join(stateDir, "diagnosis.json")} and ${join(stateDir, "before.json")} if present, ` +
-        `then write your plan JSON to stdout only.`,
     },
     {
       kind: "shell",

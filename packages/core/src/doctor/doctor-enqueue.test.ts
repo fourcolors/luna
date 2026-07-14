@@ -82,6 +82,39 @@ describe("doctor-enqueue helpers", () => {
     expect(resolveDoctorEnqueueConfig({ enabled: false }).enabled).toBe(false)
   })
 
+  it("maybeEnqueueDoctor skips when CLI path is missing (does not disable patient)", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({
+        id: "sched-cli-miss",
+        kind: "prompt",
+        spec: "0 0 * * *",
+        payload: { label: "x" },
+      })
+      const job = (yield* store.getById("sched-cli-miss"))!
+      const result = yield* maybeEnqueueDoctor(
+        store,
+        { ...job, failStreak: 5 },
+        "boom",
+        resolveDoctorEnqueueConfig({
+          failStreakThreshold: 5,
+          cliPath: "/no/such/luna-doctor-workflow.ts",
+        }),
+        Date.now(),
+      )
+      expect(result.enqueued).toBe(false)
+      expect(result.reason).toBe("cli_unreachable")
+      const patient = yield* store.getById("sched-cli-miss")
+      expect(patient?.enabled).toBe(true)
+      expect(patient?.healState).toBe("ok")
+    })
+    await Effect.runPromise(
+      program.pipe(
+        Effect.provide(JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))),
+      ),
+    )
+  })
+
   it("maybeEnqueueDoctor records a one-shot and disables the patient", async () => {
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -99,7 +132,7 @@ describe("doctor-enqueue helpers", () => {
         "worker_failed: boom",
         resolveDoctorEnqueueConfig({
           failStreakThreshold: 5,
-          cliPath: "/tmp/luna-doctor-workflow.ts",
+          cliPath: process.cwd() + "/apps/ui-web/scripts/luna-doctor-workflow.ts",
         }),
         1_700_000_000_000,
       )

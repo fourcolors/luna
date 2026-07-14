@@ -5,6 +5,7 @@
  * doctor workflow itself fails and the patient still has heal budget).
  * Always on when JobTicker is wired; tests can pass `doctor: { enabled: false }`.
  */
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Effect } from "effect"
 import type { JobsStoreApi, PersistedJob } from "../jobs/jobs-store-types.js"
@@ -35,10 +36,19 @@ export const isDoctorExemptKind = (kind: PersistedJob["kind"]): boolean =>
   kind === "dream" || kind === "wake"
 
 export const resolveDoctorCliPath = (override?: string): string => {
-  const fromEnv = process.env["LUNA_DOCTOR_CLI"]?.trim()
   if (override?.trim()) return override.trim()
+  const fromEnv = process.env["LUNA_DOCTOR_CLI"]?.trim()
   if (fromEnv) return fromEnv
   return join(process.cwd(), "apps/ui-web/scripts/luna-doctor-workflow.ts")
+}
+
+/** True when the doctor CLI entrypoint is on disk (gate before pausing patients). */
+export const doctorCliReachable = (cliPath: string): boolean => {
+  try {
+    return existsSync(cliPath)
+  } catch {
+    return false
+  }
 }
 
 export const resolveDoctorEnqueueConfig = (opts?: {
@@ -126,15 +136,16 @@ export const maybeEnqueueDoctor = (
       return { enqueued: false, reason: "below_threshold" } as const
     }
 
-    const attempt = job.healAttempts + 1
-    yield* store
-      .setV2Fields(job.id, {
-        healAttempts: attempt,
-        healState: "healing",
-        enabled: false,
-      })
-      .pipe(Effect.catchAll(() => Effect.succeed(false)))
+    // Do not pause the patient if doctor CLI is unreachable — that would
+    // permanently disable schedules when deploy layout is wrong.
+    if (!doctorCliReachable(cfg.cliPath)) {
+      yield* Effect.logWarning(
+        `[luna/sched] doctor skipped patient=${job.id}: CLI not reachable at ${cfg.cliPath}`,
+      )
+      return { enqueued: false, reason: "cli_unreachable" } as const
+    }
 
+    const attempt = job.healAttempts + 1
     const finding = buildAutoFinding(
       { ...job, healAttempts: attempt, healState: "healing" },
       lastError,
@@ -146,6 +157,8 @@ export const maybeEnqueueDoctor = (
     })
     const doctorJobId = doctorWorkflowJobId(finding, attempt)
 
+    // Record doctor job FIRST; only then pause patient. If record fails,
+    // leave the patient enabled so a bad deploy cannot soft-delete schedules.
     const recorded = yield* store
       .record({
         id: doctorJobId,
@@ -174,6 +187,14 @@ export const maybeEnqueueDoctor = (
     if (!recorded) {
       return { enqueued: false, reason: "record_failed" } as const
     }
+
+    yield* store
+      .setV2Fields(job.id, {
+        healAttempts: attempt,
+        healState: "healing",
+        enabled: false,
+      })
+      .pipe(Effect.catchAll(() => Effect.succeed(false)))
 
     yield* Effect.logInfo(
       `[luna/sched] doctor enqueued job=${recorded} patient=${job.id} attempt=${attempt}`,
