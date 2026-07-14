@@ -22,8 +22,8 @@ export interface DoctorEnqueueConfig {
   readonly orphanStreakThreshold: number
   readonly maxHealAttempts: number
   readonly cliPath: string
-  readonly bunBin?: string
-  readonly lunaHome?: string
+  readonly bunBin?: string | undefined
+  readonly lunaHome?: string | undefined
 }
 
 export const isDoctorWorkflowJob = (job: PersistedJob): boolean => {

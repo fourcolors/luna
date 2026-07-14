@@ -23,9 +23,9 @@ export interface BuildDoctorWorkflowOptions {
   /** Absolute path to the luna-doctor-workflow CLI entry (bun script). */
   readonly cliPath: string
   /** Luna home for state dir (default LUNA_HOME or ~/.luna). */
-  readonly lunaHome?: string
+  readonly lunaHome?: string | undefined
   /** bun executable (default process.execPath or "bun"). */
-  readonly bunBin?: string
+  readonly bunBin?: string | undefined
 }
 
 const resolveLunaHome = (override?: string): string =>
