@@ -11,6 +11,7 @@ import {
   extractTurnCandidates,
   MEMORY_CANDIDATE_KIND,
   packRecallContext,
+  recallForTurn,
 } from "../src/turn-memory.js"
 import {
   checkEmbeddingEvalPreflight,
@@ -93,6 +94,33 @@ describe("turn memory", () => {
       sessionId: "session-1",
       messageIds: ["message-1"],
     })
+  })
+
+  it("keeps scoped backend over-fetch bounded while retaining pack headroom", async () => {
+    let backendTopK: number | undefined
+    const backend = Object.assign(new InMemoryBackend(), {
+      search: (args: { readonly topK?: number }) => {
+        backendTopK = args.topK
+        return Stream.empty
+      },
+    })
+    const router = makeRouter([{ pattern: "*", backend }])
+
+    const packed = await Effect.runPromise(
+      recallForTurn({
+        router,
+        query: "deployment preferences",
+        scope: {
+          observerId: OPERATOR_MEMORY_SCOPE.observerId,
+          subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+        },
+      }),
+    )
+
+    // recallForTurn asks for 10; scoped router over-fetch turns that into 40.
+    // The previous 20-at-recall request multiplied to 80 backend hits.
+    expect(backendTopK).toBe(40)
+    expect(packed).toBeNull()
   })
 })
 

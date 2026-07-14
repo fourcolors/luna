@@ -319,8 +319,10 @@ export interface ThreadToolsBinding {
    *  no per-session state omit it. */
   readonly onUnbound?: (sessionId: string) => void
   /**
-   * Optional query-time recall hook. ChatService persists the original user
-   * payload first, then prepends this context only to the SDK-bound copy.
+   * Optional query-time recall hook. ChatService persists and sends the
+   * original user payload unchanged, then supplies this context as a per-turn
+   * system-prompt suffix on a finite, resumed SDK query. The suffix is replaced
+   * on the next turn and never becomes transcript content.
    */
   readonly recallMemory?: (input: {
     readonly sessionId: string

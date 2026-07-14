@@ -19,8 +19,10 @@ SDK's exactly-once `result` event and must never delay or fail the chat turn.
 
 ## Invariants
 
-- The user message persisted in `SessionStore` remains byte-for-byte free of
-  injected memory context. Context is added only to the SDK-bound envelope.
+- The user message persisted in `SessionStore` and the SDK transcript remains
+  byte-for-byte free of injected memory context. Recall-enabled threads use a
+  finite resumed SDK query per turn and put current recall only in that query's
+  system-prompt configuration, replacing it on the next turn.
 - A private record is visible only when both its subject matches and its
   observer matches. Shared records still require a matching subject. The MCP
   delete tool applies the same scope check before mutating by id.
@@ -63,8 +65,10 @@ a documented compatibility scope.
 ### 2. Bounded automatic recall
 
 Add a pure context packer plus an Effect service in `@luna/memory-tools`.
-Before `ChatService` offers the persisted user turn to the SDK inbox, the
-per-thread binding asks the service for scoped hybrid hits. The packer:
+Before `ChatService` starts the turn's finite SDK query, the per-thread binding
+asks the service for scoped hybrid hits. The query resumes the same clean SDK
+transcript and receives only the current packed context as a system-prompt
+suffix; previous recall is replaced rather than accumulated. The packer:
 
 - excludes inert candidates and non-active beliefs;
 - deduplicates normalized text;

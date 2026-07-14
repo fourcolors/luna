@@ -247,30 +247,35 @@ const runScoped = <A, E>(
   )
 
 describe("ChatService (Tier-2 sim)", () => {
-  it("injects recall only into the SDK copy and observes once after result", async () => {
-    let sdkUserText = ""
+  it("replaces per-turn recall without storing or accumulating it", async () => {
+    const sdkUserTexts: string[] = []
+    const systemPrompts: string[] = []
+    const resumes: Array<string | undefined> = []
     const observed: Array<{
       userText: string
       assistantText: string
       isError: boolean
     }> = []
-    const fakeLayer = SDKClient.fake((p) =>
-      makeChatLoopQuery({
+    const fakeLayer = SDKClient.fake((p) => {
+      systemPrompts.push(String(p.options?.systemPrompt ?? ""))
+      resumes.push(p.options?.resume)
+      return makeChatLoopQuery({
         prompt: p.prompt as AsyncIterable<SDKUserMessage>,
-        sessionId: (p as { sessionId?: string }).sessionId ?? "thr-hooks",
+        sessionId: "thr-hooks",
         responseFor: (text) => {
-          sdkUserText = text
+          sdkUserTexts.push(text)
           return "assistant final"
         },
-      }),
-    )
+      })
+    })
     const provider: ThreadToolsProvider = {
       decorate: () => ({
         mcpServers: {},
+        systemPrompt: "base identity",
         onBound: () => {},
-        recallMemory: () =>
+        recallMemory: ({ userText }) =>
           Effect.succeed(
-            "<memory_context>historical preference</memory_context>",
+            `<memory_context>${userText} memory</memory_context>`,
           ),
         observeTurn: ({ userText, assistantText, isError }) =>
           Effect.sync(() => observed.push({ userText, assistantText, isError })),
@@ -294,23 +299,38 @@ describe("ChatService (Tier-2 sim)", () => {
           const chat = yield* ChatService
           const store = yield* SessionStore
           const thread = yield* chat.createThread({ model: "claude-test" })
-          yield* chat.send(thread.id, "original user text")
+          yield* chat.send(thread.id, "first user text")
+          yield* Effect.sleep("100 millis")
+          yield* chat.send(thread.id, "second user text")
           yield* Effect.sleep("100 millis")
           const messages = yield* store
             .readMessages(thread.id)
             .pipe(Stream.runCollect)
-          const user = Array.from(messages).find((m) => m.kind === "user")
-          return user === undefined ? null : extractText(user.payload)
+          return Array.from(messages)
+            .filter((m) => m.kind === "user")
+            .map((m) => extractText(m.payload))
         }),
       ).pipe(Effect.provide(layer)),
     )
 
-    expect(storedText).toBe("original user text")
-    expect(sdkUserText).toContain("historical preference")
-    expect(sdkUserText).toContain("original user text")
+    expect(storedText).toEqual(["first user text", "second user text"])
+    expect(sdkUserTexts).toEqual(["first user text", "second user text"])
+    expect(systemPrompts).toHaveLength(2)
+    expect(systemPrompts[0]).toContain("base identity")
+    expect(systemPrompts[0]).toContain("first user text memory")
+    expect(systemPrompts[0]).not.toContain("second user text memory")
+    expect(systemPrompts[1]).toContain("base identity")
+    expect(systemPrompts[1]).toContain("second user text memory")
+    expect(systemPrompts[1]).not.toContain("first user text memory")
+    expect(resumes).toEqual([undefined, "thr-hooks"])
     expect(observed).toEqual([
       {
-        userText: "original user text",
+        userText: "first user text",
+        assistantText: "assistant final",
+        isError: false,
+      },
+      {
+        userText: "second user text",
         assistantText: "assistant final",
         isError: false,
       },

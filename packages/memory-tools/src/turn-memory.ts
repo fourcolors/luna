@@ -138,7 +138,11 @@ export function recallForTurn(input: {
   return Stream.runCollect(
     input.router.search({
       queryText: query,
-      topK: Math.max(options.maxHits * 4, 20),
+      // MemoryRouter already over-fetches scoped searches by 4x before its
+      // post-ranking scope filter. Ask it for only 2x packing headroom here
+      // (candidate/non-active filtering + de-duplication), otherwise the two
+      // layers multiply to an 80-hit backend request for the default 5 hits.
+      topK: Math.max(options.maxHits * 2, 10),
       mode: "hybrid",
       scope: input.scope,
     }),
