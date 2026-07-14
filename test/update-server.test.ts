@@ -441,6 +441,10 @@ describe("luna-update-server", () => {
 
     expect(r.status, r.stdout + r.stderr).toBe(1)
     expect(r.stderr).toContain("ROLLED BACK")
+    // The readiness timeout must name buildSha as the blocker so an operator is
+    // not left staring at an opaque "failed readiness" rollback loop.
+    expect(r.stderr).toContain("readiness gave up")
+    expect(r.stderr).toContain("buildSha")
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 

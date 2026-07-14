@@ -374,6 +374,10 @@ TX_PREV_LOCK_HASH=""
 TRANSACTION_TRACK_APPLY=false
 EXPECTED_BUILD_SHA=""
 ALLOW_MISSING_BUILD_SHA=false
+# Set by readiness_ok to the furthest-progressed reason it kept polling, so a
+# timeout surfaces WHICH gate never cleared (active / crash-loop / healthz /
+# mode / buildSha) instead of an opaque "failed readiness".
+READINESS_DETAIL=""
 
 process_fingerprint() {
   local pid="$1"
@@ -418,6 +422,7 @@ acquire_update_lock() {
   fi
   local fingerprint
   fingerprint="$(process_fingerprint "$$")"
+  [[ -n "$fingerprint" ]] || { rm -rf "$UPDATE_LOCK_DIR"; return 1; }
   ( umask 077; printf 'pid=%s\nfingerprint=%s\n' "$$" "$fingerprint" > "$UPDATE_LOCK_DIR/owner" )
   UPDATE_LOCK_HELD=true
   trap release_update_lock EXIT INT TERM
@@ -486,12 +491,16 @@ readiness_ok() {
   local baseline="$1"
   local deadline=$((SECONDS + READINESS_TIMEOUT))
   local active nrestarts http
+  READINESS_DETAIL="probe never observed $SERVICE_NAME reach 'active'"
   while (( SECONDS < deadline )); do
     active="$(sup_is_active)"
+    READINESS_DETAIL="$SERVICE_NAME is not active (state=$active)"
     if [[ "$active" == "active" ]]; then
       nrestarts="$(sup_restart_count)"
       [[ "$nrestarts" =~ ^[0-9]+$ ]] || nrestarts="0"
+      READINESS_DETAIL="$SERVICE_NAME is crash-looping (NRestarts $nrestarts > baseline $baseline)"
       if (( nrestarts <= baseline )); then
+        READINESS_DETAIL="/healthz did not return 200 on :${READINESS_PORT}"
         http="$(run_target_capture curl -fsS -o /dev/null -w '%{http_code}' \
           --max-time "$READINESS_CURL_MAX_TIME" \
           "http://127.0.0.1:${READINESS_PORT}/healthz" 2>/dev/null || printf '000')"
@@ -506,6 +515,7 @@ readiness_ok() {
           if [[ "$rcode" == "404" ]]; then
             return 0
           fi
+          READINESS_DETAIL="/readyz did not report \"mode\":\"normal\" (still booting or in setup-mode; http=$rcode)"
           if printf '%s' "$readyz" | grep -q '"mode":"normal"'; then
             if [[ -z "$EXPECTED_BUILD_SHA" ]]; then
               return 0
@@ -521,12 +531,18 @@ readiness_ok() {
             if [[ -z "$build_sha" && "$ALLOW_MISSING_BUILD_SHA" == true ]]; then
               return 0
             fi
+            if [[ -z "$build_sha" ]]; then
+              READINESS_DETAIL="/readyz reported no usable hex buildSha (runtime resolved it to a non-hex value such as 'unknown' when git/.git is unavailable); forward promotion requires a buildSha matching ${EXPECTED_BUILD_SHA:0:12} (set LUNA_BUILD_SHA in the server env to pin it)"
+            else
+              READINESS_DETAIL="/readyz buildSha $build_sha does not match expected ${EXPECTED_BUILD_SHA:0:12}"
+            fi
           fi
         fi
       fi
     fi
     sleep "$READINESS_INTERVAL"
   done
+  luna_warn "readiness gave up after ${READINESS_TIMEOUT}s: ${READINESS_DETAIL}"
   return 1
 }
 
