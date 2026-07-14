@@ -313,11 +313,11 @@ export interface JobTickerOptions {
 
   /**
    * Phase B1 — auto-enqueue the doctor workflow when a non-exempt job
-   * chronically fails (`fail_streak` / `orphan_streak`). Kill switch:
-   * `LUNA_SCHED_DOCTOR=0` (env always wins over `enabled: true`).
+   * chronically fails (`fail_streak` / `orphan_streak`). Always enabled
+   * by default; pass `enabled: false` only in tests.
    */
   readonly doctor?: {
-    /** Default true unless `LUNA_SCHED_DOCTOR=0`. */
+    /** Default true. */
     readonly enabled?: boolean
     /** Default 5. */
     readonly failStreakThreshold?: number

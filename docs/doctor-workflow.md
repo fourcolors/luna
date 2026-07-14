@@ -59,11 +59,6 @@ job (no doctor-for-doctor).
 
 Thresholds / CLI path are overridable via `JobTickerLayer({ doctor: { ... } })`.
 
-## Kill switch
-
-`LUNA_SCHED_DOCTOR=0` freezes **auto-enqueue** only. Manual
-`doctor-workflow-run` still works.
-
 ## Code
 
 - Types / builder / heal API: `packages/core/src/doctor/`

@@ -76,21 +76,13 @@ describe("doctor-enqueue helpers", () => {
     expect(patientIdFromDoctorJob(baseJob())).toBeNull()
   })
 
-  it("resolveDoctorEnqueueConfig respects LUNA_SCHED_DOCTOR=0", () => {
-    const prev = process.env["LUNA_SCHED_DOCTOR"]
-    process.env["LUNA_SCHED_DOCTOR"] = "0"
-    try {
-      const cfg = resolveDoctorEnqueueConfig({ enabled: true })
-      expect(cfg.enabled).toBe(false)
-    } finally {
-      if (prev === undefined) delete process.env["LUNA_SCHED_DOCTOR"]
-      else process.env["LUNA_SCHED_DOCTOR"] = prev
-    }
+  it("resolveDoctorEnqueueConfig defaults enabled to true", () => {
+    const cfg = resolveDoctorEnqueueConfig({})
+    expect(cfg.enabled).toBe(true)
+    expect(resolveDoctorEnqueueConfig({ enabled: false }).enabled).toBe(false)
   })
 
   it("maybeEnqueueDoctor records a one-shot and disables the patient", async () => {
-    const prev = process.env["LUNA_SCHED_DOCTOR"]
-    delete process.env["LUNA_SCHED_DOCTOR"]
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
       yield* store.record({
@@ -125,16 +117,11 @@ describe("doctor-enqueue helpers", () => {
       expect(docs[0]?.kind).toBe("workflow")
       expect(docs[0]?.payload.source).toBe("doctor-workflow")
     })
-    try {
-      await Effect.runPromise(
-        program.pipe(
-          Effect.provide(JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))),
-        ),
-      )
-    } finally {
-      if (prev === undefined) delete process.env["LUNA_SCHED_DOCTOR"]
-      else process.env["LUNA_SCHED_DOCTOR"] = prev
-    }
+    await Effect.runPromise(
+      program.pipe(
+        Effect.provide(JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))),
+      ),
+    )
   })
 
   it("maybeEnqueueDoctor skips when below threshold", async () => {

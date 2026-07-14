@@ -3,7 +3,7 @@
  *
  * Called from JobTicker after a non-exempt dispatch failure (or after a
  * doctor workflow itself fails and the patient still has heal budget).
- * Kill switch: `LUNA_SCHED_DOCTOR=0`.
+ * Always on when JobTicker is wired; tests can pass `doctor: { enabled: false }`.
  */
 import { join } from "node:path"
 import { Effect } from "effect"
@@ -49,18 +49,15 @@ export const resolveDoctorEnqueueConfig = (opts?: {
   readonly cliPath?: string
   readonly bunBin?: string
   readonly lunaHome?: string
-}): DoctorEnqueueConfig => {
-  const envDisabled = process.env["LUNA_SCHED_DOCTOR"] === "0"
-  return {
-    enabled: envDisabled ? false : (opts?.enabled ?? true),
-    failStreakThreshold: opts?.failStreakThreshold ?? 5,
-    orphanStreakThreshold: opts?.orphanStreakThreshold ?? 5,
-    maxHealAttempts: opts?.maxHealAttempts ?? 3,
-    cliPath: resolveDoctorCliPath(opts?.cliPath),
-    bunBin: opts?.bunBin,
-    lunaHome: opts?.lunaHome,
-  }
-}
+}): DoctorEnqueueConfig => ({
+  enabled: opts?.enabled ?? true,
+  failStreakThreshold: opts?.failStreakThreshold ?? 5,
+  orphanStreakThreshold: opts?.orphanStreakThreshold ?? 5,
+  maxHealAttempts: opts?.maxHealAttempts ?? 3,
+  cliPath: resolveDoctorCliPath(opts?.cliPath),
+  bunBin: opts?.bunBin,
+  lunaHome: opts?.lunaHome,
+})
 
 export const patientIdFromDoctorJob = (job: PersistedJob): string | null => {
   const finding = (job.payload as { finding?: { patient?: { id?: unknown } } })
@@ -108,9 +105,7 @@ export const maybeEnqueueDoctor = (
   nowMs: number,
 ): Effect.Effect<EnqueueDoctorResult> =>
   Effect.gen(function* () {
-    // Env kill switch is re-checked at call time so LUNA_SCHED_DOCTOR=0
-    // freezes auto-enqueue even if the layer was built with enabled:true.
-    if (!cfg.enabled || process.env["LUNA_SCHED_DOCTOR"] === "0") {
+    if (!cfg.enabled) {
       return { enqueued: false, reason: "disabled" } as const
     }
     if (isDoctorExemptKind(job.kind)) {
@@ -202,7 +197,7 @@ export const handleDoctorWorkflowFailure = (
   nowMs: number,
 ): Effect.Effect<EnqueueDoctorResult> =>
   Effect.gen(function* () {
-    if (!cfg.enabled || process.env["LUNA_SCHED_DOCTOR"] === "0") {
+    if (!cfg.enabled) {
       return { enqueued: false, reason: "disabled" } as const
     }
     const patientId = patientIdFromDoctorJob(doctorJob)
