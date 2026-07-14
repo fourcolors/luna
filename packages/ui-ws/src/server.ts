@@ -517,6 +517,29 @@ export interface UIWebSocketServerConfig {
    */
   readonly survey?: SurveyWsHandle | null
   /**
+   * Optional point-at-the-UI feedback sink. When provided, the server:
+   *   - Advertises `capabilities.feedback` in the hello frame (Moon shows the
+   *     feedback button only when this is true).
+   *   - Routes inbound `feedback-submit` frames → `submit`, then unicasts a
+   *     `feedback-ack { requestId, ok, message? }` echoing the client's
+   *     requestId (mirrors capability-execute-result).
+   *
+   * Pass the RESOLVED handle (not a Tag) so the server's env stays narrow —
+   * mirrors `suggestedActions`. `submit` returns `{ ok, message? }`, which maps
+   * straight onto the ack. Absent/`null` = no feedback button, no routing.
+   */
+  readonly feedbackSink?: {
+    readonly submit: (input: {
+      readonly note: string
+      readonly target?: unknown
+      readonly page?: string
+      readonly threadId?: string
+      readonly appVersion?: string
+      readonly appearance?: string
+      readonly clientTs?: number
+    }) => import("effect").Effect.Effect<{ readonly ok: boolean; readonly message?: string }>
+  } | null
+  /**
    * Optional setup-mode pty factory. When provided:
    *   - The server registers an inbound message handler even when chat /
    *     localShellBridge / survey are all null (setup-mode), so the client can
@@ -1027,6 +1050,7 @@ export const startUIWebSocketServer = (
     const suggestedActions = config.suggestedActions ?? null
     const vaultService = config.vaultService ?? null
     const modelRoutingService = config.modelRoutingService ?? null
+    const feedbackSink = config.feedbackSink ?? null
     const staticRoot = config.staticRoot
     const buildSha = config.buildSha
     const serverVersion = config.serverVersion
@@ -1442,6 +1466,10 @@ export const startUIWebSocketServer = (
             // capability-execute. Clients fall back to built-in commands when
             // absent/false.
             commands: capabilityRegistry !== null,
+            // Point-at-the-UI feedback: a feedbackSink is bound — the server
+            // accepts `feedback-submit` and replies `feedback-ack`. Clients
+            // hide the feedback button when absent/false so no frame is sent.
+            feedback: feedbackSink !== null,
           },
         })
 
@@ -2063,7 +2091,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null || feedbackSink !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -2501,6 +2529,111 @@ export const startUIWebSocketServer = (
                         }),
                       ),
                     )
+                    return
+                  }
+                  case "feedback-submit": {
+                    // Point-at-the-UI feedback. Persist via the injected sink,
+                    // then UNICAST a feedback-ack echoing requestId (mirrors
+                    // capability-execute-result). A sink defect acks ok:false
+                    // and must never tear down the connection.
+                    if (feedbackSink === null) return
+                    // Malformed-frame guard: requestId/note/target are
+                    // attacker-controlled JSON — reject junk before persisting.
+                    // `note` is unbounded free text, and `target.context` can
+                    // contain arbitrary client JSON, so cap both before the
+                    // persistent sink sees them.
+                    const NOTE_MAX = 8192
+                    const TARGET_MAX = 16_384
+                    const SELECTOR_MAX = 1024
+                    const REQUEST_ID_MAX = 256
+                    const rawReqId = (frame as { requestId?: unknown }).requestId
+                    // A non-string requestId collapses to "" and is rejected by
+                    // the length guard below (echoed back like skill-toggle).
+                    const reqId = typeof rawReqId === "string" ? rawReqId : ""
+                    const noteVal = (frame as { note?: unknown }).note
+                    const targetVal = (frame as { target?: unknown }).target
+                    let targetSize = Number.POSITIVE_INFINITY
+                    try {
+                      const encoded = JSON.stringify(targetVal)
+                      if (typeof encoded === "string") targetSize = encoded.length
+                    } catch {
+                      // Keep Infinity: malformed/non-serializable targets fail closed.
+                    }
+                    const selectorVal =
+                      typeof targetVal === "object" && targetVal !== null
+                        ? (targetVal as { selector?: unknown }).selector
+                        : undefined
+                    if (
+                      reqId.length === 0 ||
+                      reqId.length > REQUEST_ID_MAX ||
+                      typeof noteVal !== "string" ||
+                      noteVal.trim().length === 0 ||
+                      noteVal.length > NOTE_MAX ||
+                      typeof targetVal !== "object" ||
+                      targetVal === null ||
+                      targetSize > TARGET_MAX ||
+                      typeof selectorVal !== "string" ||
+                      selectorVal.trim().length === 0 ||
+                      selectorVal.length > SELECTOR_MAX
+                    ) {
+                      send(ws, {
+                        type: "feedback-ack",
+                        requestId: reqId,
+                        ok: false,
+                        message: "malformed feedback-submit frame",
+                      })
+                      return
+                    }
+                    const sink = feedbackSink
+                    const f = frame as {
+                      page?: string
+                      threadId?: string
+                      appVersion?: string
+                      appearance?: string
+                      clientTs?: number
+                    }
+                    yield* sink
+                      .submit({
+                        note: noteVal,
+                        target: targetVal,
+                        ...(typeof f.page === "string" ? { page: f.page } : {}),
+                        ...(typeof f.threadId === "string"
+                          ? { threadId: f.threadId }
+                          : {}),
+                        ...(typeof f.appVersion === "string"
+                          ? { appVersion: f.appVersion }
+                          : {}),
+                        ...(typeof f.appearance === "string"
+                          ? { appearance: f.appearance }
+                          : {}),
+                        ...(typeof f.clientTs === "number"
+                          ? { clientTs: f.clientTs }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap((r) =>
+                          Effect.sync(() =>
+                            send(ws, {
+                              type: "feedback-ack",
+                              requestId: reqId,
+                              ok: r.ok,
+                              ...(r.message !== undefined
+                                ? { message: r.message }
+                                : {}),
+                            }),
+                          ),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() =>
+                            send(ws, {
+                              type: "feedback-ack",
+                              requestId: reqId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            }),
+                          ),
+                        ),
+                      )
                     return
                   }
                   case "capability-execute": {

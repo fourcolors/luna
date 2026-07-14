@@ -87,6 +87,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   // Capability layer — additive behind capabilities.commands.
   "capability-catalog",
   "capability-execute-result",
+  // Point-at-the-UI feedback — additive behind capabilities.feedback.
+  "feedback-ack",
   "connector-catalog",
   "connector-list",
   "connector-oauth-redirect",
@@ -145,6 +147,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "skill-toggle",
   // Capability layer — additive behind capabilities.commands.
   "capability-execute",
+  // Point-at-the-UI feedback — additive behind capabilities.feedback.
+  "feedback-submit",
   "connector-oauth-begin",
   "connector-oauth-code",
   "connector-connect",
@@ -305,9 +309,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // stops waiting forever) → 56 server / 41 client. The capability layer
     // (backend-advertised commands, gated on capabilities.commands) adds
     // capability-catalog + capability-execute-result (server) and
-    // capability-execute (client) → 58 server / 42 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(58)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(42)
+    // capability-execute (client) → 58 server / 42 client. Point-at-the-UI
+    // feedback (gated on capabilities.feedback) adds feedback-ack (server) and
+    // feedback-submit (client) → 59 server / 43 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(59)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(43)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror
