@@ -53,6 +53,13 @@ export interface PromptActionPayload {
   readonly allowedTools?: ReadonlyArray<string>
   /** Optional model override for the spawned subagent. */
   readonly model?: string
+  /**
+   * Optional turn-budget override for the spawned subagent. The accept-handler
+   * stamps `DEFAULT_MAX_TURNS` (see accept-handler.ts) when this is absent —
+   * without it the prompt-worker's own default of 1 turn applies, which fails
+   * any suggested action that needs more than a single tool call (task-23).
+   */
+  readonly maxTurns?: number
 }
 
 /** `run_workflow`: dispatch an EXISTING saved `kind:'workflow'` job (one-shot).

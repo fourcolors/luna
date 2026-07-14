@@ -5,7 +5,7 @@ import { Clock } from "../clock.js"
 import { JobsStoreService } from "../jobs/jobs-store.js"
 import { SuggestedActionsStore } from "./suggested-actions-store.js"
 import { SuggestedActions } from "./suggested-actions.js"
-import { AcceptHandlerLayer, buildPromptJobSpec, executionIdFor } from "./accept-handler.js"
+import { AcceptHandlerLayer, DEFAULT_MAX_TURNS, buildPromptJobSpec, executionIdFor } from "./accept-handler.js"
 import type { ProposeInput, SuggestedActionRow } from "./types.js"
 import type { JobsStoreApi } from "../jobs/jobs-store-types.js"
 
@@ -54,6 +54,24 @@ describe("buildPromptJobSpec", () => {
   it("does not set permission_mode (cannot grant bypass)", () => {
     const spec = buildPromptJobSpec(fakeRow({ actionType: "task" }))
     expect("permission_mode" in spec.payload).toBe(false)
+  })
+
+  it("stamps DEFAULT_MAX_TURNS when the payload doesn't override it (task-23 — " +
+    "the prompt-worker otherwise defaults to 1 turn and every multi-tool-call " +
+    "action fails with \"Reached maximum number of turns (1)\")", () => {
+    const spec = buildPromptJobSpec(fakeRow({ actionType: "research" }))
+    expect(spec.payload.max_turns).toBe(DEFAULT_MAX_TURNS)
+    expect(spec.payload.max_turns).toBeGreaterThan(1)
+  })
+
+  it("honors an agent-supplied maxTurns override", () => {
+    const spec = buildPromptJobSpec(
+      fakeRow({
+        actionType: "research",
+        payload: { prompt: "go research X", maxTurns: 5 },
+      }),
+    )
+    expect(spec.payload.max_turns).toBe(5)
   })
 
   it("passes through agent-supplied allowedTools/model", () => {
@@ -120,6 +138,10 @@ describe("AcceptHandler accept flow", () => {
     expect(out.job?.enabled).toBe(true)
     expect(out.job?.spec).toBe("") // one-shot
     expect(out.job?.nextRunAt).toBe(1000) // due now (Clock.Test)
+    // task-23: the durably-recorded job payload must carry a multi-turn
+    // budget, not just the pure buildPromptJobSpec() builder — this is the
+    // payload the JobTicker/PromptWorker actually reads at run time.
+    expect((out.job?.payload as { max_turns?: number })?.max_turns).toBe(DEFAULT_MAX_TURNS)
   })
 
   it("arms the accepted job atomically — no separate re-enabling write (closes the double-fire window)", async () => {

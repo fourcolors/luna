@@ -58,6 +58,22 @@ const PROMPT_PREFACE: Record<string, string> = {
 export const executionIdFor = (actionId: string): string => `saj-${actionId}`
 
 /**
+ * Default turn budget stamped on accepted-action prompt jobs when the
+ * action payload doesn't specify its own `maxTurns` (task-23). Without an
+ * explicit `max_turns`, the prompt-worker (packages/adapter-sdk/src/prompt-worker.ts)
+ * defaults to 1 turn — fine for a single-shot answer, but suggested actions
+ * (task / research / create_skill / create_workflow) routinely need several
+ * tool calls to do anything useful, so they failed immediately with
+ * "Reached maximum number of turns (1)". Independently rediscovered by the
+ * self-improve-loop across exp_8535e52d, exp_3af234d4, exp_6e976de5 and
+ * exp_2dfc37df. 15 mirrors the turn budget used for other short, focused
+ * background prompt jobs in this codebase (see apps/ui-web/scripts/push-through-install.ts's
+ * default of 16); suggested actions are scoped similarly (a single accepted
+ * chat suggestion, not an open-ended research sweep like the 30-turn daily brief).
+ */
+export const DEFAULT_MAX_TURNS = 15
+
+/**
  * Pure builder: a prompt-style action → a one-shot `kind:'prompt'` job spec.
  * Exported for tests (mirrors prompt-worker's `parsePromptPayload` test seam).
  * `spec` is empty → the ticker fires it exactly once. NOTE: no `permission_mode`
@@ -71,6 +87,11 @@ export const executionIdFor = (actionId: string): string => `saj-${actionId}`
  * while I keep working" lands the answer in the conversation instead of
  * dead-ending in a job row. `row.threadId` is the originating thread bound at
  * propose() time.
+ *
+ * `max_turns` defaults to `DEFAULT_MAX_TURNS` (task-23): the prompt-worker's
+ * own bare default is 1 turn, which starves any action that needs more than
+ * a single tool call. An agent-authored payload can still override via
+ * `payload.maxTurns`.
  */
 export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
   const payload = row.payload as PromptActionPayload
@@ -84,6 +105,7 @@ export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
       source: "suggested-action",
       user_prompt: userPrompt,
       deliver_to: { kind: "chat_thread", thread_id: row.threadId },
+      max_turns: payload.maxTurns ?? DEFAULT_MAX_TURNS,
       ...(payload.allowedTools && payload.allowedTools.length > 0
         ? { allowed_tools: [...payload.allowedTools] }
         : {}),
