@@ -1937,4 +1937,303 @@ describe("JobTicker", () => {
       await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: worker }))))
     })
   })
+
+  // ── Phase B1: doctor auto-enqueue ─────────────────────────────────────
+  describe("doctor auto-enqueue (Phase B1)", () => {
+    const doctorOpts = {
+      failStreakThreshold: 2,
+      orphanStreakThreshold: 2,
+      maxHealAttempts: 3,
+      cliPath: "/tmp/luna-doctor-workflow.ts",
+    } as const
+
+    it("after N consecutive failures on a prompt job (max_attempts=1), enqueues doctor and disables patient", async () => {
+      const angry: Worker = () =>
+        Effect.fail(new WorkerError({ reason: "worker_failed", message: "chronic" }))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({
+          id: "prompt-chronic",
+          kind: "prompt",
+          spec: "0 0 1 1 *",
+          payload: { label: "p", max_attempts: 1 },
+        })
+        yield* store.setV2Fields("prompt-chronic", {
+          schedule: "0 0 1 1 *",
+          nextRunAt: 0,
+        })
+
+        yield* ticker.drain
+        yield* ticker.awaitIdle
+        const after1 = yield* store.getById("prompt-chronic")
+        expect(after1?.failStreak).toBe(1)
+        expect(after1?.healState).toBe("ok")
+        expect(after1?.enabled).toBe(true)
+
+        yield* store.setV2Fields("prompt-chronic", { nextRunAt: 0 })
+        yield* ticker.drain
+        yield* ticker.awaitIdle
+
+        const patient = yield* store.getById("prompt-chronic")
+        expect(patient?.failStreak).toBe(2)
+        expect(patient?.enabled).toBe(false)
+        expect(patient?.healState).toBe("healing")
+        expect(patient?.healAttempts).toBe(1)
+
+        const all = yield* store.listAll()
+        const doctors = all.filter(
+          (j) =>
+            j.id.startsWith("doctor-") ||
+            j.payload.source === "doctor-workflow",
+        )
+        expect(doctors.length).toBe(1)
+        expect(doctors[0]?.kind).toBe("workflow")
+        expect(doctors[0]?.enabled).toBe(true)
+        expect(
+          (doctors[0]?.payload as { finding?: { patient?: { id?: string } } })
+            .finding?.patient?.id,
+        ).toBe("prompt-chronic")
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack(
+              { prompt: angry },
+              { doctor: { ...doctorOpts } },
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("dream/wake never enqueue doctor even after many failures", async () => {
+      const angry: Worker = () =>
+        Effect.fail(new WorkerError({ reason: "worker_failed", message: "nope" }))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        for (const [id, kind] of [
+          ["dream-fail", "dream"],
+          ["wake-fail", "wake"],
+        ] as const) {
+          yield* store.record({
+            id,
+            kind,
+            spec: "0 0 1 1 *",
+            payload: { label: id, max_attempts: 1 },
+          })
+          yield* store.setV2Fields(id, { schedule: "0 0 1 1 *", nextRunAt: 0 })
+        }
+
+        for (let i = 0; i < 3; i++) {
+          yield* ticker.drain
+          yield* ticker.awaitIdle
+          yield* store.setV2Fields("dream-fail", { nextRunAt: 0 })
+          yield* store.setV2Fields("wake-fail", { nextRunAt: 0 })
+        }
+
+        const dream = yield* store.getById("dream-fail")
+        const wake = yield* store.getById("wake-fail")
+        expect(dream?.failStreak).toBeGreaterThanOrEqual(2)
+        expect(wake?.failStreak).toBeGreaterThanOrEqual(2)
+        expect(dream?.healState).toBe("ok")
+        expect(wake?.healState).toBe("ok")
+        expect(dream?.enabled).toBe(true)
+        expect(wake?.enabled).toBe(true)
+
+        const all = yield* store.listAll()
+        const doctors = all.filter((j) => j.id.startsWith("doctor-"))
+        expect(doctors.length).toBe(0)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack(
+              { dream: angry, wake: angry },
+              { doctor: { ...doctorOpts } },
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("doctor-workflow jobs never enqueue doctor for themselves", async () => {
+      const angry: Worker = () =>
+        Effect.fail(new WorkerError({ reason: "worker_failed", message: "doc-fail" }))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        // Patient already healing under doctor — doctor one-shot fails.
+        yield* store.record({
+          id: "patient-under-care",
+          kind: "prompt",
+          spec: "0 0 1 1 *",
+          payload: { label: "p" },
+        })
+        yield* store.setV2Fields("patient-under-care", {
+          schedule: "0 0 1 1 *",
+          enabled: false,
+          healAttempts: 1,
+          healState: "healing",
+        })
+        yield* store.record({
+          id: "doctor-self-check-a1-x",
+          kind: "workflow",
+          spec: "",
+          payload: {
+            label: "doctor",
+            source: "doctor-workflow",
+            finding: {
+              id: "f1",
+              patient: { kind: "job", id: "patient-under-care" },
+            },
+            doctor_attempt: 1,
+            max_attempts: 1,
+          },
+          enabled: true,
+          nextRunAt: 0,
+        })
+
+        yield* ticker.drain
+        yield* ticker.awaitIdle
+
+        // Doctor failed → re-enqueues ANOTHER doctor for the patient (attempt 2),
+        // but never treats the doctor row as a patient (no doctor-for-doctor).
+        const all = yield* store.listAll()
+        const doctorJobs = all.filter(
+          (j) =>
+            j.id.startsWith("doctor-") ||
+            j.payload.source === "doctor-workflow",
+        )
+        // Original + one re-enqueue for patient, none nested on the doctor id.
+        expect(doctorJobs.length).toBe(2)
+        for (const d of doctorJobs) {
+          const pid = (
+            d.payload as { finding?: { patient?: { id?: string } } }
+          ).finding?.patient?.id
+          expect(pid).toBe("patient-under-care")
+          expect(pid).not.toBe(d.id)
+        }
+        const patient = yield* store.getById("patient-under-care")
+        expect(patient?.healAttempts).toBe(2)
+        expect(patient?.healState).toBe("healing")
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack(
+              { workflow: angry, prompt: angry },
+              { doctor: { ...doctorOpts } },
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("success resets fail/orphan/heal streaks", async () => {
+      const ok: Worker = () => Effect.succeed({ outputText: "ok" })
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({
+          id: "recover-streaks",
+          kind: "prompt",
+          spec: "*/5 * * * *",
+          payload: { label: "r" },
+        })
+        yield* store.setV2Fields("recover-streaks", {
+          schedule: "*/5 * * * *",
+          nextRunAt: 0,
+          failStreak: 4,
+          orphanStreak: 2,
+          healAttempts: 1,
+          healState: "ok",
+          retryAttempt: 2,
+        })
+
+        yield* ticker.drain
+        yield* ticker.awaitIdle
+
+        const after = yield* store.getById("recover-streaks")
+        expect(after?.failStreak).toBe(0)
+        expect(after?.orphanStreak).toBe(0)
+        expect(after?.healAttempts).toBe(0)
+        expect(after?.healState).toBe("ok")
+        expect(after?.retryAttempt).toBe(0)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack({ prompt: ok }, { doctor: { ...doctorOpts } }),
+          ),
+        ),
+      )
+    })
+
+    it("after max heal attempts, escalate (no 4th doctor)", async () => {
+      const angry: Worker = () =>
+        Effect.fail(new WorkerError({ reason: "worker_failed", message: "still broken" }))
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const ticker = yield* JobTicker
+        yield* store.record({
+          id: "patient-maxed",
+          kind: "prompt",
+          spec: "0 0 1 1 *",
+          payload: { label: "p" },
+        })
+        yield* store.setV2Fields("patient-maxed", {
+          schedule: "0 0 1 1 *",
+          enabled: false,
+          healAttempts: 3,
+          healState: "healing",
+        })
+        yield* store.record({
+          id: "doctor-patient-maxed-a3-zz",
+          kind: "workflow",
+          spec: "",
+          payload: {
+            label: "doctor",
+            source: "doctor-workflow",
+            finding: {
+              id: "f-max",
+              patient: { kind: "job", id: "patient-maxed" },
+            },
+            doctor_attempt: 3,
+            max_attempts: 1,
+          },
+          enabled: true,
+          nextRunAt: 0,
+        })
+
+        yield* ticker.drain
+        yield* ticker.awaitIdle
+
+        const patient = yield* store.getById("patient-maxed")
+        expect(patient?.healState).toBe("escalated")
+        expect(patient?.enabled).toBe(false)
+        expect(patient?.healAttempts).toBe(3)
+
+        const all = yield* store.listAll()
+        const doctors = all.filter(
+          (j) =>
+            j.id.startsWith("doctor-") ||
+            j.payload.source === "doctor-workflow",
+        )
+        // Only the original doctor job — no 4th attempt enqueued.
+        expect(doctors.length).toBe(1)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            buildStack(
+              { workflow: angry },
+              { doctor: { ...doctorOpts, maxHealAttempts: 3 } },
+            ),
+          ),
+        ),
+      )
+    })
+  })
 })

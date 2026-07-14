@@ -43,9 +43,25 @@ bun run apps/ui-web/scripts/luna-doctor-workflow.ts verify --state-dir <dir>
 bun run apps/ui-web/scripts/luna-doctor-workflow.ts finalize --state-dir <dir>
 ```
 
+## Auto-enqueue (Phase B1)
+
+When a non-exempt job's `fail_streak` or `orphan_streak` hits the threshold
+(default **5**), JobTicker:
+
+1. Sets `heal_state=healing`, `enabled=0`, `heal_attempts += 1`
+2. Enqueues the same doctor workflow one-shot as a manual run
+3. On doctor failure: re-enqueue until `heal_attempts` reaches **3**, then
+   `heal_state=escalated` (no 4th doctor)
+4. On patient success: resets fail/orphan/heal counters
+
+**Exempt from auto-doctor:** `dream`, `wake`, and any `source=doctor-workflow`
+job (no doctor-for-doctor).
+
+Thresholds / CLI path are overridable via `JobTickerLayer({ doctor: { ... } })`.
+
 ## Kill switch
 
-`LUNA_SCHED_DOCTOR=0` will freeze **auto-enqueue** (Phase B1). Manual
+`LUNA_SCHED_DOCTOR=0` freezes **auto-enqueue** only. Manual
 `doctor-workflow-run` still works.
 
 ## Code

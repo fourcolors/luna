@@ -156,11 +156,21 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
           enabled?: boolean
           nextRunAt?: number | null
           retryAttempt?: number
+          failStreak?: number
+          orphanStreak?: number
+          healAttempts?: number
+          healState?: "ok" | "healing" | "escalated"
         } = {}
         if (patch.schedule !== undefined) fields.schedule = patch.schedule
         if (patch.enabled !== undefined) fields.enabled = patch.enabled
         if (patch.nextRunAt !== undefined) fields.nextRunAt = patch.nextRunAt
-        if (patch.resetStreaks) fields.retryAttempt = 0
+        if (patch.resetStreaks) {
+          fields.retryAttempt = 0
+          fields.failStreak = 0
+          fields.orphanStreak = 0
+          fields.healAttempts = 0
+          fields.healState = "ok"
+        }
         if (Object.keys(fields).length > 0) {
           yield* opts.jobs
             .setV2Fields(jobId, fields)
@@ -216,16 +226,20 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
           nextRunAt: job.nextRunAt,
         })
         .pipe(Effect.mapError((e) => e.message))
-      if (job.schedule) {
-        yield* opts.jobs
-          .setV2Fields(jobId, {
-            schedule: job.schedule,
-            enabled: job.enabled,
-            nextRunAt: job.nextRunAt,
-            retryAttempt: job.retryAttempt,
-          })
-          .pipe(Effect.mapError((e) => e.message))
-      }
+      // Always re-apply V2/V4 columns after record() (record defaults them).
+      // Old backup snapshots may predate SCHEMA_V4 - coalesce to safe defaults.
+      yield* opts.jobs
+        .setV2Fields(jobId, {
+          schedule: job.schedule,
+          enabled: job.enabled,
+          nextRunAt: job.nextRunAt,
+          retryAttempt: job.retryAttempt ?? 0,
+          failStreak: job.failStreak ?? 0,
+          orphanStreak: job.orphanStreak ?? 0,
+          healAttempts: job.healAttempts ?? 0,
+          healState: job.healState ?? "ok",
+        })
+        .pipe(Effect.mapError((e) => e.message))
       if (job.lastStatus) {
         yield* opts.jobs
           .touch(jobId, { lastStatus: job.lastStatus })
@@ -237,7 +251,7 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
   const escalate: JobHealApi["escalate"] = (jobId, report) =>
     Effect.gen(function* () {
       yield* opts.jobs
-        .setV2Fields(jobId, { enabled: false })
+        .setV2Fields(jobId, { enabled: false, healState: "escalated" })
         .pipe(Effect.mapError((e) => e.message))
       yield* opts.jobs
         .touch(jobId, { lastStatus: "errored" })

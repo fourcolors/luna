@@ -91,6 +91,13 @@
 import { Cron, Duration, Effect, Either, FiberMap, Layer, Ref, Schedule } from "effect"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
+import {
+  handleDoctorWorkflowFailure,
+  isDoctorWorkflowJob,
+  maybeEnqueueDoctor,
+  resolveDoctorEnqueueConfig,
+  type DoctorEnqueueConfig,
+} from "../doctor/doctor-enqueue.js"
 import { JobsStoreService } from "./jobs-store.js"
 import type { JobRun, JobRunTerminalStatus, PersistedJob } from "./jobs-store-types.js"
 import { WorkerRegistry, WorkerError } from "./worker-registry.js"
@@ -303,6 +310,30 @@ export interface JobTickerOptions {
    * the wait (immediate interrupt — useful in unit tests).
    */
   readonly shutdownDrainMs?: number
+
+  /**
+   * Phase B1 — auto-enqueue the doctor workflow when a non-exempt job
+   * chronically fails (`fail_streak` / `orphan_streak`). Kill switch:
+   * `LUNA_SCHED_DOCTOR=0` (env always wins over `enabled: true`).
+   */
+  readonly doctor?: {
+    /** Default true unless `LUNA_SCHED_DOCTOR=0`. */
+    readonly enabled?: boolean
+    /** Default 5. */
+    readonly failStreakThreshold?: number
+    /** Default 5. */
+    readonly orphanStreakThreshold?: number
+    /** Default 3. */
+    readonly maxHealAttempts?: number
+    /**
+     * Absolute path to `luna-doctor-workflow.ts`. Defaults to
+     * `join(cwd, 'apps/ui-web/scripts/luna-doctor-workflow.ts')` or
+     * `LUNA_DOCTOR_CLI`.
+     */
+    readonly cliPath?: string
+    readonly bunBin?: string
+    readonly lunaHome?: string
+  }
 }
 
 /**
@@ -468,6 +499,10 @@ export const JobTickerLayer = (
   const shutdownDrainMs =
     options?.shutdownDrainMs ??
     (Number.isFinite(envDrain) && envDrain >= 0 ? envDrain : 90_000)
+  // Phase B1 — doctor auto-enqueue config (resolved once at layer build).
+  const doctorCfg: DoctorEnqueueConfig = resolveDoctorEnqueueConfig(
+    options?.doctor,
+  )
 
   return Layer.scoped(
     JobTicker,
@@ -773,22 +808,33 @@ export const JobTickerLayer = (
               outputText: result.right.outputText,
               stepsJson: result.right.stepsJson ?? null,
             }).pipe(Effect.catchAll(() => Effect.void))
-            // Seam 3 — clear a stale retry streak on recovery. Only issue the
-            // write when there is something to clear: retry_attempt is
-            // already 0 for the overwhelming majority of ticks (no prior
-            // failure), and an unconditional reset would be a redundant
-            // UPDATE on every successful dispatch of every recurring job.
-            if (job.retryAttempt !== 0) {
+            // Seam 3 + Phase B1 — clear retry + doctor streaks on recovery.
+            // Only write when something is non-zero / non-ok so healthy ticks
+            // stay free of redundant UPDATEs.
+            if (
+              job.retryAttempt !== 0 ||
+              job.failStreak !== 0 ||
+              job.orphanStreak !== 0 ||
+              job.healAttempts !== 0 ||
+              job.healState !== "ok"
+            ) {
               yield* store
-                .setV2Fields(job.id, { retryAttempt: 0 })
+                .setV2Fields(job.id, {
+                  retryAttempt: 0,
+                  failStreak: 0,
+                  orphanStreak: 0,
+                  healAttempts: 0,
+                  healState: "ok",
+                })
                 .pipe(Effect.catchAll(() => Effect.void))
             }
           } else {
             const err = result.left as WorkerError
+            const errMsg = `${err.reason}: ${err.message}`
             yield* store.recordRunEnd(run.id, {
               finishedAt,
               status: "failed",
-              error: `${err.reason}: ${err.message}`,
+              error: errMsg,
               // Workers may pass partial output through WorkerError.stepsJson
               // (e.g. workflow worker on halt) — persist it so the operator
               // can see which step failed without rerunning.
@@ -850,6 +896,32 @@ export const JobTickerLayer = (
               yield* store
                 .setV2Fields(job.id, { retryAttempt: 0 })
                 .pipe(Effect.catchAll(() => Effect.void))
+            }
+
+            // Phase B1 — doctor auto-heal. Doctor workflow jobs never
+            // become patients themselves; failures re-enqueue or escalate
+            // the *patient*. Everyone else bumps fail_streak and may
+            // enqueue a doctor one-shot once the threshold is hit.
+            if (isDoctorWorkflowJob(job)) {
+              yield* handleDoctorWorkflowFailure(
+                store,
+                job,
+                errMsg,
+                doctorCfg,
+                finishedAt,
+              ).pipe(Effect.catchAllDefect(() => Effect.void))
+            } else {
+              const newFailStreak = job.failStreak + 1
+              yield* store
+                .setV2Fields(job.id, { failStreak: newFailStreak })
+                .pipe(Effect.catchAll(() => Effect.void))
+              yield* maybeEnqueueDoctor(
+                store,
+                { ...job, failStreak: newFailStreak },
+                errMsg,
+                doctorCfg,
+                finishedAt,
+              ).pipe(Effect.catchAllDefect(() => Effect.void))
             }
           }
           // recordRunEnd closes the job_runs row but does NOT touch jobs.last_status,

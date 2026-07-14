@@ -22,6 +22,7 @@ import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import type {
   CrashReconcileResult,
+  JobHealState,
   JobKind,
   JobRun,
   JobRunStatus,
@@ -130,6 +131,28 @@ const SCHEMA_V3 = `
   ALTER TABLE jobs ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0;
 `
 
+/**
+ * Phase B1 — doctor auto-heal counters.
+ *
+ *   fail_streak    — consecutive dispatch failures (JobTicker failure path)
+ *   orphan_streak  — crash-reconcile pull-forwards of next_run_at
+ *   heal_attempts  — doctor workflow cycles started for this patient
+ *   heal_state     — 'ok' | 'healing' | 'escalated'
+ *
+ * Plain literal DEFAULTs so existing rows backfill without a data pass.
+ */
+const SCHEMA_V4 = `
+  ALTER TABLE jobs ADD COLUMN fail_streak INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE jobs ADD COLUMN orphan_streak INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE jobs ADD COLUMN heal_attempts INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE jobs ADD COLUMN heal_state TEXT NOT NULL DEFAULT 'ok';
+`
+
+const parseHealState = (raw: unknown): JobHealState => {
+  if (raw === "healing" || raw === "escalated" || raw === "ok") return raw
+  return "ok"
+}
+
 // ── bun:sqlite minimal shape ─────────────────────────────────────────────────
 
 interface BunDb {
@@ -175,6 +198,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             enabled: input.enabled ?? true,
             nextRunAt: input.nextRunAt ?? null,
             retryAttempt: 0,
+            failStreak: 0,
+            orphanStreak: 0,
+            healAttempts: 0,
+            healState: "ok",
           }
           const existed = yield* Ref.get(store).pipe(
             Effect.map((m) => m.has(input.id)),
@@ -256,6 +283,22 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                 patch.retryAttempt !== undefined
                   ? patch.retryAttempt
                   : existing.retryAttempt,
+              failStreak:
+                patch.failStreak !== undefined
+                  ? patch.failStreak
+                  : existing.failStreak,
+              orphanStreak:
+                patch.orphanStreak !== undefined
+                  ? patch.orphanStreak
+                  : existing.orphanStreak,
+              healAttempts:
+                patch.healAttempts !== undefined
+                  ? patch.healAttempts
+                  : existing.healAttempts,
+              healState:
+                patch.healState !== undefined
+                  ? patch.healState
+                  : existing.healState,
               updatedAt: ts,
             }
             const m2 = new Map(map)
@@ -510,6 +553,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
 
             let nextStatus = job.lastStatus
             let nextRunAt = job.nextRunAt
+            let orphanStreak = job.orphanStreak
             let changed = false
 
             if (stickyRunning) {
@@ -524,6 +568,9 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               const next = Math.min(current, pulled)
               if (next !== nextRunAt) {
                 nextRunAt = next
+                // Phase B1: each crash pull-forward counts toward doctor
+                // orphan threshold (same job may still be chronically wedged).
+                orphanStreak = job.orphanStreak + 1
                 changed = true
               }
             }
@@ -534,6 +581,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               ...job,
               lastStatus: nextStatus,
               nextRunAt,
+              orphanStreak,
               updatedAt: finishedAt,
             })
             dirty = true
@@ -625,6 +673,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         applyMigration(db, "jobs", 1, SCHEMA_V1, nowMs)
         applyMigration(db, "jobs", 2, SCHEMA_V2, nowMs)
         applyMigration(db, "jobs", 3, SCHEMA_V3, nowMs)
+        applyMigration(db, "jobs", 4, SCHEMA_V4, nowMs)
 
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -637,10 +686,12 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
            VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
         )
         // V2 SELECT includes the additive columns (schedule, enabled, next_run_at);
-        // V3 adds retry_attempt (job-ticker-oban-deadlines).
+        // V3 adds retry_attempt (job-ticker-oban-deadlines);
+        // V4 adds doctor auto-heal counters (fail/orphan/heal_*).
         const SELECT_COLS =
           "id, kind, spec, next_run, last_run, last_status, payload_json, " +
-          "created_at, updated_at, schedule, enabled, next_run_at, retry_attempt"
+          "created_at, updated_at, schedule, enabled, next_run_at, retry_attempt, " +
+          "fail_streak, orphan_streak, heal_attempts, heal_state"
         const listAllStmt = db.query(
           `SELECT ${SELECT_COLS} FROM jobs ORDER BY created_at ASC`,
         )
@@ -670,11 +721,15 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         // diverged from the Memory layer (which honours null-clears).
         const setV2FieldsStmt = db.query(
           `UPDATE jobs
-              SET schedule      = CASE WHEN ? = 1 THEN ? ELSE schedule END,
-                  enabled       = CASE WHEN ? = 1 THEN ? ELSE enabled END,
-                  next_run_at   = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
-                  retry_attempt = CASE WHEN ? = 1 THEN ? ELSE retry_attempt END,
-                  updated_at    = ?
+              SET schedule       = CASE WHEN ? = 1 THEN ? ELSE schedule END,
+                  enabled        = CASE WHEN ? = 1 THEN ? ELSE enabled END,
+                  next_run_at    = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+                  retry_attempt  = CASE WHEN ? = 1 THEN ? ELSE retry_attempt END,
+                  fail_streak    = CASE WHEN ? = 1 THEN ? ELSE fail_streak END,
+                  orphan_streak  = CASE WHEN ? = 1 THEN ? ELSE orphan_streak END,
+                  heal_attempts  = CASE WHEN ? = 1 THEN ? ELSE heal_attempts END,
+                  heal_state     = CASE WHEN ? = 1 THEN ? ELSE heal_state END,
+                  updated_at     = ?
             WHERE id = ?`,
         )
         const listDueStmt = db.query(
@@ -758,9 +813,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         )
         const repairJobStmt = db.query(
           `UPDATE jobs
-              SET last_status = CASE WHEN ? = 1 THEN ? ELSE last_status END,
-                  next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
-                  updated_at  = ?
+              SET last_status   = CASE WHEN ? = 1 THEN ? ELSE last_status END,
+                  next_run_at   = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
+                  orphan_streak = CASE WHEN ? = 1 THEN ? ELSE orphan_streak END,
+                  updated_at    = ?
             WHERE id = ?`,
         )
 
@@ -778,6 +834,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           enabled: number
           next_run_at: number | null
           retry_attempt: number
+          fail_streak: number
+          orphan_streak: number
+          heal_attempts: number
+          heal_state: string
         }
         type RawRunRow = {
           id: number
@@ -820,7 +880,11 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             schedule: row.schedule,
             enabled: row.enabled !== 0,
             nextRunAt: row.next_run_at,
-            retryAttempt: row.retry_attempt,
+            retryAttempt: row.retry_attempt ?? 0,
+            failStreak: row.fail_streak ?? 0,
+            orphanStreak: row.orphan_streak ?? 0,
+            healAttempts: row.heal_attempts ?? 0,
+            healState: parseHealState(row.heal_state),
           }
         }
         const rowToRun = (row: RawRunRow): JobRun => ({
@@ -891,6 +955,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               enabled: input.enabled ?? true,
               nextRunAt: input.nextRunAt ?? null,
               retryAttempt: 0,
+              failStreak: 0,
+              orphanStreak: 0,
+              healAttempts: 0,
+              healState: "ok",
             } satisfies PersistedJob
           })
 
@@ -962,6 +1030,14 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                   patch.nextRunAt ?? null,
                   patch.retryAttempt !== undefined ? 1 : 0,
                   patch.retryAttempt ?? null,
+                  patch.failStreak !== undefined ? 1 : 0,
+                  patch.failStreak ?? null,
+                  patch.orphanStreak !== undefined ? 1 : 0,
+                  patch.orphanStreak ?? null,
+                  patch.healAttempts !== undefined ? 1 : 0,
+                  patch.healAttempts ?? null,
+                  patch.healState !== undefined ? 1 : 0,
+                  patch.healState ?? null,
                   ts,
                   id,
                 )
@@ -1224,6 +1300,8 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                   let statusVal: string | null = job.lastStatus
                   let setNext = 0
                   let nextVal: number | null = job.nextRunAt
+                  let setOrphan = 0
+                  let orphanVal: number | null = job.orphanStreak
 
                   if (stickyRunning) {
                     setStatus = 1
@@ -1242,16 +1320,23 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                     if (next !== job.nextRunAt) {
                       setNext = 1
                       nextVal = next
+                      // Phase B1: crash pull-forward bumps orphan_streak.
+                      setOrphan = 1
+                      orphanVal = job.orphanStreak + 1
                     }
                   }
 
-                  if (setStatus === 0 && setNext === 0) continue
+                  if (setStatus === 0 && setNext === 0 && setOrphan === 0) {
+                    continue
+                  }
 
                   repairJobStmt.run(
                     setStatus,
                     statusVal,
                     setNext,
                     nextVal,
+                    setOrphan,
+                    orphanVal,
                     finishedAt,
                     jobId,
                   )

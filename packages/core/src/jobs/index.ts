@@ -21,6 +21,7 @@ export {
 export {
   JobsStoreError,
   type CrashReconcileResult,
+  type JobHealState,
   type JobKind,
   type JobRun,
   type JobRunStatus,

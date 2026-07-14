@@ -492,6 +492,50 @@ describe("JobsStoreService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  // Phase B1 / SCHEMA_V4 — doctor auto-heal counters.
+  it("failStreak/orphanStreak/heal* default to 0/ok and round-trip through setV2Fields", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const job = yield* store.record({
+        id: "heal-fields",
+        kind: "prompt",
+        spec: "*/15 * * * *",
+        payload: { label: "heal-fields" },
+      })
+      expect(job.failStreak).toBe(0)
+      expect(job.orphanStreak).toBe(0)
+      expect(job.healAttempts).toBe(0)
+      expect(job.healState).toBe("ok")
+
+      yield* store.setV2Fields("heal-fields", {
+        failStreak: 5,
+        orphanStreak: 2,
+        healAttempts: 1,
+        healState: "healing",
+        enabled: false,
+      })
+      const mid = yield* store.getById("heal-fields")
+      expect(mid?.failStreak).toBe(5)
+      expect(mid?.orphanStreak).toBe(2)
+      expect(mid?.healAttempts).toBe(1)
+      expect(mid?.healState).toBe("healing")
+      expect(mid?.enabled).toBe(false)
+
+      yield* store.setV2Fields("heal-fields", {
+        failStreak: 0,
+        orphanStreak: 0,
+        healAttempts: 0,
+        healState: "ok",
+        enabled: true,
+      })
+      const after = yield* store.getById("heal-fields")
+      expect(after?.failStreak).toBe(0)
+      expect(after?.healState).toBe("ok")
+      expect(after?.enabled).toBe(true)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   // job-ticker-oban-deadlines — Oban-style retry counter (SCHEMA_V3).
   it("retryAttempt defaults to 0 on record() and round-trips through setV2Fields", async () => {
     const program = Effect.gen(function* () {
@@ -567,6 +611,10 @@ describe("JobsStoreService (Memory layer)", () => {
       expect(job?.nextRunAt!).toBeGreaterThanOrEqual(finishedAt)
       expect(job?.nextRunAt!).toBeLessThanOrEqual(finishedAt + 60_000)
       expect(job?.nextRunAt!).toBeLessThan(farFuture)
+      // Phase B1: pull-forward bumps orphan_streak.
+      expect(job?.orphanStreak).toBe(1)
+      expect(job?.failStreak).toBe(0)
+      expect(job?.healState).toBe("ok")
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
@@ -607,6 +655,7 @@ describe("JobsStoreService (Memory layer)", () => {
       // No sticky-running to clear; next_run_at must stay far future.
       expect(job?.lastStatus).toBe("fired")
       expect(job?.nextRunAt).toBe(farFuture)
+      expect(job?.orphanStreak).toBe(0)
       expect(result.jobsRepaired).toBe(0)
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
@@ -798,6 +847,9 @@ dSqlite("JobsStoreService (SQLite layer) — reconcileAfterCrash", () => {
       expect(job?.lastStatus).toBe("errored")
       expect(job?.nextRunAt!).toBeGreaterThanOrEqual(finishedAt)
       expect(job?.nextRunAt!).toBeLessThanOrEqual(finishedAt + 60_000)
+      expect(job?.orphanStreak).toBe(1)
+      expect(job?.failStreak).toBe(0)
+      expect(job?.healState).toBe("ok")
     })
     await Effect.runPromise(
       Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
@@ -1063,8 +1115,8 @@ dSqlite("JobsStoreService (SQLite layer) — SCHEMA_V3 migration on existing V2 
     seedDb.close()
 
     // Act: re-open the same on-disk DB through makeLayer(). V1 and V2 are
-    // already recorded in schema_versions, so only SCHEMA_V3's additive
-    // ALTER should run.
+    // already recorded in schema_versions, so SCHEMA_V3 + SCHEMA_V4 additive
+    // ALTERs run (and only those).
     const layer = JobsStoreService.makeLayer(dbPath).pipe(
       Layer.provide(Clock.Default),
       Layer.provide(bootstrapStubL),
@@ -1080,8 +1132,12 @@ dSqlite("JobsStoreService (SQLite layer) — SCHEMA_V3 migration on existing V2 
       expect(row?.nextRunAt).toBe(2000)
       expect(row?.payload).toEqual({ label: "pre-v3-job" })
       // The required regression guard: retry_attempt defaults to 0 on a row
-      // that predates SCHEMA_V3.
+      // that predates SCHEMA_V3; doctor counters default via SCHEMA_V4.
       expect(row?.retryAttempt).toBe(0)
+      expect(row?.failStreak).toBe(0)
+      expect(row?.orphanStreak).toBe(0)
+      expect(row?.healAttempts).toBe(0)
+      expect(row?.healState).toBe("ok")
     })
     await Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(layer))))
   })

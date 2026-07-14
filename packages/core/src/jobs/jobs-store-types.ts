@@ -69,7 +69,21 @@ export interface PersistedJob {
    * Defaults to 0 for every existing row via the SCHEMA_V3 migration.
    */
   readonly retryAttempt: number
+
+  /**
+   * Doctor auto-heal counters (Phase B1 / SCHEMA_V4). Consecutive dispatch
+   * failures (`failStreak`) and crash-reconcile pull-forwards
+   * (`orphanStreak`) feed the JobTicker's doctor enqueue threshold.
+   * `healAttempts` / `healState` track in-flight doctor workflow cycles.
+   */
+  readonly failStreak: number
+  readonly orphanStreak: number
+  readonly healAttempts: number
+  readonly healState: JobHealState
 }
+
+/** Patient heal lifecycle for doctor auto-enqueue (SCHEMA_V4). */
+export type JobHealState = "ok" | "healing" | "escalated"
 
 /**
  * JobRun — one row per cron fire (or per oneshot dispatch). Written by the
@@ -186,6 +200,11 @@ export interface JobsStoreApi {
       readonly nextRunAt?: number | null
       /** Oban-style retry counter — see `PersistedJob.retryAttempt`. */
       readonly retryAttempt?: number
+      /** Doctor auto-heal fields (SCHEMA_V4) — see `PersistedJob.failStreak`. */
+      readonly failStreak?: number
+      readonly orphanStreak?: number
+      readonly healAttempts?: number
+      readonly healState?: JobHealState
     },
   ) => Effect.Effect<boolean, JobsStoreError>
 
