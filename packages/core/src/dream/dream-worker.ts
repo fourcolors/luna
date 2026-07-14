@@ -5,9 +5,10 @@
  * `workflow` workers are typed `Worker<never>` and close over only
  * `SDKClient` + `AgentNotesService` (prompt-worker.ts). They cannot carry the
  * dream cycle, which requires `DreamStore | DreamReasoner | SessionStore |
- * MemoryRouter | Clock` (+ an OPTIONAL `CalibrationStore`). So dream gets its
- * OWN worker kind — exactly mirroring how `PromptWorkerLayer` resolves real
- * services at boot and registers a closed-over `Worker<never>`.
+ * MemoryRouter | Clock` (+ optional CalibrationStore / SuggestedActions /
+ * SkillRegistry). So dream gets its OWN worker kind — exactly mirroring how
+ * `PromptWorkerLayer` resolves real services at boot and registers a
+ * closed-over `Worker<never>`.
  *
  * The dream LOGIC is reused wholesale: the worker simply runs `runDream(now)`
  * (the same effect the legacy `registerDreamCron` cron fired). Only the
@@ -16,17 +17,19 @@
  * identity (the watermark's crash-recovery determinism depends on a single
  * clock — see runDream's idempotency notes).
  *
- * CalibrationStore is preserved as an OPTIONAL dependency: read via
- * `Effect.serviceOption` (same pattern PromptWorkerLayer uses for JobRunTools)
- * and, when present, folded into the captured context so `applyOps`' calibration
- * instrumentation keeps writing ECE rows. Absent → applyOps logs its existing
- * "CalibrationStore not provided" warning and the dream turn is unaffected.
+ * Optional deps (serviceOption at layer build, folded into captured context):
+ *   - CalibrationStore → ECE calibration rows from belief_candidate
+ *   - SuggestedActions → skill_improvement chips (source:"dream")
+ *   - SkillRegistry → skill catalog snapshot for the reasoner prompt
+ * Absent any of them → dream turn still runs; chip/catalog paths degrade loudly.
  */
 import { Context, Effect, Layer, Option } from "effect"
 import type { MemoryRouter } from "@luna/memory"
 import { Clock } from "../clock.js"
 import { CalibrationStore } from "../alignment/calibration-store.js"
 import { SessionStore } from "../session/session-store.js"
+import { SkillRegistry } from "../skill-registry/skill-registry.js"
+import { SuggestedActions } from "../suggested-actions/suggested-actions.js"
 import {
   WorkerError,
   WorkerRegistry,
@@ -69,8 +72,9 @@ export interface DreamWorkerLayerOptions {
  * Build a `Worker<never>` that runs one dream cycle against `ctx` — the dream
  * service environment captured at layer-build time. The captured context erases
  * the worker's R to `never` (via `Effect.provide`), satisfying the registry's
- * `Worker<never>` contract. `ctx` may additionally carry a `CalibrationStore`
- * (folded in by `DreamWorkerLayer`); providing a wider context is harmless.
+ * `Worker<never>` contract. `ctx` may additionally carry optional services
+ * (CalibrationStore, SuggestedActions, SkillRegistry) folded in by
+ * `DreamWorkerLayer`; providing a wider context is harmless.
  *
  * The dream `payload` is intentionally ignored — a dream cycle reads its window
  * from the watermark + SessionStore, not from the job row. The payload column
@@ -118,14 +122,16 @@ export const buildDreamWorker = (
 
 /**
  * Layer that registers the dream worker into the WorkerRegistry at boot.
- * Requires the dream service environment + WorkerRegistry; reads an OPTIONAL
- * CalibrationStore via serviceOption (so the layer's R does not grow and
- * compositions without it — tests, smokes — keep working).
+ * Requires the dream service environment + WorkerRegistry; reads OPTIONAL
+ * CalibrationStore / SuggestedActions / SkillRegistry via serviceOption (so
+ * the layer's R does not grow and compositions without them — tests, smokes —
+ * keep working).
  *
  *   const dreamWorkerL = DreamWorkerLayer().pipe(
  *     Layer.provide(Layer.mergeAll(
  *       dreamStoreL, dreamReasonerL, sessionStoreL, memoryRouterL, clockL,
  *       workerRegistryL, calibrationStoreL /* optional *\/,
+ *       suggestedActionsL /* optional *\/, skillRegistryL /* optional *\/,
  *     )),
  *   )
  */
@@ -141,17 +147,24 @@ export const DreamWorkerLayer = (
     Effect.gen(function* () {
       const reg = yield* WorkerRegistry
       const base = yield* Effect.context<DreamCtx>()
-      // Preserve calibration instrumentation when the sink is wired (advisor
-      // change 3). serviceOption keeps CalibrationStore OUT of the layer's R.
+      // Optional sinks — serviceOption keeps them OUT of the layer's R.
+      // Fold each into the captured context so applyOps / gatherInputs
+      // serviceOption resolves them at dispatch time. The cast narrows the
+      // wider Context back to DreamCtx — safe: a superset only ever satisfies
+      // MORE requirements.
       const calOpt = yield* Effect.serviceOption(CalibrationStore)
-      // Fold the optional CalibrationStore into the captured context so
-      // applyOps' serviceOption(CalibrationStore) resolves it at dispatch time.
-      // The cast narrows the (wider) Context<DreamCtx | CalibrationStore> back
-      // to the worker's declared input — safe: a superset context only ever
-      // satisfies MORE requirements.
-      const ctx = Option.isSome(calOpt)
-        ? (Context.add(base, CalibrationStore, calOpt.value) as Context.Context<DreamCtx>)
-        : base
+      const saOpt = yield* Effect.serviceOption(SuggestedActions)
+      const skillsOpt = yield* Effect.serviceOption(SkillRegistry)
+      let ctx: Context.Context<DreamCtx> = base
+      if (Option.isSome(calOpt)) {
+        ctx = Context.add(ctx, CalibrationStore, calOpt.value) as Context.Context<DreamCtx>
+      }
+      if (Option.isSome(saOpt)) {
+        ctx = Context.add(ctx, SuggestedActions, saOpt.value) as Context.Context<DreamCtx>
+      }
+      if (Option.isSome(skillsOpt)) {
+        ctx = Context.add(ctx, SkillRegistry, skillsOpt.value) as Context.Context<DreamCtx>
+      }
       const worker = buildDreamWorker(ctx)
       yield* reg.register(kind, {
         run: worker,

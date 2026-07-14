@@ -1851,6 +1851,10 @@ export interface BuildWorkerRegistryLayerOpts {
   readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   /** Optional ECE calibration sink (dream serviceOption). */
   readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  /** Optional SuggestedActions (dream skill_improvement chips, serviceOption). */
+  readonly suggestedActionsL?: Layer.Layer<import("@luna/core").SuggestedActions>
+  /** Optional SkillRegistry (dream skill catalog snapshot, serviceOption). */
+  readonly skillRegistryL?: Layer.Layer<import("@luna/core").SkillRegistry>
   // wake leaf deps (WakeWorkerLayer R = WakeReasoner|WakeLogStore|AgentNotesService|Clock)
   readonly wakeReasonerL: Layer.Layer<import("@luna/core").WakeReasoner>
   readonly wakeLogStoreL: Layer.Layer<WakeLogStore, import("effect").ConfigError>
@@ -1898,9 +1902,20 @@ export const buildWorkerRegistryLayer = (
     opts.chatThreadPosterL === undefined
       ? withCalibration
       : Layer.merge(withCalibration, opts.chatThreadPosterL)
+  // Dream skill-improvement chips: fold SuggestedActions + SkillRegistry when
+  // provided so DreamWorkerLayer's serviceOption resolves them at boot (same
+  // instances the chat layer uses — Effect memoizes layers by reference).
+  const withSuggestedActions =
+    opts.suggestedActionsL === undefined
+      ? withChatPoster
+      : Layer.merge(withChatPoster, opts.suggestedActionsL)
+  const withSkillRegistry =
+    opts.skillRegistryL === undefined
+      ? withSuggestedActions
+      : Layer.merge(withSuggestedActions, opts.skillRegistryL)
   // provideMerge so the registry stays VISIBLE above this layer (JobTickerLayer
   // + the integration test both yield* WorkerRegistry from the result).
-  return workers.pipe(Layer.provideMerge(withChatPoster))
+  return workers.pipe(Layer.provideMerge(withSkillRegistry))
 }
 
 // ── Layer wiring ────────────────────────────────────────────────────────
@@ -2491,6 +2506,8 @@ export const buildBaseLayer = (
     sessionStoreL: storeL,
     memoryRouterL,
     calibrationStoreL,
+    suggestedActionsL,
+    skillRegistryL,
     wakeReasonerL: wakeWorkerReasonerL,
     wakeLogStoreL: wakeWorkerLogStoreL,
   })

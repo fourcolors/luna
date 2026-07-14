@@ -187,6 +187,93 @@ describe("DreamReasonerDefault", () => {
     expect((after.content as { confidence: number }).confidence).toBe(RAW_BELIEF_OP.confidence)
   })
 
+  it("parses a well-formed skill_improvement create op", async () => {
+    const raw = {
+      kind: "skill_improvement",
+      mode: "create",
+      title: "Deploy skill",
+      prompt: "Author a deploy skill",
+      rationale: "operator re-did deploys thrice",
+    }
+    const ops = await Effect.runPromise(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(JSON.stringify([raw])), FakeMemory()),
+    )
+    expect(ops).toHaveLength(1)
+    const op = ops[0]!
+    expect(op.kind).toBe("skill_improvement")
+    expect(op.targetId.startsWith("skill-imp-")).toBe(true)
+    expect(op.after).toMatchObject({
+      mode: "create",
+      skillId: null,
+      title: "Deploy skill",
+      prompt: "Author a deploy skill",
+    })
+  })
+
+  it("parses skill_improvement update requiring skillId", async () => {
+    const raw = {
+      kind: "skill_improvement",
+      mode: "update",
+      skillId: "deploy-runbook",
+      title: "Tighten deploy skill",
+      prompt: "Add rollback section",
+      rationale: "rollback missing",
+    }
+    const ops = await Effect.runPromise(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(JSON.stringify([raw])), FakeMemory()),
+    )
+    expect(ops[0]!.targetId).toBe("deploy-runbook")
+    expect(ops[0]!.after).toMatchObject({ mode: "update", skillId: "deploy-runbook" })
+  })
+
+  it("rejects skill_improvement update without skillId", async () => {
+    const raw = {
+      kind: "skill_improvement",
+      mode: "update",
+      title: "x",
+      prompt: "y",
+      rationale: "z",
+    }
+    const exit = await Effect.runPromiseExit(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(JSON.stringify([raw])), FakeMemory()),
+    )
+    expect(exit._tag).toBe("Failure")
+  })
+
+  it("rejects skill_improvement with path-traversal skillId", async () => {
+    const raw = {
+      kind: "skill_improvement",
+      mode: "update",
+      skillId: "../../.ssh",
+      title: "evil",
+      prompt: "nope",
+      rationale: "poison",
+    }
+    const exit = await Effect.runPromiseExit(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(JSON.stringify([raw])), FakeMemory()),
+    )
+    expect(exit._tag).toBe("Failure")
+  })
+
+  it("buildDreamPrompt includes skill catalog and skill_improvement rules", () => {
+    const prompt = buildDreamPrompt({
+      sessions: [],
+      memories: [],
+      skills: [
+        {
+          id: "deploy-runbook",
+          name: "Deploy",
+          description: "How to deploy",
+          enabled: true,
+          source: "user",
+        },
+      ],
+    })
+    expect(prompt).toContain("skill_improvement")
+    expect(prompt).toContain("SKILL id=deploy-runbook")
+    expect(prompt).toContain("source=user")
+  })
+
   it("before-snapshot: when the belief id is pre-seeded in memory → op.before === the existing record", async () => {
     const existingRecord = makeBeliefRecord({
       statement: RAW_BELIEF_OP.statement,
