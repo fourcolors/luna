@@ -358,6 +358,113 @@ lockfile_hash() {
   fi
 }
 
+# --- crash-safe transaction + per-profile exclusion -------------------------
+# Updating mutates a live checkout across several fallible steps. A durable
+# phase journal makes a killed/power-lost run resumable, while an atomic mkdir
+# lock prevents timer/manual/CLI invocations from interleaving resets, installs,
+# and restarts. State lives outside the mutable repo by default.
+UPDATE_STATE_DIR="${LUNA_UPDATE_STATE_DIR:-$LUNA_HOME/update}"
+UPDATE_LOCK_DIR="$UPDATE_STATE_DIR/lock-$PROFILE"
+UPDATE_JOURNAL="$UPDATE_STATE_DIR/transaction-$PROFILE"
+UPDATE_LOCK_HELD=false
+TX_PHASE=""
+TX_PREV=""
+TX_TARGET=""
+TX_PREV_LOCK_HASH=""
+TRANSACTION_TRACK_APPLY=false
+EXPECTED_BUILD_SHA=""
+ALLOW_MISSING_BUILD_SHA=false
+# Set by readiness_ok to the furthest-progressed reason it kept polling, so a
+# timeout surfaces WHICH gate never cleared (active / crash-loop / healthz /
+# mode / buildSha) instead of an opaque "failed readiness".
+READINESS_DETAIL=""
+
+process_fingerprint() {
+  local pid="$1"
+  if [[ -r "/proc/$pid/stat" ]]; then
+    # Drop pid + parenthesized comm (which may contain spaces); starttime is
+    # field 20 in the remainder (field 22 in procfs' full record).
+    sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}'
+  else
+    ps -p "$pid" -o lstart= 2>/dev/null | tr -d '\n'
+  fi
+}
+
+lock_owner_alive() {
+  [[ -r "$UPDATE_LOCK_DIR/owner" ]] || return 1
+  local pid fingerprint current
+  pid="$(sed -n 's/^pid=//p' "$UPDATE_LOCK_DIR/owner" | head -1)"
+  fingerprint="$(sed -n 's/^fingerprint=//p' "$UPDATE_LOCK_DIR/owner" | head -1)"
+  [[ "$pid" =~ ^[0-9]+$ && -n "$fingerprint" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  current="$(process_fingerprint "$pid")"
+  [[ -n "$current" && "$current" == "$fingerprint" ]]
+}
+
+# shellcheck disable=SC2329  # invoked indirectly via `trap release_update_lock EXIT INT TERM` in acquire_update_lock
+release_update_lock() {
+  if [[ "$UPDATE_LOCK_HELD" == true ]]; then
+    rm -rf "$UPDATE_LOCK_DIR" 2>/dev/null || true
+    UPDATE_LOCK_HELD=false
+  fi
+}
+
+acquire_update_lock() {
+  mkdir -p "$UPDATE_STATE_DIR"
+  chmod 700 "$UPDATE_STATE_DIR" 2>/dev/null || true
+  if ! mkdir "$UPDATE_LOCK_DIR" 2>/dev/null; then
+    if lock_owner_alive; then
+      luna_warn "DEFERRED: another update for profile '$PROFILE' is already running"
+      return 1
+    fi
+    luna_warn "removing stale update lock for profile '$PROFILE'"
+    rm -rf "$UPDATE_LOCK_DIR"
+    mkdir "$UPDATE_LOCK_DIR" || return 1
+  fi
+  local fingerprint
+  fingerprint="$(process_fingerprint "$$")"
+  [[ -n "$fingerprint" ]] || { rm -rf "$UPDATE_LOCK_DIR"; return 1; }
+  ( umask 077; printf 'pid=%s\nfingerprint=%s\n' "$$" "$fingerprint" > "$UPDATE_LOCK_DIR/owner" )
+  UPDATE_LOCK_HELD=true
+  trap release_update_lock EXIT INT TERM
+}
+
+write_transaction() {
+  local phase="$1"
+  local tmp="$UPDATE_JOURNAL.tmp.$$"
+  ( umask 077; printf 'phase=%s\nprev=%s\ntarget=%s\nprev_lock_hash=%s\nupdated_at=%s\n' \
+      "$phase" "$PREV" "$REF" "$PREV_LOCK_HASH" "$(date +%s)" > "$tmp" )
+  mv "$tmp" "$UPDATE_JOURNAL"
+  TX_PHASE="$phase"
+  if [[ "${LUNA_TEST_CRASH_AFTER_PHASE:-}" == "$phase" ]]; then
+    # Deliberate SIGKILL seam: traps cannot clean the lock, matching power loss.
+    kill -KILL "$$"
+  fi
+}
+
+clear_transaction() {
+  rm -f "$UPDATE_JOURNAL"
+  TX_PHASE=""
+}
+
+load_transaction() {
+  [[ -r "$UPDATE_JOURNAL" ]] || return 1
+  TX_PHASE="" TX_PREV="" TX_TARGET="" TX_PREV_LOCK_HASH=""
+  local key value
+  while IFS='=' read -r key value; do
+    case "$key" in
+      phase) TX_PHASE="$value" ;;
+      prev) TX_PREV="$value" ;;
+      target) TX_TARGET="$value" ;;
+      prev_lock_hash) TX_PREV_LOCK_HASH="$value" ;;
+    esac
+  done < "$UPDATE_JOURNAL"
+  [[ "$TX_PHASE" =~ ^(prepared|checkout|applied|restarting|verifying|rolling-back|rollback-failed|forward-failed)$ ]] || return 1
+  [[ "$TX_PREV" =~ ^[0-9a-fA-F]{7,64}$ ]] || return 1
+  [[ "$TX_TARGET" =~ ^[0-9a-fA-F]{7,64}$ ]] || return 1
+  [[ -z "$TX_PREV_LOCK_HASH" || "$TX_PREV_LOCK_HASH" =~ ^[0-9a-fA-F]{7,64}$ ]] || return 1
+}
+
 # --- readiness probe (the gate for rollback) ----------------------------------
 # Bounded, never hangs. A failing probe is a NON-FATAL signal here — callers MUST
 # invoke this as `if ! readiness_ok; then ...`, never bare, or `set -e` aborts
@@ -385,12 +492,16 @@ readiness_ok() {
   local baseline="$1"
   local deadline=$((SECONDS + READINESS_TIMEOUT))
   local active nrestarts http
+  READINESS_DETAIL="probe never observed $SERVICE_NAME reach 'active'"
   while (( SECONDS < deadline )); do
     active="$(sup_is_active)"
+    READINESS_DETAIL="$SERVICE_NAME is not active (state=$active)"
     if [[ "$active" == "active" ]]; then
       nrestarts="$(sup_restart_count)"
       [[ "$nrestarts" =~ ^[0-9]+$ ]] || nrestarts="0"
+      READINESS_DETAIL="$SERVICE_NAME is crash-looping (NRestarts $nrestarts > baseline $baseline)"
       if (( nrestarts <= baseline )); then
+        READINESS_DETAIL="/healthz did not return 200 on :${READINESS_PORT}"
         http="$(run_target_capture curl -fsS -o /dev/null -w '%{http_code}' \
           --max-time "$READINESS_CURL_MAX_TIME" \
           "http://127.0.0.1:${READINESS_PORT}/healthz" 2>/dev/null || printf '000')"
@@ -399,17 +510,40 @@ readiness_ok() {
             --max-time "$READINESS_CURL_MAX_TIME" \
             "http://127.0.0.1:${READINESS_PORT}/readyz" 2>/dev/null || printf '\n000')"
           local rcode="${readyz##*$'\n'}"
-          if [[ "$rcode" == "404" || "$rcode" == "000" ]]; then
+          # Only a real HTTP 404 means a legacy pre-/readyz build. `000` is a
+          # transport failure (often the process dying between the healthz and
+          # readyz probes) and must retry/fail, never accept the deploy.
+          if [[ "$rcode" == "404" ]]; then
             return 0
           fi
+          READINESS_DETAIL="/readyz did not report \"mode\":\"normal\" (still booting or in setup-mode; http=$rcode)"
           if printf '%s' "$readyz" | grep -q '"mode":"normal"'; then
-            return 0
+            if [[ -z "$EXPECTED_BUILD_SHA" ]]; then
+              return 0
+            fi
+            local build_sha
+            build_sha="$(printf '%s' "$readyz" | sed -n 's/.*"buildSha":"\([0-9a-fA-F]*\)".*/\1/p' | head -1)"
+            if [[ -n "$build_sha" && ( "$EXPECTED_BUILD_SHA" == "$build_sha"* || "$build_sha" == "$EXPECTED_BUILD_SHA"* ) ]]; then
+              return 0
+            fi
+            # Rollback targets may implement /readyz but predate its additive
+            # buildSha field. Accept an absent field only for that compatibility
+            # path; if a SHA is present it must still identify PREV.
+            if [[ -z "$build_sha" && "$ALLOW_MISSING_BUILD_SHA" == true ]]; then
+              return 0
+            fi
+            if [[ -z "$build_sha" ]]; then
+              READINESS_DETAIL="/readyz reported no usable hex buildSha (runtime resolved it to a non-hex value such as 'unknown' when git/.git is unavailable); forward promotion requires a buildSha matching ${EXPECTED_BUILD_SHA:0:12} (set LUNA_BUILD_SHA in the server env to pin it)"
+            else
+              READINESS_DETAIL="/readyz buildSha $build_sha does not match expected ${EXPECTED_BUILD_SHA:0:12}"
+            fi
           fi
         fi
       fi
     fi
     sleep "$READINESS_INTERVAL"
   done
+  luna_warn "readiness gave up after ${READINESS_TIMEOUT}s: ${READINESS_DETAIL}"
   return 1
 }
 
@@ -435,6 +569,9 @@ apply_ref() {
     git_target fetch origin || return 1
   fi
   git_target reset --hard "$target" || return 1
+  if [[ "$TRANSACTION_TRACK_APPLY" == true ]]; then
+    write_transaction "checkout" || return 1
+  fi
 
   local new_lock_hash
   new_lock_hash="$(lockfile_hash)"
@@ -469,15 +606,6 @@ apply_ref() {
     luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR" || return 1
   fi
 
-  # ── Build the web client SPA ─────────────────────────────────────────────────
-  # Runs on EVERY apply (not gated on bun.lock change) so source-only edits to
-  # apps/ui-web/src/** still rebuild dist/. Also runs on rollback — intentional:
-  # rolling back to a prior ref that had different UI source also rebuilds dist/
-  # for that ref, ensuring static serving always matches the running server code.
-  # Failure here fails apply_ref() loudly → routes into rollback, not a silent
-  # stale-SPA situation.
-  luna_info "building web client SPA (apps/ui-web)"
-  run_target "$BUN_BIN" --cwd "$CONTAINER_REPO_DIR/apps/ui-web" run build || return 1
 }
 
 # Settle between stop and start. A bounded, dry-run-aware wait that lets the
@@ -749,6 +877,10 @@ seed_dream_wake_jobs() {
 # (rollback itself failed, by command error OR by failing its own health probe).
 do_rollback() {
   luna_warn "ROLLING BACK to $PREV"
+  write_transaction "rolling-back" || true
+  TRANSACTION_TRACK_APPLY=false
+  EXPECTED_BUILD_SHA="$PREV"
+  ALLOW_MISSING_BUILD_SHA=true
   local ok=true
   apply_ref "$PREV" "$(lockfile_hash)" --no-fetch || ok=false
   if [[ "$ok" == true ]]; then
@@ -759,6 +891,7 @@ do_rollback() {
     rollback_baseline="$(readiness_restart_baseline)"
     if readiness_ok "$rollback_baseline"; then
       luna_warn "update to $REF failed — ROLLED BACK to $PREV ($SERVICE_NAME healthy)"
+      clear_transaction
       exit 1
     fi
   fi
@@ -774,6 +907,7 @@ do_rollback() {
   fi
   printf 'CRITICAL: update to %s failed AND rollback to %s also failed — server may be DOWN. Manual intervention required (check: %s).\n' \
     "$REF" "$PREV" "$hint" >&2
+  write_transaction "rollback-failed" || true
   exit 2
 }
 
@@ -782,36 +916,77 @@ fail_forward() {
   local reason="$1"
   luna_warn "update to $REF failed: $reason (HEAD=${NEW_HEAD:-$REF})"
   if [[ "$ROLLBACK" == false ]]; then
+    write_transaction "forward-failed" || true
     luna_die "$reason and --no-rollback set; server left at ${NEW_HEAD:-$REF} (may be unhealthy)"
   fi
   do_rollback
 }
 
 # --- live update --------------------------------------------------------------
-PREV="$(git_target_capture rev-parse HEAD)"
-[[ -n "$PREV" ]] || luna_die "could not read current HEAD in $HOST_REPO_DIR"
-PREV_LOCK_HASH="$(lockfile_hash)"
-luna_info "Current HEAD: $PREV"
+if ! acquire_update_lock; then
+  # Contention is a safe defer, not an update failure. The timer retries.
+  exit 0
+fi
+
 NEW_HEAD=""
+if [[ -f "$UPDATE_JOURNAL" ]]; then
+  if ! load_transaction; then
+    printf 'CRITICAL: corrupt update transaction journal %s — refusing to mutate the checkout; inspect or remove it manually.\n' "$UPDATE_JOURNAL" >&2
+    exit 2
+  fi
+  PREV="$TX_PREV"
+  REF="$TX_TARGET"
+  PREV_LOCK_HASH="$TX_PREV_LOCK_HASH"
+  luna_warn "RECOVERING interrupted update phase=$TX_PHASE prev=${PREV:0:9} target=${REF:0:9}"
+  if [[ "$TX_PHASE" == "rolling-back" || "$TX_PHASE" == "rollback-failed" ]]; then
+    do_rollback
+  fi
+else
+  PREV="$(git_target_capture rev-parse HEAD)"
+  [[ -n "$PREV" ]] || luna_die "could not read current HEAD in $HOST_REPO_DIR"
+  PREV_LOCK_HASH="$(lockfile_hash)"
+  luna_info "Current HEAD: $PREV"
+
+  # Resolve the requested moving ref to an immutable commit while holding the
+  # profile lock. The journal always records this exact target, so recovery can
+  # finish the same transaction even if origin advances again meanwhile.
+  REQUESTED_REF="$REF"
+  git_target fetch origin || luna_die "fetch failed before update; checkout unchanged"
+  if [[ "$REQUESTED_REF" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+    REF="$REQUESTED_REF"
+  else
+    REF="$(git_target_capture rev-parse "${REQUESTED_REF}^{commit}")"
+  fi
+  [[ "$REF" =~ ^[0-9a-fA-F]{7,64}$ ]] || luna_die "could not resolve target ref $REQUESTED_REF"
+  write_transaction "prepared"
+fi
 
 # A forward command-level failure (fetch/reset/install) routes into rollback —
 # NOT a `set -e` abort. This is the whole point of auto-rollback.
-if ! apply_ref "$REF" "$PREV_LOCK_HASH"; then
+TRANSACTION_TRACK_APPLY=true
+if ! apply_ref "$REF" "$PREV_LOCK_HASH" --no-fetch; then
+  TRANSACTION_TRACK_APPLY=false
   fail_forward "apply to $REF errored"
 fi
+TRANSACTION_TRACK_APPLY=false
 NEW_HEAD="$(git_target_capture rev-parse HEAD)"
 luna_info "Checked out: $NEW_HEAD"
+write_transaction "applied"
 
+write_transaction "restarting"
 if ! restart_service; then
   fail_forward "service restart errored"
 fi
 # Capture NRestarts right AFTER issuing the restart; require it not to climb
 # during the probe window (a climbing count means the unit is crash-looping).
 RESTART_BASELINE="$(readiness_restart_baseline)"
+EXPECTED_BUILD_SHA="$NEW_HEAD"
+write_transaction "verifying"
 
 if readiness_ok "$RESTART_BASELINE"; then
   luna_info "updated $PREV -> $NEW_HEAD ($SERVICE_NAME healthy)"
   seed_dream_wake_jobs || true
+  clear_transaction
   exit 0
 fi
 

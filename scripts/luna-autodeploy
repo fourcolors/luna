@@ -16,14 +16,13 @@
 #   * The systemd unit log (journalctl -u luna-autodeploy-<profile>) is the audit
 #     trail: each run prints what it did and the from->to SHAs.
 #
-# AUTO-UPDATE BY DEFAULT (owner decision 2026-07, supersedes the 2026-06-08
-# manual-stable choice): BOTH channels run on a systemd timer out of the box —
-# dev every 3min, stable every 15min. The connect-aware deferral above is the
-# safety mechanism: a timer run NEVER restarts under active sessions and never
-# passes --allow-active. Opt out per channel with deploy.autoUpdate = false in
-# the registry (the timer keeps ticking but no-ops) or remove the timer
-# entirely with `luna-autodeploy uninstall-timer <profile>`. Manual one-command
-# deploys (`luna-autodeploy <profile>`) always work regardless of the knob.
+# AUTO-UPDATE BY DEFAULT (owner decision 2026-07): new hosts use the independent
+# one-minute guardian timer. This script remains its apply trigger and the
+# migration entrypoint for older 3min/15min updater-only timers. A legacy tick
+# adopts the guardian only after the running build proves checkout HEAD and no
+# update transaction is pending. deploy.autoUpdate=false disables branch
+# movement but not guardian health/repair. Manual one-command deploys always
+# work regardless of that knob.
 #
 # Usage:
 #   luna-autodeploy <profile> [--force] [--allow-active] [--dry-run] [--from-timer]
@@ -241,33 +240,81 @@ profile_config() {
 # ── deploy one channel ───────────────────────────────────────────────────────
 FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL="" VALIDATE=false FROM_TIMER=false
 
+# Existing hosts predate the guardian and still enter through the legacy timer.
+# The first legacy tick may deploy the commit that introduces this function
+# using the already-loaded old script. On the NEXT tick, this check runs before
+# the up-to-date/autoUpdate no-op and atomically hands control to the guardian.
+# Installation failure is loud and leaves the legacy timer enabled so it can
+# retry; successful installation disables that timer itself.
+maybe_migrate_guardian() {
+  local profile="$1" pending_transaction="$2" candidate="$P_REPO/scripts/luna-guardian" rc=0
+  [[ "$FROM_TIMER" == true && "$DRY_RUN" != true && "$P_TIMER_ALLOWED" == "true" ]] || return 0
+  [[ -x "$candidate" ]] || return 0
+  [[ ! -f "$pending_transaction" ]] || {
+    echo "[autodeploy:$profile] guardian migration deferred — update transaction recovery is pending"
+    return 0
+  }
+  if ! luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"; then
+    echo "[autodeploy:$profile] guardian migration deferred — runtime does not prove checkout HEAD"
+    return 0
+  fi
+  if ! bash -n "$candidate"; then
+    echo "[autodeploy:$profile] CRITICAL — guardian candidate failed syntax validation" >&2
+    return 2
+  fi
+
+  echo "[autodeploy:$profile] MIGRATING legacy timer -> independent guardian"
+  "$candidate" adopt "$profile" || rc=$?
+  case "$rc" in
+    0) echo "[autodeploy:$profile] guardian adopted; legacy timer retired" ;;
+    10) echo "[autodeploy:$profile] guardian adoption deferred; legacy timer retained" ;;
+    *)
+      echo "[autodeploy:$profile] CRITICAL — guardian migration failed; legacy timer retained for retry" >&2
+      return 2
+      ;;
+  esac
+}
+
 do_deploy() {
   local profile="$1"; profile_config "$profile"
 
+  [[ -x "$UPDATE_SERVER" ]] || { echo "luna-autodeploy: $UPDATE_SERVER not found/executable" >&2; exit 2; }
+  [[ -d "$P_REPO/.git" ]] || { echo "luna-autodeploy: $P_REPO is not a git repo" >&2; exit 2; }
+
+  local local_sha remote_sha update_state_dir pending_transaction
+  local_sha="$(git -C "$P_REPO" rev-parse HEAD)"
+  update_state_dir="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}"
+  pending_transaction="$update_state_dir/transaction-$profile"
+
+  if ! maybe_migrate_guardian "$profile" "$pending_transaction"; then return 2; fi
+
   # Auto-update knob: a TIMER-initiated run respects deploy.autoUpdate; when
-  # the operator set it to false the timer keeps ticking but every run is a
-  # quiet no-op. A manual run (no --from-timer) ignores the knob — typing the
-  # command IS the consent the knob exists to gate.
+  # the operator set it to false the guardian still owns health/recovery, but
+  # branch movement is ignored. A manual run ignores the knob — typing the
+  # command is the consent the knob exists to gate.
   if [[ "$FROM_TIMER" == true && "$P_AUTO_UPDATE" != "true" ]]; then
     echo "[autodeploy:$profile] auto-update is OFF (deploy.autoUpdate=false) — timer run skipped; manual 'luna-autodeploy $profile' still deploys"
     return 0
   fi
 
-  [[ -x "$UPDATE_SERVER" ]] || { echo "luna-autodeploy: $UPDATE_SERVER not found/executable" >&2; exit 2; }
-  [[ -d "$P_REPO/.git" ]] || { echo "luna-autodeploy: $P_REPO is not a git repo" >&2; exit 2; }
-
   git -C "$P_REPO" fetch origin "$P_BRANCH" --quiet
-  local local_sha remote_sha
-  local_sha="$(git -C "$P_REPO" rev-parse HEAD)"
   remote_sha="$(git -C "$P_REPO" rev-parse "origin/$P_BRANCH")"
 
-  if [[ "$local_sha" == "$remote_sha" && "$FORCE" != true ]]; then
+  if [[ "$local_sha" == "$remote_sha" && "$FORCE" != true && ! -f "$pending_transaction" ]]; then
     echo "[autodeploy:$profile] up to date at ${local_sha:0:9} — no-op"
     return 0
   fi
 
+  if [[ -f "$pending_transaction" ]]; then
+    echo "[autodeploy:$profile] interrupted update journal found — recovery required before normal deploy"
+  fi
+
   if [[ "$ALLOW_ACTIVE" != true && "$FORCE" != true ]]; then
-    local n; n="$(luna_active_ws_count "$P_PORT" "$P_INCUS")"
+    local n
+    if ! n="$(luna_active_ws_count "$P_PORT" "$P_INCUS")"; then
+      echo "[autodeploy:$profile] DEFERRED — active-session count UNKNOWN; refusing unattended restart (origin ${remote_sha:0:9}; use --allow-active only after manual inspection)" >&2
+      return 0
+    fi
     if [[ "$n" -gt 0 ]]; then
       echo "[autodeploy:$profile] DEFERRED — $n active session(s); will retry next tick (origin ${remote_sha:0:9})"
       return 0
@@ -287,7 +334,10 @@ do_deploy() {
   local rc=0
   "$pinned_engine" "${P_UPDATE_ARGS[@]}" || rc=$?
   case "$rc" in
-    0) echo "[autodeploy:$profile] OK — now at ${remote_sha:0:9}" ;;
+    0)
+      echo "[autodeploy:$profile] OK — now at ${remote_sha:0:9}"
+      if ! maybe_migrate_guardian "$profile" "$pending_transaction"; then rc=2; fi
+      ;;
     1) echo "[autodeploy:$profile] ROLLED BACK — update failed, recovered to ${local_sha:0:9}" >&2 ;;
     *) echo "[autodeploy:$profile] CRITICAL rc=$rc — rollback may have failed; manual attention needed" >&2 ;;
   esac

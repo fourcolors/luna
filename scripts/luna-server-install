@@ -35,6 +35,7 @@ DRY_RUN=false
 SKIP_DEPS=false
 ENABLE_SERVICE=true
 START_SERVICE=true
+UNITS_ONLY=false
 ROTATE_TOKEN=false
 EMBEDDER="${LUNA_EMBEDDER:-}"
 OLLAMA_BASE_URL="${LUNA_OLLAMA_BASE_URL:-}"
@@ -80,6 +81,9 @@ Options:
   --skip-deps               Do not install apt packages or Bun.
   --no-enable               Do not run systemctl enable.
   --no-start                Do not start/restart the service.
+  --units-only              Re-render supervisor + pager units only; never
+                            mutate env/deps/state and never restart. Used by the
+                            independent guardian to reconcile unit drift safely.
   -h, --help                Show this help.
 
 This script never prints token values. Existing tokens in .env are preserved
@@ -108,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --skip-deps) SKIP_DEPS=true; shift ;;
     --no-enable) ENABLE_SERVICE=false; shift ;;
     --no-start) START_SERVICE=false; shift ;;
+    --units-only) UNITS_ONLY=true; START_SERVICE=false; SKIP_DEPS=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) luna_die "unknown option: $1" ;;
   esac
@@ -287,7 +292,7 @@ if [[ "$DRY_RUN" == false ]]; then
   [[ -d "$REPO_DIR/.git" ]] || luna_die "$REPO_DIR is not a git clone"
 fi
 
-if ! luna_env_has_token "$ENV_FILE" || [[ "$ROTATE_TOKEN" == true ]]; then
+if [[ "$UNITS_ONLY" == false ]] && { ! luna_env_has_token "$ENV_FILE" || [[ "$ROTATE_TOKEN" == true ]]; }; then
   [[ -n "$TOKEN" ]] ||
     luna_die "UI_WS_TOKEN is required. Pass --token, set UI_WS_TOKEN, or create $ENV_FILE before installing."
 fi
@@ -299,6 +304,7 @@ if [[ "$DRY_RUN" == false ]]; then
   [[ -x "$BUN_BIN" ]] || luna_die "Bun not found at $BUN_BIN"
 fi
 
+if [[ "$UNITS_ONLY" == false ]]; then
 luna_run mkdir -p "$LUNA_HOME" "$LUNA_HOME/claude" "$LUNA_HOME/logs" "$LUNA_HOME/run"
 # Harden the Claude OAuth credential dir: owner-only (700). It holds the
 # high-value Claude.ai subscription token, so deny group/other entirely.
@@ -361,6 +367,7 @@ if [[ -n "$CLAUDE_TOKEN" && "$DRY_RUN" == false ]]; then
 elif [[ -n "$CLAUDE_TOKEN" ]]; then
   luna_info "[dry-run] would seed default account (secret_ref=env:CLAUDE_CODE_OAUTH_TOKEN)"
 fi
+fi
 
 # Version-skew guard: the unit rendered above demands READY=1 (Type=notify),
 # which only S1+ code sends. Re-rendering the unit against an older checkout
@@ -377,8 +384,11 @@ write_alert_service
 # Pager secret file: create ATOMICALLY with owner-only perms if absent (umask
 # in a subshell — no world-readable window between create and chmod), and
 # enforce 0600 on a pre-existing file (the operator writes
-# TELEGRAM_PAGER_TOKEN/LUNA_PAGER_CHAT_ID by hand later).
-if [[ "$DRY_RUN" == false ]]; then
+# TELEGRAM_PAGER_TOKEN/LUNA_PAGER_CHAT_ID by hand later). Units-only is a
+# strict supervisor reconciliation path and never mutates state.
+if [[ "$UNITS_ONLY" == true ]]; then
+  :
+elif [[ "$DRY_RUN" == false ]]; then
   if [[ ! -f "$LUNA_HOME/pager.env" ]]; then
     ( umask 077; printf '# TELEGRAM_PAGER_TOKEN=\n# LUNA_PAGER_CHAT_ID=\n' > "$LUNA_HOME/pager.env" )
   else

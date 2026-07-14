@@ -83,6 +83,11 @@ const makeStubBin = (
     // #28: simulate a deploy that boots (healthz 200) but lands in SETUP-mode at
     // the target SHA — /readyz reports mode=setup, so the deepened gate must FAIL.
     readonly setupAtTarget?: boolean
+    // Legacy /readyz responses can omit the additive buildSha field. Forward
+    // promotion must reject that ambiguity, while rollback may accept it.
+    readonly omitBuildShaAtTarget?: boolean
+    readonly omitBuildShaAtPrev?: boolean
+    readonly mismatchBuildShaAtPrev?: boolean
   },
 ) => {
   const bin = join(root, "bin")
@@ -129,7 +134,14 @@ fi
 if [[ "$*" == *"/readyz"* ]]; then
   # Mirror curl -sS -w '\\n%{http_code}' on /readyz: JSON body, newline, code.
   okbool='true'; [[ "$mode" == 'setup' ]] && okbool='false'
-  printf '{"status":"ok","mode":"%s","credentialOk":%s}\\n%s' "$mode" "$okbool" "$code"
+  if [[ "$head" == "${opts.targetSha}" && "${opts.omitBuildShaAtTarget ? "1" : "0"}" == "1" ]] ||
+     [[ "$head" == "${opts.prevSha}" && "${opts.omitBuildShaAtPrev ? "1" : "0"}" == "1" ]]; then
+    printf '{"status":"ok","mode":"%s","credentialOk":%s}\\n%s' "$mode" "$okbool" "$code"
+  elif [[ "$head" == "${opts.prevSha}" && "${opts.mismatchBuildShaAtPrev ? "1" : "0"}" == "1" ]]; then
+    printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"deadbeef"}\\n%s' "$mode" "$okbool" "$code"
+  else
+    printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"%s"}\\n%s' "$mode" "$okbool" "$head" "$code"
+  fi
   exit 0
 fi
 # /healthz: mirror -o /dev/null -w '%{http_code}' → print just the code. Exit 0 so
@@ -367,6 +379,99 @@ describe("luna-update-server", () => {
     expect(r.stdout).toContain("skipping bun install")
   })
 
+  it("recovers an update killed after checkout from the durable journal", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    const args = [
+      "--repo-dir", work, "--ref", "origin/master",
+      "--luna-home", join(temp, "state"), "--service-dir", serviceDir,
+      "--readiness-timeout", "2", "--readiness-interval", "0.3",
+    ]
+    const commonEnv = {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_UPDATE_STATE_DIR: updateState,
+    }
+
+    const killed = runUpdate(args, { ...commonEnv, LUNA_TEST_CRASH_AFTER_PHASE: "checkout" })
+    expect(killed.signal).toBe("SIGKILL")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(true)
+    expect(existsSync(join(updateState, "lock-stable"))).toBe(true)
+
+    const recovered = runUpdate(args, commonEnv)
+    expect(recovered.status, recovered.stdout + recovered.stderr).toBe(0)
+    expect(recovered.stderr).toContain("RECOVERING interrupted update")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+    expect(existsSync(join(updateState, "lock-stable"))).toBe(false)
+  })
+
+  it("rejects a forward /readyz response that omits buildSha", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: true,
+      readyAtPrev: true,
+      omitBuildShaAtTarget: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    // The readiness timeout must name buildSha as the blocker so an operator is
+    // not left staring at an opaque "failed readiness" rollback loop.
+    expect(r.stderr).toContain("readiness gave up")
+    expect(r.stderr).toContain("buildSha")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("defers a concurrent update without touching the checkout", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    const lockDir = join(updateState, "lock-stable")
+    writeUnit(serviceDir)
+    mkdirSync(lockDir, { recursive: true })
+    const fingerprint = spawnSync("ps", ["-p", String(process.pid), "-o", "lstart="], {
+      encoding: "utf8",
+    }).stdout.replace(/\n/g, "")
+    writeFileSync(join(lockDir, "owner"), `pid=${process.pid}\nfingerprint=${fingerprint}\n`)
+
+    const r = runUpdate([
+      "--repo-dir", work, "--ref", "origin/master",
+      "--luna-home", join(temp, "state"), "--service-dir", serviceDir,
+    ], { LUNA_UPDATE_STATE_DIR: updateState })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("another update")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(prevSha).not.toBe(targetSha)
+  })
+
   it("restart is a clean stop -> settle -> start (NOT a fast `systemctl restart`)", () => {
     // Regression for the 2026-06-08 stable-deploy incident: a fast `systemctl
     // restart` started the new chat-server before the outgoing one released its
@@ -577,7 +682,7 @@ exit 0
 head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
 code='503'; [[ "$head" == "${prevSha}" ]] && code='200'
 if [[ "$*" == *"/readyz"* ]]; then
-  printf '{"status":"ok","mode":"normal","credentialOk":true}\\n%s' "$code"; exit 0
+  printf '{"status":"ok","mode":"normal","credentialOk":true,"buildSha":"%s"}\\n%s' "$head" "$code"; exit 0
 fi
 printf '%s' "$code"
 exit 0
@@ -662,6 +767,68 @@ exit 0
     // one per stop -> settle -> start cycle).
     const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
     expect(cycles).toBe(2)
+  })
+
+  it("accepts a healthy rollback /readyz response that omits buildSha", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: false,
+      readyAtPrev: true,
+      omitBuildShaAtPrev: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("rejects a rollback /readyz response whose present buildSha mismatches PREV", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: false,
+      readyAtPrev: true,
+      mismatchBuildShaAtPrev: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(2)
+    expect(r.stderr).toContain("CRITICAL")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 
   it("#28 deepened gate: deploy boots into SETUP-mode (healthz 200 but readyz setup) → rollback, exit 1", () => {
@@ -982,8 +1149,9 @@ esac
       join(bin, "curl"),
       `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${curlLog}"
+head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 if [[ "$*" == *"/readyz"* ]]; then
-  printf '{"status":"ok","mode":"normal","credentialOk":true}\\n200'; exit 0
+  printf '{"status":"ok","mode":"normal","credentialOk":true,"buildSha":"%s"}\\n200' "$head"; exit 0
 fi
 printf '200'
 exit 0
@@ -1038,8 +1206,22 @@ exit 0
       readyAtPrev: true,
     })
 
-    // Destroy the origin so that any `git fetch` during rollback would fail.
-    rmSync(origin, { recursive: true, force: true })
+    // Let the transaction prefetch succeed, then destroy origin immediately.
+    // Any later rollback fetch would fail, while the local PREV remains usable.
+    const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim()
+    writeFileSync(
+      join(bin, "git"),
+      `#!/usr/bin/env bash
+if [[ "$*" == *" fetch origin"* ]]; then
+  "${realGit}" "$@"
+  rc=$?
+  rm -rf "${origin}"
+  exit $rc
+fi
+exec "${realGit}" "$@"
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "git")])
 
     const r = runUpdate([
       "--repo-dir",
@@ -1064,12 +1246,12 @@ exit 0
     expect(r.stderr).toContain("ROLLED BACK")
     // Server ended at PREV — rollback local reset worked.
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-    // Only ONE restart cycle: the forward apply_ref fails at fetch (before
-    // restart_service runs), so only the rollback's restart fires. This is the
-    // key assertion: exit 1 (not exit 2) proves rollback succeeded without fetch.
+    // Two restart cycles: the transaction prefetch succeeds, then origin is
+    // removed; the unhealthy forward start and the network-free rollback each
+    // restart once. Exit 1 (not exit 2) proves rollback did not fetch.
     // (One `stop ` per stop -> settle -> start cycle.)
     const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
-    expect(cycles).toBe(1)
+    expect(cycles).toBe(2)
   })
 
   it("readiness FAIL AND rollback FAIL → CRITICAL, exit 2", () => {

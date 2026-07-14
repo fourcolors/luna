@@ -42,7 +42,9 @@
 # ## Test seams (mirror luna-deploy.sh and luna-autodeploy pattern):
 #   LUNA_TEST_DOCTOR_INCUS_ACTIVE   — "true"/"false" — override incus exec check
 #   LUNA_TEST_DOCTOR_HOST_ACTIVE    — "true"/"false" — override host systemctl check
-#   LUNA_TEST_DOCTOR_TIMER_PRESENT  — "true"/"false" — override timer presence check
+#   LUNA_TEST_DOCTOR_GUARDIAN_TIMER_STATE — active/inactive/missing
+#   LUNA_TEST_DOCTOR_LEGACY_TIMER_STATE   — active/inactive/missing
+#   LUNA_TEST_DOCTOR_TIMER_PRESENT        — deprecated boolean fallback
 #   LUNA_TEST_DOCTOR_EMBEDDER       — "reachable"/"unreachable" — override embedder probe
 #
 # These seams allow unit tests to simulate incus-active/bare-inactive (pass) or
@@ -90,17 +92,31 @@ _check_host_unit_active() {
   [[ "$state" == "active" ]]
 }
 
-# ── check: is the autodeploy timer unit present on the bare host? ─────────────
-# Returns 0 (present/installed) or 1 (absent).
-_check_host_timer_present() {
+# ── check: timer control-plane state on the bare host ─────────────────────────
+# Prints active (loaded+enabled+active), inactive (installed but not fully
+# running), or missing. Failed queries never become a false active result.
+_host_timer_state() {
   local timer_unit="$1"
-  if [[ "${LUNA_TEST_DOCTOR_TIMER_PRESENT+set}" == "set" ]]; then
-    [[ "$LUNA_TEST_DOCTOR_TIMER_PRESENT" == "true" ]]
-    return $?
+  if [[ "$timer_unit" == luna-guardian-* && -n "${LUNA_TEST_DOCTOR_GUARDIAN_TIMER_STATE:-}" ]]; then
+    printf '%s' "$LUNA_TEST_DOCTOR_GUARDIAN_TIMER_STATE"; return
   fi
-  command -v systemctl >/dev/null 2>&1 || return 1
-  # "loaded" or "active" in the list means installed
-  systemctl list-unit-files "$timer_unit" --no-pager 2>/dev/null | grep -q "$timer_unit"
+  if [[ "$timer_unit" == luna-autodeploy-* && -n "${LUNA_TEST_DOCTOR_LEGACY_TIMER_STATE:-}" ]]; then
+    printf '%s' "$LUNA_TEST_DOCTOR_LEGACY_TIMER_STATE"; return
+  fi
+  if [[ "${LUNA_TEST_DOCTOR_TIMER_PRESENT+set}" == "set" ]]; then
+    if [[ "$LUNA_TEST_DOCTOR_TIMER_PRESENT" == "true" ]]; then printf active; else printf missing; fi
+    return
+  fi
+  command -v systemctl >/dev/null 2>&1 || { printf missing; return; }
+  if ! systemctl list-unit-files "$timer_unit" --no-pager 2>/dev/null | grep -q "$timer_unit"; then
+    printf missing; return
+  fi
+  if systemctl is-enabled --quiet "$timer_unit" 2>/dev/null &&
+     systemctl is-active --quiet "$timer_unit" 2>/dev/null; then
+    printf active
+  else
+    printf inactive
+  fi
 }
 
 # ── check: is the configured Ollama embedder reachable? ──────────────────────
@@ -197,19 +213,36 @@ validate_profile() {
     _doctor_info "$profile" "bareFolder runtime: no container to cross-check"
   fi
 
-  # F5: if deploy.timer=false, the autodeploy timer MUST NOT be installed on the host
+  # F5: timer policy now applies to the independent guardian. During migration,
+  # also reject a legacy autodeploy timer for an opted-out profile.
   if [[ "$P_TIMER_ALLOWED" == "false" ]]; then
-    local timer_unit="luna-autodeploy-${profile}.timer"
-    if _check_host_timer_present "$timer_unit"; then
-      _doctor_fail "$profile" "F5 VIOLATION: $timer_unit is INSTALLED but deploy.timer=false!"
-      _doctor_fail "$profile" "  This bypasses the no-autodeploy safety rail for $profile."
-      _doctor_fail "$profile" "  Remove the timer: luna-autodeploy uninstall-timer $profile"
-      DOCTOR_FAILED=true
-    else
-      _doctor_ok "$profile" "autodeploy timer $timer_unit is correctly absent (deploy.timer=false)"
-    fi
+    local timer_unit timer_state
+    for timer_unit in "luna-guardian-${profile}.timer" "luna-autodeploy-${profile}.timer"; do
+      timer_state="$(_host_timer_state "$timer_unit")"
+      if [[ "$timer_state" != "missing" ]]; then
+        _doctor_fail "$profile" "F5 VIOLATION: $timer_unit is INSTALLED but deploy.timer=false!"
+        DOCTOR_FAILED=true
+      else
+        _doctor_ok "$profile" "$timer_unit is correctly absent (deploy.timer=false)"
+      fi
+    done
   else
-    _doctor_info "$profile" "deploy.timer=true — timer presence not checked by F5 rail"
+    local guardian_timer="luna-guardian-${profile}.timer" legacy_timer="luna-autodeploy-${profile}.timer"
+    local guardian_state legacy_state
+    guardian_state="$(_host_timer_state "$guardian_timer")"
+    legacy_state="$(_host_timer_state "$legacy_timer")"
+    if [[ "$guardian_state" == "active" ]]; then
+      _doctor_ok "$profile" "guardian timer $guardian_timer is loaded, enabled, and active"
+    else
+      _doctor_fail "$profile" "deploy.timer=true but guardian timer $guardian_timer state=$guardian_state (need active)"
+      DOCTOR_FAILED=true
+    fi
+    if [[ "$legacy_state" == "missing" ]]; then
+      _doctor_ok "$profile" "legacy timer $legacy_timer is retired"
+    else
+      _doctor_fail "$profile" "legacy timer $legacy_timer state=$legacy_state after guardian adoption"
+      DOCTOR_FAILED=true
+    fi
   fi
 
   # Embedder reachability — only probed when LUNA_EMBEDDER=ollama.

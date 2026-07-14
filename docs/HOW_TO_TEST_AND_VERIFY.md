@@ -84,16 +84,16 @@ CAVEAT: no hot reload — after editing index.html, Cmd+R the window; after a Ru
 # preview only, mutates nothing:
 bash scripts/luna-update-server --dry-run --repo-dir <server-repo> --ref origin/master
 ```
-NOTE: `luna-update-server` is now the live deploy engine for both channels, driven by
-`luna-autodeploy` (see `docs/autodeploy.md` for the authoritative flow). Stable runs inside the
+NOTE: `luna-update-server` is the live apply engine for both channels, driven by
+the host-side guardian (see `docs/autodeploy.md` for the authoritative flow). Stable runs inside the
 `luna-stable` incus container, so its runs target the container (`--incus`); the host
 `luna-chat-server.service` is INACTIVE and host `:4753` is an incusd proxy into the container's bun
 process (per `scripts/seeds/servers.toml`, verified 2026-06-22). The script's logic - pull →
 install-if-lockfile-changed → re-pin claude → restart → readiness probe (is-active +
 NRestarts-not-climbing + /healthz 200) → rollback-to-PREV on failure → CRITICAL/exit 2 if rollback
-also fails - is covered by **16 hermetic tests**:
+also fails - is covered by **26 hermetic tests**:
 ```
-bun run test test/update-server.test.ts        # 16 pass (incl. rollback, crash-loop, network-free-rollback)
+bun run test test/update-server.test.ts        # 26 pass (incl. journal recovery, locking, rollback, crash-loop)
 ```
 
 ## 5. Automated test suites (the green baseline)
@@ -114,15 +114,17 @@ temporarily rename a frame `type` literal in `packages/ui-ws/src/protocol.ts` (e
 `git checkout packages/ui-ws/src/protocol.ts`.
 
 ## 6. Verifying a live master deploy (the dogfood pattern)
-Stable auto-updates by default via the host-side `luna-autodeploy` timer (15min cadence,
-connect-aware deferral so it never restarts mid-conversation); the manual one-command deploy is
-`luna-autodeploy stable` (always works regardless of the knob). See `docs/autodeploy.md` for the
-authoritative flow and opt-outs. After any deploy:
+Stable uses the one-minute host-side guardian with connect-aware deferral. The
+manual apply command remains `luna-autodeploy stable`. After any deploy:
 1. `ssh root@jax-box` then check the deploy, not the host unit - the host `luna-chat-server.service`
    is INACTIVE because stable runs inside the `luna-stable` incus container (host `:4753` is an
-   incusd proxy): `systemctl list-timers 'luna-autodeploy-*.timer'` and
-   `journalctl -u luna-autodeploy-stable.service -n 30` → last run deployed-clean or up-to-date.
-2. **Authoritative check — drive a real turn, don't trust /healthz**: `luna doctor --url ws://jax-box:4753/ui --token <master-token>` → L1–L4 OK (the bare `jax-box` short name also prints the benign transport WARN — see §1; use the `100.x` IP or full `*.ts.net` name for a fully-green run), run it 2–3× (cold start can WARN on L4 the first time).
+   incusd proxy). Confirm `luna-guardian-stable.timer` is active and the legacy
+   timer is absent.
+2. Run `/usr/local/lib/luna-guardian/current-stable/luna-guardian accept stable
+   --expected-sha <full-master-sha> --min-cycles 2`. This is the host acceptance
+   gate; it checks exact SHA, watchdog supervision, transaction state, timer
+   handoff, `luna-doctor`, and two healthy cycles.
+3. **Authoritative client check — drive a real turn:** `luna doctor --url ws://jax-box:4753/ui --token <master-token>` → L1–L4 OK (use the `100.x` IP or full `*.ts.net` name for a fully-green run), run it 2–3× (cold start can WARN on L4 the first time).
    This is what verified the dev→master promotion deploy — `/healthz` was 200 even though
    `bun install --frozen-lockfile` warned; only doctor's L4 real chat turn proved the server actually works.
 
@@ -132,7 +134,7 @@ authoritative flow and opt-outs. After any deploy:
   failure), so `bun install --frozen-lockfile` now exits 0 on a clean machine. CI enforces this as a
   hard gate (`.github/workflows/ci.yml`).
 - **master `--user` → system unit**: ✅ RESOLVED - stable now runs inside the `luna-stable` incus
-  container and auto-updates by default via the host-side `luna-autodeploy` timer, which drives
+  container and auto-updates by default via the host-side guardian, which drives
   `luna-update-server` (with rollback). See `docs/autodeploy.md`.
 - **Design-spec branches** `feat/setup-mode-1b` + `feat/portable-server-installer` still hold unmerged
   CODE (their implementations are superseded by what shipped on master). Their DESIGN docs were

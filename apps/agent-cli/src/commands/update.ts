@@ -40,10 +40,8 @@ import { defineCommand } from "citty"
  *     and installer all call the same function.
  *   - If active sessions > 0 and neither --allow-active nor --force: defer
  *     with exit 0 (deferred = success; let the operator decide).
- *   - If the count cannot be determined (exec/parse failure): WARN and proceed.
- *     Rationale: the engine (luna-update-server) has its own readiness gate and
- *     safety net; blocking on a tooling failure is worse than proceeding with
- *     a warning. Documented here so reviewers can audit the decision.
+ *   - If the count cannot be determined (exec/parse failure): defer. Unknown is
+ *     not zero; an operator can inspect and explicitly pass --allow-active.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -290,6 +288,8 @@ export type UpdatePlanInput =
   | { readonly kind: "up-to-date"; readonly tag: string; readonly sha: string }
   /** Active sessions present; deferred */
   | { readonly kind: "deferred"; readonly count: number; readonly tag: string }
+  /** Active-session probe failed; fail-closed defer */
+  | { readonly kind: "deferred-unknown"; readonly tag: string }
   /** Engine exit 0: updated and healthy */
   | { readonly kind: "applied-ok"; readonly targetSha: string }
   /** Engine exit 1: update failed, rolled back */
@@ -373,6 +373,14 @@ export const renderUpdatePlan = (input: UpdatePlanInput): UpdateReport => {
       return {
         lines: [
           `${input.count} active session(s) — not restarting mid-conversation. Re-run with --allow-active to update now.`,
+        ],
+        exitCode: 0,
+      }
+
+    case "deferred-unknown":
+      return {
+        lines: [
+          `Active session count is unknown — refusing to restart for ${input.tag}. Inspect the host, then re-run with --allow-active if interruption is safe.`,
         ],
         exitCode: 0,
       }
@@ -673,8 +681,7 @@ const fetchServerLatestJson = async (release: GithubRelease): Promise<ServerLate
  *     LUNA_TEST_WS_COUNT test seam, and platform-specific ss invocations.
  *
  * Returns undefined when the subprocess errors or the output cannot be parsed
- * as an integer. The caller treats undefined as "unknown" and proceeds with a
- * warning — see the WARN-and-proceed rationale in the module docblock.
+ * as an integer. Callers fail closed and defer because unknown is not zero.
  */
 const queryActiveSessionCount = (repoDir: string, port: number): number | undefined => {
   // Pass repoDir and port via positional argv ($1, $2) rather than interpolating them
@@ -902,9 +909,7 @@ export const updateCommand = defineCommand({
       if (!allowActive && !dryRun) {
         const count = queryActiveSessionCount(repoDir, port)
         if (count === undefined) {
-          process.stderr.write(
-            "[WARN] could not determine active session count — proceeding anyway\n",
-          )
+          return writeAndExit(renderUpdatePlan({ kind: "deferred-unknown", tag: pinnedRef }))
         } else if (count > 0) {
           return writeAndExit(renderUpdatePlan({ kind: "deferred", count, tag: pinnedRef }))
         }
@@ -1028,13 +1033,7 @@ export const updateCommand = defineCommand({
     if (!allowActive && !dryRun) {
       const count = queryActiveSessionCount(repoDir, port)
       if (count === undefined) {
-        // Cannot determine session count. WARN and proceed rather than blocking.
-        // The engine has its own readiness gate and auto-rollback safety net;
-        // failing here on a tooling problem (missing ss, wrong repoDir) would
-        // prevent legitimate updates without adding safety.
-        process.stderr.write(
-          "[WARN] could not determine active session count — proceeding anyway\n",
-        )
+        return writeAndExit(renderUpdatePlan({ kind: "deferred-unknown", tag }))
       } else if (count > 0) {
         return writeAndExit(renderUpdatePlan({ kind: "deferred", count, tag }))
       }

@@ -8,7 +8,7 @@ Branch policy:
 - The dev container is a staging runtime, not a branch — point it at whatever
   ref you want to stage (a feature branch or a `moon-v*` tag).
 - Land work on `master` via a PR (squash-merge). Stable **auto-updates by
-  default** - a host-side timer redeploys it while idle (see
+  default** - the host-side guardian verifies health and redeploys it while idle (see
   [autodeploy](./autodeploy.md)); the manual promotion below is the override
   for forcing a deploy or when auto-update is opted out. There is no
   `dev`→`master` promotion.
@@ -52,18 +52,19 @@ Install or repair the service:
 ssh root@jax-box
 cd /root/luna/stable/repo
 git pull --ff-only origin master
-scripts/luna-server-install \
+incus exec luna-stable -- /root/luna/scripts/luna-server-install \
   --profile stable \
-  --repo-dir /root/luna/stable/repo \
+  --repo-dir /root/luna \
   --luna-home /root/.luna
+scripts/luna-guardian adopt stable
 ```
 
 If this is the first install and no token exists yet:
 
 ```bash
-scripts/luna-server-install \
+incus exec luna-stable -- /root/luna/scripts/luna-server-install \
   --profile stable \
-  --repo-dir /root/luna/stable/repo \
+  --repo-dir /root/luna \
   --luna-home /root/.luna \
   --token '<stable-ui-ws-token>'
 ```
@@ -192,26 +193,25 @@ PR and squash-merging it. There is no `dev`→`master` promotion:
 gh pr create --base master --fill   # review, then squash-merge
 ```
 
-Promote stable on jax-box. Stable auto-updates on a timer by default, so this
-is only needed to force a deploy now or when auto-update is opted out (see
-[autodeploy](./autodeploy.md)):
+Promote stable on jax-box. Stable normally updates through the guardian; this
+drives the same connect-aware rollback path immediately and then proves live
+completion:
 
 ```bash
 ssh root@jax-box
 cd /root/luna/stable/repo
 git fetch origin master
-git checkout master
-git pull --ff-only origin master
-/root/.bun/bin/bun install --frozen-lockfile
-incus exec luna-stable -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
-# Restart as stop -> settle -> start, NOT a fast `systemctl restart`: a fast restart
-# can start the new chat-server before the outgoing one releases its DuckDB/SQLite
-# WAL/SHM handles, crashing the boot with SQLITE_CANTOPEN. The settle covers that.
-incus exec luna-stable -- systemctl stop luna-chat-server.service
-sleep 6
-incus exec luna-stable -- systemctl start luna-chat-server.service
-curl -fsS http://127.0.0.1:4753/healthz
+EXPECTED_SHA="$(git rev-parse origin/master)"
+scripts/luna-autodeploy stable
+scripts/luna-guardian adopt stable
+/usr/local/lib/luna-guardian/current-stable/luna-guardian accept stable \
+  --expected-sha "$EXPECTED_SHA" --min-cycles 2
 ```
+
+If active sessions defer the update or `Type=notify` reconciliation, leave the
+promotion pending and retry when idle. Do not replace this with raw `git pull`,
+dependency installation, and restart commands; that bypasses transaction
+journaling, rollback, exact-SHA readiness, and the acceptance gate.
 
 If stable needs to roll back:
 

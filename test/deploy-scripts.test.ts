@@ -40,6 +40,33 @@ const runScript = (
   })
 }
 
+const writePermissiveSystemctl = (bin: string) => {
+  writeFileSync(join(bin, "systemctl"), [
+    '#!/usr/bin/env bash',
+    'set -u',
+    'units="${LUNA_TEST_SYSTEMD_DIR:-/etc/systemd/system}"',
+    'cmd="${1:-}"; shift || true',
+    'case "$cmd" in',
+    '  show)',
+    '    unit="$1"; shift; prop=""',
+    '    while [[ $# -gt 0 ]]; do case "$1" in -p) prop="$2"; shift 2 ;; *) shift ;; esac; done',
+    '    case "$unit:$prop" in',
+    '      luna-guardian-*.timer:LoadState) [[ -f "$units/$unit" ]] && echo loaded || echo not-found ;;',
+    '      luna-guardian-*.timer:UnitFileState) echo enabled ;;',
+    '      luna-guardian-*.timer:ActiveState) echo active ;;',
+    '      luna-autodeploy-*.timer:LoadState) [[ -f "$units/$unit" ]] && echo loaded || echo not-found ;;',
+    '      luna-autodeploy-*.timer:UnitFileState) [[ -f "$units/$unit" ]] && echo enabled || echo disabled ;;',
+    '      luna-autodeploy-*.timer:ActiveState) [[ -f "$units/$unit" ]] && echo active || echo inactive ;;',
+    '      *) echo "" ;;',
+    '    esac',
+    '    ;;',
+    '  *) exit 0 ;;',
+    'esac',
+    '',
+  ].join('\n'))
+  expect(spawnSync("chmod", ["+x", join(bin, "systemctl")]).status).toBe(0)
+}
+
 // A fully permissive fake incus + systemctl in `bin`: the entire non-dry-run
 // container orchestration succeeds (info no-arg = daemon reachable; info
 // <instance> = new; config set drains the cloud-init heredoc off stdin; every
@@ -72,8 +99,7 @@ case "$cmd" in
 esac
 `)
   expect(spawnSync("chmod", ["+x", join(bin, "incus")]).status).toBe(0)
-  writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
-  expect(spawnSync("chmod", ["+x", join(bin, "systemctl")]).status).toBe(0)
+  writePermissiveSystemctl(bin)
 }
 
 describe("deployment scripts", () => {
@@ -686,8 +712,7 @@ esac
     // runs as root on a Linux box.
     const unitDir = join(temp, "units")
     mkdirSync(unitDir)
-    writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
-    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+    writePermissiveSystemctl(bin)
 
     const result = runScript("scripts/luna-container-create", [
       "--profile",
@@ -706,6 +731,10 @@ esac
         PATH: `${bin}:/usr/bin:/bin`,
         LUNA_SERVERS_CONFIG: join(temp, "etc-luna", "servers.toml"),
         LUNA_TEST_SYSTEMD_DIR: unitDir,
+        LUNA_GUARDIAN_PIN_BASE: join(temp, "guardian-pins"),
+        LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
+        LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
       },
     })
 
@@ -725,13 +754,13 @@ esac
     expect(seeded).toContain(`update.params.hostRepoDir         = "${repo}"`)
     // The stable stanza (a different profile) keeps the template default.
     expect(seeded).toContain(`"/root/luna/stable/repo"`)
-    const service = readFileSync(join(unitDir, "luna-autodeploy-dev.service"), "utf8")
-    expect(service).toMatch(/^ExecStart=.* dev --from-timer$/m)
-    expect(service).not.toContain("--allow-active")
-    expect(readFileSync(join(unitDir, "luna-autodeploy-dev.timer"), "utf8")).toContain(
-      "OnUnitActiveSec=3min",
+    const service = readFileSync(join(unitDir, "luna-guardian-dev.service"), "utf8")
+    expect(service).toMatch(/^ExecStart=.*luna-guardian check dev$/m)
+    expect(service).toContain("OnFailure=luna-guardian-alert-dev.service")
+    expect(readFileSync(join(unitDir, "luna-guardian-dev.timer"), "utf8")).toContain(
+      "OnUnitInactiveSec=1min",
     )
-    expect(result.stdout).toContain("Auto-update timer enabled for 'dev'")
+    expect(result.stdout).toContain("Guardian enabled for 'dev'")
   })
 
   it("installs the timer when an existing registry's stanza already points at --repo-path", () => {
@@ -780,6 +809,10 @@ deploy.autoUpdate    = true
         PATH: `${bin}:/usr/bin:/bin`,
         LUNA_SERVERS_CONFIG: registry,
         LUNA_TEST_SYSTEMD_DIR: unitDir,
+        LUNA_GUARDIAN_PIN_BASE: join(temp, "guardian-pins"),
+        LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
+        LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
       },
     })
 
@@ -789,9 +822,9 @@ deploy.autoUpdate    = true
       `update.params.hostRepoDir         = "${repo}"`,
     )
     // The timer installs against the matching path.
-    expect(result.stdout).toContain("Auto-update timer enabled for 'dev'")
-    const service = readFileSync(join(unitDir, "luna-autodeploy-dev.service"), "utf8")
-    expect(service).toMatch(/^ExecStart=.* dev --from-timer$/m)
+    expect(result.stdout).toContain("Guardian enabled for 'dev'")
+    const service = readFileSync(join(unitDir, "luna-guardian-dev.service"), "utf8")
+    expect(service).toMatch(/^ExecStart=.*luna-guardian check dev$/m)
   })
 
   it("warns and skips the timer when an existing registry's stanza points elsewhere than --repo-path", () => {
@@ -849,7 +882,7 @@ deploy.autoUpdate    = true
     // The warning names both the stale path and the actual --repo-path.
     expect(result.stderr).toContain(staleRepo)
     expect(result.stderr).toContain(repo)
-    expect(result.stderr).toContain("install-timer dev")
+    expect(result.stderr).toContain("luna-guardian install dev")
     // No timer installed, and the operator registry is left untouched.
     expect(result.stdout).not.toContain("Auto-update timer enabled for 'dev'")
     expect(existsSync(join(unitDir, "luna-autodeploy-dev.service"))).toBe(false)
@@ -877,9 +910,8 @@ deploy.autoUpdate    = true
     ])
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("Auto-update timer skipped (--no-auto-update)")
-    // No planned install-timer invocation (the `+ ...` luna_run plan line).
-    expect(result.stdout).not.toMatch(/^\+ .*install-timer stable$/m)
+    expect(result.stdout).toContain("Guardian skipped (--no-auto-update)")
+    expect(result.stdout).not.toMatch(/^\+ .*luna-guardian install stable$/m)
   })
 
   it("container dry-run plans the auto-update timer install by default", () => {
@@ -904,7 +936,7 @@ deploy.autoUpdate    = true
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toMatch(/^\+ .*install-timer stable$/m)
+    expect(result.stdout).toMatch(/^\+ .*luna-guardian install stable$/m)
     // Registry absent at the pinned path → the plan includes seeding it.
     expect(result.stdout).toContain("seeds/servers.toml")
   })
@@ -2583,16 +2615,10 @@ esac
         { cwd: repoRoot, encoding: "utf8", env: { ...process.env, ...env } },
       )
 
-    it("returns 0 when LUNA_TEST_WS_COUNT is unset (no established sockets in CI)", () => {
-      // LUNA_TEST_WS_COUNT deliberately absent: the seam is not triggered, but
-      // ss(8) either isn't present on the CI machine or returns 0 because there
-      // are no established connections to the test port. We only assert the default
-      // digit-strip produces a valid non-negative integer — not the exact value —
-      // because calling real ss on a random port is safe and still exercises the
-      // production path without depending on live state.
-      const result = runWsCount("19999")
+    it("returns a pinned zero session count", () => {
+      const result = runWsCount("19999", { LUNA_TEST_WS_COUNT: "0" })
       expect(result.status).toBe(0)
-      expect(result.stdout.trim()).toMatch(/^\d+$/)
+      expect(result.stdout.trim()).toBe("0")
     })
 
     it("returns the pinned value when LUNA_TEST_WS_COUNT is set to a digit string", () => {
@@ -2601,17 +2627,16 @@ esac
       expect(result.stdout.trim()).toBe("3")
     })
 
-    it("returns 0 when LUNA_TEST_WS_COUNT is set to empty string", () => {
+    it("returns unknown when LUNA_TEST_WS_COUNT is empty", () => {
       const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "" })
-      expect(result.status).toBe(0)
-      expect(result.stdout.trim()).toBe("0")
+      expect(result.status).not.toBe(0)
+      expect(result.stdout.trim()).toBe("")
     })
 
-    it("digit-strips non-numeric characters from LUNA_TEST_WS_COUNT", () => {
-      // e.g. LUNA_TEST_WS_COUNT="x7y" → strips non-digits → "7"
+    it("returns unknown for a malformed session count", () => {
       const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "x7y" })
-      expect(result.status).toBe(0)
-      expect(result.stdout.trim()).toBe("7")
+      expect(result.status).not.toBe(0)
+      expect(result.stdout.trim()).toBe("")
     })
   })
 })

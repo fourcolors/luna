@@ -556,12 +556,9 @@ fi
 luna_run incus exec "$INSTANCE" -- test -w /root/luna
 luna_run incus exec "$INSTANCE" -- systemctl status "$STATUS_SERVICE"
 
-# ── Host-side auto-update timer (ON by default) ───────────────────────────────
-# The autodeploy timer polls GitHub from the HOST (GitHub cannot reach the box)
-# and drives luna-update-server against this container when the branch moved
-# and no WebSocket sessions are active. Provisioning enables it by default.
-# Opt out: --no-auto-update here, `luna-autodeploy uninstall-timer <profile>`
-# later, or deploy.autoUpdate = false in the registry (timer no-ops).
+# ── Host-side guardian (ON by default) ────────────────────────────────────────
+# The pinned guardian polls from the host, verifies deep health, captures
+# incidents, resumes interrupted transactions, and updates while idle.
 
 # Render this profile's update.params.hostRepoDir in the seed registry to the
 # ACTUAL host repo path, so a custom --repo-path never yields a timer that
@@ -639,7 +636,7 @@ install_autoupdate_timer() {
         luna_info "Seeded server registry $registry_file from scripts/seeds/servers.toml (hostRepoDir=$REPO_PATH)"
       else
         rm -f "${seed_tmp:-}"
-        luna_warn "could not seed $registry_file — auto-update timer not installed. Seed it (see scripts/seeds/servers.toml) and run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+        luna_warn "could not seed $registry_file — guardian not installed. Seed it (see scripts/seeds/servers.toml) and run: $SCRIPT_DIR/luna-guardian install $PROFILE"
         return 0
       fi
     fi
@@ -654,25 +651,25 @@ install_autoupdate_timer() {
     existing_repo="$(read_stanza_repo_dir "$registry_file" "$PROFILE")"
     if [[ "$existing_repo" != "$REPO_PATH" ]]; then
       if [[ -z "$existing_repo" ]]; then
-        luna_warn "registry $registry_file has no update.params.hostRepoDir for profile '$PROFILE' — auto-update timer not installed. Add a [[server]] stanza for '$PROFILE' with update.params.hostRepoDir = \"$REPO_PATH\", then run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+        luna_warn "registry $registry_file has no update.params.hostRepoDir for profile '$PROFILE' — guardian not installed. Add a matching stanza, then run: $SCRIPT_DIR/luna-guardian install $PROFILE"
       else
-        luna_warn "registry $registry_file points profile '$PROFILE' at hostRepoDir=$existing_repo but this container uses $REPO_PATH — auto-update timer not installed (would target a nonexistent repo). Update the stanza's update.params.hostRepoDir to \"$REPO_PATH\", then run: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+        luna_warn "registry $registry_file points profile '$PROFILE' at hostRepoDir=$existing_repo but this container uses $REPO_PATH — guardian not installed. Update hostRepoDir, then run: $SCRIPT_DIR/luna-guardian install $PROFILE"
       fi
       return 0
     fi
   fi
 
-  if luna_run "$SCRIPT_DIR/luna-autodeploy" install-timer "$PROFILE"; then
-    luna_info "Auto-update timer enabled for '$PROFILE' — disable with: $SCRIPT_DIR/luna-autodeploy uninstall-timer $PROFILE"
+  if luna_run "$SCRIPT_DIR/luna-guardian" install "$PROFILE"; then
+    luna_info "Guardian enabled for '$PROFILE' (health + recovery + updates) — disable with: $SCRIPT_DIR/luna-guardian uninstall $PROFILE"
   else
-    luna_warn "auto-update timer install failed for '$PROFILE' (container itself is fine). Retry with: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+    luna_warn "guardian install failed for '$PROFILE' (container itself is fine). Retry with: $SCRIPT_DIR/luna-guardian install $PROFILE"
   fi
 }
 
 if [[ "$AUTO_UPDATE" == true ]]; then
   install_autoupdate_timer
 else
-  luna_info "Auto-update timer skipped (--no-auto-update) — enable later with: $SCRIPT_DIR/luna-autodeploy install-timer $PROFILE"
+  luna_info "Guardian skipped (--no-auto-update) — enable later with: $SCRIPT_DIR/luna-guardian install $PROFILE"
 fi
 
 luna_info "Container ready"
