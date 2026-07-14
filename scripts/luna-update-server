@@ -373,6 +373,7 @@ TX_TARGET=""
 TX_PREV_LOCK_HASH=""
 TRANSACTION_TRACK_APPLY=false
 EXPECTED_BUILD_SHA=""
+ALLOW_MISSING_BUILD_SHA=false
 
 process_fingerprint() {
   local pid="$1"
@@ -512,6 +513,12 @@ readiness_ok() {
             local build_sha
             build_sha="$(printf '%s' "$readyz" | sed -n 's/.*"buildSha":"\([0-9a-fA-F]*\)".*/\1/p' | head -1)"
             if [[ -n "$build_sha" && ( "$EXPECTED_BUILD_SHA" == "$build_sha"* || "$build_sha" == "$EXPECTED_BUILD_SHA"* ) ]]; then
+              return 0
+            fi
+            # Rollback targets may implement /readyz but predate its additive
+            # buildSha field. Accept an absent field only for that compatibility
+            # path; if a SHA is present it must still identify PREV.
+            if [[ -z "$build_sha" && "$ALLOW_MISSING_BUILD_SHA" == true ]]; then
               return 0
             fi
           fi
@@ -856,6 +863,7 @@ do_rollback() {
   write_transaction "rolling-back" || true
   TRANSACTION_TRACK_APPLY=false
   EXPECTED_BUILD_SHA="$PREV"
+  ALLOW_MISSING_BUILD_SHA=true
   local ok=true
   apply_ref "$PREV" "$(lockfile_hash)" --no-fetch || ok=false
   if [[ "$ok" == true ]]; then

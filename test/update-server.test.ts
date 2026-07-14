@@ -83,6 +83,11 @@ const makeStubBin = (
     // #28: simulate a deploy that boots (healthz 200) but lands in SETUP-mode at
     // the target SHA — /readyz reports mode=setup, so the deepened gate must FAIL.
     readonly setupAtTarget?: boolean
+    // Legacy /readyz responses can omit the additive buildSha field. Forward
+    // promotion must reject that ambiguity, while rollback may accept it.
+    readonly omitBuildShaAtTarget?: boolean
+    readonly omitBuildShaAtPrev?: boolean
+    readonly mismatchBuildShaAtPrev?: boolean
   },
 ) => {
   const bin = join(root, "bin")
@@ -129,7 +134,14 @@ fi
 if [[ "$*" == *"/readyz"* ]]; then
   # Mirror curl -sS -w '\\n%{http_code}' on /readyz: JSON body, newline, code.
   okbool='true'; [[ "$mode" == 'setup' ]] && okbool='false'
-  printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"%s"}\\n%s' "$mode" "$okbool" "$head" "$code"
+  if [[ "$head" == "${opts.targetSha}" && "${opts.omitBuildShaAtTarget ? "1" : "0"}" == "1" ]] ||
+     [[ "$head" == "${opts.prevSha}" && "${opts.omitBuildShaAtPrev ? "1" : "0"}" == "1" ]]; then
+    printf '{"status":"ok","mode":"%s","credentialOk":%s}\\n%s' "$mode" "$okbool" "$code"
+  elif [[ "$head" == "${opts.prevSha}" && "${opts.mismatchBuildShaAtPrev ? "1" : "0"}" == "1" ]]; then
+    printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"deadbeef"}\\n%s' "$mode" "$okbool" "$code"
+  else
+    printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"%s"}\\n%s' "$mode" "$okbool" "$head" "$code"
+  fi
   exit 0
 fi
 # /healthz: mirror -o /dev/null -w '%{http_code}' → print just the code. Exit 0 so
@@ -399,6 +411,37 @@ describe("luna-update-server", () => {
     expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
     expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
     expect(existsSync(join(updateState, "lock-stable"))).toBe(false)
+  })
+
+  it("rejects a forward /readyz response that omits buildSha", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: true,
+      readyAtPrev: true,
+      omitBuildShaAtTarget: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 
   it("defers a concurrent update without touching the checkout", () => {
@@ -720,6 +763,68 @@ exit 0
     // one per stop -> settle -> start cycle).
     const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
     expect(cycles).toBe(2)
+  })
+
+  it("accepts a healthy rollback /readyz response that omits buildSha", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: false,
+      readyAtPrev: true,
+      omitBuildShaAtPrev: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("rejects a rollback /readyz response whose present buildSha mismatches PREV", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: false,
+      readyAtPrev: true,
+      mismatchBuildShaAtPrev: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(2)
+    expect(r.stderr).toContain("CRITICAL")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 
   it("#28 deepened gate: deploy boots into SETUP-mode (healthz 200 but readyz setup) → rollback, exit 1", () => {

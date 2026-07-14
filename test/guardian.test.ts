@@ -163,6 +163,7 @@ describe("luna-guardian", () => {
 
     const service = readFileSync(join(units, "luna-guardian-stable.service"), "utf8")
     expect(service).toContain(`ExecStart=${current}/luna-guardian check stable`)
+    expect(service).toContain(`Environment=LUNA_HOME=${lunaHome}`)
     expect(service).toContain("OnFailure=luna-guardian-alert-stable.service")
     expect(service).toContain("TimeoutStartSec=12min")
     const timer = readFileSync(join(units, "luna-guardian-stable.timer"), "utf8")
