@@ -1130,6 +1130,26 @@ export class ChatService extends Effect.Service<ChatService>()(
                   message,
                 },
               })
+              // A failed adapter stream is terminal for the in-flight turn but
+              // emits no `result`, so drain its observation seed here — exactly
+              // as the interrupt path does. Without this poll the pendingTurns
+              // FIFO stays one slot ahead of the terminal events and every
+              // later turn's observeTurn is paired against stale user text.
+              const pending = yield* Queue.poll(pendingTurns)
+              const failedAssistantText = yield* Ref.getAndSet(assistantText, "")
+              const observeTurn = Option.getOrUndefined(binding)?.observeTurn
+              if (Option.isSome(pending) && observeTurn !== undefined) {
+                yield* observeTurn({
+                  sessionId: id,
+                  userMessageId: pending.value.userMessageId,
+                  userText: pending.value.userText,
+                  assistantText: failedAssistantText,
+                  isError: true,
+                }).pipe(
+                  Effect.catchAllCause(() => Effect.void),
+                  Effect.forkIn(threadScope),
+                )
+              }
             })
           }
 

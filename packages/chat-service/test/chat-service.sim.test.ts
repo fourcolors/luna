@@ -183,6 +183,24 @@ const makeChatLoopQuery = (params: {
   } as Partial<Query>) as Query
 }
 
+// A query whose stream fails before emitting a `result`, modelling a fatal
+// adapter failure (e.g. a stale executable) mid-turn.
+const makeFailingQuery = (): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    throw new Error("adapter stream boom")
+  }
+  const it = gen()
+  return Object.assign(it, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    applyFlagSettings: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
 const makeStreamingQuery = (params: {
   readonly prompt: AsyncIterable<SDKUserMessage>
   readonly sessionId: string
@@ -329,6 +347,72 @@ describe("ChatService (Tier-2 sim)", () => {
         assistantText: "assistant final",
         isError: false,
       },
+      {
+        userText: "second user text",
+        assistantText: "assistant final",
+        isError: false,
+      },
+    ])
+  })
+
+  it("an adapter stream failure drains its observation seed so later turns stay paired", async () => {
+    const observed: Array<{
+      userText: string
+      assistantText: string
+      isError: boolean
+    }> = []
+    let turn = 0
+    const fakeLayer = SDKClient.fake((p) => {
+      turn += 1
+      // The first turn's stream fails before any `result`; the second turn
+      // succeeds. If the failure does not drain the pendingTurns seed, the
+      // second turn's `result` pairs with the FIRST turn's user text.
+      if (turn === 1) return makeFailingQuery()
+      return makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: "thr-fail",
+        responseFor: () => "assistant final",
+      })
+    })
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        systemPrompt: "base identity",
+        onBound: () => {},
+        // A bound recallMemory routes the thread through the per-turn finite
+        // query path where handleAdapterFailure fires per turn.
+        recallMemory: () => Effect.succeed(null),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    const layer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          fakeLayer,
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.send(thread.id, "first user text")
+          yield* Effect.sleep("150 millis")
+          yield* chat.send(thread.id, "second user text")
+          yield* Effect.sleep("150 millis")
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(observed).toEqual([
+      { userText: "first user text", assistantText: "", isError: true },
       {
         userText: "second user text",
         assistantText: "assistant final",
