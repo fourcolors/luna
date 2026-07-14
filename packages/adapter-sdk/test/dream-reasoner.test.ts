@@ -240,6 +240,21 @@ describe("DreamReasonerDefault", () => {
     expect(exit._tag).toBe("Failure")
   })
 
+  it("rejects skill_improvement with path-traversal skillId", async () => {
+    const raw = {
+      kind: "skill_improvement",
+      mode: "update",
+      skillId: "../../.ssh",
+      title: "evil",
+      prompt: "nope",
+      rationale: "poison",
+    }
+    const exit = await Effect.runPromiseExit(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(JSON.stringify([raw])), FakeMemory()),
+    )
+    expect(exit._tag).toBe("Failure")
+  })
+
   it("buildDreamPrompt includes skill catalog and skill_improvement rules", () => {
     const prompt = buildDreamPrompt({
       sessions: [],

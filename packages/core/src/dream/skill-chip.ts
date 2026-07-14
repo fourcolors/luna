@@ -13,21 +13,33 @@ import type { DreamOp, SkillImprovementAfter } from "./types.js"
 /** Hard cap on skill chips emitted per dream cycle (not per chunk). */
 export const MAX_SKILL_IMPROVEMENT_CHIPS = 3
 
+/**
+ * Single-segment skill slug: no path separators, no `..`, no whitespace.
+ * Rejects model-emitted values that would poison `~/.luna/skills/<id>/…` prefaces.
+ */
+export const isSafeSkillId = (id: string): boolean =>
+  /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)
+
 /** True when after looks like a SkillImprovementAfter payload. */
 export const isSkillImprovementAfter = (
   after: unknown,
 ): after is SkillImprovementAfter => {
   if (after === null || typeof after !== "object") return false
   const a = after as Record<string, unknown>
-  return (
-    (a["mode"] === "create" || a["mode"] === "update") &&
-    typeof a["title"] === "string" &&
-    a["title"].length > 0 &&
-    typeof a["prompt"] === "string" &&
-    a["prompt"].length > 0 &&
-    (a["skillId"] === null || typeof a["skillId"] === "string") &&
-    (a["detail"] === null || typeof a["detail"] === "string" || a["detail"] === undefined)
-  )
+  if (!(a["mode"] === "create" || a["mode"] === "update")) return false
+  if (typeof a["title"] !== "string" || a["title"].length === 0) return false
+  if (typeof a["prompt"] !== "string" || a["prompt"].length === 0) return false
+  if (!(a["detail"] === null || typeof a["detail"] === "string" || a["detail"] === undefined)) {
+    return false
+  }
+  const skillId = a["skillId"]
+  if (skillId === null || skillId === undefined) {
+    // create may omit skillId; update requires a safe slug (checked below).
+    if (a["mode"] === "update") return false
+    return true
+  }
+  if (typeof skillId !== "string" || !isSafeSkillId(skillId)) return false
+  return true
 }
 
 /**
@@ -42,6 +54,10 @@ export const skillImprovementToPropose = (
   if (!isSkillImprovementAfter(op.after)) return null
   const after = op.after
   const mode = after.mode
+  // Defense in depth: never interpolate an unsafe skillId into a path preface.
+  if (mode === "update") {
+    if (!after.skillId || !isSafeSkillId(after.skillId)) return null
+  }
   const actionType = mode === "update" ? "task" : "create_skill"
   const detail =
     after.detail ??
@@ -56,17 +72,21 @@ export const skillImprovementToPropose = (
       : `Create a new Luna skill under ~/.luna/skills/<slug>/SKILL.md. ` +
         `It will register DISABLED until the operator enables it.\n\n`
 
-  return {
+  const base = {
     threadId,
-    source: "dream",
-    actionType,
+    source: "dream" as const,
+    actionType: actionType as "task" | "create_skill",
     title: after.title,
-    detail: detail ?? undefined,
     rationale: op.rationale,
     payload: {
       prompt: `${preface}${after.prompt}\n\nWhy (from dream): ${op.rationale}`,
     },
   }
+  // exactOptionalPropertyTypes: omit detail rather than assign undefined.
+  if (detail != null && detail.length > 0) {
+    return { ...base, detail }
+  }
+  return base
 }
 
 /**

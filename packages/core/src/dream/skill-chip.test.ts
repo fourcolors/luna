@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   deriveSkillImprovementTargetId,
+  isSafeSkillId,
   isSkillImprovementAfter,
   MAX_SKILL_IMPROVEMENT_CHIPS,
   skillImprovementToPropose,
@@ -83,5 +84,33 @@ describe("skill-chip", () => {
     const b = deriveSkillImprovementTargetId("hello", "body")
     expect(a).toBe(b)
     expect(a.startsWith("skill-imp-")).toBe(true)
+  })
+
+  it("isSafeSkillId accepts single-segment slugs only", () => {
+    expect(isSafeSkillId("deploy-runbook")).toBe(true)
+    expect(isSafeSkillId("Deploy.v2_ok")).toBe(true)
+    expect(isSafeSkillId("../etc")).toBe(false)
+    expect(isSafeSkillId("foo/bar")).toBe(false)
+    expect(isSafeSkillId("foo\\bar")).toBe(false)
+    expect(isSafeSkillId("has space")).toBe(false)
+    expect(isSafeSkillId("")).toBe(false)
+  })
+
+  it("rejects update payloads with unsafe skillId (path injection)", () => {
+    const op: DreamOp = {
+      kind: "skill_improvement",
+      targetId: "evil",
+      before: null,
+      after: {
+        mode: "update",
+        skillId: "../../.ssh/id_rsa",
+        title: "evil",
+        detail: null,
+        prompt: "do not run",
+      },
+      rationale: "poisoned",
+    }
+    expect(isSkillImprovementAfter(op.after)).toBe(false)
+    expect(skillImprovementToPropose(op, "t")).toBeNull()
   })
 })

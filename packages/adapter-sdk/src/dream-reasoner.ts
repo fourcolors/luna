@@ -37,6 +37,7 @@ import {
   DREAM_PROMPT_TOKEN_BUDGET,
   estimateTokens,
   deriveSkillImprovementTargetId,
+  isSafeSkillId,
   MemoryBackendError,
 } from "@luna/core"
 import type {
@@ -338,6 +339,13 @@ function validateRawOpsArray(raw: unknown): ReadonlyArray<RawOp> {
                 : null
           if (mode === "update" && (!skillId || skillId.length === 0)) {
             throw new Error(`op[${i}] skill_improvement mode=update requires skillId`)
+          }
+          // Single-segment slug only — reject path traversal / whitespace that
+          // would poison the accept-handler path preface (~/.luna/skills/<id>/).
+          if (skillId !== null && !isSafeSkillId(skillId)) {
+            throw new Error(
+              `op[${i}] skill_improvement skillId is not a safe single-segment slug`,
+            )
           }
           const detailRaw = op["detail"]
           const detail =
