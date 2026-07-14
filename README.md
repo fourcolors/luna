@@ -353,26 +353,26 @@ bun run scripts/bump-moon.ts <x.y.z> --tag --push
 See [RELEASES.md](RELEASES.md) for the full release conventions (the "Latest"
 invariant and the `chat-v*` / other tag-only releases).
 
-Stable **auto-updates by default** - a host-side timer redeploys it while idle
-(see [autodeploy](docs/autodeploy.md)). To force a deploy now, or when
-auto-update is opted out, update the stable runtime by hand:
+Stable **auto-updates by default** - the host-side guardian verifies health and
+redeploys it while idle (see [autodeploy](docs/autodeploy.md)). To force a
+deploy now, or when auto-update is opted out, drive the same connect-aware
+rollback path and prove live completion - do not run raw `git pull` +
+`bun install` + restart, which bypasses transaction journaling, rollback,
+exact-SHA readiness, and the acceptance gate:
 
 ```bash
 ssh root@jax-box
 cd /root/luna/stable/repo
 git fetch origin master
-git checkout master
-git pull --ff-only origin master
-bun install --frozen-lockfile
-incus exec luna-stable -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
-# Restart as stop -> settle -> start, NOT a fast `systemctl restart`: a fast restart
-# can start the new chat-server before the outgoing one releases its DuckDB/SQLite
-# WAL/SHM handles, crashing the boot with SQLITE_CANTOPEN. The settle covers that.
-incus exec luna-stable -- systemctl stop luna-chat-server.service
-sleep 6
-incus exec luna-stable -- systemctl start luna-chat-server.service
-curl -fsS http://127.0.0.1:4753/healthz
+EXPECTED_SHA="$(git rev-parse origin/master)"
+scripts/luna-autodeploy stable
+scripts/luna-guardian adopt stable
+/usr/local/lib/luna-guardian/current-stable/luna-guardian accept stable \
+  --expected-sha "$EXPECTED_SHA" --min-cycles 2
 ```
+
+If active sessions defer the update, leave the promotion pending and retry when
+idle. See [jax-box deploy](docs/jax-box-deploy.md) for the full runbook.
 
 ### Adding accounts
 
