@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs"
 import * as path from "node:path"
 import type { McpAppHostDeps, MemorySearchErrorKind } from "@luna/ui-ws"
 import type { CounterSnapshot } from "@luna/core"
-import type { MemoryRecord } from "@luna/memory"
+import type { MemoryRecord, MemoryVisibility } from "@luna/memory"
 
 /** The mimeType every MCP-app template is served under (SEP-1865). */
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
@@ -176,8 +176,8 @@ export const createCoreAppRegistry = (
  * inline HTML. Its identity uri is DERIVED from the artifact id —
  * `ui://luna/app/<encodeURIComponent(id)>` — so the host can stamp tools/call
  * and the server can route + gate them. These apps cannot ship server-side JS,
- * so their tools are a fixed CURATED, read-only allowlist shared by all of them
- * (buildCuratedAppTools), NOT per-app handlers. */
+ * so their tools come from a fixed CURATED registry (buildCuratedAppTools),
+ * with an optional per-app gate for destructive capabilities. */
 
 /** The uri prefix for a store-backed app. The artifact id is percent-encoded
  *  into the uri (mirrors widget.html's derivation). */
@@ -254,7 +254,7 @@ export interface CuratedMemoryRow {
   readonly scope?: {
     readonly observerId: string
     readonly subjectId: string
-    readonly visibility: string
+    readonly visibility: MemoryVisibility
   }
 }
 
@@ -315,8 +315,11 @@ export interface MemoryDeleteResult {
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v)
 
-const asOptionalString = (v: unknown): string | undefined =>
-  typeof v === "string" && v.trim().length > 0 ? v : undefined
+const asOptionalString = (v: unknown): string | undefined => {
+  if (typeof v !== "string") return undefined
+  const trimmed = v.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
 
 const asOptionalFiniteNumber = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined
@@ -405,6 +408,7 @@ export const deleteMemoryRecordWithScopeCheck = async (
  *  `content: { text }`, but other producers (e.g. beliefs) store structured
  *  content — fall back to a JSON preview so the list view never shows "". */
 const extractPreviewText = (content: unknown): string => {
+  if (typeof content === "string") return content
   if (
     content !== null &&
     typeof content === "object" &&
@@ -484,15 +488,19 @@ export const composeAppRegistries = (
  * its inline HTML (for the rare pointer-mode render — generated apps usually
  * render inline and never read the resource); `callTool` routes EVERY
  * store-app tool call to a fixed CURATED allowlist. Generated/user apps share
- * one allowlist because they carry no server JS — so the spec's same-server
- * rule degenerates to "is this a curated tool?" for this provider. Unknown
- * uris/apps/tools fail closed so a composed registry can try the next provider.
+ * one registry because they carry no server JS. Read tools are shared; the
+ * optional isToolAllowed hook narrows destructive capabilities to reviewed
+ * app identities. Unknown uris/apps/tools fail closed so a composed registry
+ * can try the next provider.
  */
 export const createStoreBackedAppRegistry = (deps: {
   readonly getAppHtml: (artifactId: string) => Promise<string | null>
   readonly curatedTools: Readonly<
     Record<string, (args: unknown) => Promise<unknown> | unknown>
   >
+  /** Optional per-app gate for tools that are not safe to expose to every
+   *  generated app (notably destructive mutations). Reads stay shared. */
+  readonly isToolAllowed?: (artifactId: string, tool: string) => boolean
 }): McpAppHostDeps => ({
   async readResource(uri) {
     const id = artifactIdFromAppUri(uri)
@@ -510,6 +518,9 @@ export const createStoreBackedAppRegistry = (deps: {
     // per-app, so a generated app can call any curated tool but nothing else.
     if (!Object.hasOwn(deps.curatedTools, tool)) {
       return { ok: false, message: `tool "${tool}" is not available to apps` }
+    }
+    if (deps.isToolAllowed !== undefined && !deps.isToolAllowed(id, tool)) {
+      return { ok: false, message: `tool "${tool}" is not available to this app` }
     }
     try {
       const value = await deps.curatedTools[tool]!(args)
@@ -530,7 +541,8 @@ export const createStoreBackedAppRegistry = (deps: {
  * The curated tool allowlist exposed to store-backed apps: workspace `pulse`
  * counters, a metadata-only `list-artifacts`, the memory-browser's
  * `memory-list` (exact-filter, paginated) / `memory-search` (hybrid top-K)
- * read pair, and `memory-delete` — the ONE mutation exposed to this surface
+ * read pair, and `memory-delete` — the ONE mutation in this registry, gated
+ * by chat-server to the reviewed `mcp-app:memory-browser` artifact
  * (no edit/flag/tag-patch; that needs a tag-patch primitive that doesn't
  * exist yet, deliberately out of scope for v1). Note the exact read surface:
  * `list-artifacts` is a GLOBAL enumeration of artifact metadata (id/title/
@@ -540,7 +552,7 @@ export const createStoreBackedAppRegistry = (deps: {
  * memory_save/memory_search/memory_delete already use), which the caller
  * should keep in mind before any multi-tenant deployment. Safe in
  * single-tenant Luna (the operator owns every artifact and every memory, and
- * the sandboxed app has a strict no-network CSP — display-only otherwise).
+ * the sandboxed app has a strict no-network CSP).
  * Args are validated here (validateMemoryListArgs/validateMemorySearchArgs/
  * validateMemoryDeleteArgs) before reaching the injected deps — the deps
  * never see unchecked wire input. `memory-delete` additionally relies on its

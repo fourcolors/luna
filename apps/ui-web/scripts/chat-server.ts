@@ -3462,6 +3462,11 @@ const buildServerLayer = (
               memorySearch: getMemorySearchPage,
               memoryDelete: getMemoryDelete,
             }),
+            // Reads are useful to generated memory views, but deletion is a
+            // privileged capability of the reviewed memory-browser artifact,
+            // not a mutation every generated app should inherit.
+            isToolAllowed: (artifactId, tool) =>
+              tool !== "memory-delete" || artifactId === "mcp-app:memory-browser",
           }),
         ),
       )

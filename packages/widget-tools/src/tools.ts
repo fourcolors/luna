@@ -183,7 +183,8 @@ export const makeMcpAppTools = (
       "error is set instead of throwing on backend failure — fall back to " +
       "memory-list when kind is 'no-vector-backend'), or window.mcp.call(" +
       "'memory-delete', {id}) → {deleted:boolean} (deletes one memory record " +
-      "by id; the only mutation exposed to apps — no edit/flag/bulk-delete). " +
+      "by id; restricted to the stable appId 'memory-browser', and the only " +
+      "mutation exposed to apps — no edit/flag/bulk-delete). " +
       "window.mcp.ready resolves once connected (the helper " +
       "is injected for you — do not write your own protocol code). Pass a stable " +
       "appId; writing again with the same id iterates it as a new, revertable " +
@@ -214,8 +215,9 @@ export const makeMcpAppTools = (
             "Available tools: 'pulse', 'list-artifacts', 'memory-list' " +
             "(paginated memory browsing), 'memory-search' (hybrid top-K memory " +
             "search, may return {error} instead of throwing), 'memory-delete' " +
-            "({id} → {deleted}, the only mutation available — no edit/flag/" +
-            "bulk-delete). Nothing else (no Tauri, no Node, no fetch) is " +
+            "({id} → {deleted}, available only to the stable appId " +
+            "'memory-browser'; no edit/flag/bulk-delete). Nothing else (no " +
+            "Tauri, no Node, no fetch) is " +
             "reachable.",
         ),
     },

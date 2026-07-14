@@ -261,6 +261,30 @@ describe("createStoreBackedAppRegistry — generated/user apps", () => {
     expect(notStore.ok).toBe(false)
   })
 
+  it("supports a per-app gate for destructive curated tools", async () => {
+    const guarded = createStoreBackedAppRegistry({
+      getAppHtml: async () => "<p>app</p>",
+      curatedTools: { "memory-delete": async () => ({ deleted: true }) },
+      isToolAllowed: (artifactId, tool) =>
+        tool !== "memory-delete" || artifactId === "mcp-app:memory-browser",
+    })
+
+    const browser = await guarded.callTool(
+      "ui://luna/app/mcp-app%3Amemory-browser",
+      "memory-delete",
+      { id: "mem_1" },
+    )
+    expect(browser.ok).toBe(true)
+
+    const otherApp = await guarded.callTool(
+      "ui://luna/app/mcp-app%3Aunrelated",
+      "memory-delete",
+      { id: "mem_1" },
+    )
+    expect(otherApp.ok).toBe(false)
+    expect(otherApp.message).toContain("not available to this app")
+  })
+
   it("prototype-chain tool names never resolve (hasOwn gate)", async () => {
     for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
       expect((await reg().callTool("ui://luna/app/mcp-app%3Ax", name, {})).ok).toBe(false)
@@ -427,9 +451,9 @@ describe("validateMemoryListArgs — the one choke point for memory-list wire in
     expect(validateMemoryListArgs({ limit: 1_000_000, offset: 1_000_000 }).offset).toBe(2000)
   })
 
-  it("passes through well-formed string filters and drops wrong-typed ones", () => {
+  it("trims well-formed string filters and drops wrong-typed ones", () => {
     expect(
-      validateMemoryListArgs({ namespace: "notes", kind: "semantic", tag: "x", since: 123 }),
+      validateMemoryListArgs({ namespace: "  notes ", kind: " semantic  ", tag: " x ", since: 123 }),
     ).toEqual({ namespace: "notes", kind: "semantic", tag: "x", since: 123, limit: 25, offset: 0 })
     expect(
       validateMemoryListArgs({ namespace: 1, kind: {}, tag: [], since: "nope" }),
@@ -440,6 +464,8 @@ describe("validateMemoryListArgs — the one choke point for memory-list wire in
 describe("validateMemorySearchArgs — the one choke point for memory-search wire input", () => {
   it("trims and length-caps the query, and clamps topK to [1, 50]", () => {
     expect(validateMemorySearchArgs({ query: "  hi  " }).query).toBe("hi")
+    expect(validateMemorySearchArgs({ query: "hi", namespace: " notes ", kind: " semantic " }))
+      .toMatchObject({ namespace: "notes", kind: "semantic" })
     expect(validateMemorySearchArgs({ query: "x".repeat(1000) }).query).toHaveLength(500)
     expect(validateMemorySearchArgs({ query: "hi", topK: 0 }).topK).toBe(1)
     expect(validateMemorySearchArgs({ query: "hi", topK: 999 }).topK).toBe(50)
@@ -554,6 +580,11 @@ describe("toCuratedMemoryRow — MemoryRecord → wire shape", () => {
   it("falls back to a JSON preview for non-text (structured) content", () => {
     const row = toCuratedMemoryRow({ ...base, kind: "belief", content: { status: "active" } })
     expect(row.text).toBe(JSON.stringify({ status: "active" }))
+  })
+
+  it("preserves legacy string content without adding JSON quotes", () => {
+    const row = toCuratedMemoryRow({ ...base, content: "plain text" })
+    expect(row.text).toBe("plain text")
   })
 
   it("echoes the scope when the record carries one", () => {
