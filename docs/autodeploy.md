@@ -163,5 +163,9 @@ scripts/luna-guardian-remote-check root@jax-box stable \
   --expected-sha <full-sha> --max-age 180
 ```
 
-It independently reads the heartbeat over SSH and probes `/readyz`, requiring a
-fresh healthy attestation, at least two cycles, and matching runtime/engine SHA.
+It independently reads the Guardian service state and heartbeat over SSH, then
+probes `/readyz`, requiring a fresh healthy attestation, at least two cycles,
+and matching runtime/engine SHA. A service in systemd's `activating` state is a
+bounded in-progress check, not a dead-man failure; `TimeoutStartSec=12min`
+prevents that exception from hiding a hung Guardian. Failed or missing units
+still page immediately.

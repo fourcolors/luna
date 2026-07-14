@@ -27,11 +27,22 @@ if [[ -z "$ready_url" ]]; then ready_url="http://${host#*@}:4753/readyz"; fi
 [[ "$ready_url" =~ ^https?:// ]] || { echo "--ready-url must use http or https" >&2; exit 2; }
 
 status="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
-  "cat /var/lib/luna-guardian/status-$profile" 2>/dev/null)" || {
-  echo "guardian-remote: cannot read $profile heartbeat from $host" >&2
+  "systemctl show luna-guardian-$profile.service -p LoadState -p ActiveState --no-pager; cat /var/lib/luna-guardian/status-$profile" 2>/dev/null)" || {
+  echo "guardian-remote: cannot read $profile guardian state from $host" >&2
   exit 1
 }
 value() { printf '%s\n' "$status" | sed -n "s/^$1=//p" | head -1; }
+load_state="$(value LoadState)"; active_state="$(value ActiveState)"
+[[ "$load_state" == "loaded" ]] || {
+  echo "guardian-remote: guardian service is not loaded (state=${load_state:-missing})" >&2; exit 1;
+}
+if [[ "$active_state" == "activating" ]]; then
+  printf 'guardian-remote: IN PROGRESS %s %s (bounded by systemd TimeoutStartSec)\n' "$host" "$profile"
+  exit 0
+fi
+[[ "$active_state" == "inactive" ]] || {
+  echo "guardian-remote: guardian service is ${active_state:-unknown}" >&2; exit 1;
+}
 completed="$(value completed_at)"; repo_sha="$(value repo_sha)"; engine_sha="$(value engine_sha)"
 outcome="$(value outcome)"; count="$(value consecutive_healthy)"; now="$(date +%s)"
 [[ "$completed" =~ ^[0-9]+$ && "$completed" -le "$now" ]] || { echo "guardian-remote: invalid heartbeat timestamp" >&2; exit 1; }

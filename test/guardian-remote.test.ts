@@ -12,14 +12,14 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-const setup = (completedAt: number) => {
+const setup = (completedAt: number, activeState = "inactive") => {
   const temp = mkdtempSync(join(tmpdir(), "luna-guardian-remote-"))
   dirs.push(temp)
   const bin = join(temp, "bin")
   const sha = "a".repeat(40)
   mkdirSync(bin)
   writeFileSync(join(bin, "ssh"), `#!/usr/bin/env bash
-printf 'profile=stable\ncompleted_at=${completedAt}\nrepo_sha=${sha}\nengine_sha=${sha}\noutcome=healthy\nconsecutive_healthy=3\n'
+printf 'LoadState=loaded\nActiveState=${activeState}\nprofile=stable\ncompleted_at=${completedAt}\nrepo_sha=${sha}\nengine_sha=${sha}\noutcome=healthy\nconsecutive_healthy=3\n'
 `)
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash
 printf '{"status":"ok","mode":"normal","buildSha":"${sha.slice(0, 8)}"}\n'
@@ -49,5 +49,27 @@ describe("luna-guardian-remote-check", () => {
     )
     expect(result.status).toBe(1)
     expect(result.stderr).toContain("heartbeat stale")
+  })
+
+  it("does not page while systemd is running a timeout-bounded guardian check", () => {
+    const { bin } = setup(Math.floor(Date.now() / 1000) - 600, "activating")
+    const result = spawnSync(
+      "bash",
+      [probe, "jax-box", "stable", "--max-age", "180"],
+      { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
+    )
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toContain("IN PROGRESS")
+  })
+
+  it("pages immediately when the guardian service has failed", () => {
+    const { bin } = setup(Math.floor(Date.now() / 1000), "failed")
+    const result = spawnSync(
+      "bash",
+      [probe, "jax-box", "stable"],
+      { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
+    )
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("guardian service is failed")
   })
 })
