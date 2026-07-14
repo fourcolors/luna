@@ -1,2 +1,6 @@
 # Runtime workspace store created by local chat-server runs (SQLite).
 .workspace/
+
+# Vite bundles TS configs to a temp .mjs beside the original and usually cleans
+# it up, but an interrupted run orphans them. Never commit these.
+*.timestamp-*.mjs

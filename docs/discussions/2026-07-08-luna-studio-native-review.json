@@ -1,0 +1,193 @@
+{
+  "slug": "2026-07-08-luna-studio-native-review",
+  "theme": "dark-blueprint",
+  "status": "active",
+  "shipped_at": null,
+  "shipped_commit": null,
+  "archived_reason": null,
+  "scope_owns": [],
+  "sections": [
+    {
+      "id": "01-header",
+      "snippet": "header",
+      "fills": {
+        "EYEBROW": "Luna Studio Native \u00b7 macOS daily driver",
+        "H1": "Wrap Luna Studio in a native Tauri shell",
+        "SUBTITLE": "Wrap the existing <code>apps/ui-web</code> React app in a new sibling Tauri v2 app (<code>apps/ui-studio-tauri</code>) and add the native layer around it: OS notifications, dock unread badge, launch-at-login, tray, deep links, signed auto-update, and reconnect resilience. Verified against code at <code>f1ca92d</code>."
+      }
+    },
+    {
+      "id": "02-kpi-strip",
+      "snippet": "kpi-strip",
+      "fills": {
+        "KPI1_LABEL": "Shell",
+        "KPI1_VALUE": "Sibling Tauri app",
+        "KPI1_DELTA": "apps/ui-studio-tauri",
+        "KPI1_CLASS": "",
+        "KPI2_LABEL": "Phases",
+        "KPI2_VALUE": "0-4 core",
+        "KPI2_DELTA": "5 optional",
+        "KPI2_CLASS": "",
+        "KPI3_LABEL": "Estimate",
+        "KPI3_VALUE": "~6-8 sessions",
+        "KPI3_DELTA": "at AI speed",
+        "KPI3_CLASS": "",
+        "KPI4_LABEL": "New server surface",
+        "KPI4_VALUE": "Zero (v1)",
+        "KPI4_DELTA": "reuses the wire",
+        "KPI4_CLASS": ""
+      }
+    },
+    {
+      "id": "03-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "1",
+        "TITLE": "Where we are, what's missing",
+        "LEDE": "The React app already anticipates a native swap, and the wire already carries every notification-worthy event. What's missing is the native layer plus reconnect resilience."
+      }
+    },
+    {
+      "id": "04-grid-3-cards",
+      "snippet": "grid-3-cards",
+      "fills": {
+        "C1_TAG": "ui-web today",
+        "C1_TITLE": "Luna Studio (React SPA)",
+        "C1_BODY": "React 18 + Vite, single typed-frame WS, token-is-session auth. <code>transport.ts:9-12</code> already anticipates a Tauri swap behind the Transport interface. Real iframe/CSP widget sandbox. <strong>But</strong>: no reconnect, no Notification API, no unread state - <code>reducer.ts:508,560</code> no-op every notification-worthy frame.",
+        "C2_TAG": "native precedent",
+        "C2_TITLE": "Moon (Tauri v2)",
+        "C2_BODY": "Proven Tauri v2 shell: notify command + least-privilege capability, staged updater, release pipeline, WKWebView cache-purge fix. Working background-delivery notification with focus/dedupe/opt-out gates. <strong>But</strong>: no tray, autostart, deep-link, single-instance, or badge anywhere.",
+        "C3_TAG": "already wired",
+        "C3_TITLE": "The wire carries everything",
+        "C3_BODY": "<code>assistant-done</code> + delivery marker = turn done. <code>suggested-action-set</code> = chips. <code>job-input-request</code> (broadcast) + <code>secret-request</code> (targeted) = 'Luna needs input'. <code>seq/throughSeq</code> dedupe makes reconnect-resume idempotent."
+      }
+    },
+    {
+      "id": "05-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "2",
+        "TITLE": "The shell decision",
+        "LEDE": "Both independent design variants and the judge converged on a new sibling Tauri app. The costs are what decide it, so they are shown, not summarized away."
+      }
+    },
+    {
+      "id": "06-grid-3-cards",
+      "snippet": "grid-3-cards",
+      "fills": {
+        "C1_TAG": "Recommended",
+        "C1_TITLE": "New sibling Tauri app",
+        "C1_BODY": "<code>com.luna.studio</code> embeds ui-web's Vite dist as <code>tauri://</code> assets. Copies Moon's proven infra with identifier/tag/stamp changes. ui-web renders with zero code changes; native calls no-op in a browser tab.<br><span class='dim'>Cost: a second release train (own keypair, <code>bump-studio</code>, <code>release-studio.yml</code>) + ~50 lines of cache-purge FFI duplicated.</span>",
+        "C2_TAG": "Rejected",
+        "C2_TITLE": "Studio window inside Moon",
+        "C2_BODY": "One binary, one updater - but Moon has no bundler (hand-authored HTML dist). A React SPA there means bolting Vite onto an app that avoids one.<br><span class='dim'>Cost: release coupling - a Studio-only fix forces a full orb re-sign; a red ui-web build blocks orb releases.</span>",
+        "C3_TAG": "Rejected as driver",
+        "C3_TITLE": "PWA / browser tab",
+        "C3_BODY": "A same-day win for an always-open tab, and that is all. Kept as the graceful-degradation path inside the same code (web Notification API + title badge), not a separate phase.<br><span class='dim'>Stopping here: no closed-window notifications, no dock badge, no launch-at-login, no OS deep links, no signed auto-update.</span>"
+      }
+    },
+    {
+      "id": "07-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "3",
+        "TITLE": "Notification architecture",
+        "LEDE": "Server event to existing WS frame to <code>useStudioNotifier</code> (new) to Moon-ported gates to a thin Rust command to Notification Center. No new wire protocol."
+      }
+    },
+    {
+      "id": "08-callout",
+      "snippet": "callout",
+      "fills": {
+        "TITLE": "The path, end to end.",
+        "BODY": "<p class='meta'>Three server sources - <code>chat-service.deliverResult</code> (stamps <code>luna_delivery</code>), the suggested-actions service, and <code>request_input</code>/<code>request_secret</code> - all land on <strong>one WebSocket</strong> (the ServerFrame union). <code>useLunaData.onServerFrame</code> (which the reducer no-ops today) branches two ways:</p><div class='grid grid-2'><div class=\"card card--recessed\"><span class=\"tag tag--accent\">notify path</span><h3>useStudioNotifier <span class='dim'>(new)</span></h3><p class=\"meta\">Gates: focused? deduped? opted out? On <code>isTauri</code> it calls Rust <code>notify_thread(kind, title, body, threadId)</code> to macOS Notification Center; in a browser tab it falls back to the web Notification API.</p></div><div class=\"card card--recessed\"><span class=\"tag tag--cool\">badge path</span><h3>useUnreadBadge <span class='dim'>(new)</span></h3><p class=\"meta\">Persisted per-thread last-seen watermark, calls <code>setBadgeCount()</code> - built in since Tauri 2.2, and the workspace is on 2.11.2.</p></div></div><p class='meta'>On macOS a banner click <strong>activates the app only</strong> (no per-banner payload), so a focus-regain handler routes to the pending attention thread or shows an attention strip.</p>"
+      }
+    },
+    {
+      "id": "09-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "4",
+        "TITLE": "What cross-checking corrected",
+        "LEDE": "Four places where one research stream was wrong and another caught it - each changes the plan materially."
+      }
+    },
+    {
+      "id": "10-callout",
+      "snippet": "callout",
+      "fills": {
+        "TITLE": "Corrections.",
+        "BODY": "<div class='grid grid-2'><div class=\"card card--recessed\"><span class=\"tag tag--good\">&#10003; corrected</span><h3>Dock badge is free</h3><p class=\"meta\">The judge specced custom <code>objc2</code> dock-tile FFI. Wrong: <code>setBadgeCount()</code> shipped in Tauri 2.2.0 and the workspace resolves 2.11.2. Phase 3 got simpler.</p></div><div class=\"card card--recessed\"><span class=\"tag tag--good\">&#10003; corrected</span><h3>Plain ws:// works from the Tauri origin</h3><p class=\"meta\">Web research warned of mixed-content blocking. Moon's shipped CSP (<code>connect-src 'self' ws: wss:</code>) talks plain <code>ws://</code> in production. No TLS termination requirement.</p></div><div class=\"card card--recessed\"><span class=\"tag tag--good\">&#10003; corrected</span><h3>'Needs input' is wirable now</h3><p class=\"meta\"><code>JobRunStatus</code> includes <code>waiting</code> (<code>jobs-store-types.ts:77</code>) and <code>job-input-request</code> broadcasts to every client. The doc claiming otherwise (<code>widget-system.md:814-817</code>) is stale - worth a one-line fix.</p></div><div class=\"card card--recessed\"><span class=\"tag tag--warn\">&#10007; corrected</span><h3>Banner click-to-thread does NOT work on macOS</h3><p class=\"meta\">The judge's Phase 2 gate assumed it. The plugin's Actions API is mobile-only (open upstream since 2021). A banner click still just activates the app - so Phase 2 routes on focus-regain, and true per-banner routing (<code>objc2</code> + <code>UNUserNotificationCenterDelegate</code>) becomes optional Phase 5.</p></div></div>"
+      }
+    },
+    {
+      "id": "11-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "5",
+        "TITLE": "Phases & proof gates",
+        "LEDE": "Each phase ends at a gate this repo's rules demand: rendered screenshots for UI, real Notification Center banners for OS work - never just green tests."
+      }
+    },
+    {
+      "id": "12-callout",
+      "snippet": "callout",
+      "fills": {
+        "TITLE": "The ladder.",
+        "BODY": "<div class='grid grid-2'><div class='card card--recessed'><span class='tag tag--accent'>Phase 0 &middot; 1 session</span><h3>Shell spike - de-risk WKWebView first</h3><p class='meta'>Scaffold <code>apps/ui-studio-tauri</code>; embed ui-web dist (<code>frontendDist: ../../ui-web/dist</code>, <code>devUrl :5174</code>); port Moon's cache-purge verbatim with a <code>.studio-webview-version</code> stamp. No notification code allowed yet.</p><p class='meta'><strong>Gate</strong> - In the real WKWebView window: live thread streams, vibe-coded widget renders inside its sandbox (no <code>__TAURI__</code> leak), clipboard works with capability declared. Screenshot proof.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 1 &middot; 1-2 sessions</span><h3>Resilience spine - an always-connected window</h3><p class='meta'>Adopt the already-built <code>LunaWsAdapter</code> backoff transport (adoption, not a build - fixes web too) + app-level auto-pong. Token moves to OS keychain via <code>load_token/save_token</code> (preserve the <code>VITE_UI_WS_TOKEN</code> build guard, mirror in CI). <code>luna://thread/&lt;id&gt;</code> deep link + single-instance + last-thread restore.</p><p class='meta'><strong>Gate</strong> - Kill the server: backoff reconnect, transcript resumes with no duplicates. Cold-launch a <code>luna://thread/&lt;id&gt;</code> lands on that thread. Token verified in keychain.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 2 &middot; 1-2 sessions</span><h3>Notifications - the headline</h3><p class='meta'><code>useStudioNotifier</code> maps four categories: turn/job done (delivery marker distinguishes background from live; live replies deliberately not notified), suggested action, and needs input (<code>job-input-request</code> broadcast + <code>secret-request</code> targeted). Port Moon's gates, request permission on first run, fail soft. Rust <code>notify_thread</code> via per-command capability. Banner click focuses Studio; on focus regain it routes to the single pending attention thread (attention strip when several pend). Web fallback in a browser tab.</p><p class='meta'><strong>Gate</strong> - With the window backgrounded, capture a real Notification Center banner for EACH category; show focus suppression and no double-banner across Studio + Moon on the same thread.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 3 &middot; 1 session</span><h3>Daily-driver shell</h3><p class='meta'><code>useUnreadBadge</code> + <code>setBadgeCount()</code>; <code>tauri-plugin-autostart</code>; tray icon with unread tooltip and open/quit.</p><p class='meta'><strong>Gate</strong> - Badge shows an accurate count that survives relaunch; login-item relaunch works; tray works.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 4 &middot; 1-2 sessions</span><h3>Distribution - own release train</h3><p class='meta'>Staged updater port (persist session before <code>app.restart()</code>), a new minisign keypair (never Moon's), <code>bump-studio.ts</code> + <code>release-studio.yml</code> (<code>studio-v*</code> tags), Latest-flag re-anchor scoped so the two apps never steal each other's updater feed.</p><p class='meta'><strong>Gate</strong> - Signed install, publish <code>studio-v(x+1)</code>, full auto-update round trip with the WKWebView serving the NEW dist (cache stamp bumped).</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 5 &middot; optional</span><h3>True banner-click routing</h3><p class='meta'><code>objc2</code> + <code>UNUserNotificationCenterDelegate</code> threading <code>threadId</code> through <code>userInfo</code>, delivering real click-to-thread. Only testable in an installed <code>.app</code>. Decide after living with the Phase 2 focus-regain UX.</p><p class='meta'><strong>Gate</strong> - Real click-to-thread from a background banner in the installed app.</p></div></div>"
+      }
+    },
+    {
+      "id": "13-callout",
+      "snippet": "callout",
+      "fills": {
+        "TITLE": "",
+        "BODY": "<strong>Cross-cutting (server, separate slice)</strong> - per-connection multi-registration for <code>secret-request</code>/<code>local-shell</code>. Today they are last-subscriber-wins per thread, so Studio auto-subscribing a thread Moon has open silently steals its interactive prompts. Benefits Moon too. Whether to build it now is <strong>Decision 1</strong> below."
+      }
+    },
+    {
+      "id": "14-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "6",
+        "TITLE": "Risks",
+        "LEDE": "Five real hazards, each with the containment that keeps it from becoming a bug."
+      }
+    },
+    {
+      "id": "15-callout",
+      "snippet": "callout",
+      "fills": {
+        "TITLE": "Risk register.",
+        "BODY": "<div class='card card--recessed'><h3>WKWebView drift at React scale</h3><p class='meta'><span class='dim'>Why it's real:</span> srcdoc/CSP sandbox + clipboard proven only in Chromium; largest webview payload in the repo.</p><p class='meta'><span class='dim'>Containment:</span> Phase 0 exists solely to expose this before feature work.</p></div><div class='card card--recessed'><h3>Prompt stealing between Studio and Moon</h3><p class='meta'><span class='dim'>Why it's real:</span> last-subscriber-wins secret/local-shell bridges.</p><p class='meta'><span class='dim'>Containment:</span> Decision 1; until then, a v1 policy, not code hope.</p></div><div class='card card--recessed'><h3>Focus-regain routing is a heuristic</h3><p class='meta'><span class='dim'>Why it's real:</span> several simultaneous attention events are ambiguous.</p><p class='meta'><span class='dim'>Containment:</span> In-app attention strip when &gt;1 pending; Phase 5 if insufficient.</p></div><div class='card card--recessed'><h3>Two release trains</h3><p class='meta'><span class='dim'>Why it's real:</span> double CI/signing surface; shared latest.json namespace.</p><p class='meta'><span class='dim'>Containment:</span> Strict identity separation: identifier, keypair, tag prefix, Latest re-anchor.</p></div><div class='card card--recessed'><h3>Public repo secret leak</h3><p class='meta'><span class='dim'>Why it's real:</span> <code>VITE_UI_WS_TOKEN</code> baked into a dist would ship the tailnet secret.</p><p class='meta'><span class='dim'>Containment:</span> Existing build guard preserved + mirrored in release-studio.yml; token in keychain; config user-entered at runtime.</p></div>"
+      }
+    },
+    {
+      "id": "16-numbered-section",
+      "snippet": "numbered-section",
+      "fills": {
+        "NUM": "7",
+        "TITLE": "Decisions I need from you",
+        "LEDE": "Five open decisions own the shape of the build. Recommended option is marked; comment on any of them and I fold your answers into the spec, delete the open questions, and start Phase 0."
+      }
+    },
+    {
+      "id": "17-callout",
+      "snippet": "callout",
+      "fills": {
+        "TITLE": "",
+        "BODY": "<div class='grid grid-2'><div class='card card--elevated'><span class='tag tag--decision'>Decision 1</span><h3>Moon coexistence <span class='dim'>(blocks Phase 2 needs-input)</span></h3><ul class='meta'><li><strong>Recommended:</strong> Studio avoids auto-subscribing threads with pending prompts - a cheap client-side guard, ships now.</li><li>One client at a time - pure policy, zero code, relies on discipline.</li><li>Build per-connection multi-registration now - the real fix, benefits Moon, +1-2 sessions before Phase 2.</li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 2</span><h3>Badge semantics</h3><ul class='meta'><li><strong>Recommended:</strong> Unread threads - calm, matches the thread-list mental model.</li><li>Unread messages - busier, inflates fast on chatty threads.</li><li>Attention-only (needs-input + suggested) - badge = 'Luna is waiting on you'.</li><li><span class='dim'>Also: does the tray mirror the badge?</span></li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 3</span><h3>Banner-click routing</h3><ul class='meta'><li><strong>Recommended:</strong> Focus-regain routing first, judge Phase 5 later - what mature Tauri chat apps ship.</li><li>Pull Phase 5 forward - true click-to-thread from day one, +1-2 sessions, installed-.app-only testing.</li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 4</span><h3>Long-term: Moon &amp; Studio</h3><ul class='meta'><li>Studio replaces Moon's chat; orb goes ambient - separation is a stepping stone.</li><li>Permanent siblings - Phase 4's separation is forever.</li><li>Decide after a month of daily-driving - defer, evidence over speculation.</li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 5</span><h3>First-run token provisioning</h3><ul class='meta'><li><strong>Recommended for v1:</strong> Manual paste into Settings - exists today, zero new surface.</li><li><code>luna://connect</code> provisioning deep link - slick, but deep links only test in an installed .app.</li></ul></div></div>"
+      }
+    },
+    {
+      "id": "18-footer-meta",
+      "snippet": "footer-meta",
+      "fills": {
+        "STRONG": "Then what?",
+        "BODY": "On your answers I fold the decisions into the spec, delete the open questions, and start Phase 0 in the <code>studio-native-plan</code> worktree - gate screenshot before anything else. <br><span class='dim'>Sources: 5-finder codebase map + 3 Opus design variants + Opus judge (9 agents, ~643k tokens); external Tauri v2 ecosystem research; hand-verified against the Tauri 2.11.2 lockfile, Moon's CSP, and <code>jobs-store-types.ts:77</code>. Full spec: <code>docs/superpowers/specs/2026-07-08-luna-studio-native-macos.md</code>.</span>"
+      }
+    }
+  ],
+  "created": "2026-07-08T23:01:45Z",
+  "updated": "2026-07-08T23:01:45Z"
+}

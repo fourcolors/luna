@@ -1,0 +1,1687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-07-14-evals-self-learning-loop</title>
+<style>
+/* === THEME FONT IMPORTS - @import is only valid before all other rules, so the
+   render scripts hoist a theme's @import lines here and keep the rest at the end. === */
+/* === LAYOUT === */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse at 15% 0%, var(--accent-dim) 0%, transparent 45%),
+    radial-gradient(ellipse at 85% 30%, var(--good-dim) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 100%, var(--decision-dim) 0%, transparent 45%);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.55;
+  min-height: 100vh;
+}
+
+.container {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 48px 32px 80px;
+  gap: 48px;
+}
+
+@media (max-width: 920px) {
+  .container { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+}
+
+/* === SIDEBAR === */
+.sidebar { position: sticky; top: 48px; align-self: start; }
+.sidebar-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+}
+.toc { display: flex; flex-direction: column; gap: 6px; }
+.toc-link {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 4px 10px;
+  border-left: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.toc-link:hover { color: var(--text); }
+.toc-link.on { color: var(--accent); border-left-color: var(--accent); }
+
+/* === MAIN COLUMN === */
+main { max-width: 940px; }
+
+/* === TYPOGRAPHY === */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+main > * { animation: fadeUp 0.5s ease-out; }
+
+header { margin-bottom: 48px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+h1 {
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-bottom: 16px;
+  max-width: 900px;
+}
+h1 .accent { color: var(--accent); font-style: italic; }
+.subtitle { font-size: 18px; color: var(--text-dim); max-width: 780px; line-height: 1.5; }
+.meta-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.meta-row span strong { color: var(--text); font-weight: 500; }
+
+section { margin-bottom: 56px; scroll-margin-top: 24px; }
+
+h2 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+h2 .num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-right: 12px;
+  vertical-align: 4px;
+  letter-spacing: 0.08em;
+}
+h2 + .lede { color: var(--text-dim); font-size: 16px; margin-bottom: 24px; max-width: 800px; }
+
+h3 { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+h4 { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin: 16px 0 6px; color: var(--text); }
+
+p { margin-bottom: 12px; }
+
+/* === CARDS & GRIDS === */
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px; }
+.card--elevated {
+  background: var(--surface-elevated);
+  border-color: var(--border-bright);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02), 0 8px 24px -16px rgba(0,0,0,0.18);
+}
+.card--recessed { background: var(--surface2); border-style: dashed; }
+
+.card p, .card ul { color: var(--text); font-size: 14.5px; }
+.card .meta { color: var(--text-dim); font-size: 13px; }
+
+ul.tight { list-style: none; padding: 0; }
+ul.tight li { padding: 4px 0; font-size: 14.5px; }
+ul.tight li::before { content: '·'; color: var(--accent); margin-right: 8px; font-weight: 700; }
+
+/* === TAGS === */
+.tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.tag--accent  { background: var(--accent-dim);   color: var(--accent); }
+.tag--good    { background: var(--good-dim);     color: var(--good); }
+.tag--cool    { background: var(--cool-dim);     color: var(--cool); }
+.tag--warn    { background: var(--warn-dim);     color: var(--warn); }
+.tag--decision{ background: var(--decision-dim); color: var(--decision); }
+
+/* === COMPARE TABLE === */
+table.compare {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 14.5px;
+}
+table.compare th, table.compare td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+table.compare thead th {
+  background: var(--surface2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+table.compare tbody tr:last-child td { border-bottom: none; }
+table.compare td.dim { color: var(--text-dim); }
+table.compare td strong { color: var(--accent); font-weight: 600; }
+
+/* === CODE === */
+pre, code { font-family: var(--font-mono); font-size: 13px; }
+pre {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  line-height: 1.55;
+  color: var(--text);
+}
+code.inline {
+  background: var(--surface2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+pre .c { color: var(--text-dim); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+pre .v { color: var(--cool); }
+
+/* === KPI === */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.kpi {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-bright);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.kpi .label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.kpi .value { font-family: var(--font-display); font-size: 26px; font-weight: 600; line-height: 1.1; }
+.kpi .delta { font-family: var(--font-mono); font-size: 12px; color: var(--good); margin-top: 4px; }
+.kpi .delta.warn { color: var(--warn); }
+
+/* === DECISION CARD === */
+.decision-card {
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-left: 3px solid var(--decision);
+  border-radius: 10px;
+  padding: 18px 22px;
+  margin-bottom: 12px;
+}
+.decision-card .q { font-family: var(--font-display); font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.decision-card .opts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.decision-card .opt {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+}
+.decision-card .opt strong { color: var(--decision); font-weight: 600; }
+.decision-card .recommendation,
+.decision-card .resolution {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-top: 10px;
+  letter-spacing: 0.04em;
+}
+.decision-card .recommendation { color: var(--good); }
+.decision-card .recommendation::before { content: '→ '; }
+.decision-card .resolution { color: var(--text-dim); }
+.decision-card .resolution::before { content: '✓ '; color: var(--good); }
+
+/* === CALLOUT === */
+.callout {
+  border-left: 3px solid var(--cool);
+  background: var(--cool-dim);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin: 20px 0;
+  font-size: 14.5px;
+}
+.callout strong { color: var(--cool); }
+
+/* === WIREFRAME === */
+.wireframe {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+.wf-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.wf-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 720px) { .wf-row-3 { grid-template-columns: 1fr; } }
+.wf-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 200px;
+  flex: 1 1 260px;
+  max-width: 460px;
+}
+.wf-box .wf-note {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-top: 8px;
+  line-height: 1.65;
+}
+.wf-skill   { border-left: 3px solid var(--accent); }
+.wf-script  { border-left: 3px solid var(--cool); }
+.wf-data    { border-left: 3px solid var(--good); }
+.wf-out     { border-left: 3px solid var(--decision); }
+.wf-flow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 0;
+}
+.wf-flow span { margin: 0 12px; }
+
+/* === TIMELINE === */
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+  border-left: 2px solid var(--border-bright);
+}
+.timeline > li {
+  position: relative;
+  padding: 4px 0 18px 22px;
+}
+.timeline > li::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 10px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+}
+.timeline time {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.timeline > li > div { color: var(--text); }
+
+/* === ANNOTATED CODE === */
+.annotated {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 18px;
+  margin: 16px 0;
+}
+.annotated > pre { margin: 0; }
+.annotated .notes {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.annotated .notes > p { margin: 0 0 10px; }
+.annotated .notes strong { color: var(--text); }
+
+/* === FOOTER === */
+footer {
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+footer strong { color: var(--text); }
+
+/* === REVIEW MODE (select + comment, feedback round-trip) === */
+.rv-pill {
+  position: fixed; right: 20px; bottom: 20px; z-index: 60;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em;
+  padding: 9px 14px; border-radius: 999px; cursor: pointer;
+  background: var(--surface-elevated); color: var(--text-dim);
+  border: 1px solid var(--border-bright);
+  box-shadow: 0 4px 16px -8px rgba(0,0,0,0.25);
+  user-select: none;
+}
+.rv-pill:hover { color: var(--text); }
+body.rv-on .rv-pill { color: var(--accent); border-color: var(--accent); }
+.rv-badge {
+  background: var(--accent); color: var(--on-accent, var(--bg));
+  border-radius: 999px; font-size: 11px; padding: 1px 7px; font-weight: 700;
+}
+.rv-badge:empty { display: none; }
+
+body.rv-on main [data-rv-section]:hover { outline: 1px dashed var(--accent); outline-offset: 6px; border-radius: 4px; }
+body.rv-on main [data-rv-section]:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 4px; }
+
+.rv-add {
+  position: absolute; z-index: 65; display: none;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  padding: 4px 9px; border-radius: 6px; cursor: pointer;
+  background: var(--accent); color: var(--on-accent, var(--bg)); border: none;
+}
+.rv-add.open { display: block; }
+
+.rv-pop {
+  position: absolute; z-index: 70; display: none;
+  background: var(--surface-elevated); border: 1px solid var(--border-bright);
+  border-radius: 8px; box-shadow: 0 8px 24px -8px rgba(0,0,0,0.3);
+  padding: 8px;
+}
+.rv-pop.open { display: block; }
+button.rv-pop {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  cursor: pointer; color: var(--text);
+}
+.rv-pop .rv-pop-quote {
+  max-width: 280px; font-size: 12px; font-style: italic; color: var(--text-dim);
+  border-left: 2px solid var(--border-bright); padding-left: 8px; margin-bottom: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-pop textarea {
+  display: block; width: 280px; min-height: 64px; resize: vertical;
+  font-family: var(--font-body); font-size: 13.5px; line-height: 1.45;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright); border-radius: 6px; padding: 8px;
+}
+.rv-pop .rv-row { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+
+.rv-btn {
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.04em;
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright);
+}
+.rv-btn:hover { border-color: var(--accent); color: var(--accent); }
+.rv-btn--primary { background: var(--accent); color: var(--on-accent, var(--bg)); border-color: transparent; }
+.rv-btn--primary:hover { color: var(--on-accent, var(--bg)); opacity: 0.9; }
+
+.rv-panel {
+  position: fixed; right: 20px; bottom: 68px; z-index: 60; display: none;
+  width: 340px; max-height: 60vh; overflow: auto;
+  background: var(--surface-elevated); border: 1px solid var(--border-bright);
+  border-radius: 12px; box-shadow: 0 12px 32px -12px rgba(0,0,0,0.35);
+  padding: 14px 16px;
+}
+body.rv-on .rv-panel { display: block; }
+.rv-panel-head {
+  font-family: var(--font-mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--text-dim); margin-bottom: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; user-select: none;
+}
+.rv-panel.rv-min { max-height: none; overflow: hidden; }
+.rv-panel.rv-min > :not(.rv-panel-head) { display: none !important; }
+.rv-panel.rv-min .rv-panel-head { margin-bottom: 0; }
+.rv-empty { font-size: 13px; color: var(--text-dim); padding: 6px 0; }
+.rv-item { border-top: 1px solid var(--border); padding: 10px 2px; position: relative; }
+.rv-item:first-child { border-top: none; }
+.rv-sec {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em;
+  color: var(--accent); cursor: pointer; background: none; border: none; padding: 0;
+}
+.rv-sec:hover { text-decoration: underline; }
+.rv-quote {
+  font-size: 12.5px; color: var(--text-dim); font-style: italic;
+  border-left: 2px solid var(--border-bright); padding-left: 8px; margin: 6px 0;
+}
+.rv-body { font-size: 13.5px; color: var(--text); white-space: pre-wrap; }
+.rv-del {
+  position: absolute; top: 8px; right: 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 14px; line-height: 1;
+}
+.rv-del:hover { color: var(--warn); }
+.rv-actions { display: flex; gap: 8px; margin-top: 12px; }
+.rv-copyarea {
+  display: none; width: 100%; min-height: 90px; margin-top: 8px;
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright); border-radius: 6px; padding: 8px;
+}
+.rv-copyarea.open { display: block; }
+
+@media (max-width: 920px) { .rv-panel { width: calc(100vw - 40px); } }
+@media print { .rv-pill, .rv-panel, .rv-pop, .rv-add { display: none !important; } }
+
+/* === THEME — variables + optional component overrides. Loaded LAST so themes can override. === */
+/* dark-blueprint — dark-first, mono-primary. For technical / system-state pages. Uses system fonts. */
+:root {
+  --font-display: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  --font-body:    system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:    ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #1c2128;
+  --surface-elevated: #21262d;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-bright: rgba(255, 255, 255, 0.16);
+  --text: #c9d1d9;
+  --text-dim: #7d8590;
+
+  --accent:    #79c0ff;  --accent-dim:   rgba(121, 192, 255, 0.10);
+  --good:      #56d364;  --good-dim:     rgba(86, 211, 100, 0.10);
+  --cool:      #a5d6ff;  --cool-dim:     rgba(165, 214, 255, 0.10);
+  --warn:      #d29922;  --warn-dim:     rgba(210, 153, 34, 0.10);
+  --decision:  #ff7b72;  --decision-dim: rgba(255, 123, 114, 0.10);
+}
+
+/* dark-blueprint stays dark-first regardless of system pref */
+
+/* === STATUS PILLS === */
+.pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pill--shipped { background: var(--good-dim); color: var(--good); }
+.pill--partial { background: var(--warn-dim); color: var(--warn); }
+.pill--designed { background: var(--cool-dim); color: var(--cool); }
+.pill--gap { background: var(--decision-dim); color: var(--decision); }
+.pill--defer { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
+
+/* === PHASE BOARD === */
+.phase-board {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 24px;
+}
+.phase {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  gap: 14px;
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.phase .ph-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding-top: 2px;
+}
+.phase .ph-title { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.phase .ph-body { font-size: 13.5px; color: var(--text-dim); line-height: 1.5; }
+.phase--done { border-left: 3px solid var(--good); }
+.phase--next { border-left: 3px solid var(--accent); background: var(--surface-elevated); }
+.phase--later { border-left: 3px solid var(--border-bright); opacity: 0.92; }
+
+/* === PIPELINE === */
+.pipeline {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin: 18px 0;
+}
+@media (max-width: 900px) { .pipeline { grid-template-columns: repeat(2, 1fr); } }
+.pipe-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 12px 14px;
+  min-width: 0;
+}
+.pipe-step .n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.pipe-step .t { font-family: var(--font-display); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.pipe-step .b { font-size: 12.5px; color: var(--text-dim); line-height: 1.45; }
+.pipe-step.ok { border-top: 3px solid var(--good); }
+.pipe-step.mid { border-top: 3px solid var(--warn); }
+.pipe-step.miss { border-top: 3px solid var(--decision); }
+
+/* === VERDICT CELL === */
+.verdict-ahead { color: var(--good); font-weight: 600; }
+.verdict-ok { color: var(--cool); font-weight: 600; }
+.verdict-gap { color: var(--decision); font-weight: 600; }
+.verdict-na { color: var(--text-dim); }
+
+table.compare td code, table.compare th code {
+  font-size: 12px;
+}
+.dim { color: var(--text-dim); }
+
+</style>
+</head>
+<body>
+
+<div class="container">
+  <aside class="sidebar">
+    <div class="sidebar-label">On this page</div>
+    <nav class="toc"></nav>
+  </aside>
+  <main>
+
+<!-- @section:id=01-header snippet=header -->
+<header>
+  <div class="eyebrow">Luna · Evals &amp; Self-Learning · Discussion</div>
+  <h1>How Luna learns - and what <span class="accent">"evals"</span> should mean</h1>
+  <p class="subtitle">Current state of the alignment / dream loop, offline quality instruments, and Dream&nbsp;v2 gates - compared to 2025–2026 agent-eval state of the art. Goal: decide what closes the self-improvement loop next, and what stays a deliberate non-goal.</p>
+  <div class="meta-row">
+    <span><strong>Date</strong> 2026-07-14</span>
+    <span><strong>Status</strong> discussion / pre-build</span>
+    <span><strong>Specs</strong> alignment-loop · dream-v2</span>
+    <span><strong>Mode</strong> supervised local agent, not RL</span>
+  </div>
+</header>
+<!-- @endsection:01-header -->
+
+<!-- @section:id=02-kpi-strip snippet=kpi-strip -->
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Live product loop</div>
+    <div class="value">Shipped</div>
+    <div class="delta">Dream → survey → beliefs</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Next single cut</div>
+    <div class="value">Skill chips</div>
+    <div class="delta warn">dream → create_skill</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Already built</div>
+    <div class="value">Chip pipeline</div>
+    <div class="delta">source:dream schema ready</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Not this slice</div>
+    <div class="value">Goldens / gates</div>
+    <div class="delta">defer full Dream v2</div>
+  </div>
+</div>
+<!-- @endsection:02-kpi-strip -->
+
+<!-- @section:id=03-thesis snippet=numbered-section -->
+<section>
+  <h2><span class="num">0</span>Thesis</h2>
+  <p class="lede">Luna already has a real supervised feedback loop. What it does not have is a closed self-improvement loop with a measurement instrument. That second loop is designed (Dream&nbsp;v2) and mostly unbuilt past Phase&nbsp;1.</p>
+</section>
+<!-- @endsection:03-thesis -->
+
+<!-- @section:id=04-thesis-callout snippet=callout -->
+<div class="callout">
+  <strong>Product bet (keep it).</strong> Improve local state and artifacts - beliefs, memory, skills, workflows - under operator ground truth. Do not fine-tune weights on personal traffic. That is closer to good personal-agent architecture than most "self-learning" marketing.
+</div>
+
+<!-- @endsection:04-thesis-callout -->
+
+<!-- @section:id=04b-narrow snippet=numbered-section -->
+<section>
+  <h2><span class="num">0b</span>Decision lock — one cut only</h2>
+  <p class="lede">Operator feedback (2026-07-14): the full evals board is too much. Ship <strong>one</strong> new learning surface: Dream proposes skill (then workflow) improvements as chips. Not goldens, not Labs, not shadow sandboxes, not GEPA.</p>
+</section>
+<!-- @endsection:04b-narrow -->
+
+<!-- @section:id=04c-narrow-body snippet=callout -->
+<div class="callout">
+  <strong>The cut.</strong> Tonight's Dream already rewrites memory hygiene and stages belief candidates. It never proposes skills or workflows. The chip system already supports <code>create_skill</code> / <code>create_workflow</code> with <code>source:"dream"</code> — schema ready, zero call sites from Dream. Wire that one lane.
+</div>
+
+<div class="grid grid-2" style="margin-top:16px">
+  <div class="card card--elevated">
+    <span class="tag tag--good">In scope (v1)</span>
+    <h3>Dream → skill improvement chips</h3>
+    <ul class="tight">
+      <li>New held dream op (e.g. <code>skill_improvement</code>), <strong>never auto-applied</strong></li>
+      <li>Maps to existing <code>SuggestedActions.propose({ source:"dream", actionType:"create_skill" | "task" })</code></li>
+      <li>Accept still spawns prompt job; new skills stay <strong>disabled/quarantined</strong> until you enable</li>
+      <li>Cap chips per night (e.g. ≤3) so this is signal not spam</li>
+      <li>Prompt includes skill catalog snapshot so it can target known skills</li>
+    </ul>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--decision">Out of scope (this slice)</span>
+    <h3>Everything else on the board</h3>
+    <ul class="tight">
+      <li>Golden set mining / holdout / κ calibration</li>
+      <li>Shadow SQLite experiments / gate router</li>
+      <li>TrainingHarness productization / Labs scenario bank</li>
+      <li>Trajectory recorder / GEPA rewrites / packs</li>
+      <li>Auto-apply skill text into <code>~/.luna/skills</code> without a chip</li>
+      <li>Workflow lane can follow the same pattern after skills work</li>
+    </ul>
+  </div>
+</div>
+
+<div class="wireframe" style="margin-top:20px">
+  <div class="wf-row">
+    <div class="wf-box wf-data">Nightly Dream (sessions + skill catalog)
+      <span class="wf-note">Extend reasoner kinds. Keep memory/belief ops. Add improvement proposals only.</span>
+    </div>
+  </div>
+  <div class="wf-flow"><span>▼</span> applyOps: materialize hygiene/beliefs · hold improvements<span>▼</span></div>
+  <div class="wf-row">
+    <div class="wf-box wf-out">SuggestedActions.propose · source:dream
+      <span class="wf-note">create_skill or task("update skill X"). Chips appear on a home/recent thread.</span>
+    </div>
+  </div>
+  <div class="wf-flow"><span>▼</span> you accept or dismiss<span>▼</span></div>
+  <div class="wf-row">
+    <div class="wf-box wf-skill">AcceptHandler → one-shot prompt job
+      <span class="wf-note">Authors SKILL.md under ~/.luna/skills. Registers DISABLED. You enable when ready.</span>
+    </div>
+  </div>
+</div>
+
+<div class="decision-card" style="margin-top:20px">
+  <div class="q">Narrowed D2 · Confirm this as the only next build</div>
+  <div class="opts">
+    <div class="opt"><strong>A · Recommended</strong><br>Skills first via dream chips (create_skill / task-to-update). Workflows as copy-paste of the same pattern after.</div>
+    <div class="opt"><strong>B</strong><br>Skills + workflows in the same first PR (more surface, same bridge).</div>
+    <div class="opt"><strong>C</strong><br>Workflows first instead (create_workflow chips).</div>
+  </div>
+  <div class="recommendation">A — create_skill already quarantines disabled; safer than dream-authored workflow shells.</div>
+  <div class="resolution">Locked 2026-07-14: skills-first chips only. Implemented on feat/dream-skill-chips (skill_improvement → SuggestedActions source:dream).</div>
+</div>
+
+
+<!-- @section:id=05-three-layers snippet=numbered-section -->
+<section>
+  <h2><span class="num">1</span>Three layers that look like evals</h2>
+  <p class="lede">Only Layer&nbsp;1 is a closed product loop today. Layer&nbsp;2 is engineering instrumentation. Layer&nbsp;3 is the designed self-improvement system.</p>
+</section>
+<!-- @endsection:05-three-layers -->
+
+<!-- @section:id=06-layer-cards snippet=grid-3-cards -->
+<div class="grid grid-3">
+  <div class="card card--elevated">
+    <span class="tag tag--good">Layer 1 · shipped</span>
+    <h3>Alignment loop</h3>
+    <p class="meta">Nightly Dream → proposed beliefs / memory hygiene → survey (task_quality + belief_validation) → activate/retire → inject beliefs into system prompt. Global EWMA only controls survey cadence.</p>
+    <p class="meta"><code>packages/core/src/{dream,alignment,beliefs}/</code> · Moon / TUI / WS wired</p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--cool">Layer 2 · engineering</span>
+    <h3>Offline instruments</h3>
+    <p class="meta">LoCoMo memory eval, paraphrase-recall bench, TrainingHarness + Labs primitives, harness-corpus ops probes. Real tests; not connected to Dream promotions.</p>
+    <p class="meta"><code>packages/memory/…/locomo-eval</code> · <code>training-harness/</code> · <code>seeds/harness-corpus/</code></p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--warn">Layer 3 · designed</span>
+    <h3>Dream v2 gates</h3>
+    <p class="meta">Open proposal space × closed gate taxonomy. Operator-confirmed golden set. Shadow SQLite experiments. Substrate-owned scorers. Phase&nbsp;1 (distill/chunk) largely done; 2–6+ ahead.</p>
+    <p class="meta"><code>docs/superpowers/specs/2026-07-07-dream-v2-…</code></p>
+  </div>
+</div>
+<!-- @endsection:06-layer-cards -->
+
+<!-- @section:id=07-live-loop snippet=numbered-section -->
+<section>
+  <h2><span class="num">2</span>Live product loop (what actually runs)</h2>
+  <p class="lede">This is how Luna "learns" you today. Preference learning into context - not into model weights.</p>
+</section>
+<!-- @endsection:07-live-loop -->
+
+<!-- @section:id=08-live-pipeline snippet=wireframe -->
+<div class="wireframe">
+  <div class="wf-row">
+    <div class="wf-box wf-data">Sessions + memory + obs
+      <span class="wf-note">Windowed by dream watermark. Phase&nbsp;1 distill drops stream_event noise; chunks advance watermark per chunk.</span>
+    </div>
+  </div>
+  <div class="wf-flow"><span>▼</span> nightly <code>dream</code> worker · JobTicker<span>▼</span></div>
+  <div class="wf-row-3">
+    <div class="wf-box wf-skill">memory_dedup
+      <span class="wf-note">Auto-apply (lowest stake).</span>
+    </div>
+    <div class="wf-box wf-script">belief_candidate
+      <span class="wf-note">Staged PROPOSED only. Needs survey.</span>
+    </div>
+    <div class="wf-box wf-script">staleness / contradiction
+      <span class="wf-note">Held proposals. Not free-fire.</span>
+    </div>
+  </div>
+  <div class="wf-flow"><span>▼</span> Survey surface (Moon / TUI)<span>▼</span></div>
+  <div class="wf-row-3">
+    <div class="wf-box wf-out">task_quality
+      <span class="wf-note">Likert 1–5 → (n−1)/4. Feeds EWMA → cadence only.</span>
+    </div>
+    <div class="wf-box wf-out">belief_validation
+      <span class="wf-note">confirm / correct / reject → activate or retire. ≤20 active.</span>
+    </div>
+    <div class="wf-box wf-data">outreach_welcome
+      <span class="wf-note">Typed + EWMA path exists. Emitter deferred.</span>
+    </div>
+  </div>
+  <div class="wf-flow"><span>▼</span> next thread system prompt<span>▼</span></div>
+  <div class="wf-row">
+    <div class="wf-box wf-skill">composeBeliefsSection
+      <span class="wf-note">Active beliefs inject like DNA.md. strength = confidence × recency × validation.</span>
+    </div>
+  </div>
+</div>
+<!-- @endsection:08-live-pipeline -->
+
+<!-- @section:id=09-trust-model snippet=grid-2-cards -->
+<div class="grid grid-2">
+  <div class="card">
+    <span class="tag tag--accent">Trust model (load-bearing)</span>
+    <h3>Two signals, never one scalar</h3>
+    <ul class="tight">
+      <li><strong>Global alignment EWMA</strong> - "how often should I survey?" Attention budget only.</li>
+      <li><strong>Per-belief confidence + history</strong> - gates actions in that domain only.</li>
+      <li>A week of great coding help must not unlock autonomous finance outreach.</li>
+      <li>Cold start: dormant, surveys daily, climb by earning validated beliefs.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <span class="tag tag--good">Measure-only firewall</span>
+    <h3>Logged, cannot steer yet</h3>
+    <ul class="tight">
+      <li><strong>Calibration / ECE</strong> - verbalized dream confidence vs outcomes.</li>
+      <li><strong>Sample agreement</strong> - SelfCheckGPT-style multi-pass; pass&nbsp;1 materializes.</li>
+      <li><strong>Tier classifier</strong> - 0/1/2 from confidence × stakes × reversibility.</li>
+      <li>Intentional: collect honesty data before auto-gated self-modification.</li>
+    </ul>
+  </div>
+</div>
+<!-- @endsection:09-trust-model -->
+
+<!-- @section:id=10-feedback-map snippet=numbered-section -->
+<section>
+  <h2><span class="num">3</span>Where feedback flows today</h2>
+  <p class="lede">If it is not on this table, it is not a learning path yet.</p>
+</section>
+<!-- @endsection:10-feedback-map -->
+
+<!-- @section:id=11-feedback-table snippet=compare-table -->
+<table class="compare">
+  <thead>
+    <tr>
+      <th>Source</th>
+      <th>Into</th>
+      <th>Not into</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Survey task_quality</strong></td>
+      <td>Survey cadence (EWMA)</td>
+      <td>Autonomy, routing, skills, weights</td>
+      <td><span class="pill pill--shipped">shipped</span></td>
+    </tr>
+    <tr>
+      <td><strong>Survey belief_validation</strong></td>
+      <td>Belief activate/retire → prompt</td>
+      <td>Model weights</td>
+      <td><span class="pill pill--shipped">shipped</span></td>
+    </tr>
+    <tr>
+      <td><strong>Dream memory hygiene</strong></td>
+      <td>Cleaner memory store</td>
+      <td>Agent policy</td>
+      <td><span class="pill pill--shipped">shipped</span></td>
+    </tr>
+    <tr>
+      <td><strong>Calibration / tier / sampling</strong></td>
+      <td>Logs only</td>
+      <td>Any runtime decision</td>
+      <td><span class="pill pill--partial">measure-only</span></td>
+    </tr>
+    <tr>
+      <td><strong>Permission denials</strong></td>
+      <td>(planned) task_quality pre-bias</td>
+      <td>-</td>
+      <td><span class="pill pill--designed">spec'd</span></td>
+    </tr>
+    <tr>
+      <td><strong>LoCoMo / paraphrase benches</strong></td>
+      <td>Engineering judgment</td>
+      <td>Production gates</td>
+      <td><span class="pill pill--partial">offline</span></td>
+    </tr>
+    <tr>
+      <td><strong>TrainingHarness / Labs</strong></td>
+      <td>Unit / M4 acceptance</td>
+      <td>Golden set / chat-server</td>
+      <td><span class="pill pill--partial">primitives</span></td>
+    </tr>
+    <tr>
+      <td><strong>Dream → chips / experiments</strong></td>
+      <td>Skills, workflows, gated promote</td>
+      <td>-</td>
+      <td><span class="pill pill--gap">not built</span></td>
+    </tr>
+    <tr>
+      <td><strong>RLHF / DPO / fine-tune</strong></td>
+      <td>-</td>
+      <td>Everything (non-goal)</td>
+      <td><span class="pill pill--defer">out of scope</span></td>
+    </tr>
+  </tbody>
+</table>
+<!-- @endsection:11-feedback-table -->
+
+<!-- @section:id=12-dream-v2 snippet=numbered-section -->
+<section>
+  <h2><span class="num">4</span>Dream v2 - the target self-improvement loop</h2>
+  <p class="lede">Open proposal space. Closed gate taxonomy. Human answers mint ground truth. Nothing ungated auto-applies. Scorers live in substrate and are structurally unwritable by dream workers.</p>
+</section>
+<!-- @endsection:12-dream-v2 -->
+
+<!-- @section:id=13-gates snippet=grid-4-cards -->
+<div class="grid grid-4">
+  <div class="card">
+    <span class="tag tag--accent">Behavioral</span>
+    <h3>Golden set + judge</h3>
+    <p class="meta">Black-box end to end. Works for any lever. Pinned judge, different family than generator. κ ≥ 0.6 or inconclusive.</p>
+  </div>
+  <div class="card">
+    <span class="tag tag--cool">Retrieval</span>
+    <h3>Recall / ranking</h3>
+    <p class="meta">Query→memory pairs, live vs shadow. For embedding / index / retrieval config changes.</p>
+  </div>
+  <div class="card">
+    <span class="tag tag--good">Integrity</span>
+    <h3>Schema + probes</h3>
+    <p class="meta">Row counts, referential checks, harness-corpus binary floor. Structural safety.</p>
+  </div>
+  <div class="card">
+    <span class="tag tag--warn">Cost / latency</span>
+    <h3>Telemetry deltas</h3>
+    <p class="meta">Surfaced as trade-offs, not silent wins. Quality without a blank check.</p>
+  </div>
+</div>
+<!-- @endsection:13-gates -->
+
+<!-- @section:id=14-phase-board snippet=numbered-section -->
+<section>
+  <h2><span class="num">5</span>Build board</h2>
+  <p class="lede">Approved order from the Dream&nbsp;v2 spec. Phase&nbsp;1 is the only substantial land so far.</p>
+</section>
+<!-- @endsection:14-phase-board -->
+
+<!-- @section:id=15-phases snippet=phase-board -->
+<div class="phase-board">
+  <div class="phase phase--done">
+    <div class="ph-id">Phase 1</div>
+    <div>
+      <div class="ph-title">Distill + chunked watermark</div>
+      <div class="ph-body">Bounded inputs, message-granularity window, per-chunk advance. Fixes #255 death spiral ("Prompt is too long").</div>
+    </div>
+    <span class="pill pill--shipped">largely done</span>
+  </div>
+  <div class="phase phase--next">
+    <div class="ph-id">Phase 2</div>
+    <div>
+      <div class="ph-title">Chips + trajectory recorder</div>
+      <div class="ph-body">Dream ops → <code>SuggestedActions.propose({source:"dream"})</code>. Per-turn <code>(tool_request, tool_response, model_id)</code> for forward-only counterfactual replay.</div>
+    </div>
+    <span class="pill pill--gap">critical path</span>
+  </div>
+  <div class="phase phase--next">
+    <div class="ph-id">Phase 3</div>
+    <div>
+      <div class="ph-title">Golden set + evidence bundles</div>
+      <div class="ph-body">Mine candidates from traces; only operator answers confirm. Cap ~3/survey, ~5/week. Dual-write to beliefs + holdout. <code>not_enough_context</code> first-class.</div>
+    </div>
+    <span class="pill pill--gap">critical path</span>
+  </div>
+  <div class="phase phase--later">
+    <div class="ph-id">Phase 4</div>
+    <div>
+      <div class="ph-title">Substrate vs evolved state</div>
+      <div class="ph-body">Git/seeds vs <code>~/.luna/</code>. Doctor check. Hash manifests for seeded skills. Upgrade hygiene.</div>
+    </div>
+    <span class="pill pill--designed">designed</span>
+  </div>
+  <div class="phase phase--next">
+    <div class="ph-id">Phase 5</div>
+    <div>
+      <div class="ph-title">Experiment MVP</div>
+      <div class="ph-body">Shadow-copy SQLite sandbox, behavioral gate, gate router with chip degradation, volume-quantum windows, stats honest at tiny N. Chips only.</div>
+    </div>
+    <span class="pill pill--gap">critical path</span>
+  </div>
+  <div class="phase phase--later">
+    <div class="ph-id">Phase 6+</div>
+    <div>
+      <div class="ph-title">Full gates + GEPA-class + packs</div>
+      <div class="ph-body">Retrieval/integrity gates, Tier&nbsp;0 auto-apply, long-window structural rewrites, upgrade gate on personal holdout, cross-instance packs (eval summary only).</div>
+    </div>
+    <span class="pill pill--defer">later</span>
+  </div>
+</div>
+<!-- @endsection:15-phases -->
+
+<!-- @section:id=16-sota snippet=numbered-section -->
+<section>
+  <h2><span class="num">6</span>State of the art (2025–2026)</h2>
+  <p class="lede">Agent eval moved from static Q&amp;A benches to long-horizon, tool-using, environment-grounded harnesses. Self-learning usually means artifact + context updates under gates - not personal RLHF.</p>
+</section>
+<!-- @endsection:16-sota -->
+
+<!-- @section:id=17-sota-pipeline snippet=pipeline -->
+<div class="pipeline">
+  <div class="pipe-step ok">
+    <div class="n">Collect</div>
+    <div class="t">Traces</div>
+    <div class="b">Transcripts, tool spans, outcomes, cost</div>
+  </div>
+  <div class="pipe-step mid">
+    <div class="n">Label</div>
+    <div class="t">Human / implicit</div>
+    <div class="b">SME review, thumbs, denials, undos</div>
+  </div>
+  <div class="pipe-step mid">
+    <div class="n">Evaluate</div>
+    <div class="t">Multi-grader</div>
+    <div class="b">Code + LLM-judge + outcome checks</div>
+  </div>
+  <div class="pipe-step miss">
+    <div class="n">Update</div>
+    <div class="t">Policy / artifacts</div>
+    <div class="b">Prompts, skills, tools, memory - rarely weights</div>
+  </div>
+  <div class="pipe-step miss">
+    <div class="n">Verify</div>
+    <div class="t">Sandbox</div>
+    <div class="b">Shadow + regression golden set</div>
+  </div>
+  <div class="pipe-step miss">
+    <div class="n">Deploy</div>
+    <div class="t">Promote</div>
+    <div class="b">Warm baseline + rollback</div>
+  </div>
+</div>
+<p class="meta dim" style="margin-top:-8px;margin-bottom:20px;font-size:13px;">Border colors map roughly to Luna readiness: green = solid today, amber = partial, red = designed/missing. SOTA expects the full flywheel.</p>
+<!-- @endsection:17-sota-pipeline -->
+
+<!-- @section:id=18-sota-patterns snippet=grid-3-cards -->
+<div class="grid grid-3">
+  <div class="card card--recessed">
+    <span class="tag tag--cool">Swiss cheese</span>
+    <h3>Never one eval layer</h3>
+    <p class="meta">Offline suite + production monitoring + human review + failure→dataset flywheel. Single layers leak; combined layers catch.</p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--cool">What to score</span>
+    <h3>Outcome + trajectory</h3>
+    <p class="meta">Environment state (booking made, test green), tool selection/order/schema, action advancement vs completion, instruction adherence, cost.</p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--cool">Self-learning types</span>
+    <h3>Three different things</h3>
+    <p class="meta"><strong>Weights</strong> (RLHF/DPO/RLVR) - labs. <strong>Artifacts</strong> (DSPy/GEPA/skills) - production agents. <strong>User model</strong> (memory/beliefs) - personal agents. Luna targets 2+3, supervised.</p>
+  </div>
+</div>
+<!-- @endsection:18-sota-patterns -->
+
+<!-- @section:id=19-gap snippet=numbered-section -->
+<section>
+  <h2><span class="num">7</span>Gap analysis - Luna vs SOTA</h2>
+  <p class="lede">Philosophy is strong for a local single-operator agent. Measurement instrument and gated promote path are the holes.</p>
+</section>
+<!-- @endsection:19-gap -->
+
+<!-- @section:id=20-gap-table snippet=compare-table -->
+<table class="compare">
+  <thead>
+    <tr>
+      <th>Capability</th>
+      <th>SOTA</th>
+      <th>Luna</th>
+      <th>Verdict</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Human preference signal</strong></td>
+      <td>Thumbs / SME / HITL tools</td>
+      <td>Structured survey + beliefs</td>
+      <td class="verdict-ahead">Ahead (personal)</td>
+    </tr>
+    <tr>
+      <td><strong>Trust separation</strong></td>
+      <td>Rare outside careful safety</td>
+      <td>Global EWMA ≠ per-belief action rights</td>
+      <td class="verdict-ahead">Ahead</td>
+    </tr>
+    <tr>
+      <td><strong>Measure-only before auto</strong></td>
+      <td>Often skipped</td>
+      <td>Calibration/tier locked measure-only</td>
+      <td class="verdict-ahead">Ahead</td>
+    </tr>
+    <tr>
+      <td><strong>Operator golden set</strong></td>
+      <td>Core of mature flywheels</td>
+      <td>Designed Phase&nbsp;3</td>
+      <td class="verdict-gap">Missing · critical</td>
+    </tr>
+    <tr>
+      <td><strong>Shadow sandbox promote</strong></td>
+      <td>Best practice for config/prompt trials</td>
+      <td>Designed Phase&nbsp;5</td>
+      <td class="verdict-gap">Missing · critical</td>
+    </tr>
+    <tr>
+      <td><strong>Trajectory recorder</strong></td>
+      <td>Standard agent platforms</td>
+      <td>Planned Phase&nbsp;2</td>
+      <td class="verdict-gap">Missing</td>
+    </tr>
+    <tr>
+      <td><strong>Multi-grader harness</strong></td>
+      <td>Scenario bank + rubrics + judges</td>
+      <td>Exact-match Harness shell; Labs unpersisted</td>
+      <td class="verdict-gap">Primitives only</td>
+    </tr>
+    <tr>
+      <td><strong>Judge calibrated to human</strong></td>
+      <td>κ / agreement monitoring</td>
+      <td>LoCoMo offline judge only</td>
+      <td class="verdict-gap">Missing</td>
+    </tr>
+    <tr>
+      <td><strong>Prod → regression cases</strong></td>
+      <td>Failure clustering → datasets</td>
+      <td>Miner designed, not live</td>
+      <td class="verdict-gap">Designed</td>
+    </tr>
+    <tr>
+      <td><strong>Ops integrity floor</strong></td>
+      <td>CI + probes</td>
+      <td>Harness corpus</td>
+      <td class="verdict-ok">Good floor</td>
+    </tr>
+    <tr>
+      <td><strong>Memory quality evals</strong></td>
+      <td>Specialized benches</td>
+      <td>LoCoMo + paraphrase-recall</td>
+      <td class="verdict-ok">Good offline</td>
+    </tr>
+    <tr>
+      <td><strong>Weight updates / RL</strong></td>
+      <td>Frontier labs</td>
+      <td>Explicit non-goal</td>
+      <td class="verdict-na">Correct non-goal</td>
+    </tr>
+  </tbody>
+</table>
+<!-- @endsection:20-gap-table -->
+
+<!-- @section:id=21-trenchant snippet=callout -->
+<div class="callout">
+  <strong>Trenchant observation.</strong> The risk is not "we forgot RLHF." The risk is running Dream proposals without a measurement instrument, so "self-improvement" becomes unfalsifiable opinion. The product question is: <em>what are we allowed to change, and what instrument proves the change was good?</em> Design already answered it. Implementation has not.
+</div>
+<!-- @endsection:21-trenchant -->
+
+<!-- @section:id=22-rec snippet=numbered-section -->
+<section>
+  <h2><span class="num">8</span>Recommendation</h2>
+  <p class="lede"><strong>Narrowed:</strong> ignore the full Dream&nbsp;v2 phase ladder for now. Ship one lane — Dream proposes skill improvements as chips. Full gates/goldens stay design, not the next PR.</p>
+</section>
+<!-- @endsection:22-rec -->
+
+<!-- @section:id=23-rec-cards snippet=grid-3-cards -->
+<div class="grid grid-3">
+  <div class="card card--elevated">
+    <span class="tag tag--good">Do next</span>
+    <h3>Phases 2 → 3 → 5</h3>
+    <ul class="tight">
+      <li>Chips so proposals are visible</li>
+      <li>Trajectory recorder for replay later</li>
+      <li>Golden set as the measurement instrument</li>
+      <li>Shadow sandbox experiment MVP (chips only)</li>
+      <li>Productize TrainingHarness as golden-case runner</li>
+    </ul>
+  </div>
+  <div class="card">
+    <span class="tag tag--cool">Cheap parallel wins</span>
+    <h3>Wire implicit labels</h3>
+    <ul class="tight">
+      <li>Permission denials → task_quality pre-bias</li>
+      <li>Keep LoCoMo / recall as retrieval regression</li>
+      <li>Keep harness-corpus as integrity floor</li>
+      <li>Leave calibration measure-only until ECE/κ look honest</li>
+    </ul>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--decision">Explicitly defer</span>
+    <h3>Until scoreboard exists</h3>
+    <ul class="tight">
+      <li>GEPA-class structural rewrites</li>
+      <li>Tier 0 auto-apply</li>
+      <li>Cross-instance packs</li>
+      <li>Any weight training path</li>
+      <li>Vendor-centric eval SaaS as source of truth</li>
+    </ul>
+  </div>
+</div>
+<!-- @endsection:23-rec-cards -->
+
+<!-- @section:id=24-decisions snippet=numbered-section -->
+<section>
+  <h2><span class="num">9</span>Decisions I need from you</h2>
+  <p class="lede">These own the shape of the next build. Recommended options marked. Comment in review mode; answers fold into Dream&nbsp;v2 open decisions and issue breakdown.</p>
+</section>
+<!-- @endsection:24-decisions -->
+
+<!-- @section:id=25-decision-cards snippet=decisions -->
+<div class="decision-card">
+  <div class="q">D1 · Is the Dream v2 shape the right self-learning bet?</div>
+  <div class="opts">
+    <div class="opt"><strong>A · Recommended</strong><br>Yes - supervised artifact/state evolution under golden gates. No weights.</div>
+    <div class="opt"><strong>B</strong><br>Yes, but prioritize offline Labs/Harness productization before dream chips.</div>
+    <div class="opt"><strong>C</strong><br>No - lean into production-observability flywheel first (trace UI, failure clusters) without personal goldens.</div>
+  </div>
+  <div class="recommendation">Lock A unless you want a SaaS-style observability product more than personal improvement.</div>
+</div>
+
+<div class="decision-card">
+  <div class="q">D2 · What is the first implementation slice after this discussion?</div>
+  <div class="opts">
+    <div class="opt"><strong>A · Recommended</strong><br>Phase 2: dream → chips + trajectory recorder (makes later evals possible).</div>
+    <div class="opt"><strong>B</strong><br>Jump to Phase 3 golden-set mining first (measurement before more proposals).</div>
+    <div class="opt"><strong>C</strong><br>Productize TrainingHarness/Labs against a hand-authored mini golden set (spike the instrument).</div>
+  </div>
+  <div class="recommendation">A preserves approved build order. C is a valid spike if you want a falsifiable harness before more dream surface.</div>
+</div>
+
+<div class="decision-card">
+  <div class="q">D3 · Weekly elicitation budget for golden / survey load</div>
+  <div class="opts">
+    <div class="opt"><strong>A · Recommended</strong><br>~3 questions per survey, ~5 per week (spec default).</div>
+    <div class="opt"><strong>B</strong><br>Stricter: 2 per survey, ~3/week - protect attention harder.</div>
+    <div class="opt"><strong>C</strong><br>Looser early: allow higher budget until ~10 holdout cases exist.</div>
+  </div>
+  <div class="recommendation">A, with C only during cold-start of the golden set if you opt in.</div>
+</div>
+
+<div class="decision-card">
+  <div class="q">D4 · Security-tagged substrate updates vs personal eval gate</div>
+  <div class="opts">
+    <div class="opt"><strong>A · Recommended</strong><br>Security tags bypass personal golden gate, always notify.</div>
+    <div class="opt"><strong>B</strong><br>Bypass silently (fastest patching, less visibility).</div>
+    <div class="opt"><strong>C</strong><br>Never bypass - security waits on personal holdout (safer locally, slower patches).</div>
+  </div>
+  <div class="recommendation">A balances patch speed with operator awareness.</div>
+</div>
+
+<div class="decision-card">
+  <div class="q">D5 · Should this become tracked issues now?</div>
+  <div class="opts">
+    <div class="opt"><strong>A · Recommended</strong><br>Yes - Phase 2 / 3 / 5 as three tracer-bullet issues after you lock D1–D4.</div>
+    <div class="opt"><strong>B</strong><br>One epic PRD issue first, then slice.</div>
+    <div class="opt"><strong>C</strong><br>No issues yet - keep as discussion until next session.</div>
+  </div>
+  <div class="recommendation">A if D1 holds; use project triage vocabulary.</div>
+</div>
+<!-- @endsection:25-decision-cards -->
+
+<!-- @section:id=26-code-map snippet=numbered-section -->
+<section>
+  <h2><span class="num">10</span>Code &amp; doc map</h2>
+  <p class="lede">Pointers for the next agent, not a tour.</p>
+</section>
+<!-- @endsection:26-code-map -->
+
+<!-- @section:id=27-code-table snippet=compare-table -->
+<table class="compare">
+  <thead>
+    <tr><th>Area</th><th>Path</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Dream engine</td><td><code>packages/core/src/dream/</code></td></tr>
+    <tr><td>Alignment / survey / calibration</td><td><code>packages/core/src/alignment/</code></td></tr>
+    <tr><td>Beliefs + prompt inject</td><td><code>packages/core/src/beliefs/</code></td></tr>
+    <tr><td>TrainingHarness</td><td><code>packages/core/src/training-harness/</code></td></tr>
+    <tr><td>LabsService</td><td><code>packages/core/src/labs/</code></td></tr>
+    <tr><td>SuggestedActions</td><td><code>packages/core/src/suggested-actions/</code></td></tr>
+    <tr><td>LoCoMo</td><td><code>packages/memory/src/adapters/locomo-eval/</code></td></tr>
+    <tr><td>Paraphrase recall</td><td><code>packages/memory/bench/paraphrase-recall.ts</code></td></tr>
+    <tr><td>Ops harness</td><td><code>seeds/harness-corpus/</code></td></tr>
+    <tr><td>Alignment design</td><td><code>docs/superpowers/specs/2026-05-28-luna-alignment-loop-design.md</code></td></tr>
+    <tr><td>Dream v2 design</td><td><code>docs/superpowers/specs/2026-07-07-dream-v2-self-improvement-loop.md</code></td></tr>
+    <tr><td>Labs vision (deferred)</td><td><code>DESIGN.md</code> §14</td></tr>
+  </tbody>
+</table>
+<!-- @endsection:27-code-table -->
+
+<!-- @section:id=28-footer snippet=footer-meta -->
+<footer>
+  <strong>Then what?</strong> Confirm narrowed D2 (skills-first chips). On go, implement the single lane: dream op → SuggestedActions.propose(source:"dream") → quarantine skill. Defer goldens/gates.<br>
+  <span class="dim">Sources: codebase recon (dream/alignment/beliefs/labs/harness/memory evals); Dream&nbsp;v2 + alignment-loop specs; agent-eval survey literature and production flywheel practice (trajectory grading, LLM-as-judge calibration, Swiss-cheese layers). Not a claim that Luna should adopt any vendor product.</span>
+</footer>
+<!-- @endsection:28-footer -->
+
+    <!-- @insertion-point -->
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const main = document.querySelector('main');
+  if (!main) return;
+
+  // --- Map @section anchor comments onto their DOM elements ---
+  // Every top-level element between <!-- @section:id=X --> and its @endsection
+  // gets data-rv-section="X". These are the SAME ids the bin/ scripts and the
+  // manifest use, so feedback is pre-addressed for agent-side revision.
+  const SEC_RE = /@section:id=([\w-]+)/;
+  let currentId = null;
+  Array.prototype.forEach.call(main.childNodes, node => {
+    if (node.nodeType === 8) {
+      const m = node.nodeValue.match(SEC_RE);
+      if (m) { currentId = m[1]; return; }
+      if (node.nodeValue.indexOf('@endsection:') !== -1) { currentId = null; return; }
+    } else if (node.nodeType === 1 && currentId) {
+      node.setAttribute('data-rv-section', currentId);
+    }
+  });
+
+  // --- Build TOC from <h2> elements inside <main> ---
+  const toc = document.querySelector('.toc');
+  document.querySelectorAll('main h2').forEach(h => {
+    const sec = h.closest('section');
+    const anchorId = sec && sec.getAttribute('data-rv-section');
+    const id = anchorId || h.id || h.textContent.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (sec) sec.id = id;
+    const a = document.createElement('a');
+    a.href = '#' + id;
+    a.textContent = h.textContent.replace(/^\d+\s*/, '').trim();
+    a.className = 'toc-link';
+    if (toc) toc.appendChild(a);
+  });
+  document.querySelectorAll('.toc-link').forEach(a => {
+    a.addEventListener('click', () => {
+      document.querySelectorAll('.toc-link.on').forEach(x => x.classList.remove('on'));
+      a.classList.add('on');
+    });
+  });
+
+  // --- Review mode: select text or pick a section, comment, copy for agent ---
+  // Key storage on the full path: file:// pages share one localStorage origin,
+  // so a basename key would bleed comments between same-named pages in
+  // different repos. The short slug is display-only.
+  const pagePath = decodeURIComponent(location.pathname || '/page').replace(/\.html?$/, '');
+  const slug = pagePath.split('/').pop() || 'page';
+  const STORE_KEY = 'rv-feedback:' + pagePath;
+  const MODE_KEY = 'rv-on:' + pagePath;
+  const QUOTE_MAX = 240;
+
+  function loadComments() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; }
+    catch (e) { return []; }
+  }
+  function saveComments() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(comments)); }
+    catch (e) { /* private mode etc.; comments live for the session only */ }
+  }
+  let comments = loadComments();
+
+  function el(tag, className, text) {
+    const n = document.createElement(tag);
+    if (className) n.className = className;
+    if (text) n.textContent = text;
+    return n;
+  }
+
+  // Floating UI: pill, panel, selection chip, comment form, section add button
+  const badge = el('span', 'rv-badge');
+  const pill = el('button', 'rv-pill');
+  pill.type = 'button';
+  pill.append('✎ review', badge);
+  pill.title = 'Toggle review mode: select text or hover a section to comment';
+
+  const panel = el('aside', 'rv-panel');
+  const panelHead = el('div', 'rv-panel-head', 'feedback · ' + slug);
+  panelHead.title = 'Click to collapse / expand';
+  panelHead.addEventListener('click', () => panel.classList.toggle('rv-min'));
+  const list = el('div', 'rv-list');
+  const empty = el('div', 'rv-empty',
+    'Select any text, or hover a section and hit "+ comment". Then "Copy for agent" and paste into chat.');
+  const btnCopy = el('button', 'rv-btn rv-btn--primary', 'Copy for agent');
+  btnCopy.type = 'button';
+  const btnClear = el('button', 'rv-btn', 'Clear all');
+  btnClear.type = 'button';
+  const actions = el('div', 'rv-actions');
+  actions.append(btnCopy, btnClear);
+  const copyArea = el('textarea', 'rv-copyarea');
+  copyArea.id = 'rv-copy-output';
+  copyArea.readOnly = true;
+  panel.append(panelHead, list, empty, actions, copyArea);
+
+  const chip = el('button', 'rv-pop', '💬 comment');
+  chip.type = 'button';
+
+  const form = el('div', 'rv-pop');
+  const formQuote = el('div', 'rv-pop-quote');
+  const formText = document.createElement('textarea');
+  formText.id = 'rv-comment-input';
+  formText.placeholder = 'What should change here?';
+  const btnSave = el('button', 'rv-btn rv-btn--primary', 'Save');
+  btnSave.type = 'button';
+  const btnCancel = el('button', 'rv-btn', 'Cancel');
+  btnCancel.type = 'button';
+  const formRow = el('div', 'rv-row');
+  formRow.append(btnCancel, btnSave);
+  form.append(formQuote, formText, formRow);
+
+  const addBtn = el('button', 'rv-add', '+ comment');
+  addBtn.type = 'button';
+
+  document.body.append(pill, panel, chip, form, addBtn);
+
+  let pending = null; // {section, quote} awaiting form save
+  let hoverSection = null;
+
+  function isOn() { return document.body.classList.contains('rv-on'); }
+
+  function setMode(on) {
+    document.body.classList.toggle('rv-on', on);
+    // Sections become keyboard stops in review mode (Enter opens the form)
+    main.querySelectorAll('[data-rv-section]').forEach(node => {
+      if (on) node.setAttribute('tabindex', '0');
+      else node.removeAttribute('tabindex');
+    });
+    if (!on) { hide(chip); hide(form); hide(addBtn); copyArea.classList.remove('open'); }
+    try { localStorage.setItem(MODE_KEY, on ? '1' : '0'); } catch (e) {}
+  }
+
+  function hide(node) { node.classList.remove('open'); }
+
+  function placeAt(node, x, y) {
+    node.classList.add('open'); // must be visible before measuring
+    const w = node.offsetWidth + 12;
+    node.style.left = Math.max(8, Math.min(x, window.scrollX + document.documentElement.clientWidth - w)) + 'px';
+    node.style.top = y + 'px';
+  }
+
+  function sectionOf(domNode) {
+    let n = domNode;
+    while (n && n.nodeType !== 1) n = n.parentNode;
+    const holder = n && n.closest('[data-rv-section]');
+    return holder ? holder.getAttribute('data-rv-section') : null;
+  }
+
+  function renderList() {
+    list.textContent = '';
+    empty.style.display = comments.length ? 'none' : 'block';
+    badge.textContent = comments.length ? String(comments.length) : '';
+    comments.forEach(c => {
+      const item = el('div', 'rv-item');
+      const sec = el('button', 'rv-sec', c.section ? '[' + c.section + ']' : '[page]');
+      sec.type = 'button';
+      sec.addEventListener('click', () => {
+        const target = c.section && main.querySelector('[data-rv-section="' + c.section + '"]');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      const del = el('button', 'rv-del', '×');
+      del.type = 'button';
+      del.title = 'Delete comment';
+      del.addEventListener('click', () => {
+        comments = comments.filter(x => x.id !== c.id);
+        saveComments(); renderList();
+      });
+      item.append(sec, del);
+      if (c.quote) item.append(el('div', 'rv-quote', '“' + c.quote + '”'));
+      item.append(el('div', 'rv-body', c.text));
+      list.append(item);
+    });
+  }
+
+  function payload() {
+    const n = comments.length;
+    const lines = [];
+    lines.push('## Page feedback - ' + slug);
+    lines.push(n + ' comment' + (n === 1 ? '' : 's') + ' · exported ' + new Date().toISOString());
+    lines.push('');
+    comments.forEach((c, i) => {
+      const where = c.section ? '[' + c.section + ']' : '[page]';
+      const anchor = c.quote ? ' re: "' + c.quote + '"' : ' (whole section)';
+      lines.push((i + 1) + '. ' + where + anchor);
+      String(c.text).split('\n').forEach(t => lines.push('   ' + t));
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+
+  function flash(btn, msg) {
+    if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+    btn.textContent = msg;
+    clearTimeout(btn._rvFlashTimer);
+    btn._rvFlashTimer = setTimeout(() => { btn.textContent = btn.dataset.label; }, 1600);
+  }
+
+  function copyManual(text) {
+    copyArea.classList.add('open');
+    copyArea.value = text;
+    copyArea.focus();
+    copyArea.select();
+    try { return document.execCommand('copy'); } catch (e) { return false; }
+  }
+
+  function openForm(x, y, section, quote) {
+    pending = { section: section, quote: quote };
+    formQuote.textContent = quote ? '“' + quote + '”' : '(whole section: ' + (section || 'page') + ')';
+    formText.value = '';
+    hide(chip); hide(addBtn);
+    placeAt(form, x, y);
+    formText.focus();
+  }
+
+  function saveFromForm() {
+    const text = formText.value.trim();
+    if (!text || !pending) { hide(form); return; }
+    comments.push({
+      id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      section: pending.section,
+      quote: pending.quote,
+      text: text,
+      at: new Date().toISOString()
+    });
+    pending = null;
+    saveComments(); renderList();
+    hide(form);
+    const s = window.getSelection();
+    if (s) s.removeAllRanges();
+    pill.focus();
+  }
+
+  pill.addEventListener('click', () => setMode(!isOn()));
+  btnSave.addEventListener('click', saveFromForm);
+  btnCancel.addEventListener('click', () => { pending = null; hide(form); pill.focus(); });
+  form.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { pending = null; hide(form); pill.focus(); }
+  });
+  formText.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveFromForm();
+  });
+
+  // Keyboard path: Tab to a section (tabindex set in review mode), Enter opens
+  // the comment form for it; focus also surfaces the "+ comment" button.
+  main.addEventListener('focusin', e => {
+    if (!isOn() || form.classList.contains('open')) return;
+    const holder = e.target.closest && e.target.closest('[data-rv-section]');
+    if (holder && e.target === holder) {
+      hoverSection = holder.getAttribute('data-rv-section');
+      const rect = holder.getBoundingClientRect();
+      placeAt(addBtn, rect.right + window.scrollX - 90, rect.top + window.scrollY - 10);
+    }
+  });
+  main.addEventListener('keydown', e => {
+    if (!isOn() || e.key !== 'Enter') return;
+    const t = e.target;
+    if (t.nodeType === 1 && t.hasAttribute('data-rv-section')) {
+      e.preventDefault();
+      const rect = t.getBoundingClientRect();
+      openForm(rect.left + window.scrollX + 16, rect.top + window.scrollY + 16,
+        t.getAttribute('data-rv-section'), null);
+    }
+  });
+
+  btnCopy.addEventListener('click', () => {
+    if (!comments.length) { flash(btnCopy, 'nothing to copy'); return; }
+    const text = payload();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => flash(btnCopy, 'copied ✓'),
+        () => flash(btnCopy, copyManual(text) ? 'copied ✓' : 'select + copy below')
+      );
+    } else {
+      flash(btnCopy, copyManual(text) ? 'copied ✓' : 'select + copy below');
+    }
+  });
+
+  btnClear.addEventListener('click', () => {
+    if (!comments.length) return;
+    if (!window.confirm('Clear ' + comments.length + ' comment(s)?')) return;
+    comments = [];
+    saveComments(); renderList();
+    copyArea.classList.remove('open');
+  });
+
+  // Text selection -> chip -> form
+  function placeChipFromSelection(allowHide) {
+    const bail = () => { if (allowHide) hide(chip); };
+    const s = window.getSelection();
+    if (!s || s.isCollapsed || !s.rangeCount) return bail();
+    const range = s.getRangeAt(0);
+    if (!main.contains(range.commonAncestorContainer)) return bail();
+    const quote = s.toString().replace(/\s+/g, ' ').trim();
+    if (!quote) return bail();
+    const rect = range.getBoundingClientRect();
+    // A selection spanning two sections has no single honest address; demote
+    // to page-level and let the agent locate the quote by text. endOffset 0
+    // means the end container contributed nothing (triple-click artifact).
+    const startSec = sectionOf(range.startContainer);
+    let endSec = sectionOf(range.endContainer);
+    if (range.endOffset === 0) endSec = startSec;
+    chip.dataset.section = (startSec === endSec ? startSec : '') || '';
+    chip.dataset.quote = quote.length > QUOTE_MAX ? quote.slice(0, QUOTE_MAX - 1) + '…' : quote;
+    placeAt(chip, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
+  }
+
+  document.addEventListener('mouseup', e => {
+    if (!isOn()) return;
+    if (e.target.closest && e.target.closest('.rv-pop, .rv-panel, .rv-pill, .rv-add')) return;
+    setTimeout(() => placeChipFromSelection(true), 0);
+  });
+
+  // Touch: long-press selection never fires a mouseup we can use, so follow
+  // selectionchange (debounced, show-only so a mid-click collapse can't yank
+  // the chip out from under a slow tap).
+  let selTimer = null;
+  document.addEventListener('selectionchange', () => {
+    if (!isOn() || form.classList.contains('open')) return;
+    clearTimeout(selTimer);
+    selTimer = setTimeout(() => placeChipFromSelection(false), 250);
+  });
+
+  chip.addEventListener('click', () => {
+    const x = parseFloat(chip.style.left) || 0;
+    const y = parseFloat(chip.style.top) || 0;
+    openForm(x, y, chip.dataset.section || null, chip.dataset.quote || null);
+  });
+
+  // Section hover -> floating "+ comment" button
+  document.addEventListener('mouseover', e => {
+    if (!isOn() || form.classList.contains('open')) return;
+    if (!e.target.closest) return;
+    if (e.target.closest('.rv-add, .rv-pop')) return;
+    const holder = e.target.closest('[data-rv-section]');
+    if (holder) {
+      hoverSection = holder.getAttribute('data-rv-section');
+      const rect = holder.getBoundingClientRect();
+      placeAt(addBtn, rect.right + window.scrollX - 90, rect.top + window.scrollY - 10);
+    } else if (!e.target.closest('.rv-panel, .rv-pill')) {
+      hoverSection = null;
+      hide(addBtn);
+    }
+  });
+
+  addBtn.addEventListener('click', () => {
+    const x = parseFloat(addBtn.style.left) || 0;
+    const y = (parseFloat(addBtn.style.top) || 0) + 26;
+    openForm(x, y, hoverSection, null);
+  });
+
+  renderList();
+  // '1'/'0' are explicit user choices; only auto-open on the comments
+  // heuristic when no choice has been stored yet.
+  let modeSaved = null;
+  try { modeSaved = localStorage.getItem(MODE_KEY); } catch (e) {}
+  if (modeSaved === '1' || (modeSaved === null && comments.length)) setMode(true);
+})();
+</script>
+</body>
+</html>
+

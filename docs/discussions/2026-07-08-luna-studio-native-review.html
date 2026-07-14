@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-07-08-luna-studio-native-review</title>
+<style>
+/* === THEME FONT IMPORTS - @import is only valid before all other rules, so the
+   render scripts hoist a theme's @import lines here and keep the rest at the end. === */
+/* === LAYOUT === */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse at 15% 0%, var(--accent-dim) 0%, transparent 45%),
+    radial-gradient(ellipse at 85% 30%, var(--good-dim) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 100%, var(--decision-dim) 0%, transparent 45%);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.55;
+  min-height: 100vh;
+}
+
+.container {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 48px 32px 80px;
+  gap: 48px;
+}
+
+@media (max-width: 920px) {
+  .container { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+}
+
+/* === SIDEBAR === */
+.sidebar { position: sticky; top: 48px; align-self: start; }
+.sidebar-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+}
+.toc { display: flex; flex-direction: column; gap: 6px; }
+.toc-link {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 4px 10px;
+  border-left: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.toc-link:hover { color: var(--text); }
+.toc-link.on { color: var(--accent); border-left-color: var(--accent); }
+
+/* === MAIN COLUMN === */
+main { max-width: 940px; }
+
+/* === TYPOGRAPHY === */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+main > * { animation: fadeUp 0.5s ease-out; }
+
+header { margin-bottom: 48px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+h1 {
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-bottom: 16px;
+  max-width: 900px;
+}
+h1 .accent { color: var(--accent); font-style: italic; }
+.subtitle { font-size: 18px; color: var(--text-dim); max-width: 780px; line-height: 1.5; }
+.meta-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.meta-row span strong { color: var(--text); font-weight: 500; }
+
+section { margin-bottom: 56px; scroll-margin-top: 24px; }
+
+h2 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+h2 .num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-right: 12px;
+  vertical-align: 4px;
+  letter-spacing: 0.08em;
+}
+h2 + .lede { color: var(--text-dim); font-size: 16px; margin-bottom: 24px; max-width: 800px; }
+
+h3 { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+h4 { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin: 16px 0 6px; color: var(--text); }
+
+p { margin-bottom: 12px; }
+
+/* === CARDS & GRIDS === */
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px; }
+.card--elevated {
+  background: var(--surface-elevated);
+  border-color: var(--border-bright);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02), 0 8px 24px -16px rgba(0,0,0,0.18);
+}
+.card--recessed { background: var(--surface2); border-style: dashed; }
+
+.card p, .card ul { color: var(--text); font-size: 14.5px; }
+.card .meta { color: var(--text-dim); font-size: 13px; }
+
+ul.tight { list-style: none; padding: 0; }
+ul.tight li { padding: 4px 0; font-size: 14.5px; }
+ul.tight li::before { content: '·'; color: var(--accent); margin-right: 8px; font-weight: 700; }
+
+/* === TAGS === */
+.tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.tag--accent  { background: var(--accent-dim);   color: var(--accent); }
+.tag--good    { background: var(--good-dim);     color: var(--good); }
+.tag--cool    { background: var(--cool-dim);     color: var(--cool); }
+.tag--warn    { background: var(--warn-dim);     color: var(--warn); }
+.tag--decision{ background: var(--decision-dim); color: var(--decision); }
+
+/* === COMPARE TABLE === */
+table.compare {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 14.5px;
+}
+table.compare th, table.compare td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+table.compare thead th {
+  background: var(--surface2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+table.compare tbody tr:last-child td { border-bottom: none; }
+table.compare td.dim { color: var(--text-dim); }
+table.compare td strong { color: var(--accent); font-weight: 600; }
+
+/* === CODE === */
+pre, code { font-family: var(--font-mono); font-size: 13px; }
+pre {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  line-height: 1.55;
+  color: var(--text);
+}
+code.inline {
+  background: var(--surface2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+pre .c { color: var(--text-dim); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+pre .v { color: var(--cool); }
+
+/* === KPI === */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.kpi {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-bright);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.kpi .label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.kpi .value { font-family: var(--font-display); font-size: 26px; font-weight: 600; line-height: 1.1; }
+.kpi .delta { font-family: var(--font-mono); font-size: 12px; color: var(--good); margin-top: 4px; }
+.kpi .delta.warn { color: var(--warn); }
+
+/* === DECISION CARD === */
+.decision-card {
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-left: 3px solid var(--decision);
+  border-radius: 10px;
+  padding: 18px 22px;
+  margin-bottom: 12px;
+}
+.decision-card .q { font-family: var(--font-display); font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.decision-card .opts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.decision-card .opt {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+}
+.decision-card .opt strong { color: var(--decision); font-weight: 600; }
+.decision-card .recommendation,
+.decision-card .resolution {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-top: 10px;
+  letter-spacing: 0.04em;
+}
+.decision-card .recommendation { color: var(--good); }
+.decision-card .recommendation::before { content: '→ '; }
+.decision-card .resolution { color: var(--text-dim); }
+.decision-card .resolution::before { content: '✓ '; color: var(--good); }
+
+/* === CALLOUT === */
+.callout {
+  border-left: 3px solid var(--cool);
+  background: var(--cool-dim);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin: 20px 0;
+  font-size: 14.5px;
+}
+.callout strong { color: var(--cool); }
+
+/* === WIREFRAME === */
+.wireframe {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+.wf-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.wf-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 720px) { .wf-row-3 { grid-template-columns: 1fr; } }
+.wf-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 200px;
+  flex: 1 1 260px;
+  max-width: 460px;
+}
+.wf-box .wf-note {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-top: 8px;
+  line-height: 1.65;
+}
+.wf-skill   { border-left: 3px solid var(--accent); }
+.wf-script  { border-left: 3px solid var(--cool); }
+.wf-data    { border-left: 3px solid var(--good); }
+.wf-out     { border-left: 3px solid var(--decision); }
+.wf-flow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 0;
+}
+.wf-flow span { margin: 0 12px; }
+
+/* === TIMELINE === */
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+  border-left: 2px solid var(--border-bright);
+}
+.timeline > li {
+  position: relative;
+  padding: 4px 0 18px 22px;
+}
+.timeline > li::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 10px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+}
+.timeline time {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.timeline > li > div { color: var(--text); }
+
+/* === ANNOTATED CODE === */
+.annotated {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 18px;
+  margin: 16px 0;
+}
+.annotated > pre { margin: 0; }
+.annotated .notes {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.annotated .notes > p { margin: 0 0 10px; }
+.annotated .notes strong { color: var(--text); }
+
+/* === FOOTER === */
+footer {
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+footer strong { color: var(--text); }
+
+/* === REVIEW MODE (select + comment, feedback round-trip) === */
+.rv-pill {
+  position: fixed; right: 20px; bottom: 20px; z-index: 60;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em;
+  padding: 9px 14px; border-radius: 999px; cursor: pointer;
+  background: var(--surface-elevated); color: var(--text-dim);
+  border: 1px solid var(--border-bright);
+  box-shadow: 0 4px 16px -8px rgba(0,0,0,0.25);
+  user-select: none;
+}
+.rv-pill:hover { color: var(--text); }
+body.rv-on .rv-pill { color: var(--accent); border-color: var(--accent); }
+.rv-badge {
+  background: var(--accent); color: var(--on-accent, var(--bg));
+  border-radius: 999px; font-size: 11px; padding: 1px 7px; font-weight: 700;
+}
+.rv-badge:empty { display: none; }
+
+body.rv-on main [data-rv-section]:hover { outline: 1px dashed var(--accent); outline-offset: 6px; border-radius: 4px; }
+body.rv-on main [data-rv-section]:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 4px; }
+
+.rv-add {
+  position: absolute; z-index: 65; display: none;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  padding: 4px 9px; border-radius: 6px; cursor: pointer;
+  background: var(--accent); color: var(--on-accent, var(--bg)); border: none;
+}
+.rv-add.open { display: block; }
+
+.rv-pop {
+  position: absolute; z-index: 70; display: none;
+  background: var(--surface-elevated); border: 1px solid var(--border-bright);
+  border-radius: 8px; box-shadow: 0 8px 24px -8px rgba(0,0,0,0.3);
+  padding: 8px;
+}
+.rv-pop.open { display: block; }
+button.rv-pop {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  cursor: pointer; color: var(--text);
+}
+.rv-pop .rv-pop-quote {
+  max-width: 280px; font-size: 12px; font-style: italic; color: var(--text-dim);
+  border-left: 2px solid var(--border-bright); padding-left: 8px; margin-bottom: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-pop textarea {
+  display: block; width: 280px; min-height: 64px; resize: vertical;
+  font-family: var(--font-body); font-size: 13.5px; line-height: 1.45;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright); border-radius: 6px; padding: 8px;
+}
+.rv-pop .rv-row { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+
+.rv-btn {
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.04em;
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright);
+}
+.rv-btn:hover { border-color: var(--accent); color: var(--accent); }
+.rv-btn--primary { background: var(--accent); color: var(--on-accent, var(--bg)); border-color: transparent; }
+.rv-btn--primary:hover { color: var(--on-accent, var(--bg)); opacity: 0.9; }
+
+.rv-panel {
+  position: fixed; right: 20px; bottom: 68px; z-index: 60; display: none;
+  width: 340px; max-height: 60vh; overflow: auto;
+  background: var(--surface-elevated); border: 1px solid var(--border-bright);
+  border-radius: 12px; box-shadow: 0 12px 32px -12px rgba(0,0,0,0.35);
+  padding: 14px 16px;
+}
+body.rv-on .rv-panel { display: block; }
+.rv-panel-head {
+  font-family: var(--font-mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--text-dim); margin-bottom: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; user-select: none;
+}
+.rv-panel.rv-min { max-height: none; overflow: hidden; }
+.rv-panel.rv-min > :not(.rv-panel-head) { display: none !important; }
+.rv-panel.rv-min .rv-panel-head { margin-bottom: 0; }
+.rv-empty { font-size: 13px; color: var(--text-dim); padding: 6px 0; }
+.rv-item { border-top: 1px solid var(--border); padding: 10px 2px; position: relative; }
+.rv-item:first-child { border-top: none; }
+.rv-sec {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em;
+  color: var(--accent); cursor: pointer; background: none; border: none; padding: 0;
+}
+.rv-sec:hover { text-decoration: underline; }
+.rv-quote {
+  font-size: 12.5px; color: var(--text-dim); font-style: italic;
+  border-left: 2px solid var(--border-bright); padding-left: 8px; margin: 6px 0;
+}
+.rv-body { font-size: 13.5px; color: var(--text); white-space: pre-wrap; }
+.rv-del {
+  position: absolute; top: 8px; right: 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 14px; line-height: 1;
+}
+.rv-del:hover { color: var(--warn); }
+.rv-actions { display: flex; gap: 8px; margin-top: 12px; }
+.rv-copyarea {
+  display: none; width: 100%; min-height: 90px; margin-top: 8px;
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright); border-radius: 6px; padding: 8px;
+}
+.rv-copyarea.open { display: block; }
+
+@media (max-width: 920px) { .rv-panel { width: calc(100vw - 40px); } }
+@media print { .rv-pill, .rv-panel, .rv-pop, .rv-add { display: none !important; } }
+
+/* === THEME — variables + optional component overrides. Loaded LAST so themes can override. === */
+/* dark-blueprint — dark-first, mono-primary. For technical / system-state pages. Uses system fonts. */
+:root {
+  --font-display: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  --font-body:    system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:    ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #1c2128;
+  --surface-elevated: #21262d;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-bright: rgba(255, 255, 255, 0.16);
+  --text: #c9d1d9;
+  --text-dim: #7d8590;
+
+  --accent:    #79c0ff;  --accent-dim:   rgba(121, 192, 255, 0.10);
+  --good:      #56d364;  --good-dim:     rgba(86, 211, 100, 0.10);
+  --cool:      #a5d6ff;  --cool-dim:     rgba(165, 214, 255, 0.10);
+  --warn:      #d29922;  --warn-dim:     rgba(210, 153, 34, 0.10);
+  --decision:  #ff7b72;  --decision-dim: rgba(255, 123, 114, 0.10);
+}
+
+/* dark-blueprint stays dark-first regardless of system pref */
+</style>
+</head>
+<body>
+<div class="container">
+  <aside class="sidebar">
+    <div class="sidebar-label">On this page</div>
+    <nav class="toc"></nav>
+  </aside>
+  <main>
+
+
+<!-- @section:id=01-header snippet=header -->
+<header>
+  <div class="eyebrow">Luna Studio Native · macOS daily driver</div>
+  <h1>Wrap Luna Studio in a native Tauri shell</h1>
+  <p class="subtitle">Wrap the existing <code>apps/ui-web</code> React app in a new sibling Tauri v2 app (<code>apps/ui-studio-tauri</code>) and add the native layer around it: OS notifications, dock unread badge, launch-at-login, tray, deep links, signed auto-update, and reconnect resilience. Verified against code at <code>f1ca92d</code>.</p>
+</header>
+<!-- @endsection:01-header -->
+
+<!-- @section:id=02-kpi-strip snippet=kpi-strip -->
+<!-- kpi-strip — 4-column headline metrics row. Fills: KPI{1..4}_{LABEL,VALUE,DELTA,CLASS}.
+     KPI{N}_CLASS is the delta variant — empty for good (default green) or "warn" for amber. -->
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Shell</div>
+    <div class="value">Sibling Tauri app</div>
+    <div class="delta ">apps/ui-studio-tauri</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Phases</div>
+    <div class="value">0-4 core</div>
+    <div class="delta ">5 optional</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Estimate</div>
+    <div class="value">~6-8 sessions</div>
+    <div class="delta ">at AI speed</div>
+  </div>
+  <div class="kpi">
+    <div class="label">New server surface</div>
+    <div class="value">Zero (v1)</div>
+    <div class="delta ">reuses the wire</div>
+  </div>
+</div>
+<!-- @endsection:02-kpi-strip -->
+
+<!-- @section:id=03-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">1</span>Where we are, what's missing</h2>
+  <p class="lede">The React app already anticipates a native swap, and the wire already carries every notification-worthy event. What's missing is the native layer plus reconnect resilience.</p>
+</section>
+<!-- @endsection:03-numbered-section -->
+
+<!-- @section:id=04-grid-3-cards snippet=grid-3-cards -->
+<!-- grid-3-cards — generic 3-column recessed-card grid. Fills: C{1,2,3}_{TAG,TITLE,BODY}.
+     For "if-you-approve" sections, build steps, three-prong recommendations, etc. -->
+<div class="grid grid-3">
+  <div class="card card--recessed">
+    <span class="tag tag--accent">ui-web today</span>
+    <h3>Luna Studio (React SPA)</h3>
+    <p class="meta">React 18 + Vite, single typed-frame WS, token-is-session auth. <code>transport.ts:9-12</code> already anticipates a Tauri swap behind the Transport interface. Real iframe/CSP widget sandbox. <strong>But</strong>: no reconnect, no Notification API, no unread state - <code>reducer.ts:508,560</code> no-op every notification-worthy frame.</p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--accent">native precedent</span>
+    <h3>Moon (Tauri v2)</h3>
+    <p class="meta">Proven Tauri v2 shell: notify command + least-privilege capability, staged updater, release pipeline, WKWebView cache-purge fix. Working background-delivery notification with focus/dedupe/opt-out gates. <strong>But</strong>: no tray, autostart, deep-link, single-instance, or badge anywhere.</p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--accent">already wired</span>
+    <h3>The wire carries everything</h3>
+    <p class="meta"><code>assistant-done</code> + delivery marker = turn done. <code>suggested-action-set</code> = chips. <code>job-input-request</code> (broadcast) + <code>secret-request</code> (targeted) = 'Luna needs input'. <code>seq/throughSeq</code> dedupe makes reconnect-resume idempotent.</p>
+  </div>
+</div>
+<!-- @endsection:04-grid-3-cards -->
+
+<!-- @section:id=05-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">2</span>The shell decision</h2>
+  <p class="lede">Both independent design variants and the judge converged on a new sibling Tauri app. The costs are what decide it, so they are shown, not summarized away.</p>
+</section>
+<!-- @endsection:05-numbered-section -->
+
+<!-- @section:id=06-grid-3-cards snippet=grid-3-cards -->
+<!-- grid-3-cards — generic 3-column recessed-card grid. Fills: C{1,2,3}_{TAG,TITLE,BODY}.
+     For "if-you-approve" sections, build steps, three-prong recommendations, etc. -->
+<div class="grid grid-3">
+  <div class="card card--recessed">
+    <span class="tag tag--accent">Recommended</span>
+    <h3>New sibling Tauri app</h3>
+    <p class="meta"><code>com.luna.studio</code> embeds ui-web's Vite dist as <code>tauri://</code> assets. Copies Moon's proven infra with identifier/tag/stamp changes. ui-web renders with zero code changes; native calls no-op in a browser tab.<br><span class='dim'>Cost: a second release train (own keypair, <code>bump-studio</code>, <code>release-studio.yml</code>) + ~50 lines of cache-purge FFI duplicated.</span></p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--accent">Rejected</span>
+    <h3>Studio window inside Moon</h3>
+    <p class="meta">One binary, one updater - but Moon has no bundler (hand-authored HTML dist). A React SPA there means bolting Vite onto an app that avoids one.<br><span class='dim'>Cost: release coupling - a Studio-only fix forces a full orb re-sign; a red ui-web build blocks orb releases.</span></p>
+  </div>
+  <div class="card card--recessed">
+    <span class="tag tag--accent">Rejected as driver</span>
+    <h3>PWA / browser tab</h3>
+    <p class="meta">A same-day win for an always-open tab, and that is all. Kept as the graceful-degradation path inside the same code (web Notification API + title badge), not a separate phase.<br><span class='dim'>Stopping here: no closed-window notifications, no dock badge, no launch-at-login, no OS deep links, no signed auto-update.</span></p>
+  </div>
+</div>
+<!-- @endsection:06-grid-3-cards -->
+
+<!-- @section:id=07-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">3</span>Notification architecture</h2>
+  <p class="lede">Server event to existing WS frame to <code>useStudioNotifier</code> (new) to Moon-ported gates to a thin Rust command to Notification Center. No new wire protocol.</p>
+</section>
+<!-- @endsection:07-numbered-section -->
+
+<!-- @section:id=08-callout snippet=callout -->
+<!-- callout — generic left-border tinted aside. Fills: TITLE (single-line strong) and BODY (single-line text, no commas). -->
+<div class="callout">
+  <strong>The path, end to end.</strong> <p class='meta'>Three server sources - <code>chat-service.deliverResult</code> (stamps <code>luna_delivery</code>), the suggested-actions service, and <code>request_input</code>/<code>request_secret</code> - all land on <strong>one WebSocket</strong> (the ServerFrame union). <code>useLunaData.onServerFrame</code> (which the reducer no-ops today) branches two ways:</p><div class='grid grid-2'><div class="card card--recessed"><span class="tag tag--accent">notify path</span><h3>useStudioNotifier <span class='dim'>(new)</span></h3><p class="meta">Gates: focused? deduped? opted out? On <code>isTauri</code> it calls Rust <code>notify_thread(kind, title, body, threadId)</code> to macOS Notification Center; in a browser tab it falls back to the web Notification API.</p></div><div class="card card--recessed"><span class="tag tag--cool">badge path</span><h3>useUnreadBadge <span class='dim'>(new)</span></h3><p class="meta">Persisted per-thread last-seen watermark, calls <code>setBadgeCount()</code> - built in since Tauri 2.2, and the workspace is on 2.11.2.</p></div></div><p class='meta'>On macOS a banner click <strong>activates the app only</strong> (no per-banner payload), so a focus-regain handler routes to the pending attention thread or shows an attention strip.</p>
+</div>
+<!-- @endsection:08-callout -->
+
+<!-- @section:id=09-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">4</span>What cross-checking corrected</h2>
+  <p class="lede">Four places where one research stream was wrong and another caught it - each changes the plan materially.</p>
+</section>
+<!-- @endsection:09-numbered-section -->
+
+<!-- @section:id=10-callout snippet=callout -->
+<!-- callout — generic left-border tinted aside. Fills: TITLE (single-line strong) and BODY (single-line text, no commas). -->
+<div class="callout">
+  <strong>Corrections.</strong> <div class='grid grid-2'><div class="card card--recessed"><span class="tag tag--good">&#10003; corrected</span><h3>Dock badge is free</h3><p class="meta">The judge specced custom <code>objc2</code> dock-tile FFI. Wrong: <code>setBadgeCount()</code> shipped in Tauri 2.2.0 and the workspace resolves 2.11.2. Phase 3 got simpler.</p></div><div class="card card--recessed"><span class="tag tag--good">&#10003; corrected</span><h3>Plain ws:// works from the Tauri origin</h3><p class="meta">Web research warned of mixed-content blocking. Moon's shipped CSP (<code>connect-src 'self' ws: wss:</code>) talks plain <code>ws://</code> in production. No TLS termination requirement.</p></div><div class="card card--recessed"><span class="tag tag--good">&#10003; corrected</span><h3>'Needs input' is wirable now</h3><p class="meta"><code>JobRunStatus</code> includes <code>waiting</code> (<code>jobs-store-types.ts:77</code>) and <code>job-input-request</code> broadcasts to every client. The doc claiming otherwise (<code>widget-system.md:814-817</code>) is stale - worth a one-line fix.</p></div><div class="card card--recessed"><span class="tag tag--warn">&#10007; corrected</span><h3>Banner click-to-thread does NOT work on macOS</h3><p class="meta">The judge's Phase 2 gate assumed it. The plugin's Actions API is mobile-only (open upstream since 2021). A banner click still just activates the app - so Phase 2 routes on focus-regain, and true per-banner routing (<code>objc2</code> + <code>UNUserNotificationCenterDelegate</code>) becomes optional Phase 5.</p></div></div>
+</div>
+<!-- @endsection:10-callout -->
+
+<!-- @section:id=11-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">5</span>Phases & proof gates</h2>
+  <p class="lede">Each phase ends at a gate this repo's rules demand: rendered screenshots for UI, real Notification Center banners for OS work - never just green tests.</p>
+</section>
+<!-- @endsection:11-numbered-section -->
+
+<!-- @section:id=12-callout snippet=callout -->
+<!-- callout — generic left-border tinted aside. Fills: TITLE (single-line strong) and BODY (single-line text, no commas). -->
+<div class="callout">
+  <strong>The ladder.</strong> <div class='grid grid-2'><div class='card card--recessed'><span class='tag tag--accent'>Phase 0 &middot; 1 session</span><h3>Shell spike - de-risk WKWebView first</h3><p class='meta'>Scaffold <code>apps/ui-studio-tauri</code>; embed ui-web dist (<code>frontendDist: ../../ui-web/dist</code>, <code>devUrl :5174</code>); port Moon's cache-purge verbatim with a <code>.studio-webview-version</code> stamp. No notification code allowed yet.</p><p class='meta'><strong>Gate</strong> - In the real WKWebView window: live thread streams, vibe-coded widget renders inside its sandbox (no <code>__TAURI__</code> leak), clipboard works with capability declared. Screenshot proof.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 1 &middot; 1-2 sessions</span><h3>Resilience spine - an always-connected window</h3><p class='meta'>Adopt the already-built <code>LunaWsAdapter</code> backoff transport (adoption, not a build - fixes web too) + app-level auto-pong. Token moves to OS keychain via <code>load_token/save_token</code> (preserve the <code>VITE_UI_WS_TOKEN</code> build guard, mirror in CI). <code>luna://thread/&lt;id&gt;</code> deep link + single-instance + last-thread restore.</p><p class='meta'><strong>Gate</strong> - Kill the server: backoff reconnect, transcript resumes with no duplicates. Cold-launch a <code>luna://thread/&lt;id&gt;</code> lands on that thread. Token verified in keychain.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 2 &middot; 1-2 sessions</span><h3>Notifications - the headline</h3><p class='meta'><code>useStudioNotifier</code> maps four categories: turn/job done (delivery marker distinguishes background from live; live replies deliberately not notified), suggested action, and needs input (<code>job-input-request</code> broadcast + <code>secret-request</code> targeted). Port Moon's gates, request permission on first run, fail soft. Rust <code>notify_thread</code> via per-command capability. Banner click focuses Studio; on focus regain it routes to the single pending attention thread (attention strip when several pend). Web fallback in a browser tab.</p><p class='meta'><strong>Gate</strong> - With the window backgrounded, capture a real Notification Center banner for EACH category; show focus suppression and no double-banner across Studio + Moon on the same thread.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 3 &middot; 1 session</span><h3>Daily-driver shell</h3><p class='meta'><code>useUnreadBadge</code> + <code>setBadgeCount()</code>; <code>tauri-plugin-autostart</code>; tray icon with unread tooltip and open/quit.</p><p class='meta'><strong>Gate</strong> - Badge shows an accurate count that survives relaunch; login-item relaunch works; tray works.</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 4 &middot; 1-2 sessions</span><h3>Distribution - own release train</h3><p class='meta'>Staged updater port (persist session before <code>app.restart()</code>), a new minisign keypair (never Moon's), <code>bump-studio.ts</code> + <code>release-studio.yml</code> (<code>studio-v*</code> tags), Latest-flag re-anchor scoped so the two apps never steal each other's updater feed.</p><p class='meta'><strong>Gate</strong> - Signed install, publish <code>studio-v(x+1)</code>, full auto-update round trip with the WKWebView serving the NEW dist (cache stamp bumped).</p></div><div class='card card--recessed'><span class='tag tag--accent'>Phase 5 &middot; optional</span><h3>True banner-click routing</h3><p class='meta'><code>objc2</code> + <code>UNUserNotificationCenterDelegate</code> threading <code>threadId</code> through <code>userInfo</code>, delivering real click-to-thread. Only testable in an installed <code>.app</code>. Decide after living with the Phase 2 focus-regain UX.</p><p class='meta'><strong>Gate</strong> - Real click-to-thread from a background banner in the installed app.</p></div></div>
+</div>
+<!-- @endsection:12-callout -->
+
+<!-- @section:id=13-callout snippet=callout -->
+<!-- callout — generic left-border tinted aside. Fills: TITLE (single-line strong) and BODY (single-line text, no commas). -->
+<div class="callout">
+  <strong></strong> <strong>Cross-cutting (server, separate slice)</strong> - per-connection multi-registration for <code>secret-request</code>/<code>local-shell</code>. Today they are last-subscriber-wins per thread, so Studio auto-subscribing a thread Moon has open silently steals its interactive prompts. Benefits Moon too. Whether to build it now is <strong>Decision 1</strong> below.
+</div>
+<!-- @endsection:13-callout -->
+
+<!-- @section:id=14-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">6</span>Risks</h2>
+  <p class="lede">Five real hazards, each with the containment that keeps it from becoming a bug.</p>
+</section>
+<!-- @endsection:14-numbered-section -->
+
+<!-- @section:id=15-callout snippet=callout -->
+<!-- callout — generic left-border tinted aside. Fills: TITLE (single-line strong) and BODY (single-line text, no commas). -->
+<div class="callout">
+  <strong>Risk register.</strong> <div class='card card--recessed'><h3>WKWebView drift at React scale</h3><p class='meta'><span class='dim'>Why it's real:</span> srcdoc/CSP sandbox + clipboard proven only in Chromium; largest webview payload in the repo.</p><p class='meta'><span class='dim'>Containment:</span> Phase 0 exists solely to expose this before feature work.</p></div><div class='card card--recessed'><h3>Prompt stealing between Studio and Moon</h3><p class='meta'><span class='dim'>Why it's real:</span> last-subscriber-wins secret/local-shell bridges.</p><p class='meta'><span class='dim'>Containment:</span> Decision 1; until then, a v1 policy, not code hope.</p></div><div class='card card--recessed'><h3>Focus-regain routing is a heuristic</h3><p class='meta'><span class='dim'>Why it's real:</span> several simultaneous attention events are ambiguous.</p><p class='meta'><span class='dim'>Containment:</span> In-app attention strip when &gt;1 pending; Phase 5 if insufficient.</p></div><div class='card card--recessed'><h3>Two release trains</h3><p class='meta'><span class='dim'>Why it's real:</span> double CI/signing surface; shared latest.json namespace.</p><p class='meta'><span class='dim'>Containment:</span> Strict identity separation: identifier, keypair, tag prefix, Latest re-anchor.</p></div><div class='card card--recessed'><h3>Public repo secret leak</h3><p class='meta'><span class='dim'>Why it's real:</span> <code>VITE_UI_WS_TOKEN</code> baked into a dist would ship the tailnet secret.</p><p class='meta'><span class='dim'>Containment:</span> Existing build guard preserved + mirrored in release-studio.yml; token in keychain; config user-entered at runtime.</p></div>
+</div>
+<!-- @endsection:15-callout -->
+
+<!-- @section:id=16-numbered-section snippet=numbered-section -->
+<section>
+  <h2><span class="num">7</span>Decisions I need from you</h2>
+  <p class="lede">Five open decisions own the shape of the build. Recommended option is marked; comment on any of them and I fold your answers into the spec, delete the open questions, and start Phase 0.</p>
+</section>
+<!-- @endsection:16-numbered-section -->
+
+<!-- @section:id=17-callout snippet=callout -->
+<!-- callout — generic left-border tinted aside. Fills: TITLE (single-line strong) and BODY (single-line text, no commas). -->
+<div class="callout">
+  <strong></strong> <div class='grid grid-2'><div class='card card--elevated'><span class='tag tag--decision'>Decision 1</span><h3>Moon coexistence <span class='dim'>(blocks Phase 2 needs-input)</span></h3><ul class='meta'><li><strong>Recommended:</strong> Studio avoids auto-subscribing threads with pending prompts - a cheap client-side guard, ships now.</li><li>One client at a time - pure policy, zero code, relies on discipline.</li><li>Build per-connection multi-registration now - the real fix, benefits Moon, +1-2 sessions before Phase 2.</li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 2</span><h3>Badge semantics</h3><ul class='meta'><li><strong>Recommended:</strong> Unread threads - calm, matches the thread-list mental model.</li><li>Unread messages - busier, inflates fast on chatty threads.</li><li>Attention-only (needs-input + suggested) - badge = 'Luna is waiting on you'.</li><li><span class='dim'>Also: does the tray mirror the badge?</span></li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 3</span><h3>Banner-click routing</h3><ul class='meta'><li><strong>Recommended:</strong> Focus-regain routing first, judge Phase 5 later - what mature Tauri chat apps ship.</li><li>Pull Phase 5 forward - true click-to-thread from day one, +1-2 sessions, installed-.app-only testing.</li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 4</span><h3>Long-term: Moon &amp; Studio</h3><ul class='meta'><li>Studio replaces Moon's chat; orb goes ambient - separation is a stepping stone.</li><li>Permanent siblings - Phase 4's separation is forever.</li><li>Decide after a month of daily-driving - defer, evidence over speculation.</li></ul></div><div class='card card--elevated'><span class='tag tag--decision'>Decision 5</span><h3>First-run token provisioning</h3><ul class='meta'><li><strong>Recommended for v1:</strong> Manual paste into Settings - exists today, zero new surface.</li><li><code>luna://connect</code> provisioning deep link - slick, but deep links only test in an installed .app.</li></ul></div></div>
+</div>
+<!-- @endsection:17-callout -->
+
+<!-- @section:id=18-footer-meta snippet=footer-meta -->
+<!-- footer-meta — generic page footer with two fills: STRONG (lead-in phrase) and BODY (the message). -->
+<footer>
+  <strong>Then what?</strong> On your answers I fold the decisions into the spec, delete the open questions, and start Phase 0 in the <code>studio-native-plan</code> worktree - gate screenshot before anything else. <br><span class='dim'>Sources: 5-finder codebase map + 3 Opus design variants + Opus judge (9 agents, ~643k tokens); external Tauri v2 ecosystem research; hand-verified against the Tauri 2.11.2 lockfile, Moon's CSP, and <code>jobs-store-types.ts:77</code>. Full spec: <code>docs/superpowers/specs/2026-07-08-luna-studio-native-macos.md</code>.</span>
+</footer>
+<!-- @endsection:18-footer-meta -->
+    <!-- @insertion-point -->
+  </main>
+</div>
+<script>
+(function () {
+  'use strict';
+  const main = document.querySelector('main');
+  if (!main) return;
+
+  // --- Map @section anchor comments onto their DOM elements ---
+  // Every top-level element between <!-- @section:id=X --> and its @endsection
+  // gets data-rv-section="X". These are the SAME ids the bin/ scripts and the
+  // manifest use, so feedback is pre-addressed for agent-side revision.
+  const SEC_RE = /@section:id=([\w-]+)/;
+  let currentId = null;
+  Array.prototype.forEach.call(main.childNodes, node => {
+    if (node.nodeType === 8) {
+      const m = node.nodeValue.match(SEC_RE);
+      if (m) { currentId = m[1]; return; }
+      if (node.nodeValue.indexOf('@endsection:') !== -1) { currentId = null; return; }
+    } else if (node.nodeType === 1 && currentId) {
+      node.setAttribute('data-rv-section', currentId);
+    }
+  });
+
+  // --- Build TOC from <h2> elements inside <main> ---
+  const toc = document.querySelector('.toc');
+  document.querySelectorAll('main h2').forEach(h => {
+    const sec = h.closest('section');
+    const anchorId = sec && sec.getAttribute('data-rv-section');
+    const id = anchorId || h.id || h.textContent.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (sec) sec.id = id;
+    const a = document.createElement('a');
+    a.href = '#' + id;
+    a.textContent = h.textContent.replace(/^\d+\s*/, '').trim();
+    a.className = 'toc-link';
+    if (toc) toc.appendChild(a);
+  });
+  document.querySelectorAll('.toc-link').forEach(a => {
+    a.addEventListener('click', () => {
+      document.querySelectorAll('.toc-link.on').forEach(x => x.classList.remove('on'));
+      a.classList.add('on');
+    });
+  });
+
+  // --- Review mode: select text or pick a section, comment, copy for agent ---
+  // Key storage on the full path: file:// pages share one localStorage origin,
+  // so a basename key would bleed comments between same-named pages in
+  // different repos. The short slug is display-only.
+  const pagePath = decodeURIComponent(location.pathname || '/page').replace(/\.html?$/, '');
+  const slug = pagePath.split('/').pop() || 'page';
+  const STORE_KEY = 'rv-feedback:' + pagePath;
+  const MODE_KEY = 'rv-on:' + pagePath;
+  const QUOTE_MAX = 240;
+
+  function loadComments() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; }
+    catch (e) { return []; }
+  }
+  function saveComments() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(comments)); }
+    catch (e) { /* private mode etc.; comments live for the session only */ }
+  }
+  let comments = loadComments();
+
+  function el(tag, className, text) {
+    const n = document.createElement(tag);
+    if (className) n.className = className;
+    if (text) n.textContent = text;
+    return n;
+  }
+
+  // Floating UI: pill, panel, selection chip, comment form, section add button
+  const badge = el('span', 'rv-badge');
+  const pill = el('button', 'rv-pill');
+  pill.type = 'button';
+  pill.append('✎ review', badge);
+  pill.title = 'Toggle review mode: select text or hover a section to comment';
+
+  const panel = el('aside', 'rv-panel');
+  const panelHead = el('div', 'rv-panel-head', 'feedback · ' + slug);
+  panelHead.title = 'Click to collapse / expand';
+  panelHead.addEventListener('click', () => panel.classList.toggle('rv-min'));
+  const list = el('div', 'rv-list');
+  const empty = el('div', 'rv-empty',
+    'Select any text, or hover a section and hit "+ comment". Then "Copy for agent" and paste into chat.');
+  const btnCopy = el('button', 'rv-btn rv-btn--primary', 'Copy for agent');
+  btnCopy.type = 'button';
+  const btnClear = el('button', 'rv-btn', 'Clear all');
+  btnClear.type = 'button';
+  const actions = el('div', 'rv-actions');
+  actions.append(btnCopy, btnClear);
+  const copyArea = el('textarea', 'rv-copyarea');
+  copyArea.id = 'rv-copy-output';
+  copyArea.readOnly = true;
+  panel.append(panelHead, list, empty, actions, copyArea);
+
+  const chip = el('button', 'rv-pop', '💬 comment');
+  chip.type = 'button';
+
+  const form = el('div', 'rv-pop');
+  const formQuote = el('div', 'rv-pop-quote');
+  const formText = document.createElement('textarea');
+  formText.id = 'rv-comment-input';
+  formText.placeholder = 'What should change here?';
+  const btnSave = el('button', 'rv-btn rv-btn--primary', 'Save');
+  btnSave.type = 'button';
+  const btnCancel = el('button', 'rv-btn', 'Cancel');
+  btnCancel.type = 'button';
+  const formRow = el('div', 'rv-row');
+  formRow.append(btnCancel, btnSave);
+  form.append(formQuote, formText, formRow);
+
+  const addBtn = el('button', 'rv-add', '+ comment');
+  addBtn.type = 'button';
+
+  document.body.append(pill, panel, chip, form, addBtn);
+
+  let pending = null; // {section, quote} awaiting form save
+  let hoverSection = null;
+
+  function isOn() { return document.body.classList.contains('rv-on'); }
+
+  function setMode(on) {
+    document.body.classList.toggle('rv-on', on);
+    // Sections become keyboard stops in review mode (Enter opens the form)
+    main.querySelectorAll('[data-rv-section]').forEach(node => {
+      if (on) node.setAttribute('tabindex', '0');
+      else node.removeAttribute('tabindex');
+    });
+    if (!on) { hide(chip); hide(form); hide(addBtn); copyArea.classList.remove('open'); }
+    try { localStorage.setItem(MODE_KEY, on ? '1' : '0'); } catch (e) {}
+  }
+
+  function hide(node) { node.classList.remove('open'); }
+
+  function placeAt(node, x, y) {
+    node.classList.add('open'); // must be visible before measuring
+    const w = node.offsetWidth + 12;
+    node.style.left = Math.max(8, Math.min(x, window.scrollX + document.documentElement.clientWidth - w)) + 'px';
+    node.style.top = y + 'px';
+  }
+
+  function sectionOf(domNode) {
+    let n = domNode;
+    while (n && n.nodeType !== 1) n = n.parentNode;
+    const holder = n && n.closest('[data-rv-section]');
+    return holder ? holder.getAttribute('data-rv-section') : null;
+  }
+
+  function renderList() {
+    list.textContent = '';
+    empty.style.display = comments.length ? 'none' : 'block';
+    badge.textContent = comments.length ? String(comments.length) : '';
+    comments.forEach(c => {
+      const item = el('div', 'rv-item');
+      const sec = el('button', 'rv-sec', c.section ? '[' + c.section + ']' : '[page]');
+      sec.type = 'button';
+      sec.addEventListener('click', () => {
+        const target = c.section && main.querySelector('[data-rv-section="' + c.section + '"]');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      const del = el('button', 'rv-del', '×');
+      del.type = 'button';
+      del.title = 'Delete comment';
+      del.addEventListener('click', () => {
+        comments = comments.filter(x => x.id !== c.id);
+        saveComments(); renderList();
+      });
+      item.append(sec, del);
+      if (c.quote) item.append(el('div', 'rv-quote', '“' + c.quote + '”'));
+      item.append(el('div', 'rv-body', c.text));
+      list.append(item);
+    });
+  }
+
+  function payload() {
+    const n = comments.length;
+    const lines = [];
+    lines.push('## Page feedback - ' + slug);
+    lines.push(n + ' comment' + (n === 1 ? '' : 's') + ' · exported ' + new Date().toISOString());
+    lines.push('');
+    comments.forEach((c, i) => {
+      const where = c.section ? '[' + c.section + ']' : '[page]';
+      const anchor = c.quote ? ' re: "' + c.quote + '"' : ' (whole section)';
+      lines.push((i + 1) + '. ' + where + anchor);
+      String(c.text).split('\n').forEach(t => lines.push('   ' + t));
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+
+  function flash(btn, msg) {
+    if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+    btn.textContent = msg;
+    clearTimeout(btn._rvFlashTimer);
+    btn._rvFlashTimer = setTimeout(() => { btn.textContent = btn.dataset.label; }, 1600);
+  }
+
+  function copyManual(text) {
+    copyArea.classList.add('open');
+    copyArea.value = text;
+    copyArea.focus();
+    copyArea.select();
+    try { return document.execCommand('copy'); } catch (e) { return false; }
+  }
+
+  function openForm(x, y, section, quote) {
+    pending = { section: section, quote: quote };
+    formQuote.textContent = quote ? '“' + quote + '”' : '(whole section: ' + (section || 'page') + ')';
+    formText.value = '';
+    hide(chip); hide(addBtn);
+    placeAt(form, x, y);
+    formText.focus();
+  }
+
+  function saveFromForm() {
+    const text = formText.value.trim();
+    if (!text || !pending) { hide(form); return; }
+    comments.push({
+      id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      section: pending.section,
+      quote: pending.quote,
+      text: text,
+      at: new Date().toISOString()
+    });
+    pending = null;
+    saveComments(); renderList();
+    hide(form);
+    const s = window.getSelection();
+    if (s) s.removeAllRanges();
+    pill.focus();
+  }
+
+  pill.addEventListener('click', () => setMode(!isOn()));
+  btnSave.addEventListener('click', saveFromForm);
+  btnCancel.addEventListener('click', () => { pending = null; hide(form); pill.focus(); });
+  form.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { pending = null; hide(form); pill.focus(); }
+  });
+  formText.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveFromForm();
+  });
+
+  // Keyboard path: Tab to a section (tabindex set in review mode), Enter opens
+  // the comment form for it; focus also surfaces the "+ comment" button.
+  main.addEventListener('focusin', e => {
+    if (!isOn() || form.classList.contains('open')) return;
+    const holder = e.target.closest && e.target.closest('[data-rv-section]');
+    if (holder && e.target === holder) {
+      hoverSection = holder.getAttribute('data-rv-section');
+      const rect = holder.getBoundingClientRect();
+      placeAt(addBtn, rect.right + window.scrollX - 90, rect.top + window.scrollY - 10);
+    }
+  });
+  main.addEventListener('keydown', e => {
+    if (!isOn() || e.key !== 'Enter') return;
+    const t = e.target;
+    if (t.nodeType === 1 && t.hasAttribute('data-rv-section')) {
+      e.preventDefault();
+      const rect = t.getBoundingClientRect();
+      openForm(rect.left + window.scrollX + 16, rect.top + window.scrollY + 16,
+        t.getAttribute('data-rv-section'), null);
+    }
+  });
+
+  btnCopy.addEventListener('click', () => {
+    if (!comments.length) { flash(btnCopy, 'nothing to copy'); return; }
+    const text = payload();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => flash(btnCopy, 'copied ✓'),
+        () => flash(btnCopy, copyManual(text) ? 'copied ✓' : 'select + copy below')
+      );
+    } else {
+      flash(btnCopy, copyManual(text) ? 'copied ✓' : 'select + copy below');
+    }
+  });
+
+  btnClear.addEventListener('click', () => {
+    if (!comments.length) return;
+    if (!window.confirm('Clear ' + comments.length + ' comment(s)?')) return;
+    comments = [];
+    saveComments(); renderList();
+    copyArea.classList.remove('open');
+  });
+
+  // Text selection -> chip -> form
+  function placeChipFromSelection(allowHide) {
+    const bail = () => { if (allowHide) hide(chip); };
+    const s = window.getSelection();
+    if (!s || s.isCollapsed || !s.rangeCount) return bail();
+    const range = s.getRangeAt(0);
+    if (!main.contains(range.commonAncestorContainer)) return bail();
+    const quote = s.toString().replace(/\s+/g, ' ').trim();
+    if (!quote) return bail();
+    const rect = range.getBoundingClientRect();
+    // A selection spanning two sections has no single honest address; demote
+    // to page-level and let the agent locate the quote by text. endOffset 0
+    // means the end container contributed nothing (triple-click artifact).
+    const startSec = sectionOf(range.startContainer);
+    let endSec = sectionOf(range.endContainer);
+    if (range.endOffset === 0) endSec = startSec;
+    chip.dataset.section = (startSec === endSec ? startSec : '') || '';
+    chip.dataset.quote = quote.length > QUOTE_MAX ? quote.slice(0, QUOTE_MAX - 1) + '…' : quote;
+    placeAt(chip, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
+  }
+
+  document.addEventListener('mouseup', e => {
+    if (!isOn()) return;
+    if (e.target.closest && e.target.closest('.rv-pop, .rv-panel, .rv-pill, .rv-add')) return;
+    setTimeout(() => placeChipFromSelection(true), 0);
+  });
+
+  // Touch: long-press selection never fires a mouseup we can use, so follow
+  // selectionchange (debounced, show-only so a mid-click collapse can't yank
+  // the chip out from under a slow tap).
+  let selTimer = null;
+  document.addEventListener('selectionchange', () => {
+    if (!isOn() || form.classList.contains('open')) return;
+    clearTimeout(selTimer);
+    selTimer = setTimeout(() => placeChipFromSelection(false), 250);
+  });
+
+  chip.addEventListener('click', () => {
+    const x = parseFloat(chip.style.left) || 0;
+    const y = parseFloat(chip.style.top) || 0;
+    openForm(x, y, chip.dataset.section || null, chip.dataset.quote || null);
+  });
+
+  // Section hover -> floating "+ comment" button
+  document.addEventListener('mouseover', e => {
+    if (!isOn() || form.classList.contains('open')) return;
+    if (!e.target.closest) return;
+    if (e.target.closest('.rv-add, .rv-pop')) return;
+    const holder = e.target.closest('[data-rv-section]');
+    if (holder) {
+      hoverSection = holder.getAttribute('data-rv-section');
+      const rect = holder.getBoundingClientRect();
+      placeAt(addBtn, rect.right + window.scrollX - 90, rect.top + window.scrollY - 10);
+    } else if (!e.target.closest('.rv-panel, .rv-pill')) {
+      hoverSection = null;
+      hide(addBtn);
+    }
+  });
+
+  addBtn.addEventListener('click', () => {
+    const x = parseFloat(addBtn.style.left) || 0;
+    const y = (parseFloat(addBtn.style.top) || 0) + 26;
+    openForm(x, y, hoverSection, null);
+  });
+
+  renderList();
+  // '1'/'0' are explicit user choices; only auto-open on the comments
+  // heuristic when no choice has been stored yet.
+  let modeSaved = null;
+  try { modeSaved = localStorage.getItem(MODE_KEY); } catch (e) {}
+  if (modeSaved === '1' || (modeSaved === null && comments.length)) setMode(true);
+})();
+</script>
+</body>
+</html>
