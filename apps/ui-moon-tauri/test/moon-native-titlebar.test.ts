@@ -25,11 +25,21 @@ describe('native macOS titlebar ownership', () => {
     // share these consts so the two placements cannot drift apart.
     expect(main).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 36.0')
     expect(main).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 12.0')
-    expect(main).toContain('.maximizable(desc.kind == "chat")')
-    expect(main.match(/\.maximizable\(true\)/g)).toHaveLength(1)
     expect(main).toContain('fn configure_native_window_chrome(')
     expect(main).toContain('button.setHidden(false)')
-    expect(main).toContain('button.setEnabled(zoom_enabled)')
+  })
+
+  it('uses standard native traffic lights everywhere: the zoom (green) button is never disabled', () => {
+    // Regression guard. Non-chat cards used to build with maximizable(false) and
+    // call setEnabled(false) on the zoom button, so the green light rendered as a
+    // gray DISABLED dot. Standard native chrome keeps all three buttons enabled:
+    // no per-window zoom gating, no setEnabled call that could gray the green.
+    expect(main).not.toContain('zoom_enabled')
+    expect(main).not.toMatch(/setEnabled/)
+    // Both native window builders (spawn_panel_at + open_artifact_widget) opt the
+    // zoom button into the style mask so AppKit renders it enabled/green.
+    expect(main.match(/\.maximizable\(true\)/g)).toHaveLength(2)
+    expect(main).not.toMatch(/\.maximizable\(false\)/)
   })
 
   it('zoom means zoom: card windows opt out of the native fullscreen Space', () => {
