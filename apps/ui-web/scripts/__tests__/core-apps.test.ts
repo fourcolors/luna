@@ -10,8 +10,9 @@
  *   - pulse-snapshot aggregates the EventCounter counter names correctly
  *   - the shipped workspace-pulse app html is a REAL MCP app (handshake +
  *     tools/call, no luna.* bridge usage, no external refs)
- *   - memory-list/memory-search validate args BEFORE they reach the injected
- *     router deps (the memory-browser's read-only surface)
+ *   - memory-list/memory-search/memory-delete validate args BEFORE they
+ *     reach the injected router deps (the memory-browser's read+delete
+ *     surface — memory-delete is its ONE mutation)
  */
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -23,11 +24,14 @@ import {
   composeAppRegistries,
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
+  deleteMemoryRecordWithScopeCheck,
   pulseFromSnapshot,
   toCuratedMemoryRow,
+  validateMemoryDeleteArgs,
   validateMemoryListArgs,
   validateMemorySearchArgs,
   type CoreApp,
+  type MemoryDeleteResult,
   type MemoryListPage,
   type MemorySearchPage,
 } from "../core-apps.js"
@@ -313,17 +317,21 @@ const memorySearchStub = (): MemorySearchPage => ({
   topK: 10,
 })
 
-describe("buildCuratedAppTools — the read-only allowlist", () => {
-  it("exposes exactly pulse + list-artifacts + memory-list + memory-search, wired to the injected getters", async () => {
+const memoryDeleteStub = (): MemoryDeleteResult => ({ deleted: false })
+
+describe("buildCuratedAppTools — the read+delete allowlist", () => {
+  it("exposes exactly pulse + list-artifacts + memory-list + memory-search + memory-delete, wired to the injected getters", async () => {
     const getPulse = vi.fn(async () => ({ toolsCalled: 1, errors: 0, estimatedUsd: 0, activeSessions: 0 }))
     const listArtifacts = vi.fn(async () => [
       { id: "widget:a", title: "A", kind: "widget", version: 1, updatedAt: 0 },
     ])
     const memoryList = vi.fn(async () => memoryListStub())
     const memorySearch = vi.fn(async () => memorySearchStub())
-    const tools = buildCuratedAppTools({ getPulse, listArtifacts, memoryList, memorySearch })
+    const memoryDelete = vi.fn(async () => memoryDeleteStub())
+    const tools = buildCuratedAppTools({ getPulse, listArtifacts, memoryList, memorySearch, memoryDelete })
     expect(Object.keys(tools).sort()).toEqual([
       "list-artifacts",
+      "memory-delete",
       "memory-list",
       "memory-search",
       "pulse",
@@ -332,20 +340,24 @@ describe("buildCuratedAppTools — the read-only allowlist", () => {
     await tools["list-artifacts"]!({})
     await tools["memory-list"]!({})
     await tools["memory-search"]!({ query: "hi" })
+    await tools["memory-delete"]!({ id: "mem_1" })
     expect(getPulse).toHaveBeenCalledTimes(1)
     expect(listArtifacts).toHaveBeenCalledTimes(1)
     expect(memoryList).toHaveBeenCalledTimes(1)
     expect(memorySearch).toHaveBeenCalledTimes(1)
+    expect(memoryDelete).toHaveBeenCalledTimes(1)
   })
 
-  it("memory-list/memory-search VALIDATE args before they reach the injected deps — the deps never see raw wire input", async () => {
+  it("memory-list/memory-search/memory-delete VALIDATE args before they reach the injected deps — the deps never see raw wire input", async () => {
     const memoryList = vi.fn(async () => memoryListStub())
     const memorySearch = vi.fn(async () => memorySearchStub())
+    const memoryDelete = vi.fn(async () => memoryDeleteStub())
     const tools = buildCuratedAppTools({
       getPulse: async () => ({ toolsCalled: 0, errors: 0, estimatedUsd: 0, activeSessions: 0 }),
       listArtifacts: async () => [],
       memoryList,
       memorySearch,
+      memoryDelete,
     })
 
     // Wildly out-of-range / wrong-typed args clamp to the safe defaults —
@@ -368,9 +380,14 @@ describe("buildCuratedAppTools — the read-only allowlist", () => {
       topK: 1,
     })
 
+    await tools["memory-delete"]!({ id: "  mem_abc123  " })
+    expect(memoryDelete).toHaveBeenCalledWith({ id: "mem_abc123" })
+
     // A garbage (non-object) payload never throws — it degrades to defaults.
     await tools["memory-list"]!(null)
     await tools["memory-search"]!("not an object")
+    await tools["memory-delete"]!(null)
+    await tools["memory-delete"]!({ id: 12345 })
     expect(memoryList).toHaveBeenLastCalledWith({
       namespace: undefined,
       kind: undefined,
@@ -385,6 +402,7 @@ describe("buildCuratedAppTools — the read-only allowlist", () => {
       kind: undefined,
       topK: 10,
     })
+    expect(memoryDelete).toHaveBeenLastCalledWith({ id: "" })
   })
 })
 
@@ -431,6 +449,86 @@ describe("validateMemorySearchArgs — the one choke point for memory-search wir
     expect(validateMemorySearchArgs({}).query).toBe("")
     expect(validateMemorySearchArgs(null).query).toBe("")
     expect(validateMemorySearchArgs({ query: 5 }).query).toBe("")
+  })
+})
+
+describe("validateMemoryDeleteArgs — the one choke point for memory-delete wire input", () => {
+  it("trims a well-formed id", () => {
+    expect(validateMemoryDeleteArgs({ id: "  mem_abc123  " })).toEqual({ id: "mem_abc123" })
+  })
+
+  it("length-caps a pathological id rather than throwing", () => {
+    expect(validateMemoryDeleteArgs({ id: "x".repeat(1000) }).id).toHaveLength(200)
+  })
+
+  it("a missing/non-string/garbage id normalizes to empty string, not a throw", () => {
+    for (const bad of [undefined, null, "nope", 5, [], {}, { id: 5 }, { id: [] }]) {
+      expect(validateMemoryDeleteArgs(bad).id).toBe("")
+    }
+    expect(validateMemoryDeleteArgs({}).id).toBe("")
+    expect(validateMemoryDeleteArgs({ id: "   " }).id).toBe("")
+  })
+})
+
+describe("deleteMemoryRecordWithScopeCheck — the memory-delete defense-in-depth guard", () => {
+  const record = { id: "mem_1", namespace: "notes", kind: "semantic" } as unknown as MemoryRecord
+
+  it("fetches, confirms scope, THEN deletes — deletes exactly once, in order", async () => {
+    const calls: string[] = []
+    const getRecord = vi.fn(async (id: string) => { calls.push(`get:${id}`); return record })
+    const deleteRecord = vi.fn(async (id: string) => { calls.push(`delete:${id}`); return true })
+    const matchesScope = vi.fn(() => true)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_1" },
+      { getRecord, deleteRecord, matchesScope },
+    )
+    expect(result).toEqual({ deleted: true })
+    expect(calls).toEqual(["get:mem_1", "delete:mem_1"])
+    expect(matchesScope).toHaveBeenCalledWith(record)
+    expect(deleteRecord).toHaveBeenCalledTimes(1)
+  })
+
+  it("a record OUTSIDE the bound scope is refused — deleteRecord is NEVER called (defense in depth)", async () => {
+    const getRecord = vi.fn(async () => record)
+    const deleteRecord = vi.fn(async () => true)
+    const matchesScope = vi.fn(() => false)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_1" },
+      { getRecord, deleteRecord, matchesScope },
+    )
+    expect(result).toEqual({ deleted: false })
+    expect(deleteRecord).not.toHaveBeenCalled()
+  })
+
+  it("a missing record (getRecord → null) is a no-op — deleteRecord is NEVER called", async () => {
+    const getRecord = vi.fn(async () => null)
+    const deleteRecord = vi.fn(async () => true)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_ghost" },
+      { getRecord, deleteRecord, matchesScope: () => true },
+    )
+    expect(result).toEqual({ deleted: false })
+    expect(deleteRecord).not.toHaveBeenCalled()
+  })
+
+  it("an empty id (validateMemoryDeleteArgs' safe default) short-circuits — getRecord is NEVER called", async () => {
+    const getRecord = vi.fn(async () => record)
+    const deleteRecord = vi.fn(async () => true)
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "" },
+      { getRecord, deleteRecord, matchesScope: () => true },
+    )
+    expect(result).toEqual({ deleted: false })
+    expect(getRecord).not.toHaveBeenCalled()
+    expect(deleteRecord).not.toHaveBeenCalled()
+  })
+
+  it("echoes whatever deleteRecord reports (a race where the record vanished between get and delete)", async () => {
+    const result = await deleteMemoryRecordWithScopeCheck(
+      { id: "mem_1" },
+      { getRecord: async () => record, deleteRecord: async () => false, matchesScope: () => true },
+    )
+    expect(result).toEqual({ deleted: false })
   })
 })
 

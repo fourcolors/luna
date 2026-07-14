@@ -176,11 +176,15 @@ export const makeMcpAppTools = (
       "version,updatedAt}], window.mcp.call('memory-list', {namespace?,kind?," +
       "tag?,since?,limit?,offset?}) → {rows:[{id,namespace,kind,text,content," +
       "tags,createdAt,updatedAt,scope?}],limit,offset,hasMore} (exact-filter, " +
-      "paginated browsing of long-term memory), or window.mcp.call(" +
+      "paginated browsing of long-term memory), window.mcp.call(" +
       "'memory-search', {query,namespace?,kind?,topK?}) → {rows:[{...same " +
-      "shape as memory-list rows,score}],query,topK} (hybrid BM25+vector " +
-      "top-K search) — both memory tools are READ-ONLY (no save/delete is " +
-      "exposed to apps). window.mcp.ready resolves once connected (the helper " +
+      "shape as memory-list rows,score}],query,topK,error?:{kind:'no-vector-" +
+      "backend'|'internal',message}} (hybrid BM25+vector top-K search; " +
+      "error is set instead of throwing on backend failure — fall back to " +
+      "memory-list when kind is 'no-vector-backend'), or window.mcp.call(" +
+      "'memory-delete', {id}) → {deleted:boolean} (deletes one memory record " +
+      "by id; the only mutation exposed to apps — no edit/flag/bulk-delete). " +
+      "window.mcp.ready resolves once connected (the helper " +
       "is injected for you — do not write your own protocol code). Pass a stable " +
       "appId; writing again with the same id iterates it as a new, revertable " +
       "version. Returns the artifact id + version.",
@@ -209,8 +213,10 @@ export const makeMcpAppTools = (
             "for live data and window.mcp.ready (a Promise) to wait for connect. " +
             "Available tools: 'pulse', 'list-artifacts', 'memory-list' " +
             "(paginated memory browsing), 'memory-search' (hybrid top-K memory " +
-            "search) — memory-list/memory-search are read-only. Nothing else " +
-            "(no Tauri, no Node, no fetch) is reachable.",
+            "search, may return {error} instead of throwing), 'memory-delete' " +
+            "({id} → {deleted}, the only mutation available — no edit/flag/" +
+            "bulk-delete). Nothing else (no Tauri, no Node, no fetch) is " +
+            "reachable.",
         ),
     },
     alwaysLoad: true,

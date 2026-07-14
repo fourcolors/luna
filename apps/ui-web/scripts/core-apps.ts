@@ -27,7 +27,7 @@
  */
 import { readFileSync } from "node:fs"
 import * as path from "node:path"
-import type { McpAppHostDeps } from "@luna/ui-ws"
+import type { McpAppHostDeps, MemorySearchErrorKind } from "@luna/ui-ws"
 import type { CounterSnapshot } from "@luna/core"
 import type { MemoryRecord } from "@luna/memory"
 
@@ -206,20 +206,29 @@ export interface CuratedArtifactRow {
   readonly updatedAt: number
 }
 
-/* ── memory-list / memory-search: read-only memory-browser curated tools ───
+/* ── memory-list / memory-search / memory-delete: memory-browser curated
+ * tools ───────────────────────────────────────────────────────────────────
  * Backs the Moon "memory browser" MCP app (Chairman-facing, ships alongside
- * this module). Two surfaces on top of the SAME MemoryRouter the memory_*
+ * this module). Three surfaces on top of the SAME MemoryRouter the memory_*
  * SDK tools already use (@luna/memory-tools tools.ts):
  *   - `memory-list`   → MemoryRouter.query() exact-filter listing, paginated
  *                        via limit/offset (MemoryQuery has no native offset,
  *                        so chat-server over-fetches offset+limit+1 rows and
  *                        slices — see the memoryList dep it injects below).
- *   - `memory-search` → MemoryRouter.search() hybrid BM25+vector top-K.
- * Both are READ-ONLY: no save/delete tool is exposed to the app surface.
+ *   - `memory-search` → MemoryRouter.search() hybrid BM25+vector top-K. On
+ *                        backend failure (e.g. no vector backend configured)
+ *                        the injected dep sets `error` on the returned page
+ *                        instead of throwing, so the app can detect
+ *                        "no-vector-backend" and fall back to memory-list.
+ *   - `memory-delete` → MemoryRouter.get() + delete(), mirroring
+ *                        memory_delete's scope re-check exactly. The ONLY
+ *                        mutation exposed to the app surface — no edit/flag/
+ *                        tag-patch (that needs a primitive that doesn't
+ *                        exist; deliberately out of scope for v1).
  * Args arrive as `unknown` over the wire (an app is agent/user HTML, never
- * trusted) — validateMemoryListArgs/validateMemorySearchArgs are the ONE
- * validation choke point, pure + exported so they're unit-testable without a
- * router. */
+ * trusted) — validateMemoryListArgs/validateMemorySearchArgs/
+ * validateMemoryDeleteArgs are the ONE validation choke point per tool, pure
+ * + exported so they're unit-testable without a router. */
 
 const MEMORY_LIST_DEFAULT_LIMIT = 25
 const MEMORY_LIST_MAX_LIMIT = 100
@@ -227,6 +236,7 @@ const MEMORY_LIST_MAX_OFFSET = 2000
 const MEMORY_SEARCH_DEFAULT_TOP_K = 10
 const MEMORY_SEARCH_MAX_TOP_K = 50
 const MEMORY_SEARCH_QUERY_MAX_LEN = 500
+const MEMORY_DELETE_ID_MAX_LEN = 200
 
 /** The wire shape of one memory record surfaced to a curated app tool —
  *  mirrors the memory_search SDK tool's projection (id/tags/kind/namespace/
@@ -263,6 +273,15 @@ export interface MemorySearchPage {
   readonly rows: ReadonlyArray<CuratedMemorySearchRow>
   readonly query: string
   readonly topK: number
+  /** Set instead of throwing when the underlying search failed (e.g. no
+   *  vector backend configured) — mirrors @luna/ui-ws's MemorySearchErrorKind
+   *  so the memory-browser app can detect "no-vector-backend" specifically
+   *  and fall back to memory-list rather than showing a dead-end error. rows
+   *  is [] whenever error is set. */
+  readonly error?: {
+    readonly kind: MemorySearchErrorKind
+    readonly message: string
+  }
 }
 
 export interface ValidatedMemoryListArgs {
@@ -279,6 +298,18 @@ export interface ValidatedMemorySearchArgs {
   readonly namespace?: string
   readonly kind?: string
   readonly topK: number
+}
+
+export interface ValidatedMemoryDeleteArgs {
+  readonly id: string
+}
+
+/** Result of the `memory-delete` curated tool. `deleted:false` covers both
+ *  "no such record" and "record exists but is outside the bound scope" —
+ *  the caller can't distinguish a missing id from a scope refusal, which is
+ *  the point (no oracle for cross-scope record existence). */
+export interface MemoryDeleteResult {
+  readonly deleted: boolean
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -327,6 +358,47 @@ export const validateMemorySearchArgs = (args: unknown): ValidatedMemorySearchAr
     kind: asOptionalString(a["kind"]),
     topK: asClampedInt(a["topK"], MEMORY_SEARCH_DEFAULT_TOP_K, 1, MEMORY_SEARCH_MAX_TOP_K),
   }
+}
+
+/** Validate/clamp raw `memory-delete` args off the wire. A missing/non-string
+ *  id (or one that is all whitespace) normalizes to "" — the injected
+ *  memoryDelete dep never sees raw wire input, and an empty id simply won't
+ *  match any record (deleted:false), so this degrades safely rather than
+ *  throwing. Length-capped defensively; real ids are short (`mem_<ts36>_
+ *  <6 chars>`). */
+export const validateMemoryDeleteArgs = (args: unknown): ValidatedMemoryDeleteArgs => {
+  const a = isPlainObject(args) ? args : {}
+  const rawId = typeof a["id"] === "string" ? a["id"].trim() : ""
+  return { id: rawId.slice(0, MEMORY_DELETE_ID_MAX_LEN) }
+}
+
+/**
+ * The `memory-delete` scope re-check, extracted as an Effect-free (Promise)
+ * function so it's unit-testable without a real MemoryRouter — mirrors
+ * @luna/memory-tools tools.ts' memory_delete handler (~258-288) exactly:
+ * fetch the record, THEN verify scope, THEN delete. This is DEFENSE IN
+ * DEPTH: chat-server's injected getRecord/deleteRecord are already scope-
+ * bound (memoryBrowserScope), so matchesScope should never actually reject
+ * anything getRecord returned — but deletion is destructive, so we re-check
+ * anyway rather than trust a single layer. An empty id (validateMemory
+ * DeleteArgs' safe default for malformed input) short-circuits to
+ * `{deleted:false}` without calling getRecord at all.
+ */
+export const deleteMemoryRecordWithScopeCheck = async (
+  args: ValidatedMemoryDeleteArgs,
+  deps: {
+    readonly getRecord: (id: string) => Promise<MemoryRecord | null>
+    readonly deleteRecord: (id: string) => Promise<boolean>
+    readonly matchesScope: (record: MemoryRecord) => boolean
+  },
+): Promise<MemoryDeleteResult> => {
+  if (args.id.length === 0) return { deleted: false }
+  const existing = await deps.getRecord(args.id)
+  if (existing === null || !deps.matchesScope(existing)) {
+    return { deleted: false }
+  }
+  const removed = await deps.deleteRecord(args.id)
+  return { deleted: removed }
 }
 
 /** Best-effort preview text for a record: memory_save always writes
@@ -455,29 +527,42 @@ export const createStoreBackedAppRegistry = (deps: {
 })
 
 /**
- * The curated, READ-ONLY tool allowlist exposed to store-backed apps:
- * workspace `pulse` counters, a metadata-only `list-artifacts`, and the
- * memory-browser's `memory-list` (exact-filter, paginated) / `memory-search`
- * (hybrid top-K) pair. No tool here writes state, deletes anything, or
- * returns secrets. Note the exact read surface: `list-artifacts` is a GLOBAL
- * enumeration of artifact metadata (id/title/kind/version/updatedAt — never
- * content, never origin); `memory-list`/`memory-search` are scoped by the
- * injected deps (chat-server binds them to the OPERATOR_MEMORY_SCOPE, the
- * same scope memory_search/memory_save already use), which the caller should
- * keep in mind before any multi-tenant deployment. Safe in single-tenant
- * Luna (the operator owns every artifact and every memory, and the sandboxed
- * app has a strict no-network CSP — display-only). Args are validated here
- * (validateMemoryListArgs/validateMemorySearchArgs) before reaching the
- * injected deps — the deps never see unchecked wire input.
+ * The curated tool allowlist exposed to store-backed apps: workspace `pulse`
+ * counters, a metadata-only `list-artifacts`, the memory-browser's
+ * `memory-list` (exact-filter, paginated) / `memory-search` (hybrid top-K)
+ * read pair, and `memory-delete` — the ONE mutation exposed to this surface
+ * (no edit/flag/tag-patch; that needs a tag-patch primitive that doesn't
+ * exist yet, deliberately out of scope for v1). Note the exact read surface:
+ * `list-artifacts` is a GLOBAL enumeration of artifact metadata (id/title/
+ * kind/version/updatedAt — never content, never origin); `memory-list`/
+ * `memory-search`/`memory-delete` are scoped by the injected deps
+ * (chat-server binds them to the OPERATOR_MEMORY_SCOPE, the same scope
+ * memory_save/memory_search/memory_delete already use), which the caller
+ * should keep in mind before any multi-tenant deployment. Safe in
+ * single-tenant Luna (the operator owns every artifact and every memory, and
+ * the sandboxed app has a strict no-network CSP — display-only otherwise).
+ * Args are validated here (validateMemoryListArgs/validateMemorySearchArgs/
+ * validateMemoryDeleteArgs) before reaching the injected deps — the deps
+ * never see unchecked wire input. `memory-delete` additionally relies on its
+ * injected dep re-checking scope AFTER fetching the record (defense in
+ * depth — see makeMemoryTools' memory_delete in @luna/memory-tools for the
+ * pattern this mirrors), since arg validation alone can't enforce that.
  */
 export const buildCuratedAppTools = (deps: {
   readonly getPulse: () => Promise<PulseCounters>
   readonly listArtifacts: () => Promise<ReadonlyArray<CuratedArtifactRow>>
   readonly memoryList: (args: ValidatedMemoryListArgs) => Promise<MemoryListPage>
   readonly memorySearch: (args: ValidatedMemorySearchArgs) => Promise<MemorySearchPage>
+  /** The injected dep is trusted to apply its OWN scope re-check (mirroring
+   *  memory_delete's matchesMemoryScope guard in @luna/memory-tools) even
+   *  though query-scoping should already prevent cross-scope reads from
+   *  reaching here — deletion is destructive, so chat-server re-verifies
+   *  scope defensively before calling router.delete. */
+  readonly memoryDelete: (args: ValidatedMemoryDeleteArgs) => Promise<MemoryDeleteResult>
 }): Readonly<Record<string, (args: unknown) => Promise<unknown> | unknown>> => ({
   pulse: () => deps.getPulse(),
   "list-artifacts": () => deps.listArtifacts(),
   "memory-list": (args) => deps.memoryList(validateMemoryListArgs(args)),
   "memory-search": (args) => deps.memorySearch(validateMemorySearchArgs(args)),
+  "memory-delete": (args) => deps.memoryDelete(validateMemoryDeleteArgs(args)),
 })
