@@ -6,6 +6,8 @@ import { CalibrationStore } from "../alignment/calibration-store.js"
 import { classifyTier, revertabilityFor } from "../alignment/tier-classifier.js"
 import { readBelief } from "../beliefs/types.js"
 import { SessionStore } from "../session/session-store.js"
+import { SkillRegistry } from "../skill-registry/skill-registry.js"
+import { SuggestedActions } from "../suggested-actions/suggested-actions.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
 import {
@@ -15,7 +17,11 @@ import {
   DREAM_PROMPT_TOKEN_BUDGET,
 } from "./distill.js"
 import type { DistilledSession } from "./distill.js"
-import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
+import {
+  MAX_SKILL_IMPROVEMENT_CHIPS,
+  skillImprovementToPropose,
+} from "./skill-chip.js"
+import type { DreamOp, DreamOpKind, DreamInputs, DreamSkillSummary } from "./types.js"
 import { DREAM_OP_TRAITS } from "./types.js"
 
 const OP_KINDS = Object.keys(DREAM_OP_TRAITS) as ReadonlyArray<DreamOpKind>
@@ -37,11 +43,33 @@ const detectabilityFor = (kind: DreamOpKind): number =>
  *    injected, and activation stays gated on the Phase 3 survey. Undoable via
  *    revert (before:null → delete).
  * Still HELD as 'proposed' (no survey to catch a bad apply yet): memory_staleness,
- * memory_contradiction.
+ * memory_contradiction, skill_improvement.
+ *
+ * skill_improvement additionally bridges to SuggestedActions chips when a
+ * thread target is provided and SuggestedActions is wired (optional).
  */
 const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>(
   OP_KINDS.filter((k) => DREAM_OP_TRAITS[k].materialize),
 )
+
+export interface ApplyOpsOptions {
+  /**
+   * Thread that receives dream-sourced skill chips. When null/undefined, skill
+   * improvements are still audited as 'proposed' but no chip is emitted.
+   */
+  readonly actionsThreadId?: string | null
+  /**
+   * Remaining skill-chip budget for this dream cycle (not just this call).
+   * Defaults to MAX_SKILL_IMPROVEMENT_CHIPS. applyOps returns how many were
+   * emitted so the caller can ratchet the budget across chunks.
+   */
+  readonly skillChipBudget?: number
+}
+
+export interface ApplyOpsResult {
+  /** How many skill_improvement chips were actually proposed this call. */
+  readonly skillChipsEmitted: number
+}
 
 /**
  * Apply a reasoner's ops. Auto-applies exact-dedup (idempotent state-set);
@@ -49,8 +77,17 @@ const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>(
  * watermark AFTER this resolves (see runDream) — re-running over the same
  * window is a no-op because dreamId is deterministic and record() is
  * INSERT OR IGNORE, and memory ops are idempotent.
+ *
+ * skill_improvement: always audit as proposed; optionally emit a
+ * SuggestedActions chip (source:"dream") when actionsThreadId + budget allow.
+ * A chip failure NEVER fails the dream turn (same measure-only discipline as
+ * calibration).
  */
-export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
+export const applyOps = (
+  dreamId: string,
+  ops: ReadonlyArray<DreamOp>,
+  opts: ApplyOpsOptions = {},
+) =>
   Effect.gen(function* () {
     const store = yield* DreamStore
     const mem = yield* MemoryRouterTag
@@ -63,6 +100,12 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
     // is Effect.ignore'd below — a calibration failure can NEVER alter a dream
     // turn, and nothing ever reads calibration_log back into behavior.
     const calOpt = yield* Effect.serviceOption(CalibrationStore)
+    const saOpt = yield* Effect.serviceOption(SuggestedActions)
+
+    let skillChipsEmitted = 0
+    let skillChipBudget =
+      opts.skillChipBudget ?? MAX_SKILL_IMPROVEMENT_CHIPS
+    const actionsThreadId = opts.actionsThreadId ?? null
 
     for (const op of ops) {
       if (MATERIALIZE_OPS.has(op.kind)) {
@@ -139,8 +182,52 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
           before: op.before, after: op.after, rationale: op.rationale,
           status: "proposed", appliedAt: null,
         })
+
+        // skill_improvement → chip bridge (optional). Audit already written
+        // above; emission is best-effort and budgeted across the dream cycle.
+        if (op.kind === "skill_improvement") {
+          if (skillChipBudget <= 0) {
+            yield* Effect.logInfo(
+              `[luna/dream] skill_improvement chip budget exhausted; audited only ` +
+                `(targetId=${op.targetId})`,
+            )
+          } else if (!actionsThreadId) {
+            yield* Effect.logWarning(
+              `[luna/dream] skill_improvement has no actionsThreadId — chip NOT emitted ` +
+                `(targetId=${op.targetId}); set LUNA_DREAM_ACTIONS_THREAD or process a session window`,
+            )
+          } else if (Option.isNone(saOpt)) {
+            yield* Effect.logWarning(
+              `[luna/dream] SuggestedActions not provided — skill chip NOT emitted ` +
+                `(targetId=${op.targetId}); wire SuggestedActions into the dream layer`,
+            )
+          } else {
+            const input = skillImprovementToPropose(op, actionsThreadId)
+            if (input === null) {
+              yield* Effect.logWarning(
+                `[luna/dream] skill_improvement payload malformed; chip skipped ` +
+                  `(targetId=${op.targetId})`,
+              )
+            } else {
+              yield* saOpt.value.propose(input).pipe(
+                Effect.tap(() => {
+                  skillChipsEmitted += 1
+                  skillChipBudget -= 1
+                  return Effect.void
+                }),
+                Effect.catchAllCause((cause) =>
+                  Effect.logWarning(
+                    `[luna/dream] skill chip propose failed (non-fatal): ${String(cause)}`,
+                  ),
+                ),
+              )
+            }
+          }
+        }
       }
     }
+
+    return { skillChipsEmitted } satisfies ApplyOpsResult
   })
 
 /**
@@ -226,8 +313,42 @@ export const gatherInputs = (
       .query({ namespace: "operator" })
       .pipe(Stream.runCollect, Effect.map((c) => Array.from(c)))
 
-    return { sessions: withMessages, memories }
+    // Optional skill catalog for skill_improvement proposals. Bodies never
+    // enter the dream prompt (cost + leak surface) — metadata only.
+    const skillsOpt = yield* Effect.serviceOption(SkillRegistry)
+    let skills: ReadonlyArray<DreamSkillSummary> = []
+    if (Option.isSome(skillsOpt)) {
+      const catalog = yield* skillsOpt.value.catalog()
+      skills = catalog.map(
+        (e): DreamSkillSummary => ({
+          id: e.id,
+          name: e.name,
+          description: e.description,
+          enabled: e.enabled,
+          source: e.source,
+        }),
+      )
+    }
+
+    return { sessions: withMessages, memories, skills }
   })
+
+/**
+ * Thread that receives dream-sourced skill chips.
+ * 1. LUNA_DREAM_ACTIONS_THREAD env (explicit operator pin)
+ * 2. else newest session id in this cycle's ordered window (session id === thread id)
+ * 3. else null (audit only, no chip)
+ */
+export const resolveDreamActionsThreadId = (
+  orderedSessions: ReadonlyArray<DistilledSession>,
+): string | null => {
+  const env = process.env["LUNA_DREAM_ACTIONS_THREAD"]?.trim()
+  if (env) return env
+  if (orderedSessions.length === 0) return null
+  // ordered ascending by lastMessageAt — last element is most recent.
+  const newest = orderedSessions[orderedSessions.length - 1]
+  return newest?.summary.id ?? null
+}
 
 /**
  * Fixed headroom reserved for everything that rides on the prompt besides the
@@ -446,14 +567,30 @@ export const runDream = (now: number, opts: RunDreamOptions = {}) =>
     let chunksProcessed = 0
     let sessionsProcessed = 0
     let stoppedEarly = false
+    // Cycle-wide skill chip budget (shared across chunks).
+    let skillChipBudget = MAX_SKILL_IMPROVEMENT_CHIPS
+    const actionsThreadId = resolveDreamActionsThreadId(ordered)
+    if (actionsThreadId) {
+      yield* Effect.logInfo(
+        `[luna/dream] runDream: skill chips → thread ${actionsThreadId}`,
+      )
+    }
 
     if (chunks.length === 0) {
       // Zero-window dummy pass (today's exact behavior): ONE reasoner call over
       // an empty session set, dreamId "dream-W-W", watermark unmoved. Kept as an
       // unconditional path — NOT gated on the deadline (see header).
       const dreamId = deriveDreamId(watermark, watermark)
-      const ops = yield* reasoner.reason({ sessions: [], memories: inputs.memories })
-      yield* applyOps(dreamId, ops)
+      const ops = yield* reasoner.reason({
+        sessions: [],
+        memories: inputs.memories,
+        skills: inputs.skills,
+      })
+      const applied = yield* applyOps(dreamId, ops, {
+        actionsThreadId,
+        skillChipBudget,
+      })
+      skillChipBudget -= applied.skillChipsEmitted
       yield* store.setWatermark(watermark)
       chunksProcessed = 1
     } else {
@@ -479,8 +616,16 @@ export const runDream = (now: number, opts: RunDreamOptions = {}) =>
           `[luna/dream] runDream: chunk ${chunksProcessed + 1}/${chunks.length} starting; dreamId=${dreamId}; sessions=${chunk.length}`,
         )
 
-        const ops = yield* reasoner.reason({ sessions: chunk, memories: inputs.memories })
-        yield* applyOps(dreamId, ops)
+        const ops = yield* reasoner.reason({
+          sessions: chunk,
+          memories: inputs.memories,
+          skills: inputs.skills,
+        })
+        const applied = yield* applyOps(dreamId, ops, {
+          actionsThreadId,
+          skillChipBudget,
+        })
+        skillChipBudget -= applied.skillChipsEmitted
 
         // Advance the watermark PER CHUNK, BEFORE the next chunk — the monotone
         // ratchet that keeps a partial/failed night from freezing progress.

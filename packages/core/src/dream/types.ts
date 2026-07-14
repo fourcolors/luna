@@ -10,10 +10,37 @@ export type DreamOpKind =
   | "memory_staleness" // proposed + held until Phase 3 survey
   | "memory_contradiction" // proposed + held
   | "belief_candidate" // Phase 2 §7.2: auto-materialized as a PROPOSED belief record (inert until Phase 3 activation); undoable via revert
+  | "skill_improvement" // held audit + SuggestedActions chip; NEVER writes skill files
+
+/**
+ * Payload for skill_improvement ops (`DreamOp.after`).
+ * Bridged to SuggestedActions (create_skill | task) — never auto-applied to disk.
+ */
+export interface SkillImprovementAfter {
+  /** create a new user skill, or task a rewrite of an existing user skill. */
+  readonly mode: "create" | "update"
+  /** Existing skill id when mode=update; null for create. */
+  readonly skillId: string | null
+  /** Short chip title shown in the UI. */
+  readonly title: string
+  /** Optional longer chip detail. */
+  readonly detail: string | null
+  /** Self-contained authoring prompt for the accept → prompt-job subagent. */
+  readonly prompt: string
+}
+
+/** Compact skill catalog line for the dream reasoner (no bodies). */
+export interface DreamSkillSummary {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly enabled: boolean
+  readonly source: string
+}
 
 export interface DreamOp {
   readonly kind: DreamOpKind
-  /** The memory record id this op concerns. */
+  /** The memory record id this op concerns (or skill id / synthetic id for skill_improvement). */
   readonly targetId: string
   /** Snapshot of the target before the op (for undo). null when target is new. */
   readonly before: unknown
@@ -86,6 +113,11 @@ export const DREAM_OP_TRAITS: Record<DreamOpKind, DreamOpTraits> = {
     detectability: 1, // a confidence-bearing proposal we can later score
     revertability: { materialized: 0.9, held: 0.3 },
   },
+  skill_improvement: {
+    materialize: false, // NEVER write skill files; chip + audit only
+    detectability: 1,
+    revertability: { materialized: 0.9, held: 0.9 },
+  },
 }
 
 export type DreamAuditStatus = "applied" | "proposed" | "reverted"
@@ -128,6 +160,11 @@ export interface DreamAuditQuery {
 export interface DreamInputs {
   readonly sessions: ReadonlyArray<DistilledSession>
   readonly memories: ReadonlyArray<MemoryRecord>
+  /**
+   * Skill catalog snapshot (id/name/description/enabled/source only — no bodies).
+   * Empty when SkillRegistry is not wired. Used for skill_improvement proposals.
+   */
+  readonly skills?: ReadonlyArray<DreamSkillSummary>
 }
 
 export interface DreamReasonerApi {

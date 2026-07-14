@@ -10,6 +10,8 @@ import { SessionStore } from "../session/session-store.js"
 import { FakeReasoner } from "./reasoner.js"
 import { makeBeliefRecord } from "../beliefs/types.js"
 import { CalibrationStore } from "../alignment/calibration-store.js"
+import { SuggestedActions } from "../suggested-actions/suggested-actions.js"
+import { SuggestedActionsStore } from "../suggested-actions/suggested-actions-store.js"
 
 // Minimal Ref-backed memory router double (only the methods applyOps uses).
 const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
@@ -112,6 +114,124 @@ describe("applyOps", () => {
     expect((out.stored!.content as { status: string }).status).toBe("proposed")
     expect(out.rows).toHaveLength(1)
     expect(out.rows[0]?.status).toBe("applied") // op applied (undoable)
+  })
+
+  it("holds skill_improvement as proposed and does NOT write memory", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          const ops: DreamOp[] = [
+            {
+              kind: "skill_improvement",
+              targetId: "skill-imp-x",
+              before: null,
+              after: {
+                mode: "create",
+                skillId: null,
+                title: "Deploy skill",
+                detail: null,
+                prompt: "Author a deploy skill",
+              },
+              rationale: "repeated deploy friction",
+            },
+          ]
+          const result = yield* applyOps("dream-0-100", ops)
+          const rogue = yield* mem.get("skill-imp-x")
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          return { rogue, rows, result }
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out.rogue).toBeNull()
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]?.status).toBe("proposed")
+    expect(out.rows[0]?.op).toBe("skill_improvement")
+    expect(out.result.skillChipsEmitted).toBe(0) // no SuggestedActions + no thread
+  })
+
+  it("emits a dream-sourced create_skill chip when SuggestedActions + thread are provided", async () => {
+    const saLayer = Layer.provideMerge(SuggestedActions.layer, SuggestedActionsStore.Memory)
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* DreamStore
+        const sa = yield* SuggestedActions
+        const ops: DreamOp[] = [
+          {
+            kind: "skill_improvement",
+            targetId: "skill-imp-y",
+            before: null,
+            after: {
+              mode: "create",
+              skillId: null,
+              title: "Incident skill",
+              detail: "Capture incident playbook",
+              prompt: "Author SKILL.md for incidents",
+            },
+            rationale: "two incidents without a playbook",
+          },
+        ]
+        const result = yield* applyOps("dream-0-100", ops, {
+          actionsThreadId: "thread-home",
+          skillChipBudget: 3,
+        })
+        const rows = yield* store.list({ dreamId: "dream-0-100" })
+        const chips = yield* sa.listByThread("thread-home")
+        return { result, rows, chips }
+      }).pipe(
+        Effect.provide(DreamStore.Memory),
+        Effect.provide(FakeMemory([])),
+        Effect.provide(saLayer),
+        Effect.provide(Clock.Default),
+      ) as Effect.Effect<any, any, never>,
+    )
+    expect(out.result.skillChipsEmitted).toBe(1)
+    expect(out.rows[0]?.status).toBe("proposed")
+    expect(out.chips).toHaveLength(1)
+    expect(out.chips[0]?.source).toBe("dream")
+    expect(out.chips[0]?.actionType).toBe("create_skill")
+    expect(out.chips[0]?.title).toBe("Incident skill")
+  })
+
+  it("caps skill chips at the remaining budget (audit still records all)", async () => {
+    const saLayer = Layer.provideMerge(SuggestedActions.layer, SuggestedActionsStore.Memory)
+    const makeOp = (n: number): DreamOp => ({
+      kind: "skill_improvement",
+      targetId: `skill-imp-${n}`,
+      before: null,
+      after: {
+        mode: "create",
+        skillId: null,
+        title: `Skill ${n}`,
+        detail: null,
+        prompt: `Author skill ${n}`,
+      },
+      rationale: `why ${n}`,
+    })
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* DreamStore
+        const sa = yield* SuggestedActions
+        const result = yield* applyOps(
+          "dream-0-100",
+          [makeOp(1), makeOp(2), makeOp(3), makeOp(4)],
+          { actionsThreadId: "t", skillChipBudget: 2 },
+        )
+        const rows = yield* store.list({ dreamId: "dream-0-100" })
+        const chips = yield* sa.listByThread("t")
+        return { result, rows, chips }
+      }).pipe(
+        Effect.provide(DreamStore.Memory),
+        Effect.provide(FakeMemory([])),
+        Effect.provide(saLayer),
+        Effect.provide(Clock.Default),
+      ) as Effect.Effect<any, any, never>,
+    )
+    expect(out.result.skillChipsEmitted).toBe(2)
+    expect(out.rows).toHaveLength(4) // all audited
+    expect(out.chips).toHaveLength(2)
   })
 
   it("records exactly ONE calibration row — only for the belief_candidate op (write path, measure-only)", async () => {

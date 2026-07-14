@@ -36,14 +36,16 @@ import {
   DEFAULT_DISTILL_OPTIONS,
   DREAM_PROMPT_TOKEN_BUDGET,
   estimateTokens,
+  deriveSkillImprovementTargetId,
+  MemoryBackendError,
 } from "@luna/core"
 import type {
   DreamInputs,
   DreamOp,
   DreamOpKind,
   DreamReasonerApi,
+  SkillImprovementAfter,
 } from "@luna/core"
-import { MemoryBackendError } from "@luna/core"
 import { SDKClient } from "./sdk-client.js"
 import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 import {
@@ -61,6 +63,7 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
   "memory_staleness",
   "memory_contradiction",
   "belief_candidate",
+  "skill_improvement",
 ])
 
 /**
@@ -87,6 +90,12 @@ const DREAM_OPS_SCHEMA: Record<string, unknown> = {
       targetId: { type: "string" },
       before: {},
       after: {},
+      // skill_improvement fields
+      mode: { type: "string", enum: ["create", "update"] },
+      skillId: { type: ["string", "null"] },
+      title: { type: "string" },
+      detail: { type: ["string", "null"] },
+      prompt: { type: "string" },
     },
   },
 }
@@ -129,7 +138,19 @@ interface RawOtherOp {
   readonly rationale: string
 }
 
-type RawOp = RawBeliefCandidateOp | RawOtherOp
+/** Shape for skill_improvement ops the model emits. */
+interface RawSkillImprovementOp {
+  readonly kind: "skill_improvement"
+  readonly mode: "create" | "update"
+  readonly skillId?: string | null
+  readonly title: string
+  readonly detail?: string | null
+  readonly prompt: string
+  readonly evidence?: ReadonlyArray<string>
+  readonly rationale: string
+}
+
+type RawOp = RawBeliefCandidateOp | RawOtherOp | RawSkillImprovementOp
 
 // ---------------------------------------------------------------------------
 // Prompt builder (pure, exported for tests)
@@ -190,9 +211,16 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
     DEFAULT_DISTILL_OPTIONS.memoriesChars,
   )
 
+  const skillLines = (inputs.skills ?? []).map(
+    (s) =>
+      `SKILL id=${s.id} name=${JSON.stringify(s.name)} enabled=${s.enabled} source=${s.source}: ${s.description}`,
+  )
+  // Cap skill catalog block hard so a large registry cannot bloat the prompt.
+  const skillsBlock = capMemories(skillLines, 4_000)
+
   return [
     "You are Luna's nightly Dream reasoner. Reflect over the sessions and current",
-    "memory/beliefs below and propose state changes as a STRICT JSON array of ops.",
+    "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops.",
     "",
     "Rules (ALL are load-bearing — violating them corrupts the alignment loop):",
     "",
@@ -201,6 +229,7 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
     "2. Each op MUST have exactly these fields:",
     '   { "kind": ..., "domain"?: ..., "statement"?: ..., "confidence"?: ...,',
     '     "evidence"?: [...], "targetId"?: ..., "before"?: ..., "after"?: ...,',
+    '     "mode"?: ..., "skillId"?: ..., "title"?: ..., "detail"?: ..., "prompt"?: ...,',
     '     "rationale": "..." }',
     "",
     `3. kind MUST be one of: ${[...VALID_KINDS].join(" | ")}`,
@@ -215,9 +244,27 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
     "   - Required fields: targetId (the memory record id), rationale (string).",
     "   - Optional: before (current state), after (desired state or null for delete).",
     "",
-    "SESSIONS (source of truth for belief candidates):",
+    "6. For kind=skill_improvement (skills/workflows the operator should build next):",
+    "   - MUST derive from SESSION TRANSCRIPTS: repeated work, friction, missing playbooks.",
+    "   - Required: mode ('create'|'update'), title (short chip title), prompt (self-contained",
+    "     authoring instructions for a subagent), rationale (why, with session evidence).",
+    "   - Optional: skillId (REQUIRED when mode=update — must match a SKILL id below),",
+    "     detail (longer chip blurb), evidence (session:id#msg_id strings).",
+    "   - Prefer mode=update for existing user skills; use mode=create for new ones.",
+    "   - NEVER propose editing source=builtin skills in place — if a builtin needs",
+    "     improvement, mode=create a NEW user skill that supersedes it.",
+    "   - The system enforces a hard cap of ~3 skill chips per night — propose only the",
+    "     highest-value ideas. Empty array is fine when nothing skill-worthy happened.",
+    "   - Do NOT write skill file contents into the op; put authoring instructions in prompt.",
+    "",
+    "SESSIONS (source of truth for belief candidates + skill improvements):",
     sessions || "(none)",
     "",
+    "SKILL CATALOG (metadata only; for skill_improvement create/update):",
+    skillsBlock || "(none — skill catalog not available this cycle)",
+    "",
+    // CURRENT MEMORY STATE stays LAST so memory-cap tests that measure from
+    // this header to end of prompt remain valid (skills must not follow it).
     "CURRENT MEMORY STATE (for dedup/staleness/contradiction ops only):",
     mems || "(none)",
   ].join("\n")
@@ -269,6 +316,47 @@ function validateRawOpsArray(raw: unknown): ReadonlyArray<RawOp> {
             evidence: Array.isArray(evidence) ? (evidence as ReadonlyArray<string>) : [],
             rationale,
           } satisfies RawBeliefCandidateOp
+        } else if (kind === "skill_improvement") {
+          const mode = op["mode"]
+          if (mode !== "create" && mode !== "update") {
+            throw new Error(`op[${i}] skill_improvement mode must be 'create'|'update'`)
+          }
+          const title = op["title"]
+          if (typeof title !== "string" || title.trim().length === 0) {
+            throw new Error(`op[${i}] skill_improvement missing title`)
+          }
+          const prompt = op["prompt"]
+          if (typeof prompt !== "string" || prompt.trim().length === 0) {
+            throw new Error(`op[${i}] skill_improvement missing prompt`)
+          }
+          const skillIdRaw = op["skillId"]
+          const skillId =
+            skillIdRaw === undefined || skillIdRaw === null
+              ? null
+              : typeof skillIdRaw === "string"
+                ? skillIdRaw
+                : null
+          if (mode === "update" && (!skillId || skillId.length === 0)) {
+            throw new Error(`op[${i}] skill_improvement mode=update requires skillId`)
+          }
+          const detailRaw = op["detail"]
+          const detail =
+            detailRaw === undefined || detailRaw === null
+              ? null
+              : typeof detailRaw === "string"
+                ? detailRaw
+                : null
+          const evidence = op["evidence"]
+          return {
+            kind: "skill_improvement",
+            mode,
+            skillId,
+            title: title.trim(),
+            detail,
+            prompt: prompt.trim(),
+            evidence: Array.isArray(evidence) ? (evidence as ReadonlyArray<string>) : [],
+            rationale,
+          } satisfies RawSkillImprovementOp
         } else {
           // memory_dedup | memory_staleness | memory_contradiction
           const targetId = op["targetId"]
@@ -382,6 +470,25 @@ function materializeOp(
         }),
       ),
     )
+  } else if (raw.kind === "skill_improvement") {
+    const after: SkillImprovementAfter = {
+      mode: raw.mode,
+      skillId: raw.skillId ?? null,
+      title: raw.title,
+      detail: raw.detail ?? null,
+      prompt: raw.prompt,
+    }
+    const targetId =
+      raw.mode === "update" && raw.skillId
+        ? raw.skillId
+        : deriveSkillImprovementTargetId(raw.title, raw.prompt)
+    return Effect.succeed({
+      kind: "skill_improvement",
+      targetId,
+      before: null,
+      after,
+      rationale: raw.rationale,
+    } satisfies DreamOp)
   } else {
     // memory_dedup | memory_staleness | memory_contradiction — pass through
     return Effect.succeed({
