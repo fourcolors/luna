@@ -1569,9 +1569,11 @@ fn spawn_panel_at(
     .always_on_top(false)
     .skip_taskbar(true)
     .visible(true)
-    // Zoom is useful for the browser-like chat, but misleading on compact
-    // utility/settings panels where it only creates empty space.
-    .maximizable(desc.kind == "chat")
+    // Standard native traffic lights on every window: the green (zoom) button
+    // is a real, ENABLED control everywhere, never a grayed-out disabled dot.
+    // FullScreenNone (see configure_native_window_chrome) keeps a green click an
+    // in-screen zoom, never a jump to a fullscreen Space.
+    .maximizable(true)
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
     .min_inner_size(220.0, 120.0);
     // Tauri/Wry owns the native controls for the full window lifetime. A static
@@ -1591,7 +1593,7 @@ fn spawn_panel_at(
         builder = builder.position(px, py);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
-    finalize_native_window_chrome(&window, desc.kind == "chat");
+    finalize_native_window_chrome(&window);
     Ok(window)
 }
 
@@ -1741,7 +1743,7 @@ async fn open_artifact_widget(
         builder = builder.position(px, py);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
-    finalize_native_window_chrome(&window, true);
+    finalize_native_window_chrome(&window);
     Ok(label)
 }
 
@@ -1885,18 +1887,19 @@ fn with_appkit_main_thread<R>(
 /// hierarchy, but on transparent accessory windows they can be left hidden by
 /// the initial layout pass. Explicitly revealing those existing NSButtons is a
 /// one-time native-window setup — there is no webview IPC, hover choreography,
-/// resize observer, or replacement control model. Utility panels keep the
-/// standard disabled zoom treatment; chat and artifact windows allow zoom.
+/// resize observer, or replacement control model. Every window keeps all three
+/// standard AppKit buttons ENABLED: the zoom (green) button is never disabled,
+/// because a disabled NSWindow zoom button renders as a gray dot instead of
+/// green, which reads as broken chrome. (tao already leaves it enabled once the
+/// window is built with `maximizable(true)`; this function must not re-disable
+/// it.)
 ///
 /// Zoom means ZOOM, never native fullscreen: `FullScreenNone` opts the window
 /// out of the fullscreen Space, so a plain green-button click resizes within
 /// the current screen. A transparent, shadowless card on a fullscreen Space
 /// would sit on a black backdrop with dead transparent margins.
 #[cfg(target_os = "macos")]
-fn configure_native_window_chrome(
-    window: &tauri::WebviewWindow,
-    zoom_enabled: bool,
-) -> Result<(), String> {
+fn configure_native_window_chrome(window: &tauri::WebviewWindow) -> Result<(), String> {
     with_appkit_main_thread(window.clone(), move |win| {
         use objc2_app_kit::{
             NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior,
@@ -1951,9 +1954,6 @@ fn configure_native_window_chrome(
                 let mut rect = NSView::frame(&button);
                 rect.origin.x = TRAFFIC_LIGHT_INSET_X + (index as f64) * spacing;
                 button.setFrameOrigin(rect.origin);
-                if index == 2 {
-                    button.setEnabled(zoom_enabled);
-                }
             }
         }
         Ok(())
@@ -1969,8 +1969,8 @@ fn configure_native_window_chrome(
 /// Best-effort by design — the window is already built and visible, so a
 /// chrome failure must never fail the command that opened it.
 #[cfg(target_os = "macos")]
-fn finalize_native_window_chrome(window: &tauri::WebviewWindow, zoom_enabled: bool) {
-    if let Err(e) = configure_native_window_chrome(window, zoom_enabled) {
+fn finalize_native_window_chrome(window: &tauri::WebviewWindow) {
+    if let Err(e) = configure_native_window_chrome(window) {
         eprintln!(
             "[moon] native chrome setup failed for {}: {e}",
             window.label()
@@ -1979,18 +1979,18 @@ fn finalize_native_window_chrome(window: &tauri::WebviewWindow, zoom_enabled: bo
     let retry = window.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let _ = configure_native_window_chrome(&retry, zoom_enabled);
+        let _ = configure_native_window_chrome(&retry);
     });
     let on_focus = window.clone();
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Focused(true)) {
-            let _ = configure_native_window_chrome(&on_focus, zoom_enabled);
+            let _ = configure_native_window_chrome(&on_focus);
         }
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn finalize_native_window_chrome(_window: &tauri::WebviewWindow, _zoom_enabled: bool) {}
+fn finalize_native_window_chrome(_window: &tauri::WebviewWindow) {}
 
 // ── Native-speed window resize (macOS) ──────────────────────────────────────
 //

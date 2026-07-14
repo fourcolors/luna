@@ -10,9 +10,11 @@ Moon panels and artifact cards are independent native macOS windows.
   inset keeps the complete cluster inside the opaque rounded title bar.
 - The controls stay visible on every Moon skin and AppKit owns hover, focus,
   hit testing, minimize, and zoom behavior.
-- Chat and artifact windows allow native zoom. Compact utility and settings
-  panels disable zoom because their fixed-purpose layouts do not gain useful
-  space when maximized.
+- Every window uses the standard native traffic lights with all three controls
+  enabled: the green (zoom) button is never disabled. A disabled AppKit zoom
+  button renders as a gray dot instead of green, which reads as broken chrome,
+  so all Moon windows build with `maximizable(true)` and never call
+  `setEnabled(false)` on a traffic light.
 - Zoom always means zoom, never native fullscreen: every card window carries
   `NSWindowCollectionBehaviorFullScreenNone`, so the green button resizes
   within the current screen instead of moving the transparent card onto a
