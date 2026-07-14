@@ -27,7 +27,7 @@ if [[ -z "$ready_url" ]]; then ready_url="http://${host#*@}:4753/readyz"; fi
 [[ "$ready_url" =~ ^https?:// ]] || { echo "--ready-url must use http or https" >&2; exit 2; }
 
 status="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
-  "systemctl show luna-guardian-$profile.service -p LoadState -p ActiveState --no-pager; cat /var/lib/luna-guardian/status-$profile 2>/dev/null || true" 2>/dev/null)" || {
+  "systemctl show luna-guardian-$profile.service -p LoadState -p ActiveState --no-pager; systemctl show luna-guardian-$profile.timer -p LoadState -p ActiveState -p LastTriggerUSecMonotonic --no-pager | sed 's/^/timer_/'; cat /var/lib/luna-guardian/status-$profile 2>/dev/null || true" 2>/dev/null)" || {
   echo "guardian-remote: cannot read $profile guardian state from $host" >&2
   exit 1
 }
@@ -45,6 +45,17 @@ fi
 }
 completed="$(value completed_at)"; repo_sha="$(value repo_sha)"; engine_sha="$(value engine_sha)"
 outcome="$(value outcome)"; count="$(value consecutive_healthy)"; now="$(date +%s)"
+if [[ -z "$completed" ]]; then
+  # No heartbeat yet: suppress only the install-to-first-trigger window (timer
+  # active but never fired). A timer that has already fired without a heartbeat
+  # is a real failure and still pages below.
+  timer_load="$(value timer_LoadState)"; timer_active="$(value timer_ActiveState)"
+  timer_triggered="$(value timer_LastTriggerUSecMonotonic)"
+  if [[ "$timer_load" == "loaded" && "$timer_active" == "active" && "$timer_triggered" == "0" ]]; then
+    printf 'guardian-remote: PENDING FIRST CYCLE %s %s (guardian timer active, no heartbeat yet)\n' "$host" "$profile"
+    exit 0
+  fi
+fi
 [[ "$completed" =~ ^[0-9]+$ && "$completed" -le "$now" ]] || { echo "guardian-remote: invalid heartbeat timestamp" >&2; exit 1; }
 age=$((now - completed))
 (( age <= max_age )) || { echo "guardian-remote: heartbeat stale (${age}s > ${max_age}s)" >&2; exit 1; }

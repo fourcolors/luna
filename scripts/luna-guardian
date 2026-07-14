@@ -207,11 +207,15 @@ refresh_guardian_if_needed() {
 }
 
 update_then_refresh() {
-  local profile="$1" update="$2"; shift 2
-  "$update" "$profile" "$@" || return
+  local profile="$1" update="$2" rc=0; shift 2
+  "$update" "$profile" "$@" || rc=$?
+  # autodeploy exit 1 recovered a bad forward commit by rolling back; exit >=2
+  # means the rollback itself failed. Only an unrecoverable failure pages.
+  if (( rc >= 2 )); then return "$rc"; fi
   # A deferred update is also successful. Deep health prevents it from
   # promoting an unverified checkout or a build that does not match HEAD.
-  if runtime_health; then refresh_guardian_if_needed "$profile"; fi
+  if runtime_health; then refresh_guardian_if_needed "$profile"; return; fi
+  return "$rc"
 }
 
 reconcile_unit_if_idle() {
