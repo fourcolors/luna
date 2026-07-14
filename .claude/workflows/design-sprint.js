@@ -49,9 +49,11 @@ export const meta = {
 //                 the raw material for JTBD forces. Cite sources inline.',
 //     repoPath:  '/abs/path/to/repo-or-worktree',   // optional but recommended
 //     constraints: 'Hard technical/product constraints the design must respect.',
+//     researchers: [{ label, prompt }, ...],          // optional; overrides research areas
 //     conceptLenses: [{ label, prompt }, ...],       // optional; overrides defaults
 //     conceptCount: 3,                                // optional; ignored if conceptLenses given
 //     fidelity: 'spec-only',                          // 'spec-only' | 'delegate-build'
+//     testers: [{ label, prompt }, ...],              // optional; overrides test personas
 //     stakeholderAnswers: 'Answers to prior questionsForStakeholder, if re-running.',
 //     model: 'sonnet',
 //   }})
@@ -145,7 +147,7 @@ const TESTFINDING = {
 // ── Phase 1: Understand - JTBD forces + parallel technical/competitive research
 phase('Understand')
 const forces = await agent(
-  BRIEF + '\n\nProduce a rigorous JTBD Four Forces analysis (Push, Pull, Anxiety, Habit - the switch-interview framework: someone adopts a new solution only when Push+Pull > Anxiety+Habit against their current behavior). Ground every force in the supplied evidence, label confidence honestly, and do not pad with generic UX platitudes. Name the single riskiest unexamined assumption and the one question that would most cheaply resolve it.',
+  BRIEF + '\n\nProduce a rigorous JTBD Four Forces analysis (Push, Pull, Anxiety, Habit - the switch-interview framework: someone adopts a new solution only when Push+Pull > Anxiety+Habit against their current behavior). Ground every force in the supplied evidence, label confidence honestly, and do not pad with generic UX platitudes. Name the single riskiest unexamined assumption and provide 1-3 concise questions that would most cheaply resolve the remaining uncertainty.',
   { label: 'jtbd-forces', phase: 'Understand', schema: FORCES, model: model, effort: 'high' }
 )
 log('JTBD job statement: ' + ((forces && forces.jobStatement) || '(none)') + ' | riskiest assumption: ' + ((forces && forces.riskiestAssumption && forces.riskiestAssumption.assumption) || '(none)'))
@@ -204,13 +206,12 @@ log('Converged on: ' + ((converge && converge.chosenApproach) || '(none)'))
 phase('Prototype')
 let prototype
 if (fidelity === 'delegate-build' && repoPath !== '.') {
-  const built = await agent(
+  prototype = await agent(
     BRIEF + '\n\nBUILD SPEC to implement:\n' + ((converge && converge.buildSpec) || '') +
     '\n\nState machine to implement exactly: ' + ((converge && converge.stateMachine) || []).join(', ') +
-    '\n\nImplement this in the repo at ' + repoPath + '. Run the relevant tests and report actual pass/fail counts - do not claim success without running them. Report exactly what you built and where.',
-    { label: 'prototype-build', phase: 'Prototype', model: model, effort: 'high' }
+    '\n\nImplement this in the repo at ' + repoPath + '. Run the relevant tests and report actual pass/fail counts - do not claim success without running them. Return delivered="built", a concise summary, the exact artifact location(s), and the actual test command(s) with pass/fail counts.',
+    { label: 'prototype-build', phase: 'Prototype', schema: PROTOTYPE, model: model, effort: 'high' }
   )
-  prototype = { delivered: 'built', summary: String(built || ''), artifactLocation: repoPath, testResults: 'See summary - verify independently before trusting.' }
 } else {
   prototype = { delivered: 'spec-only', summary: 'Spec-only fidelity (default). The invoking thread should build this - a workflow subagent may not have artifact-authoring tools (e.g. mcp_app_write) available.', artifactLocation: 'N/A - see converge.buildSpec', testResults: 'N/A' }
   log('Prototype phase: spec-only (pass fidelity: "delegate-build" + repoPath to attempt a real build instead).')
