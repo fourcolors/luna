@@ -129,6 +129,7 @@ describe("luna-guardian", () => {
     const units = join(temp, "systemd")
     const pins = join(temp, "pins")
     const state = join(temp, "state")
+    const lunaHome = join(temp, "luna-home")
     const systemctlState = join(temp, "systemctl-state")
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
@@ -142,6 +143,7 @@ describe("luna-guardian", () => {
         PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
         LUNA_SERVERS_CONFIG: fixture,
         LUNA_TEST_STAT_MODE: "600",
+        LUNA_HOME: lunaHome,
         LUNA_GUARDIAN_PIN_BASE: pins,
         LUNA_GUARDIAN_STATE_DIR: state,
         LUNA_UPDATE_STATE_DIR: join(temp, "update"),
@@ -171,6 +173,9 @@ describe("luna-guardian", () => {
     const alert = readFileSync(join(units, "luna-guardian-alert-stable.service"), "utf8")
     expect(alert).toContain(`${current}/luna-pager`)
     expect(alert).not.toContain("/root/luna/stable/repo/scripts/luna-pager")
+    expect(alert).toContain(`Environment=LUNA_HOME=${lunaHome}`)
+    expect(alert).toContain(`EnvironmentFile=-${lunaHome}/pager.env`)
+    expect(alert).not.toContain(`${state}/pager.env`)
   })
 
   it("refuses installation when the registry disables the timer", () => {

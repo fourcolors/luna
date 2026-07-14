@@ -291,6 +291,7 @@ run_check() {
 
 render_control_plane() {
   local profile="$1" interval="$2" current="$3"
+  local luna_home="${LUNA_HOME:-${HOME:-/root}/.luna}"
   local guardian_timer="luna-guardian-$profile.timer" legacy_timer="luna-autodeploy-$profile.timer"
   local guardian_service="$SYSTEMD_DIR/luna-guardian-$profile.service"
   local guardian_alert="$SYSTEMD_DIR/luna-guardian-alert-$profile.service"
@@ -317,8 +318,8 @@ EOF
 Description=Luna guardian failure pager ($profile)
 [Service]
 Type=oneshot
-Environment=LUNA_HOME=$STATE_DIR
-EnvironmentFile=-$STATE_DIR/pager.env
+Environment=LUNA_HOME=$luna_home
+EnvironmentFile=-$luna_home/pager.env
 ExecStart=$current/luna-pager luna-guardian-$profile
 EOF
   mv "$guardian_alert.tmp.$$" "$guardian_alert"
