@@ -297,7 +297,7 @@ bun run test
 Focused checks for the deployment/client work:
 
 ```bash
-bash -n install.sh scripts/luna-server-install scripts/luna-container-create scripts/lib/luna-deploy.sh
+bash -n install.sh scripts/luna-server-install scripts/luna-container-create scripts/luna-guardian scripts/luna-guardian-remote-check scripts/lib/luna-deploy.sh
 bun run test test/deploy-scripts.test.ts apps/ui-web/scripts/__tests__/rename-chat-server.test.ts
 bun run --filter '@luna/agent-cli' test
 ```
