@@ -401,6 +401,7 @@ lock_owner_alive() {
   [[ -n "$current" && "$current" == "$fingerprint" ]]
 }
 
+# shellcheck disable=SC2329  # invoked indirectly via `trap release_update_lock EXIT INT TERM` in acquire_update_lock
 release_update_lock() {
   if [[ "$UPDATE_LOCK_HELD" == true ]]; then
     rm -rf "$UPDATE_LOCK_DIR" 2>/dev/null || true
