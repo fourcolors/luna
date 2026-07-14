@@ -45,6 +45,18 @@ import type { WakeCronOptions } from "./wake.js"
 /** The registry discriminant for the wake worker. */
 export const WAKE_WORKER_KIND = "wake"
 
+/**
+ * Default outer JobTicker backstop for wake (matches wake-reasoner's inner
+ * DEFAULT_QUERY_TIMEOUT_MS of 10 min). Overridable via LUNA_WAKE_TIMEOUT_MS.
+ * Registered as defaultTimeoutMs so the ticker applies grace (not the bare
+ * 5-min workerDeadline) — fixes the outer/inner timeout inversion.
+ */
+export const resolveWakeDefaultTimeoutMs = (): number => {
+  const raw = process.env["LUNA_WAKE_TIMEOUT_MS"]?.trim()
+  const n = raw ? Number(raw) : 10 * 60 * 1000
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 10 * 60 * 1000
+}
+
 /** The wake service environment a wake cycle requires (+ Clock for `now`). */
 type WakeCtx = WakeReasoner | WakeLogStore | AgentNotesService | Clock
 
@@ -164,7 +176,12 @@ export const WakeWorkerLayer = (
       const reg = yield* WorkerRegistry
       const ctx = yield* Effect.context<WakeCtx>()
       const worker = buildWakeWorker(ctx, kind)
-      yield* reg.register(kind, worker)
+      // A2: register with defaultTimeoutMs so JobTicker outer backstop is
+      // ~10m+grace, not the bare 5m workerDeadline (wake-reasoner inner is 10m).
+      yield* reg.register(kind, {
+        run: worker,
+        defaultTimeoutMs: resolveWakeDefaultTimeoutMs(),
+      })
     }),
   )
 }

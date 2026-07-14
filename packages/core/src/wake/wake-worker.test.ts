@@ -49,7 +49,11 @@ import { FakeWakeReasoner } from "./reasoner.js"
 import { installWakeSchema } from "./workspace-schema.js"
 import { WakeLogStore } from "./wake-log-store.js"
 import type { WakeDigest } from "./types.js"
-import { WakeWorkerLayer, WAKE_WORKER_KIND } from "./wake-worker.js"
+import {
+  WakeWorkerLayer,
+  WAKE_WORKER_KIND,
+  resolveWakeDefaultTimeoutMs,
+} from "./wake-worker.js"
 
 const ctx: WorkerContext = {
   jobId: "wake-job",
@@ -90,6 +94,16 @@ describe("WakeWorkerLayer", () => {
       const kinds = yield* reg.listKinds
       expect([...kinds]).toContain(WAKE_WORKER_KIND)
       expect(WAKE_WORKER_KIND).toBe("wake")
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(exposed(pickDigest))))
+  })
+
+  it("(a2) registers with defaultTimeoutMs >= 10 min so ticker outer backstop is not bare 5m (A2)", async () => {
+    const prog = Effect.gen(function* () {
+      const reg = yield* WorkerRegistry
+      const entry = yield* reg.lookupEntry(WAKE_WORKER_KIND)
+      expect(entry?.defaultTimeoutMs).toBeGreaterThanOrEqual(10 * 60 * 1000)
+      expect(resolveWakeDefaultTimeoutMs()).toBeGreaterThanOrEqual(10 * 60 * 1000)
     })
     await Effect.runPromise(prog.pipe(Effect.provide(exposed(pickDigest))))
   })

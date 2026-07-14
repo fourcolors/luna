@@ -66,6 +66,21 @@ describe("buildPromptJobSpec", () => {
     expect(spec.payload.allowed_tools).toEqual(["Write", "Bash"])
     expect(spec.payload.model).toBe("claude-x")
   })
+
+  it("stamps default max_turns=15 when payload omits it (A3)", () => {
+    const spec = buildPromptJobSpec(fakeRow({ actionType: "task" }))
+    expect(spec.payload.max_turns).toBe(15)
+  })
+
+  it("honors explicit max_turns on the payload", () => {
+    const spec = buildPromptJobSpec(
+      fakeRow({
+        actionType: "task",
+        payload: { prompt: "go do X", max_turns: 40 },
+      }),
+    )
+    expect(spec.payload.max_turns).toBe(40)
+  })
 })
 
 /* -------------------------------------------------------------------------- */

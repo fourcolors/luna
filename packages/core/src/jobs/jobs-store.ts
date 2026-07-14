@@ -569,6 +569,9 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         pruneRuns,
         closeOrphanedRuns,
         reconcileAfterCrash,
+        // Memory payloads are objects; nothing to JSON.parse. SQLite layer
+        // implements the real quarantine pass (A4).
+        quarantineUnparseablePayloads: () => Effect.succeed(0),
       } satisfies JobsStoreApi
     }),
   )
@@ -1279,6 +1282,69 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               }),
           })
 
+        // A4: quarantine enabled rows whose payload_json is not valid JSON.
+        // Dedicated pass (not inside listDue/rowToJob) so reads stay pure.
+        const quarantineUnparseablePayloads: JobsStoreApi["quarantineUnparseablePayloads"] =
+          (args) =>
+            Effect.try({
+              try: () => {
+                const candidates = db
+                  .query(
+                    `SELECT id, payload_json FROM jobs WHERE enabled = 1`,
+                  )
+                  .all() as Array<{ id: string; payload_json: string }>
+                let n = 0
+                const finishedAt = args.finishedAt
+                for (const row of candidates) {
+                  try {
+                    JSON.parse(row.payload_json)
+                    continue
+                  } catch {
+                    // unparseable — quarantine
+                  }
+                  db.run("BEGIN IMMEDIATE")
+                  try {
+                    db.query(
+                      `UPDATE jobs
+                          SET enabled = 0,
+                              last_status = 'errored',
+                              updated_at = ?
+                        WHERE id = ? AND enabled = 1`,
+                    ).run(finishedAt, row.id)
+                    db.query(
+                      `INSERT INTO job_runs
+                         (job_id, started_at, finished_at, status, attempt, error)
+                       VALUES (?, ?, ?, 'failed', 1, ?)`,
+                    ).run(
+                      row.id,
+                      finishedAt,
+                      finishedAt,
+                      "bad_payload: unparseable payload_json",
+                    )
+                    db.run("COMMIT")
+                    n++
+                    console.warn(
+                      `[jobs-store] quarantined job "${row.id}": unparseable payload_json`,
+                    )
+                  } catch (e) {
+                    try {
+                      db.run("ROLLBACK")
+                    } catch {
+                      /* best-effort */
+                    }
+                    throw e
+                  }
+                }
+                return n
+              },
+              catch: (cause) =>
+                new JobsStoreError({
+                  op: "boot",
+                  message: String(cause),
+                  cause,
+                }),
+            })
+
         return {
           record,
           listAll,
@@ -1296,6 +1362,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           pruneRuns,
           closeOrphanedRuns,
           reconcileAfterCrash,
+          quarantineUnparseablePayloads,
         } satisfies JobsStoreApi
       }),
     )

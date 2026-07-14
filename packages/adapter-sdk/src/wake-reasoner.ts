@@ -323,16 +323,12 @@ export const WakeReasonerDefault: Layer.Layer<
       const pathToClaudeCodeExecutable =
         process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || undefined
 
-      // Wall-clock ceiling for the single reasoning turn. Wake runs via the V2
-      // JobTicker (kind:"wake" -> WakeWorker), which registers the BARE
-      // back-compat form (no defaultTimeoutMs) and so gets the ticker's
-      // ENFORCED 5-min workerDeadline — shorter than this 10-min inner
-      // ceiling, so in practice the ticker interrupts an overrunning wake
-      // first (deadline_passed, retried with backoff since Seam 3). This
-      // inner ceiling still matters: it aborts a wedged subprocess even when
-      // the layer is exercised outside the ticker, and it bounds the turn if
-      // wake is ever registered with a wider defaultTimeoutMs. Overridable
-      // via env; defaults to 10 min.
+      // Wall-clock ceiling for the single reasoning turn. WakeWorker registers
+      // defaultTimeoutMs = LUNA_WAKE_TIMEOUT_MS || 10 min (same default as
+      // here), so the JobTicker outer backstop is defaultTimeoutMs + grace —
+      // the ticker no longer interrupts first at a bare 5 min. This inner
+      // ceiling still aborts a wedged subprocess and stays aligned with the
+      // outer registration. Overridable via env; defaults to 10 min.
       const wakeTimeoutMs = (() => {
         const raw = process.env["LUNA_WAKE_TIMEOUT_MS"]?.trim()
         const n = raw ? Number(raw) : DEFAULT_QUERY_TIMEOUT_MS

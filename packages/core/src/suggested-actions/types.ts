@@ -53,6 +53,12 @@ export interface PromptActionPayload {
   readonly allowedTools?: ReadonlyArray<string>
   /** Optional model override for the spawned subagent. */
   readonly model?: string
+  /**
+   * Max agent turns for the spawned prompt job. When omitted, accept-handler
+   * stamps DEFAULT_SUGGESTED_ACTION_MAX_TURNS (15) so PromptWorker does not
+   * fall through to max_turns=1.
+   */
+  readonly max_turns?: number
 }
 
 /** `run_workflow`: dispatch an EXISTING saved `kind:'workflow'` job (one-shot).

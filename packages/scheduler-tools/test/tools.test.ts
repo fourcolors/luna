@@ -67,9 +67,35 @@ describe("scheduler tools — V2", () => {
     expect((result.job?.nextRunAt ?? 0) > 0).toBe(true)
     expect(result.job?.payload.user_prompt).toBe("remind me about standup")
     expect(result.job?.payload.source).toBe("scheduler-tools")
+    // A3: default max_turns stamped so PromptWorker does not fall through to 1
+    expect((result.job?.payload as { max_turns?: number }).max_turns).toBe(15)
     expect((result.job?.payload as { deliver_to?: { kind?: string } }).deliver_to?.kind).toBe(
       "obs_note",
     )
+  })
+
+  it("schedule_create stamps explicit max_turns when provided", async () => {
+    const result = await Effect.runPromise(
+      withScheduler(
+        Effect.gen(function* () {
+          const jobsStore = yield* JobsStoreService
+          const [createTool] = makeSchedulerTools(jobsStore)
+          const out = yield* Effect.promise(() =>
+            createTool.handler(
+              {
+                expr: "0 9 * * 1",
+                prompt: "deep weekly review",
+                max_turns: 30,
+              },
+              undefined,
+            ),
+          )
+          const parsed = parseTextResult<{ triggerId: string }>(out as ToolCallResult)
+          return yield* jobsStore.getById(parsed.triggerId)
+        }),
+      ),
+    )
+    expect((result?.payload as { max_turns?: number }).max_turns).toBe(30)
   })
 
   it("schedule_create with an invalid cron returns a tool error", async () => {

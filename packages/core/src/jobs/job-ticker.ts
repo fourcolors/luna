@@ -562,6 +562,26 @@ export const JobTickerLayer = (
         )
       }
 
+      // A4: quarantine enabled rows with unparseable payload_json so they
+      // stop appearing as forever-due ghosts in listDue (skipped by rowToJob).
+      const quarantined = yield* store
+        .quarantineUnparseablePayloads({ finishedAt: bootNow })
+        .pipe(
+          Effect.catchAll((err) =>
+            Effect.as(
+              Effect.logWarning(
+                `[luna/sched] payload quarantine pass failed: ${err.message}`,
+              ),
+              0,
+            ),
+          ),
+        )
+      if (quarantined > 0) {
+        yield* Effect.logWarning(
+          `[luna/sched] boot quarantine: disabled ${quarantined} job(s) with unparseable payload_json`,
+        )
+      }
+
       // In-memory at-most-once guard for one-shot jobs. The durable disable
       // (setV2Fields enabled=false) can fail under a storage outage, which
       // would otherwise leave the row enabled+next_run_at NULL and re-fire it

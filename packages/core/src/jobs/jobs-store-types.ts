@@ -344,6 +344,18 @@ export interface JobsStoreApi {
     /** Inclusive upper bound for deterministic reschedule jitter (default 60000). */
     readonly rescheduleJitterMs?: number
   }) => Effect.Effect<CrashReconcileResult, JobsStoreError>
+
+  /**
+   * A4: Quarantine enabled jobs whose `payload_json` fails JSON.parse.
+   * Disables the row (`enabled=0`, `last_status='errored'`), inserts a
+   * synthetic failed `job_runs` row with error `bad_payload: unparseable
+   * payload_json`, and returns how many jobs were quarantined.
+   * Dedicated pass (not buried in listDue/rowToJob) so reads stay pure.
+   * Memory backend: always 0 (payloads are already objects).
+   */
+  readonly quarantineUnparseablePayloads: (args: {
+    readonly finishedAt: number
+  }) => Effect.Effect<number, JobsStoreError>
 }
 
 /** Result of `JobsStoreApi.reconcileAfterCrash`. */
