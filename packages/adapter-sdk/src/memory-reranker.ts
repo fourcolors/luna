@@ -96,9 +96,11 @@ export const RERANK_RUBRIC = `- 61-100: the candidate memory contains what the q
 // Candidate text is deliberately NOT truncated: real-data validation showed
 // dense reference-note memories carry the query-relevant content deep in the
 // body, and a 400-char cap tanked scores below the injection threshold
-// (correct answers went from 95 to gated-out). Latency proved to be SDK
-// session-startup dominated, not prompt-size dominated, so capping bought
-// nothing to justify the quality loss.
+// (correct answers went from 95 to gated-out). This is a measured
+// latency/quality tradeoff, not a free lunch: controlled 5-vs-20-candidate
+// timing showed a ~17-21s fixed SDK-session floor PLUS ~9s median for the
+// extra candidate text - capping would save that ~9s at the cost of gating
+// out correct answers. Quality wins while this lane is search-only.
 // Candidate and query text are UNTRUSTED (memories can originate from inbound
 // Telegram messages). In a single batched call a hostile candidate could try
 // to self-promote past the injection gate or instruct the model to zero out
