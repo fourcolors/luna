@@ -28,7 +28,7 @@
  *     per Operator's `sqlite-vec-scaling` skill. With HNSW: 0.037ms p95 @ 10k
  *     measured on arm64-darwin (same skill).
  *   - search() honors namespace filter via SQL `WHERE namespace = ?`.
- *   - search() supports `mode: "vec" | "hybrid" | "bm25"`. `"hybrid"` (Phase 26)
+ *   - search() supports `mode: "vec" | "hybrid" | "bm25" | "hybrid-terms"`. `"hybrid"` (Phase 26)
  *     fuses BM25 (FTS5 over `text`) with cosine vector ranking via
  *     Reciprocal Rank Fusion (k=60). Backends that don't have FTS5 in
  *     scope MUST fail; we never silently degrade.
@@ -103,7 +103,7 @@ export interface SqliteVectorBackendApi {
     readonly queryText: string
     readonly topK?: number
     readonly namespace?: string
-    readonly mode?: "vec" | "hybrid" | "bm25"
+    readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
@@ -759,7 +759,10 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         //     containing the query as a contiguous token sequence match.
         //     This is the historical hybrid behavior (kept unchanged).
         //   "terms" - each word quoted individually and OR-joined, giving
-        //     bag-of-words bm25() ranking over any term overlap.
+        //     bag-of-words bm25() ranking over any term overlap. Tokenizer
+        //     is ASCII-only ([A-Za-z0-9_]) while FTS5 itself is unicode61,
+        //     so non-ASCII query terms (CJK, accented) are dropped; fine for
+        //     the current English corpus, revisit before i18n.
         const rankByBm25 = (
           queryText: string,
           namespace: string | undefined,
@@ -829,7 +832,7 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                 return Stream.fromIterable(out)
               }
 
-              // mode === "hybrid"
+              // mode === "hybrid" | "hybrid-terms"
               // Pull max(topK, 50) candidates per side; fuse via RRF (k=60).
               const candidateLimit = Math.max(topK, 50)
 
@@ -837,16 +840,17 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                 try: () => rankByVec(queryVec, args.namespace, candidateLimit),
                 catch: (cause) => asError("search.hybrid.vec", cause),
               })
-              // "phrase" preserves hybrid's historical exact-phrase BM25 arm;
-              // switching hybrid to "terms" is a product change that must be
-              // judged by the bench first (see bench/memory-suite.ts).
+              // "hybrid" keeps the historical exact-phrase BM25 arm; the
+              // additive "hybrid-terms" mode fuses the bag-of-words arm
+              // instead, so the bench can judge that product change before
+              // any default flips (see bench/memory-suite.ts).
               const bm25Ranked = yield* Effect.try({
                 try: () =>
                   rankByBm25(
                     args.queryText,
                     args.namespace,
                     candidateLimit,
-                    "phrase",
+                    mode === "hybrid-terms" ? "terms" : "phrase",
                   ),
                 catch: (cause) => asError("search.hybrid.bm25", cause),
               })

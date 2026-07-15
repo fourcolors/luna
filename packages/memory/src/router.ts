@@ -86,7 +86,7 @@ export interface MemoryRouter {
     readonly queryText: string
     readonly topK?: number
     readonly namespace?: string
-    readonly mode?: "vec" | "hybrid" | "bm25"
+    readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
     readonly scope?: MemoryScopeQuery
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },

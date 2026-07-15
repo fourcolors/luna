@@ -28,10 +28,11 @@
  *   0  ran to completion (report-only, or enforce passed)
  *   1  LUNA_BENCH_ENFORCE=1 and hybrid OVERALL recall@5 < threshold
  *   2  Ollama unreachable (skip - daemon not running)
- *   3  corpus invalid or load error
+ *   3  corpus invalid, load error, or invalid configuration
+ *   4  runtime failure (backend/embedder error mid-run)
  */
 import { readFileSync, writeFileSync } from "node:fs"
-import { resolve, dirname } from "node:path"
+import { basename, resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Effect, Layer, Stream } from "effect"
 import {
@@ -94,7 +95,7 @@ const POSITIVE_SLICE_ORDER: ReadonlyArray<QuerySlice> = [
   "temporal",
 ]
 
-const MODES = ["bm25", "vec", "hybrid"] as const
+const MODES = ["bm25", "vec", "hybrid", "hybrid-terms"] as const
 type Mode = (typeof MODES)[number]
 
 const TOP_K = 10
@@ -258,8 +259,15 @@ function relevantRanks(
   return ranks
 }
 
-function recallAtK(ranks: ReadonlyArray<number>, k: number): number {
-  return ranks.some((r) => r <= k) ? 1 : 0
+/** True recall@k: fraction of the query's relevant ids found in the top k.
+ * Equal to hit-rate for single-relevant queries (the common case). */
+function recallAtK(
+  ranks: ReadonlyArray<number>,
+  k: number,
+  relevantCount: number,
+): number {
+  if (relevantCount === 0) return 0
+  return ranks.filter((r) => r <= k).length / relevantCount
 }
 
 function mrrOf(ranks: ReadonlyArray<number>): number {
@@ -304,9 +312,9 @@ function aggregateSlice(
   let sumNdcg = 0
   for (const r of results) {
     const ranks = relevantRanks(r.rankedIds, r.relevantIds)
-    sumR1 += recallAtK(ranks, 1)
-    sumR5 += recallAtK(ranks, 5)
-    sumR10 += recallAtK(ranks, 10)
+    sumR1 += recallAtK(ranks, 1, r.relevantIds.size)
+    sumR5 += recallAtK(ranks, 5, r.relevantIds.size)
+    sumR10 += recallAtK(ranks, 10, r.relevantIds.size)
     sumMrr += mrrOf(ranks)
     sumNdcg += ndcgAt10(ranks, r.relevantIds.size)
   }
@@ -366,11 +374,11 @@ function fmtMs(n: number): string {
 }
 
 function tabulateLatency(rows: ReadonlyArray<LatencyMetrics>): string {
-  const header = `| mode   | mean (ms) | p50 (ms) | p95 (ms) |`
+  const header = `| mode         | mean (ms) | p50 (ms) | p95 (ms) |`
   const sep = `|:---|---:|---:|---:|`
   const body = rows.map(
     (r) =>
-      `| ${r.mode.padEnd(6)} | ${fmtMs(r.mean).padStart(9)} | ${fmtMs(r.p50).padStart(8)} | ${fmtMs(r.p95).padStart(8)} |`,
+      `| ${r.mode.padEnd(12)} | ${fmtMs(r.mean).padStart(9)} | ${fmtMs(r.p50).padStart(8)} | ${fmtMs(r.p95).padStart(8)} |`,
   )
   return [header, sep, ...body].join("\n")
 }
@@ -410,11 +418,11 @@ function separationFor(
 }
 
 function tabulateSeparation(rows: ReadonlyArray<SeparationMetrics>): string {
-  const header = `| mode   | neg median | neg p90 | pos median | pos p90 |`
+  const header = `| mode         | neg median | neg p90 | pos median | pos p90 |`
   const sep = `|:---|---:|---:|---:|---:|`
   const body = rows.map(
     (r) =>
-      `| ${r.mode.padEnd(6)} | ${fmtScore(r.negMedian).padStart(10)} | ${fmtScore(r.negP90).padStart(7)} | ${fmtScore(r.posMedian).padStart(10)} | ${fmtScore(r.posP90).padStart(7)} |`,
+      `| ${r.mode.padEnd(12)} | ${fmtScore(r.negMedian).padStart(10)} | ${fmtScore(r.negP90).padStart(7)} | ${fmtScore(r.posMedian).padStart(10)} | ${fmtScore(r.posP90).padStart(7)} |`,
   )
   return [header, sep, ...body].join("\n")
 }
@@ -422,6 +430,15 @@ function tabulateSeparation(rows: ReadonlyArray<SeparationMetrics>): string {
 async function main(): Promise<void> {
   const sample = process.argv.includes("--sample")
   const corpusPath = resolveCorpusPath(sample)
+
+  // A malformed threshold would make `recall < NaN` always false and the
+  // enforce gate silently pass; refuse to run misconfigured instead.
+  if (ENFORCE && !Number.isFinite(RECALL_THRESHOLD)) {
+    console.error(
+      `[bench] invalid LUNA_BENCH_RECALL_THRESHOLD ${JSON.stringify(process.env["LUNA_BENCH_RECALL_THRESHOLD"])} - must be a finite number`,
+    )
+    process.exit(3)
+  }
 
   let corpus: Corpus
   try {
@@ -467,12 +484,17 @@ async function main(): Promise<void> {
   console.log(`# embedder: ${embedderChoice}`)
   if (embedderChoice === "stub") {
     console.log(
-      `# WARNING: stub embedder in use - vec/hybrid numbers below are MEANINGLESS (stub embeddings carry no real semantics). bm25 numbers are real lexical results.`,
+      `# NOTE: stub embedder in use - stub vectors are a deterministic bag-of-tokens hash sketch, so vec/hybrid approximate unweighted bag-of-words cosine (a lexical sanity baseline, NOT semantic retrieval). Use LUNA_EMBEDDER=ollama for real numbers. bm25 numbers are real lexical results either way.`,
     )
   }
   console.log(``)
 
-  const allResults: Record<Mode, QueryResult[]> = { bm25: [], vec: [], hybrid: [] }
+  const allResults: Record<Mode, QueryResult[]> = {
+    bm25: [],
+    vec: [],
+    hybrid: [],
+    "hybrid-terms": [],
+  }
 
   await Effect.runPromise(
     Effect.scoped(
@@ -488,8 +510,26 @@ async function main(): Promise<void> {
             }),
           )
         }
-        for (const mode of MODES) {
-          for (const q of corpus.queries) {
+        // Untimed warmup pass: absorbs JIT, cold FTS/HNSW caches, and
+        // first-call embedder setup so no mode pays first-run cost in the
+        // timed pass (running one mode's block first previously inflated
+        // its latency ~2x - an execution-order artifact, not a real cost).
+        for (const q of corpus.queries.slice(0, 25)) {
+          for (const mode of MODES) {
+            yield* Stream.runCollect(
+              router.search({
+                queryText: q.text,
+                namespace: NAMESPACE,
+                topK: TOP_K,
+                mode,
+              }),
+            )
+          }
+        }
+        // Timed pass, mode-interleaved per query so drift (GC, machine
+        // load) spreads evenly across modes instead of biasing one block.
+        for (const q of corpus.queries) {
+          for (const mode of MODES) {
             const t0 = performance.now()
             const hits = yield* Stream.runCollect(
               router.search({
@@ -516,7 +556,9 @@ async function main(): Promise<void> {
   )
 
   const jsonOut: Record<string, unknown> = {
-    corpus: { path: corpusPath, records: corpus.records.length, queries: corpus.queries.length },
+    // basename only: absolute paths are machine-specific noise in a
+    // committed baseline file.
+    corpus: { file: basename(corpusPath), records: corpus.records.length, queries: corpus.queries.length },
     embedder: embedderChoice,
     modes: {} as Record<string, unknown>,
   }
@@ -537,10 +579,25 @@ async function main(): Promise<void> {
       ),
     )
     const overallRow = aggregateSlice(positiveResults, "OVERALL")
+    // OVERALL is a micro-average (every positive query weighted equally),
+    // so it inherits the corpus's slice proportions. MACRO is the unweighted
+    // mean of the slice rows and is insensitive to those proportions.
+    const macroRow: SliceMetrics = {
+      slice: "MACRO",
+      queries: sliceRows.length,
+      recallAt1: sliceRows.reduce((a, r) => a + r.recallAt1, 0) / sliceRows.length,
+      recallAt5: sliceRows.reduce((a, r) => a + r.recallAt5, 0) / sliceRows.length,
+      recallAt10: sliceRows.reduce((a, r) => a + r.recallAt10, 0) / sliceRows.length,
+      mrr: sliceRows.reduce((a, r) => a + r.mrr, 0) / sliceRows.length,
+      ndcg10: sliceRows.reduce((a, r) => a + r.ndcg10, 0) / sliceRows.length,
+    }
 
     console.log(`## mode: ${mode}`)
     console.log(``)
-    console.log(tabulateSlices([...sliceRows, overallRow]))
+    console.log(tabulateSlices([...sliceRows, overallRow, macroRow]))
+    console.log(
+      `(OVERALL = micro-average over positive queries, weighted by slice sizes; MACRO = unweighted mean of slice rows; MACRO "queries" column = slice count)`,
+    )
     console.log(``)
 
     if (mode === "hybrid") hybridOverallRecall5 = overallRow.recallAt5
@@ -548,6 +605,7 @@ async function main(): Promise<void> {
     jsonModes[mode] = {
       bySlice: Object.fromEntries(sliceRows.map((r) => [r.slice, r])),
       overall: overallRow,
+      macro: macroRow,
     }
   }
 
@@ -562,8 +620,18 @@ async function main(): Promise<void> {
     `## score separation (no injection threshold exists today - negative-query hits WOULD be injected)`,
   )
   console.log(``)
-  const sepRows = MODES.map((mode) => separationFor(mode, allResults[mode]))
+  // bm25 is omitted: its score is purely rank-derived (top-1 is always
+  // 0.500 whenever anything matches), so it carries no match magnitude and
+  // can never separate negatives from positives. hybrid RRF scores are also
+  // rank-derived but vary with cross-arm agreement, so they stay (read them
+  // as fusion agreement, not match confidence).
+  const sepRows = MODES.filter((m) => m !== "bm25").map((mode) =>
+    separationFor(mode, allResults[mode]),
+  )
   console.log(tabulateSeparation(sepRows))
+  console.log(
+    `(bm25 omitted: rank-derived scores carry no match magnitude. hybrid/hybrid-terms RRF scores measure cross-arm agreement, not match confidence.)`,
+  )
   console.log(``)
   jsonOut["negativeSeparation"] = Object.fromEntries(sepRows.map((r) => [r.mode, r]))
 
@@ -589,4 +657,12 @@ async function main(): Promise<void> {
   )
 }
 
-await main()
+// Exit 4 keeps runtime failures (backend/embedder errors) distinct from the
+// quality gate's exit 1, so CI can't mistake an infra outage for a recall
+// regression.
+try {
+  await main()
+} catch (e) {
+  console.error(`[bench] runtime failure: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`)
+  process.exit(4)
+}
