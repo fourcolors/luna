@@ -1,0 +1,246 @@
+{
+  "corpus": {
+    "records": 200,
+    "queries": 230
+  },
+  "embedder": "ollama",
+  "model": "haiku",
+  "hybrid": {
+    "rows": [
+      {
+        "slice": "verbatim",
+        "queries": 40,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "mrr": 1,
+        "ndcg10": 1
+      },
+      {
+        "slice": "paraphrase",
+        "queries": 60,
+        "recallAt1": 0.8666666666666667,
+        "recallAt5": 0.9666666666666667,
+        "recallAt10": 0.9666666666666667,
+        "mrr": 0.9107638888888888,
+        "ndcg10": 0.924239926205987
+      },
+      {
+        "slice": "vocab-mismatch",
+        "queries": 60,
+        "recallAt1": 0.48333333333333334,
+        "recallAt5": 0.6833333333333333,
+        "recallAt10": 0.85,
+        "mrr": 0.5749519530034235,
+        "ndcg10": 0.6371366626002334
+      },
+      {
+        "slice": "temporal",
+        "queries": 30,
+        "recallAt1": 0.6166666666666667,
+        "recallAt5": 0.861111111111111,
+        "recallAt10": 0.9444444444444444,
+        "mrr": 0.7322619047619047,
+        "ndcg10": 0.7753949686218028
+      }
+    ],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 190,
+      "recallAt1": 0.7342105263157894,
+      "recallAt5": 0.8675438596491228,
+      "recallAt10": 0.9333333333333333,
+      "mrr": 0.7953200402968206,
+      "ndcg10": 0.82602339151067
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 4,
+      "recallAt1": 0.7416666666666667,
+      "recallAt5": 0.8777777777777779,
+      "recallAt10": 0.9402777777777778,
+      "mrr": 0.8044944366635542,
+      "ndcg10": 0.8341928893570058
+    }
+  },
+  "batched": {
+    "rows": [
+      {
+        "slice": "verbatim",
+        "queries": 40,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "mrr": 1,
+        "ndcg10": 1
+      },
+      {
+        "slice": "paraphrase",
+        "queries": 60,
+        "recallAt1": 0.8833333333333333,
+        "recallAt5": 0.9833333333333333,
+        "recallAt10": 0.9833333333333333,
+        "mrr": 0.9305555555555556,
+        "ndcg10": 0.9442441461309549
+      },
+      {
+        "slice": "vocab-mismatch",
+        "queries": 60,
+        "recallAt1": 0.7666666666666667,
+        "recallAt5": 0.8833333333333333,
+        "recallAt10": 0.8833333333333333,
+        "mrr": 0.8194444444444444,
+        "ndcg10": 0.8359108127976215
+      },
+      {
+        "slice": "temporal",
+        "queries": 30,
+        "recallAt1": 0.9277777777777777,
+        "recallAt5": 0.9444444444444444,
+        "recallAt10": 0.9444444444444444,
+        "mrr": 0.9666666666666667,
+        "ndcg10": 0.9489759575340919
+      }
+    ],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 190,
+      "recallAt1": 0.8780701754385966,
+      "recallAt5": 0.9491228070175439,
+      "recallAt10": 0.9491228070175439,
+      "mrr": 0.9157894736842107,
+      "ndcg10": 0.9225188224301961
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 4,
+      "recallAt1": 0.8944444444444444,
+      "recallAt5": 0.9527777777777777,
+      "recallAt10": 0.9527777777777777,
+      "mrr": 0.9291666666666667,
+      "ndcg10": 0.932282729115667
+    }
+  },
+  "batchedOnSubsample": {
+    "rows": [
+      {
+        "slice": "paraphrase",
+        "queries": 6,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "mrr": 1,
+        "ndcg10": 1
+      },
+      {
+        "slice": "vocab-mismatch",
+        "queries": 12,
+        "recallAt1": 0.6666666666666666,
+        "recallAt5": 0.9166666666666666,
+        "recallAt10": 0.9166666666666666,
+        "mrr": 0.7916666666666666,
+        "ndcg10": 0.8243991050595311
+      }
+    ],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 18,
+      "recallAt1": 0.7777777777777778,
+      "recallAt5": 0.9444444444444444,
+      "recallAt10": 0.9444444444444444,
+      "mrr": 0.8611111111111112,
+      "ndcg10": 0.8829327367063541
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 2,
+      "recallAt1": 0.8333333333333333,
+      "recallAt5": 0.9583333333333333,
+      "recallAt10": 0.9583333333333333,
+      "mrr": 0.8958333333333333,
+      "ndcg10": 0.9121995525297655
+    }
+  },
+  "pointwise": {
+    "rows": [
+      {
+        "slice": "paraphrase",
+        "queries": 6,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "mrr": 1,
+        "ndcg10": 1
+      },
+      {
+        "slice": "vocab-mismatch",
+        "queries": 12,
+        "recallAt1": 0.5,
+        "recallAt5": 0.8333333333333334,
+        "recallAt10": 0.9166666666666666,
+        "mrr": 0.6770833333333334,
+        "ndcg10": 0.7365986575892967
+      }
+    ],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 18,
+      "recallAt1": 0.6666666666666666,
+      "recallAt5": 0.8888888888888888,
+      "recallAt10": 0.9444444444444444,
+      "mrr": 0.7847222222222222,
+      "ndcg10": 0.8243991050595311
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 2,
+      "recallAt1": 0.75,
+      "recallAt5": 0.9166666666666667,
+      "recallAt10": 0.9583333333333333,
+      "mrr": 0.8385416666666667,
+      "ndcg10": 0.8682993287946483
+    }
+  },
+  "separation": {
+    "before": {
+      "label": "hybrid",
+      "negMedian": 0.01639344262295082,
+      "negP90": 0.01639344262295082,
+      "posMedian": 0.01639344262295082,
+      "posP90": 0.03278688524590164
+    },
+    "after": {
+      "label": "llm",
+      "negMedian": 15,
+      "negP90": 45,
+      "posMedian": 95,
+      "posP90": 98
+    }
+  },
+  "injectionThreshold": {
+    "threshold": 75,
+    "keepPositiveFrac": 0.968421052631579,
+    "rejectNegativeFrac": 0.975,
+    "meetsGoal": true
+  },
+  "latency": {
+    "batched": {
+      "label": "batched",
+      "mean": 18849.496829726082,
+      "p50": 18143.147062999997,
+      "p95": 26042.833843749995,
+      "calls": 230
+    },
+    "pointwise": {
+      "label": "pointwise",
+      "mean": 10067.355108579168,
+      "p50": 9251.693207999982,
+      "p95": 13781.589135399952,
+      "calls": 480
+    }
+  },
+  "parseFailure": {
+    "batchedRate": 0,
+    "pointwiseRate": 0
+  }
+}
