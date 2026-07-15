@@ -20,6 +20,7 @@ import {
   STORE_APP_URI_PREFIX,
   artifactIdFromAppUri,
   buildCuratedAppTools,
+  buildFeedbackQueueApp,
   buildWorkspacePulseApp,
   composeAppRegistries,
   createCoreAppRegistry,
@@ -27,10 +28,13 @@ import {
   deleteMemoryRecordWithScopeCheck,
   pulseFromSnapshot,
   toCuratedMemoryRow,
+  validateFeedbackListArgs,
+  validateFeedbackSetStatusArgs,
   validateMemoryDeleteArgs,
   validateMemoryListArgs,
   validateMemorySearchArgs,
   type CoreApp,
+  type FeedbackListPage,
   type MemoryDeleteResult,
   type MemoryListPage,
   type MemorySearchPage,
@@ -343,8 +347,17 @@ const memorySearchStub = (): MemorySearchPage => ({
 
 const memoryDeleteStub = (): MemoryDeleteResult => ({ deleted: false })
 
+const feedbackListStub = (): FeedbackListPage => ({
+  rows: [],
+  limit: 25,
+  offset: 0,
+  hasMore: false,
+})
+
+const feedbackSetStatusStub = (): { ok: boolean; message?: string } => ({ ok: true })
+
 describe("buildCuratedAppTools — the read+delete allowlist", () => {
-  it("exposes exactly pulse + list-artifacts + memory-list + memory-search + memory-delete, wired to the injected getters", async () => {
+  it("exposes exactly pulse + list-artifacts + memory-list + memory-search + memory-delete + feedback-list + feedback-set-status, wired to the injected getters", async () => {
     const getPulse = vi.fn(async () => ({ toolsCalled: 1, errors: 0, estimatedUsd: 0, activeSessions: 0 }))
     const listArtifacts = vi.fn(async () => [
       { id: "widget:a", title: "A", kind: "widget", version: 1, updatedAt: 0 },
@@ -352,8 +365,20 @@ describe("buildCuratedAppTools — the read+delete allowlist", () => {
     const memoryList = vi.fn(async () => memoryListStub())
     const memorySearch = vi.fn(async () => memorySearchStub())
     const memoryDelete = vi.fn(async () => memoryDeleteStub())
-    const tools = buildCuratedAppTools({ getPulse, listArtifacts, memoryList, memorySearch, memoryDelete })
+    const feedbackList = vi.fn(async () => feedbackListStub())
+    const feedbackSetStatus = vi.fn(async () => feedbackSetStatusStub())
+    const tools = buildCuratedAppTools({
+      getPulse,
+      listArtifacts,
+      memoryList,
+      memorySearch,
+      memoryDelete,
+      feedbackList,
+      feedbackSetStatus,
+    })
     expect(Object.keys(tools).sort()).toEqual([
+      "feedback-list",
+      "feedback-set-status",
       "list-artifacts",
       "memory-delete",
       "memory-list",
@@ -365,11 +390,15 @@ describe("buildCuratedAppTools — the read+delete allowlist", () => {
     await tools["memory-list"]!({})
     await tools["memory-search"]!({ query: "hi" })
     await tools["memory-delete"]!({ id: "mem_1" })
+    await tools["feedback-list"]!({})
+    await tools["feedback-set-status"]!({ id: "fb_1", status: "resolved" })
     expect(getPulse).toHaveBeenCalledTimes(1)
     expect(listArtifacts).toHaveBeenCalledTimes(1)
     expect(memoryList).toHaveBeenCalledTimes(1)
     expect(memorySearch).toHaveBeenCalledTimes(1)
     expect(memoryDelete).toHaveBeenCalledTimes(1)
+    expect(feedbackList).toHaveBeenCalledTimes(1)
+    expect(feedbackSetStatus).toHaveBeenCalledTimes(1)
   })
 
   it("memory-list/memory-search/memory-delete VALIDATE args before they reach the injected deps — the deps never see raw wire input", async () => {
@@ -382,6 +411,8 @@ describe("buildCuratedAppTools — the read+delete allowlist", () => {
       memoryList,
       memorySearch,
       memoryDelete,
+      feedbackList: async () => feedbackListStub(),
+      feedbackSetStatus: async () => feedbackSetStatusStub(),
     })
 
     // Wildly out-of-range / wrong-typed args clamp to the safe defaults —
@@ -593,5 +624,86 @@ describe("toCuratedMemoryRow — MemoryRecord → wire shape", () => {
       scope: { observerId: "luna", subjectId: "operator", visibility: "private" },
     })
     expect(row.scope).toEqual({ observerId: "luna", subjectId: "operator", visibility: "private" })
+  })
+})
+
+describe("validateFeedbackListArgs — the one choke point for feedback-list wire input", () => {
+  it("defaults every field when args is missing/garbage", () => {
+    for (const bad of [undefined, null, "nope", 5, []]) {
+      expect(validateFeedbackListArgs(bad)).toEqual({
+        status: undefined,
+        limit: 25,
+        offset: 0,
+      })
+    }
+  })
+
+  it("clamps limit to [1, 100] and offset to [0, 2000]", () => {
+    expect(validateFeedbackListArgs({ limit: 0, offset: -1 }).limit).toBe(1)
+    expect(validateFeedbackListArgs({ limit: 0, offset: -1 }).offset).toBe(0)
+    expect(validateFeedbackListArgs({ limit: 1_000_000, offset: 1_000_000 }).limit).toBe(100)
+    expect(validateFeedbackListArgs({ limit: 1_000_000, offset: 1_000_000 }).offset).toBe(2000)
+  })
+
+  it("trims a well-formed status filter and drops wrong-typed ones", () => {
+    expect(validateFeedbackListArgs({ status: "  resolved " }).status).toBe("resolved")
+    expect(validateFeedbackListArgs({ status: 42 }).status).toBeUndefined()
+    expect(validateFeedbackListArgs({ status: "x".repeat(1000) }).status).toHaveLength(64)
+  })
+})
+
+describe("validateFeedbackSetStatusArgs — the one choke point for feedback-set-status wire input", () => {
+  it("trims id/status and length-caps resolvedRef/notes", () => {
+    expect(
+      validateFeedbackSetStatusArgs({ id: "  fb_1  ", status: " resolved ", resolvedRef: " pr-9 ", notes: " ok " }),
+    ).toEqual({ id: "fb_1", status: "resolved", resolvedRef: "pr-9", notes: "ok" })
+    expect(validateFeedbackSetStatusArgs({ id: "fb_1", status: "open" })).toEqual({
+      id: "fb_1",
+      status: "open",
+    })
+  })
+
+  it("defaults status to 'open' and id to '' for missing/garbage input, never throws", () => {
+    for (const bad of [undefined, null, "nope", 5, []]) {
+      expect(validateFeedbackSetStatusArgs(bad)).toEqual({ id: "", status: "open" })
+    }
+    expect(validateFeedbackSetStatusArgs({ id: 5, status: {} })).toEqual({ id: "", status: "open" })
+  })
+
+  it("length-caps a pathological id/resolvedRef/notes rather than throwing", () => {
+    expect(validateFeedbackSetStatusArgs({ id: "x".repeat(1000) }).id).toHaveLength(200)
+    expect(
+      validateFeedbackSetStatusArgs({ id: "fb_1", resolvedRef: "x".repeat(1000) }).resolvedRef,
+    ).toHaveLength(500)
+    expect(
+      validateFeedbackSetStatusArgs({ id: "fb_1", notes: "x".repeat(10000) }).notes,
+    ).toHaveLength(4000)
+  })
+})
+
+describe("buildFeedbackQueueApp — the Phase 1 on-demand triage view", () => {
+  it("registers at ui://luna/feedback-queue with exactly feedback-list + feedback-set-status", async () => {
+    const feedbackList = vi.fn(async () => feedbackListStub())
+    const feedbackSetStatus = vi.fn(async () => feedbackSetStatusStub())
+    const app = buildFeedbackQueueApp({ feedbackList, feedbackSetStatus })
+    expect(app.uri).toBe("ui://luna/feedback-queue")
+    expect(Object.keys(app.tools).sort()).toEqual(["feedback-list", "feedback-set-status"])
+    expect(app.html.length).toBeGreaterThan(0)
+    await app.tools["feedback-list"]!({})
+    await app.tools["feedback-set-status"]!({ id: "fb_1", status: "resolved" })
+    expect(feedbackList).toHaveBeenCalledTimes(1)
+    expect(feedbackSetStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it("is servable through createCoreAppRegistry (readResource + callTool)", async () => {
+    const app = buildFeedbackQueueApp({
+      feedbackList: async () => feedbackListStub(),
+      feedbackSetStatus: async () => feedbackSetStatusStub(),
+    })
+    const reg = createCoreAppRegistry([app])
+    const res = await reg.readResource("ui://luna/feedback-queue")
+    expect(res.ok).toBe(true)
+    const call = await reg.callTool("ui://luna/feedback-queue", "feedback-list", {})
+    expect(call.ok).toBe(true)
   })
 })

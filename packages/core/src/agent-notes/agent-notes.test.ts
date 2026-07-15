@@ -17,7 +17,11 @@
 import { describe, expect, it } from "vitest"
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { AgentNotesService } from "./agent-notes.js"
+
+const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
+const dSqlite = isBun ? describe : describe.skip
 
 // ── Test runner helper ───────────────────────────────────────────────────────
 
@@ -137,6 +141,42 @@ describe("AgentNotesService", () => {
       )
 
       expect(note.kind).toBe("custom_kind_xyz")
+    })
+
+    // ── Part D: optional caller-supplied id (feedback-screenshot flow) ─────
+    it("persists with the exact caller-supplied id when `id` is provided", async () => {
+      const { note, found } = await run(
+        Effect.gen(function* () {
+          const svc = yield* AgentNotesService
+          const note = yield* svc.record({
+            id: "custom-fixed-id",
+            sessionId: "sess-custom-id",
+            kind: "ui_feedback",
+            summary: "feedback note",
+          })
+          const found = yield* svc.getById("custom-fixed-id")
+          return { note, found }
+        }),
+      )
+      expect(note.id).toBe("custom-fixed-id")
+      expect(found).not.toBeNull()
+      expect(found!.id).toBe("custom-fixed-id")
+    })
+
+    it("still auto-generates a UUID when `id` is omitted (regression — 20+ existing callers)", async () => {
+      const note = await run(
+        Effect.gen(function* () {
+          const svc = yield* AgentNotesService
+          return yield* svc.record({
+            sessionId: "sess-auto-id",
+            kind: "progress",
+            summary: "no explicit id",
+          })
+        }),
+      )
+      expect(typeof note.id).toBe("string")
+      expect(note.id.length).toBeGreaterThan(0)
+      expect(note.id).not.toBe("custom-fixed-id")
     })
   })
 
@@ -544,5 +584,58 @@ describe("AgentNotesService", () => {
         }
       },
     )
+  })
+})
+
+// ── SQLite layer: same optional-id contract (Part D), skipped outside bun ────
+
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "agent-notes test — bootstrap stub",
+} as const)
+
+const SqliteTestLayer = AgentNotesService.makeLayer(":memory:").pipe(
+  Layer.provide(Clock.Default),
+  Layer.provide(bootstrapStubL),
+)
+
+const runSqlite = <A, E>(
+  eff: Effect.Effect<A, E, AgentNotesService>,
+): Promise<A> => Effect.runPromise(eff.pipe(Effect.provide(SqliteTestLayer)))
+
+dSqlite("AgentNotesService (SQLite layer) — record id", () => {
+  it("persists with the exact caller-supplied id when `id` is provided", async () => {
+    const { note, found } = await runSqlite(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        const note = yield* svc.record({
+          id: "sqlite-custom-id",
+          sessionId: "sess-sqlite-custom",
+          kind: "ui_feedback",
+          summary: "feedback note",
+        })
+        const found = yield* svc.getById("sqlite-custom-id")
+        return { note, found }
+      }),
+    )
+    expect(note.id).toBe("sqlite-custom-id")
+    expect(found).not.toBeNull()
+    expect(found!.id).toBe("sqlite-custom-id")
+  })
+
+  it("still auto-generates a UUID when `id` is omitted (regression)", async () => {
+    const note = await runSqlite(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        return yield* svc.record({
+          sessionId: "sess-sqlite-auto",
+          kind: "progress",
+          summary: "no explicit id",
+        })
+      }),
+    )
+    expect(typeof note.id).toBe("string")
+    expect(note.id.length).toBeGreaterThan(0)
+    expect(note.id).not.toBe("sqlite-custom-id")
   })
 })

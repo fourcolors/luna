@@ -28,7 +28,7 @@
 import { readFileSync } from "node:fs"
 import * as path from "node:path"
 import type { McpAppHostDeps, MemorySearchErrorKind } from "@luna/ui-ws"
-import type { CounterSnapshot } from "@luna/core"
+import type { CounterSnapshot, FeedbackListRow } from "@luna/core"
 import type { MemoryRecord, MemoryVisibility } from "@luna/memory"
 
 /** The mimeType every MCP-app template is served under (SEP-1865). */
@@ -375,6 +375,77 @@ export const validateMemoryDeleteArgs = (args: unknown): ValidatedMemoryDeleteAr
   return { id: rawId.slice(0, MEMORY_DELETE_ID_MAX_LEN) }
 }
 
+/* ── feedback-list / feedback-set-status: feedback-queue curated tools ─────
+ * Backs the Phase 1 on-demand `ui://luna/feedback-queue` core app (Part G)
+ * AND — since these are now real curated tools, not app-private — any
+ * future store-backed app that wants to read/triage the queue too (Phase 2's
+ * live queue app reuses the same tool names). Reads (`feedback-list`) are
+ * shared with every store-backed app; the one mutation (`feedback-set-
+ * status`) is gated by chat-server's isToolAllowed to the reviewed
+ * `mcp-app:feedback-queue` artifact id, mirroring memory-delete's gate. */
+
+const FEEDBACK_LIST_DEFAULT_LIMIT = 25
+const FEEDBACK_LIST_MAX_LIMIT = 100
+const FEEDBACK_LIST_MAX_OFFSET = 2000
+const FEEDBACK_STATUS_MAX_LEN = 64
+const FEEDBACK_ID_MAX_LEN = 200
+const FEEDBACK_RESOLVED_REF_MAX_LEN = 500
+const FEEDBACK_STATUS_NOTES_MAX_LEN = 4000
+
+export interface ValidatedFeedbackListArgs {
+  readonly status?: string
+  readonly limit: number
+  readonly offset: number
+}
+export interface ValidatedFeedbackSetStatusArgs {
+  readonly id: string
+  readonly status: string
+  readonly resolvedRef?: string
+  readonly notes?: string
+}
+export interface FeedbackListPage {
+  readonly rows: ReadonlyArray<FeedbackListRow>
+  readonly limit: number
+  readonly offset: number
+  readonly hasMore: boolean
+}
+
+/** Validate/clamp raw `feedback-list` args off the wire. Never throws — a
+ *  malformed call degrades to "list the first page of open items" rather
+ *  than failing closed (mirrors validateMemoryListArgs). */
+export const validateFeedbackListArgs = (args: unknown): ValidatedFeedbackListArgs => {
+  const a = isPlainObject(args) ? args : {}
+  return {
+    status: asOptionalString(a["status"])?.slice(0, FEEDBACK_STATUS_MAX_LEN),
+    limit: asClampedInt(a["limit"], FEEDBACK_LIST_DEFAULT_LIMIT, 1, FEEDBACK_LIST_MAX_LIMIT),
+    offset: asClampedInt(a["offset"], 0, 0, FEEDBACK_LIST_MAX_OFFSET),
+  }
+}
+
+/** Validate/clamp raw `feedback-set-status` args off the wire. A missing/
+ *  non-string id normalizes to "" — the injected dep's store re-checks the
+ *  id exists as a ui_feedback note before writing (defense in depth), so an
+ *  empty id degrades safely to {ok:false} rather than throwing here. */
+export const validateFeedbackSetStatusArgs = (
+  args: unknown,
+): ValidatedFeedbackSetStatusArgs => {
+  const a = isPlainObject(args) ? args : {}
+  const rawId = typeof a["id"] === "string" ? a["id"].trim() : ""
+  const rawStatus = asOptionalString(a["status"]) ?? "open"
+  const resolvedRef = asOptionalString(a["resolvedRef"])
+  const notes = asOptionalString(a["notes"])
+  return {
+    id: rawId.slice(0, FEEDBACK_ID_MAX_LEN),
+    status: rawStatus.slice(0, FEEDBACK_STATUS_MAX_LEN),
+    ...(resolvedRef !== undefined
+      ? { resolvedRef: resolvedRef.slice(0, FEEDBACK_RESOLVED_REF_MAX_LEN) }
+      : {}),
+    ...(notes !== undefined
+      ? { notes: notes.slice(0, FEEDBACK_STATUS_NOTES_MAX_LEN) }
+      : {}),
+  }
+}
+
 /**
  * The `memory-delete` scope re-check, extracted as an Effect-free (Promise)
  * function so it's unit-testable without a real MemoryRouter — mirrors
@@ -571,10 +642,42 @@ export const buildCuratedAppTools = (deps: {
    *  reaching here — deletion is destructive, so chat-server re-verifies
    *  scope defensively before calling router.delete. */
   readonly memoryDelete: (args: ValidatedMemoryDeleteArgs) => Promise<MemoryDeleteResult>
+  /** feedback-queue: list `ui_feedback` notes + their triage status. Read —
+   *  shared with every store-backed app, same as pulse/list-artifacts/memory-list. */
+  readonly feedbackList: (args: ValidatedFeedbackListArgs) => Promise<FeedbackListPage>
+  /** feedback-queue: the ONE mutation. Gated by chat-server's isToolAllowed
+   *  to the reviewed `mcp-app:feedback-queue` artifact id (mirrors memory-delete). */
+  readonly feedbackSetStatus: (
+    args: ValidatedFeedbackSetStatusArgs,
+  ) => Promise<{ readonly ok: boolean; readonly message?: string }>
 }): Readonly<Record<string, (args: unknown) => Promise<unknown> | unknown>> => ({
   pulse: () => deps.getPulse(),
   "list-artifacts": () => deps.listArtifacts(),
   "memory-list": (args) => deps.memoryList(validateMemoryListArgs(args)),
   "memory-search": (args) => deps.memorySearch(validateMemorySearchArgs(args)),
   "memory-delete": (args) => deps.memoryDelete(validateMemoryDeleteArgs(args)),
+  "feedback-list": (args) => deps.feedbackList(validateFeedbackListArgs(args)),
+  "feedback-set-status": (args) => deps.feedbackSetStatus(validateFeedbackSetStatusArgs(args)),
+})
+
+/**
+ * The Phase 1 on-demand feedback triage view — a STATIC core app (like
+ * buildWorkspacePulseApp), NOT a runtime mcp_app_write artifact. See the
+ * file-level comment in core-apps/feedback-queue.html for the full
+ * rationale (also restated in this PR's body). Ships fully in this PR,
+ * reuses the same feedback-list/feedback-set-status curated tools Phase 2's
+ * live queue app will call.
+ */
+export const buildFeedbackQueueApp = (deps: {
+  readonly feedbackList: (args: ValidatedFeedbackListArgs) => Promise<FeedbackListPage>
+  readonly feedbackSetStatus: (
+    args: ValidatedFeedbackSetStatusArgs,
+  ) => Promise<{ readonly ok: boolean; readonly message?: string }>
+}): CoreApp => ({
+  uri: "ui://luna/feedback-queue",
+  html: readAppHtml("feedback-queue.html"),
+  tools: {
+    "feedback-list": (args) => deps.feedbackList(validateFeedbackListArgs(args)),
+    "feedback-set-status": (args) => deps.feedbackSetStatus(validateFeedbackSetStatusArgs(args)),
+  },
 })

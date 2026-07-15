@@ -253,6 +253,8 @@ import {
   runAutoArchive,
   AUTO_ARCHIVE_IDLE_MS,
   MCPRegistry,
+  openUiFeedbackStatusStore,
+  type FeedbackListRow,
 } from "@luna/core"
 import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
@@ -395,6 +397,7 @@ import {
 import { resolveUiWsToken } from "./ui-ws-token.js"
 import {
   buildCuratedAppTools,
+  buildFeedbackQueueApp,
   buildWorkspacePulseApp,
   composeAppRegistries,
   createCoreAppRegistry,
@@ -402,9 +405,12 @@ import {
   deleteMemoryRecordWithScopeCheck,
   pulseFromSnapshot,
   toCuratedMemoryRow,
+  type FeedbackListPage,
   type MemoryDeleteResult,
   type MemoryListPage,
   type MemorySearchPage,
+  type ValidatedFeedbackListArgs,
+  type ValidatedFeedbackSetStatusArgs,
   type ValidatedMemoryDeleteArgs,
   type ValidatedMemoryListArgs,
   type ValidatedMemorySearchArgs,
@@ -2772,6 +2778,78 @@ const computeStaticRoot = (): string | undefined => {
   return undefined
 }
 
+// PNG signature (8 bytes) — see readPngDimensions below.
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+
+/**
+ * Parse a PNG buffer's IHDR chunk for width/height — small, dependency-free
+ * (avoids pulling in an image-decoding library just for two integers). The
+ * PNG signature is 8 bytes, followed by a 4-byte chunk length, the 4-byte
+ * "IHDR" tag, then width (4 bytes BE) at offset 16-19 and height (4 bytes
+ * BE) at offset 20-23. Returns null on any signature mismatch or short
+ * buffer — NEVER throws. Used by writeFeedbackScreenshot (Moon feedback-
+ * screenshot + triage-queue, Phase 1) to record dimensions from the actual
+ * decoded file rather than trusting client-reported values; a null result
+ * still lets the screenshot file write succeed, just with width/height
+ * recorded as 0 (dimension metadata is best-effort, separate from the "did
+ * the file write succeed" gate). Exported for unit tests.
+ */
+export const readPngDimensions = (buf: Buffer): { width: number; height: number } | null => {
+  try {
+    if (buf.length < 24) return null
+    if (!buf.subarray(0, 8).equals(PNG_SIGNATURE)) return null
+    if (buf.toString("ascii", 12, 16) !== "IHDR") return null
+    const width = buf.readUInt32BE(16)
+    const height = buf.readUInt32BE(20)
+    if (width <= 0 || height <= 0) return null
+    return { width, height }
+  } catch {
+    return null
+  }
+}
+
+export interface FeedbackScreenshotMeta {
+  readonly screenshotPath: string
+  readonly width: number
+  readonly height: number
+  readonly bytes: number
+  readonly captureMethod: "native-window"
+}
+
+/**
+ * Decode a base64 PNG, write it to `<feedbackScreenshotsDir>/<id>.png`, and
+ * return its metadata — or null on ANY failure (bad/empty base64, mkdir/
+ * write error, …). Screenshot capture is ALWAYS best-effort: this function
+ * must never throw, so feedbackSink.submit can proceed to record the note
+ * with no screenshot metadata rather than fail the whole submission.
+ * Exported for unit tests (chat-server.ts's own boot closure isn't
+ * independently testable, but this pure disk-write step is).
+ */
+export const writeFeedbackScreenshot = (
+  screenshotB64: string | undefined,
+  id: string,
+  feedbackScreenshotsDir: string,
+): FeedbackScreenshotMeta | null => {
+  if (typeof screenshotB64 !== "string" || screenshotB64.length === 0) return null
+  try {
+    const buf = Buffer.from(screenshotB64, "base64")
+    if (buf.length === 0) return null
+    mkdirSync(feedbackScreenshotsDir, { recursive: true })
+    const screenshotPath = join(feedbackScreenshotsDir, `${id}.png`)
+    writeFileSync(screenshotPath, buf)
+    const dims = readPngDimensions(buf)
+    return {
+      screenshotPath,
+      width: dims?.width ?? 0,
+      height: dims?.height ?? 0,
+      bytes: buf.length,
+      captureMethod: "native-window",
+    }
+  } catch {
+    return null
+  }
+}
+
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
 ): Layer.Layer<ServerHandle> =>
@@ -3416,10 +3494,82 @@ const buildServerLayer = (
           deleteRecord: (id) => Effect.runPromise(mem.delete(id)),
           matchesScope: (record) => matchesMemoryScope(record, memoryBrowserScope),
         })
+
+      // ── UI Feedback Triage Status (Moon feedback-screenshot + triage-
+      // queue, Phase 1) ────────────────────────────────────────────────
+      // Independent bun:sqlite connection to luna.db for the
+      // ui_feedback_status companion table — mirrors modelRoutingService's
+      // (below, ~3720) exact require("bun:sqlite") + try/catch shape: opens
+      // its own handle, tolerates open failure (feature disabled, never
+      // crashes the server), and closes via an Effect finalizer. Must be
+      // defined BEFORE mcpAppHost below, since buildFeedbackQueueApp and the
+      // curated feedback-list/feedback-set-status tools need these deps.
+      let uiFeedbackStatusDbClose: (() => void) | null = null
+      const uiFeedbackStatusStore = (() => {
+        try {
+          const ufsPaths = resolveRuntimePaths()
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { Database } = require("bun:sqlite") as {
+            Database: new (p: string) => {
+              run(sql: string): void
+              query(sql: string): {
+                get(...args: unknown[]): unknown
+                all(...args: unknown[]): unknown[]
+                run(...args: unknown[]): { changes: number }
+              }
+              close(): void
+            }
+          }
+          const ufsDb = new Database(ufsPaths.lunaDbPath)
+          uiFeedbackStatusDbClose = () => ufsDb.close()
+          return openUiFeedbackStatusStore(ufsDb)
+        } catch (err) {
+          writeSync(
+            1,
+            `[luna/ui-feedback] failed to open status store (feedback triage disabled): ${String(err)}\n`,
+          )
+          return null
+        }
+      })()
+      if (uiFeedbackStatusDbClose !== null) {
+        const closeUfsDb = uiFeedbackStatusDbClose
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              closeUfsDb()
+            } catch {
+              // best-effort: a failed close on shutdown must not throw.
+            }
+          }),
+        )
+      }
+      // Tolerates a null store (feature disabled if it failed to open) —
+      // degrades to an empty page / a friendly ok:false rather than crashing.
+      const getFeedbackList = async (
+        args: ValidatedFeedbackListArgs,
+      ): Promise<FeedbackListPage> => {
+        if (uiFeedbackStatusStore === null) {
+          return { rows: [], limit: args.limit, offset: args.offset, hasMore: false }
+        }
+        const { rows, hasMore } = uiFeedbackStatusStore.list(args)
+        return { rows, limit: args.limit, offset: args.offset, hasMore }
+      }
+      const getFeedbackSetStatus = async (
+        args: ValidatedFeedbackSetStatusArgs,
+      ): Promise<{ readonly ok: boolean; readonly message?: string }> => {
+        if (uiFeedbackStatusStore === null) {
+          return { ok: false, message: "feedback triage store unavailable" }
+        }
+        return uiFeedbackStatusStore.setStatus(args, Date.now())
+      }
+
       const mcpAppHost = createMcpAppHost(
         composeAppRegistries(
           // Static, compile-time core apps (the Luna server as first provider).
-          createCoreAppRegistry([buildWorkspacePulseApp(getPulse)]),
+          createCoreAppRegistry([
+            buildWorkspacePulseApp(getPulse),
+            buildFeedbackQueueApp({ feedbackList: getFeedbackList, feedbackSetStatus: getFeedbackSetStatus }),
+          ]),
           // Generated / user-authored apps: ui://luna/app/<id> resolves to a
           // pinned mcp-app artifact's HTML, tools/call gated by the curated set.
           createStoreBackedAppRegistry({
@@ -3462,12 +3612,18 @@ const buildServerLayer = (
               memoryList: getMemoryListPage,
               memorySearch: getMemorySearchPage,
               memoryDelete: getMemoryDelete,
+              // feedback-list / feedback-set-status: same curated tool names
+              // the static ui://luna/feedback-queue app above uses, now also
+              // available to store-backed apps (Phase 2's live queue app).
+              feedbackList: getFeedbackList,
+              feedbackSetStatus: getFeedbackSetStatus,
             }),
-            // Reads are useful to generated memory views, but deletion is a
-            // privileged capability of the reviewed memory-browser artifact,
-            // not a mutation every generated app should inherit.
+            // Reads are useful to generated memory/feedback views, but each
+            // registry's one mutation is a privileged capability of its OWN
+            // reviewed artifact, not something every generated app inherits.
             isToolAllowed: (artifactId, tool) =>
-              tool !== "memory-delete" || artifactId === "mcp-app:memory-browser",
+              (tool !== "memory-delete" || artifactId === "mcp-app:memory-browser") &&
+              (tool !== "feedback-set-status" || artifactId === "mcp-app:feedback-queue"),
           }),
         ),
       )
@@ -3690,9 +3846,26 @@ const buildServerLayer = (
           readonly appVersion?: string
           readonly appearance?: string
           readonly clientTs?: number
-        }): Effect.Effect<{ readonly ok: boolean; readonly message?: string }> =>
-          agentNotes
+          /** Best-effort base64 PNG (no `data:` prefix) — see
+           *  FeedbackSubmitFrame.screenshot / server.ts's SCREENSHOT_MAX_BASE64_CHARS
+           *  guard. Decoded and written to disk BEFORE the agent_notes INSERT
+           *  (Part D: record() now takes an optional caller id) because
+           *  agent_notes is append-only — there is no UPDATE, so the full
+           *  payload including screenshot metadata must be complete up front. */
+          readonly screenshot?: string
+        }): Effect.Effect<{ readonly ok: boolean; readonly message?: string }> => {
+          const id = crypto.randomUUID()
+          // Screenshot is ALWAYS best-effort — writeFeedbackScreenshot never
+          // throws and returns null on any decode/mkdir/write failure, so
+          // the note itself must never fail to record because of it.
+          const screenshotMeta = writeFeedbackScreenshot(
+            input.screenshot,
+            id,
+            join(LUNA_HOME, "feedback-screenshots"),
+          )
+          return agentNotes
             .record({
+              id,
               sessionId: input.threadId ?? "ui-feedback",
               kind: "ui_feedback",
               summary: input.note.slice(0, 200),
@@ -3703,6 +3876,12 @@ const buildServerLayer = (
                 appVersion: input.appVersion ?? null,
                 appearance: input.appearance ?? null,
                 clientTs: input.clientTs ?? null,
+                // Purely additive: OMITTED (not null) when there's no
+                // screenshot, so old/no-screenshot notes keep the exact
+                // pre-this-feature payload shape (see FeedbackListRow's
+                // projection in ui-feedback-status-store.ts, which must
+                // treat this key as optional and never throw on its absence).
+                ...(screenshotMeta !== null ? { screenshot: screenshotMeta } : {}),
               },
             })
             .pipe(
@@ -3713,7 +3892,8 @@ const buildServerLayer = (
                   message: "Could not record feedback.",
                 }),
               ),
-            ),
+            )
+        },
       }
 
       // ── Model Routing Settings (PR 1) ───────────────────────────────────

@@ -1960,6 +1960,93 @@ fn configure_native_window_chrome(window: &tauri::WebviewWindow) -> Result<(), S
     })
 }
 
+/// Wire payload for `capture_window_screenshot`: a base64-encoded PNG (no
+/// `data:` prefix) of the captured window.
+#[derive(serde::Serialize)]
+struct CaptureResult {
+    base64: String,
+}
+
+/// Capture a screenshot of this window via native macOS window compositing
+/// (the `screencapture` CLI targeting this window's CGWindowID) — NOT DOM
+/// rasterization, which silently drops this app's SVG filter/backdrop-blur
+/// chrome. Best-effort: ANY failure (Screen-Recording TCC denied,
+/// `screencapture` missing/erroring, empty output, etc.) returns `Err` so
+/// the frontend submits the feedback note without a screenshot rather than
+/// blocking it — see FeedbackEngine._captureScreenshot in chat.html.
+///
+/// UNVERIFIED IN CI: this crate is macOS-only for this code path and this
+/// dev sandbox is Linux, so `cargo check`/`cargo build` cannot compile-check
+/// this function here. `NSWindow::windowNumber()` (a standard, decades-old
+/// AppKit readonly NSInteger property) is assumed to be exposed by
+/// objc2-app-kit 0.3.2's generated bindings the same way `standardWindowButton`
+/// etc. already are in `configure_native_window_chrome` above — but this has
+/// NOT been confirmed by an actual compile. Whoever builds this on a real Mac
+/// (`cargo build` / `cargo tauri build`) MUST verify this compiles; if
+/// `windowNumber()` isn't the right binding name, the ObjC symbol is
+/// `-[NSWindow windowNumber]` and the CGWindowID passed to `screencapture -l`
+/// must match it (screencapture's `-l` flag expects the same integer
+/// CGWindowListCreateImage would use for that window).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn capture_window_screenshot(window: tauri::WebviewWindow) -> Result<CaptureResult, String> {
+    let window_id = with_appkit_main_thread(window.clone(), move |win| {
+        use objc2_app_kit::NSWindow;
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        let number = unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            ns_win.windowNumber()
+        };
+        Ok(number)
+    })?;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = std::env::temp_dir().join(format!(
+        "luna-feedback-shot-{}-{}.png",
+        std::process::id(),
+        nanos
+    ));
+
+    // screencapture only writes to a path (no stdout-PNG mode for -l).
+    // -x: no camera shutter sound. -o: no window-shadow border.
+    let output = tokio::process::Command::new("screencapture")
+        .arg("-x")
+        .arg("-o")
+        .arg("-t")
+        .arg("png")
+        .arg(format!("-l{}", window_id))
+        .arg(&tmp_path)
+        .output()
+        .await
+        .map_err(|e| format!("failed to spawn screencapture: {e}"))?;
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!(
+            "screencapture exited with {:?} (Screen Recording permission may be denied)",
+            output.status.code()
+        ));
+    }
+
+    let bytes = std::fs::read(&tmp_path).map_err(|e| format!("failed to read capture: {e}"))?;
+    let _ = std::fs::remove_file(&tmp_path);
+    if bytes.is_empty() {
+        return Err("screencapture produced an empty file".to_string());
+    }
+
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    Ok(CaptureResult { base64: STANDARD.encode(&bytes) })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn capture_window_screenshot(_window: tauri::WebviewWindow) -> Result<CaptureResult, String> {
+    Err("screenshot capture is only supported on macOS".to_string())
+}
+
 /// AppKit performs one deferred title-bar layout after a transparent overlay
 /// window is shown. Apply the native chrome immediately, then once more after
 /// that construction-only pass so AppKit cannot restore the hidden/default
@@ -2624,6 +2711,7 @@ fn main() {
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,
+        capture_window_screenshot,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2672,7 +2760,8 @@ fn main() {
         close_widget,
         collapse_to_moon,
         expand_from_moon,
-        begin_native_resize
+        begin_native_resize,
+        capture_window_screenshot
     ]);
 
     builder

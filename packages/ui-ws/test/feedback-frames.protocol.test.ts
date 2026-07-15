@@ -59,6 +59,9 @@ describe("feedback wire frames (plain TS unions, NO Effect Schema)", () => {
       }
       const rt = JSON.parse(JSON.stringify(f)) as FeedbackSubmitFrame
       expect(rt).toEqual(f)
+      // screenshot is additive/optional — an old-client frame without it
+      // still typechecks and roundtrips (backward compat).
+      expect(rt.screenshot).toBeUndefined()
       // @ts-expect-error — target.selector is required
       const _illegal: FeedbackSubmitFrame = {
         type: "feedback-submit",
@@ -69,6 +72,21 @@ describe("feedback wire frames (plain TS unions, NO Effect Schema)", () => {
         clientTs: 1,
       }
       void _illegal
+    })
+
+    it("screenshot is an OPTIONAL base64 PNG (no data: prefix) and roundtrips intact", () => {
+      const f: FeedbackSubmitFrame = {
+        type: "feedback-submit",
+        requestId: "fb-4",
+        note: "the icon looks wrong",
+        target: { selector: "#thing" },
+        page: "chat.html",
+        clientTs: 1,
+        screenshot: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+      }
+      const rt = JSON.parse(JSON.stringify(f)) as FeedbackSubmitFrame
+      expect(rt.screenshot).toBe(f.screenshot)
+      expect(rt.screenshot?.startsWith("data:")).toBe(false)
     })
   })
 

@@ -30,6 +30,10 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process
 toml = "0.8"
 # TOML editing that preserves comments and field order (used by set_default_route).
 toml_edit = "0.22"
+# base64 encoding for the native-window-screenshot IPC payload
+# (capture_window_screenshot shells out to the macOS `screencapture` CLI and
+# ships the resulting PNG bytes to the frontend as base64 over Tauri IPC).
+base64 = "0.22"
 
 [dev-dependencies]
 # Used in client_config unit tests for atomic-write round-trips.
