@@ -2437,6 +2437,78 @@ describe("\"working\" reaction glyph (setMessageReaction)", () => {
 
     expect(received).toHaveLength(1)
   })
+
+  /**
+   * The read receipt used to fail 100% silently (both a non-ok API result and
+   * a transport defect were swallowed with zero trace) — a chat with
+   * restricted `available_reactions` would never show a hint that Luna's
+   * only user-visible "I read this" signal on Telegram had stopped working.
+   * These assert the failure IS now surfaced, exactly once per chat.
+   */
+  it("logs a warning (once) when setMessageReaction returns a non-ok result", async () => {
+    const chatId = 558
+    const updates = [
+      makeTextUpdate({ chatId, updateId: 12300, messageId: 1, text: "first" }),
+      makeTextUpdate({ chatId, updateId: 12301, messageId: 2, text: "second" }),
+    ]
+    const { transport: base } = makeFakeTransport([{ ok: true, result: updates }])
+    const flaky: TelegramHttpTransport = (method, params) =>
+      method === "setMessageReaction"
+        ? Effect.succeed({ ok: false, error_code: 400, description: "Bad Request: REACTION_INVALID" })
+        : base(method, params)
+    const adapter = makeTelegramAdapter({ id: "tg-reaction-warn", httpTransport: flaky })
+    adapter.setMessageHandler(() => Effect.void)
+
+    const warnings: string[] = []
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "))
+    })
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+          yield* Effect.sleep("50 millis")
+          yield* Fiber.interrupt(fiber)
+        }),
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+
+    const hits = warnings.filter(
+      (w) => w.includes("read-receipt") && w.includes(`chat=${chatId}`) && w.includes("REACTION_INVALID"),
+    )
+    // Two messages in the same chat both fail — only the FIRST is logged.
+    expect(hits).toHaveLength(1)
+  })
+
+  it("logs a warning when setMessageReaction dies (transport defect), not just a non-ok result", async () => {
+    const chatId = 559
+    const update = makeTextUpdate({ chatId, updateId: 12400, text: "defect path" })
+    const { transport: base } = makeFakeTransport([{ ok: true, result: [update] }])
+    const dying: TelegramHttpTransport = (method, params) =>
+      method === "setMessageReaction" ? Effect.die(new Error("boom")) : base(method, params)
+    const adapter = makeTelegramAdapter({ id: "tg-reaction-warn-defect", httpTransport: dying })
+    adapter.setMessageHandler(() => Effect.void)
+
+    const warnings: string[] = []
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "))
+    })
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+          yield* Effect.sleep("50 millis")
+          yield* Fiber.interrupt(fiber)
+        }),
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+
+    expect(warnings.some((w) => w.includes("read-receipt") && w.includes(`chat=${chatId}`))).toBe(true)
+  })
 })
 
 /* -------------------------------------------------------------------------- */
