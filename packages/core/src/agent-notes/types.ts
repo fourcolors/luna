@@ -33,6 +33,13 @@ export interface AgentNotesApi {
     readonly summary: string
     readonly parentId?: string
     readonly payload?: unknown
+    /** Optional caller-supplied id. Used by the feedback-screenshot flow,
+     *  which must know the note's id BEFORE the INSERT (to name the
+     *  screenshot file `<id>.png` and put its path in payload_json — there is
+     *  no UPDATE, so the payload must be complete up front). Omitted →
+     *  unchanged behavior, a UUID is generated server-side (every existing
+     *  caller is unaffected). */
+    readonly id?: string
   }) => Effect.Effect<AgentNote, NoteError>
 
   readonly getRecent: (

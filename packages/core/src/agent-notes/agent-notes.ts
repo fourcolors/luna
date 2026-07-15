@@ -67,7 +67,7 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
       const record: AgentNotesApi["record"] = (input) =>
         Effect.gen(function* () {
           const ts = yield* clock.nowMs()
-          const id = crypto.randomUUID()
+          const id = input.id ?? crypto.randomUUID()
           const note: AgentNote = {
             id,
             sessionId: input.sessionId,
@@ -280,7 +280,7 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
         const record: AgentNotesApi["record"] = (input) =>
           Effect.gen(function* () {
             const ts = yield* clock.nowMs()
-            const id = crypto.randomUUID()
+            const id = input.id ?? crypto.randomUUID()
             const payloadJson =
               input.payload !== undefined
                 ? JSON.stringify(input.payload)
