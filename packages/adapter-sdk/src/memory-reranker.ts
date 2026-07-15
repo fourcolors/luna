@@ -93,6 +93,12 @@ export const RERANK_RUBRIC = `- 61-100: the candidate memory contains what the q
  * the SIRA rubric, and an explicit strict-JSON-only instruction. Exported so
  * it can be unit-tested independently of the full layer.
  */
+// Candidate text is deliberately NOT truncated: real-data validation showed
+// dense reference-note memories carry the query-relevant content deep in the
+// body, and a 400-char cap tanked scores below the injection threshold
+// (correct answers went from 95 to gated-out). Latency proved to be SDK
+// session-startup dominated, not prompt-size dominated, so capping bought
+// nothing to justify the quality loss.
 export function buildRerankPrompt(
   queryText: string,
   candidates: ReadonlyArray<RerankCandidateInput>,
@@ -166,10 +172,22 @@ export function parseScores(
   return out
 }
 
-/** Strip accidental markdown fences before JSON.parse — same defensive
+/** Strip accidental markdown fences before JSON.parse - same defensive
  * pattern as dream-reasoner's parseRawOps. */
 function stripFences(text: string): string {
   return text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()
+}
+
+/** Last-resort extraction: the model occasionally wraps its JSON in prose or
+ * fence variants the strip above misses (observed in real-data validation:
+ * a leading sentence before the fence). The scores payload is a single JSON
+ * object, so the outermost brace span is unambiguous. */
+function extractJsonObject(text: string): string {
+  const stripped = stripFences(text)
+  const first = stripped.indexOf("{")
+  const last = stripped.lastIndexOf("}")
+  if (first >= 0 && last > first) return stripped.slice(first, last + 1)
+  return stripped
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +265,7 @@ export const MemoryRerankerDefault: Layer.Layer<
           turn.structuredOutput !== undefined
             ? turn.structuredOutput
             : yield* Effect.try({
-                try: () => JSON.parse(stripFences(turn.text)) as unknown,
+                try: () => JSON.parse(extractJsonObject(turn.text)) as unknown,
                 catch: (cause) =>
                   new RerankError({
                     op: "parse",
