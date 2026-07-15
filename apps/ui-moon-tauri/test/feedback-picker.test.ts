@@ -107,6 +107,17 @@ describe('FeedbackEngine (chat.html)', () => {
     ;(document as any).elementFromPoint = () => el
   }
 
+  // submit() is now async — it awaits FeedbackEngine._captureScreenshot()
+  // before sending the frame (best-effort native screenshot capture). In
+  // these tests window.__TAURI__.core is absent, so _captureScreenshot
+  // resolves to null on its first `await` boundary with no further internal
+  // awaits. A handful of microtask ticks reliably drains that chain even
+  // under vi.useFakeTimers() (which only freezes macrotasks like
+  // setTimeout, not the microtask queue).
+  async function flushMicrotasks() {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+  }
+
   // ── capability gating ────────────────────────────────────────────────────
   it('feedback button is hidden by default (no hello yet)', () => {
     expect(btn().hidden).toBe(true)
@@ -187,7 +198,7 @@ describe('FeedbackEngine (chat.html)', () => {
   })
 
   // ── submit ─────────────────────────────────────────────────────────────────
-  it('submit sends exactly one feedback-submit frame with note + target', () => {
+  it('submit sends exactly one feedback-submit frame with note + target', async () => {
     sendHello({ feedback: true })
     internals().State.ws = { readyState: WebSocket.OPEN }
     internals().State.activeThreadId = 'thr-42'
@@ -203,6 +214,7 @@ describe('FeedbackEngine (chat.html)', () => {
     input().dispatchEvent(new Event('input'))
     expect(submitBtn().disabled).toBe(false)
     submitBtn().click()
+    await flushMicrotasks()
 
     const frames = sent.filter((f) => f.type === 'feedback-submit')
     expect(frames).toHaveLength(1)
@@ -214,6 +226,28 @@ describe('FeedbackEngine (chat.html)', () => {
     expect(typeof f.target.selector).toBe('string')
     expect(f.target.id).toBe('message-input')
     expect(typeof f.clientTs).toBe('number')
+  })
+
+  it('submit omits the `screenshot` key entirely when window.__TAURI__ has no `core` (normal jsdom/test env)', async () => {
+    sendHello({ feedback: true })
+    internals().State.ws = { readyState: WebSocket.OPEN }
+    // beforeEach sets window.__TAURI__.window/event but never .core — the
+    // same shape a non-Tauri (plain browser/jsdom) environment has.
+    expect((window as any).__TAURI__.core).toBeUndefined()
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+
+    stubTarget(document.getElementById('message-input')!)
+    btn().click()
+    document.body.dispatchEvent(new MouseEvent('click', { clientX: 10, clientY: 10, bubbles: true }))
+    input().value = 'no screenshot available here'
+    input().dispatchEvent(new Event('input'))
+    submitBtn().click()
+    await flushMicrotasks()
+
+    const frames = sent.filter((f) => f.type === 'feedback-submit')
+    expect(frames).toHaveLength(1)
+    expect('screenshot' in frames[0]).toBe(false)
   })
 
   it('submit is a no-op when the socket is not open', () => {
@@ -246,7 +280,7 @@ describe('FeedbackEngine (chat.html)', () => {
   })
 
   // ── ack round-trip ─────────────────────────────────────────────────────────
-  it('feedback-ack ok:true confirms and auto-hides the composer', () => {
+  it('feedback-ack ok:true confirms and auto-hides the composer', async () => {
     sendHello({ feedback: true })
     internals().State.ws = { readyState: WebSocket.OPEN }
     const sent: any[] = []
@@ -257,6 +291,7 @@ describe('FeedbackEngine (chat.html)', () => {
     input().value = 'looks off'
     input().dispatchEvent(new Event('input'))
     submitBtn().click()
+    await flushMicrotasks()
     const reqId = sent.find((f) => f.type === 'feedback-submit').requestId
 
     internals().handleFrame({ type: 'feedback-ack', requestId: reqId, ok: true })
@@ -266,7 +301,7 @@ describe('FeedbackEngine (chat.html)', () => {
     expect(panel().hidden).toBe(true) // auto-hid
   })
 
-  it('feedback-ack ok:false shows the error and keeps the composer open', () => {
+  it('feedback-ack ok:false shows the error and keeps the composer open', async () => {
     sendHello({ feedback: true })
     internals().State.ws = { readyState: WebSocket.OPEN }
     const sent: any[] = []
@@ -277,6 +312,7 @@ describe('FeedbackEngine (chat.html)', () => {
     input().value = 'looks off'
     input().dispatchEvent(new Event('input'))
     submitBtn().click()
+    await flushMicrotasks()
     const reqId = sent.find((f) => f.type === 'feedback-submit').requestId
 
     internals().handleFrame({ type: 'feedback-ack', requestId: reqId, ok: false, message: 'nope' })
@@ -294,5 +330,88 @@ describe('FeedbackEngine (chat.html)', () => {
     internals().handleFrame({ type: 'feedback-ack', requestId: 'fb-other', ok: true })
     // Unchanged — the stale ack did not flip status to ok.
     expect(status().classList.contains('ok')).toBe(false)
+  })
+
+  // ── cropAndEncodeFeedbackScreenshot (pure helper) ─────────────────────────
+  //
+  // jsdom does not ship a real <canvas> 2D rasterizer (no `canvas` npm
+  // package in this workspace), so `getContext('2d')` returns null by
+  // default. These tests stub `HTMLCanvasElement.prototype.getContext` /
+  // `toDataURL` to exercise the crop-rect math and the downscale-retry loop
+  // without a real rasterizer — the function itself is otherwise pure.
+  describe('cropAndEncodeFeedbackScreenshot', () => {
+    let origGetContext: any
+    let origToDataURL: any
+
+    beforeEach(() => {
+      origGetContext = (HTMLCanvasElement.prototype as any).getContext
+      origToDataURL = (HTMLCanvasElement.prototype as any).toDataURL
+    })
+
+    afterEach(() => {
+      ;(HTMLCanvasElement.prototype as any).getContext = origGetContext
+      ;(HTMLCanvasElement.prototype as any).toDataURL = origToDataURL
+    })
+
+    it('returns the full crop size, unscaled, when the first pass is already within budget', () => {
+      ;(HTMLCanvasElement.prototype as any).getContext = function () {
+        return { clearRect: () => {}, drawImage: () => {} }
+      }
+      ;(HTMLCanvasElement.prototype as any).toDataURL = function () {
+        // A tiny fixed payload regardless of canvas size — always well under
+        // FEEDBACK_SCREENSHOT_TARGET_BYTES, so the retry loop must not fire.
+        return 'data:image/png;base64,' + 'A'.repeat(100)
+      }
+      const fakeImg = { naturalWidth: 2000, naturalHeight: 2000 } as any
+      const result = internals().cropAndEncodeFeedbackScreenshot(
+        fakeImg,
+        { x: 10, y: 20, w: 100, h: 50 },
+        1,
+      )
+      expect(result).toBeTruthy()
+      expect(result.width).toBe(100)
+      expect(result.height).toBe(50)
+      expect(result.base64).toBe('A'.repeat(100))
+      expect(result.bytes).toBeGreaterThan(0)
+    })
+
+    it('downscales the output when the encoded size exceeds the target budget', () => {
+      ;(HTMLCanvasElement.prototype as any).getContext = function () {
+        return { clearRect: () => {}, drawImage: () => {} }
+      }
+      ;(HTMLCanvasElement.prototype as any).toDataURL = function (this: HTMLCanvasElement) {
+        // Payload size scales with canvas area so shrinking the canvas
+        // actually shrinks the encoded output — proves the retry loop drives
+        // real downscaling, not a no-op.
+        const chars = Math.max(1, Math.round(this.width * this.height * 4))
+        return 'data:image/png;base64,' + 'A'.repeat(chars)
+      }
+      const fakeImg = { naturalWidth: 4000, naturalHeight: 4000 } as any
+      // Requested crop is 2000x1500 CSS px at dpr=2 -> 4000x3000 source px,
+      // an encoded size far above FEEDBACK_SCREENSHOT_TARGET_BYTES (400000).
+      const result = internals().cropAndEncodeFeedbackScreenshot(
+        fakeImg,
+        { x: 0, y: 0, w: 2000, h: 1500 },
+        2,
+      )
+      expect(result).toBeTruthy()
+      expect(result.width).toBeLessThan(4000)
+      expect(result.height).toBeLessThan(3000)
+      // Aspect ratio is preserved by the uniform 0.75x shrink factor.
+      expect(result.width / result.height).toBeCloseTo(4000 / 3000, 1)
+    })
+
+    it('returns null when getContext yields no context (defensive — never throws)', () => {
+      ;(HTMLCanvasElement.prototype as any).getContext = function () { return null }
+      const fakeImg = { naturalWidth: 500, naturalHeight: 500 } as any
+      const result = internals().cropAndEncodeFeedbackScreenshot(fakeImg, { x: 0, y: 0, w: 100, h: 100 }, 1)
+      expect(result).toBeNull()
+    })
+
+    it('returns null for a degenerate (zero-area) crop rect instead of throwing', () => {
+      const fakeImg = { naturalWidth: 500, naturalHeight: 500 } as any
+      const result = internals().cropAndEncodeFeedbackScreenshot(fakeImg, { x: 600, y: 600, w: 100, h: 100 }, 1)
+      expect(result).toBeNull()
+    })
   })
 })

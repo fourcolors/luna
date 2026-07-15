@@ -4031,6 +4031,54 @@
       return s;
     }
 
+    // Client-side target size for a cropped feedback screenshot. PNG-only
+    // deliberately: WKWebView's `canvas.toDataURL('image/webp')` support is
+    // uncertain across macOS versions, while PNG is universally supported.
+    // PNG has no quality knob, so downscaling the output dimensions is the
+    // only lever available to stay under this budget — see the retry loop
+    // in cropAndEncodeFeedbackScreenshot below. This is well under the
+    // server's SCREENSHOT_MAX_BASE64_CHARS guard (see server.ts).
+    const FEEDBACK_SCREENSHOT_TARGET_BYTES = 400000; // ~400KB
+
+    // Pure: crop `img` (a full-window PNG captured natively) to the CSS-px
+    // `rectCss` of the picked element, scaled by devicePixelRatio, and
+    // re-encode as PNG — downscaling the output size if needed to stay
+    // near FEEDBACK_SCREENSHOT_TARGET_BYTES. Returns null on any failure
+    // (never throws) so the caller can fall back to no screenshot.
+    function cropAndEncodeFeedbackScreenshot(img, rectCss, dpr) {
+      try {
+        const sx = Math.max(0, Math.round(rectCss.x * dpr));
+        const sy = Math.max(0, Math.round(rectCss.y * dpr));
+        let sw = Math.max(1, Math.round(rectCss.w * dpr));
+        let sh = Math.max(1, Math.round(rectCss.h * dpr));
+        sw = Math.min(sw, img.naturalWidth - sx);
+        sh = Math.min(sh, img.naturalHeight - sy);
+        if (sw <= 0 || sh <= 0) return null;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        let outW = sw, outH = sh;
+        let dataUrl = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          canvas.width = outW;
+          canvas.height = outH;
+          ctx.clearRect(0, 0, outW, outH);
+          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+          dataUrl = canvas.toDataURL('image/png');
+          const approxBytes = Math.ceil((dataUrl.length - dataUrl.indexOf(',') - 1) * 3 / 4);
+          if (approxBytes <= FEEDBACK_SCREENSHOT_TARGET_BYTES || (outW <= 60 || outH <= 60)) break;
+          outW = Math.max(60, Math.round(outW * 0.75));
+          outH = Math.max(60, Math.round(outH * 0.75));
+        }
+        if (!dataUrl) return null;
+        const comma = dataUrl.indexOf(',');
+        const base64 = dataUrl.slice(comma + 1);
+        return { base64: base64, width: outW, height: outH, bytes: Math.ceil(base64.length * 3 / 4) };
+      } catch (_) {
+        return null;
+      }
+    }
+
     const FeedbackEngine = {
       _enabled: false,   // server advertises the `feedback` capability
       _picking: false,   // picker mode active
@@ -4157,7 +4205,7 @@
         DOM.feedbackSubmit.disabled = v.length === 0;
       },
 
-      submit() {
+      async submit() {
         const note = ((DOM.feedbackInput && DOM.feedbackInput.value) || '').trim();
         if (!note) { this.setStatus('Type a note first.', 'error'); return; }
         if (!this._target) { this.setStatus('Pick an element first.', 'error'); return; }
@@ -4174,7 +4222,7 @@
           this.setStatus('Failed to identify element — try clicking a different one.', 'error');
           return;
         }
-        WebSocketEngine.send({
+        const frame = {
           type: 'feedback-submit',
           requestId: reqId,
           ...(State.activeThreadId ? { threadId: State.activeThreadId } : {}),
@@ -4199,9 +4247,38 @@
           page: (t.route && t.route.page) || 'chat.html',
           ...(State.appVersion ? { appVersion: State.appVersion } : {}),
           clientTs: Date.now(),
-        });
+        };
         if (DOM.feedbackSubmit) DOM.feedbackSubmit.disabled = true;
         this.setStatus('Sending…', 'info');
+        // Screenshot capture is ALWAYS best-effort: any failure (no Tauri
+        // runtime, no rect, Screen-Recording permission denied, capture/crop
+        // error) must never block or delay submitting the note beyond a
+        // normal await — _captureScreenshot never throws.
+        const shot = await this._captureScreenshot(t);
+        if (shot && shot.base64) {
+          frame.screenshot = shot.base64;
+        }
+        WebSocketEngine.send(frame);
+      },
+
+      // Best-effort native window screenshot of the picked element. Returns
+      // null (never throws) on any failure so submit() always falls back to
+      // sending the note without a screenshot.
+      async _captureScreenshot(target) {
+        try {
+          if (!(window.__TAURI__ && window.__TAURI__.core) || !target || !target.rect) return null;
+          const res = await window.__TAURI__.core.invoke('capture_window_screenshot');
+          if (!res || typeof res.base64 !== 'string' || !res.base64) return null;
+          const img = await new Promise((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = reject;
+            el.src = 'data:image/png;base64,' + res.base64;
+          });
+          return cropAndEncodeFeedbackScreenshot(img, target.rect, window.devicePixelRatio || 1);
+        } catch (_) {
+          return null; // best-effort — never block the note
+        }
       },
 
       cancel() {
@@ -10276,6 +10353,7 @@
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.FeedbackEngine = FeedbackEngine;
       window.__MoonInternals.describeTarget = describeTarget;
+      window.__MoonInternals.cropAndEncodeFeedbackScreenshot = cropAndEncodeFeedbackScreenshot;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.SmartBarEngine = SmartBarEngine;
       window.__MoonInternals.ComposerConfig = ComposerConfig;

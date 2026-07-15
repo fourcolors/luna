@@ -12,6 +12,7 @@
     "allow-set-panel-last-thread",
     "allow-open-widget",
     "allow-open-artifact-widget",
+    "allow-capture-window-screenshot",
     "allow-voice-status",
     "allow-voice-ptt-down",
     "allow-voice-ptt-up",
