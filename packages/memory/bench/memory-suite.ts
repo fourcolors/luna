@@ -22,7 +22,13 @@
  *   LUNA_BENCH_JSON              if set, write full structured results here
  *   LUNA_BENCH_ENFORCE           "1" to gate on hybrid recall@5 (default "0", report-only)
  *   LUNA_BENCH_RECALL_THRESHOLD  hybrid OVERALL recall@5 floor when enforcing (default 0.85)
+ *   LUNA_BENCH_ENRICHMENT        path to an enrichment sidecar (see enrich-corpus.ts);
+ *                                overrides --enriched's default path when set
  *   --sample                     use the bundled memory-suite-corpus.sample.json fixture
+ *   --enriched                   merge the sibling memory-suite-corpus.enrichment.json
+ *                                sidecar into each record before put() (Experiment A).
+ *                                Embedding input is unaffected either way - only the
+ *                                lexical (bm25/hybrid-terms) index gains the phrases.
  *
  * Exit codes:
  *   0  ran to completion (report-only, or enforce passed)
@@ -127,6 +133,44 @@ function resolveCorpusPath(sample: boolean): string {
   const envPath = process.env["LUNA_BENCH_CORPUS"]
   if (envPath !== undefined) return resolve(envPath)
   return resolve(here, "memory-suite-corpus.json")
+}
+
+interface EnrichmentSidecar {
+  readonly file: string
+  readonly model: string
+  readonly generatedAt: string
+  readonly phrases: Readonly<Record<string, ReadonlyArray<string>>>
+}
+
+/** `LUNA_BENCH_ENRICHMENT` wins over `--enriched`'s default sibling path;
+ * neither present means enrichment stays off (report-only comparison knob,
+ * not a default-on feature - see Deliverable 3 in the enrichment plan). */
+function resolveEnrichmentPath(): string | null {
+  const envPath = process.env["LUNA_BENCH_ENRICHMENT"]
+  if (envPath !== undefined) return resolve(envPath)
+  if (process.argv.includes("--enriched")) {
+    const here = dirname(fileURLToPath(import.meta.url))
+    return resolve(here, "memory-suite-corpus.enrichment.json")
+  }
+  return null
+}
+
+function loadEnrichment(path: string): EnrichmentSidecar {
+  const raw = readFileSync(path, "utf8")
+  const parsed = JSON.parse(raw) as {
+    model?: unknown
+    generatedAt?: unknown
+    phrases?: unknown
+  }
+  if (parsed.phrases === null || typeof parsed.phrases !== "object") {
+    throw new Error(`enrichment sidecar missing \`phrases\` object (${path})`)
+  }
+  return {
+    file: basename(path),
+    model: typeof parsed.model === "string" ? parsed.model : "unknown",
+    generatedAt: typeof parsed.generatedAt === "string" ? parsed.generatedAt : "unknown",
+    phrases: parsed.phrases as Record<string, ReadonlyArray<string>>,
+  }
 }
 
 /**
@@ -450,6 +494,23 @@ async function main(): Promise<void> {
     process.exit(3)
   }
 
+  const enrichmentPath = resolveEnrichmentPath()
+  let enrichment: EnrichmentSidecar | null = null
+  if (enrichmentPath !== null) {
+    try {
+      enrichment = loadEnrichment(enrichmentPath)
+    } catch (e) {
+      console.error(
+        `[bench] enrichment sidecar load failed (${enrichmentPath}): ${e instanceof Error ? e.message : String(e)} - run enrich-corpus.ts first, or unset LUNA_BENCH_ENRICHMENT/--enriched`,
+      )
+      process.exit(3)
+    }
+  }
+  const enrichedCount =
+    enrichment !== null
+      ? corpus.records.filter((r) => (enrichment!.phrases[r.id]?.length ?? 0) > 0).length
+      : 0
+
   const embedderChoice = process.env["LUNA_EMBEDDER"]?.toLowerCase() ?? "stub"
   if (embedderChoice === "ollama") {
     const reachable = await probeOllama()
@@ -482,6 +543,11 @@ async function main(): Promise<void> {
     `# memory-suite - ${corpus.records.length} records, ${corpus.queries.length} queries · ${corpusPath}`,
   )
   console.log(`# embedder: ${embedderChoice}`)
+  if (enrichment !== null) {
+    console.log(
+      `# enrichment: ${enrichment.file} (${enrichment.model}, ${enrichedCount} records enriched)`,
+    )
+  }
   if (embedderChoice === "stub") {
     console.log(
       `# NOTE: stub embedder in use - stub vectors are a deterministic bag-of-tokens hash sketch, so vec/hybrid approximate unweighted bag-of-words cosine (a lexical sanity baseline, NOT semantic retrieval). Use LUNA_EMBEDDER=ollama for real numbers. bm25 numbers are real lexical results either way.`,
@@ -501,12 +567,20 @@ async function main(): Promise<void> {
       Effect.gen(function* () {
         const router = yield* MemoryRouterTag
         for (const rec of corpus.records) {
+          const phrases = enrichment?.phrases[rec.id]
+          const content: Record<string, unknown> = { text: rec.text }
+          // Lexical-index-only: enrichment phrases never reach the embedder
+          // (see put() in sqlite-vector.ts) - only the bm25/hybrid-terms
+          // index gains them. Vec numbers must be identical either way.
+          if (phrases !== undefined && phrases.length > 0) {
+            content["enrichmentPhrases"] = phrases
+          }
           yield* router.put(
             makeRecord({
               id: rec.id,
               namespace: NAMESPACE,
               kind: rec.kind,
-              content: { text: rec.text },
+              content,
             }),
           )
         }
@@ -560,6 +634,14 @@ async function main(): Promise<void> {
     // committed baseline file.
     corpus: { file: basename(corpusPath), records: corpus.records.length, queries: corpus.queries.length },
     embedder: embedderChoice,
+    enrichment:
+      enrichment !== null
+        ? {
+            file: enrichment.file,
+            model: enrichment.model,
+            coverage: enrichedCount / corpus.records.length,
+          }
+        : null,
     modes: {} as Record<string, unknown>,
   }
   const jsonModes = jsonOut["modes"] as Record<string, unknown>

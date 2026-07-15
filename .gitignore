@@ -37,3 +37,6 @@ pnpm-lock.yaml
 
 # ping-pong cycle cache (ephemeral)
 .claude/ping-pong/
+
+# rerank-eval LLM response cache (ephemeral, keyed by model+shape+query+candidates)
+packages/memory/bench/.rerank-cache.json

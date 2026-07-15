@@ -138,24 +138,40 @@ export const MEMORY_VECTOR_SCHEMA_MIGRATION = `
     embedding_model       TEXT NOT NULL DEFAULT 'unknown',
     embedding_format      TEXT NOT NULL DEFAULT 'raw-v0',
     embedding_input_hash  TEXT NOT NULL DEFAULT '',
-    embedded_at           INTEGER NOT NULL DEFAULT 0
+    embedded_at           INTEGER NOT NULL DEFAULT 0,
+    enrichment            TEXT NOT NULL DEFAULT ''
   );
   CREATE INDEX IF NOT EXISTS idx_vectors_ns ON memory_vectors(namespace);
+`
 
-  CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
-    USING fts5(text, content='memory_vectors', content_rowid='rowid', tokenize='porter unicode61');
+// "enrichment" is a lexical-index-only signal (SIRA-style corpus enrichment,
+// Experiment A): LLM-generated alias phrases that let bm25 match vocabulary
+// the record's own text never uses. It is indexed as a second FTS5 column
+// here but is NEVER fed to the embedder — vector search input stays
+// text-only (see put() in sqlite-vector.ts).
+//
+// This is deliberately NOT part of MEMORY_VECTOR_SCHEMA_MIGRATION above:
+// `memory_vectors.enrichment` must exist BEFORE this FTS (re)creation runs,
+// or the 'rebuild' below (which reads both declared columns from the
+// content table by name) fails against a legacy `memory_vectors` that
+// hasn't been ALTERed yet. ensureMemoryVectorSchema() calls this only after
+// every column-ALTER guard has run, so the ordering is enforced by
+// construction, not by convention.
+const MEMORY_FTS_SCHEMA = `
+  CREATE VIRTUAL TABLE memory_fts
+    USING fts5(text, enrichment, content='memory_vectors', content_rowid='rowid', tokenize='porter unicode61');
 
-  CREATE TRIGGER IF NOT EXISTS memory_vectors_ai AFTER INSERT ON memory_vectors BEGIN
-    INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
+  CREATE TRIGGER memory_vectors_ai AFTER INSERT ON memory_vectors BEGIN
+    INSERT INTO memory_fts(rowid, text, enrichment) VALUES (new.rowid, new.text, new.enrichment);
   END;
 
-  CREATE TRIGGER IF NOT EXISTS memory_vectors_ad AFTER DELETE ON memory_vectors BEGIN
-    INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+  CREATE TRIGGER memory_vectors_ad AFTER DELETE ON memory_vectors BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, text, enrichment) VALUES('delete', old.rowid, old.text, old.enrichment);
   END;
 
-  CREATE TRIGGER IF NOT EXISTS memory_vectors_au AFTER UPDATE ON memory_vectors BEGIN
-    INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
-    INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
+  CREATE TRIGGER memory_vectors_au AFTER UPDATE ON memory_vectors BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, text, enrichment) VALUES('delete', old.rowid, old.text, old.enrichment);
+    INSERT INTO memory_fts(rowid, text, enrichment) VALUES (new.rowid, new.text, new.enrichment);
   END;
 
   INSERT INTO memory_fts(memory_fts) VALUES('rebuild');
@@ -183,6 +199,11 @@ const METADATA_COLUMNS = [
     sql: "ALTER TABLE memory_vectors ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
   },
 ] as const
+
+const ENRICHMENT_COLUMN = {
+  name: "enrichment",
+  sql: "ALTER TABLE memory_vectors ADD COLUMN enrichment TEXT NOT NULL DEFAULT ''",
+} as const
 
 const RECORD_METADATA_COLUMNS = [
   {
@@ -262,6 +283,40 @@ function keyedTextForRow(row: VectorAuditRow): string | null {
   }
 }
 
+/**
+ * Guarded (re)creation of `memory_fts`. Handles two cases with the same
+ * check, since both leave `memory_fts` without an "enrichment" column:
+ *   - Fresh / pre-FTS DB: `memory_fts` doesn't exist yet (PRAGMA table_info
+ *     returns nothing) — DROP is a no-op, CREATE builds the final 2-column
+ *     shape directly, and 'rebuild' seeds it from whatever rows already
+ *     exist in `memory_vectors` (zero for a truly fresh DB).
+ *   - Legacy DB: `memory_fts` exists with only "text" — must be dropped and
+ *     recreated (FTS5 has no ALTER ADD COLUMN), then repopulated via
+ *     'rebuild' from `memory_vectors` (the canonical source).
+ * Callers MUST ensure `memory_vectors.enrichment` already exists before
+ * calling this — 'rebuild' reads both declared columns from the content
+ * table by name and fails if either is missing.
+ * Old triggers are DROPped (not `CREATE TRIGGER IF NOT EXISTS`, which would
+ * silently keep stale single-column trigger bodies) and recreated to write
+ * both columns.
+ */
+function ensureMemoryFtsSchema(db: BunDatabase): void {
+  const ftsCols = new Set(
+    (db.query("PRAGMA table_info(memory_fts)").all() as TableInfoRow[]).map(
+      (row) => row.name,
+    ),
+  )
+  if (ftsCols.has("enrichment")) return // already final shape — no-op
+
+  db.run(`
+    DROP TRIGGER IF EXISTS memory_vectors_ai;
+    DROP TRIGGER IF EXISTS memory_vectors_ad;
+    DROP TRIGGER IF EXISTS memory_vectors_au;
+    DROP TABLE IF EXISTS memory_fts;
+  `)
+  db.run(MEMORY_FTS_SCHEMA)
+}
+
 export function ensureMemoryVectorSchema(db: BunDatabase): void {
   db.run(MEMORY_VECTOR_SCHEMA_MIGRATION)
   const keyedCols = new Set(
@@ -280,6 +335,10 @@ export function ensureMemoryVectorSchema(db: BunDatabase): void {
   for (const col of METADATA_COLUMNS) {
     if (!cols.has(col.name)) db.run(col.sql)
   }
+  // Enrichment column must land on memory_vectors BEFORE memory_fts is
+  // (re)created below — see ensureMemoryFtsSchema's doc comment.
+  if (!cols.has(ENRICHMENT_COLUMN.name)) db.run(ENRICHMENT_COLUMN.sql)
+  ensureMemoryFtsSchema(db)
 }
 
 function parseHnswDimension(sql: string | null | undefined): number | null {

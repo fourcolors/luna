@@ -1223,6 +1223,298 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
+  // ───────────────────────── Enrichment (Experiment A) ─────────────────
+  // SIRA-style corpus enrichment: LLM-generated alias phrases carried at
+  // content.enrichmentPhrases are joined into memory_vectors.enrichment and
+  // indexed as a second FTS5 column. Lexical-index-only — never embedded.
+
+  it("Enrichment #1: a record with enrichmentPhrases is retrievable via bm25 by an enrichment-only term", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "enriched",
+            namespace: "enr",
+            kind: "note",
+            content: {
+              text: "the vehicle needs regular maintenance",
+              enrichmentPhrases: ["automobile upkeep", "car servicing"],
+            },
+          }),
+        )
+        const bm25 = yield* Stream.runCollect(
+          b.search({
+            queryText: "servicing",
+            mode: "bm25",
+            namespace: "enr",
+            topK: 5,
+          }),
+        )
+        const hybridTerms = yield* Stream.runCollect(
+          b.search({
+            queryText: "servicing",
+            mode: "hybrid-terms",
+            namespace: "enr",
+            topK: 5,
+          }),
+        )
+        return {
+          bm25: Array.from(bm25).map((r) => r.record.id),
+          hybridTerms: Array.from(hybridTerms).map((r) => r.record.id),
+        }
+      }),
+    )
+    // "servicing" appears only in enrichmentPhrases, never in text — a hit
+    // here proves the second FTS column is being searched.
+    expect(out.bm25).toContain("enriched")
+    expect(out.hybridTerms).toContain("enriched")
+  })
+
+  it("Enrichment #2: a record without phrases behaves exactly as before", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "plain",
+            namespace: "enr2",
+            kind: "note",
+            content: { text: "ordinary record with no enrichment" },
+          }),
+        )
+        const bm25 = yield* Stream.runCollect(
+          b.search({
+            queryText: "ordinary record",
+            mode: "bm25",
+            namespace: "enr2",
+            topK: 5,
+          }),
+        )
+        // A term that would only ever come from enrichment must NOT match.
+        const noHit = yield* Stream.runCollect(
+          b.search({
+            queryText: "automobile upkeep",
+            mode: "bm25",
+            namespace: "enr2",
+            topK: 5,
+          }),
+        )
+        return {
+          bm25: Array.from(bm25).map((r) => r.record.id),
+          noHit: Array.from(noHit).map((r) => r.record.id),
+        }
+      }),
+    )
+    expect(out.bm25).toContain("plain")
+    expect(out.noHit).not.toContain("plain")
+  })
+
+  it("Enrichment #3: updating a record's phrases updates the index", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "swap-enr",
+            namespace: "enr3",
+            kind: "note",
+            content: {
+              text: "static base text",
+              enrichmentPhrases: ["oldphraseuniq11"],
+            },
+          }),
+        )
+        const beforeOld = yield* Stream.runCollect(
+          b.search({
+            queryText: "oldphraseuniq11",
+            mode: "bm25",
+            namespace: "enr3",
+            topK: 5,
+          }),
+        )
+        yield* b.put(
+          makeRecord({
+            id: "swap-enr",
+            namespace: "enr3",
+            kind: "note",
+            content: {
+              text: "static base text",
+              enrichmentPhrases: ["newphraseuniq22"],
+            },
+          }),
+        )
+        const afterOld = yield* Stream.runCollect(
+          b.search({
+            queryText: "oldphraseuniq11",
+            mode: "bm25",
+            namespace: "enr3",
+            topK: 5,
+          }),
+        )
+        const afterNew = yield* Stream.runCollect(
+          b.search({
+            queryText: "newphraseuniq22",
+            mode: "bm25",
+            namespace: "enr3",
+            topK: 5,
+          }),
+        )
+        return {
+          beforeOld: Array.from(beforeOld).map((r) => r.record.id),
+          afterOld: Array.from(afterOld).map((r) => r.record.id),
+          afterNew: Array.from(afterNew).map((r) => r.record.id),
+        }
+      }),
+    )
+    expect(out.beforeOld).toContain("swap-enr")
+    expect(out.afterOld).not.toContain("swap-enr")
+    expect(out.afterNew).toContain("swap-enr")
+  })
+
+  it("Enrichment #4: a pre-enrichment on-disk DB migrates the FTS table without losing existing rows", async () => {
+    // Simulate a DB created before Experiment A: memory_fts has only a
+    // single "text" column, matching what MEMORY_VECTOR_SCHEMA_MIGRATION
+    // produced pre-enrichment. Reopening via the backend must migrate the
+    // FTS table (drop+recreate+rebuild) without disturbing existing rows,
+    // and the migration must never re-run once applied.
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-enrichment-migrate-"))
+    const dbPath = path.join(tmp, "vectors.db")
+
+    try {
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            run: (...p: unknown[]) => { changes: number }
+            get: (...p: unknown[]) => unknown
+          }
+          close: () => void
+        }
+      }
+      const pre = new bunSqlite.Database(dbPath)
+      pre.run("PRAGMA foreign_keys = ON")
+      pre.run(`
+        CREATE TABLE memory_keyed (
+          id TEXT PRIMARY KEY, namespace TEXT NOT NULL, kind TEXT NOT NULL,
+          content_json TEXT NOT NULL, schema_version INTEGER NOT NULL,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          tags_json TEXT NOT NULL
+        );
+        CREATE TABLE memory_vectors (
+          id TEXT PRIMARY KEY REFERENCES memory_keyed(id) ON DELETE CASCADE,
+          namespace TEXT NOT NULL, embedding BLOB NOT NULL,
+          dimension INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL
+        );
+        CREATE VIRTUAL TABLE memory_fts
+          USING fts5(text, content='memory_vectors', content_rowid='rowid', tokenize='porter unicode61');
+        CREATE TRIGGER memory_vectors_ai AFTER INSERT ON memory_vectors BEGIN
+          INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
+        END;
+        CREATE TRIGGER memory_vectors_ad AFTER DELETE ON memory_vectors BEGIN
+          INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+        END;
+        CREATE TRIGGER memory_vectors_au AFTER UPDATE ON memory_vectors BEGIN
+          INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+          INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
+        END;
+      `)
+      pre.query(`INSERT INTO memory_keyed VALUES (?,?,?,?,?,?,?,?)`).run(
+        "pre-enr-1",
+        "preenrns",
+        "note",
+        JSON.stringify({ text: "pre enrichment marker phrase" }),
+        1,
+        Date.now(),
+        Date.now(),
+        JSON.stringify([]),
+      )
+      pre.query(`INSERT INTO memory_vectors VALUES (?,?,?,?,?,?)`).run(
+        "pre-enr-1",
+        "preenrns",
+        new Uint8Array(8 * 4),
+        8,
+        "pre enrichment marker phrase",
+        Date.now(),
+      )
+      pre.close()
+
+      // Reopen via the backend — migration runs once.
+      const fileLayer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            // The pre-existing row must still be found via its original text.
+            const legacyHit = yield* Stream.runCollect(
+              b.search({
+                queryText: "pre enrichment marker phrase",
+                mode: "bm25",
+                namespace: "preenrns",
+                topK: 5,
+              }),
+            )
+            // A fresh record with enrichment phrases must also be searchable
+            // via its enrichment-only term, proving the new column is live.
+            yield* b.put(
+              makeRecord({
+                id: "post-enr-1",
+                namespace: "preenrns",
+                kind: "note",
+                content: {
+                  text: "brand new record",
+                  enrichmentPhrases: ["freshenrichuniq33"],
+                },
+              }),
+            )
+            const enrichmentHit = yield* Stream.runCollect(
+              b.search({
+                queryText: "freshenrichuniq33",
+                mode: "bm25",
+                namespace: "preenrns",
+                topK: 5,
+              }),
+            )
+            return {
+              legacyHit: Array.from(legacyHit).map((r) => r.record.id),
+              enrichmentHit: Array.from(enrichmentHit).map((r) => r.record.id),
+            }
+          }),
+        ).pipe(Effect.provide(fileLayer)),
+      )
+      expect(ids.legacyHit).toContain("pre-enr-1")
+      expect(ids.enrichmentHit).toContain("post-enr-1")
+
+      // Reopening a second time must be a no-op: PRAGMA table_info(memory_fts)
+      // already reports the enrichment column, so the migration short-circuits
+      // instead of dropping/rebuilding again.
+      const bunSqlite2 = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          query: (sql: string) => { all: (...p: unknown[]) => unknown[] }
+          close: () => void
+        }
+      }
+      const reopened = new bunSqlite2.Database(dbPath)
+      const cols = reopened
+        .query("PRAGMA table_info(memory_fts)")
+        .all() as { name: string }[]
+      reopened.close()
+      expect(cols.map((c) => c.name).sort()).toEqual(["enrichment", "text"])
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
   it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
     const FailEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "fail",

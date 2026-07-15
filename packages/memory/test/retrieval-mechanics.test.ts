@@ -175,39 +175,44 @@ describe.skipIf(!hasBunSqlite)("retrieval mechanics (stub embedder)", () => {
   it("emits exactly one RetrievalCallEvent per search() call with correct fields", async () => {
     const layer = buildLayer()
     const collected = await run(
-      Effect.gen(function* () {
-        const obs = yield* ObservabilityService
-        const router = yield* MemoryRouterTag
-        // Eagerly subscribe BEFORE the search so we don't miss the event.
-        const stream = yield* obs.subscribeEvents
-        const fiber = yield* Effect.fork(
-          stream.pipe(
-            Stream.filter((ev): ev is ObsEvent & { kind: "RetrievalCall" } =>
-              ev.kind === "RetrievalCall",
+      // obs.subscribeEvents acquires a scoped subscription (unsubscribes on
+      // scope close) - Effect.scoped here discharges that Scope requirement
+      // before Effect.provide(layer), matching run()'s R = never contract.
+      Effect.scoped(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const router = yield* MemoryRouterTag
+          // Eagerly subscribe BEFORE the search so we don't miss the event.
+          const stream = yield* obs.subscribeEvents
+          const fiber = yield* Effect.fork(
+            stream.pipe(
+              Stream.filter((ev): ev is ObsEvent & { kind: "RetrievalCall" } =>
+                ev.kind === "RetrievalCall",
+              ),
+              Stream.take(1),
+              Stream.runCollect,
+              Effect.map(Chunk.toReadonlyArray),
             ),
-            Stream.take(1),
-            Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
-          ),
-        )
-        yield* router.put(
-          makeRecord({
-            id: "t1",
-            namespace: "k",
-            kind: "n",
-            content: { text: "telemetry probe target" },
-          }),
-        )
-        yield* Stream.runDrain(
-          router.search({
-            queryText: "telemetry probe",
-            namespace: "k",
-            topK: 5,
-            mode: "hybrid",
-          }),
-        )
-        return yield* Fiber.join(fiber)
-      }).pipe(Effect.provide(layer)),
+          )
+          yield* router.put(
+            makeRecord({
+              id: "t1",
+              namespace: "k",
+              kind: "n",
+              content: { text: "telemetry probe target" },
+            }),
+          )
+          yield* Stream.runDrain(
+            router.search({
+              queryText: "telemetry probe",
+              namespace: "k",
+              topK: 5,
+              mode: "hybrid",
+            }),
+          )
+          return yield* Fiber.join(fiber)
+        }),
+      ).pipe(Effect.provide(layer)),
     )
 
     expect(collected).toHaveLength(1)

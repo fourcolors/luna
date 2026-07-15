@@ -188,6 +188,27 @@ function extractText(content: unknown): string | null {
   return null
 }
 
+// Enrichment (SIRA-style corpus enrichment, Experiment A): optional
+// LLM-generated alias phrases carried at content.enrichmentPhrases. Joined
+// into a single string for the memory_vectors.enrichment column, which is
+// indexed as a SECOND FTS5 column (see sqlite-vector-maintenance.ts) so
+// bm25()/hybrid-terms can match query vocabulary the record's own text
+// never uses. This is a lexical-index-only signal — it is NEVER embedded;
+// the embedding input below stays text-only.
+function extractEnrichmentPhrases(content: unknown): ReadonlyArray<string> {
+  if (
+    content !== null &&
+    typeof content === "object" &&
+    "enrichmentPhrases" in content
+  ) {
+    const raw = (content as { enrichmentPhrases: unknown }).enrichmentPhrases
+    if (Array.isArray(raw) && raw.every((p) => typeof p === "string")) {
+      return raw as ReadonlyArray<string>
+    }
+  }
+  return []
+}
+
 export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
   SqliteVectorBackend,
   SqliteVectorBackendApi
@@ -484,8 +505,8 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
           `INSERT INTO memory_vectors
              (id, namespace, embedding, dimension, text, ts,
               embedding_provider, embedding_model, embedding_format,
-              embedding_input_hash, embedded_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+              embedding_input_hash, embedded_at, enrichment)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         const delVecStmt = db.query(`DELETE FROM memory_vectors WHERE id = ?`)
         const getStmt = db.query(`SELECT * FROM memory_keyed WHERE id = ?`)
@@ -626,6 +647,7 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                         embedder.embeddingFormat,
                         embeddingInputHash,
                         embeddedAt,
+                        extractEnrichmentPhrases(rec.content).join(" "),
                       )
                     }
                     db.run("COMMIT")

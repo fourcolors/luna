@@ -18,20 +18,27 @@ const hasBunSqlite = (() => {
 })()
 
 describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
-  const layer = Layer.provideMerge(
-    SqliteVectorBackend.fromPath(":memory:"),
-    Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+  // InMemoryBackend is an Effect.Tag class (like SqliteVectorBackend) - its
+  // implementation comes from `.Default`, obtained via `yield* InMemoryBackend`
+  // inside an Effect, never `new InMemoryBackend()` (that constructs a bare
+  // Tag identity, not a MemoryBackend-shaped object).
+  const layer = Layer.mergeAll(
+    Layer.provideMerge(
+      SqliteVectorBackend.fromPath(":memory:"),
+      Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+    ),
+    InMemoryBackend.Default,
   )
 
   const run = <A, E>(
-    eff: Effect.Effect<A, E, SqliteVectorBackend | EmbedderService>,
+    eff: Effect.Effect<A, E, SqliteVectorBackend | EmbedderService | InMemoryBackend>,
   ) => Effect.runPromise(Effect.scoped(eff).pipe(Effect.provide(layer)))
 
   it("dispatches to vector backend by namespace pattern", async () => {
     const out = await run(
       Effect.gen(function* () {
         const vec = yield* SqliteVectorBackend
-        const keyed = new InMemoryBackend()
+        const keyed = yield* InMemoryBackend
         const router = makeRouter([
           { pattern: "notes:*", backend: vec },
           { pattern: "*", backend: keyed },
@@ -64,7 +71,7 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const vec = yield* SqliteVectorBackend
-          const keyed = new InMemoryBackend()
+          const keyed = yield* InMemoryBackend
           const router = makeRouter([
             { pattern: "notes:*", backend: vec },
             { pattern: "*", backend: keyed },
@@ -91,7 +98,7 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
     const out = await run(
       Effect.gen(function* () {
         const vec = yield* SqliteVectorBackend
-        const keyed = new InMemoryBackend()
+        const keyed = yield* InMemoryBackend
         const router = makeRouter([
           { pattern: "notes:*", backend: vec },
           { pattern: "*", backend: keyed },
@@ -116,7 +123,7 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
     const out = await run(
       Effect.gen(function* () {
         const vec = yield* SqliteVectorBackend
-        const keyed = new InMemoryBackend()
+        const keyed = yield* InMemoryBackend
         const router = makeRouter([
           { pattern: "notes:*", backend: vec },
           { pattern: "*", backend: keyed },
@@ -182,7 +189,9 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
   })
 
   it("fan-out fails cleanly when no vector backends are registered", async () => {
-    const keyed = new InMemoryBackend()
+    const keyed = Effect.runSync(
+      Effect.provide(InMemoryBackend, InMemoryBackend.Default),
+    )
     const router = makeRouter([{ pattern: "*", backend: keyed }])
     const result = await Effect.runPromise(
       Stream.runCollect(router.search({ queryText: "x" })).pipe(Effect.either),
