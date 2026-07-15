@@ -28,10 +28,13 @@
  *     per Operator's `sqlite-vec-scaling` skill. With HNSW: 0.037ms p95 @ 10k
  *     measured on arm64-darwin (same skill).
  *   - search() honors namespace filter via SQL `WHERE namespace = ?`.
- *   - search() supports `mode: "vec" | "hybrid"`. `"hybrid"` (Phase 26)
+ *   - search() supports `mode: "vec" | "hybrid" | "bm25"`. `"hybrid"` (Phase 26)
  *     fuses BM25 (FTS5 over `text`) with cosine vector ranking via
  *     Reciprocal Rank Fusion (k=60). Backends that don't have FTS5 in
  *     scope MUST fail; we never silently degrade.
+ *   - `"bm25"` (bench harness, additive) ranks purely by the existing FTS5
+ *     bm25() ordering, skipping the query-embedding call and vector scoring
+ *     entirely. Useful for isolating lexical recall from embedding quality.
  *
  * Schema (DESIGN.md §5.1 reserved this; we add the indexes):
  *
@@ -100,7 +103,7 @@ export interface SqliteVectorBackendApi {
     readonly queryText: string
     readonly topK?: number
     readonly namespace?: string
-    readonly mode?: "vec" | "hybrid"
+    readonly mode?: "vec" | "hybrid" | "bm25"
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
@@ -750,20 +753,30 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         }
 
         // BM25 ranking via FTS5. Returns ids ordered best-first.
-        // FTS5 MATCH syntax is sensitive to special chars (-, :, etc.); wrap
-        // the user-supplied query as a single quoted phrase so arbitrary
-        // text is treated as a literal phrase query. Tokens within the
-        // phrase are still tokenized by porter+unicode61 internally.
+        // FTS5 MATCH syntax is sensitive to special chars (-, :, etc.), so
+        // user text is never passed raw. Two match styles:
+        //   "phrase" - the whole query as one quoted phrase; only documents
+        //     containing the query as a contiguous token sequence match.
+        //     This is the historical hybrid behavior (kept unchanged).
+        //   "terms" - each word quoted individually and OR-joined, giving
+        //     bag-of-words bm25() ranking over any term overlap.
         const rankByBm25 = (
           queryText: string,
           namespace: string | undefined,
           limit: number,
+          matchStyle: "phrase" | "terms",
         ): string[] => {
           // Escape embedded double-quotes per FTS5 quoting rules ("" = ").
-          const phrase = `"${queryText.replace(/"/g, '""')}"`
+          const match =
+            matchStyle === "phrase"
+              ? `"${queryText.replace(/"/g, '""')}"`
+              : (queryText.match(/[A-Za-z0-9_]+/g) ?? [])
+                  .map((w) => `"${w}"`)
+                  .join(" OR ")
+          if (match.length === 0) return []
           const rows = (namespace
-            ? ftsByNsStmt.all(phrase, namespace, limit)
-            : ftsAllStmt.all(phrase, limit)) as { id: string }[]
+            ? ftsByNsStmt.all(match, namespace, limit)
+            : ftsAllStmt.all(match, limit)) as { id: string }[]
           return rows.map((r) => r.id)
         }
 
@@ -773,6 +786,27 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
 
           return Stream.unwrap(
             Effect.gen(function* () {
+              // bm25: pure lexical rank via FTS5, no embedding call needed
+              // (unlike "vec"/"hybrid" below, which both embed the query).
+              if (mode === "bm25") {
+                const bm25Ranked = yield* Effect.try({
+                  try: () =>
+                    rankByBm25(args.queryText, args.namespace, topK, "terms"),
+                  catch: (cause) => asError("search.bm25", cause),
+                })
+                // Score = 1/(rank+1), 1-indexed rank from bm25() order. This
+                // is not a bm25 magnitude (those aren't comparable across
+                // queries/corpora); it's the simplest strictly-decreasing
+                // score consistent with "rank-1 scores highest".
+                const out: { record: MemoryRecord; score: number }[] = []
+                bm25Ranked.forEach((id, idx) => {
+                  const row = getStmt.get(id) as DbRow | null | undefined
+                  if (row)
+                    out.push({ record: rowToRecord(row), score: 1 / (idx + 2) })
+                })
+                return Stream.fromIterable(out)
+              }
+
               // 1. Embed the query text (needed by both modes; hybrid still
               //    uses vec ranking as one of the two fused signals).
               const queryVec = yield* embedder
@@ -803,9 +837,17 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                 try: () => rankByVec(queryVec, args.namespace, candidateLimit),
                 catch: (cause) => asError("search.hybrid.vec", cause),
               })
+              // "phrase" preserves hybrid's historical exact-phrase BM25 arm;
+              // switching hybrid to "terms" is a product change that must be
+              // judged by the bench first (see bench/memory-suite.ts).
               const bm25Ranked = yield* Effect.try({
                 try: () =>
-                  rankByBm25(args.queryText, args.namespace, candidateLimit),
+                  rankByBm25(
+                    args.queryText,
+                    args.namespace,
+                    candidateLimit,
+                    "phrase",
+                  ),
                 catch: (cause) => asError("search.hybrid.bm25", cause),
               })
 

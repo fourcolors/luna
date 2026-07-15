@@ -45,12 +45,14 @@ export interface MemoryVectorBackend extends MemoryBackend {
    *   - `"hybrid"` — backends fuse BM25 (FTS5) with vector ranking via RRF.
    *     Backends that do not support hybrid MUST fail with
    *     `MemoryBackendError`, not silently fall back to vec-only.
+   *   - `"bm25"` — pure lexical FTS5 ranking, no embedding call. Backends
+   *     without FTS5 in scope MUST fail with `MemoryBackendError`.
    */
   readonly search: (args: {
     readonly queryText: string
     readonly topK?: number
     readonly namespace?: string
-    readonly mode?: "vec" | "hybrid"
+    readonly mode?: "vec" | "hybrid" | "bm25"
     readonly scope?: MemoryScopeQuery
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },

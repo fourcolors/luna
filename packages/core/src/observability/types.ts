@@ -125,7 +125,7 @@ export interface RetrievalCallEvent extends ObsEventBase {
   readonly kind: "RetrievalCall"
   readonly sessionId?: string
   readonly namespace?: string
-  readonly mode: "vec" | "hybrid"
+  readonly mode: "vec" | "hybrid" | "bm25"
   readonly queryDigest: string
   readonly embedderProvider: string
   readonly embedderModel: string
