@@ -40,7 +40,7 @@
  *     LUNA_MEMORY_RERANK=1 AND a MemoryReranker was passed to
  *     makeMemoryTools, search over-fetches to at least 20 candidates,
  *     reranks them, and gates via applyRerank (score>=LUNA_RERANK_THRESHOLD,
- *     default 75) before slicing to `limit`. DEFAULT OFF — with no reranker
+ *     default 75) before slicing to `limit`. DEFAULT OFF - with no reranker
  *     passed and/or the flag unset, behavior is byte-identical to before.
  *     A rerank failure (timeout/parse/SDK error) falls back to the
  *     un-reranked hybrid order; it never fails the tool call.
@@ -68,7 +68,7 @@ import {
   resolveRerankThreshold,
 } from "./rerank-support.js"
 
-/** Minimum over-fetch when rerank is active — matches the bench's TOP_K=20
+/** Minimum over-fetch when rerank is active - matches the bench's TOP_K=20
  * (packages/memory/bench/rerank-eval.ts), the pool size the 0.734 -> 0.878
  * recall@1 lift was measured against. */
 const RERANK_OVERFETCH_TOP_K = 20
@@ -161,7 +161,7 @@ function extractText(content: unknown): string {
 /**
  * Build the wire DTO for one search hit. `llmScore` is present only when
  * memory_search reranked this result (LUNA_MEMORY_RERANK=1 + a reranker was
- * provided) — absent on the default, un-reranked path, so the DTO shape is
+ * provided) - absent on the default, un-reranked path, so the DTO shape is
  * byte-identical to before when rerank isn't in play.
  */
 function toSearchHitDTO(
@@ -259,7 +259,7 @@ export const makeMemoryTools = (
           reranker !== undefined && rerankFlagEnabled("LUNA_MEMORY_RERANK")
         // Over-fetch when a kind filter is set so the post-filter still has
         // enough candidates to return `limit` matches (4× with a floor of
-        // 20 — a heuristic good enough for the local store sizes we see in
+        // 20 - a heuristic good enough for the local store sizes we see in
         // practice), OR when rerank is active (floor of RERANK_OVERFETCH_TOP_K,
         // the pool size the bench's recall lift was measured against).
         const kindOverfetch =
@@ -299,6 +299,10 @@ export const makeMemoryTools = (
         }
 
         const startMs = Date.now()
+        // sandbox() (not just either()) so DEFECTS in SDK/broker plumbing
+        // degrade to un-reranked results too - memory_search must never
+        // fail because reranking failed, matching recallForTurn's
+        // catchAllCause guarantee.
         const outcome = yield* reranker!
           .rerank({
             queryText: args.query,
@@ -308,7 +312,7 @@ export const makeMemoryTools = (
               retrievalScore: h.score,
             })),
           })
-          .pipe(Effect.either)
+          .pipe(Effect.sandbox, Effect.either)
 
         if (outcome._tag === "Left") {
           yield* logRerankFailureOnce("memory_search", outcome.left)

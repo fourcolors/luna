@@ -150,7 +150,7 @@ describe("ObsEvent schema validation", () => {
       durationMs: 42,
       status: "success",
       reranked: true,
-      // rerankMs / kept / dropped missing — and no embedder fields either,
+      // rerankMs / kept / dropped missing - and no embedder fields either,
       // so it satisfies neither union member.
     }
     expect(Either.isLeft(decodeObsEvent(bad))).toBe(true)

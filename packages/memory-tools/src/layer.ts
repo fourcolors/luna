@@ -198,11 +198,11 @@ export interface MemoryToolsLayerOptions {
   readonly embedder?: Layer.Layer<EmbedderService, EmbedderError>
   /**
    * Optional MemoryReranker layer (e.g. adapter-sdk's MemoryRerankerDefault).
-   * When provided, memory_search CAN rerank — actually doing so is still
+   * When provided, memory_search CAN rerank - actually doing so is still
    * gated per-request by LUNA_MEMORY_RERANK=1 (see tools.ts). DEFAULT
    * undefined: today's un-reranked behavior with zero wiring changes
    * required. Kept SDK-free here (memory-tools does not depend on
-   * adapter-sdk) — the caller builds the SDK-backed layer and passes it in.
+   * adapter-sdk) - the caller builds the SDK-backed layer and passes it in.
    */
   readonly rerankerLayer?: Layer.Layer<MemoryReranker, never, never>
 }

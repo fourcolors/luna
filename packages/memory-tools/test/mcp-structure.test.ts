@@ -188,10 +188,10 @@ describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants
 // relies on: `Effect.serviceOption(MemoryReranker)` has R=never (does NOT
 // bubble MemoryReranker into the layer's declared requirements), so it only
 // resolves to Some when a reranker layer was EXPLICITLY composed via
-// Layer.provide directly onto the same Effect.gen — never from some far-away
+// Layer.provide directly onto the same Effect.gen - never from some far-away
 // ambient layer elsewhere in a larger app's composition. Proven in isolation
 // here (independent of the SDK's opaque McpServer instance, which vitest
-// cannot drive — see this file's header) because it is exactly the mechanism
+// cannot drive - see this file's header) because it is exactly the mechanism
 // packages/memory-tools/src/layer.ts's MemoryToolsLayer uses internally.
 describe("Effect.serviceOption(MemoryReranker) composition (the MemoryToolsLayer wiring mechanism)", () => {
   it("resolves Some when a reranker layer is composed via Layer.provide on the same Effect.gen", async () => {

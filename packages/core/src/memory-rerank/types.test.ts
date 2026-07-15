@@ -10,7 +10,7 @@ import {
 } from "./types.js"
 
 // ---------------------------------------------------------------------------
-// applyRerank — pure gating helper
+// applyRerank - pure gating helper
 // ---------------------------------------------------------------------------
 
 interface TestCandidate {
@@ -100,7 +100,7 @@ describe("applyRerank", () => {
     expect(result.kept.map((k) => k.candidate.id)).toEqual(["c", "b", "d"])
     expect(result.kept.map((k) => k.llmScore)).toEqual([95, undefined, undefined])
     expect(result.keptCount).toBe(3)
-    // Only "a" is a counted drop — b/d are unscored, never counted as dropped.
+    // Only "a" is a counted drop - b/d are unscored, never counted as dropped.
     expect(result.droppedCount).toBe(1)
   })
 

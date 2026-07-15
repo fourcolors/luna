@@ -148,7 +148,7 @@ const RetrievalCallBase = {
 //     after the underlying retrieval already logged its own event above
 //     (reranked: true; no embedder fields; rerank stats required instead).
 // An object satisfying NEITHER variant (e.g. missing embedderModel and not
-// marked reranked: true) is correctly rejected — this preserves the
+// marked reranked: true) is correctly rejected - this preserves the
 // pre-existing "rejects RetrievalCall missing embedderModel" guardrail.
 const RetrievalCallSchema = Schema.Union(
   Schema.Struct({

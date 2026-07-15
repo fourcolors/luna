@@ -695,10 +695,10 @@ const BELIEF_REFRESH_INTERVAL_MS = 30_000
  * @param memoryRerankerL - optional MemoryReranker layer (Phase 3 production
  *   reranker, PR #332 bench). When provided, BOTH memory_search
  *   (LUNA_MEMORY_RERANK=1) and per-turn recall (LUNA_RECALL_RERANK=1) CAN
- *   rerank — each still gated independently at call time. Composed directly
+ *   rerank - each still gated independently at call time. Composed directly
  *   onto both (a) MemoryToolsLayer() below and (b) this function's own
  *   Effect.gen, so `Effect.serviceOption(MemoryReranker)` resolves in both
- *   places. Default undefined: byte-identical to before this param existed —
+ *   places. Default undefined: byte-identical to before this param existed -
  *   no reranker in context, both gates are no-ops regardless of env.
  */
 export const ThreadToolsProviderLayer = (
@@ -857,7 +857,7 @@ export const ThreadToolsProviderLayer = (
       // passed a `memoryRerankerL` that got composed onto THIS layer's own
       // pipe below (see the function's closing `.pipe(...)`). Actually
       // reranking recall is a SEPARATE gate (LUNA_RECALL_RERANK=1) from
-      // memory_search's (LUNA_MEMORY_RERANK=1) — see recallForTurn below.
+      // memory_search's (LUNA_MEMORY_RERANK=1) - see recallForTurn below.
       const recallRerankerOpt = yield* Effect.serviceOption(MemoryReranker)
       const recallReranker = Option.getOrUndefined(recallRerankerOpt)
       const memObs = yield* ObservabilityService
@@ -1064,7 +1064,7 @@ export const ThreadToolsProviderLayer = (
       return provider
     }),
   ).pipe(
-    // rerankerLayer: undefined when the caller didn't pass memoryRerankerL —
+    // rerankerLayer: undefined when the caller didn't pass memoryRerankerL -
     // MemoryToolsLayer treats that as "no reranker", byte-identical to
     // before this option existed.
     Layer.provide(MemoryToolsLayer({ rerankerLayer: memoryRerankerL })),
@@ -2305,9 +2305,9 @@ export const buildBaseLayer = (
   )
 
   // Phase 3 production reranker (PR #332 bench): closes over the SAME boot
-  // identities as dreamWorkerReasonerL below (sdkClientL, brokerL) — a
+  // identities as dreamWorkerReasonerL below (sdkClientL, brokerL) - a
   // fully self-contained Layer<MemoryReranker, never, never>. Always built
-  // (cheap — just closes a `rerank` function, no SDK call until invoked);
+  // (cheap - just closes a `rerank` function, no SDK call until invoked);
   // ACTUAL reranking stays gated per-request by LUNA_MEMORY_RERANK=1 /
   // LUNA_RECALL_RERANK=1 (both DEFAULT OFF) inside memory-tools.
   const memoryRerankerL = MemoryRerankerDefault.pipe(

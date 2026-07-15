@@ -542,7 +542,7 @@ describe("selectEmbedderLayer", () => {
 })
 
 // ---------------------------------------------------------------------------
-// memory_search reranking (Phase 3, PR #332 bench) — LUNA_MEMORY_RERANK gate,
+// memory_search reranking (Phase 3, PR #332 bench) - LUNA_MEMORY_RERANK gate,
 // fallback-on-failure, and the unscored-candidate-stays-ungated policy.
 // ---------------------------------------------------------------------------
 describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
@@ -667,7 +667,26 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
       await searchTool.handler({ query: "espresso" }, undefined),
     )
-    // Falls back to plain hybrid search — still returns results, none reranked.
+    // Falls back to plain hybrid search - still returns results, none reranked.
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
+  })
+
+  it("flag ON: falls back to un-reranked order when the reranker DIES (defect, not typed error)", async () => {
+    await seedRecords([
+      { id: "m1", text: "operator likes espresso" },
+      { id: "m2", text: "operator likes tea" },
+    ])
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    const dyingReranker: MemoryRerankerApi = {
+      rerank: () => Effect.die(new Error("unexpected plumbing throw")),
+    }
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: dyingReranker })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "espresso" }, undefined),
+    )
+    // A defect must degrade exactly like a typed RerankError - memory_search
+    // never fails because reranking failed.
     expect(hits.length).toBeGreaterThan(0)
     expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
   })

@@ -19,7 +19,7 @@ import {
   resolveRerankThreshold,
 } from "./rerank-support.js"
 
-/** Minimum over-fetch when rerank is active — matches memory_search's floor
+/** Minimum over-fetch when rerank is active - matches memory_search's floor
  * (packages/memory-tools/src/tools.ts's RERANK_OVERFETCH_TOP_K), the pool
  * size the bench's recall lift was measured against. */
 const RECALL_RERANK_OVERFETCH_TOP_K = 20
@@ -147,9 +147,9 @@ type ScoredHit = { readonly record: MemoryRecord; readonly score: number }
 /**
  * Rerank `hits`, reorder them by the gate's kept order, and pack. Any rerank
  * failure (timeout/parse/SDK error) falls back to packing the ORIGINAL
- * (un-reranked) hit order — recall must never come back empty just because
+ * (un-reranked) hit order - recall must never come back empty just because
  * the reranker had a bad turn. Candidates the reranker didn't score are never
- * dropped (applyRerank's contract) — they simply keep their retrieval-order
+ * dropped (applyRerank's contract) - they simply keep their retrieval-order
  * position at the tail, so packRecallContext still sees every hit it would
  * have seen without reranking.
  */
@@ -203,11 +203,11 @@ export function recallForTurn(input: {
   readonly options?: RecallContextOptions
   /**
    * Behind LUNA_RECALL_RERANK=1 (separate flag from memory_search's
-   * LUNA_MEMORY_RERANK — DEFAULT OFF; per-turn recall's latency budget is
+   * LUNA_MEMORY_RERANK - DEFAULT OFF; per-turn recall's latency budget is
    * unproven independent of the MCP tool path). When both the flag is set
    * AND a reranker is passed, over-fetches and reranks before packing;
    * otherwise behavior is byte-identical to before. The caller (chat-service)
-   * already wraps the whole recallMemory() call in its own recall timeout —
+   * already wraps the whole recallMemory() call in its own recall timeout -
    * this function adds no timeout of its own, it just degrades to un-reranked
    * packing on any rerank failure so a slow/failed rerank never blows the
    * turn past that existing budget.

@@ -1,5 +1,5 @@
 /**
- * rerank-support.ts — shared, SDK-free plumbing for gating/observing the
+ * rerank-support.ts - shared, SDK-free plumbing for gating/observing the
  * production memory reranker (Phase 3, PR #332 bench) from BOTH call sites
  * that use it: the `memory_search` MCP tool (tools.ts) and `recallForTurn`
  * (turn-memory.ts). Centralized here so the two lanes can't drift on
@@ -7,7 +7,7 @@
  * shape of the rerank observability event.
  */
 import { createHash } from "node:crypto"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import type { ObservabilityApi, RerankError } from "@luna/core"
 
 /** Matches the bench's holdout-validated gate (packages/memory/bench/
@@ -24,7 +24,7 @@ export function resolveRerankThreshold(
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : DEFAULT_RERANK_THRESHOLD
 }
 
-/** Both lanes are DEFAULT OFF, gated by their own env flag (separate flags —
+/** Both lanes are DEFAULT OFF, gated by their own env flag (separate flags -
  * per-turn recall's latency budget is unproven independent of the MCP tool
  * path). A flag is "on" only for the literal value "1". */
 export function rerankFlagEnabled(
@@ -37,7 +37,7 @@ export function rerankFlagEnabled(
 /**
  * "Log once per process" failure policy, keyed by a caller-supplied lane
  * name so memory_search's first failure doesn't suppress recallForTurn's
- * (and vice versa). A module-level Set is intentional here — this process
+ * (and vice versa). A module-level Set is intentional here - this process
  * may serve MANY requests, and repeating an identical rerank-unavailable
  * warning on every single one would just be log noise once the operator has
  * seen it.
@@ -46,12 +46,18 @@ const loggedLanes = new Set<string>()
 
 export function logRerankFailureOnce(
   lane: string,
-  error: RerankError,
+  failure: RerankError | Cause.Cause<RerankError>,
 ): Effect.Effect<void> {
   if (loggedLanes.has(lane)) return Effect.void
   loggedLanes.add(lane)
+  // Accepts a bare RerankError or a full Cause: memory_search sandboxes the
+  // rerank call so DEFECTS (not just typed failures) degrade to un-reranked
+  // order, and a defect arrives here as a Cause.
+  const detail = Cause.isCause(failure)
+    ? Cause.pretty(failure).split("\n")[0]
+    : `${failure.op}: ${failure.message}`
   return Effect.logWarning(
-    `[luna/memory] ${lane}: rerank failed (${error.op}: ${error.message}) — ` +
+    `[luna/memory] ${lane}: rerank failed (${detail}) - ` +
       "falling back to un-reranked order. Further rerank failures on this " +
       "lane are suppressed for the rest of this process.",
   )
@@ -68,7 +74,7 @@ const digestOf = (text: string): string =>
 /**
  * Emit the rerank-stage RetrievalCall event (see @luna/core's
  * RetrievalCallRerankEvent) when an ObservabilityApi instance is available.
- * A no-op (Effect.void) when `obs` is undefined — callers that were built
+ * A no-op (Effect.void) when `obs` is undefined - callers that were built
  * without an ObservabilityService in context (e.g. bare unit tests) stay
  * silent rather than requiring one just to exercise the rerank path.
  */

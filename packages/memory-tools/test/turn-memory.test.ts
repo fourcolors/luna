@@ -135,7 +135,7 @@ describe("turn memory", () => {
     })
 
     // InMemoryBackend has no real search() implementation (put/get/query
-    // only — see packages/memory/src/backends/in-memory.ts) — same reason
+    // only - see packages/memory/src/backends/in-memory.ts) - same reason
     // the "keeps scoped backend over-fetch bounded" test above overrides
     // `search` directly rather than relying on it. Mirror that pattern here
     // with two fixed records so the FAKE reranker below has something to
@@ -234,7 +234,7 @@ describe("turn memory", () => {
           reranker,
         }),
       )
-      // Falls back to the plain hybrid pack — both records still present.
+      // Falls back to the plain hybrid pack - both records still present.
       expect(packed?.hits.length).toBe(2)
     })
   })

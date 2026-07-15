@@ -132,7 +132,7 @@ interface RetrievalCallEventBase extends ObsEventBase {
   readonly status: "success" | "error"
 }
 
-/** The event MemoryRouter.search() itself emits — unchanged shape. */
+/** The event MemoryRouter.search() itself emits - unchanged shape. */
 export interface RetrievalCallFullEvent extends RetrievalCallEventBase {
   readonly queryDigest: string
   readonly embedderProvider: string
@@ -144,12 +144,12 @@ export interface RetrievalCallFullEvent extends RetrievalCallEventBase {
 /**
  * Reranker widening (Phase 3 production reranker, PR #332 bench): the
  * SEPARATE event memory_search / recallForTurn emit after
- * LUNA_MEMORY_RERANK=1 / LUNA_RECALL_RERANK=1 actually reranks a result set —
+ * LUNA_MEMORY_RERANK=1 / LUNA_RECALL_RERANK=1 actually reranks a result set -
  * AFTER the underlying retrieval already logged its own RetrievalCallFullEvent
  * above. A rerank step scores already-retrieved candidates and has no
  * embedder of its own to report, so those fields are simply absent rather
  * than widened-to-optional on the shared shape (which would weaken the
- * embedder-field guardrail for genuine retrieval events too — see schema.ts).
+ * embedder-field guardrail for genuine retrieval events too - see schema.ts).
  */
 export interface RetrievalCallRerankEvent extends RetrievalCallEventBase {
   readonly queryDigest?: string
@@ -157,7 +157,7 @@ export interface RetrievalCallRerankEvent extends RetrievalCallEventBase {
   /** Wall-clock ms the rerank call itself took. */
   readonly rerankMs: number
   /** Candidates that survived applyRerank's gate (see @luna/core's
-   * applyRerank — includes the unscored tail, never silently dropped). */
+   * applyRerank - includes the unscored tail, never silently dropped). */
   readonly kept: number
   /** Scored candidates dropped for falling below the rerank threshold. */
   readonly dropped: number
