@@ -123,6 +123,39 @@ describe("ObsEvent schema validation", () => {
     expect(Either.isRight(decodeObsEvent(good))).toBe(true)
   })
 
+  it("decodeObsEvent accepts a well-formed rerank-stage RetrievalCall (no embedder fields)", () => {
+    const good = {
+      ts: new Date().toISOString(),
+      kind: "RetrievalCall",
+      level: "info",
+      mode: "hybrid",
+      candidateCount: 20,
+      durationMs: 42,
+      status: "success",
+      reranked: true,
+      rerankMs: 42,
+      kept: 5,
+      dropped: 12,
+    }
+    expect(Either.isRight(decodeObsEvent(good))).toBe(true)
+  })
+
+  it("decodeObsEvent rejects a RetrievalCall with reranked:true but missing rerank stats", () => {
+    const bad = {
+      ts: new Date().toISOString(),
+      kind: "RetrievalCall",
+      level: "info",
+      mode: "hybrid",
+      candidateCount: 20,
+      durationMs: 42,
+      status: "success",
+      reranked: true,
+      // rerankMs / kept / dropped missing — and no embedder fields either,
+      // so it satisfies neither union member.
+    }
+    expect(Either.isLeft(decodeObsEvent(bad))).toBe(true)
+  })
+
   it("emit() passes through a well-formed event unchanged", async () => {
     const collected = await run(
       Effect.gen(function* () {

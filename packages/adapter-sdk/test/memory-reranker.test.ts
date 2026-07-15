@@ -1,0 +1,314 @@
+/**
+ * memory-reranker.test.ts — Tier-1 tests for MemoryRerankerDefault.
+ *
+ * All tests run with SDKClient.fake + a Ref-free fake AccountBroker (copied
+ * from dream-reasoner.test.ts's brokerFake()). ZERO network / model calls.
+ */
+import { describe, expect, it } from "vitest"
+import { Effect, Layer } from "effect"
+import {
+  AccountBroker,
+  AccountBrokerLayer,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+  Clock,
+  EnvSecretProvider,
+  MemoryReranker,
+  RerankError,
+  type RerankCandidateInput,
+} from "@luna/core"
+import { SDKClient } from "../src/sdk-client.js"
+import {
+  MemoryRerankerDefault,
+  buildRerankPrompt,
+  parseScores as parseRerankScores,
+  resolveRerankModel,
+} from "../src/memory-reranker.js"
+import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+
+// ---------------------------------------------------------------------------
+// Fake AccountBroker (copied from dream-reasoner.test.ts's brokerFake()).
+// ---------------------------------------------------------------------------
+const GOOGLE_TOK_ENV = "RERANK_GOOGLE_TOK"
+const brokerFake = (): Layer.Layer<AccountBroker> =>
+  AccountBrokerLayer.fromAccounts([
+    { id: "g1", kind: "google", secretRef: `env:${GOOGLE_TOK_ENV}` },
+    { id: "a1", kind: "anthropic", secretRef: CLAUDE_CODE_LOGIN_SECRET_REF },
+  ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
+
+const candidates = (ids: ReadonlyArray<string>): ReadonlyArray<RerankCandidateInput> =>
+  ids.map((id, i) => ({ id, text: `memory text for ${id}`, retrievalScore: 1 - i * 0.1 }))
+
+const fakeClientWithResult = (resultText: string): Layer.Layer<SDKClient> =>
+  SDKClient.fake((_params) => {
+    const resultMsg = { ...makeResultMessage("sid", "uuid-1"), result: resultText }
+    return makeFakeQuery({ messages: [resultMsg] }).query
+  })
+
+const fakeClientNoSuccess = (): Layer.Layer<SDKClient> =>
+  SDKClient.fake((_params) => {
+    const assistantMsg = makeAssistantMessage("sid", "some text", "uuid-2")
+    return makeFakeQuery({ messages: [assistantMsg] }).query
+  })
+
+/** A client that records the options it was called with, for assertions on
+ * what runBrokeredReasonerTurn actually sent to sdk.query. */
+const recordingClientWith = (
+  sink: { last: { options: Record<string, unknown> } | null },
+  frame: SDKMessage,
+): Layer.Layer<SDKClient> =>
+  SDKClient.fake((params) => {
+    sink.last = { options: (params.options ?? {}) as Record<string, unknown> }
+    return makeFakeQuery({ messages: [frame] }).query
+  })
+
+const runRerank = (
+  args: { queryText: string; candidates: ReadonlyArray<RerankCandidateInput>; timeoutMs?: number },
+  sdkLayer: Layer.Layer<SDKClient>,
+  brokerLayer: Layer.Layer<AccountBroker> = brokerFake(),
+) =>
+  Effect.gen(function* () {
+    const r = yield* MemoryReranker
+    return yield* r.rerank(args)
+  }).pipe(
+    Effect.provide(MemoryRerankerDefault),
+    Effect.provide(sdkLayer),
+    Effect.provide(brokerLayer),
+  )
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("MemoryRerankerDefault", () => {
+  it("parses a well-formed batched score response for every candidate", async () => {
+    const cands = candidates(["a", "b", "c"])
+    const json = JSON.stringify({ scores: { "1": 90, "2": 40, "3": 12 } })
+    const scores = await Effect.runPromise(
+      runRerank({ queryText: "q", candidates: cands }, fakeClientWithResult(json)),
+    )
+    expect(scores).toEqual(
+      expect.arrayContaining([
+        { id: "a", llmScore: 90 },
+        { id: "b", llmScore: 40 },
+        { id: "c", llmScore: 12 },
+      ]),
+    )
+    expect(scores).toHaveLength(3)
+  })
+
+  it("strips markdown fences before parsing", async () => {
+    const cands = candidates(["a"])
+    const fenced = "```json\n" + JSON.stringify({ scores: { "1": 77 } }) + "\n```"
+    const scores = await Effect.runPromise(
+      runRerank({ queryText: "q", candidates: cands }, fakeClientWithResult(fenced)),
+    )
+    expect(scores).toEqual([{ id: "a", llmScore: 77 }])
+  })
+
+  it("partial response: candidates missing from `scores` are simply absent from the result (no error)", async () => {
+    const cands = candidates(["a", "b", "c"])
+    // Only candidate 2 scored; 1 and 3 missing entirely.
+    const json = JSON.stringify({ scores: { "2": 88 } })
+    const scores = await Effect.runPromise(
+      runRerank({ queryText: "q", candidates: cands }, fakeClientWithResult(json)),
+    )
+    expect(scores).toEqual([{ id: "b", llmScore: 88 }])
+  })
+
+  it("out-of-range or non-numeric individual scores are dropped, not fatal", async () => {
+    const cands = candidates(["a", "b", "c"])
+    const json = JSON.stringify({ scores: { "1": 150, "2": "not-a-number", "3": 55 } })
+    const scores = await Effect.runPromise(
+      runRerank({ queryText: "q", candidates: cands }, fakeClientWithResult(json)),
+    )
+    expect(scores).toEqual([{ id: "c", llmScore: 55 }])
+  })
+
+  it("empty candidates array short-circuits to [] with NO SDK call", async () => {
+    let called = false
+    const trackingSdk: Layer.Layer<SDKClient> = SDKClient.fake((_params) => {
+      called = true
+      return makeFakeQuery({ messages: [] }).query
+    })
+    const scores = await Effect.runPromise(
+      runRerank({ queryText: "q", candidates: [] }, trackingSdk),
+    )
+    expect(scores).toEqual([])
+    expect(called).toBe(false)
+  })
+
+  it("totally malformed JSON text -> RerankError op:'parse'", async () => {
+    const cands = candidates(["a"])
+    const exit = await Effect.runPromiseExit(
+      runRerank({ queryText: "q", candidates: cands }, fakeClientWithResult("not json at all")),
+    )
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const err = exit.cause._tag === "Fail" ? exit.cause.error : null
+      expect(err).toBeInstanceOf(RerankError)
+      expect((err as RerankError).op).toBe("parse")
+    }
+  })
+
+  it("valid JSON but missing `scores` key -> RerankError op:'parse'", async () => {
+    const cands = candidates(["a"])
+    const exit = await Effect.runPromiseExit(
+      runRerank(
+        { queryText: "q", candidates: cands },
+        fakeClientWithResult(JSON.stringify({ nope: true })),
+      ),
+    )
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const err = exit.cause._tag === "Fail" ? exit.cause.error : null
+      expect((err as RerankError).op).toBe("parse")
+    }
+  })
+
+  it("no success result message -> RerankError op:'empty'", async () => {
+    const cands = candidates(["a"])
+    const exit = await Effect.runPromiseExit(
+      runRerank({ queryText: "q", candidates: cands }, fakeClientNoSuccess()),
+    )
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const err = exit.cause._tag === "Fail" ? exit.cause.error : null
+      expect(err).toBeInstanceOf(RerankError)
+      expect((err as RerankError).op).toBe("empty")
+    }
+  })
+
+  it("per-call timeoutMs overrides the default and surfaces RerankError op:'timeout' on expiry", async () => {
+    const cands = candidates(["a"])
+    // gapMs > timeoutMs: the fake query stalls past the deadline.
+    const slowSdk: Layer.Layer<SDKClient> = SDKClient.fake((_params) => {
+      const resultMsg = { ...makeResultMessage("sid", "uuid-slow"), result: '{"scores":{"1":90}}' }
+      return makeFakeQuery({ messages: [resultMsg], gapMs: 50 }).query
+    })
+    const exit = await Effect.runPromiseExit(
+      runRerank({ queryText: "q", candidates: cands, timeoutMs: 5 }, slowSdk),
+    )
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const err = exit.cause._tag === "Fail" ? exit.cause.error : null
+      expect(err).toBeInstanceOf(RerankError)
+      expect((err as RerankError).op).toBe("timeout")
+    }
+  })
+
+  it("uses resolveRerankModel's default ('haiku') when LUNA_RERANK_MODEL / LUNA_REASONER_MODEL are unset", () => {
+    const prevRerank = process.env["LUNA_RERANK_MODEL"]
+    const prevReasoner = process.env["LUNA_REASONER_MODEL"]
+    delete process.env["LUNA_RERANK_MODEL"]
+    delete process.env["LUNA_REASONER_MODEL"]
+    try {
+      expect(resolveRerankModel()).toBe("haiku")
+    } finally {
+      if (prevRerank !== undefined) process.env["LUNA_RERANK_MODEL"] = prevRerank
+      if (prevReasoner !== undefined) process.env["LUNA_REASONER_MODEL"] = prevReasoner
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// structured output flag ON (end-to-end)
+// ---------------------------------------------------------------------------
+
+describe("MemoryRerankerDefault — structured output flag ON (end-to-end)", () => {
+  const withFlag = async (value: string | undefined, fn: () => Promise<void>) => {
+    const prev = process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+    if (value === undefined) delete process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+    else process.env["LUNA_REASONER_STRUCTURED_OUTPUT"] = value
+    try {
+      await fn()
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+      else process.env["LUNA_REASONER_STRUCTURED_OUTPUT"] = prev
+    }
+  }
+
+  it("flag ON -> injects outputFormat(json_schema, object) into the SDK options", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-dso"),
+      result: JSON.stringify({ scores: { "1": 90 } }),
+      structured_output: { scores: { "1": 90 } },
+    } as unknown as SDKMessage
+    await withFlag("1", async () => {
+      await Effect.runPromise(
+        runRerank({ queryText: "q", candidates: candidates(["a"]) }, recordingClientWith(sink, frame)),
+      )
+    })
+    const opts = sink.last!.options
+    const outputFormat = opts["outputFormat"] as { type?: string; schema?: { type?: string } } | undefined
+    expect(outputFormat).toBeDefined()
+    expect(outputFormat!.type).toBe("json_schema")
+    expect(outputFormat!.schema?.type).toBe("object")
+  })
+
+  it("flag ON -> consumes structured_output even when text is unparseable garbage", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-garbage"),
+      result: "Here are the scores you asked for!",
+      structured_output: { scores: { "1": 81 } },
+    } as unknown as SDKMessage
+    await withFlag("1", async () => {
+      const scores = await Effect.runPromise(
+        runRerank({ queryText: "q", candidates: candidates(["a"]) }, recordingClientWith(sink, frame)),
+      )
+      expect(scores).toEqual([{ id: "a", llmScore: 81 }])
+    })
+  })
+
+  it("flag OFF (default) -> no outputFormat sent, falls back to text JSON.parse", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-textonly"),
+      result: JSON.stringify({ scores: { "1": 63 } }),
+    } as unknown as SDKMessage
+    await withFlag(undefined, async () => {
+      const scores = await Effect.runPromise(
+        runRerank({ queryText: "q", candidates: candidates(["a"]) }, recordingClientWith(sink, frame)),
+      )
+      expect(scores).toEqual([{ id: "a", llmScore: 63 }])
+    })
+    expect(sink.last!.options["outputFormat"]).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pure helpers (buildRerankPrompt / parseRerankScores) — exported for direct
+// unit testing independent of the SDK plumbing.
+// ---------------------------------------------------------------------------
+
+describe("buildRerankPrompt", () => {
+  it("numbers candidates 1-indexed and includes the query + rubric", () => {
+    const prompt = buildRerankPrompt("what do I like", candidates(["a", "b"]))
+    expect(prompt).toContain("Query: what do I like")
+    expect(prompt).toContain("1. memory text for a")
+    expect(prompt).toContain("2. memory text for b")
+    expect(prompt).toContain('{"scores": {"1": <int>, "2": <int>, ...}}')
+  })
+})
+
+describe("parseRerankScores", () => {
+  it("maps numbered keys back to candidate ids by position", () => {
+    const cands = candidates(["x", "y"])
+    const out = parseRerankScores({ scores: { "1": 10, "2": 20 } }, cands)
+    expect(out).toEqual([
+      { id: "x", llmScore: 10 },
+      { id: "y", llmScore: 20 },
+    ])
+  })
+
+  it("throws when `scores` is missing", () => {
+    expect(() => parseRerankScores({}, candidates(["x"]))).toThrow()
+  })
+
+  it("throws when the raw value isn't an object", () => {
+    expect(() => parseRerankScores("nope", candidates(["x"]))).toThrow()
+    expect(() => parseRerankScores(null, candidates(["x"]))).toThrow()
+  })
+})

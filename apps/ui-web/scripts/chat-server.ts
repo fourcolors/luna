@@ -255,6 +255,7 @@ import {
   MCPRegistry,
   openUiFeedbackStatusStore,
   type FeedbackListRow,
+  MemoryReranker,
 } from "@luna/core"
 import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
@@ -299,6 +300,7 @@ import {
   WorkflowWorkerLayer,
   JobRunToolsProviderTag,
   ChatThreadPosterTag,
+  MemoryRerankerDefault,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -690,9 +692,20 @@ const BELIEF_REFRESH_INTERVAL_MS = 30_000
  *
  * @param refreshIntervalMs - how often to re-query active beliefs (default
  *   BELIEF_REFRESH_INTERVAL_MS = 30 s). Pass a small value in smoke tests.
+ * @param memoryRerankerL - optional MemoryReranker layer (Phase 3 production
+ *   reranker, PR #332 bench). When provided, BOTH memory_search
+ *   (LUNA_MEMORY_RERANK=1) and per-turn recall (LUNA_RECALL_RERANK=1) CAN
+ *   rerank — each still gated independently at call time. Composed directly
+ *   onto both (a) MemoryToolsLayer() below and (b) this function's own
+ *   Effect.gen, so `Effect.serviceOption(MemoryReranker)` resolves in both
+ *   places. Default undefined: byte-identical to before this param existed —
+ *   no reranker in context, both gates are no-ops regardless of env.
  */
-export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS) =>
-  Layer.scoped(
+export const ThreadToolsProviderLayer = (
+  refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS,
+  memoryRerankerL?: Layer.Layer<MemoryReranker, never, never>,
+) => {
+  const base = Layer.scoped(
     ThreadToolsProviderTag,
     Effect.gen(function* () {
       const memTools = yield* MemoryToolsService
@@ -838,10 +851,21 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
         process.env["LUNA_MEMORY_AUTO_RECALL"]?.trim() !== "0"
       const turnExtractionEnabled =
         process.env["LUNA_MEMORY_TURN_EXTRACTION"]?.trim() !== "0"
+      // Phase 3 production reranker (PR #332 bench): resolved once at boot,
+      // same lifetime as `mem` above. Effect.serviceOption -> R=never, so
+      // this stays undefined (byte-identical to before) unless the caller
+      // passed a `memoryRerankerL` that got composed onto THIS layer's own
+      // pipe below (see the function's closing `.pipe(...)`). Actually
+      // reranking recall is a SEPARATE gate (LUNA_RECALL_RERANK=1) from
+      // memory_search's (LUNA_MEMORY_RERANK=1) — see recallForTurn below.
+      const recallRerankerOpt = yield* Effect.serviceOption(MemoryReranker)
+      const recallReranker = Option.getOrUndefined(recallRerankerOpt)
+      const memObs = yield* ObservabilityService
       console.log(
         "[luna/memory] turn pipeline:",
         `recall=${autoRecallEnabled ? "on" : "off"}`,
         `extraction=${turnExtractionEnabled ? "on" : "off"}`,
+        `recallRerank=${recallReranker !== undefined ? "available" : "off"}`,
       )
 
       // Plain mutable holder — read synchronously by decorate().
@@ -977,6 +1001,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
                         observerId: OPERATOR_MEMORY_SCOPE.observerId,
                         subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
                       },
+                      reranker: recallReranker,
+                      observability: memObs,
                     }).pipe(Effect.map((packed) => packed?.text ?? null)),
                 }
               : {}),
@@ -1038,7 +1064,10 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       return provider
     }),
   ).pipe(
-    Layer.provide(MemoryToolsLayer()),
+    // rerankerLayer: undefined when the caller didn't pass memoryRerankerL —
+    // MemoryToolsLayer treats that as "no reranker", byte-identical to
+    // before this option existed.
+    Layer.provide(MemoryToolsLayer({ rerankerLayer: memoryRerankerL })),
     Layer.provide(
       // Surface the system-managed cycles (wake/dream) as read-only entries in
       // schedule_list so the operator sees the whole schedule picture, not just
@@ -1069,6 +1098,14 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(SecretToolsLayer({ bridge: secretRequestBridge })),
     Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
   )
+  // Compose memoryRerankerL directly onto THIS layer's own Effect.gen too
+  // (not just MemoryToolsLayer's, above) so the recallForTurn wiring's
+  // `Effect.serviceOption(MemoryReranker)` inside `base` also resolves it.
+  // Layer.provide is a no-op-safe merge when memoryRerankerL is undefined.
+  return memoryRerankerL !== undefined
+    ? base.pipe(Layer.provide(memoryRerankerL))
+    : base
+}
 
 // Build a fresh RuntimeSnapshot per `obs_runtime` call (issue #12). Reads
 // from process.env so it reflects whatever the chat-server's resolved
@@ -2267,7 +2304,20 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
-  const threadToolsL = ThreadToolsProviderLayer().pipe(
+  // Phase 3 production reranker (PR #332 bench): closes over the SAME boot
+  // identities as dreamWorkerReasonerL below (sdkClientL, brokerL) — a
+  // fully self-contained Layer<MemoryReranker, never, never>. Always built
+  // (cheap — just closes a `rerank` function, no SDK call until invoked);
+  // ACTUAL reranking stays gated per-request by LUNA_MEMORY_RERANK=1 /
+  // LUNA_RECALL_RERANK=1 (both DEFAULT OFF) inside memory-tools.
+  const memoryRerankerL = MemoryRerankerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(brokerL),
+  )
+  const threadToolsL = ThreadToolsProviderLayer(
+    BELIEF_REFRESH_INTERVAL_MS,
+    memoryRerankerL,
+  ).pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     // PRD Part B: skill_tools (skill_load) + the registry snapshot read by
     // decorate(). SkillToolsLayer requires SkillRegistry, so order matters:

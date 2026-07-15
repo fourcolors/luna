@@ -1,12 +1,28 @@
 import { createHash } from "node:crypto"
 import { Effect, Stream } from "effect"
 import {
+  applyRerank,
+  type MemoryRerankerApi,
+  type ObservabilityApi,
+} from "@luna/core"
+import {
   makeRecord,
   type MemoryRecord,
   type MemoryRouter,
   type MemoryScope,
   type MemoryScopeQuery,
 } from "@luna/memory"
+import {
+  emitRerankObservability,
+  logRerankFailureOnce,
+  rerankFlagEnabled,
+  resolveRerankThreshold,
+} from "./rerank-support.js"
+
+/** Minimum over-fetch when rerank is active — matches memory_search's floor
+ * (packages/memory-tools/src/tools.ts's RERANK_OVERFETCH_TOP_K), the pool
+ * size the bench's recall lift was measured against. */
+const RECALL_RERANK_OVERFETCH_TOP_K = 20
 
 export const MEMORY_CANDIDATE_KIND = "memory-candidate"
 export const MEMORY_CANDIDATE_NAMESPACE = "memory-candidates"
@@ -126,28 +142,113 @@ export function packRecallContext(
   }
 }
 
+type ScoredHit = { readonly record: MemoryRecord; readonly score: number }
+
+/**
+ * Rerank `hits`, reorder them by the gate's kept order, and pack. Any rerank
+ * failure (timeout/parse/SDK error) falls back to packing the ORIGINAL
+ * (un-reranked) hit order — recall must never come back empty just because
+ * the reranker had a bad turn. Candidates the reranker didn't score are never
+ * dropped (applyRerank's contract) — they simply keep their retrieval-order
+ * position at the tail, so packRecallContext still sees every hit it would
+ * have seen without reranking.
+ */
+function rerankHits(
+  hits: ReadonlyArray<ScoredHit>,
+  args: {
+    readonly query: string
+    readonly reranker: MemoryRerankerApi
+    readonly observability: ObservabilityApi | undefined
+    readonly options: RecallContextOptions
+  },
+): Effect.Effect<PackedRecallContext | null, never> {
+  const candidates = hits.map((h) => ({
+    id: h.record.id,
+    text: memoryText(h.record) ?? "",
+    retrievalScore: h.score,
+  }))
+  return args.reranker.rerank({ queryText: args.query, candidates }).pipe(
+    Effect.either,
+    Effect.flatMap((outcome) => {
+      if (outcome._tag === "Left") {
+        return logRerankFailureOnce("recallForTurn", outcome.left).pipe(
+          Effect.as(packRecallContext(hits, args.options)),
+        )
+      }
+      const threshold = resolveRerankThreshold()
+      const startMs = Date.now()
+      const byId = new Map(hits.map((h) => [h.record.id, h] as const))
+      const { kept, droppedCount } = applyRerank(
+        hits.map((h) => ({ id: h.record.id })),
+        outcome.right,
+        { threshold },
+      )
+      const reordered = kept.map(({ candidate }) => byId.get(candidate.id)!)
+      const rerankMs = Date.now() - startMs
+      return emitRerankObservability(args.observability, {
+        queryText: args.query,
+        mode: "hybrid",
+        rerankMs,
+        kept: kept.length,
+        dropped: droppedCount,
+      }).pipe(Effect.as(packRecallContext(reordered, args.options)))
+    }),
+  )
+}
+
 export function recallForTurn(input: {
   readonly router: MemoryRouter
   readonly query: string
   readonly scope: MemoryScopeQuery
   readonly options?: RecallContextOptions
+  /**
+   * Behind LUNA_RECALL_RERANK=1 (separate flag from memory_search's
+   * LUNA_MEMORY_RERANK — DEFAULT OFF; per-turn recall's latency budget is
+   * unproven independent of the MCP tool path). When both the flag is set
+   * AND a reranker is passed, over-fetches and reranks before packing;
+   * otherwise behavior is byte-identical to before. The caller (chat-service)
+   * already wraps the whole recallMemory() call in its own recall timeout —
+   * this function adds no timeout of its own, it just degrades to un-reranked
+   * packing on any rerank failure so a slow/failed rerank never blows the
+   * turn past that existing budget.
+   */
+  readonly reranker?: MemoryRerankerApi
+  readonly observability?: ObservabilityApi
 }): Effect.Effect<PackedRecallContext | null, never> {
   const options = input.options ?? DEFAULT_RECALL_CONTEXT_OPTIONS
   const query = input.query.trim().slice(0, 2_000)
   if (query.length === 0) return Effect.succeed(null)
+  const rerankRequested =
+    input.reranker !== undefined && rerankFlagEnabled("LUNA_RECALL_RERANK")
+  // MemoryRouter already over-fetches scoped searches by 4x before its
+  // post-ranking scope filter. Ask it for only 2x packing headroom here
+  // (candidate/non-active filtering + de-duplication), otherwise the two
+  // layers multiply to an 80-hit backend request for the default 5 hits.
+  // When rerank is active, floor the pool at RECALL_RERANK_OVERFETCH_TOP_K
+  // (the pool size the bench's recall lift was measured against).
+  const baseTopK = Math.max(options.maxHits * 2, 10)
+  const topK = rerankRequested
+    ? Math.max(baseTopK, RECALL_RERANK_OVERFETCH_TOP_K)
+    : baseTopK
   return Stream.runCollect(
     input.router.search({
       queryText: query,
-      // MemoryRouter already over-fetches scoped searches by 4x before its
-      // post-ranking scope filter. Ask it for only 2x packing headroom here
-      // (candidate/non-active filtering + de-duplication), otherwise the two
-      // layers multiply to an 80-hit backend request for the default 5 hits.
-      topK: Math.max(options.maxHits * 2, 10),
+      topK,
       mode: "hybrid",
       scope: input.scope,
     }),
   ).pipe(
-    Effect.map((chunk) => packRecallContext(Array.from(chunk), options)),
+    Effect.flatMap((chunk) => {
+      const hits = Array.from(chunk)
+      return rerankRequested
+        ? rerankHits(hits, {
+            query,
+            reranker: input.reranker!,
+            observability: input.observability,
+            options,
+          })
+        : Effect.succeed(packRecallContext(hits, options))
+    }),
     Effect.catchAllCause((cause) =>
       Effect.logWarning(
         `[luna/memory] automatic recall failed; continuing without context: ${String(cause)}`,

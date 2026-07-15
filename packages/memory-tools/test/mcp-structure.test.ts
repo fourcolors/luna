@@ -17,9 +17,11 @@
  * bootstrap race (Phase 27a) is handled correctly.
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import {
   Clock,
+  FakeReranker,
+  MemoryReranker,
   ObservabilityService,
   StubEmbedderLayer,
 } from "@luna/core"
@@ -179,6 +181,35 @@ describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants
     } finally {
       await runtime.dispose()
     }
+  })
+})
+
+// The load-bearing wiring mechanism MemoryToolsLayer's rerankerLayer option
+// relies on: `Effect.serviceOption(MemoryReranker)` has R=never (does NOT
+// bubble MemoryReranker into the layer's declared requirements), so it only
+// resolves to Some when a reranker layer was EXPLICITLY composed via
+// Layer.provide directly onto the same Effect.gen — never from some far-away
+// ambient layer elsewhere in a larger app's composition. Proven in isolation
+// here (independent of the SDK's opaque McpServer instance, which vitest
+// cannot drive — see this file's header) because it is exactly the mechanism
+// packages/memory-tools/src/layer.ts's MemoryToolsLayer uses internally.
+describe("Effect.serviceOption(MemoryReranker) composition (the MemoryToolsLayer wiring mechanism)", () => {
+  it("resolves Some when a reranker layer is composed via Layer.provide on the same Effect.gen", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* Effect.serviceOption(MemoryReranker)
+      }).pipe(Effect.provide(FakeReranker.of({ a: 90 }))),
+    )
+    expect(Option.isSome(result)).toBe(true)
+  })
+
+  it("resolves None when no reranker layer is provided at all", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* Effect.serviceOption(MemoryReranker)
+      }),
+    )
+    expect(Option.isNone(result)).toBe(true)
   })
 })
 
