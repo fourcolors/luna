@@ -1,0 +1,108 @@
+{
+  "version": "0.0.1",
+  "description": "Tiny self-contained fixture for smoke-testing memory-suite.ts via --sample. Not a quality baseline - too small to be statistically meaningful.",
+  "records": [
+    {
+      "id": "proj-luna-moon",
+      "kind": "project",
+      "text": "Luna Moon is a Tauri desktop app that hosts a dock of floating panel widgets around a central orb."
+    },
+    {
+      "id": "proj-deploy-router",
+      "kind": "project",
+      "text": "The deploy router slice added multi-route support so a single Luna instance can serve several channels at once."
+    },
+    {
+      "id": "pref-em-dash",
+      "kind": "preference",
+      "text": "Never use the em dash character in written output; use a plain dash instead."
+    },
+    {
+      "id": "pref-worktree",
+      "kind": "preference",
+      "text": "Always do development work inside a dedicated git worktree, never directly on a branch outside one."
+    },
+    {
+      "id": "epi-jax-box-migration",
+      "kind": "episodic",
+      "text": "On 2026-07-07 the team audited Sol versus Luna and found Sol had been dead since May 18th due to a clean-exit loophole."
+    },
+    {
+      "id": "epi-vault-merge",
+      "kind": "episodic",
+      "text": "The tiered secret vault work merged as two pull requests, one for the core tiering and one for the delete-scrub follow-up."
+    },
+    {
+      "id": "distract-weather",
+      "kind": "distractor",
+      "text": "The weather in Portland tends to be mild and rainy through most of the winter months."
+    },
+    {
+      "id": "distract-recipe",
+      "kind": "distractor",
+      "text": "A basic bread dough needs flour, water, yeast, and salt, kneaded until smooth and elastic."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-verbatim-moon",
+      "slice": "verbatim",
+      "text": "Luna Moon is a Tauri desktop app that hosts a dock of floating panel widgets around a central orb.",
+      "relevantIds": ["proj-luna-moon"]
+    },
+    {
+      "id": "q-verbatim-em-dash",
+      "slice": "verbatim",
+      "text": "Never use the em dash character in written output; use a plain dash instead.",
+      "relevantIds": ["pref-em-dash"]
+    },
+    {
+      "id": "q-paraphrase-moon",
+      "slice": "paraphrase",
+      "text": "What is Luna Moon, the Tauri app with floating widgets around an orb?",
+      "relevantIds": ["proj-luna-moon"]
+    },
+    {
+      "id": "q-paraphrase-worktree",
+      "slice": "paraphrase",
+      "text": "Should I develop directly on a branch, or always use a separate worktree?",
+      "relevantIds": ["pref-worktree"]
+    },
+    {
+      "id": "q-paraphrase-router",
+      "slice": "paraphrase",
+      "text": "How did Luna add support for serving multiple channels from one instance?",
+      "relevantIds": ["proj-deploy-router"]
+    },
+    {
+      "id": "q-vocab-mismatch-vault",
+      "slice": "vocab-mismatch",
+      "text": "How many PRs shipped the encrypted credential storage tiering feature?",
+      "relevantIds": ["epi-vault-merge"]
+    },
+    {
+      "id": "q-vocab-mismatch-dash",
+      "slice": "vocab-mismatch",
+      "text": "What's the house rule about hyphen versus long-dash punctuation?",
+      "relevantIds": ["pref-em-dash"]
+    },
+    {
+      "id": "q-temporal-sol-audit",
+      "slice": "temporal",
+      "text": "What happened on July 7th 2026 regarding the Sol versus Luna comparison?",
+      "relevantIds": ["epi-jax-box-migration"]
+    },
+    {
+      "id": "q-temporal-sol-dead",
+      "slice": "temporal",
+      "text": "Since when has the Sol agent been dead, and why?",
+      "relevantIds": ["epi-jax-box-migration"]
+    },
+    {
+      "id": "q-negative-unrelated",
+      "slice": "negative",
+      "text": "What's the best way to cook a three-course dinner for six people on a budget?",
+      "relevantIds": []
+    }
+  ]
+}

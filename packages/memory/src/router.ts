@@ -77,15 +77,16 @@ export interface MemoryRouter {
    *
    * `mode: "vec"` (default) does pure cosine ranking. `"hybrid"` (Phase 26)
    * fuses BM25 (FTS5) with vec ranking via Reciprocal Rank Fusion on
-   * backends that support it (currently `SqliteVectorBackend`). Backends
-   * that don't support hybrid fail with `MemoryBackendError`; the router
-   * does not silently fall back to vec-only.
+   * backends that support it (currently `SqliteVectorBackend`). `"bm25"`
+   * (bench harness) ranks purely by FTS5 lexical match, skipping the query
+   * embedding entirely. Backends that don't support a mode fail with
+   * `MemoryBackendError`; the router does not silently fall back to vec-only.
    */
   readonly search: (args: {
     readonly queryText: string
     readonly topK?: number
     readonly namespace?: string
-    readonly mode?: "vec" | "hybrid"
+    readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
     readonly scope?: MemoryScopeQuery
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },

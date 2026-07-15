@@ -129,7 +129,7 @@ const RetrievalCallSchema = Schema.Struct({
   kind: Schema.Literal("RetrievalCall"),
   sessionId: Schema.optional(Schema.String),
   namespace: Schema.optional(Schema.String),
-  mode: Schema.Literal("vec", "hybrid"),
+  mode: Schema.Literal("vec", "hybrid", "bm25", "hybrid-terms"),
   queryDigest: Schema.String,
   embedderProvider: Schema.String,
   embedderModel: Schema.String,

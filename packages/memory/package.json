@@ -11,6 +11,7 @@
     "test:bun": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "bench:recall": "bun bench/paraphrase-recall.ts",
+    "bench:memory": "bun bench/memory-suite.ts",
     "eval:locomo": "bun src/adapters/locomo-eval/run.ts",
     "eval:locomo:judge-rescore": "bun src/adapters/locomo-eval/judge-rescore.ts"
   },

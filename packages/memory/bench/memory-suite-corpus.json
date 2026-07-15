@@ -1,0 +1,2771 @@
+{
+  "version": "v1",
+  "description": "Memory-retrieval eval corpus for Luna's memory bench. 200 fictional records (60 project, 40 preference, 60 episodic, 40 distractor) describing a fictional personal AI-assistant product's architecture, deploy machinery, desktop UI, background jobs, and its operator's standing preferences, plus dated 2026 episodic events. 230 queries across five slices: verbatim (near-copy of a record substring), paraphrase (same meaning, reworded, may share content words), vocab-mismatch (same meaning, zero shared content words with the target record - synonyms, hypernyms, or descriptions by effect), temporal (time-anchored questions resolved against episodic record dates, with 'now' assumed to be 2026-07-14), and negative (plausible questions with no correct record in the corpus, expecting an empty relevantIds). Distractor records share two or more distinctive words with a target record's text but mean something unrelated, and are never a relevantId for any query.",
+  "records": [
+    {
+      "id": "rec_project_001_vectorlite_store",
+      "kind": "project",
+      "text": "Luna's memory system stores embeddings in a local vectorlite HNSW index layered on top of bun:sqlite for fast approximate nearest-neighbor lookup."
+    },
+    {
+      "id": "rec_project_002_hybrid_rrf",
+      "kind": "project",
+      "text": "Luna's hybrid search combines BM25 keyword scores and vector cosine scores using Reciprocal Rank Fusion to produce a single ranked list."
+    },
+    {
+      "id": "rec_project_003_memory_mcp_tools",
+      "kind": "project",
+      "text": "The memory MCP server exposes three tools to the agent: save, search, and delete, so the agent can manage its own persistent recall."
+    },
+    {
+      "id": "rec_project_004_embedding_model",
+      "kind": "project",
+      "text": "Luna runs a small local embedding model called the ember-mini encoder for memory vectors, avoiding a round trip to any external embedding API."
+    },
+    {
+      "id": "rec_project_005_dedup_merge",
+      "kind": "project",
+      "text": "When a new memory is saved with cosine similarity above 0.92 to an existing entry, the memory router merges them instead of creating a duplicate."
+    },
+    {
+      "id": "rec_project_006_memory_kind_tag",
+      "kind": "project",
+      "text": "Every memory entry carries a kind tag of project, preference, or episodic so retrieval can bias ranking toward the category the query implies."
+    },
+    {
+      "id": "rec_project_007_memory_export",
+      "kind": "project",
+      "text": "The memory export tool dumps all entries to a single JSON file for backup, independent of the live sqlite database."
+    },
+    {
+      "id": "rec_project_008_memory_ttl",
+      "kind": "project",
+      "text": "Episodic memory entries carry a 180 day soft expiry; entries not reinforced by a later reference are excluded from default search after that window."
+    },
+    {
+      "id": "rec_project_009_stable_dev_channels",
+      "kind": "project",
+      "text": "Luna ships to two deploy channels, stable and dev, so risky changes can soak in dev before promotion to stable."
+    },
+    {
+      "id": "rec_project_010_autodeploy_defer",
+      "kind": "project",
+      "text": "The autodeploy timer checks for active chat sessions before restarting a channel and defers the rollout rather than interrupting a live conversation."
+    },
+    {
+      "id": "rec_project_011_autodeploy_force",
+      "kind": "project",
+      "text": "Passing the allow-active flag to the autodeploy command forces a rollout even while sessions are active, for urgent fixes."
+    },
+    {
+      "id": "rec_project_012_rollback_health",
+      "kind": "project",
+      "text": "If a deploy fails its post-restart health check, the deploy pipeline automatically rolls the channel back to the previous known-good build."
+    },
+    {
+      "id": "rec_project_013_widget_dock_update_train",
+      "kind": "project",
+      "text": "The widget dock desktop app ships through a staged update train so a broken build can be halted before it reaches most installs."
+    },
+    {
+      "id": "rec_project_014_sandbox_pods",
+      "kind": "project",
+      "text": "Each deploy channel runs inside its own isolated sandbox pod, so the stable and dev channels never share a filesystem or process table."
+    },
+    {
+      "id": "rec_project_015_no_mistakes_gate",
+      "kind": "project",
+      "text": "Every change must pass the no-mistakes validation pipeline, which runs review, tests, and lint, before it can reach a deploy target."
+    },
+    {
+      "id": "rec_project_016_effect_layers",
+      "kind": "project",
+      "text": "Luna's backend services are wired together as composable Effect-TS layers, including the account broker, the session store, and the job ticker."
+    },
+    {
+      "id": "rec_project_017_local_state_dir",
+      "kind": "project",
+      "text": "Luna keeps all of its local runtime state, including databases and account secrets, under a single hidden directory on the operator's machine."
+    },
+    {
+      "id": "rec_project_018_session_store",
+      "kind": "project",
+      "text": "The session store persists chat threads and their messages in sqlite, so a restart never loses conversation history."
+    },
+    {
+      "id": "rec_project_019_reattach_cap",
+      "kind": "project",
+      "text": "When a chat client reconnects, the session store restores the last active thread per route but caps how many stale connections it will reattach."
+    },
+    {
+      "id": "rec_project_020_auto_title",
+      "kind": "project",
+      "text": "New threads are automatically titled by reading the first user message and stripping any client-added marker line before deriving the title."
+    },
+    {
+      "id": "rec_project_021_hide_empty_threads",
+      "kind": "project",
+      "text": "The sidebar hides threads that never received a real user message, so probe and test threads no longer clutter the thread list."
+    },
+    {
+      "id": "rec_project_022_parallel_threads",
+      "kind": "project",
+      "text": "Clicking the plus button spawns a brand new panel with a fresh thread, letting the operator run two conversations side by side."
+    },
+    {
+      "id": "rec_project_023_subagents_in_chat",
+      "kind": "project",
+      "text": "Task-tool subagent runs are rendered inline in the chat timeline as their own collapsible turns."
+    },
+    {
+      "id": "rec_project_024_job_ticker_v2",
+      "kind": "project",
+      "text": "The job ticker is Luna's second-generation background scheduler and fully replaced the original scheduler, which is no longer in the codebase."
+    },
+    {
+      "id": "rec_project_025_job_deadlines",
+      "kind": "project",
+      "text": "Each background worker has its own configurable deadline and retry backoff, replacing a single global timeout that used to fail every job type the same way."
+    },
+    {
+      "id": "rec_project_026_bounded_fibers",
+      "kind": "project",
+      "text": "Background jobs run as bounded Effect fibers so the job ticker can cap concurrency and avoid overwhelming the host machine."
+    },
+    {
+      "id": "rec_project_027_nightly_digest",
+      "kind": "project",
+      "text": "The nightly digest job compiles a summary of the day's activity and delivers it into a dedicated digest thread every morning."
+    },
+    {
+      "id": "rec_project_028_job_result_delivery",
+      "kind": "project",
+      "text": "When a background job finishes, its result is delivered directly into the chat thread that originally triggered it."
+    },
+    {
+      "id": "rec_project_029_observability_jsonl",
+      "kind": "project",
+      "text": "The observability service writes structured events as JSON Lines to a local event log for later analysis."
+    },
+    {
+      "id": "rec_project_030_cost_rollup",
+      "kind": "project",
+      "text": "Cost accounting listens for spend events from the observability service and rolls them up per session, per team, and per workflow."
+    },
+    {
+      "id": "rec_project_031_crash_loop_pager",
+      "kind": "project",
+      "text": "A watchdog process sends a heartbeat and pages the operator if a service enters a crash loop, with a manual restart lever as a fallback."
+    },
+    {
+      "id": "rec_project_032_duckdb_analysis",
+      "kind": "project",
+      "text": "The event log can be queried directly with DuckDB, letting the operator run ad-hoc analysis over months of observability data without a separate database."
+    },
+    {
+      "id": "rec_project_033_account_broker",
+      "kind": "project",
+      "text": "The account broker rotates OAuth tokens across several linked accounts to balance load and track the health of each one."
+    },
+    {
+      "id": "rec_project_034_vault_tiered",
+      "kind": "project",
+      "text": "The vault backend stores secrets in the operating system's secure keychain where available, falling back to an encrypted directory on systems without one."
+    },
+    {
+      "id": "rec_project_035_deny_rails",
+      "kind": "project",
+      "text": "Agent permissions follow a broad allowlist paired with explicit deny rails, so agents get wide reach by default but cannot touch a short list of protected operations."
+    },
+    {
+      "id": "rec_project_036_secure_secret_entry",
+      "kind": "project",
+      "text": "When an agent needs a secret from the operator, it requests one through a secure input field so the value never appears in the visible transcript."
+    },
+    {
+      "id": "rec_project_037_oauth_multiaccount",
+      "kind": "project",
+      "text": "The connector consent flow supports linking more than one account per provider, so the operator can switch which linked account a workflow uses."
+    },
+    {
+      "id": "rec_project_038_single_instance_deeplink",
+      "kind": "project",
+      "text": "The desktop app enforces a single running instance and registers a custom URL scheme so links can hand off directly into an existing window."
+    },
+    {
+      "id": "rec_project_039_skills_system",
+      "kind": "project",
+      "text": "Skills are self-contained bundles of instructions and scripts that the agent can load on demand for a specific kind of task."
+    },
+    {
+      "id": "rec_project_040_connectors_prd",
+      "kind": "project",
+      "text": "The connector system PRD describes three pillars: authentication, data sync, and the desktop panel surface that displays connected data."
+    },
+    {
+      "id": "rec_project_041_mcp_app_panels",
+      "kind": "project",
+      "text": "MCP app panels let a connected tool render its own interactive surface directly inside a desktop widget panel."
+    },
+    {
+      "id": "rec_project_042_workflows_gallery",
+      "kind": "project",
+      "text": "The workflows gallery panel lists reusable multi-step workflows the operator can launch with a single click."
+    },
+    {
+      "id": "rec_project_043_dream_skill_chips",
+      "kind": "project",
+      "text": "The nightly reflection job can propose improvements to existing skills, surfaced to the operator as review chips in chat."
+    },
+    {
+      "id": "rec_project_044_telegram_attachments",
+      "kind": "project",
+      "text": "Inbound Telegram photos and PDFs are queued per chat in a bounded FIFO and passed through a file-type sniff check before being attached to a thread."
+    },
+    {
+      "id": "rec_project_045_telegram_formatting",
+      "kind": "project",
+      "text": "The Telegram channel renders replies with formatted text, shows a typing indicator, and supports a small set of slash commands."
+    },
+    {
+      "id": "rec_project_046_voice_speech",
+      "kind": "project",
+      "text": "Voice replies are synthesized on-device using the operating system's built-in speech framework rather than a cloud text-to-speech service."
+    },
+    {
+      "id": "rec_project_047_local_shell_multiroot",
+      "kind": "project",
+      "text": "The attach-machine capability gives an agent full local shell access on the operator's machine rather than a folder-confined subset."
+    },
+    {
+      "id": "rec_project_048_trunk_based",
+      "kind": "project",
+      "text": "Luna's engineering workflow is trunk-based: every branch merges directly to the main branch and no long-lived secondary branch is kept around."
+    },
+    {
+      "id": "rec_project_049_postgres_verdict",
+      "kind": "project",
+      "text": "A migration study concluded that Luna's sqlite-based storage should coexist with a future Postgres-backed entities service rather than migrate wholesale."
+    },
+    {
+      "id": "rec_project_050_model_routing",
+      "kind": "project",
+      "text": "Provider routing chains are keyed by a model identifier, so a single request can be routed to whichever provider currently serves that model."
+    },
+    {
+      "id": "rec_project_051_model_effort_switcher",
+      "kind": "project",
+      "text": "The composer includes a switcher for choosing both the model and its reasoning effort before sending a message."
+    },
+    {
+      "id": "rec_project_052_font_settings",
+      "kind": "project",
+      "text": "Font family and size for the chat interface are configurable from the settings panel and persist across restarts."
+    },
+    {
+      "id": "rec_project_053_notifications",
+      "kind": "project",
+      "text": "Desktop notifications are grouped into four categories so the operator can mute noisy categories without losing urgent ones."
+    },
+    {
+      "id": "rec_project_054_theme_watercolor",
+      "kind": "project",
+      "text": "The desktop app ships a soft watercolor visual theme as an alternative to the default light and dark themes."
+    },
+    {
+      "id": "rec_project_055_window_welding",
+      "kind": "project",
+      "text": "Adjacent widget panels magnetically weld their edges together so dragging one panel can tow a connected cluster."
+    },
+    {
+      "id": "rec_project_056_collapse_toggle",
+      "kind": "project",
+      "text": "The whole widget dock can collapse into a single small orb icon and expand back out with a keyboard shortcut."
+    },
+    {
+      "id": "rec_project_057_artifacts_in_panels",
+      "kind": "project",
+      "text": "Generated artifacts of every supported kind can be opened and viewed directly inside a desktop panel instead of only in chat."
+    },
+    {
+      "id": "rec_project_058_traffic_lights",
+      "kind": "project",
+      "text": "The desktop window's native close, minimize, and maximize buttons are given extra clickable padding so they register reliably near the window edge."
+    },
+    {
+      "id": "rec_project_059_liveness_ladder",
+      "kind": "project",
+      "text": "A staged liveness system escalates from a simple heartbeat to a crash-loop pager to a manual restart lever as failures get more severe."
+    },
+    {
+      "id": "rec_project_060_alignment_loop",
+      "kind": "project",
+      "text": "A nightly reflection job, a beliefs file, and a periodic survey together form a closed loop that keeps the agent's stated preferences aligned with observed behavior."
+    },
+    {
+      "id": "rec_preference_001_terse",
+      "kind": "preference",
+      "text": "Morgan Ellery prefers terse responses with no trailing recap; answer the question and stop."
+    },
+    {
+      "id": "rec_preference_002_full_name",
+      "kind": "preference",
+      "text": "Morgan Ellery prefers being addressed by full name rather than a shortened first name."
+    },
+    {
+      "id": "rec_preference_003_dark_mode",
+      "kind": "preference",
+      "text": "Morgan Ellery keeps the editor and terminal in dark mode at all times."
+    },
+    {
+      "id": "rec_preference_004_zsh_default",
+      "kind": "preference",
+      "text": "Morgan Ellery wants shell examples written in Zsh syntax by default, reserving Bash only for portable scripts and skills."
+    },
+    {
+      "id": "rec_preference_005_verify_before_claim",
+      "kind": "preference",
+      "text": "Morgan Ellery expects a claim to be checked, by running a command or reading a file, before it is stated as fact."
+    },
+    {
+      "id": "rec_preference_006_1password_keychain",
+      "kind": "preference",
+      "text": "Morgan Ellery keeps most credentials in a password manager and treats the OS keychain as a fallback store."
+    },
+    {
+      "id": "rec_preference_007_new_commits",
+      "kind": "preference",
+      "text": "Morgan Ellery prefers a fresh git commit over amending an existing one unless an amend is explicitly requested."
+    },
+    {
+      "id": "rec_preference_008_obsidian_notes",
+      "kind": "preference",
+      "text": "Morgan Ellery keeps daily notes and personal knowledge in a flat, metadata-tagged note vault."
+    },
+    {
+      "id": "rec_preference_009_bang_prefix",
+      "kind": "preference",
+      "text": "Morgan Ellery wants interactive commands suggested with a leading exclamation mark so they can be run straight from the prompt."
+    },
+    {
+      "id": "rec_preference_010_email",
+      "kind": "preference",
+      "text": "Morgan Ellery's contact email for both work and personal matters is morgan.ellery@example.com."
+    },
+    {
+      "id": "rec_preference_011_no_em_dash",
+      "kind": "preference",
+      "text": "Morgan Ellery never wants an em dash in written text; a plain hyphen should be used instead."
+    },
+    {
+      "id": "rec_preference_012_one_sentence_per_line",
+      "kind": "preference",
+      "text": "Morgan Ellery wants long markdown documents written with one full sentence per physical line."
+    },
+    {
+      "id": "rec_preference_013_quality_over_cost",
+      "kind": "preference",
+      "text": "Morgan Ellery does not want development cost weighed heavily in technical decisions, favoring quality, simplicity, and long-term maintainability instead."
+    },
+    {
+      "id": "rec_preference_014_worktree_only",
+      "kind": "preference",
+      "text": "Morgan Ellery insists that agents always work from a git worktree rather than editing a branch directly."
+    },
+    {
+      "id": "rec_preference_015_delegate_exploration",
+      "kind": "preference",
+      "text": "Morgan Ellery wants exploration and search work handed off to subagents so the main thread's context stays clean."
+    },
+    {
+      "id": "rec_preference_016_end_of_turn_summary",
+      "kind": "preference",
+      "text": "Morgan Ellery wants a short end-of-turn summary on shipped work covering what shipped, the risk, judgment calls made, and what's next."
+    },
+    {
+      "id": "rec_preference_017_reproduce_bug_e2e",
+      "kind": "preference",
+      "text": "Morgan Ellery wants a bug reproduced end-to-end, the way a real user would trigger it, before any fix is attempted."
+    },
+    {
+      "id": "rec_preference_018_pixel_perfect",
+      "kind": "preference",
+      "text": "Morgan Ellery is picky about visual polish and wants any obviously wrong UI detail fixed along the way, even if unrelated to the current task."
+    },
+    {
+      "id": "rec_preference_019_fix_flakiness",
+      "kind": "preference",
+      "text": "Morgan Ellery wants lint errors and flaky tests fixed on sight, even when they were not caused by the current change."
+    },
+    {
+      "id": "rec_preference_020_evidence_first",
+      "kind": "preference",
+      "text": "Morgan Ellery wants technical decisions backed by research and shown evidence rather than assumptions."
+    },
+    {
+      "id": "rec_preference_021_workflow_model_tiering",
+      "kind": "preference",
+      "text": "Morgan Ellery wants workflow scripts authored on a large model but has their subagents run on smaller models chosen by task difficulty."
+    },
+    {
+      "id": "rec_preference_022_no_manual_changelog",
+      "kind": "preference",
+      "text": "Morgan Ellery does not want CHANGELOG files or other auto-generated files edited by hand."
+    },
+    {
+      "id": "rec_preference_023_scoped_instruction_priority",
+      "kind": "preference",
+      "text": "Morgan Ellery expects a one-off, scoped instruction for the current task to override a standing preference without permanently changing that preference."
+    },
+    {
+      "id": "rec_preference_024_protected_how_to_work",
+      "kind": "preference",
+      "text": "Morgan Ellery wants the operating instructions section of any guidance file left untouched unless they explicitly change how they want to work."
+    },
+    {
+      "id": "rec_preference_025_coffee_oat_milk",
+      "kind": "preference",
+      "text": "Morgan Ellery takes their coffee with oat milk and no sugar."
+    },
+    {
+      "id": "rec_preference_026_minimal_emoji",
+      "kind": "preference",
+      "text": "Morgan Ellery does not want emoji added to written output unless they specifically ask for it."
+    },
+    {
+      "id": "rec_preference_027_confirm_destructive_git",
+      "kind": "preference",
+      "text": "Morgan Ellery wants confirmation before any destructive git operation such as a force push or a hard reset."
+    },
+    {
+      "id": "rec_preference_028_proceed_on_reversible",
+      "kind": "preference",
+      "text": "Morgan Ellery wants agents to proceed without asking on reversible actions that clearly follow from the original request."
+    },
+    {
+      "id": "rec_preference_029_native_notifications",
+      "kind": "preference",
+      "text": "Morgan Ellery prefers native desktop notifications over in-app toast banners for anything urgent."
+    },
+    {
+      "id": "rec_preference_030_keyboard_chords",
+      "kind": "preference",
+      "text": "Morgan Ellery likes multi-key chord shortcuts for actions they use often, rather than single hotkeys that collide with other apps."
+    },
+    {
+      "id": "rec_preference_031_timezone",
+      "kind": "preference",
+      "text": "Morgan Ellery works on Pacific time and wants dates and schedules expressed in that zone unless stated otherwise."
+    },
+    {
+      "id": "rec_preference_032_commit_message_why",
+      "kind": "preference",
+      "text": "Morgan Ellery wants commit messages that explain why a change was made rather than restating what the diff already shows."
+    },
+    {
+      "id": "rec_preference_033_no_agent_coauthor",
+      "kind": "preference",
+      "text": "Morgan Ellery never wants an agent's name added as a co-author on a commit."
+    },
+    {
+      "id": "rec_preference_034_small_prs",
+      "kind": "preference",
+      "text": "Morgan Ellery prefers pull requests kept small and scoped to one concern rather than bundling unrelated changes."
+    },
+    {
+      "id": "rec_preference_035_distrust_unproven",
+      "kind": "preference",
+      "text": "Morgan Ellery wants any claim that has not been checked flagged as unproven rather than stated with confidence."
+    },
+    {
+      "id": "rec_preference_036_screenshot_proof",
+      "kind": "preference",
+      "text": "Morgan Ellery requires a real screenshot of any user-facing UI change before considering the change done."
+    },
+    {
+      "id": "rec_preference_037_scratch_folder",
+      "kind": "preference",
+      "text": "Morgan Ellery wants throwaway scripts kept in a dedicated scratch folder rather than scattered through the main project tree."
+    },
+    {
+      "id": "rec_preference_038_no_permission_updates",
+      "kind": "preference",
+      "text": "Morgan Ellery never wants an agent to change its own permission configuration without being asked."
+    },
+    {
+      "id": "rec_preference_039_public_repo_caution",
+      "kind": "preference",
+      "text": "Morgan Ellery does not want any personal infrastructure details, like real hostnames or internal aliases, appearing in a public repository."
+    },
+    {
+      "id": "rec_preference_040_first_source",
+      "kind": "preference",
+      "text": "Morgan Ellery wants technical claims backed by a first-party, original source rather than a secondhand summary whenever one is available."
+    },
+    {
+      "id": "rec_episodic_001_scheduler_v1_retired",
+      "kind": "episodic",
+      "text": "On 2026-01-08, the original scheduler was retired and the job ticker became the only scheduler running in production."
+    },
+    {
+      "id": "rec_episodic_002_vault_tiered_shipped",
+      "kind": "episodic",
+      "text": "On 2026-01-15, the tiered vault backend shipped, adding keychain storage on systems that support it and an encrypted directory fallback everywhere else."
+    },
+    {
+      "id": "rec_episodic_003_model_routing_merged",
+      "kind": "episodic",
+      "text": "On 2026-01-22, provider routing chains keyed by model identifier were merged, closing the seam left open by the first routing pass."
+    },
+    {
+      "id": "rec_episodic_004_moon_setup_wizard",
+      "kind": "episodic",
+      "text": "On 2026-01-29, the first-run setup wizard for the desktop app was verified against a real build and shipped."
+    },
+    {
+      "id": "rec_episodic_005_voice_shipped",
+      "kind": "episodic",
+      "text": "On 2026-02-03, on-device voice replies shipped after the speech framework integration cleared its verification pass."
+    },
+    {
+      "id": "rec_episodic_006_string_retether",
+      "kind": "episodic",
+      "text": "On 2026-02-10, the physical string effect connecting satellite panels to the dock was rebuilt to survive a panel being dragged off-screen."
+    },
+    {
+      "id": "rec_episodic_007_provider_routing_pr99",
+      "kind": "episodic",
+      "text": "On 2026-02-17, the multi-provider routing seam went live, letting a single conversation switch providers mid-thread."
+    },
+    {
+      "id": "rec_episodic_008_dead_code_sweep",
+      "kind": "episodic",
+      "text": "On 2026-02-24, a dead code sweep removed several unused modules, though one package was kept after a barrel-import check flagged it as still in use."
+    },
+    {
+      "id": "rec_episodic_009_native_window_buttons",
+      "kind": "episodic",
+      "text": "On 2026-03-02, native window buttons shipped after discovering the desktop framework's window command needed an explicit capability entry or the call was silently rejected."
+    },
+    {
+      "id": "rec_episodic_010_reattach_self_heal",
+      "kind": "episodic",
+      "text": "On 2026-03-05, per-route last-thread restoration and a reattach cap shipped together to stop stale connections from piling up after a restart."
+    },
+    {
+      "id": "rec_episodic_011_panels_not_always_on_top",
+      "kind": "episodic",
+      "text": "On 2026-03-09, a fix landed so widget panels only float above other windows when the operator has explicitly turned that setting on."
+    },
+    {
+      "id": "rec_episodic_012_server_self_update_draft",
+      "kind": "episodic",
+      "text": "On 2026-03-13, a draft of the self-update command for the backend server was opened, covering the first phase of a planned four-phase rollout."
+    },
+    {
+      "id": "rec_episodic_013_traffic_lights_fix",
+      "kind": "episodic",
+      "text": "On 2026-03-18, the native window traffic light buttons were fixed by growing the titlebar hit area and adding a drag guard in the frontend."
+    },
+    {
+      "id": "rec_episodic_014_drag_lag_fix",
+      "kind": "episodic",
+      "text": "On 2026-03-23, panel dragging lag was fixed by coalescing move events onto a single animation frame instead of applying each one immediately."
+    },
+    {
+      "id": "rec_episodic_015_moon_no_outline_rule",
+      "kind": "episodic",
+      "text": "On 2026-03-27, a hard rule was adopted never to add a crisp ring or border outline to a widget's shell after a review flagged it as visually jarring."
+    },
+    {
+      "id": "rec_episodic_016_adapter_stream_fix",
+      "kind": "episodic",
+      "text": "On 2026-04-01, a bug where the streaming adapter silently swallowed an underlying failure cause was fixed and merged."
+    },
+    {
+      "id": "rec_episodic_017_deploy_router_slice",
+      "kind": "episodic",
+      "text": "On 2026-04-06, the deploy router's multi-route slice merged, though SPKI pinning and a live rollout to the secondary connection pool were left for a follow-up."
+    },
+    {
+      "id": "rec_episodic_018_weld_seam_band_fix",
+      "kind": "episodic",
+      "text": "On 2026-04-10, a race condition in the panel welding refresh was fixed by coalescing and debouncing the seam recalculation."
+    },
+    {
+      "id": "rec_episodic_019_wkwebview_cache_bug",
+      "kind": "episodic",
+      "text": "On 2026-04-14, a release looked broken only in the installed desktop app; the root cause turned out to be a stale webview cache that needed purging on every version change."
+    },
+    {
+      "id": "rec_episodic_020_shell_acl_parallel_panels",
+      "kind": "episodic",
+      "text": "On 2026-04-17, parallel panel support shipped behind an access control list keyed to a per-panel identifier."
+    },
+    {
+      "id": "rec_episodic_021_studio_web_build_merged",
+      "kind": "episodic",
+      "text": "On 2026-04-21, the new React and Vite based companion web app replaced the older framework it was built to succeed."
+    },
+    {
+      "id": "rec_episodic_022_telegram_ux_upgrade",
+      "kind": "episodic",
+      "text": "On 2026-04-24, the Telegram channel upgrade shipped with formatted replies, a typing indicator, and a small set of slash commands."
+    },
+    {
+      "id": "rec_episodic_023_sdk_sonnet_default",
+      "kind": "episodic",
+      "text": "On 2026-04-28, the default daily-driver model was switched to a faster mid-tier model, with a larger model kept available as an advisor option."
+    },
+    {
+      "id": "rec_episodic_024_moon_sticky_windows",
+      "kind": "episodic",
+      "text": "On 2026-05-02, clustered widget windows were made to tow each other using a native transient window attachment instead of a manual position sync."
+    },
+    {
+      "id": "rec_episodic_025_moon_shell_acl_v50",
+      "kind": "episodic",
+      "text": "On 2026-05-06, a desktop app release shipped the parallel panel access control list to every operator on the stable channel."
+    },
+    {
+      "id": "rec_episodic_026_luna_studio_web_build",
+      "kind": "episodic",
+      "text": "On 2026-05-08, a set of experimental widgets were verified live against the new web companion app after a local auth gap was worked around."
+    },
+    {
+      "id": "rec_episodic_027_moon_wkwebview_stale_cache_note",
+      "kind": "episodic",
+      "text": "On 2026-05-11, a follow-up incident again traced a broken-looking release back to webview cache staleness, confirming the purge-on-version-change rule was necessary."
+    },
+    {
+      "id": "rec_episodic_028_digest_job_timeout",
+      "kind": "episodic",
+      "text": "On 2026-05-14, the nightly digest job started failing with a deadline_passed error because every job type shared one global five minute timeout regardless of how long it actually needed."
+    },
+    {
+      "id": "rec_episodic_029_digest_job_root_cause_note",
+      "kind": "episodic",
+      "text": "On 2026-05-14, the digest job failure was traced to the scheduler's single global timeout rather than to the digest job's own logic, which was working correctly."
+    },
+    {
+      "id": "rec_episodic_030_sol_agent_audit",
+      "kind": "episodic",
+      "text": "On 2026-05-18, an audit of a competing internal agent project found it had been dead since a clean-exit code path silently stopped it from restarting."
+    },
+    {
+      "id": "rec_episodic_031_job_deadlines_fix_merged",
+      "kind": "episodic",
+      "text": "On 2026-05-21, per-worker deadlines and retry backoff merged to replace the single global timeout that had caused the digest job failure earlier that month."
+    },
+    {
+      "id": "rec_episodic_032_job_deadlines_deployed",
+      "kind": "episodic",
+      "text": "On 2026-05-24, the per-worker deadline fix was deployed to both the dev and stable channels and the digest job began completing reliably again."
+    },
+    {
+      "id": "rec_episodic_033_moon_slideout_drawer_v55",
+      "kind": "episodic",
+      "text": "On 2026-05-27, a single-window thread switcher for the desktop app shipped, replacing an earlier cross-window redocking approach that proved unreliable in real use."
+    },
+    {
+      "id": "rec_episodic_034_moon_auto_titles",
+      "kind": "episodic",
+      "text": "On 2026-05-29, automatic thread titling shipped, deriving a title from the first user message the first time a thread is read after creation."
+    },
+    {
+      "id": "rec_episodic_035_moon_title_hardening",
+      "kind": "episodic",
+      "text": "On 2026-06-01, thread titling was hardened to strip a client-added marker line before deriving the title, after titles were found leaking that marker text."
+    },
+    {
+      "id": "rec_episodic_036_dream_prompt_length_fix",
+      "kind": "episodic",
+      "text": "On 2026-06-03, the nightly reflection job's prompt length problem was fixed in a sandboxed verification pass, cutting the token count enough to stop truncation."
+    },
+    {
+      "id": "rec_episodic_037_dream_prompt_deploy_note",
+      "kind": "episodic",
+      "text": "On 2026-06-05, the reflection job's prompt fix was still pending a stable channel deploy with sample logging turned on to confirm the fix under a real overnight run."
+    },
+    {
+      "id": "rec_episodic_038_hide_empty_threads_merged",
+      "kind": "episodic",
+      "text": "On 2026-06-08, a change to hide empty and archived threads from the sidebar merged, using an existence check that runs before the row limit is applied."
+    },
+    {
+      "id": "rec_episodic_039_hide_empty_threads_live_check",
+      "kind": "episodic",
+      "text": "On 2026-06-10, a spot check against a copy of the production thread database found that twenty-two of thirty-five threads had never received a real user message."
+    },
+    {
+      "id": "rec_episodic_040_workflows_view_review",
+      "kind": "episodic",
+      "text": "On 2026-06-13, the workflows gallery panel was put up for review after the dead in-chat workflow engine it replaced was fully removed."
+    },
+    {
+      "id": "rec_episodic_041_liveness_ladder_pr",
+      "kind": "episodic",
+      "text": "On 2026-06-15, the first stage of the liveness ladder shipped as a draft, adding a watchdog heartbeat, a crash-loop pager, and a manual restart lever."
+    },
+    {
+      "id": "rec_episodic_042_spike_before_refactor_feedback",
+      "kind": "episodic",
+      "text": "On 2026-06-17, the operator asked that any big refactor be preceded by a small throwaway spike that validates the underlying assumption first."
+    },
+    {
+      "id": "rec_episodic_043_ultracode_dropdown_effort_triplication",
+      "kind": "episodic",
+      "text": "On 2026-06-19, an effort-level dropdown shipped, but the effort type turned out to be defined three separate times across the protocol, wire format, and reducer, so all three had to be widened together."
+    },
+    {
+      "id": "rec_episodic_044_chat_server_memory_leak",
+      "kind": "episodic",
+      "text": "On 2026-06-22, a memory leak in the chat server's reattach path was fixed by adding a heartbeat and bounding the connection cache to five hundred and twelve entries."
+    },
+    {
+      "id": "rec_episodic_045_thread_delivery_sink",
+      "kind": "episodic",
+      "text": "On 2026-06-24, background job results began delivering directly into the thread that triggered them instead of only appearing in a separate results panel."
+    },
+    {
+      "id": "rec_episodic_046_moon_topbar_redesign",
+      "kind": "episodic",
+      "text": "On 2026-06-27, the top bar of the desktop app was redesigned, and a rendering quirk was found where the embedded web view silently dropped a modern color function inside inline SVG icons."
+    },
+    {
+      "id": "rec_episodic_047_workspace_md_injection_warning",
+      "kind": "episodic",
+      "text": "On 2026-06-29, a public workspace notes file was found to be both publicly readable and directly injected into the agent's prompt, so deploy infrastructure details were removed from it."
+    },
+    {
+      "id": "rec_episodic_048_workflow_model_tiering_feedback",
+      "kind": "episodic",
+      "text": "On 2026-07-01, the operator clarified that workflow scripts should be authored on the largest available model but their subagents should run on a smaller model chosen for the task."
+    },
+    {
+      "id": "rec_episodic_049_studio_phase0_gate",
+      "kind": "episodic",
+      "text": "On 2026-07-02, the phase zero gate for the native companion app passed after it was verified running in a real embedded webview rather than a browser simulation."
+    },
+    {
+      "id": "rec_episodic_050_studio_phase1_merged",
+      "kind": "episodic",
+      "text": "On 2026-07-04, phase one of the native companion app merged, adding a transport layer, last-thread restoration, and an unbounded reconnect loop."
+    },
+    {
+      "id": "rec_episodic_051_studio_deeplink_singleinstance",
+      "kind": "episodic",
+      "text": "On 2026-07-06, custom URL deep linking and single-instance enforcement for the native companion app merged after the launch behavior was proven against a real build."
+    },
+    {
+      "id": "rec_episodic_052_telegram_attachments_deployed",
+      "kind": "episodic",
+      "text": "On 2026-07-08, the fix for silently dropped Telegram photo and PDF attachments was deployed and verified live against a real chat."
+    },
+    {
+      "id": "rec_episodic_053_job_ticker_deadlines_root_cause",
+      "kind": "episodic",
+      "text": "On 2026-07-09, the per-worker deadline fix was confirmed merged and deployed to both channels, closing out the root cause of the earlier May digest job failures."
+    },
+    {
+      "id": "rec_episodic_054_moon_thread_drawer_deployed_stable",
+      "kind": "episodic",
+      "text": "On 2026-07-09, the thread sidebar decluttering fix was force-deployed to the stable channel, dropping the visible thread count from one hundred twenty one down to about sixty seven."
+    },
+    {
+      "id": "rec_episodic_055_studio_notifications_merged",
+      "kind": "episodic",
+      "text": "On 2026-07-09, phase two of the native companion app merged, adding real desktop notification banners across four categories."
+    },
+    {
+      "id": "rec_episodic_056_studio_all_phases_complete",
+      "kind": "episodic",
+      "text": "On 2026-07-10, all five planned phases of the native companion app were marked complete, closing out a project that began with a phase zero spike."
+    },
+    {
+      "id": "rec_episodic_057_moon_workflows_registry_restart_note",
+      "kind": "episodic",
+      "text": "On 2026-07-11, it was noted that updates to the workflow registry file require a full desktop app restart before the new entries appear in the gallery panel."
+    },
+    {
+      "id": "rec_episodic_058_ignore_vite_artifacts",
+      "kind": "episodic",
+      "text": "On 2026-07-12, build tooling timestamp files started being ignored by version control after they kept showing up as noise in every diff."
+    },
+    {
+      "id": "rec_episodic_059_dream_skill_chips_merged",
+      "kind": "episodic",
+      "text": "On 2026-07-13, the reflection job's skill-improvement proposals began surfacing to the operator as review chips directly in chat."
+    },
+    {
+      "id": "rec_episodic_060_worktree_bun_cache_fix",
+      "kind": "episodic",
+      "text": "On 2026-07-14, a fresh worktree setup failure was traced to a shared package cache permission error, fixed by pointing the install command at a per-operator cache directory."
+    },
+    {
+      "id": "rec_distractor_001_bank_vault_secure",
+      "kind": "distractor",
+      "text": "A bank vault is considered secure once its walls exceed a foot of reinforced concrete, regardless of the lock brand."
+    },
+    {
+      "id": "rec_distractor_002_keychain_fallback",
+      "kind": "distractor",
+      "text": "A car's spare keychain is often kept as a fallback in a kitchen drawer in case the everyday one goes missing."
+    },
+    {
+      "id": "rec_distractor_003_memory_entry_journal",
+      "kind": "distractor",
+      "text": "A diary app calls each saved note a memory entry, though under the hood it is just a plain text file with no search index."
+    },
+    {
+      "id": "rec_distractor_004_memory_foam_expand",
+      "kind": "distractor",
+      "text": "Memory foam mattresses ship compressed in a small box and slowly expand back to full size once the packaging is removed."
+    },
+    {
+      "id": "rec_distractor_005_digest_biology",
+      "kind": "distractor",
+      "text": "The human digestive system breaks down food using enzymes secreted by the stomach and small intestine."
+    },
+    {
+      "id": "rec_distractor_006_boat_dock",
+      "kind": "distractor",
+      "text": "A wooden boat dock needs its pilings inspected every few years for rot below the waterline."
+    },
+    {
+      "id": "rec_distractor_007_hospital_review_panel",
+      "kind": "distractor",
+      "text": "A hospital review panel evaluates unusual medical cases and recommends a course of treatment."
+    },
+    {
+      "id": "rec_distractor_008_solar_panel",
+      "kind": "distractor",
+      "text": "Solar panels convert sunlight into electricity and are typically rated by their peak wattage output."
+    },
+    {
+      "id": "rec_distractor_009_sewing_thread_seam",
+      "kind": "distractor",
+      "text": "A tailor matches sewing thread to fabric weight so a seam doesn't pucker once it's pressed."
+    },
+    {
+      "id": "rec_distractor_010_subway_token",
+      "kind": "distractor",
+      "text": "A subway token was once required for fare payment before contactless cards replaced the system entirely."
+    },
+    {
+      "id": "rec_distractor_011_runway_model",
+      "kind": "distractor",
+      "text": "A runway model walks a designer's newest collection in front of a seated front row."
+    },
+    {
+      "id": "rec_distractor_012_architecture_scale_model",
+      "kind": "distractor",
+      "text": "An architect builds a scale model of a building to show a client the massing before construction begins."
+    },
+    {
+      "id": "rec_distractor_013_dark_roast_coffee",
+      "kind": "distractor",
+      "text": "Dark roast coffee beans are roasted longer, producing a bolder flavor with less perceived acidity."
+    },
+    {
+      "id": "rec_distractor_014_push_notification_marketing",
+      "kind": "distractor",
+      "text": "Push notification marketing campaigns see the highest engagement when sent during commute hours."
+    },
+    {
+      "id": "rec_distractor_015_junkyard_watchdog",
+      "kind": "distractor",
+      "text": "A junkyard watchdog is trained to patrol the fence line at night and bark at intruders."
+    },
+    {
+      "id": "rec_distractor_016_violin_string",
+      "kind": "distractor",
+      "text": "A violin string typically needs replacing about once a year for a player who practices daily."
+    },
+    {
+      "id": "rec_distractor_017_metal_welding_seam",
+      "kind": "distractor",
+      "text": "Metal welding joins two pieces of steel by melting a filler rod into the seam between them."
+    },
+    {
+      "id": "rec_distractor_018_drag_racing",
+      "kind": "distractor",
+      "text": "Drag racing measures how quickly a car covers a quarter mile from a standing start."
+    },
+    {
+      "id": "rec_distractor_019_movie_title_sequence",
+      "kind": "distractor",
+      "text": "A movie's title sequence often sets the tone before the first line of dialogue is spoken."
+    },
+    {
+      "id": "rec_distractor_020_cash_cache",
+      "kind": "distractor",
+      "text": "A cache of cash hidden under a floorboard is a common trope in heist films."
+    },
+    {
+      "id": "rec_distractor_021_kitchen_timer_egg",
+      "kind": "distractor",
+      "text": "A kitchen timer set for a soft-boiled egg usually reads about six minutes."
+    },
+    {
+      "id": "rec_distractor_022_airline_deadline",
+      "kind": "distractor",
+      "text": "An airline boarding deadline typically closes fifteen minutes before a flight's scheduled departure."
+    },
+    {
+      "id": "rec_distractor_023_railyard_scheduler",
+      "kind": "distractor",
+      "text": "A rail yard scheduler sequences which locomotive pulls out first during a shift change."
+    },
+    {
+      "id": "rec_distractor_024_singing_voice",
+      "kind": "distractor",
+      "text": "A trained singing voice can project across a concert hall without any electronic amplification."
+    },
+    {
+      "id": "rec_distractor_025_telegram_historical",
+      "kind": "distractor",
+      "text": "A telegram sent in the early twentieth century charged by the word, which pushed senders toward terse phrasing."
+    },
+    {
+      "id": "rec_distractor_026_physics_vector",
+      "kind": "distractor",
+      "text": "A vector in physics has both a magnitude and a direction, unlike a plain scalar quantity."
+    },
+    {
+      "id": "rec_distractor_027_gem_embedding",
+      "kind": "distractor",
+      "text": "A jeweler's gem embedding technique sets small stones directly into a metal band without visible prongs."
+    },
+    {
+      "id": "rec_distractor_028_commit_message_convention",
+      "kind": "distractor",
+      "text": "The Conventional Commits convention standardizes commit message prefixes like feat and fix across many open source projects."
+    },
+    {
+      "id": "rec_distractor_029_git_worktree_generic",
+      "kind": "distractor",
+      "text": "Git worktrees let a developer check out multiple branches of the same repository into separate directories at once."
+    },
+    {
+      "id": "rec_distractor_030_oauth_generic",
+      "kind": "distractor",
+      "text": "OAuth 2.0 access tokens should be short-lived and paired with a refresh token for any long-running session."
+    },
+    {
+      "id": "rec_distractor_031_bm25_elasticsearch",
+      "kind": "distractor",
+      "text": "BM25 is the default keyword ranking function in Elasticsearch and performs well without any vector index at all."
+    },
+    {
+      "id": "rec_distractor_032_photo_effect",
+      "kind": "distractor",
+      "text": "A long exposure effect in photography blurs moving water into a smooth, silky texture."
+    },
+    {
+      "id": "rec_distractor_033_layer_cake",
+      "kind": "distractor",
+      "text": "A properly baked layer cake needs each layer to cool completely before it's stacked and frosted."
+    },
+    {
+      "id": "rec_distractor_034_windup_widget_toy",
+      "kind": "distractor",
+      "text": "A wind-up widget sold at a novelty shop clicks and spins for about thirty seconds before it runs down."
+    },
+    {
+      "id": "rec_distractor_035_juggling_skill",
+      "kind": "distractor",
+      "text": "Juggling three balls is usually the first skill a beginner performer learns before moving on to clubs or rings."
+    },
+    {
+      "id": "rec_distractor_036_plumbing_connector",
+      "kind": "distractor",
+      "text": "A plumbing connector fitting joins two pipes of different diameters without a full pipe replacement."
+    },
+    {
+      "id": "rec_distractor_037_court_session",
+      "kind": "distractor",
+      "text": "A court session can be adjourned by a judge if a key witness fails to appear."
+    },
+    {
+      "id": "rec_distractor_038_tv_channel_ratings",
+      "kind": "distractor",
+      "text": "A television channel's ratings are measured by the number of households tuned in during a given time slot."
+    },
+    {
+      "id": "rec_distractor_039_rollercoaster_rollback",
+      "kind": "distractor",
+      "text": "A roller coaster's rollback safety feature stops the train from cresting a hill it doesn't have enough speed to clear."
+    },
+    {
+      "id": "rec_distractor_040_oncall_pager",
+      "kind": "distractor",
+      "text": "A pager clipped to a belt was the standard way an on-call doctor got reached before mobile phones became common."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q_verbatim_001",
+      "slice": "verbatim",
+      "text": "stores embeddings in a local vectorlite HNSW index layered on top of bun:sqlite",
+      "relevantIds": [
+        "rec_project_001_vectorlite_store"
+      ]
+    },
+    {
+      "id": "q_verbatim_002",
+      "slice": "verbatim",
+      "text": "combines BM25 keyword scores and vector cosine scores using Reciprocal Rank Fusion",
+      "relevantIds": [
+        "rec_project_002_hybrid_rrf"
+      ]
+    },
+    {
+      "id": "q_verbatim_003",
+      "slice": "verbatim",
+      "text": "exposes three tools to the agent: save, search, and delete",
+      "relevantIds": [
+        "rec_project_003_memory_mcp_tools"
+      ]
+    },
+    {
+      "id": "q_verbatim_004",
+      "slice": "verbatim",
+      "text": "ships to two deploy channels, stable and dev",
+      "relevantIds": [
+        "rec_project_009_stable_dev_channels"
+      ]
+    },
+    {
+      "id": "q_verbatim_005",
+      "slice": "verbatim",
+      "text": "if a deploy fails its post-restart health check, the deploy pipeline automatically rolls the channel back",
+      "relevantIds": [
+        "rec_project_012_rollback_health"
+      ]
+    },
+    {
+      "id": "q_verbatim_006",
+      "slice": "verbatim",
+      "text": "backend services are wired together as composable Effect-TS layers",
+      "relevantIds": [
+        "rec_project_016_effect_layers"
+      ]
+    },
+    {
+      "id": "q_verbatim_007",
+      "slice": "verbatim",
+      "text": "second-generation background scheduler and fully replaced the original scheduler",
+      "relevantIds": [
+        "rec_project_024_job_ticker_v2"
+      ]
+    },
+    {
+      "id": "q_verbatim_008",
+      "slice": "verbatim",
+      "text": "writes structured events as JSON Lines to a local event log",
+      "relevantIds": [
+        "rec_project_029_observability_jsonl"
+      ]
+    },
+    {
+      "id": "q_verbatim_009",
+      "slice": "verbatim",
+      "text": "rotates OAuth tokens across several linked accounts to balance load",
+      "relevantIds": [
+        "rec_project_033_account_broker"
+      ]
+    },
+    {
+      "id": "q_verbatim_010",
+      "slice": "verbatim",
+      "text": "stores secrets in the operating system's secure keychain where available",
+      "relevantIds": [
+        "rec_project_034_vault_tiered"
+      ]
+    },
+    {
+      "id": "q_verbatim_011",
+      "slice": "verbatim",
+      "text": "broad allowlist paired with explicit deny rails",
+      "relevantIds": [
+        "rec_project_035_deny_rails"
+      ]
+    },
+    {
+      "id": "q_verbatim_012",
+      "slice": "verbatim",
+      "text": "self-contained bundles of instructions and scripts that the agent can load on demand",
+      "relevantIds": [
+        "rec_project_039_skills_system"
+      ]
+    },
+    {
+      "id": "q_verbatim_013",
+      "slice": "verbatim",
+      "text": "inbound Telegram photos and PDFs are queued per chat in a bounded FIFO",
+      "relevantIds": [
+        "rec_project_044_telegram_attachments"
+      ]
+    },
+    {
+      "id": "q_verbatim_014",
+      "slice": "verbatim",
+      "text": "every branch merges directly to the main branch and no long-lived secondary branch is kept around",
+      "relevantIds": [
+        "rec_project_048_trunk_based"
+      ]
+    },
+    {
+      "id": "q_verbatim_015",
+      "slice": "verbatim",
+      "text": "adjacent widget panels magnetically weld their edges together",
+      "relevantIds": [
+        "rec_project_055_window_welding"
+      ]
+    },
+    {
+      "id": "q_verbatim_016",
+      "slice": "verbatim",
+      "text": "a nightly reflection job, a beliefs file, and a periodic survey together form a closed loop",
+      "relevantIds": [
+        "rec_project_060_alignment_loop"
+      ]
+    },
+    {
+      "id": "q_verbatim_017",
+      "slice": "verbatim",
+      "text": "prefers terse responses with no trailing recap",
+      "relevantIds": [
+        "rec_preference_001_terse"
+      ]
+    },
+    {
+      "id": "q_verbatim_018",
+      "slice": "verbatim",
+      "text": "wants shell examples written in Zsh syntax by default",
+      "relevantIds": [
+        "rec_preference_004_zsh_default"
+      ]
+    },
+    {
+      "id": "q_verbatim_019",
+      "slice": "verbatim",
+      "text": "prefers a fresh git commit over amending an existing one",
+      "relevantIds": [
+        "rec_preference_007_new_commits"
+      ]
+    },
+    {
+      "id": "q_verbatim_020",
+      "slice": "verbatim",
+      "text": "never wants an em dash in written text",
+      "relevantIds": [
+        "rec_preference_011_no_em_dash"
+      ]
+    },
+    {
+      "id": "q_verbatim_021",
+      "slice": "verbatim",
+      "text": "does not want development cost weighed heavily in technical decisions",
+      "relevantIds": [
+        "rec_preference_013_quality_over_cost"
+      ]
+    },
+    {
+      "id": "q_verbatim_022",
+      "slice": "verbatim",
+      "text": "end-of-turn summary on shipped work covering what shipped, the risk, judgment calls made, and what's next",
+      "relevantIds": [
+        "rec_preference_016_end_of_turn_summary"
+      ]
+    },
+    {
+      "id": "q_verbatim_023",
+      "slice": "verbatim",
+      "text": "picky about visual polish and wants any obviously wrong UI detail fixed along the way",
+      "relevantIds": [
+        "rec_preference_018_pixel_perfect"
+      ]
+    },
+    {
+      "id": "q_verbatim_024",
+      "slice": "verbatim",
+      "text": "does not want CHANGELOG files or other auto-generated files edited by hand",
+      "relevantIds": [
+        "rec_preference_022_no_manual_changelog"
+      ]
+    },
+    {
+      "id": "q_verbatim_025",
+      "slice": "verbatim",
+      "text": "never wants an agent's name added as a co-author on a commit",
+      "relevantIds": [
+        "rec_preference_033_no_agent_coauthor"
+      ]
+    },
+    {
+      "id": "q_verbatim_026",
+      "slice": "verbatim",
+      "text": "requires a real screenshot of any user-facing UI change before considering the change done",
+      "relevantIds": [
+        "rec_preference_036_screenshot_proof"
+      ]
+    },
+    {
+      "id": "q_verbatim_027",
+      "slice": "verbatim",
+      "text": "does not want any personal infrastructure details, like real hostnames or internal aliases, appearing in a public repository",
+      "relevantIds": [
+        "rec_preference_039_public_repo_caution"
+      ]
+    },
+    {
+      "id": "q_verbatim_028",
+      "slice": "verbatim",
+      "text": "the original scheduler was retired and the job ticker became the only scheduler running in production",
+      "relevantIds": [
+        "rec_episodic_001_scheduler_v1_retired"
+      ]
+    },
+    {
+      "id": "q_verbatim_029",
+      "slice": "verbatim",
+      "text": "the desktop framework's window command needed an explicit capability entry or the call was silently rejected",
+      "relevantIds": [
+        "rec_episodic_009_native_window_buttons"
+      ]
+    },
+    {
+      "id": "q_verbatim_030",
+      "slice": "verbatim",
+      "text": "panel dragging lag was fixed by coalescing move events onto a single animation frame",
+      "relevantIds": [
+        "rec_episodic_014_drag_lag_fix"
+      ]
+    },
+    {
+      "id": "q_verbatim_031",
+      "slice": "verbatim",
+      "text": "a stale webview cache that needed purging on every version change",
+      "relevantIds": [
+        "rec_episodic_019_wkwebview_cache_bug"
+      ]
+    },
+    {
+      "id": "q_verbatim_032",
+      "slice": "verbatim",
+      "text": "the nightly digest job started failing with a deadline_passed error",
+      "relevantIds": [
+        "rec_episodic_028_digest_job_timeout"
+      ]
+    },
+    {
+      "id": "q_verbatim_033",
+      "slice": "verbatim",
+      "text": "a single-window thread switcher for the desktop app shipped, replacing an earlier cross-window redocking approach",
+      "relevantIds": [
+        "rec_episodic_033_moon_slideout_drawer_v55"
+      ]
+    },
+    {
+      "id": "q_verbatim_034",
+      "slice": "verbatim",
+      "text": "hide empty and archived threads from the sidebar merged, using an existence check that runs before the row limit",
+      "relevantIds": [
+        "rec_episodic_038_hide_empty_threads_merged"
+      ]
+    },
+    {
+      "id": "q_verbatim_035",
+      "slice": "verbatim",
+      "text": "the effort type turned out to be defined three separate times across the protocol, wire format, and reducer",
+      "relevantIds": [
+        "rec_episodic_043_ultracode_dropdown_effort_triplication"
+      ]
+    },
+    {
+      "id": "q_verbatim_036",
+      "slice": "verbatim",
+      "text": "a memory leak in the chat server's reattach path was fixed by adding a heartbeat",
+      "relevantIds": [
+        "rec_episodic_044_chat_server_memory_leak"
+      ]
+    },
+    {
+      "id": "q_verbatim_037",
+      "slice": "verbatim",
+      "text": "phase one of the native companion app merged, adding a transport layer, last-thread restoration",
+      "relevantIds": [
+        "rec_episodic_050_studio_phase1_merged"
+      ]
+    },
+    {
+      "id": "q_verbatim_038",
+      "slice": "verbatim",
+      "text": "dropping the visible thread count from one hundred twenty one down to about sixty seven",
+      "relevantIds": [
+        "rec_episodic_054_moon_thread_drawer_deployed_stable"
+      ]
+    },
+    {
+      "id": "q_verbatim_039",
+      "slice": "verbatim",
+      "text": "provider routing chains are keyed by a model identifier",
+      "relevantIds": [
+        "rec_project_050_model_routing"
+      ]
+    },
+    {
+      "id": "q_verbatim_040",
+      "slice": "verbatim",
+      "text": "keeps all of its local runtime state, including databases and account secrets, under a single hidden directory",
+      "relevantIds": [
+        "rec_project_017_local_state_dir"
+      ]
+    },
+    {
+      "id": "q_paraphrase_001",
+      "slice": "paraphrase",
+      "text": "does Luna call out to an external API to generate memory embeddings, or is that done locally",
+      "relevantIds": [
+        "rec_project_004_embedding_model"
+      ]
+    },
+    {
+      "id": "q_paraphrase_002",
+      "slice": "paraphrase",
+      "text": "what happens when I save something almost identical to a memory that already exists",
+      "relevantIds": [
+        "rec_project_005_dedup_merge"
+      ]
+    },
+    {
+      "id": "q_paraphrase_003",
+      "slice": "paraphrase",
+      "text": "how does search know whether I'm asking about a fact, a preference, or a past event",
+      "relevantIds": [
+        "rec_project_006_memory_kind_tag"
+      ]
+    },
+    {
+      "id": "q_paraphrase_004",
+      "slice": "paraphrase",
+      "text": "is there a way to get all my memories out into a single file",
+      "relevantIds": [
+        "rec_project_007_memory_export"
+      ]
+    },
+    {
+      "id": "q_paraphrase_005",
+      "slice": "paraphrase",
+      "text": "do old episodic memories ever get dropped from search results",
+      "relevantIds": [
+        "rec_project_008_memory_ttl"
+      ]
+    },
+    {
+      "id": "q_paraphrase_006",
+      "slice": "paraphrase",
+      "text": "why would a deploy wait instead of restarting a channel right away",
+      "relevantIds": [
+        "rec_project_010_autodeploy_defer"
+      ]
+    },
+    {
+      "id": "q_paraphrase_007",
+      "slice": "paraphrase",
+      "text": "how do I force a rollout through even though people are actively chatting",
+      "relevantIds": [
+        "rec_project_011_autodeploy_force"
+      ]
+    },
+    {
+      "id": "q_paraphrase_008",
+      "slice": "paraphrase",
+      "text": "how does the desktop app avoid pushing a broken build to everyone at once",
+      "relevantIds": [
+        "rec_project_013_widget_dock_update_train"
+      ]
+    },
+    {
+      "id": "q_paraphrase_009",
+      "slice": "paraphrase",
+      "text": "are the stable and dev channels sharing any files or processes with each other",
+      "relevantIds": [
+        "rec_project_014_sandbox_pods"
+      ]
+    },
+    {
+      "id": "q_paraphrase_010",
+      "slice": "paraphrase",
+      "text": "what has to pass before a change is allowed to reach a deploy target",
+      "relevantIds": [
+        "rec_project_015_no_mistakes_gate"
+      ]
+    },
+    {
+      "id": "q_paraphrase_011",
+      "slice": "paraphrase",
+      "text": "where do my chat conversations actually get saved",
+      "relevantIds": [
+        "rec_project_018_session_store"
+      ]
+    },
+    {
+      "id": "q_paraphrase_012",
+      "slice": "paraphrase",
+      "text": "what stops a flood of stale reconnects from accumulating after the server restarts",
+      "relevantIds": [
+        "rec_project_019_reattach_cap"
+      ]
+    },
+    {
+      "id": "q_paraphrase_013",
+      "slice": "paraphrase",
+      "text": "how does a new thread end up with a title without me typing one",
+      "relevantIds": [
+        "rec_project_020_auto_title"
+      ]
+    },
+    {
+      "id": "q_paraphrase_014",
+      "slice": "paraphrase",
+      "text": "why don't empty test threads show up in my sidebar anymore",
+      "relevantIds": [
+        "rec_project_021_hide_empty_threads"
+      ]
+    },
+    {
+      "id": "q_paraphrase_015",
+      "slice": "paraphrase",
+      "text": "what happens when I hit the plus button in the app",
+      "relevantIds": [
+        "rec_project_022_parallel_threads"
+      ]
+    },
+    {
+      "id": "q_paraphrase_016",
+      "slice": "paraphrase",
+      "text": "how are subagent runs shown to me while they're working",
+      "relevantIds": [
+        "rec_project_023_subagents_in_chat"
+      ]
+    },
+    {
+      "id": "q_paraphrase_017",
+      "slice": "paraphrase",
+      "text": "does every kind of background job share the same timeout",
+      "relevantIds": [
+        "rec_project_025_job_deadlines"
+      ]
+    },
+    {
+      "id": "q_paraphrase_018",
+      "slice": "paraphrase",
+      "text": "what stops background jobs from overloading the machine they run on",
+      "relevantIds": [
+        "rec_project_026_bounded_fibers"
+      ]
+    },
+    {
+      "id": "q_paraphrase_019",
+      "slice": "paraphrase",
+      "text": "what compiles a recap of the day and where does it land",
+      "relevantIds": [
+        "rec_project_027_nightly_digest"
+      ]
+    },
+    {
+      "id": "q_paraphrase_020",
+      "slice": "paraphrase",
+      "text": "how is spend tracked per team or per workflow",
+      "relevantIds": [
+        "rec_project_030_cost_rollup"
+      ]
+    },
+    {
+      "id": "q_paraphrase_021",
+      "slice": "paraphrase",
+      "text": "what happens if a service keeps crashing and restarting in a loop",
+      "relevantIds": [
+        "rec_project_031_crash_loop_pager"
+      ]
+    },
+    {
+      "id": "q_paraphrase_022",
+      "slice": "paraphrase",
+      "text": "can I run ad-hoc SQL over the historical event log",
+      "relevantIds": [
+        "rec_project_032_duckdb_analysis"
+      ]
+    },
+    {
+      "id": "q_paraphrase_023",
+      "slice": "paraphrase",
+      "text": "how does the agent ask me for a password without it showing up in the chat log",
+      "relevantIds": [
+        "rec_project_036_secure_secret_entry"
+      ]
+    },
+    {
+      "id": "q_paraphrase_024",
+      "slice": "paraphrase",
+      "text": "can I link more than one account from the same provider",
+      "relevantIds": [
+        "rec_project_037_oauth_multiaccount"
+      ]
+    },
+    {
+      "id": "q_paraphrase_025",
+      "slice": "paraphrase",
+      "text": "does opening a second copy of the desktop app open a whole new window",
+      "relevantIds": [
+        "rec_project_038_single_instance_deeplink"
+      ]
+    },
+    {
+      "id": "q_paraphrase_026",
+      "slice": "paraphrase",
+      "text": "what are the main pieces described in the connector system design doc",
+      "relevantIds": [
+        "rec_project_040_connectors_prd"
+      ]
+    },
+    {
+      "id": "q_paraphrase_027",
+      "slice": "paraphrase",
+      "text": "can a connected tool show its own custom UI inside a panel",
+      "relevantIds": [
+        "rec_project_041_mcp_app_panels"
+      ]
+    },
+    {
+      "id": "q_paraphrase_028",
+      "slice": "paraphrase",
+      "text": "where do I go to launch a saved multi-step workflow",
+      "relevantIds": [
+        "rec_project_042_workflows_gallery"
+      ]
+    },
+    {
+      "id": "q_paraphrase_029",
+      "slice": "paraphrase",
+      "text": "can the reflection job suggest changes to my existing skills",
+      "relevantIds": [
+        "rec_project_043_dream_skill_chips"
+      ]
+    },
+    {
+      "id": "q_paraphrase_030",
+      "slice": "paraphrase",
+      "text": "does the Telegram bot support any commands or just plain text",
+      "relevantIds": [
+        "rec_project_045_telegram_formatting"
+      ]
+    },
+    {
+      "id": "q_paraphrase_031",
+      "slice": "paraphrase",
+      "text": "is text-to-speech handled on my machine or sent to a cloud service",
+      "relevantIds": [
+        "rec_project_046_voice_speech"
+      ]
+    },
+    {
+      "id": "q_paraphrase_032",
+      "slice": "paraphrase",
+      "text": "how much of my local filesystem can an agent reach through the attach-machine feature",
+      "relevantIds": [
+        "rec_project_047_local_shell_multiroot"
+      ]
+    },
+    {
+      "id": "q_paraphrase_033",
+      "slice": "paraphrase",
+      "text": "did the migration study recommend moving everything off sqlite",
+      "relevantIds": [
+        "rec_project_049_postgres_verdict"
+      ]
+    },
+    {
+      "id": "q_paraphrase_034",
+      "slice": "paraphrase",
+      "text": "where do I pick which model and how hard it should think before sending a message",
+      "relevantIds": [
+        "rec_project_051_model_effort_switcher"
+      ]
+    },
+    {
+      "id": "q_paraphrase_035",
+      "slice": "paraphrase",
+      "text": "can I change the chat font and will it stick after I restart",
+      "relevantIds": [
+        "rec_project_052_font_settings"
+      ]
+    },
+    {
+      "id": "q_paraphrase_036",
+      "slice": "paraphrase",
+      "text": "how are desktop alerts grouped so I can mute the noisy ones",
+      "relevantIds": [
+        "rec_project_053_notifications"
+      ]
+    },
+    {
+      "id": "q_paraphrase_037",
+      "slice": "paraphrase",
+      "text": "is there an alternative visual style besides plain light and dark",
+      "relevantIds": [
+        "rec_project_054_theme_watercolor"
+      ]
+    },
+    {
+      "id": "q_paraphrase_038",
+      "slice": "paraphrase",
+      "text": "how do I shrink the whole dock down to just a small icon",
+      "relevantIds": [
+        "rec_project_056_collapse_toggle"
+      ]
+    },
+    {
+      "id": "q_paraphrase_039",
+      "slice": "paraphrase",
+      "text": "can I open a generated artifact somewhere other than inside the chat",
+      "relevantIds": [
+        "rec_project_057_artifacts_in_panels"
+      ]
+    },
+    {
+      "id": "q_paraphrase_040",
+      "slice": "paraphrase",
+      "text": "why did the window close button feel hard to click near the edge",
+      "relevantIds": [
+        "rec_project_058_traffic_lights"
+      ]
+    },
+    {
+      "id": "q_paraphrase_041",
+      "slice": "paraphrase",
+      "text": "how does the failure-escalation system decide when to page a person versus just logging a heartbeat",
+      "relevantIds": [
+        "rec_project_059_liveness_ladder"
+      ]
+    },
+    {
+      "id": "q_paraphrase_042",
+      "slice": "paraphrase",
+      "text": "should I call the operator by their first name or their full name",
+      "relevantIds": [
+        "rec_preference_002_full_name"
+      ]
+    },
+    {
+      "id": "q_paraphrase_043",
+      "slice": "paraphrase",
+      "text": "what UI theme does the operator run in their tools",
+      "relevantIds": [
+        "rec_preference_003_dark_mode"
+      ]
+    },
+    {
+      "id": "q_paraphrase_044",
+      "slice": "paraphrase",
+      "text": "is it okay to state something as true without checking it first",
+      "relevantIds": [
+        "rec_preference_005_verify_before_claim"
+      ]
+    },
+    {
+      "id": "q_paraphrase_045",
+      "slice": "paraphrase",
+      "text": "how should I hand off a command that needs to run interactively",
+      "relevantIds": [
+        "rec_preference_009_bang_prefix"
+      ]
+    },
+    {
+      "id": "q_paraphrase_046",
+      "slice": "paraphrase",
+      "text": "what's the best way to reach the operator by email",
+      "relevantIds": [
+        "rec_preference_010_email"
+      ]
+    },
+    {
+      "id": "q_paraphrase_047",
+      "slice": "paraphrase",
+      "text": "how should long markdown docs be formatted sentence by sentence",
+      "relevantIds": [
+        "rec_preference_012_one_sentence_per_line"
+      ]
+    },
+    {
+      "id": "q_paraphrase_048",
+      "slice": "paraphrase",
+      "text": "is it ever okay to edit code directly on a shared branch",
+      "relevantIds": [
+        "rec_preference_014_worktree_only"
+      ]
+    },
+    {
+      "id": "q_paraphrase_049",
+      "slice": "paraphrase",
+      "text": "who should do the heavy file searching, the main thread or a helper",
+      "relevantIds": [
+        "rec_preference_015_delegate_exploration"
+      ]
+    },
+    {
+      "id": "q_paraphrase_050",
+      "slice": "paraphrase",
+      "text": "should I try to fix a bug before I've actually seen it happen the way a user would trigger it",
+      "relevantIds": [
+        "rec_preference_017_reproduce_bug_e2e"
+      ]
+    },
+    {
+      "id": "q_paraphrase_051",
+      "slice": "paraphrase",
+      "text": "should I fix a flaky test even if my current task didn't cause it",
+      "relevantIds": [
+        "rec_preference_019_fix_flakiness"
+      ]
+    },
+    {
+      "id": "q_paraphrase_052",
+      "slice": "paraphrase",
+      "text": "does the operator want evidence behind a technical recommendation",
+      "relevantIds": [
+        "rec_preference_020_evidence_first"
+      ]
+    },
+    {
+      "id": "q_paraphrase_053",
+      "slice": "paraphrase",
+      "text": "can a one-time instruction for today permanently change a standing rule",
+      "relevantIds": [
+        "rec_preference_023_scoped_instruction_priority"
+      ]
+    },
+    {
+      "id": "q_paraphrase_054",
+      "slice": "paraphrase",
+      "text": "do I need to check in before running something like a force push",
+      "relevantIds": [
+        "rec_preference_027_confirm_destructive_git"
+      ]
+    },
+    {
+      "id": "q_paraphrase_055",
+      "slice": "paraphrase",
+      "text": "does the operator prefer OS-level alerts or in-app toast messages",
+      "relevantIds": [
+        "rec_preference_029_native_notifications"
+      ]
+    },
+    {
+      "id": "q_paraphrase_056",
+      "slice": "paraphrase",
+      "text": "should a pull request bundle several unrelated changes together",
+      "relevantIds": [
+        "rec_preference_034_small_prs"
+      ]
+    },
+    {
+      "id": "q_paraphrase_057",
+      "slice": "paraphrase",
+      "text": "where should one-off debug scripts live in the project",
+      "relevantIds": [
+        "rec_preference_037_scratch_folder"
+      ]
+    },
+    {
+      "id": "q_paraphrase_058",
+      "slice": "paraphrase",
+      "text": "when did the first-run onboarding flow get confirmed working in a real build",
+      "relevantIds": [
+        "rec_episodic_004_moon_setup_wizard"
+      ]
+    },
+    {
+      "id": "q_paraphrase_059",
+      "slice": "paraphrase",
+      "text": "what parts of the deploy router change got merged versus left for later",
+      "relevantIds": [
+        "rec_episodic_017_deploy_router_slice"
+      ]
+    },
+    {
+      "id": "q_paraphrase_060",
+      "slice": "paraphrase",
+      "text": "what rendering bug turned up while reworking the app's top bar",
+      "relevantIds": [
+        "rec_episodic_046_moon_topbar_redesign"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_001",
+      "slice": "vocab-mismatch",
+      "text": "how does the assistant find similar saved notes quickly without scanning everything one by one",
+      "relevantIds": [
+        "rec_project_001_vectorlite_store"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_002",
+      "slice": "vocab-mismatch",
+      "text": "what built-in functions can the system use to keep track of information about me on its own",
+      "relevantIds": [
+        "rec_project_003_memory_mcp_tools"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_003",
+      "slice": "vocab-mismatch",
+      "text": "does new functionality get tried out somewhere before everyone sees it",
+      "relevantIds": [
+        "rec_project_009_stable_dev_channels"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_004",
+      "slice": "vocab-mismatch",
+      "text": "what happens on its own if a fresh release turns out broken right after going live",
+      "relevantIds": [
+        "rec_project_012_rollback_health"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_005",
+      "slice": "vocab-mismatch",
+      "text": "on which computer does all of the assistant's private information physically sit",
+      "relevantIds": [
+        "rec_project_017_local_state_dir"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_006",
+      "slice": "vocab-mismatch",
+      "text": "is there an old task runner still hiding somewhere in the software",
+      "relevantIds": [
+        "rec_project_024_job_ticker_v2"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_007",
+      "slice": "vocab-mismatch",
+      "text": "in what format does the assistant record what it's been doing behind the scenes",
+      "relevantIds": [
+        "rec_project_029_observability_jsonl"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_008",
+      "slice": "vocab-mismatch",
+      "text": "how does the system distribute requests among multiple connected credentials instead of overloading just one",
+      "relevantIds": [
+        "rec_project_033_account_broker"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_009",
+      "slice": "vocab-mismatch",
+      "text": "where do my passwords end up once the assistant has saved them",
+      "relevantIds": [
+        "rec_project_034_vault_tiered"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_010",
+      "slice": "vocab-mismatch",
+      "text": "what stops an automated helper from messing with a handful of sensitive things even though it can do almost everything else",
+      "relevantIds": [
+        "rec_project_035_deny_rails"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_011",
+      "slice": "vocab-mismatch",
+      "text": "can the assistant grab a purpose-built playbook only when a particular sort of job comes up",
+      "relevantIds": [
+        "rec_project_039_skills_system"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_012",
+      "slice": "vocab-mismatch",
+      "text": "why don't incoming pictures from my messaging app get lost anymore",
+      "relevantIds": [
+        "rec_project_044_telegram_attachments"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_013",
+      "slice": "vocab-mismatch",
+      "text": "does spoken output require an internet connection to generate",
+      "relevantIds": [
+        "rec_project_046_voice_speech"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_014",
+      "slice": "vocab-mismatch",
+      "text": "does unfinished work sit off to the side for weeks, or does it land in the shared codebase right away",
+      "relevantIds": [
+        "rec_project_048_trunk_based"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_015",
+      "slice": "vocab-mismatch",
+      "text": "how does the system pick out which backend should handle a given conversation based on which one right now supports a certain AI engine",
+      "relevantIds": [
+        "rec_project_050_model_routing"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_016",
+      "slice": "vocab-mismatch",
+      "text": "can I silence one sort of system alert while still getting the important notices",
+      "relevantIds": [
+        "rec_project_053_notifications"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_017",
+      "slice": "vocab-mismatch",
+      "text": "why do nearby floating panes get pulled along whenever only one of them gets moved",
+      "relevantIds": [
+        "rec_project_055_window_welding"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_018",
+      "slice": "vocab-mismatch",
+      "text": "why did tapping right at the corner of the app finally start landing every time",
+      "relevantIds": [
+        "rec_project_058_traffic_lights"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_019",
+      "slice": "vocab-mismatch",
+      "text": "what makes sure the assistant's claimed habits actually match what it does over time",
+      "relevantIds": [
+        "rec_project_060_alignment_loop"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_020",
+      "slice": "vocab-mismatch",
+      "text": "can I get a full copy of everything the assistant has learned about me",
+      "relevantIds": [
+        "rec_project_007_memory_export"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_021",
+      "slice": "vocab-mismatch",
+      "text": "how do I push a critical patch out immediately even while people are using it",
+      "relevantIds": [
+        "rec_project_011_autodeploy_force"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_022",
+      "slice": "vocab-mismatch",
+      "text": "how does a fresh conversation end up labeled without me naming it",
+      "relevantIds": [
+        "rec_project_020_auto_title"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_023",
+      "slice": "vocab-mismatch",
+      "text": "why did my conversation view get shorter and tidier all of a sudden",
+      "relevantIds": [
+        "rec_project_021_hide_empty_threads"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_024",
+      "slice": "vocab-mismatch",
+      "text": "how is the money used on the underlying language model attributed to different projects",
+      "relevantIds": [
+        "rec_project_030_cost_rollup"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_025",
+      "slice": "vocab-mismatch",
+      "text": "how does a helper ask me for something sensitive without it ending up readable in the log",
+      "relevantIds": [
+        "rec_project_036_secure_secret_entry"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_026",
+      "slice": "vocab-mismatch",
+      "text": "can tapping a special web address bring me straight back to an already-open copy of the program",
+      "relevantIds": [
+        "rec_project_038_single_instance_deeplink"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_027",
+      "slice": "vocab-mismatch",
+      "text": "can a linked add-on draw a custom live area somewhere within a floating screen",
+      "relevantIds": [
+        "rec_project_041_mcp_app_panels"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_028",
+      "slice": "vocab-mismatch",
+      "text": "does the messaging bot give any sign that it's composing a response before sending it",
+      "relevantIds": [
+        "rec_project_045_telegram_formatting"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_029",
+      "slice": "vocab-mismatch",
+      "text": "did the team decide to replace the current database entirely with a different one",
+      "relevantIds": [
+        "rec_project_049_postgres_verdict"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_030",
+      "slice": "vocab-mismatch",
+      "text": "is there a softer, more painterly look available besides the usual two color schemes",
+      "relevantIds": [
+        "rec_project_054_theme_watercolor"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_031",
+      "slice": "vocab-mismatch",
+      "text": "does the operator like a short reply or a long wrap-up at the end",
+      "relevantIds": [
+        "rec_preference_001_terse"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_032",
+      "slice": "vocab-mismatch",
+      "text": "which color scheme does the operator run in their coding tools",
+      "relevantIds": [
+        "rec_preference_003_dark_mode"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_033",
+      "slice": "vocab-mismatch",
+      "text": "is it fine to present an assumption as though it had already been confirmed",
+      "relevantIds": [
+        "rec_preference_005_verify_before_claim"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_034",
+      "slice": "vocab-mismatch",
+      "text": "where do sensitive login secrets typically end up being held for this operator",
+      "relevantIds": [
+        "rec_preference_006_1password_keychain"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_035",
+      "slice": "vocab-mismatch",
+      "text": "what tool stores the operator's day-to-day journal and reference material",
+      "relevantIds": [
+        "rec_preference_008_obsidian_notes"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_036",
+      "slice": "vocab-mismatch",
+      "text": "how should an instruction meant to be typed by a human be flagged in a reply",
+      "relevantIds": [
+        "rec_preference_009_bang_prefix"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_037",
+      "slice": "vocab-mismatch",
+      "text": "does budget matter more than robustness when choosing an engineering approach",
+      "relevantIds": [
+        "rec_preference_013_quality_over_cost"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_038",
+      "slice": "vocab-mismatch",
+      "text": "is it acceptable to change files right on the shared main line instead of using a private workspace",
+      "relevantIds": [
+        "rec_preference_014_worktree_only"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_039",
+      "slice": "vocab-mismatch",
+      "text": "who should hunt through the codebase, the primary conversation or a helper",
+      "relevantIds": [
+        "rec_preference_015_delegate_exploration"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_040",
+      "slice": "vocab-mismatch",
+      "text": "should a problem be recreated exactly as an actual person using the product would run into it before anyone tries to patch it",
+      "relevantIds": [
+        "rec_preference_017_reproduce_bug_e2e"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_041",
+      "slice": "vocab-mismatch",
+      "text": "if something on screen looks clearly off, should it still get addressed even though it has nothing to do with whatever else is being worked on",
+      "relevantIds": [
+        "rec_preference_018_pixel_perfect"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_042",
+      "slice": "vocab-mismatch",
+      "text": "what does the operator put in their morning brew",
+      "relevantIds": [
+        "rec_preference_025_coffee_oat_milk"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_043",
+      "slice": "vocab-mismatch",
+      "text": "should the operator be checked with first before taking an easily undoable step",
+      "relevantIds": [
+        "rec_preference_028_proceed_on_reversible"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_044",
+      "slice": "vocab-mismatch",
+      "text": "which coast is the operator's clock set to",
+      "relevantIds": [
+        "rec_preference_031_timezone"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_045",
+      "slice": "vocab-mismatch",
+      "text": "should something unverified be shown as though it were beyond doubt",
+      "relevantIds": [
+        "rec_preference_035_distrust_unproven"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_046",
+      "slice": "vocab-mismatch",
+      "text": "can a helper broaden what it's allowed to do purely off its own initiative, with nobody instructing it to",
+      "relevantIds": [
+        "rec_preference_038_no_permission_updates"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_047",
+      "slice": "vocab-mismatch",
+      "text": "is it fine to rely on someone else's retelling instead of checking the primary reference directly",
+      "relevantIds": [
+        "rec_preference_040_first_source"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_048",
+      "slice": "vocab-mismatch",
+      "text": "when did the layered secret-safekeeping upgrade go out the door",
+      "relevantIds": [
+        "rec_episodic_002_vault_tiered_shipped"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_049",
+      "slice": "vocab-mismatch",
+      "text": "when was the tether holding clustered floating widgets together made sturdier",
+      "relevantIds": [
+        "rec_episodic_006_string_retether"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_050",
+      "slice": "vocab-mismatch",
+      "text": "when was a change released that keeps leftover dropped sessions from accumulating once the server comes back up",
+      "relevantIds": [
+        "rec_episodic_010_reattach_self_heal"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_051",
+      "slice": "vocab-mismatch",
+      "text": "when did a patch land for something that was quietly hiding why a live data feed had broken",
+      "relevantIds": [
+        "rec_episodic_016_adapter_stream_fix"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_052",
+      "slice": "vocab-mismatch",
+      "text": "when did grouped floating panes start being pulled along together through a built-in OS-level linking feature rather than by hand-adjusting where each one sits",
+      "relevantIds": [
+        "rec_episodic_024_moon_sticky_windows"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_053",
+      "slice": "vocab-mismatch",
+      "text": "when did a review of a rival effort inside the company reveal that it quietly went idle weeks earlier",
+      "relevantIds": [
+        "rec_episodic_030_sol_agent_audit"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_054",
+      "slice": "vocab-mismatch",
+      "text": "when did conversations start getting a name pulled from the opening note",
+      "relevantIds": [
+        "rec_episodic_034_moon_auto_titles"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_055",
+      "slice": "vocab-mismatch",
+      "text": "when was the old built-in multi-step task runner finally torn out of the conversation surface",
+      "relevantIds": [
+        "rec_episodic_040_workflows_view_review"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_056",
+      "slice": "vocab-mismatch",
+      "text": "when did the escalating failure-alert system's earliest piece land as an unfinished early pass",
+      "relevantIds": [
+        "rec_episodic_041_liveness_ladder_pr"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_057",
+      "slice": "vocab-mismatch",
+      "text": "when did updating the program's upper strip reveal a display glitch tucked within a built-in vector graphic",
+      "relevantIds": [
+        "rec_episodic_046_moon_topbar_redesign"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_058",
+      "slice": "vocab-mismatch",
+      "text": "when was the messaging service's missing-file problem confirmed as resolved during an actual back-and-forth",
+      "relevantIds": [
+        "rec_episodic_052_telegram_attachments_deployed"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_059",
+      "slice": "vocab-mismatch",
+      "text": "when did every remaining stage of the standalone client's plan get declared done, wrapping up an effort that started from an early trial run",
+      "relevantIds": [
+        "rec_episodic_056_studio_all_phases_complete"
+      ]
+    },
+    {
+      "id": "q_vocab-mismatch_060",
+      "slice": "vocab-mismatch",
+      "text": "when did the project's change-tracking system quietly begin skipping over leftover auto-generated clutter from the compilation step instead of flagging it on each comparison",
+      "relevantIds": [
+        "rec_episodic_058_ignore_vite_artifacts"
+      ]
+    },
+    {
+      "id": "q_temporal_001",
+      "slice": "temporal",
+      "text": "what did we ship in early January",
+      "relevantIds": [
+        "rec_episodic_001_scheduler_v1_retired"
+      ]
+    },
+    {
+      "id": "q_temporal_002",
+      "slice": "temporal",
+      "text": "what happened in mid-May with the digest job",
+      "relevantIds": [
+        "rec_episodic_028_digest_job_timeout",
+        "rec_episodic_029_digest_job_root_cause_note"
+      ]
+    },
+    {
+      "id": "q_temporal_003",
+      "slice": "temporal",
+      "text": "what happened on July 9th",
+      "relevantIds": [
+        "rec_episodic_053_job_ticker_deadlines_root_cause",
+        "rec_episodic_054_moon_thread_drawer_deployed_stable",
+        "rec_episodic_055_studio_notifications_merged"
+      ]
+    },
+    {
+      "id": "q_temporal_004",
+      "slice": "temporal",
+      "text": "what did we decide last month about tackling a big refactor",
+      "relevantIds": [
+        "rec_episodic_042_spike_before_refactor_feedback"
+      ]
+    },
+    {
+      "id": "q_temporal_005",
+      "slice": "temporal",
+      "text": "what was fixed in late June around effort settings",
+      "relevantIds": [
+        "rec_episodic_043_ultracode_dropdown_effort_triplication"
+      ]
+    },
+    {
+      "id": "q_temporal_006",
+      "slice": "temporal",
+      "text": "what happened at the start of June with thread titles",
+      "relevantIds": [
+        "rec_episodic_035_moon_title_hardening"
+      ]
+    },
+    {
+      "id": "q_temporal_007",
+      "slice": "temporal",
+      "text": "what shipped in late May for the desktop app's sidebar",
+      "relevantIds": [
+        "rec_episodic_033_moon_slideout_drawer_v55"
+      ]
+    },
+    {
+      "id": "q_temporal_008",
+      "slice": "temporal",
+      "text": "what was found when checking thread data in June",
+      "relevantIds": [
+        "rec_episodic_039_hide_empty_threads_live_check"
+      ]
+    },
+    {
+      "id": "q_temporal_009",
+      "slice": "temporal",
+      "text": "what happened in February with provider routing",
+      "relevantIds": [
+        "rec_episodic_007_provider_routing_pr99"
+      ]
+    },
+    {
+      "id": "q_temporal_010",
+      "slice": "temporal",
+      "text": "what shipped in late January for onboarding",
+      "relevantIds": [
+        "rec_episodic_004_moon_setup_wizard"
+      ]
+    },
+    {
+      "id": "q_temporal_011",
+      "slice": "temporal",
+      "text": "what was found in April about a broken-looking release",
+      "relevantIds": [
+        "rec_episodic_019_wkwebview_cache_bug"
+      ]
+    },
+    {
+      "id": "q_temporal_012",
+      "slice": "temporal",
+      "text": "what happened in early March with window buttons",
+      "relevantIds": [
+        "rec_episodic_009_native_window_buttons"
+      ]
+    },
+    {
+      "id": "q_temporal_013",
+      "slice": "temporal",
+      "text": "what was fixed in late March about panel dragging",
+      "relevantIds": [
+        "rec_episodic_014_drag_lag_fix"
+      ]
+    },
+    {
+      "id": "q_temporal_014",
+      "slice": "temporal",
+      "text": "what rule got adopted in late March about widget borders",
+      "relevantIds": [
+        "rec_episodic_015_moon_no_outline_rule"
+      ]
+    },
+    {
+      "id": "q_temporal_015",
+      "slice": "temporal",
+      "text": "what happened at the start of April with a streaming bug",
+      "relevantIds": [
+        "rec_episodic_016_adapter_stream_fix"
+      ]
+    },
+    {
+      "id": "q_temporal_016",
+      "slice": "temporal",
+      "text": "what merged in early April for deploy routing",
+      "relevantIds": [
+        "rec_episodic_017_deploy_router_slice"
+      ]
+    },
+    {
+      "id": "q_temporal_017",
+      "slice": "temporal",
+      "text": "what was fixed in mid-April with panel seams",
+      "relevantIds": [
+        "rec_episodic_018_weld_seam_band_fix"
+      ]
+    },
+    {
+      "id": "q_temporal_018",
+      "slice": "temporal",
+      "text": "what shipped in late April for the Telegram channel",
+      "relevantIds": [
+        "rec_episodic_022_telegram_ux_upgrade"
+      ]
+    },
+    {
+      "id": "q_temporal_019",
+      "slice": "temporal",
+      "text": "what changed in late April about the default model",
+      "relevantIds": [
+        "rec_episodic_023_sdk_sonnet_default"
+      ]
+    },
+    {
+      "id": "q_temporal_020",
+      "slice": "temporal",
+      "text": "what happened in early May with clustered windows",
+      "relevantIds": [
+        "rec_episodic_024_moon_sticky_windows"
+      ]
+    },
+    {
+      "id": "q_temporal_021",
+      "slice": "temporal",
+      "text": "what was confirmed again in mid-May about the webview cache bug",
+      "relevantIds": [
+        "rec_episodic_027_moon_wkwebview_stale_cache_note"
+      ]
+    },
+    {
+      "id": "q_temporal_022",
+      "slice": "temporal",
+      "text": "what was merged in late May to fix job deadlines",
+      "relevantIds": [
+        "rec_episodic_031_job_deadlines_fix_merged"
+      ]
+    },
+    {
+      "id": "q_temporal_023",
+      "slice": "temporal",
+      "text": "what was deployed in late May for the digest job",
+      "relevantIds": [
+        "rec_episodic_032_job_deadlines_deployed"
+      ]
+    },
+    {
+      "id": "q_temporal_024",
+      "slice": "temporal",
+      "text": "what happened in early June with the reflection job's prompt",
+      "relevantIds": [
+        "rec_episodic_036_dream_prompt_length_fix"
+      ]
+    },
+    {
+      "id": "q_temporal_025",
+      "slice": "temporal",
+      "text": "what merged in late June for background job result delivery",
+      "relevantIds": [
+        "rec_episodic_045_thread_delivery_sink"
+      ]
+    },
+    {
+      "id": "q_temporal_026",
+      "slice": "temporal",
+      "text": "what happened at the very start of July regarding workflow authorship",
+      "relevantIds": [
+        "rec_episodic_048_workflow_model_tiering_feedback"
+      ]
+    },
+    {
+      "id": "q_temporal_027",
+      "slice": "temporal",
+      "text": "what passed in early July for the native companion app",
+      "relevantIds": [
+        "rec_episodic_049_studio_phase0_gate"
+      ]
+    },
+    {
+      "id": "q_temporal_028",
+      "slice": "temporal",
+      "text": "what was found in late June about a rendering glitch in the top bar",
+      "relevantIds": [
+        "rec_episodic_046_moon_topbar_redesign"
+      ]
+    },
+    {
+      "id": "q_temporal_029",
+      "slice": "temporal",
+      "text": "what happened this week with the skill-improvement chips",
+      "relevantIds": [
+        "rec_episodic_059_dream_skill_chips_merged"
+      ]
+    },
+    {
+      "id": "q_temporal_030",
+      "slice": "temporal",
+      "text": "what happened today with the worktree cache issue",
+      "relevantIds": [
+        "rec_episodic_060_worktree_bun_cache_fix"
+      ]
+    },
+    {
+      "id": "q_negative_001",
+      "slice": "negative",
+      "text": "what is Luna's monthly subscription price",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_002",
+      "slice": "negative",
+      "text": "is there an Android version of the desktop app",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_003",
+      "slice": "negative",
+      "text": "has Luna passed a SOC 2 compliance audit",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_004",
+      "slice": "negative",
+      "text": "what is the context window size of the underlying language model",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_005",
+      "slice": "negative",
+      "text": "what's the support ticket response time SLA",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_006",
+      "slice": "negative",
+      "text": "can the backend be self-hosted on a customer's own servers for enterprise deals",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_007",
+      "slice": "negative",
+      "text": "was any part of the backend rewritten in Rust",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_008",
+      "slice": "negative",
+      "text": "how does Luna's pricing compare to a specific named competitor's enterprise tier",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_009",
+      "slice": "negative",
+      "text": "what was last quarter's revenue",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_010",
+      "slice": "negative",
+      "text": "is the team hiring for a new role right now",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_011",
+      "slice": "negative",
+      "text": "what's in the current terms of service regarding data retention",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_012",
+      "slice": "negative",
+      "text": "what's the weather forecast for tomorrow",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_013",
+      "slice": "negative",
+      "text": "what's a good recipe for lasagna",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_014",
+      "slice": "negative",
+      "text": "who won last night's basketball game",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_015",
+      "slice": "negative",
+      "text": "what does the plugin marketplace revenue split look like for third-party developers",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_016",
+      "slice": "negative",
+      "text": "what font ships as the default in the mobile app",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_017",
+      "slice": "negative",
+      "text": "does the mobile app support push notification opt-in during onboarding",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_018",
+      "slice": "negative",
+      "text": "what questions are on the new user onboarding survey",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_019",
+      "slice": "negative",
+      "text": "can you share a customer testimonial about Luna",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_020",
+      "slice": "negative",
+      "text": "what's the current stock price of a competitor's parent company",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_021",
+      "slice": "negative",
+      "text": "what swim workout should I do today",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_022",
+      "slice": "negative",
+      "text": "does Luna support translating the chat UI into other languages",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_023",
+      "slice": "negative",
+      "text": "has Luna achieved GDPR certification",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_024",
+      "slice": "negative",
+      "text": "what is the operator's home address",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_025",
+      "slice": "negative",
+      "text": "what was the outcome of a recent unrelated court case",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_026",
+      "slice": "negative",
+      "text": "what's Luna's opinion on the upcoming election",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_027",
+      "slice": "negative",
+      "text": "how much does a rival note-taking app charge per seat",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_028",
+      "slice": "negative",
+      "text": "what CPU does the production server hardware use",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_029",
+      "slice": "negative",
+      "text": "when was a specific rival company founded",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_030",
+      "slice": "negative",
+      "text": "what book should I read next",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_031",
+      "slice": "negative",
+      "text": "when is the tax filing deadline this year",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_032",
+      "slice": "negative",
+      "text": "can Luna play a game of chess with me",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_033",
+      "slice": "negative",
+      "text": "what's the forecast for next week's storm",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_034",
+      "slice": "negative",
+      "text": "what historical event happened on this date in 1920",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_035",
+      "slice": "negative",
+      "text": "what's the name of the CEO's dog",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_036",
+      "slice": "negative",
+      "text": "what holidays does the team observe as paid time off",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_037",
+      "slice": "negative",
+      "text": "what does the operator's health insurance plan cover",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_038",
+      "slice": "negative",
+      "text": "what's the exchange rate between two currencies today",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_039",
+      "slice": "negative",
+      "text": "does Luna have a referral program with cash rewards",
+      "relevantIds": []
+    },
+    {
+      "id": "q_negative_040",
+      "slice": "negative",
+      "text": "what programming bootcamp did the lead engineer attend",
+      "relevantIds": []
+    }
+  ]
+}

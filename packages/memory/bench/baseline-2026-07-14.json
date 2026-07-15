@@ -1,0 +1,291 @@
+{
+  "corpus": {
+    "file": "memory-suite-corpus.json",
+    "records": 200,
+    "queries": 230
+  },
+  "embedder": "ollama",
+  "modes": {
+    "bm25": {
+      "bySlice": {
+        "verbatim": {
+          "slice": "verbatim",
+          "queries": 40,
+          "recallAt1": 1,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "mrr": 1,
+          "ndcg10": 1
+        },
+        "paraphrase": {
+          "slice": "paraphrase",
+          "queries": 60,
+          "recallAt1": 0.8333333333333334,
+          "recallAt5": 0.95,
+          "recallAt10": 0.9666666666666667,
+          "mrr": 0.878888888888889,
+          "ndcg10": 0.900378367704858
+        },
+        "vocab-mismatch": {
+          "slice": "vocab-mismatch",
+          "queries": 60,
+          "recallAt1": 0.03333333333333333,
+          "recallAt5": 0.11666666666666667,
+          "recallAt10": 0.16666666666666666,
+          "mrr": 0.06562169312169312,
+          "ndcg10": 0.08910645971844731
+        },
+        "temporal": {
+          "slice": "temporal",
+          "queries": 30,
+          "recallAt1": 0.5,
+          "recallAt5": 0.8777777777777778,
+          "recallAt10": 0.9111111111111111,
+          "mrr": 0.676111111111111,
+          "ndcg10": 0.7359453405445414
+        }
+      },
+      "overall": {
+        "slice": "OVERALL",
+        "queries": 190,
+        "recallAt1": 0.5631578947368421,
+        "recallAt5": 0.6859649122807017,
+        "recallAt10": 0.7122807017543858,
+        "mrr": 0.615547201336675,
+        "ndcg10": 0.6391971045354445
+      },
+      "macro": {
+        "slice": "MACRO",
+        "queries": 4,
+        "recallAt1": 0.5916666666666668,
+        "recallAt5": 0.736111111111111,
+        "recallAt10": 0.7611111111111111,
+        "mrr": 0.6551554232804233,
+        "ndcg10": 0.6813575419919616
+      }
+    },
+    "vec": {
+      "bySlice": {
+        "verbatim": {
+          "slice": "verbatim",
+          "queries": 40,
+          "recallAt1": 0.975,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "mrr": 0.9875,
+          "ndcg10": 0.9907732438392864
+        },
+        "paraphrase": {
+          "slice": "paraphrase",
+          "queries": 60,
+          "recallAt1": 0.8666666666666667,
+          "recallAt5": 0.9666666666666667,
+          "recallAt10": 0.9666666666666667,
+          "mrr": 0.9097222222222221,
+          "ndcg10": 0.924239926205987
+        },
+        "vocab-mismatch": {
+          "slice": "vocab-mismatch",
+          "queries": 60,
+          "recallAt1": 0.48333333333333334,
+          "recallAt5": 0.6833333333333333,
+          "recallAt10": 0.85,
+          "mrr": 0.5729298941798943,
+          "ndcg10": 0.6371366626002334
+        },
+        "temporal": {
+          "slice": "temporal",
+          "queries": 30,
+          "recallAt1": 0.6166666666666667,
+          "recallAt5": 0.861111111111111,
+          "recallAt10": 0.9444444444444444,
+          "mrr": 0.7322619047619047,
+          "ndcg10": 0.7753949686218028
+        }
+      },
+      "overall": {
+        "slice": "OVERALL",
+        "queries": 190,
+        "recallAt1": 0.7289473684210527,
+        "recallAt5": 0.8675438596491228,
+        "recallAt10": 0.9333333333333333,
+        "mrr": 0.7917209690893902,
+        "ndcg10": 0.8240809165294672
+      },
+      "macro": {
+        "slice": "MACRO",
+        "queries": 4,
+        "recallAt1": 0.7354166666666667,
+        "recallAt5": 0.8777777777777779,
+        "recallAt10": 0.9402777777777778,
+        "mrr": 0.8006035052910053,
+        "ndcg10": 0.8318862003168274
+      }
+    },
+    "hybrid": {
+      "bySlice": {
+        "verbatim": {
+          "slice": "verbatim",
+          "queries": 40,
+          "recallAt1": 1,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "mrr": 1,
+          "ndcg10": 1
+        },
+        "paraphrase": {
+          "slice": "paraphrase",
+          "queries": 60,
+          "recallAt1": 0.8666666666666667,
+          "recallAt5": 0.9666666666666667,
+          "recallAt10": 0.9666666666666667,
+          "mrr": 0.9097222222222221,
+          "ndcg10": 0.924239926205987
+        },
+        "vocab-mismatch": {
+          "slice": "vocab-mismatch",
+          "queries": 60,
+          "recallAt1": 0.48333333333333334,
+          "recallAt5": 0.6833333333333333,
+          "recallAt10": 0.85,
+          "mrr": 0.5729298941798943,
+          "ndcg10": 0.6371366626002334
+        },
+        "temporal": {
+          "slice": "temporal",
+          "queries": 30,
+          "recallAt1": 0.6166666666666667,
+          "recallAt5": 0.861111111111111,
+          "recallAt10": 0.9444444444444444,
+          "mrr": 0.7322619047619047,
+          "ndcg10": 0.7753949686218028
+        }
+      },
+      "overall": {
+        "slice": "OVERALL",
+        "queries": 190,
+        "recallAt1": 0.7342105263157894,
+        "recallAt5": 0.8675438596491228,
+        "recallAt10": 0.9333333333333333,
+        "mrr": 0.7943525480367586,
+        "ndcg10": 0.82602339151067
+      },
+      "macro": {
+        "slice": "MACRO",
+        "queries": 4,
+        "recallAt1": 0.7416666666666667,
+        "recallAt5": 0.8777777777777779,
+        "recallAt10": 0.9402777777777778,
+        "mrr": 0.8037285052910053,
+        "ndcg10": 0.8341928893570058
+      }
+    },
+    "hybrid-terms": {
+      "bySlice": {
+        "verbatim": {
+          "slice": "verbatim",
+          "queries": 40,
+          "recallAt1": 0.975,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "mrr": 0.9875,
+          "ndcg10": 0.9907732438392864
+        },
+        "paraphrase": {
+          "slice": "paraphrase",
+          "queries": 60,
+          "recallAt1": 0.9,
+          "recallAt5": 0.9833333333333333,
+          "recallAt10": 0.9833333333333333,
+          "mrr": 0.9333333333333333,
+          "ndcg10": 0.945902372947686
+        },
+        "vocab-mismatch": {
+          "slice": "vocab-mismatch",
+          "queries": 60,
+          "recallAt1": 0.13333333333333333,
+          "recallAt5": 0.3333333333333333,
+          "recallAt10": 0.4166666666666667,
+          "mrr": 0.2136507936507937,
+          "ndcg10": 0.262091255825254
+        },
+        "temporal": {
+          "slice": "temporal",
+          "queries": 30,
+          "recallAt1": 0.6333333333333333,
+          "recallAt5": 0.9333333333333333,
+          "recallAt10": 0.9333333333333333,
+          "mrr": 0.7638888888888888,
+          "ndcg10": 0.8092917243182651
+        }
+      },
+      "overall": {
+        "slice": "OVERALL",
+        "queries": 190,
+        "recallAt1": 0.631578947368421,
+        "recallAt5": 0.7736842105263158,
+        "recallAt10": 0.8,
+        "mrr": 0.6907142857142856,
+        "ndcg10": 0.7178384168920826
+      },
+      "macro": {
+        "slice": "MACRO",
+        "queries": 4,
+        "recallAt1": 0.6604166666666667,
+        "recallAt5": 0.8125,
+        "recallAt10": 0.8333333333333333,
+        "mrr": 0.724593253968254,
+        "ndcg10": 0.752014649232623
+      }
+    }
+  },
+  "latency": {
+    "bm25": {
+      "mode": "bm25",
+      "mean": 1.3430286260868263,
+      "p50": 1.1528539999994791,
+      "p95": 2.5248355999991867
+    },
+    "vec": {
+      "mode": "vec",
+      "mean": 23.324718121739142,
+      "p50": 22.823020999998334,
+      "p95": 27.615093449999403
+    },
+    "hybrid": {
+      "mode": "hybrid",
+      "mean": 23.908693278260913,
+      "p50": 23.399271000000226,
+      "p95": 29.673268900000267
+    },
+    "hybrid-terms": {
+      "mode": "hybrid-terms",
+      "mean": 24.40752101304344,
+      "p50": 23.656229500000336,
+      "p95": 30.34270885000105
+    }
+  },
+  "negativeSeparation": {
+    "vec": {
+      "mode": "vec",
+      "negMedian": 0.6357252150774002,
+      "negP90": 0.6656015485525131,
+      "posMedian": 0.6840895116329193,
+      "posP90": 0.7588882178068161
+    },
+    "hybrid": {
+      "mode": "hybrid",
+      "negMedian": 0.01639344262295082,
+      "negP90": 0.01639344262295082,
+      "posMedian": 0.01639344262295082,
+      "posP90": 0.03278688524590164
+    },
+    "hybrid-terms": {
+      "mode": "hybrid-terms",
+      "negMedian": 0.03126908933360546,
+      "negP90": 0.03229206013447156,
+      "posMedian": 0.03278688524590164,
+      "posP90": 0.03278688524590164
+    }
+  }
+}
