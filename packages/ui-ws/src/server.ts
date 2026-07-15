@@ -537,6 +537,8 @@ export interface UIWebSocketServerConfig {
       readonly appVersion?: string
       readonly appearance?: string
       readonly clientTs?: number
+      /** Best-effort base64 PNG (no `data:` prefix) — see FeedbackSubmitFrame.screenshot. */
+      readonly screenshot?: string
     }) => import("effect").Effect.Effect<{ readonly ok: boolean; readonly message?: string }>
   } | null
   /**
@@ -2546,6 +2548,10 @@ export const startUIWebSocketServer = (
                     const TARGET_MAX = 16_384
                     const SELECTOR_MAX = 1024
                     const REQUEST_ID_MAX = 256
+                    // ~512KB binary PNG ceiling × ~4/3 base64 expansion ≈
+                    // 683KB, rounded up. Independent of the socket's 32MB
+                    // maxPayload ceiling — this bounds disk usage per note.
+                    const SCREENSHOT_MAX_BASE64_CHARS = 700_000
                     const rawReqId = (frame as { requestId?: unknown }).requestId
                     // A non-string requestId collapses to "" and is rejected by
                     // the length guard below (echoed back like skill-toggle).
@@ -2592,6 +2598,18 @@ export const startUIWebSocketServer = (
                       appearance?: string
                       clientTs?: number
                     }
+                    // Screenshot is validated SEPARATELY from the malformed-
+                    // frame guard above: a bad/oversized screenshot must
+                    // never reject the whole note, it is silently dropped
+                    // instead (best-effort, never-blocking capture).
+                    const rawScreenshot = (frame as { screenshot?: unknown })
+                      .screenshot
+                    const screenshotVal =
+                      typeof rawScreenshot === "string" &&
+                      rawScreenshot.length > 0 &&
+                      rawScreenshot.length <= SCREENSHOT_MAX_BASE64_CHARS
+                        ? rawScreenshot
+                        : undefined
                     yield* sink
                       .submit({
                         note: noteVal,
@@ -2608,6 +2626,9 @@ export const startUIWebSocketServer = (
                           : {}),
                         ...(typeof f.clientTs === "number"
                           ? { clientTs: f.clientTs }
+                          : {}),
+                        ...(screenshotVal !== undefined
+                          ? { screenshot: screenshotVal }
                           : {}),
                       })
                       .pipe(

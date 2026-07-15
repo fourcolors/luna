@@ -1783,6 +1783,15 @@ export interface FeedbackSubmitFrame {
   readonly appVersion?: string
   readonly appearance?: string
   readonly clientTs: number
+  /** Best-effort base64-encoded PNG (NO `data:` URI prefix) of the picked
+   *  element, captured via native macOS window capture and cropped/downscaled
+   *  client-side (see FeedbackEngine._captureScreenshot in chat.html). Omitted
+   *  when capture failed, permission was denied, or the platform/build doesn't
+   *  support it — screenshot is always best-effort, never blocking. Server-side
+   *  SCREENSHOT_MAX_BASE64_CHARS bounds this independently of the socket's
+   *  32MB maxPayload ceiling; an oversized or non-string value is silently
+   *  dropped (the note still submits) rather than rejecting the whole frame. */
+  readonly screenshot?: string
 }
 
 export type ClientFrame =

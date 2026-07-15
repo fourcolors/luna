@@ -45,6 +45,7 @@ type SinkInput = {
   readonly appVersion?: string
   readonly appearance?: string
   readonly clientTs?: number
+  readonly screenshot?: string
 }
 
 interface Rig {
@@ -261,5 +262,77 @@ describe("feedback-only ui-ws server (live)", () => {
     )
     expect(ack).toMatchObject({ ok: false, message: "sink said no" })
     client.close()
+  })
+
+  // ── screenshot (additive, best-effort, never blocks the note) ────────────
+  describe("screenshot field", () => {
+    it("a valid small screenshot string reaches the sink's submit call", async () => {
+      activeRig = await startFeedbackRig()
+      const client = await openClient(activeRig.url)
+      await client.waitFor((f) => f.type === "hello")
+
+      client.send(validSubmit({ requestId: "fb-shot-1", screenshot: "iVBORw0KGgoAAAANSUhEUg==" }))
+      const ack = await client.waitFor(
+        (f) => f.type === "feedback-ack" && f.requestId === "fb-shot-1",
+      )
+      expect(ack).toMatchObject({ ok: true })
+      expect(activeRig.recorded).toHaveLength(1)
+      expect(activeRig.recorded[0]!.screenshot).toBe("iVBORw0KGgoAAAANSUhEUg==")
+      client.close()
+    })
+
+    it("an oversized screenshot (> SCREENSHOT_MAX_BASE64_CHARS) is silently dropped — the note still submits ok:true, with no screenshot field", async () => {
+      activeRig = await startFeedbackRig()
+      const client = await openClient(activeRig.url)
+      await client.waitFor((f) => f.type === "hello")
+
+      const oversized = "A".repeat(700_001)
+      client.send(validSubmit({ requestId: "fb-shot-2", screenshot: oversized }))
+      const ack = await client.waitFor(
+        (f) => f.type === "feedback-ack" && f.requestId === "fb-shot-2",
+      )
+      expect(ack).toMatchObject({ ok: true })
+      expect(activeRig.recorded).toHaveLength(1)
+      expect(activeRig.recorded[0]!.screenshot).toBeUndefined()
+      client.close()
+    })
+
+    it("a non-string screenshot (number, object) is dropped harmlessly — the note still submits ok:true", async () => {
+      activeRig = await startFeedbackRig()
+      const client = await openClient(activeRig.url)
+      await client.waitFor((f) => f.type === "hello")
+
+      client.send(validSubmit({ requestId: "fb-shot-3", screenshot: 123 }))
+      const ackNum = await client.waitFor(
+        (f) => f.type === "feedback-ack" && f.requestId === "fb-shot-3",
+      )
+      expect(ackNum).toMatchObject({ ok: true })
+
+      client.send(validSubmit({ requestId: "fb-shot-4", screenshot: {} }))
+      const ackObj = await client.waitFor(
+        (f) => f.type === "feedback-ack" && f.requestId === "fb-shot-4",
+      )
+      expect(ackObj).toMatchObject({ ok: true })
+
+      expect(activeRig.recorded).toHaveLength(2)
+      expect(activeRig.recorded[0]!.screenshot).toBeUndefined()
+      expect(activeRig.recorded[1]!.screenshot).toBeUndefined()
+      client.close()
+    })
+
+    it("omitting screenshot entirely behaves exactly as before (backward-compat regression check)", async () => {
+      activeRig = await startFeedbackRig()
+      const client = await openClient(activeRig.url)
+      await client.waitFor((f) => f.type === "hello")
+
+      client.send(validSubmit({ requestId: "fb-shot-5" }))
+      const ack = await client.waitFor(
+        (f) => f.type === "feedback-ack" && f.requestId === "fb-shot-5",
+      )
+      expect(ack).toMatchObject({ ok: true })
+      expect(activeRig.recorded).toHaveLength(1)
+      expect("screenshot" in activeRig.recorded[0]!).toBe(false)
+      client.close()
+    })
   })
 })
