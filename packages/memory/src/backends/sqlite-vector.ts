@@ -193,7 +193,7 @@ function extractText(content: unknown): string | null {
 // into a single string for the memory_vectors.enrichment column, which is
 // indexed as a SECOND FTS5 column (see sqlite-vector-maintenance.ts) so
 // bm25()/hybrid-terms can match query vocabulary the record's own text
-// never uses. This is a lexical-index-only signal — it is NEVER embedded;
+// never uses. This is a lexical-index-only signal - it is NEVER embedded;
 // the embedding input below stays text-only.
 function extractEnrichmentPhrases(content: unknown): ReadonlyArray<string> {
   if (

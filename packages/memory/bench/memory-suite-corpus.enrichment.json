@@ -1,7 +1,7 @@
 {
   "version": "1",
   "model": "haiku",
-  "generatedAt": "2026-07-15T04:04:10.977Z",
+  "generatedAt": "2026-07-15T04:55:01.921Z",
   "phrases": {
     "rec_project_001_vectorlite_store": [
       "semantic search",
@@ -212,28 +212,21 @@
     ],
     "rec_project_023_subagents_in_chat": [
       "agent visibility",
-      "task execution display",
       "nested agents",
       "agent transparency",
       "workflow step visibility",
-      "background task display",
       "agent progress tracking",
       "expandable agent results"
     ],
     "rec_project_024_job_ticker_v2": [
-      "job orchestration",
-      "async job queue",
-      "job coordination",
       "task orchestration engine",
-      "job concurrency control",
       "orchestration framework",
       "async task management",
       "worker coordination engine",
       "distributed task queue"
     ],
     "rec_project_025_job_deadlines": [
-      "granular error handling",
-      "job-specific limits"
+      "granular error handling"
     ],
     "rec_project_026_bounded_fibers": [
       "resource protection",
@@ -358,7 +351,6 @@
       "auth selection"
     ],
     "rec_project_038_single_instance_deeplink": [
-      "URL handler",
       "protocol activation",
       "URI routing",
       "activation protocol",
@@ -427,7 +419,6 @@
     ],
     "rec_project_044_telegram_attachments": [
       "media validation",
-      "file filtering",
       "incoming enrichment",
       "payload validation",
       "content verification",
@@ -627,7 +618,6 @@
       "complete identity",
       "official style",
       "surname usage",
-      "proper name",
       "formal naming",
       "legal identity"
     ],
@@ -640,17 +630,12 @@
       "always dim",
       "black scheme",
       "nocturnal ui",
-      "midnight mode",
       "enforced darkness"
     ],
     "rec_preference_004_zsh_default": [
-      "zsh first",
-      "prefer zsh",
       "unix preference",
       "interpreter choice",
-      "legacy fallback",
-      "zsh mainline",
-      "zsh emphasis"
+      "legacy fallback"
     ],
     "rec_preference_005_verify_before_claim": [
       "evidence first",
@@ -677,7 +662,6 @@
       "sequential history",
       "linear logs",
       "don't squash",
-      "git discipline",
       "no rewrites",
       "accumulative history",
       "append only",
@@ -756,7 +740,6 @@
     ],
     "rec_preference_014_worktree_only": [
       "isolated checkout",
-      "git hygiene",
       "sandbox approach",
       "separate workspace",
       "independent environment",
@@ -772,7 +755,6 @@
       "parallel lookup",
       "separate investigation",
       "discovery handoff",
-      "lightweight main loop",
       "auxiliary queries",
       "delegation pattern"
     ],
@@ -877,7 +859,6 @@
       "dairy alternative",
       "sweetener-free",
       "caffeinated ritual",
-      "plant milk",
       "unsweetened consumption",
       "morning drink",
       "caffeine regimen",
@@ -934,7 +915,6 @@
       "app-agnostic binding",
       "gesture sequences",
       "frequency-based binding",
-      "sequential key pattern",
       "global namespace safety",
       "modal keystroke",
       "accessibility customization"
@@ -1049,7 +1029,6 @@
       "skip middleman"
     ],
     "rec_episodic_001_scheduler_v1_retired": [
-      "job management consolidation",
       "task queue unification",
       "infrastructure simplification"
     ],
@@ -1254,8 +1233,7 @@
       "frontend overhaul",
       "toolchain migration",
       "component library refresh",
-      "build system upgrade",
-      "web app launch"
+      "build system upgrade"
     ],
     "rec_episodic_022_telegram_ux_upgrade": [
       "chat improvements",
@@ -1284,11 +1262,9 @@
       "v50 rollout"
     ],
     "rec_episodic_026_luna_studio_web_build": [
-      "auth workaround",
       "integration testing",
       "e2e validation",
-      "studio launch",
-      "auth issue"
+      "studio launch"
     ],
     "rec_episodic_027_moon_wkwebview_stale_cache_note": [
       "webkit caching",
@@ -1302,13 +1278,11 @@
       "oban failure",
       "background jobs",
       "oban limitation",
-      "timing issue",
-      "job crash"
+      "timing issue"
     ],
     "rec_episodic_029_digest_job_root_cause_note": [
       "root cause",
       "fault isolation",
-      "job debugging",
       "infrastructure bug",
       "diagnosis",
       "issue analysis"
@@ -1316,7 +1290,6 @@
     "rec_episodic_030_sol_agent_audit": [
       "sol postmortem",
       "infrastructure halt",
-      "exit handler",
       "service downtime",
       "supervisor trap",
       "graceful shutdown"
@@ -1338,7 +1311,6 @@
       "health restoration",
       "service healing",
       "scheduling repair",
-      "background job restoration",
       "infrastructure rollout",
       "release finalization",
       "performance recovery",
@@ -1471,8 +1443,7 @@
     ],
     "rec_episodic_045_thread_delivery_sink": [
       "message sink",
-      "consolidated output",
-      "job completion routing"
+      "consolidated output"
     ],
     "rec_episodic_046_moon_topbar_redesign": [
       "presentation attribute issue",
@@ -1507,16 +1478,13 @@
     ],
     "rec_episodic_049_studio_phase0_gate": [
       "integration test",
-      "real device proof",
       "fidelity testing",
       "hardware proof",
-      "real environment test",
       "end-to-end validation"
     ],
     "rec_episodic_050_studio_phase1_merged": [
       "connection resilience",
       "state recovery",
-      "failover loop",
       "stateful recovery",
       "session persistence",
       "recovery mechanism",
@@ -1548,9 +1516,7 @@
     ],
     "rec_episodic_053_job_ticker_deadlines_root_cause": [
       "timeout backoff",
-      "job expiration",
       "timeout logic",
-      "job scheduler",
       "retry exhaustion",
       "timeout enforcement",
       "fail resolution"
@@ -1657,7 +1623,6 @@
       "unstructured data logging",
       "record-keeping architecture",
       "chronicle backend",
-      "flat-file storage",
       "logging platform",
       "annotation repository",
       "documentation storage",

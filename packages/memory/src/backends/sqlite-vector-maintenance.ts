@@ -147,7 +147,7 @@ export const MEMORY_VECTOR_SCHEMA_MIGRATION = `
 // "enrichment" is a lexical-index-only signal (SIRA-style corpus enrichment,
 // Experiment A): LLM-generated alias phrases that let bm25 match vocabulary
 // the record's own text never uses. It is indexed as a second FTS5 column
-// here but is NEVER fed to the embedder — vector search input stays
+// here but is NEVER fed to the embedder - vector search input stays
 // text-only (see put() in sqlite-vector.ts).
 //
 // This is deliberately NOT part of MEMORY_VECTOR_SCHEMA_MIGRATION above:
@@ -287,14 +287,14 @@ function keyedTextForRow(row: VectorAuditRow): string | null {
  * Guarded (re)creation of `memory_fts`. Handles two cases with the same
  * check, since both leave `memory_fts` without an "enrichment" column:
  *   - Fresh / pre-FTS DB: `memory_fts` doesn't exist yet (PRAGMA table_info
- *     returns nothing) — DROP is a no-op, CREATE builds the final 2-column
+ *     returns nothing) - DROP is a no-op, CREATE builds the final 2-column
  *     shape directly, and 'rebuild' seeds it from whatever rows already
  *     exist in `memory_vectors` (zero for a truly fresh DB).
- *   - Legacy DB: `memory_fts` exists with only "text" — must be dropped and
+ *   - Legacy DB: `memory_fts` exists with only "text" - must be dropped and
  *     recreated (FTS5 has no ALTER ADD COLUMN), then repopulated via
  *     'rebuild' from `memory_vectors` (the canonical source).
  * Callers MUST ensure `memory_vectors.enrichment` already exists before
- * calling this — 'rebuild' reads both declared columns from the content
+ * calling this - 'rebuild' reads both declared columns from the content
  * table by name and fails if either is missing.
  * Old triggers are DROPped (not `CREATE TRIGGER IF NOT EXISTS`, which would
  * silently keep stale single-column trigger bodies) and recreated to write
@@ -306,15 +306,31 @@ function ensureMemoryFtsSchema(db: BunDatabase): void {
       (row) => row.name,
     ),
   )
-  if (ftsCols.has("enrichment")) return // already final shape — no-op
+  if (ftsCols.has("enrichment")) return // already final shape - no-op
 
-  db.run(`
-    DROP TRIGGER IF EXISTS memory_vectors_ai;
-    DROP TRIGGER IF EXISTS memory_vectors_ad;
-    DROP TRIGGER IF EXISTS memory_vectors_au;
-    DROP TABLE IF EXISTS memory_fts;
-  `)
-  db.run(MEMORY_FTS_SCHEMA)
+  // All-or-nothing: without a transaction, a crash after CREATE VIRTUAL
+  // TABLE commits but before 'rebuild' finishes would leave a final-shaped
+  // but EMPTY index that the guard above then treats as migrated forever
+  // (permanent silent bm25/hybrid degradation). BEGIN IMMEDIATE also
+  // serializes two connections racing this migration on the same file.
+  db.run("BEGIN IMMEDIATE")
+  try {
+    db.run(`
+      DROP TRIGGER IF EXISTS memory_vectors_ai;
+      DROP TRIGGER IF EXISTS memory_vectors_ad;
+      DROP TRIGGER IF EXISTS memory_vectors_au;
+      DROP TABLE IF EXISTS memory_fts;
+    `)
+    db.run(MEMORY_FTS_SCHEMA)
+    db.run("COMMIT")
+  } catch (cause) {
+    try {
+      db.run("ROLLBACK")
+    } catch {
+      // connection may have already rolled back (e.g. on close/crash)
+    }
+    throw cause
+  }
 }
 
 export function ensureMemoryVectorSchema(db: BunDatabase): void {
@@ -336,7 +352,7 @@ export function ensureMemoryVectorSchema(db: BunDatabase): void {
     if (!cols.has(col.name)) db.run(col.sql)
   }
   // Enrichment column must land on memory_vectors BEFORE memory_fts is
-  // (re)created below — see ensureMemoryFtsSchema's doc comment.
+  // (re)created below - see ensureMemoryFtsSchema's doc comment.
   if (!cols.has(ENRICHMENT_COLUMN.name)) db.run(ENRICHMENT_COLUMN.sql)
   ensureMemoryFtsSchema(db)
 }

@@ -478,7 +478,22 @@ async function retrieveCandidates(
 // ---------------------------------------------------------------------------
 
 const MODEL = process.env["LUNA_RERANK_MODEL"] ?? "haiku"
-const CONCURRENCY = Math.max(6, Math.min(8, Number(process.env["LUNA_RERANK_CONCURRENCY"] ?? "7")))
+
+/** Validates LUNA_RERANK_CONCURRENCY explicitly rather than letting a bad
+ * value (NaN from a non-numeric string) silently fall through Math.min/max
+ * into mapLimit's Array.from({length: NaN}), which produces zero workers
+ * and hangs the run instead of failing loudly. */
+function resolveRequestedConcurrency(): number {
+  const raw = process.env["LUNA_RERANK_CONCURRENCY"]
+  if (raw === undefined) return 7
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 1) {
+    console.error(`[rerank] invalid LUNA_RERANK_CONCURRENCY "${raw}" - must be a finite number >= 1`)
+    process.exit(3)
+  }
+  return n
+}
+const CONCURRENCY = Math.max(6, Math.min(8, resolveRequestedConcurrency()))
 const CLAUDE_DISALLOWED_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task"
 const CALL_TIMEOUT_MS = 45_000
 const RETRY_ATTEMPTS = 2
@@ -526,6 +541,10 @@ function callClaudeOnce(prompt: string): Promise<{ text: string; tookMs: number 
       clearTimeout(timer)
       reject(e)
     })
+    // EPIPE guard: the child can exit before consuming stdin; without this
+    // listener that throws an unhandled 'error' event instead of letting
+    // the 'close' handler below report the real failure.
+    child.stdin.on("error", () => {})
     child.on("close", (code) => {
       clearTimeout(timer)
       const tookMs = performance.now() - t0
@@ -618,6 +637,12 @@ async function preflightClaude(): Promise<void> {
 // Rerank rubric (adapted from SIRA's relevance_v04.txt pointwise scorer)
 // ---------------------------------------------------------------------------
 
+// Bump this whenever RUBRIC, pointwisePrompt, or batchedPrompt's wording
+// changes - it's part of the cache key, so a bump naturally invalidates
+// stale cached scores instead of silently reusing scores for a different
+// prompt. The cache file is gitignored, so old entries just re-miss.
+const PROMPT_VERSION = "1"
+
 const RUBRIC = `- 61-100: the candidate memory contains what the query asks about
 - 41-60: the candidate memory is topically related but does not directly answer
 - 0-40: the candidate memory is unrelated to the query`
@@ -657,8 +682,16 @@ Output ONLY strict JSON, no markdown fences, no prose, with one key per candidat
 
 type Cache = Record<string, unknown>
 
-function cacheKey(shape: "batched" | "pointwise", queryId: string, candidateIds: ReadonlyArray<string>): string {
-  const raw = `${MODEL}|${shape}|${queryId}|${candidateIds.join(",")}`
+/** Content-hashed cache key: model | shape | prompt version | query text |
+ * joined candidate texts. Keying on text (not ids) plus PROMPT_VERSION
+ * means a corpus edit or a rubric/prompt wording change naturally misses
+ * the cache instead of silently reusing a score for different content. */
+function cacheKey(
+  shape: "batched" | "pointwise",
+  queryText: string,
+  candidateTexts: ReadonlyArray<string>,
+): string {
+  const raw = `${MODEL}|${shape}|${PROMPT_VERSION}|${queryText}|${candidateTexts.join(" ")}`
   return createHash("sha256").update(raw).digest("hex").slice(0, 24)
 }
 
@@ -730,9 +763,12 @@ async function runBatchedShape(
   const stats = freshStats()
   stats.totalQueries = retrievals.length
   const outcomes = await mapLimit(retrievals, CONCURRENCY, async (r) => {
-    const candidateIds = r.candidates.map((c) => c.id)
-    const hybridOrder = candidateIds
-    const key = cacheKey("batched", r.queryId, candidateIds)
+    const hybridOrder = r.candidates.map((c) => c.id)
+    const key = cacheKey(
+      "batched",
+      r.queryText,
+      r.candidates.map((c) => c.text),
+    )
     let scores: Record<string, number> | null = null
 
     if (useCache && key in cache) {
@@ -806,7 +842,7 @@ async function runPointwiseShape(
   const outcomes = await mapLimit(retrievals, 1, async (r) => {
     const hybridOrder = r.candidates.map((c) => c.id)
     const perCandidate = await mapLimit(r.candidates, CONCURRENCY, async (c) => {
-      const key = cacheKey("pointwise", r.queryId, [c.id])
+      const key = cacheKey("pointwise", r.queryText, [c.text])
       if (useCache && key in cache) {
         stats.cacheHits++
         return { id: c.id, score: cache[key] as number, failed: false }
@@ -1056,18 +1092,24 @@ async function main(): Promise<void> {
   }
 
   // ---- Table (a): hybrid vs batched-reranked, full processed corpus ----
+  // Fallback queries (parse/CLI failure -> rankedIds is just hybrid order
+  // relabeled) are excluded from the "reranked" rows below: including them
+  // would silently blend hybrid-order results into the rerank metric and
+  // make the comparison dishonest. They're reported as a separate count.
   const hybridScored: ScoredQuery[] = retrievals.map((r) => ({
     queryId: r.queryId,
     slice: r.slice,
     relevantIds: r.relevantIds,
     rankedIds: r.candidates.map((c) => c.id),
   }))
-  const batchedScored: ScoredQuery[] = batchedOutcomes.map((o) => ({
+  const batchedNonFallback = batchedOutcomes.filter((o) => !o.fell_back)
+  const batchedScored: ScoredQuery[] = batchedNonFallback.map((o) => ({
     queryId: o.queryId,
     slice: o.slice,
     relevantIds: o.relevantIds,
     rankedIds: o.rankedIds,
   }))
+  const batchedExcluded = batchedOutcomes.length - batchedNonFallback.length
   const hybridTable = slicesTable(hybridScored)
   const batchedTable = slicesTable(batchedScored)
 
@@ -1077,31 +1119,46 @@ async function main(): Promise<void> {
   console.log(``)
   console.log(tabulateSlices([...hybridTable.rows, hybridTable.overall, hybridTable.macro]))
   console.log(``)
-  console.log(`### reranked (batched)`)
+  console.log(`### reranked (batched, ${batchedScored.length} of ${batchedOutcomes.length} queries)`)
   console.log(``)
   console.log(tabulateSlices([...batchedTable.rows, batchedTable.overall, batchedTable.macro]))
+  console.log(``)
+  console.log(
+    `excluded ${batchedExcluded} fallback quer${batchedExcluded === 1 ? "y" : "ies"} from the reranked rows above (fell back to hybrid order on parse/CLI failure)`,
+  )
   console.log(``)
 
   // ---- Table (b): batched vs pointwise on the subsample queries ----
   const batchedOnSubsample = batchedScored.filter((s) => subsampleIds.has(s.queryId))
-  const pointwiseScored: ScoredQuery[] = pointwiseOutcomes.map((o) => ({
+  const batchedSubsampleExcluded = subsample.length - batchedOnSubsample.length
+  const pointwiseNonFallback = pointwiseOutcomes.filter((o) => !o.fell_back)
+  const pointwiseScored: ScoredQuery[] = pointwiseNonFallback.map((o) => ({
     queryId: o.queryId,
     slice: o.slice,
     relevantIds: o.relevantIds,
     rankedIds: o.rankedIds,
   }))
+  const pointwiseExcluded = pointwiseOutcomes.length - pointwiseNonFallback.length
   const batchedSubsampleTable = slicesTable(batchedOnSubsample)
   const pointwiseTable = slicesTable(pointwiseScored)
 
   console.log(`## (b) batched vs pointwise, subsample queries (${subsample.length} queries)`)
   console.log(``)
-  console.log(`### batched (subsample)`)
+  console.log(`### batched (subsample, ${batchedOnSubsample.length} of ${subsample.length} queries)`)
   console.log(``)
   console.log(tabulateSlices([...batchedSubsampleTable.rows, batchedSubsampleTable.overall, batchedSubsampleTable.macro]))
   console.log(``)
-  console.log(`### pointwise (subsample)`)
+  console.log(
+    `excluded ${batchedSubsampleExcluded} fallback quer${batchedSubsampleExcluded === 1 ? "y" : "ies"} from the batched (subsample) rows above`,
+  )
+  console.log(``)
+  console.log(`### pointwise (subsample, ${pointwiseScored.length} of ${subsample.length} queries)`)
   console.log(``)
   console.log(tabulateSlices([...pointwiseTable.rows, pointwiseTable.overall, pointwiseTable.macro]))
+  console.log(``)
+  console.log(
+    `excluded ${pointwiseExcluded} fallback quer${pointwiseExcluded === 1 ? "y" : "ies"} from the pointwise (subsample) rows above`,
+  )
   console.log(``)
 
   // ---- Table (c): negative separation before/after + injection threshold ----
@@ -1188,6 +1245,11 @@ async function main(): Promise<void> {
           injectionThreshold: threshold,
           latency: { batched: latencyFor("batched", batchedStats.latenciesMs), pointwise: latencyFor("pointwise", pointwiseStats.latenciesMs) },
           parseFailure: { batchedRate: batchedFailRate, pointwiseRate: pointwiseFailRate },
+          excludedFallback: {
+            batched: batchedExcluded,
+            batchedOnSubsample: batchedSubsampleExcluded,
+            pointwise: pointwiseExcluded,
+          },
         },
         null,
         2,

@@ -1226,7 +1226,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
   // ───────────────────────── Enrichment (Experiment A) ─────────────────
   // SIRA-style corpus enrichment: LLM-generated alias phrases carried at
   // content.enrichmentPhrases are joined into memory_vectors.enrichment and
-  // indexed as a second FTS5 column. Lexical-index-only — never embedded.
+  // indexed as a second FTS5 column. Lexical-index-only - never embedded.
 
   it("Enrichment #1: a record with enrichmentPhrases is retrievable via bm25 by an enrichment-only term", async () => {
     const out = await run(
@@ -1265,7 +1265,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
         }
       }),
     )
-    // "servicing" appears only in enrichmentPhrases, never in text — a hit
+    // "servicing" appears only in enrichmentPhrases, never in text - a hit
     // here proves the second FTS column is being searched.
     expect(out.bm25).toContain("enriched")
     expect(out.hybridTerms).toContain("enriched")
@@ -1442,7 +1442,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       )
       pre.close()
 
-      // Reopen via the backend — migration runs once.
+      // Reopen via the backend - migration runs once.
       const fileLayer = Layer.provideMerge(
         SqliteVectorBackend.fromPath(dbPath),
         Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
