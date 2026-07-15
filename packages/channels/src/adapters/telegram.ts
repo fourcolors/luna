@@ -136,14 +136,18 @@
  * `opts.isPartial` is true and is omitted once the turn finalizes, so the
  * button disappears with the turn.
  *
- * ## "Working" reaction glyph
+ * ## "Working" reaction glyph (read receipt)
  *
  * setMessageReaction (Bot API 7.0+) reacts to the Chairman's own inbound
- * message with 👀 when a turn starts (same call site as startTyping).
- * Fire-and-forget/best-effort — a 400 from a chat with restricted
- * available_reactions must never break delivery. Deliberately NOT cleared
- * on turn completion (see reactWorking's doc comment and the PR description
- * for the DM-notification tradeoff this avoids).
+ * message with 👀 when a turn starts (same call site as startTyping). This
+ * IS Luna's read receipt on Telegram — the Bot API gives bots no other
+ * user-visible "seen" signal. Fire-and-forget/best-effort — a 400 from a
+ * chat with restricted available_reactions must never break delivery — but
+ * a failure is logged once per chat (`warnReactionFailed`/
+ * `reactionWarnLogged`) so a chat where the read receipt has silently
+ * stopped working is discoverable instead of invisible. Deliberately NOT
+ * cleared on turn completion (see reactWorking's doc comment and the PR
+ * description for the DM-notification tradeoff this avoids).
  *
  * ## Forum-topic session scoping
  *
@@ -369,12 +373,19 @@ const STOP_KEYBOARD = {
 const REACTION_EMOJI = "👀"
 
 /**
- * Best-effort "I'm working on this" reaction on the triggering message.
- * Fire-and-forget: some chats restrict `available_reactions` and this call
- * can 400 — that must never break message delivery. The real transport
- * already folds HTTP failures into `{ ok: false }`; we simply don't inspect
- * the result, and catchAllCause absorbs any defect from an injected/test
- * transport.
+ * Best-effort "I'm working on this" reaction on the triggering message — this
+ * IS Luna's read receipt on Telegram: the Bot API has no user-visible "seen"
+ * status for bots, so the 👀 reaction is the only acknowledgment a Chairman
+ * watching the chat actually sees. Fire-and-forget by design (it must never
+ * block or delay message delivery), but "fire-and-forget" previously also
+ * meant "fails completely silently" — a chat with `available_reactions`
+ * restricted (some groups, some Bot API versions) would 400 forever with
+ * zero trace, so nobody could tell the read receipt had stopped working from
+ * a real failure vs. Telegram simply being slow. `onFailure` is called with
+ * the failure description (both a non-ok API result AND a transport-level
+ * defect) so the caller can log it — once per chat, not per message, via
+ * the caller's own dedup (see `warnReactionFailed`/`reactionWarnLogged`) —
+ * without turning a restricted-reactions chat into log spam.
  *
  * Deliberately NOT cleared on turn completion — see telegram-ux-improvements
  * PR description for the tradeoff (clearing/re-reacting on every turn would
@@ -384,14 +395,20 @@ const reactWorking = (
   transport: TelegramHttpTransport,
   chatId: string,
   messageId: number,
+  onFailure: (description: string) => void,
 ): Effect.Effect<void> =>
   transport("setMessageReaction", {
     chat_id: chatId,
     message_id: messageId,
     reaction: [{ type: "emoji", emoji: REACTION_EMOJI }],
   }).pipe(
+    Effect.tap((result) =>
+      result.ok ? Effect.void : Effect.sync(() => onFailure(result.description ?? "unknown error")),
+    ),
     Effect.asVoid,
-    Effect.catchAllCause(() => Effect.void),
+    Effect.catchAllCause((cause) =>
+      Effect.sync(() => onFailure(Cause.pretty(cause))),
+    ),
   )
 
 /** A single Telegram update from getUpdates. */
@@ -922,6 +939,25 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // open group or a spammer cannot flood the log.
   const loggedDrops = new Set<string>()
 
+  // Rate-limit "working" reaction (👀 read-receipt) failure logging to the
+  // first hit per chat — a chat with reactions disabled/restricted would
+  // otherwise fail on every single inbound message and flood the log. The
+  // point isn't to log every failure, it's to make the FIRST one visible so
+  // a silently-broken read receipt is discoverable instead of invisible.
+  const reactionWarnLogged = new Set<string>()
+  const warnReactionFailed = (chatId: string, description: string): void => {
+    if (reactionWarnLogged.has(chatId)) return
+    reactionWarnLogged.add(chatId)
+    try {
+      console.warn(
+        `[luna/channels] telegram: "working" reaction (👀 read-receipt) failed for ` +
+          `chat=${chatId}, not retrying for this chat: ${description}`,
+      )
+    } catch {
+      // logging must never fail the fiber
+    }
+  }
+
   // stream-edit state: inbound platformMessageId → sent Telegram message_id.
   // One entry per active turn; cleaned up on isFinal.
   const sentMessageIds = new Map<string, number>()
@@ -1341,7 +1377,11 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
               // inbound message — fire-and-forget, never blocks the download.
               const mediaMessageId = mediaMsg.metadata?.["messageId"]
               if (typeof mediaMessageId === "number") {
-                Effect.runFork(reactWorking(transport, mediaMsg.channelId, mediaMessageId))
+                Effect.runFork(
+                  reactWorking(transport, mediaMsg.channelId, mediaMessageId, (description) =>
+                    warnReactionFailed(mediaMsg.channelId, description),
+                  ),
+                )
               }
               const outcome = yield* downloadSemaphore.withPermits(1)(
                 fetchTelegramAttachment(transport, resolvedFileTransport, media),
@@ -1380,7 +1420,11 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           // message — fire-and-forget, never blocks dispatch.
           const inboundMessageIdForReaction = msg.metadata?.["messageId"]
           if (typeof inboundMessageIdForReaction === "number") {
-            Effect.runFork(reactWorking(transport, msg.channelId, inboundMessageIdForReaction))
+            Effect.runFork(
+              reactWorking(transport, msg.channelId, inboundMessageIdForReaction, (description) =>
+                warnReactionFailed(msg.channelId, description),
+              ),
+            )
           }
 
           if (messageHandler !== null) {
