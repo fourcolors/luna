@@ -1,0 +1,567 @@
+/**
+ * enrich-corpus - generates SIRA-style alias phrases for the bench corpus.
+ *
+ * For each corpus record, asks an LLM for up to 10 short phrases (synonyms,
+ * hypernyms, colloquialisms, category labels, description-by-effect) that a
+ * future query might use but that do NOT appear in the record's own text.
+ * Writes a cached sidecar file the bench reads at run time (bench never
+ * calls an LLM itself - see memory-suite.ts's LUNA_BENCH_ENRICHMENT).
+ *
+ * LLM access: shells out to the `claude` CLI (`claude -p --model <model>`,
+ * prompt piped over stdin), batching 10 records per call. Requires the CLI
+ * to be installed and authenticated; this script does not fall back to a
+ * different model on failure - it stops and reports.
+ *
+ * Idempotent: records already present in the sidecar are skipped unless
+ * --force. Safe to re-run after a partial failure (Ctrl-C, a bad batch) -
+ * the sidecar is flushed atomically to disk after every completed batch,
+ * and a record whose response was missing or malformed is left absent
+ * from the sidecar (never stored as []) so the next run retries it.
+ *
+ * Run via:
+ *   bun packages/memory/bench/enrich-corpus.ts
+ *   bun packages/memory/bench/enrich-corpus.ts --force
+ *   bun packages/memory/bench/enrich-corpus.ts --model sonnet --concurrency 2
+ *   bun packages/memory/bench/enrich-corpus.ts --refilter   (no LLM calls;
+ *     reapplies the mechanical phrase filter to the existing sidecar)
+ *
+ * Exit codes:
+ *   0  completed, every record enriched (or already cached)
+ *   1  one or more batches failed, or some ids were missing from a
+ *      response, after the retry-once guard
+ *   3  corpus invalid, load error, or invalid configuration
+ */
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs"
+import { resolve, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import { spawn } from "node:child_process"
+
+// node:child_process, not `Bun.spawn` - the project avoids @types/bun (see
+// DESIGN.md and the sqlite backend comments). The prompt is piped over
+// stdin rather than passed as an argv element (see callClaudeOnce below) so
+// large batches can't hit ARG_MAX.
+
+interface CorpusRecord {
+  readonly id: string
+  readonly kind: string
+  readonly text: string
+}
+
+interface Corpus {
+  readonly records: ReadonlyArray<CorpusRecord>
+}
+
+interface EnrichmentSidecar {
+  readonly version: string
+  readonly model: string
+  readonly generatedAt: string
+  readonly phrases: Record<string, ReadonlyArray<string>>
+}
+
+const SIDECAR_VERSION = "1"
+
+function parseArgs(argv: ReadonlyArray<string>) {
+  let corpusPath: string | undefined
+  let outPath: string | undefined
+  let model = "haiku"
+  let batchSize = 10
+  let concurrency = 4
+  let force = false
+  let refilter = false
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === "--force") force = true
+    else if (a === "--refilter") refilter = true
+    else if (a === "--corpus") corpusPath = argv[++i]
+    else if (a === "--out") outPath = argv[++i]
+    else if (a === "--model") model = argv[++i] ?? model
+    else if (a === "--batch-size") batchSize = Number(argv[++i])
+    else if (a === "--concurrency") concurrency = Number(argv[++i])
+  }
+  return { corpusPath, outPath, model, batchSize, concurrency, force, refilter }
+}
+
+function loadCorpus(path: string): Corpus {
+  const raw = readFileSync(path, "utf8")
+  const parsed = JSON.parse(raw) as { records?: unknown }
+  if (!Array.isArray(parsed.records) || parsed.records.length === 0) {
+    throw new Error(`corpus: missing or empty \`records\` array (${path})`)
+  }
+  const records: CorpusRecord[] = parsed.records.map((raw, i) => {
+    const rec = raw as Partial<CorpusRecord>
+    if (typeof rec.id !== "string" || rec.id.length === 0) {
+      throw new Error(`corpus.records[${i}]: missing or invalid \`id\``)
+    }
+    if (typeof rec.text !== "string" || rec.text.length === 0) {
+      throw new Error(`corpus.records[${i}] (${rec.id}): missing or invalid \`text\``)
+    }
+    return { id: rec.id, kind: typeof rec.kind === "string" ? rec.kind : "unknown", text: rec.text }
+  })
+  return { records }
+}
+
+function loadSidecar(path: string): EnrichmentSidecar | null {
+  if (!existsSync(path)) return null
+  try {
+    const raw = readFileSync(path, "utf8")
+    const parsed = JSON.parse(raw) as Partial<EnrichmentSidecar>
+    if (parsed.phrases === undefined || typeof parsed.phrases !== "object") {
+      throw new Error("sidecar missing `phrases` object")
+    }
+    return {
+      version: parsed.version ?? SIDECAR_VERSION,
+      model: parsed.model ?? "unknown",
+      generatedAt: parsed.generatedAt ?? new Date(0).toISOString(),
+      phrases: parsed.phrases as Record<string, ReadonlyArray<string>>,
+    }
+  } catch (e) {
+    throw new Error(
+      `sidecar at ${path} exists but is unreadable/corrupt - fix or delete it before re-running: ${e instanceof Error ? e.message : String(e)}`,
+    )
+  }
+}
+
+// ─── LLM batch call ───────────────────────────────────────────────────────
+
+const PROMPT_RULES = `You generate SEARCH ALIAS PHRASES for a memory record, adapted from SIRA-style
+corpus enrichment. For each record below, produce up to 10 NEW short phrases
+(1-4 words each) that a FUTURE SEARCH QUERY might plausibly use to find this
+record, but that do NOT appear verbatim in the record's own text. Favor:
+synonyms, hypernyms (broader category terms), colloquialisms, category
+labels, and description-by-effect (what it does / why it matters).
+
+Forbid:
+- any word that already appears in the record's text (even inflected forms)
+- generic filler words ("information", "system", "data", "thing", "stuff")
+- full sentences or anything longer than 4 words
+
+Output ONLY a single JSON object mapping each record id to an array of
+phrase strings. No markdown code fences, no explanation, no extra keys.
+Example shape: {"rec_001": ["phrase one", "phrase two"], "rec_002": []}`
+
+function buildPrompt(batch: ReadonlyArray<CorpusRecord>): string {
+  const records = batch
+    .map((r) => `- id: ${r.id}\n  text: ${r.text}`)
+    .join("\n")
+  return `${PROMPT_RULES}\n\nRecords:\n${records}\n\nRespond with the JSON object now.`
+}
+
+const CALL_TIMEOUT_MS = 90_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/** Spawns one `claude -p --model <model>` call with the prompt piped over
+ * stdin (avoids ARG_MAX on large batches). Rejects on nonzero exit or a
+ * timeout so callClaudeWithRetry can treat both as a transient failure. */
+function callClaudeOnce(prompt: string, model: string): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn("claude", ["-p", "--model", model], { stdio: ["pipe", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      reject(new Error(`claude call timed out after ${CALL_TIMEOUT_MS}ms`))
+    }, CALL_TIMEOUT_MS)
+    child.stdout.on("data", (d) => (stdout += String(d)))
+    child.stderr.on("data", (d) => (stderr += String(d)))
+    child.on("error", (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+    // EPIPE guard: the child can exit before consuming stdin (crash, bad
+    // model name); without this listener that throws an unhandled 'error'
+    // event instead of letting the 'close' handler report the real cause.
+    child.stdin.on("error", () => {})
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      if (code !== 0) {
+        reject(new Error(`claude CLI failed: ${stderr.slice(0, 1000) || `exited ${code}`}`))
+        return
+      }
+      resolvePromise(stdout)
+    })
+    child.stdin.write(prompt)
+    child.stdin.end()
+  })
+}
+
+/** Retries once on a transient CLI failure (nonzero exit, timeout) after a
+ * short backoff. This is separate from the bad-JSON retry in runBatch,
+ * which needs to alter the prompt rather than just resend it. */
+async function callClaudeWithRetry(prompt: string, model: string): Promise<string> {
+  try {
+    return await callClaudeOnce(prompt, model)
+  } catch (e) {
+    console.warn(
+      `[enrich-corpus] transient CLI failure, retrying after 2s backoff: ${e instanceof Error ? e.message : String(e)}`,
+    )
+    await sleep(2000)
+    return await callClaudeOnce(prompt, model)
+  }
+}
+
+/** Strips optional ```json fences and surrounding prose the model may add
+ * despite instructions, then JSON.parses. Returns null (not a throw) on
+ * failure so callers can drive the retry-once policy explicitly. */
+function tryParseJson(raw: string): unknown | null {
+  const trimmed = raw.trim()
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/)
+  const candidate = fenced ? fenced[1]! : trimmed
+  try {
+    return JSON.parse(candidate)
+  } catch {
+    // Last resort: find the outermost {...} span and try that (handles
+    // stray leading/trailing prose the fence regex above didn't catch).
+    const start = candidate.indexOf("{")
+    const end = candidate.lastIndexOf("}")
+    if (start === -1 || end === -1 || end <= start) return null
+    try {
+      return JSON.parse(candidate.slice(start, end + 1))
+    } catch {
+      return null
+    }
+  }
+}
+
+// Standard short stopword list for the exact content-word match rule below.
+// Deliberately generic (not corpus-tuned) so the filter stays predictable.
+const STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of",
+  "with", "by", "is", "are", "was", "were", "be", "been", "being", "this",
+  "that", "these", "those", "it", "its", "as", "from", "into", "than",
+  "then", "so", "such", "not", "no", "do", "does", "did", "has", "have",
+  "had", "will", "would", "could", "should", "may", "might", "must", "can",
+  "i", "you", "he", "she", "we", "they", "them", "his", "her", "their",
+  "our", "your", "my", "me", "him", "us", "what", "which", "who", "whom",
+  "where", "when", "why", "how", "all", "each", "few", "more", "most",
+  "other", "some", "any", "both", "own", "same", "too", "very", "just",
+  "about", "above", "after", "again", "against", "before", "below",
+  "between", "down", "during", "further", "here", "there", "once", "only",
+  "out", "over", "under", "up", "off", "if", "while",
+])
+
+/** Mechanical post-filter: drops phrases the model's instruction-following
+ * missed, in two ways - the model's soft "don't reuse my own words"
+ * instruction is not trustworthy on its own.
+ *
+ * 1. content-word stem: a phrase word >4 chars sharing a 5-char prefix with
+ *    a record-text word >4 chars (catches inflections: "storing" / "stored").
+ * 2. exact content-word match: a phrase word >=3 chars, not a stopword,
+ *    that appears verbatim in the record text (catches short exact reuse
+ *    the stem rule's >4-char floor misses, e.g. "job" in "job management"). */
+function contentStems(text: string): Set<string> {
+  const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  const stems = new Set<string>()
+  for (const w of words) {
+    if (w.length > 4) stems.add(w.slice(0, 5))
+  }
+  return stems
+}
+
+function contentWords(text: string): Set<string> {
+  const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  const out = new Set<string>()
+  for (const w of words) {
+    if (w.length >= 3 && !STOPWORDS.has(w)) out.add(w)
+  }
+  return out
+}
+
+function phraseSharesStem(phrase: string, stems: ReadonlySet<string>): boolean {
+  const words = phrase.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  return words.some((w) => w.length > 4 && stems.has(w.slice(0, 5)))
+}
+
+function phraseHasExactContentWordMatch(phrase: string, words: ReadonlySet<string>): boolean {
+  const phraseWords = phrase.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  return phraseWords.some((w) => w.length >= 3 && !STOPWORDS.has(w) && words.has(w))
+}
+
+function filterPhrases(
+  rawPhrases: ReadonlyArray<string>,
+  recordText: string,
+): string[] {
+  const stems = contentStems(recordText)
+  const words = contentWords(recordText)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of rawPhrases) {
+    if (typeof raw !== "string") continue
+    const phrase = raw.trim()
+    if (phrase.length === 0) continue
+    if (phrase.split(/\s+/).length > 4) continue
+    if (phraseSharesStem(phrase, stems)) continue
+    if (phraseHasExactContentWordMatch(phrase, words)) continue
+    const key = phrase.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(phrase)
+    if (out.length >= 10) break
+  }
+  return out
+}
+
+interface BatchResult {
+  readonly ok: boolean
+  readonly phrasesById: Record<string, string[]>
+  /** ids in this batch the model's response omitted entirely - left absent
+   * from phrasesById (never stored as []) so a rerun retries them. */
+  readonly missingIds: ReadonlyArray<string>
+  readonly error?: string
+}
+
+async function runBatch(
+  batch: ReadonlyArray<CorpusRecord>,
+  model: string,
+): Promise<BatchResult> {
+  const recordsById = new Map(batch.map((r) => [r.id, r]))
+  let lastError: string | undefined
+  const attempt = async (extraReminder: string): Promise<unknown | null> => {
+    const prompt = buildPrompt(batch) + extraReminder
+    try {
+      const stdout = await callClaudeWithRetry(prompt, model)
+      return tryParseJson(stdout)
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e)
+      return null
+    }
+  }
+
+  let parsed = await attempt("")
+  if (parsed === null) {
+    // Retry-once-on-bad-JSON guard (separate from callClaudeWithRetry's
+    // transient-CLI-failure retry above).
+    parsed = await attempt(
+      "\n\nYour previous output was not valid JSON. Output ONLY the raw JSON object - no markdown fences, no commentary.",
+    )
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      phrasesById: {},
+      missingIds: [],
+      error:
+        lastError !== undefined
+          ? `batch [${batch.map((r) => r.id).join(", ")}]: claude CLI call failed after retry - ${lastError}`
+          : `batch [${batch.map((r) => r.id).join(", ")}]: model did not return valid JSON after retry`,
+    }
+  }
+
+  const out: Record<string, string[]> = {}
+  const missingIds: string[] = []
+  const obj = parsed as Record<string, unknown>
+  for (const [id, rec] of recordsById) {
+    const raw = obj[id]
+    if (!Array.isArray(raw)) {
+      // Do NOT store [] here - an absent id is what marks it pending for
+      // the next run. A model-returned [] (explicit empty list) is stored
+      // normally below via filterPhrases on an empty array.
+      missingIds.push(id)
+      console.warn(`[enrich-corpus] warning: response missing phrases for ${id}; will retry on next run`)
+      continue
+    }
+    out[id] = filterPhrases(raw as string[], rec.text)
+  }
+  return { ok: true, phrasesById: out, missingIds }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: ReadonlyArray<T>,
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i]!, i)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+function chunk<T>(arr: ReadonlyArray<T>, size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+/** Atomic write: temp file in the same dir + rename, so a crash mid-write
+ * (or a concurrent reader) can never see a truncated/corrupt sidecar. */
+function writeSidecarAtomic(sidecar: EnrichmentSidecar, path: string): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, JSON.stringify(sidecar, null, 2) + "\n")
+  renameSync(tmp, path)
+}
+
+/** One-shot, no-LLM pass: reapplies filterPhrases to every record already
+ * in the sidecar, using the strengthened content-word rule. Used to clean
+ * up a sidecar generated before that rule existed. */
+async function runRefilter(corpusPath: string, sidecarPath: string): Promise<void> {
+  let corpus: Corpus
+  try {
+    corpus = loadCorpus(corpusPath)
+  } catch (e) {
+    console.error(`[enrich-corpus] --refilter: corpus load failed (${corpusPath}): ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(3)
+    return
+  }
+
+  const existing = loadSidecar(sidecarPath)
+  if (existing === null) {
+    console.error(`[enrich-corpus] --refilter: no sidecar at ${sidecarPath} to refilter`)
+    process.exit(3)
+    return
+  }
+
+  const textById = new Map(corpus.records.map((r) => [r.id, r.text]))
+  const newPhrases: Record<string, ReadonlyArray<string>> = {}
+  const perRecordCounts: number[] = []
+  let before = 0
+  let after = 0
+
+  for (const [id, list] of Object.entries(existing.phrases)) {
+    before += list.length
+    const text = textById.get(id)
+    if (text === undefined) {
+      console.warn(`[enrich-corpus] --refilter: record ${id} not in corpus, keeping ${list.length} phrase(s) unfiltered`)
+      newPhrases[id] = list
+      perRecordCounts.push(list.length)
+      after += list.length
+      continue
+    }
+    const filtered = filterPhrases(list, text)
+    newPhrases[id] = filtered
+    perRecordCounts.push(filtered.length)
+    after += filtered.length
+  }
+
+  const sidecar: EnrichmentSidecar = {
+    version: existing.version,
+    model: existing.model,
+    generatedAt: new Date().toISOString(),
+    phrases: newPhrases,
+  }
+  writeSidecarAtomic(sidecar, sidecarPath)
+
+  const n = perRecordCounts.length
+  const min = n > 0 ? Math.min(...perRecordCounts) : 0
+  const max = n > 0 ? Math.max(...perRecordCounts) : 0
+  const mean = n > 0 ? perRecordCounts.reduce((a, b) => a + b, 0) / n : 0
+  const zeroCount = perRecordCounts.filter((c) => c === 0).length
+
+  console.log(`[enrich-corpus] --refilter: ${n} records, dropped ${before - after} phrase(s) (${before} -> ${after}) -> wrote ${sidecarPath}`)
+  console.log(`[enrich-corpus] --refilter stats: min=${min} mean=${mean.toFixed(2)} max=${max} zero-phrase-records=${zeroCount}`)
+}
+
+async function main(): Promise<void> {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const { corpusPath, outPath, model, batchSize, concurrency, force, refilter } = parseArgs(
+    process.argv.slice(2),
+  )
+  const resolvedCorpus = corpusPath !== undefined ? resolve(corpusPath) : resolve(here, "memory-suite-corpus.json")
+  const resolvedOut = outPath !== undefined ? resolve(outPath) : resolve(here, "memory-suite-corpus.enrichment.json")
+
+  if (refilter) {
+    await runRefilter(resolvedCorpus, resolvedOut)
+    return
+  }
+
+  if (!Number.isFinite(batchSize) || batchSize < 1) {
+    console.error(`[enrich-corpus] invalid --batch-size`)
+    process.exit(3)
+  }
+  if (!Number.isFinite(concurrency) || concurrency < 1) {
+    console.error(`[enrich-corpus] invalid --concurrency`)
+    process.exit(3)
+  }
+
+  let corpus: Corpus
+  try {
+    corpus = loadCorpus(resolvedCorpus)
+  } catch (e) {
+    console.error(`[enrich-corpus] corpus load failed (${resolvedCorpus}): ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(3)
+    return
+  }
+
+  let existing: EnrichmentSidecar | null
+  try {
+    existing = force ? null : loadSidecar(resolvedOut)
+  } catch (e) {
+    console.error(`[enrich-corpus] ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(3)
+    return
+  }
+
+  const phrases: Record<string, ReadonlyArray<string>> = { ...(existing?.phrases ?? {}) }
+  const pending = corpus.records.filter((r) => force || !(r.id in phrases))
+
+  console.log(
+    `[enrich-corpus] ${corpus.records.length} records, ${pending.length} pending (${corpus.records.length - pending.length} cached) - model=${model} batch=${batchSize} concurrency=${concurrency}`,
+  )
+
+  if (pending.length === 0) {
+    console.log(`[enrich-corpus] nothing to do - all records already enriched (use --force to regenerate)`)
+    return
+  }
+
+  const batches = chunk(pending, batchSize)
+  let failures = 0
+  let missingIdTotal = 0
+  let batchesDone = 0
+
+  // Flushed after every completed batch (not once at the end): a crash or
+  // failed batch loses at most one batch of work, which is what makes the
+  // "safe to re-run after a partial failure" claim in the header true.
+  const persist = (): void => {
+    const sidecar: EnrichmentSidecar = {
+      version: SIDECAR_VERSION,
+      model,
+      generatedAt: new Date().toISOString(),
+      phrases,
+    }
+    writeSidecarAtomic(sidecar, resolvedOut)
+  }
+
+  await mapWithConcurrency(batches, concurrency, async (batch, i) => {
+    const result = await runBatch(batch, model)
+    batchesDone++
+    if (!result.ok) {
+      failures++
+      console.error(`[enrich-corpus] batch ${i + 1}/${batches.length} FAILED: ${result.error}`)
+      return result
+    }
+    for (const [id, list] of Object.entries(result.phrasesById)) {
+      phrases[id] = list
+    }
+    if (result.missingIds.length > 0) {
+      missingIdTotal += result.missingIds.length
+    }
+    persist()
+    console.log(
+      `[enrich-corpus] batch ${i + 1}/${batches.length} ok (${batchesDone}/${batches.length} done, flushed to disk)`,
+    )
+    return result
+  })
+
+  console.log(`[enrich-corpus] ${resolvedOut}: ${Object.keys(phrases).length} records with phrases`)
+
+  if (failures > 0 || missingIdTotal > 0) {
+    console.error(
+      `[enrich-corpus] ${failures}/${batches.length} batches failed, ${missingIdTotal} record(s) missing from responses - re-run to retry (idempotent, only failed/missing records are absent from the sidecar)`,
+    )
+    process.exit(1)
+  }
+}
+
+try {
+  await main()
+} catch (e) {
+  console.error(`[enrich-corpus] runtime failure: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`)
+  process.exit(3)
+}

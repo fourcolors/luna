@@ -1,0 +1,2030 @@
+{
+  "version": "1",
+  "model": "haiku",
+  "generatedAt": "2026-07-15T04:55:01.921Z",
+  "phrases": {
+    "rec_project_001_vectorlite_store": [
+      "semantic search",
+      "cosine similarity",
+      "dense retrieval",
+      "kNN search",
+      "semantic recall",
+      "similarity matching",
+      "learned representations",
+      "ann algorithm"
+    ],
+    "rec_project_002_hybrid_rrf": [
+      "reranking algorithm",
+      "ensemble retrieval",
+      "rrf algorithm",
+      "text matching",
+      "query relevance",
+      "term weighting",
+      "semantic matching",
+      "weighted aggregation"
+    ],
+    "rec_project_003_memory_mcp_tools": [
+      "protocol interface",
+      "api endpoints",
+      "crud operations",
+      "rpc methods",
+      "capability interface",
+      "extensible interface",
+      "resource access",
+      "method binding",
+      "stateful operations"
+    ],
+    "rec_project_004_embedding_model": [
+      "on-device inference",
+      "neural network",
+      "representation learning",
+      "compact inference",
+      "offline computation",
+      "feature extraction",
+      "latent representation",
+      "semantic transformation"
+    ],
+    "rec_project_005_dedup_merge": [
+      "deduplication logic",
+      "collision detection",
+      "semantic dedup",
+      "clustering algorithm",
+      "matching strategy",
+      "novelty detection",
+      "redundancy removal",
+      "record consolidation",
+      "identity resolution",
+      "approximate matching"
+    ],
+    "rec_project_006_memory_kind_tag": [
+      "classification system",
+      "metadata labels",
+      "faceted search",
+      "type filtering",
+      "intent classification",
+      "type annotation",
+      "semantic filtering",
+      "domain classification",
+      "attribute filtering"
+    ],
+    "rec_project_007_memory_export": [
+      "serialization format",
+      "data archival",
+      "data portability",
+      "archival format",
+      "snapshot format",
+      "offline archival",
+      "record extraction",
+      "state snapshot",
+      "format conversion",
+      "persistence interface"
+    ],
+    "rec_project_008_memory_ttl": [
+      "temporal decay",
+      "aging mechanism",
+      "relevance decay",
+      "stale data",
+      "recency bias",
+      "cleanup strategy",
+      "ttl mechanism",
+      "retention policy",
+      "automated pruning"
+    ],
+    "rec_project_009_stable_dev_channels": [
+      "release pipeline",
+      "staging environment",
+      "gradual rollout",
+      "phased release",
+      "branch strategy",
+      "rollout management",
+      "safety mechanism",
+      "testing environment"
+    ],
+    "rec_project_010_autodeploy_defer": [
+      "scheduled rollback",
+      "downtime avoidance",
+      "release gating",
+      "deployment safety",
+      "scheduled deployment",
+      "zero-downtime deployment",
+      "intelligent deployment"
+    ],
+    "rec_project_011_autodeploy_force": [
+      "interrupt safety check",
+      "expedited channel update",
+      "skip readiness block",
+      "emergency override mode",
+      "bypass readiness gate",
+      "override connection gate",
+      "emergency safety bypass",
+      "push during outage"
+    ],
+    "rec_project_012_rollback_health": [
+      "canary gate",
+      "fallback to stable",
+      "crash loop prevention",
+      "integrity verification gate",
+      "safe rollback",
+      "graceful degradation",
+      "bad state detection"
+    ],
+    "rec_project_013_widget_dock_update_train": [
+      "phased rollout",
+      "progressive release",
+      "canary deployment",
+      "slow rollout",
+      "controlled distribution",
+      "rollout ring",
+      "safe release",
+      "gradual adoption"
+    ],
+    "rec_project_014_sandbox_pods": [
+      "separate namespaces",
+      "containerized environments",
+      "namespace segregation",
+      "separate runtime",
+      "kernel namespace",
+      "confined compute",
+      "runtime segregation"
+    ],
+    "rec_project_015_no_mistakes_gate": [
+      "CI gate",
+      "merge blocker",
+      "quality bar",
+      "presubmit check",
+      "mandatory checks",
+      "integration gate",
+      "compliance barrier",
+      "code quality gate"
+    ],
+    "rec_project_016_effect_layers": [
+      "dependency injection",
+      "functional architecture",
+      "IO abstraction",
+      "modular wiring",
+      "managed dependencies",
+      "runtime management",
+      "async abstraction"
+    ],
+    "rec_project_017_local_state_dir": [
+      "filesystem vault",
+      "encrypted storage dir",
+      "dotfolder config",
+      "home storage folder",
+      "user data folder",
+      "disk persistence",
+      "encrypted home store",
+      "secure data folder"
+    ],
+    "rec_project_018_session_store": [
+      "database backend",
+      "sql cache",
+      "crash resilience",
+      "durability guarantee",
+      "data durability",
+      "crash recovery",
+      "replay buffer",
+      "retention mechanism"
+    ],
+    "rec_project_019_reattach_cap": [
+      "resource leak prevention",
+      "orphan cleanup",
+      "backpressure mechanism"
+    ],
+    "rec_project_020_auto_title": [
+      "header extraction",
+      "summary generation",
+      "prefix removal",
+      "semantic labeling",
+      "conversation summarization",
+      "content-based naming",
+      "auto-naming",
+      "smart labeling"
+    ],
+    "rec_project_021_hide_empty_threads": [
+      "conversation housekeeping"
+    ],
+    "rec_project_022_parallel_threads": [
+      "split view chat",
+      "simultaneous chats",
+      "chat window split",
+      "dual workspace"
+    ],
+    "rec_project_023_subagents_in_chat": [
+      "agent visibility",
+      "nested agents",
+      "agent transparency",
+      "workflow step visibility",
+      "agent progress tracking",
+      "expandable agent results"
+    ],
+    "rec_project_024_job_ticker_v2": [
+      "task orchestration engine",
+      "orchestration framework",
+      "async task management",
+      "worker coordination engine",
+      "distributed task queue"
+    ],
+    "rec_project_025_job_deadlines": [
+      "granular error handling"
+    ],
+    "rec_project_026_bounded_fibers": [
+      "resource protection",
+      "queue capacity",
+      "workload throttling",
+      "resource fairness",
+      "workload control"
+    ],
+    "rec_project_027_nightly_digest": [
+      "scheduled report",
+      "daily standup",
+      "message aggregation",
+      "periodic notification",
+      "nocturnal report"
+    ],
+    "rec_project_028_job_result_delivery": [
+      "callback routing",
+      "completion reporting",
+      "async callback",
+      "outcome propagation",
+      "reply injection",
+      "asynchronous integration",
+      "response routing"
+    ],
+    "rec_project_029_observability_jsonl": [
+      "telemetry logging",
+      "audit trail",
+      "activity tracking",
+      "instrumentation logging",
+      "trace recording",
+      "metrics capture",
+      "incident forensics",
+      "operational monitoring",
+      "diagnostic logging"
+    ],
+    "rec_project_030_cost_rollup": [
+      "expense tracking",
+      "budget monitoring",
+      "metering",
+      "usage billing",
+      "rate calculation",
+      "financial metrics",
+      "billing aggregation",
+      "consumption tracking",
+      "financial summation",
+      "price breakdown"
+    ],
+    "rec_project_031_crash_loop_pager": [
+      "availability monitor",
+      "catastrophic failure handler",
+      "health check alert",
+      "automatic recovery",
+      "keepalive expiry alert",
+      "failure notification system",
+      "down detector",
+      "auto-recovery",
+      "supervisor monitoring",
+      "daemon health monitoring"
+    ],
+    "rec_project_032_duckdb_analysis": [
+      "historical audit trail",
+      "trend discovery",
+      "reporting interface",
+      "long-term insights",
+      "audit archive",
+      "metric trends",
+      "insight generation",
+      "time-series exploration",
+      "report generation",
+      "metric storage"
+    ],
+    "rec_project_033_account_broker": [
+      "credential switching",
+      "provider failover",
+      "failover mechanism",
+      "multi-source auth",
+      "distribution mechanism",
+      "provider switching",
+      "credential management",
+      "auth distribution"
+    ],
+    "rec_project_034_vault_tiered": [
+      "credential container",
+      "multi-level safekeeping",
+      "credential shielding",
+      "OS integration",
+      "keyring support",
+      "cache layer",
+      "platform abstraction",
+      "tiered containment",
+      "redundant protection"
+    ],
+    "rec_project_035_deny_rails": [
+      "security boundaries",
+      "access control",
+      "ACL system",
+      "capability-based security",
+      "sandboxing model",
+      "privilege restriction",
+      "blocking rules",
+      "capability gates",
+      "authorization model",
+      "security model"
+    ],
+    "rec_project_036_secure_secret_entry": [
+      "credential obfuscation",
+      "hidden credential entry",
+      "masked entry",
+      "credential privacy",
+      "privacy safeguard",
+      "obfuscation mechanism",
+      "prompt privacy",
+      "credential masking",
+      "sensitive obfuscation"
+    ],
+    "rec_project_037_oauth_multiaccount": [
+      "credential selection",
+      "oauth routing",
+      "identity routing",
+      "credential routing",
+      "auth failover",
+      "auth selection"
+    ],
+    "rec_project_038_single_instance_deeplink": [
+      "protocol activation",
+      "URI routing",
+      "activation protocol",
+      "incoming activation",
+      "handler activation",
+      "launch routing",
+      "focus mechanism",
+      "navigation protocol",
+      "routing handler"
+    ],
+    "rec_project_039_skills_system": [
+      "plugin system",
+      "capability collection",
+      "extension framework",
+      "dynamic capability",
+      "pluggable system",
+      "modular capability set",
+      "addon framework",
+      "toolkit interface",
+      "capability provisioning",
+      "runtime extension"
+    ],
+    "rec_project_040_connectors_prd": [
+      "provider integration",
+      "auth framework",
+      "information sharing",
+      "integration architecture",
+      "account linking",
+      "oauth bridge",
+      "provider framework",
+      "UI integration",
+      "credential bridge",
+      "platform extension"
+    ],
+    "rec_project_041_mcp_app_panels": [
+      "custom visualization",
+      "extension UI",
+      "third-party display",
+      "native display",
+      "external visualization",
+      "integration viewport"
+    ],
+    "rec_project_042_workflows_gallery": [
+      "automation library",
+      "template collection",
+      "process catalog",
+      "runbook browser",
+      "sequence executor",
+      "recipe interface",
+      "orchestration menu",
+      "quick-start interface",
+      "procedural palette",
+      "execution browser"
+    ],
+    "rec_project_043_dream_skill_chips": [
+      "auto-enhancement",
+      "capability refinement",
+      "optimization feedback",
+      "overnight learning",
+      "automated coaching",
+      "incremental training",
+      "self-refinement",
+      "procedural feedback",
+      "nudge interface",
+      "recommendation system"
+    ],
+    "rec_project_044_telegram_attachments": [
+      "media validation",
+      "incoming enrichment",
+      "payload validation",
+      "content verification",
+      "upload inspection",
+      "media ingestion",
+      "stream filtering"
+    ],
+    "rec_project_045_telegram_formatting": [
+      "rich messaging",
+      "quickaction interface",
+      "response enrichment",
+      "presence feedback",
+      "markup styling",
+      "input shortcuts",
+      "messaging protocol",
+      "keystroke feedback",
+      "interaction palette",
+      "quick actions"
+    ],
+    "rec_project_046_voice_speech": [
+      "local composition",
+      "native audio",
+      "offline audio",
+      "response vocalization",
+      "endpoint audio",
+      "response generation",
+      "zero-latency audio",
+      "edge audio",
+      "hardware vocalization"
+    ],
+    "rec_project_047_local_shell_multiroot": [
+      "unrestricted execution",
+      "privilege elevation",
+      "system execution",
+      "power mode",
+      "sandbox bypass",
+      "host execution",
+      "unrestricted terminal",
+      "executable interface",
+      "terminal privilege",
+      "unconstrained environment"
+    ],
+    "rec_project_048_trunk_based": [
+      "continuous integration",
+      "master-only",
+      "ephemeral streams",
+      "mainline development",
+      "single stream",
+      "pull-request flow",
+      "rapid integration cadence",
+      "linear history",
+      "monostream"
+    ],
+    "rec_project_049_postgres_verdict": [
+      "polyglot persistence",
+      "incremental adoption",
+      "dual-store",
+      "gradual transition",
+      "relational layer",
+      "data tier expansion",
+      "heterogeneous database",
+      "schema federation",
+      "staged adoption"
+    ],
+    "rec_project_050_model_routing": [
+      "backend selection",
+      "intelligent dispatch",
+      "flexible backend",
+      "LLM switching",
+      "adaptive backend",
+      "capability-based dispatch",
+      "endpoint aggregation",
+      "adaptive inference",
+      "multi-LLM dispatch",
+      "backend abstraction"
+    ],
+    "rec_project_051_model_effort_switcher": [
+      "inference tuning",
+      "capability dial",
+      "LLM selector",
+      "quality level",
+      "complexity control",
+      "parameter tuning",
+      "output quality",
+      "precision setting",
+      "performance level",
+      "token budget"
+    ],
+    "rec_project_052_font_settings": [
+      "typography tuning",
+      "text styling",
+      "typeface selector",
+      "display customization",
+      "visual preferences",
+      "appearance options",
+      "character sizing",
+      "layout tuning",
+      "readability control"
+    ],
+    "rec_project_053_notifications": [
+      "alert filtering",
+      "priority levels",
+      "sound control",
+      "alert management",
+      "selective suppression",
+      "importance ranking",
+      "quiet mode",
+      "alert rules",
+      "distraction reduction",
+      "attention management"
+    ],
+    "rec_project_054_theme_watercolor": [
+      "color scheme",
+      "aesthetic option",
+      "UI palette",
+      "design variant",
+      "appearance skin",
+      "pastel colors",
+      "accent palette",
+      "interface styling",
+      "design skin"
+    ],
+    "rec_project_055_window_welding": [
+      "synchronized movement",
+      "linked windows",
+      "collective motion",
+      "grouped windows",
+      "cohesive motion",
+      "unified movement",
+      "window linking",
+      "multi-window control"
+    ],
+    "rec_project_056_collapse_toggle": [
+      "toggle visibility",
+      "UI minimizer",
+      "hide/show hotkey",
+      "compact mode",
+      "interface minimizing",
+      "viewport reduction",
+      "presentation mode",
+      "quick hide",
+      "hidden state"
+    ],
+    "rec_project_057_artifacts_in_panels": [
+      "rendering preview",
+      "sidebar display",
+      "content window",
+      "off-thread rendering",
+      "side-by-side view",
+      "widget rendering",
+      "output preview",
+      "visual output",
+      "inline rendering",
+      "creation display"
+    ],
+    "rec_project_058_traffic_lights": [
+      "titlebar controls",
+      "hit target",
+      "accessibility improvement",
+      "corner controls",
+      "input target",
+      "control hitbox"
+    ],
+    "rec_project_059_liveness_ladder": [
+      "health monitoring",
+      "uptime detection",
+      "recovery automation",
+      "watchdog timer",
+      "degradation response",
+      "multi-level protection",
+      "availability safeguard"
+    ],
+    "rec_project_060_alignment_loop": [
+      "consistency maintenance",
+      "feedback cycle",
+      "self-improvement",
+      "drift detection",
+      "value verification",
+      "synchronization check"
+    ],
+    "rec_preference_001_terse": [
+      "concise output",
+      "brief replies",
+      "factual only",
+      "minimal elaboration",
+      "restrained style",
+      "short format",
+      "skip summaries",
+      "just facts",
+      "cut summarization",
+      "punt explanation"
+    ],
+    "rec_preference_002_full_name": [
+      "avoid nicknames",
+      "formal protocol",
+      "no abbreviations",
+      "complete identity",
+      "official style",
+      "surname usage",
+      "formal naming",
+      "legal identity"
+    ],
+    "rec_preference_003_dark_mode": [
+      "night theme",
+      "low light",
+      "light off",
+      "dim display",
+      "lights out",
+      "always dim",
+      "black scheme",
+      "nocturnal ui",
+      "enforced darkness"
+    ],
+    "rec_preference_004_zsh_default": [
+      "unix preference",
+      "interpreter choice",
+      "legacy fallback"
+    ],
+    "rec_preference_005_verify_before_claim": [
+      "evidence first",
+      "reproduce proof",
+      "confirm via shell",
+      "execute validate",
+      "concrete evidence",
+      "verify assertions",
+      "empirical proof",
+      "hands-on verification"
+    ],
+    "rec_preference_006_1password_keychain": [
+      "primary vault",
+      "1password preferred",
+      "secrets hierarchy",
+      "backup storage",
+      "vault priority",
+      "primary security",
+      "tiered storage",
+      "encryption first",
+      "auxiliary storage"
+    ],
+    "rec_preference_007_new_commits": [
+      "sequential history",
+      "linear logs",
+      "don't squash",
+      "no rewrites",
+      "accumulative history",
+      "append only",
+      "history preservation",
+      "immutable chain"
+    ],
+    "rec_preference_008_obsidian_notes": [
+      "obsidian structure",
+      "tag system",
+      "meta organization",
+      "diary entries",
+      "tag-based filing",
+      "unstructured storage",
+      "semantic markup",
+      "tag-driven discovery",
+      "annotation system",
+      "markup structure"
+    ],
+    "rec_preference_009_bang_prefix": [
+      "shell ready",
+      "executable format",
+      "bang notation",
+      "ready to paste",
+      "copy-paste friendly",
+      "direct execution",
+      "quick invoke",
+      "shell invocation"
+    ],
+    "rec_preference_010_email": [
+      "reach out",
+      "communication method",
+      "correspondence address",
+      "get in touch",
+      "message endpoint",
+      "unified channel",
+      "primary address",
+      "official mailbox",
+      "single inbox",
+      "centralized messaging"
+    ],
+    "rec_preference_011_no_em_dash": [
+      "minus sign",
+      "punctuation style",
+      "formatting rule",
+      "character choice",
+      "typographic convention",
+      "style guide",
+      "punctuation preference",
+      "horizontal separator",
+      "character standard",
+      "formatting convention"
+    ],
+    "rec_preference_012_one_sentence_per_line": [
+      "prose formatting",
+      "clause wrapping",
+      "text layout",
+      "formatting convention",
+      "syntax guideline",
+      "paragraph rule",
+      "row alignment",
+      "single clause format",
+      "prose structure",
+      "file formatting"
+    ],
+    "rec_preference_013_quality_over_cost": [
+      "engineering priorities",
+      "robustness focus",
+      "scalability preference",
+      "future-proof design",
+      "speed tradeoff",
+      "efficiency concern",
+      "value over speed",
+      "sustainable architecture",
+      "polish priority",
+      "durability focus"
+    ],
+    "rec_preference_014_worktree_only": [
+      "isolated checkout",
+      "sandbox approach",
+      "separate workspace",
+      "independent environment",
+      "copy isolation",
+      "parallel clone",
+      "checkout policy",
+      "isolation requirement"
+    ],
+    "rec_preference_015_delegate_exploration": [
+      "query outsourcing",
+      "research offload",
+      "auxiliary agent",
+      "parallel lookup",
+      "separate investigation",
+      "discovery handoff",
+      "auxiliary queries",
+      "delegation pattern"
+    ],
+    "rec_preference_016_end_of_turn_summary": [
+      "wrap-up recap",
+      "completion report",
+      "progress update",
+      "status recap",
+      "closure statement",
+      "result recap",
+      "transition note",
+      "outcome review"
+    ],
+    "rec_preference_017_reproduce_bug_e2e": [
+      "integration testing",
+      "representative scenario",
+      "realistic path",
+      "full flow verification",
+      "production simulation",
+      "actual usage pattern",
+      "live verification",
+      "authentic scenario",
+      "practical path",
+      "holistic verification"
+    ],
+    "rec_preference_018_pixel_perfect": [
+      "design precision",
+      "aesthetic attention",
+      "UI refinement",
+      "appearance standards",
+      "cosmetic scope",
+      "rendering accuracy",
+      "presentation standards",
+      "incidental cleanup",
+      "opportunistic refinement"
+    ],
+    "rec_preference_019_fix_flakiness": [
+      "code quality gate",
+      "preemptive cleanup",
+      "stability focus",
+      "linting compliance",
+      "opportunistic polish",
+      "incidental hygiene",
+      "proactive remediation",
+      "quality pass",
+      "robustness focus",
+      "static analysis"
+    ],
+    "rec_preference_020_evidence_first": [
+      "data-driven choice",
+      "fact-based reasoning",
+      "verified approach",
+      "proof requirement",
+      "empirical validation",
+      "source citation",
+      "validation requirement",
+      "grounded reasoning",
+      "documentation first"
+    ],
+    "rec_preference_021_workflow_model_tiering": [
+      "dual-tier execution",
+      "hierarchical agent sizing",
+      "complexity routing",
+      "capability delegation",
+      "orchestrator hierarchy",
+      "runtime efficiency",
+      "resource stratification",
+      "effort-based selection",
+      "tower architecture"
+    ],
+    "rec_preference_022_no_manual_changelog": [
+      "automation boundaries",
+      "no-touch policy",
+      "toolchain artifacts",
+      "immutable output",
+      "synthetic content",
+      "exclude from curation",
+      "automation trust",
+      "readonly toolchain",
+      "machine-written maintenance"
+    ],
+    "rec_preference_023_scoped_instruction_priority": [
+      "local vs global",
+      "immediate priority",
+      "contextual exception",
+      "nonpersistent guidance",
+      "situational adjustment",
+      "request-level authority"
+    ],
+    "rec_preference_024_protected_how_to_work": [
+      "protocol preservation",
+      "core methodology",
+      "stable guidelines",
+      "working agreement",
+      "hands-off charter",
+      "foundation rules",
+      "locked principles",
+      "authoritative baseline"
+    ],
+    "rec_preference_025_coffee_oat_milk": [
+      "beverage preference",
+      "dairy alternative",
+      "sweetener-free",
+      "caffeinated ritual",
+      "unsweetened consumption",
+      "morning drink",
+      "caffeine regimen",
+      "wholefood approach",
+      "barista order"
+    ],
+    "rec_preference_026_minimal_emoji": [
+      "textual restraint",
+      "prose-first style",
+      "symbol minimalism",
+      "decoration opt-in",
+      "typographic purity",
+      "conservative styling",
+      "plain text priority",
+      "sparse ornamentation",
+      "request-triggered visuals"
+    ],
+    "rec_preference_027_confirm_destructive_git": [
+      "mutation gates",
+      "reversibility checkpoint",
+      "approval barrier",
+      "safety throttle",
+      "consent requirement",
+      "irreversible safeguard",
+      "vcs protection",
+      "dangerous action alert",
+      "rollback prevention",
+      "friction threshold"
+    ],
+    "rec_preference_028_proceed_on_reversible": [
+      "autonomy on safe moves",
+      "low-friction operations",
+      "transparent inference",
+      "consequence-light execution",
+      "undoable initiative",
+      "undo-safe autonomy",
+      "obvious extension",
+      "backward-compatible move",
+      "recoverable execution"
+    ],
+    "rec_preference_029_native_notifications": [
+      "system alert priority",
+      "os-level delivery",
+      "ui-bypass messaging",
+      "interrupt strategy",
+      "foreground visibility",
+      "external alerting",
+      "critical alert routing",
+      "system tray prominent"
+    ],
+    "rec_preference_030_keyboard_chords": [
+      "combination keybindings",
+      "conflict-free input",
+      "app-agnostic binding",
+      "gesture sequences",
+      "frequency-based binding",
+      "global namespace safety",
+      "modal keystroke",
+      "accessibility customization"
+    ],
+    "rec_preference_031_timezone": [
+      "PT",
+      "PST",
+      "timezone preference",
+      "West Coast",
+      "UTC offset",
+      "local standard",
+      "chronological convention",
+      "calendar settings",
+      "PDT",
+      "temporal spec"
+    ],
+    "rec_preference_032_commit_message_why": [
+      "purpose over mechanism",
+      "rationale first",
+      "reasoning required",
+      "intent documentation",
+      "motivation narrative",
+      "justification section",
+      "argue the why",
+      "rationale not mechanics",
+      "substantive note",
+      "substantiation upfront"
+    ],
+    "rec_preference_033_no_agent_coauthor": [
+      "no AI attribution",
+      "exclude AI credits",
+      "human only credits",
+      "solo git credit",
+      "suppress AI sign-off",
+      "git blame single",
+      "sole credit required"
+    ],
+    "rec_preference_034_small_prs": [
+      "unified purpose",
+      "narrow focus",
+      "minimal review",
+      "modular commits",
+      "feature isolation",
+      "lean delivery",
+      "orthogonal features",
+      "focused deliverable"
+    ],
+    "rec_preference_035_distrust_unproven": [
+      "unverified facts",
+      "assumption call-out",
+      "verify before declare",
+      "evidence required",
+      "assume nothing",
+      "prove first",
+      "test before trust",
+      "unconfirmed caveat",
+      "empirical grounding"
+    ],
+    "rec_preference_036_screenshot_proof": [
+      "visual proof",
+      "pixel perfect",
+      "visual verification",
+      "capture verify",
+      "render evidence",
+      "snapshot confirmation",
+      "display confirmation",
+      "see it working",
+      "show not tell"
+    ],
+    "rec_preference_037_scratch_folder": [
+      "temporary code",
+      "ephemeral storage",
+      "playground isolation",
+      "quarantine experimentation",
+      "sandbox directory",
+      "spike code bin",
+      "work-in-progress repo",
+      "trial code home",
+      "disposable code"
+    ],
+    "rec_preference_038_no_permission_updates": [
+      "no self-modification",
+      "explicit allowlist",
+      "static ACL",
+      "freeze capabilities",
+      "veto auto-privilege",
+      "ask before granting",
+      "manual approval",
+      "block self-grant"
+    ],
+    "rec_preference_039_public_repo_caution": [
+      "IP leak prevention",
+      "secret exposure guard",
+      "no ops config",
+      "sanitize commits",
+      "redact private info",
+      "network safety",
+      "credentials check",
+      "environment isolation",
+      "compartmentalize secrets",
+      "perimeter hygiene"
+    ],
+    "rec_preference_040_first_source": [
+      "primary evidence",
+      "cite upstream",
+      "documentation link",
+      "direct reference",
+      "official docs",
+      "author statement",
+      "no paraphrasing",
+      "canonical reference",
+      "skip middleman"
+    ],
+    "rec_episodic_001_scheduler_v1_retired": [
+      "task queue unification",
+      "infrastructure simplification"
+    ],
+    "rec_episodic_002_vault_tiered_shipped": [
+      "secrets persistence layer",
+      "dual-mode secrets",
+      "cross-platform secrets",
+      "secret persistence",
+      "credential caching"
+    ],
+    "rec_episodic_003_model_routing_merged": [
+      "LLM switching capability",
+      "conversation portability",
+      "multi-LLM support",
+      "chat flexibility"
+    ],
+    "rec_episodic_004_moon_setup_wizard": [
+      "onboarding flow",
+      "initialization sequence",
+      "configuration assistant",
+      "startup walkthrough",
+      "launch experience",
+      "welcome flow",
+      "preliminary configuration",
+      "user onboarding",
+      "initial provisioning"
+    ],
+    "rec_episodic_005_voice_shipped": [
+      "audio response generation",
+      "TTS implementation",
+      "reply automation",
+      "local audio synthesis",
+      "audio messaging",
+      "audio capability",
+      "synthesis platform"
+    ],
+    "rec_episodic_006_string_retether": [
+      "elasticity simulation",
+      "constraint mechanics",
+      "visual anchor system",
+      "attachment resilience",
+      "animation robustness",
+      "tether mechanics",
+      "force simulation"
+    ],
+    "rec_episodic_007_provider_routing_pr99": [
+      "LLM agility",
+      "model portability",
+      "agent flexibility",
+      "runtime model selection",
+      "model interchangeability"
+    ],
+    "rec_episodic_008_dead_code_sweep": [
+      "cleanup pass",
+      "codebase hygiene",
+      "garbage collection",
+      "dependency analysis",
+      "maintenance pass",
+      "tidying pass"
+    ],
+    "rec_episodic_009_native_window_buttons": [
+      "chrome controls",
+      "titlebar UI",
+      "system chrome",
+      "permission configuration",
+      "manifest configuration",
+      "API authorization",
+      "control surface",
+      "authorization requirement",
+      "access gating"
+    ],
+    "rec_episodic_010_reattach_self_heal": [
+      "session recovery",
+      "link pooling",
+      "reconnection limit",
+      "memory leak fix",
+      "accumulation prevention",
+      "backpressure handling",
+      "reconnect throttling",
+      "resource cleanup",
+      "zombie elimination",
+      "orphan prevention"
+    ],
+    "rec_episodic_011_panels_not_always_on_top": [
+      "z-order toggle",
+      "topmost behavior",
+      "layering control",
+      "overlay mode",
+      "elevation toggle",
+      "stacking rule",
+      "sticky disable",
+      "z-layer",
+      "always-top toggle",
+      "titlebar hover"
+    ],
+    "rec_episodic_012_server_self_update_draft": [
+      "daemon versioning",
+      "incremental deployment",
+      "staged service",
+      "upgrade automation",
+      "version control",
+      "release staging",
+      "distribution system",
+      "staggered launch",
+      "orchestrated deployment"
+    ],
+    "rec_episodic_013_traffic_lights_fix": [
+      "close minimize maximize",
+      "system controls",
+      "red yellow green",
+      "interaction zone",
+      "click target",
+      "mouse hitbox",
+      "UI accessibility",
+      "borderless UI",
+      "control zone expansion",
+      "pointer hitarea"
+    ],
+    "rec_episodic_014_drag_lag_fix": [
+      "rAF batching",
+      "input throttling",
+      "performance optimization",
+      "jank reduction",
+      "smooth rendering",
+      "render performance",
+      "batch processing",
+      "update queueing",
+      "touch responsiveness"
+    ],
+    "rec_episodic_015_moon_no_outline_rule": [
+      "styling constraint",
+      "container appearance",
+      "design guideline",
+      "no-stroke policy",
+      "aesthetic guideline",
+      "harsh edges ban",
+      "styling prohibition",
+      "UI polish guide",
+      "design enforcement",
+      "container styling"
+    ],
+    "rec_episodic_016_adapter_stream_fix": [
+      "error suppression",
+      "exception masking",
+      "stack trace loss",
+      "hidden errors",
+      "error propagation",
+      "transparent handling",
+      "debug visibility",
+      "exception transparency",
+      "error concealment",
+      "fault isolation"
+    ],
+    "rec_episodic_017_deploy_router_slice": [
+      "security validation",
+      "TLS hardening",
+      "failover routing",
+      "traffic distribution",
+      "replica routing",
+      "routing redundancy",
+      "failover mechanism",
+      "load balancing",
+      "canary release"
+    ],
+    "rec_episodic_018_weld_seam_band_fix": [
+      "synchronization bug",
+      "timing adjustment",
+      "concurrency bug",
+      "concurrent access",
+      "throttle updates",
+      "boundary alignment",
+      "frame sync",
+      "UI junction",
+      "position update",
+      "jitter suppression"
+    ],
+    "rec_episodic_019_wkwebview_cache_bug": [
+      "memory clearing",
+      "outdated data",
+      "browser storage",
+      "update conflict",
+      "deployment artifact",
+      "update mechanism",
+      "debug symptom",
+      "reinstall issue",
+      "invisible bug"
+    ],
+    "rec_episodic_020_shell_acl_parallel_panels": [
+      "capability system",
+      "permission model",
+      "auth framework",
+      "isolation boundary",
+      "security scoping",
+      "feature gating",
+      "authorization mechanism",
+      "scope isolation",
+      "privilege restriction",
+      "multi-instance protection"
+    ],
+    "rec_episodic_021_studio_web_build_merged": [
+      "ui modernization",
+      "frontend overhaul",
+      "toolchain migration",
+      "component library refresh",
+      "build system upgrade"
+    ],
+    "rec_episodic_022_telegram_ux_upgrade": [
+      "chat improvements",
+      "messaging polish",
+      "interaction enhancements",
+      "markdown support",
+      "presence signals",
+      "ux refinement"
+    ],
+    "rec_episodic_023_sdk_sonnet_default": [
+      "inference speed",
+      "capability tradeoff",
+      "routing logic",
+      "sonnet adoption",
+      "performance optimization",
+      "fallback configuration",
+      "cost efficiency"
+    ],
+    "rec_episodic_024_moon_sticky_windows": [
+      "ui docking"
+    ],
+    "rec_episodic_025_moon_shell_acl_v50": [
+      "permissions system",
+      "authorization layer",
+      "feature gating",
+      "v50 rollout"
+    ],
+    "rec_episodic_026_luna_studio_web_build": [
+      "integration testing",
+      "e2e validation",
+      "studio launch"
+    ],
+    "rec_episodic_027_moon_wkwebview_stale_cache_note": [
+      "webkit caching",
+      "installation debugging",
+      "ui rendering",
+      "tauri troubleshooting",
+      "deployment gotcha"
+    ],
+    "rec_episodic_028_digest_job_timeout": [
+      "scheduler bug",
+      "oban failure",
+      "background jobs",
+      "oban limitation",
+      "timing issue"
+    ],
+    "rec_episodic_029_digest_job_root_cause_note": [
+      "root cause",
+      "fault isolation",
+      "infrastructure bug",
+      "diagnosis",
+      "issue analysis"
+    ],
+    "rec_episodic_030_sol_agent_audit": [
+      "sol postmortem",
+      "infrastructure halt",
+      "service downtime",
+      "supervisor trap",
+      "graceful shutdown"
+    ],
+    "rec_episodic_031_job_deadlines_fix_merged": [
+      "concurrency safeguards",
+      "scheduler robustness",
+      "execution time bounds",
+      "distributed work limits",
+      "background task hardening",
+      "oban configuration",
+      "work queue resilience",
+      "concurrent execution control",
+      "reliability hardening",
+      "queue management"
+    ],
+    "rec_episodic_032_job_deadlines_deployed": [
+      "system recovery",
+      "health restoration",
+      "service healing",
+      "scheduling repair",
+      "infrastructure rollout",
+      "release finalization",
+      "performance recovery",
+      "uptime restoration"
+    ],
+    "rec_episodic_033_moon_slideout_drawer_v55": [
+      "moon focus control",
+      "ui consolidation",
+      "navigation stability",
+      "panel management",
+      "pointer management",
+      "docking stability",
+      "pointer stability",
+      "widget focus"
+    ],
+    "rec_episodic_034_moon_auto_titles": [
+      "content-aware naming",
+      "conversation naming",
+      "smart labeling",
+      "context extraction",
+      "initial content parsing",
+      "name generation",
+      "topic summarization",
+      "semantic extraction",
+      "semantic labeling",
+      "intelligent naming"
+    ],
+    "rec_episodic_035_moon_title_hardening": [
+      "content scrubbing",
+      "output cleaning",
+      "data exposure fix",
+      "privacy exposure fix",
+      "content filtering",
+      "data sanitization",
+      "filtering enhancement",
+      "metadata scrubbing",
+      "protocol correction",
+      "content malformation fix"
+    ],
+    "rec_episodic_036_dream_prompt_length_fix": [
+      "input optimization",
+      "overflow prevention",
+      "capacity management",
+      "size constraint handling",
+      "model input limits",
+      "dream scheduler tuning",
+      "generation sizing",
+      "capacity constraints",
+      "input scaling",
+      "batch limit handling"
+    ],
+    "rec_episodic_037_dream_prompt_deploy_note": [
+      "pre-production check",
+      "production readiness",
+      "validation checkpoint",
+      "approval gate",
+      "observability enhancement",
+      "monitoring setup",
+      "diagnostics instrumentation",
+      "telemetry instrumentation",
+      "staging readiness"
+    ],
+    "rec_episodic_038_hide_empty_threads_merged": [
+      "message filtering",
+      "ui cleanup",
+      "inactive removal",
+      "clutter reduction",
+      "navigation improvement",
+      "conversation pruning",
+      "dormant message removal",
+      "ui decluttering",
+      "display filtering",
+      "panel optimization"
+    ],
+    "rec_episodic_039_hide_empty_threads_live_check": [
+      "validation findings",
+      "data audit",
+      "verification result",
+      "effectiveness measurement",
+      "impact assessment",
+      "engagement metrics",
+      "content verification",
+      "noise detection",
+      "dormancy metric",
+      "conversation health"
+    ],
+    "rec_episodic_040_workflows_view_review": [
+      "feature deprecation",
+      "obsolescence handling",
+      "interface upgrade",
+      "navigation redesign",
+      "interface modernization",
+      "visualization launch",
+      "feature retirement",
+      "component refresh",
+      "system modernization",
+      "architecture cleanup"
+    ],
+    "rec_episodic_041_liveness_ladder_pr": [
+      "health monitoring",
+      "process resurrection",
+      "failure detection",
+      "recovery automation",
+      "ping monitor",
+      "monitor circuit"
+    ],
+    "rec_episodic_042_spike_before_refactor_feedback": [
+      "proof of concept",
+      "exploratory code",
+      "risk reduction",
+      "feasibility test",
+      "prototype check"
+    ],
+    "rec_episodic_043_ultracode_dropdown_effort_triplication": [
+      "sync coordination",
+      "cross-layer consistency",
+      "schema alignment",
+      "coupled changes",
+      "enum coupling",
+      "multi-layer sync",
+      "state consistency"
+    ],
+    "rec_episodic_044_chat_server_memory_leak": [
+      "resource exhaustion",
+      "cleanup automation",
+      "reference counting",
+      "session limit",
+      "capacity cap",
+      "gc tuning"
+    ],
+    "rec_episodic_045_thread_delivery_sink": [
+      "message sink",
+      "consolidated output"
+    ],
+    "rec_episodic_046_moon_topbar_redesign": [
+      "presentation attribute issue",
+      "webkit compatibility",
+      "cross-platform ui issue",
+      "CSS-in-markup bug",
+      "presentation attribute limitation",
+      "style parsing bug",
+      "markup style issue",
+      "CSS support issue"
+    ],
+    "rec_episodic_047_workspace_md_injection_warning": [
+      "security exposure",
+      "secret leakage",
+      "attack surface",
+      "sensitive data leak",
+      "operational security",
+      "information exposure",
+      "threat model",
+      "security hygiene"
+    ],
+    "rec_episodic_048_workflow_model_tiering_feedback": [
+      "tiered execution",
+      "cost optimization",
+      "capability matching",
+      "layer selection",
+      "orchestration strategy",
+      "performance allocation",
+      "role-based execution",
+      "resource stratification",
+      "cost-aware dispatch"
+    ],
+    "rec_episodic_049_studio_phase0_gate": [
+      "integration test",
+      "fidelity testing",
+      "hardware proof",
+      "end-to-end validation"
+    ],
+    "rec_episodic_050_studio_phase1_merged": [
+      "connection resilience",
+      "state recovery",
+      "stateful recovery",
+      "session persistence",
+      "recovery mechanism",
+      "retry strategy"
+    ],
+    "rec_episodic_051_studio_deeplink_singleinstance": [
+      "window deduplication",
+      "entrypoint normalization",
+      "protocol registration",
+      "lifecycle handler",
+      "path routing",
+      "tauri integration",
+      "intent handling",
+      "window focusing",
+      "activation sequence",
+      "scheme router"
+    ],
+    "rec_episodic_052_telegram_attachments_deployed": [
+      "media loss",
+      "file ingestion",
+      "fifo queue",
+      "message flow",
+      "injection gate",
+      "sync gate",
+      "content arrival",
+      "buffer management",
+      "channel receiver",
+      "receipt confirmation"
+    ],
+    "rec_episodic_053_job_ticker_deadlines_root_cause": [
+      "timeout backoff",
+      "timeout logic",
+      "retry exhaustion",
+      "timeout enforcement",
+      "fail resolution"
+    ],
+    "rec_episodic_054_moon_thread_drawer_deployed_stable": [
+      "empty hiding",
+      "conversation organizer",
+      "panel density",
+      "window layout",
+      "filtering logic",
+      "title generation",
+      "content removal",
+      "list optimization",
+      "message probe",
+      "archive handling"
+    ],
+    "rec_episodic_055_studio_notifications_merged": [
+      "system alerts",
+      "alert display",
+      "tauri integration",
+      "platform alerts",
+      "wkwebview alerts",
+      "event signals",
+      "os integration",
+      "message alerts",
+      "popup display",
+      "badge system"
+    ],
+    "rec_episodic_056_studio_all_phases_complete": [
+      "studio ship",
+      "tauri launch",
+      "window management",
+      "theme support",
+      "sidebar panel",
+      "notification system",
+      "scheme handler",
+      "multiwindow support",
+      "wkwebview integration",
+      "ui framework"
+    ],
+    "rec_episodic_057_moon_workflows_registry_restart_note": [
+      "hotload limitation",
+      "reload needed",
+      "config persistence",
+      "ui refresh",
+      "json parsing",
+      "configuration delay",
+      "metadata reload",
+      "entry sync"
+    ],
+    "rec_episodic_058_ignore_vite_artifacts": [
+      "vite cache",
+      "gitignore update",
+      "tsconfig artifacts",
+      "dist folder",
+      "artifact exclusion",
+      "dev toolchain",
+      "cache clearing"
+    ],
+    "rec_episodic_059_dream_skill_chips_merged": [
+      "dream feedback",
+      "suggestion display",
+      "chip renderer",
+      "inline action",
+      "alignment loop",
+      "suggestion widget"
+    ],
+    "rec_episodic_060_worktree_bun_cache_fix": [
+      "dependency resolution",
+      "filesystem isolation",
+      "bun symlinks",
+      "node_modules",
+      "npm access",
+      "dependency graph",
+      "path resolution",
+      "isolation layer"
+    ],
+    "rec_distractor_001_bank_vault_secure": [
+      "theft resistance",
+      "strongbox specifications",
+      "structural durability",
+      "burglary prevention",
+      "protective barriers",
+      "fortified architecture",
+      "armored design",
+      "safe construction",
+      "breach resistance",
+      "impenetrable construction"
+    ],
+    "rec_distractor_002_keychain_fallback": [
+      "backup key storage",
+      "lost key contingency",
+      "emergency access solution",
+      "duplicate key placement",
+      "secondary access backup",
+      "key loss prevention",
+      "home key storage",
+      "contingency key system",
+      "accessible backup access",
+      "hidden key location"
+    ],
+    "rec_distractor_003_memory_entry_journal": [
+      "journal software storage",
+      "unstructured data logging",
+      "record-keeping architecture",
+      "chronicle backend",
+      "logging platform",
+      "annotation repository",
+      "documentation storage",
+      "personal chronicle system",
+      "retrieval-less storage"
+    ],
+    "rec_distractor_004_memory_foam_expand": [
+      "vacuum-sealed bedding",
+      "slow recovery material",
+      "self-inflating surface",
+      "density recovery process",
+      "unpacking bedding setup",
+      "delayed inflation",
+      "coiled shipment storage",
+      "uncompressed restoration"
+    ],
+    "rec_distractor_005_digest_biology": [
+      "metabolic processing",
+      "gut chemical reactions",
+      "bodily nutrient processing",
+      "GI tract function",
+      "protein decomposition",
+      "meal processing mechanism",
+      "nutrient absorption",
+      "biological nutrient extraction"
+    ],
+    "rec_distractor_006_boat_dock": [
+      "marine structure maintenance",
+      "underwater corrosion check",
+      "timber decay assessment",
+      "wharf structural integrity",
+      "submerged wood damage",
+      "mooring facility upkeep",
+      "aquatic wood durability",
+      "pier foundation stability"
+    ],
+    "rec_distractor_007_hospital_review_panel": [
+      "clinical assessment board",
+      "diagnostic committee",
+      "clinical decision-making",
+      "healthcare oversight",
+      "peer assessment body",
+      "care standards committee",
+      "healthcare governance body",
+      "clinical standards board",
+      "diagnostic scrutiny"
+    ],
+    "rec_distractor_008_solar_panel": [
+      "renewable power generation",
+      "PV array specifications",
+      "light-to-power efficiency",
+      "power generation capacity",
+      "renewable energy harvesting",
+      "DC power generation",
+      "photovoltaic performance"
+    ],
+    "rec_distractor_009_sewing_thread_seam": [
+      "garment finishing quality",
+      "material compatibility selection",
+      "stitch integrity",
+      "tension management technique",
+      "clothing construction standards",
+      "fastening material pairing",
+      "textile reinforcement",
+      "garment durability",
+      "needle craft specifications",
+      "finished garment appearance"
+    ],
+    "rec_distractor_010_subway_token": [
+      "mass transit access",
+      "transit ticketing evolution",
+      "public transportation history",
+      "physical transit pass",
+      "rapid transit coins",
+      "outdated transit ticketing",
+      "transit authentication history",
+      "pre-digital transit media",
+      "historical public transport"
+    ],
+    "rec_distractor_011_runway_model": [
+      "fashion show",
+      "catwalk",
+      "garment display",
+      "apparel presentation",
+      "style exhibition",
+      "haute couture",
+      "clothing showcase",
+      "fashion presentation"
+    ],
+    "rec_distractor_012_architecture_scale_model": [
+      "miniature representation",
+      "design mockup",
+      "spatial mockup",
+      "planning aid",
+      "three-dimensional mockup",
+      "proportional representation",
+      "physical mockup",
+      "visualization tool"
+    ],
+    "rec_distractor_013_dark_roast_coffee": [
+      "strong brew",
+      "brewing intensity",
+      "deep profile",
+      "high caffeine",
+      "oxidation level",
+      "smoky notes",
+      "robust beverage",
+      "heavy body",
+      "taste profile",
+      "extraction method"
+    ],
+    "rec_distractor_014_push_notification_marketing": [
+      "mobile alert strategy",
+      "timing optimization",
+      "message scheduling",
+      "delivery timing",
+      "behavioral targeting",
+      "alert deployment",
+      "mobile messaging",
+      "user targeting",
+      "conversion optimization",
+      "schedule tuning"
+    ],
+    "rec_distractor_015_junkyard_watchdog": [
+      "guard dog",
+      "perimeter defense",
+      "security canine",
+      "access control",
+      "property protection",
+      "alarm response",
+      "protective animal",
+      "surveillance dog",
+      "security sentinel",
+      "guard animal"
+    ],
+    "rec_distractor_016_violin_string": [
+      "instrument maintenance",
+      "musical wear",
+      "maintenance frequency",
+      "performance upkeep",
+      "durability issue",
+      "musician upkeep",
+      "maintenance interval",
+      "instrument care",
+      "lifecycle management",
+      "upkeep schedule"
+    ],
+    "rec_distractor_017_metal_welding_seam": [
+      "structural bond",
+      "fusion joint",
+      "material joining",
+      "bond creation",
+      "fusion technique",
+      "joint formation",
+      "fastening method",
+      "connection process",
+      "structural connection",
+      "material fusion"
+    ],
+    "rec_distractor_018_drag_racing": [
+      "acceleration competition",
+      "speed contest",
+      "vehicle acceleration",
+      "performance metric",
+      "zero to speed",
+      "motor sport",
+      "acceleration test",
+      "timed sprint",
+      "performance benchmark"
+    ],
+    "rec_distractor_019_movie_title_sequence": [
+      "opening credits",
+      "cinematic intro",
+      "mood establishment",
+      "film introduction",
+      "visual prologue",
+      "narrative opening",
+      "introductory segment",
+      "visual storytelling",
+      "pre-action setup",
+      "stylistic opening"
+    ],
+    "rec_distractor_020_cash_cache": [
+      "money stash",
+      "concealed funds",
+      "treasure hiding",
+      "secret storage",
+      "stashed money",
+      "illicit funds",
+      "monetary concealment",
+      "wealth storage",
+      "secure hiding",
+      "fund hiding"
+    ],
+    "rec_distractor_021_kitchen_timer_egg": [
+      "cooking duration",
+      "yolk consistency",
+      "breakfast cooking",
+      "stovetop preparation",
+      "breakfast technique",
+      "protein cooking",
+      "shell instruction",
+      "heat duration",
+      "meal preparation",
+      "poached variant"
+    ],
+    "rec_distractor_022_airline_deadline": [
+      "gate closure",
+      "check-in cutoff",
+      "airport timing",
+      "passenger cutoff",
+      "takeoff preparation",
+      "last call",
+      "checkpoint closing",
+      "takeoff window"
+    ],
+    "rec_distractor_023_railyard_scheduler": [
+      "train dispatch",
+      "railway operations",
+      "consist arrangement",
+      "track assignment",
+      "departure ordering",
+      "railyard dispatch",
+      "operational management",
+      "queue management"
+    ],
+    "rec_distractor_024_singing_voice": [
+      "unamplified reach",
+      "acoustic carry",
+      "stage presence",
+      "vocal technique",
+      "natural resonance",
+      "opera performance",
+      "vocal power",
+      "resonance mastery",
+      "acoustic brilliance",
+      "vocal strength"
+    ],
+    "rec_distractor_025_telegram_historical": [
+      "per-unit billing",
+      "concise communication",
+      "message economy",
+      "brevity incentive",
+      "historical messaging",
+      "cost-driven style",
+      "1900s communication",
+      "financial constraint",
+      "transmission cost"
+    ],
+    "rec_distractor_026_physics_vector": [
+      "multidimensional measure",
+      "force representation",
+      "arrow notation",
+      "component value",
+      "motion description",
+      "mathematical object",
+      "spatial element",
+      "two-part measurement"
+    ],
+    "rec_distractor_027_gem_embedding": [
+      "bezel mounting",
+      "secure fastening",
+      "flush mount",
+      "ornamental attachment",
+      "inlay method",
+      "collet-free mounting",
+      "ring setting",
+      "adornment placement"
+    ],
+    "rec_distractor_028_commit_message_convention": [
+      "semantic versioning",
+      "code classification",
+      "changelog generation",
+      "change categorization",
+      "type annotation",
+      "release organization",
+      "repo workflow"
+    ],
+    "rec_distractor_029_git_worktree_generic": [
+      "version control workflow",
+      "silo workspace",
+      "concurrent work",
+      "isolated workspace",
+      "divergent paths",
+      "independent clones",
+      "parallel workspaces"
+    ],
+    "rec_distractor_030_oauth_generic": [
+      "credential management",
+      "authentication protocol",
+      "temporary credentials",
+      "stateless auth",
+      "grant mechanism",
+      "credential lifecycle",
+      "security standard",
+      "authorization protocol"
+    ],
+    "rec_distractor_031_bm25_elasticsearch": [
+      "text search",
+      "full-text retrieval",
+      "scoring algorithm",
+      "lexical matching",
+      "inverted database",
+      "relevance computation",
+      "term-based retrieval",
+      "search engine"
+    ],
+    "rec_distractor_032_photo_effect": [
+      "slow shutter",
+      "time-lapse technique",
+      "motion blur",
+      "flowing liquid",
+      "shutter duration",
+      "temporal blending",
+      "drag trails"
+    ],
+    "rec_distractor_033_layer_cake": [
+      "multi-tier dessert",
+      "assembly timing",
+      "construction sequence",
+      "cooling phase",
+      "pastry architecture",
+      "tier assembly",
+      "baking sequence",
+      "icing application",
+      "sweetened sandwich"
+    ],
+    "rec_distractor_034_windup_widget_toy": [
+      "mechanical gadget",
+      "spring-loaded device",
+      "clockwork mechanism",
+      "tension release",
+      "brief operation",
+      "self-powered gadget",
+      "limited duration",
+      "winding action",
+      "momentum exhaustion",
+      "coil-driven"
+    ],
+    "rec_distractor_035_juggling_skill": [
+      "circus act",
+      "cascade pattern",
+      "toss-catch technique",
+      "vaudeville",
+      "entry-level trick",
+      "object manipulation",
+      "basic acrobatics",
+      "prop routine",
+      "plate spinning"
+    ],
+    "rec_distractor_036_plumbing_connector": [
+      "coupling hardware",
+      "bore mismatch",
+      "tube joinery",
+      "size transition",
+      "flow junction",
+      "dimensional compatibility",
+      "joint assembly",
+      "reducer coupling",
+      "bore adapter"
+    ],
+    "rec_distractor_037_court_session": [
+      "legal proceeding",
+      "trial interruption",
+      "continuance motion",
+      "postponement",
+      "judicial recess",
+      "missing testimony",
+      "trial delay",
+      "postponed hearing"
+    ],
+    "rec_distractor_038_tv_channel_ratings": [
+      "viewership metrics",
+      "Nielsen index",
+      "broadcast popularity",
+      "demographic reach",
+      "audience share",
+      "viewing data",
+      "popularity index",
+      "viewing audience",
+      "day-part performance"
+    ],
+    "rec_distractor_039_rollercoaster_rollback": [
+      "launch failure",
+      "magnetic brake",
+      "amusement ride",
+      "momentum check",
+      "gravity threshold",
+      "insufficient velocity",
+      "inertia limit"
+    ],
+    "rec_distractor_040_oncall_pager": [
+      "beeper device",
+      "medical alert",
+      "pre-smartphone era",
+      "wireless notification",
+      "emergency summoning",
+      "antiquated communication",
+      "wearable alert",
+      "healthcare communication",
+      "vibration alert",
+      "summoning mechanism"
+    ]
+  }
+}
