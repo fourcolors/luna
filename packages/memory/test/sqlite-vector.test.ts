@@ -1506,6 +1506,45 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
         .all() as { name: string }[]
       reopened.close()
       expect(cols.map((c) => c.name).sort()).toEqual(["enrichment", "text"])
+
+      // Behavioral no-op proof, not just the column-shape proxy: a THIRD
+      // open through the real backend must still find both the legacy row
+      // and the enrichment-only term - a botched re-migration (double FTS
+      // rebuild, dropped rows) would fail these searches even though the
+      // column list above still looks right.
+      const fileLayer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const again = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const legacy = yield* Stream.runCollect(
+              b.search({
+                queryText: "pre enrichment marker phrase",
+                mode: "bm25",
+                namespace: "preenrns",
+                topK: 5,
+              }),
+            )
+            const enriched = yield* Stream.runCollect(
+              b.search({
+                queryText: "freshenrichuniq33",
+                mode: "bm25",
+                namespace: "preenrns",
+                topK: 5,
+              }),
+            )
+            return {
+              legacy: Array.from(legacy).map((r) => r.record.id),
+              enriched: Array.from(enriched).map((r) => r.record.id),
+            }
+          }),
+        ).pipe(Effect.provide(fileLayer2)),
+      )
+      expect(again.legacy).toContain("pre-enr-1")
+      expect(again.enriched).toContain("post-enr-1")
     } finally {
       try {
         fs.rmSync(tmp, { recursive: true, force: true })

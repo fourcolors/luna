@@ -926,6 +926,50 @@ function computeInjectionThreshold(
   return bestMeetingGoal ?? bestEffort
 }
 
+interface HoldoutThreshold {
+  readonly meanKeepFrac: number
+  readonly meanRejectFrac: number
+  readonly folds: number
+}
+
+/** 2-fold cross-validated keep/reject: fit the threshold on one half of the
+ * queries (deterministic even/odd index split), evaluate on the other half,
+ * both directions, and average. The in-sample threshold above is optimistic
+ * by construction (fit and scored on the same queries); this is the honest
+ * out-of-sample estimate of how the gate would perform on unseen queries. */
+function holdoutThresholdEstimate(
+  positiveScores: ReadonlyArray<number>,
+  negativeScores: ReadonlyArray<number>,
+): HoldoutThreshold | null {
+  const split = (xs: ReadonlyArray<number>) => [
+    xs.filter((_, i) => i % 2 === 0),
+    xs.filter((_, i) => i % 2 === 1),
+  ]
+  const [posA, posB] = split(positiveScores)
+  const [negA, negB] = split(negativeScores)
+  const evalFold = (
+    train: { pos: number[]; neg: number[] },
+    test: { pos: number[]; neg: number[] },
+  ) => {
+    const fit = computeInjectionThreshold(train.pos, train.neg)
+    if (fit === null || test.pos.length === 0 || test.neg.length === 0) return null
+    return {
+      keep: test.pos.filter((s) => s >= fit.threshold).length / test.pos.length,
+      reject: test.neg.filter((s) => s < fit.threshold).length / test.neg.length,
+    }
+  }
+  const folds = [
+    evalFold({ pos: posA!, neg: negA! }, { pos: posB!, neg: negB! }),
+    evalFold({ pos: posB!, neg: negB! }, { pos: posA!, neg: negA! }),
+  ].filter((f): f is { keep: number; reject: number } => f !== null)
+  if (folds.length === 0) return null
+  return {
+    meanKeepFrac: folds.reduce((a, f) => a + f.keep, 0) / folds.length,
+    meanRejectFrac: folds.reduce((a, f) => a + f.reject, 0) / folds.length,
+    folds: folds.length,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -1078,12 +1122,18 @@ async function main(): Promise<void> {
     console.log(`suggested injection threshold: n/a (insufficient positive or negative samples)`)
   } else {
     console.log(
-      `suggested injection threshold: score >= ${threshold.threshold} (keeps ${(threshold.keepPositiveFrac * 100).toFixed(
+      `suggested injection threshold: score >= ${threshold.threshold} (IN-SAMPLE: keeps ${(threshold.keepPositiveFrac * 100).toFixed(
         1,
-      )}% of positive top-1s, rejects ${(threshold.rejectNegativeFrac * 100).toFixed(1)}% of negative top-1s)${
+      )}% of positive top-1s, rejects ${(threshold.rejectNegativeFrac * 100).toFixed(1)}% of negative top-1s - fit and scored on the same queries, so optimistic)${
         threshold.meetsGoal ? "" : " - does NOT meet the 95%/80% goal, best effort shown"
       }`,
     )
+    const holdout = holdoutThresholdEstimate(positiveTop1, negativeTop1)
+    if (holdout !== null) {
+      console.log(
+        `holdout estimate (2-fold CV): keeps ${(holdout.meanKeepFrac * 100).toFixed(1)}% / rejects ${(holdout.meanRejectFrac * 100).toFixed(1)}% on unseen queries`,
+      )
+    }
   }
   console.log(``)
 

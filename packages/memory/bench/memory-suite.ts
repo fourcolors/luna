@@ -547,6 +547,9 @@ async function main(): Promise<void> {
     console.log(
       `# enrichment: ${enrichment.file} (${enrichment.model}, ${enrichedCount} records enriched)`,
     )
+    console.log(
+      `# CAVEAT: corpus and queries are both LLM-authored, so the phrase generator guesses query vocabulary more reliably here than against real user phrasing - treat enrichment gains as an upper bound until validated on real memories.`,
+    )
   }
   if (embedderChoice === "stub") {
     console.log(
