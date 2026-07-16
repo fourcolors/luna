@@ -29,6 +29,10 @@
  *   LUNA_BENCH_CORPUS                path to a corpus JSON file (default:
  *                                    sibling memory-suite-corpus.json)
  *   LUNA_BENCH_JSON                  if set, write full structured results here
+ *   LUNA_RERANK_ENGINE               "cross-encoder" selects local llama-server
+ *   LUNA_RERANK_CE_URL               llama-server base URL (default http://127.0.0.1:8181)
+ *   LUNA_RERANK_CE_TIMEOUT_MS        cross-encoder request timeout (default 2000)
+ *   LUNA_RERANK_CE_MAX_INPUT_CHARS    whole-candidate request split budget (default 48000)
  *   LUNA_RERANK_MODEL                claude CLI model alias (default "haiku")
  *   LUNA_RERANK_CONCURRENCY          parallel LLM calls (default 7, clamp 6-8)
  *   LUNA_RERANK_SUBSAMPLE_VOCAB      pointwise subsample vocab-mismatch count (default 12)
@@ -44,6 +48,7 @@
  *   3  corpus invalid, load error, or invalid configuration
  *   4  runtime failure (backend/embedder error mid-run)
  *   5  claude CLI unavailable or unauthenticated
+ *   6  cross-encoder sidecar unreachable or calibration failed
  */
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -54,10 +59,17 @@ import { spawn, spawnSync } from "node:child_process"
 import { Effect, Layer, Stream } from "effect"
 import {
   Clock,
+  MemoryReranker,
   ObservabilityService,
   StubEmbedderLayer,
   makeOllamaEmbedderLayer,
+  type MemoryRerankerApi,
 } from "@luna/core"
+import {
+  CrossEncoderRerankerLayer,
+  DEFAULT_CROSS_ENCODER_URL,
+  probeCrossEncoder,
+} from "@luna/adapter-sdk"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
 import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { MemoryLayer } from "../src/layer.js"
@@ -478,6 +490,10 @@ async function retrieveCandidates(
 // ---------------------------------------------------------------------------
 
 const MODEL = process.env["LUNA_RERANK_MODEL"] ?? "haiku"
+const CROSS_ENCODER_MODE = process.env["LUNA_RERANK_ENGINE"] === "cross-encoder"
+const CROSS_ENCODER_URL = (
+  process.env["LUNA_RERANK_CE_URL"]?.trim() || DEFAULT_CROSS_ENCODER_URL
+).replace(/\/+$/, "")
 
 /** Validates LUNA_RERANK_CONCURRENCY explicitly rather than letting a bad
  * value (NaN from a non-numeric string) silently fall through Math.min/max
@@ -691,7 +707,16 @@ function cacheKey(
   queryText: string,
   candidateTexts: ReadonlyArray<string>,
 ): string {
-  const raw = `${MODEL}|${shape}|${PROMPT_VERSION}|${queryText}|${candidateTexts.join(" ")}`
+  // Include a model-identity tag for the cross-encoder: the client can't
+  // fingerprint the server's GGUF, so without this a cache populated by a
+  // DIFFERENT model would silently serve stale scores (the committed baseline
+  // must never be replayed from a mismatched cache). Operators changing the
+  // sidecar model must bump LUNA_RERANK_CE_MODEL_TAG.
+  const ceModelTag = process.env["LUNA_RERANK_CE_MODEL_TAG"]?.trim() || "qwen3-reranker-0.6b-q4km"
+  const engineKey = CROSS_ENCODER_MODE
+    ? `cross-encoder|${CROSS_ENCODER_URL}|${ceModelTag}`
+    : MODEL
+  const raw = `${engineKey}|${shape}|${PROMPT_VERSION}|${queryText}|${candidateTexts.join("\u0000")}`
   return createHash("sha256").update(raw).digest("hex").slice(0, 24)
 }
 
@@ -826,6 +851,223 @@ async function runBatchedShape(
     } satisfies RerankOutcome
   })
   return { outcomes, stats }
+}
+
+interface CrossEncoderBatchedRun {
+  readonly outcomes: RerankOutcome[]
+  readonly stats: CallStats
+  readonly scoresByQuery: ReadonlyMap<string, ReadonlyMap<string, number>>
+}
+
+// The claude-CLI CONCURRENCY (6-8) is wrong for the cross-encoder engine.
+// The bench DEFAULTS TO SEQUENTIAL (1) for two measured reasons:
+//   1. Reliability: a timed-out client abandons its HTTP request but the
+//      sidecar keeps processing the orphaned task, so concurrent callers
+//      against a 1-slot server cascade into a growing queue and time out
+//      (measured: CONCURRENCY~7 wedged into repeated 13-30s timeouts; even
+//      2 produced occasional 2000ms-timeout fallbacks that silently drop
+//      queries from the quality tables).
+//   2. Bit-exactness: at concurrency > 1 the request COMPLETION order varies
+//      run-to-run, and llama-server reuses each slot's KV cache by prompt
+//      prefix, so the reuse pattern differs between runs and yields +/-1
+//      point noise. Sequential fixes the order and the engine is bit-exact.
+// 230 queries at ~0.9s each is ~3.5 min - fine for a measurement harness.
+// Set LUNA_RERANK_CE_CONCURRENCY=N to trade determinism/reliability for
+// throughput when benchmarking latency under load.
+const CROSS_ENCODER_CONCURRENCY = (() => {
+  const raw = process.env["LUNA_RERANK_CE_CONCURRENCY"]?.trim()
+  const n = raw ? Number(raw) : 1
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : 1
+})()
+
+async function runCrossEncoderBatchedShape(
+  retrievals: ReadonlyArray<RetrievalResult>,
+  cache: Cache,
+  useCache: boolean,
+  cachePath: string,
+  reranker: MemoryRerankerApi,
+  // Concurrency is a parameter (not the module const) so the determinism
+  // check can force sequential scoring. At concurrency > 1 the request
+  // COMPLETION order varies run-to-run, and llama-server reuses each slot's
+  // KV cache by prompt-prefix similarity, so the reuse pattern (recompute vs
+  // reuse) differs between passes and produces +/-1 point KV-reuse noise.
+  // Sequential scoring fixes the order, making the reuse pattern identical
+  // and the engine bit-exact.
+  concurrency: number = CROSS_ENCODER_CONCURRENCY,
+): Promise<CrossEncoderBatchedRun> {
+  const stats = freshStats()
+  stats.totalQueries = retrievals.length
+  const scoresByQuery = new Map<string, ReadonlyMap<string, number>>()
+  const outcomes = await mapLimit(retrievals, concurrency, async (r) => {
+    const hybridOrder = r.candidates.map((candidate) => candidate.id)
+    const key = cacheKey(
+      "batched",
+      r.queryText,
+      r.candidates.map((candidate) => candidate.text),
+    )
+    let indexedScores: Record<string, number> | null = null
+
+    if (useCache && key in cache) {
+      indexedScores = cache[key] as Record<string, number>
+      stats.cacheHits++
+    } else {
+      stats.cacheMisses++
+      const t0 = performance.now()
+      try {
+        const scores = await Effect.runPromise(
+          reranker.rerank({
+            queryText: r.queryText,
+            candidates: r.candidates.map((candidate) => ({
+              id: candidate.id,
+              text: candidate.text,
+              retrievalScore: candidate.score,
+            })),
+          }),
+        )
+        stats.latenciesMs.push(performance.now() - t0)
+        const scoreById = new Map(scores.map((score) => [score.id, score.llmScore]))
+        if (r.candidates.every((candidate) => scoreById.has(candidate.id))) {
+          indexedScores = Object.fromEntries(
+            r.candidates.map((candidate, index) => [String(index + 1), scoreById.get(candidate.id)!]),
+          )
+          if (useCache) {
+            cache[key] = indexedScores
+            persistCacheIncremental(cache, cachePath)
+          }
+        }
+      } catch (error) {
+        console.error(
+          `[rerank] cross-encoder call failed for ${r.queryId}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+
+    if (indexedScores === null) {
+      stats.failedQueries++
+      return {
+        queryId: r.queryId,
+        slice: r.slice,
+        relevantIds: r.relevantIds,
+        rankedIds: hybridOrder,
+        top1LlmScore: null,
+        fell_back: true,
+      } satisfies RerankOutcome
+    }
+
+    const withScores = r.candidates.map((candidate, index) => ({
+      id: candidate.id,
+      score: indexedScores![String(index + 1)]!,
+      origRank: index,
+    }))
+    if (withScores.some(({ score }) => typeof score !== "number" || !Number.isFinite(score))) {
+      stats.failedQueries++
+      return {
+        queryId: r.queryId,
+        slice: r.slice,
+        relevantIds: r.relevantIds,
+        rankedIds: hybridOrder,
+        top1LlmScore: null,
+        fell_back: true,
+      } satisfies RerankOutcome
+    }
+    scoresByQuery.set(r.queryId, new Map(withScores.map(({ id, score }) => [id, score])))
+    withScores.sort((a, b) =>
+      b.score !== a.score ? b.score - a.score : a.origRank - b.origRank,
+    )
+    return {
+      queryId: r.queryId,
+      slice: r.slice,
+      relevantIds: r.relevantIds,
+      rankedIds: withScores.map((candidate) => candidate.id),
+      top1LlmScore: withScores[0]?.score ?? null,
+      fell_back: false,
+    } satisfies RerankOutcome
+  })
+  return { outcomes, stats, scoresByQuery }
+}
+
+function assertDeterministic(
+  retrievals: ReadonlyArray<RetrievalResult>,
+  first: CrossEncoderBatchedRun,
+  second: CrossEncoderBatchedRun,
+): void {
+  // Every delta, not just a sample: at 230 queries x 20 candidates a raw
+  // per-line dump of every mismatch is thousands of lines and buries the
+  // one signal that matters - whether deltas are 1-point floating-point
+  // batching noise (see cross-encoder-reranker.ts's DEFAULT_CROSS_ENCODER_TIMEOUT_MS
+  // comment on server-side queueing; --parallel > 1 reorders the matmul
+  // reduction across concurrently-batched requests, which is a real,
+  // non-buggy source of sub-integer score drift) or an actual regression
+  // (deltas of several points, which floating-point reordering does not
+  // produce). The histogram makes that distinction visible at a glance; a
+  // few example lines from the WORST bucket keep it debuggable without
+  // reprinting every occurrence.
+  const unscored: string[] = []
+  const deltaCounts = new Map<number, number>()
+  const deltaExamples = new Map<number, string[]>()
+  let identical = 0
+  for (const retrieval of retrievals) {
+    for (const candidate of retrieval.candidates) {
+      const firstScore = first.scoresByQuery.get(retrieval.queryId)?.get(candidate.id)
+      const secondScore = second.scoresByQuery.get(retrieval.queryId)?.get(candidate.id)
+      if (firstScore === undefined || secondScore === undefined) {
+        unscored.push(`${retrieval.queryId}/${candidate.id}`)
+      } else if (firstScore === secondScore) {
+        identical++
+      } else {
+        const delta = Math.abs(firstScore - secondScore)
+        deltaCounts.set(delta, (deltaCounts.get(delta) ?? 0) + 1)
+        const examples = deltaExamples.get(delta) ?? []
+        if (examples.length < 3) {
+          examples.push(`${retrieval.queryId}/${candidate.id}: ${firstScore} != ${secondScore}`)
+        }
+        deltaExamples.set(delta, examples)
+      }
+    }
+  }
+  if (
+    first.stats.failedQueries > 0 ||
+    second.stats.failedQueries > 0 ||
+    unscored.length > 0
+  ) {
+    const totalQueries = retrievals.length
+    console.error(
+      `[rerank] determinism: INVALID - ${first.stats.failedQueries}/${totalQueries} queries fell back to hybrid order in pass 1, ${second.stats.failedQueries}/${totalQueries} in pass 2 - fix the underlying rerank failures before this check is meaningful`,
+    )
+    if (unscored.length > 0) {
+      console.error(
+        `[rerank] determinism: ${unscored.length} candidate comparisons were unscored because one or both passes lacked a score`,
+      )
+    }
+    process.exit(6)
+  }
+  if (deltaCounts.size > 0) {
+    console.error(`[rerank] determinism: FAIL`)
+    const totalMismatches = Array.from(deltaCounts.values()).reduce((a, b) => a + b, 0)
+    console.error(
+      `[rerank] determinism: ${totalMismatches} of ${identical + totalMismatches} scored comparisons differed between passes - delta histogram (|pass1 - pass2| -> count):`,
+    )
+    Array.from(deltaCounts.keys())
+      .sort((a, b) => a - b)
+      .forEach((delta) => {
+        console.error(`[rerank]   delta=${delta}: ${deltaCounts.get(delta)} occurrences`)
+        deltaExamples.get(delta)!.forEach((example) => console.error(`[rerank]     e.g. ${example}`))
+      })
+    process.exit(4)
+  }
+  // Scope the claim honestly. Two SEQUENTIAL passes (concurrency 1) prove
+  // "identical request order + identical server state -> identical scores",
+  // which is what a same-order production caller gets. It does NOT prove
+  // unconditional determinism: a server started with --parallel > 1 serving
+  // genuinely concurrent clients can still reorder matmul reductions across
+  // co-batched requests (measured: +/-1 point on ~0.2% of pairs). The check
+  // keeps ONE request in flight, so it cannot exercise or detect that path -
+  // hence the ce-server.sh --parallel 1 default and the CE_PARALLEL warning.
+  console.log(`determinism: PASS (${identical}/${identical} identical, two sequential passes)`)
+  console.log(
+    `[rerank] NOTE: proves same-order/same-state reproducibility; a --parallel>1 sidecar under concurrent load can still drift +/-1 (kept off by ce-server.sh's --parallel 1 default).`,
+  )
+  console.log(``)
 }
 
 async function runPointwiseShape(
@@ -1039,9 +1281,41 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`[rerank] preflight: checking claude CLI...`)
-  await preflightClaude()
-  console.log(`[rerank] preflight OK - model=${MODEL} concurrency=${CONCURRENCY}`)
+  let crossEncoderReranker: MemoryRerankerApi | null = null
+  if (CROSS_ENCODER_MODE) {
+    console.log(`[rerank] preflight: checking cross-encoder at ${CROSS_ENCODER_URL}...`)
+    try {
+      const probe = await Effect.runPromise(probeCrossEncoder(CROSS_ENCODER_URL))
+      console.log(
+        `[rerank] preflight OK - engine=cross-encoder url=${CROSS_ENCODER_URL} relevant=${probe.relevantRawScore} irrelevant=${probe.irrelevantRawScore}`,
+      )
+      if (CROSS_ENCODER_CONCURRENCY > 1) {
+        // The determinism CHECK is always forced sequential and will still
+        // print PASS, but the QUALITY tables below are scored at this
+        // concurrency and can carry +/-1 KV-reuse noise that the check does
+        // not cover. Warn so a concurrent quality run is never mistaken for a
+        // reproducible one.
+        console.log(
+          `[rerank] WARNING: LUNA_RERANK_CE_CONCURRENCY=${CROSS_ENCODER_CONCURRENCY} (>1) - quality tables may carry +/-1 KV-reuse noise; the determinism PASS below only covers the forced-sequential check, not these tables. Use concurrency 1 for reproducible numbers.`,
+        )
+      }
+      crossEncoderReranker = await Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* MemoryReranker
+        }).pipe(Effect.provide(CrossEncoderRerankerLayer({ url: CROSS_ENCODER_URL }))),
+      )
+    } catch (error) {
+      console.error(
+        `[rerank] cross-encoder preflight failed at ${CROSS_ENCODER_URL}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      process.exit(6)
+      return
+    }
+  } else {
+    console.log(`[rerank] preflight: checking claude CLI...`)
+    await preflightClaude()
+    console.log(`[rerank] preflight OK - model=${MODEL} concurrency=${CONCURRENCY}`)
+  }
 
   const queries = limit !== undefined ? corpus.queries.slice(0, limit) : corpus.queries
   console.log(`# rerank-eval - ${corpus.records.length} records, ${queries.length} queries · ${corpusPath}`)
@@ -1062,28 +1336,76 @@ async function main(): Promise<void> {
 
   console.log(`## batched shape (1 call/query, ${retrievals.length} calls)`)
   console.log(``)
-  const { outcomes: batchedOutcomes, stats: batchedStats } = await runBatchedShape(retrievals, cache, useCache, cachePath)
+  const batchedRun = CROSS_ENCODER_MODE
+    ? await runCrossEncoderBatchedShape(
+        retrievals,
+        cache,
+        useCache,
+        cachePath,
+        crossEncoderReranker!,
+      )
+    : await runBatchedShape(retrievals, cache, useCache, cachePath)
+  const { outcomes: batchedOutcomes, stats: batchedStats } = batchedRun
 
-  // Subsample selection for the pointwise shape, in corpus order.
-  const vocabWant = Number(process.env["LUNA_RERANK_SUBSAMPLE_VOCAB"] ?? "12")
-  const paraphraseWant = Number(process.env["LUNA_RERANK_SUBSAMPLE_PARAPHRASE"] ?? "6")
-  const negativeWant = Number(process.env["LUNA_RERANK_SUBSAMPLE_NEGATIVE"] ?? "6")
-  const bySlice = (s: QuerySlice, want: number) => retrievals.filter((r) => r.slice === s).slice(0, want)
-  const subsample = [
-    ...bySlice("vocab-mismatch", vocabWant),
-    ...bySlice("paraphrase", paraphraseWant),
-    ...bySlice("negative", negativeWant),
-  ]
-  const subsampleIds = new Set(subsample.map((r) => r.queryId))
-  if (subsample.length < vocabWant + paraphraseWant + negativeWant) {
-    console.log(
-      `[rerank] NOTE: subsample smaller than requested (${subsample.length} of ${vocabWant + paraphraseWant + negativeWant}) - --limit likely cut into slice availability`,
+  if (CROSS_ENCODER_MODE) {
+    // Two FRESH sequential passes (concurrency 1, no cache) so the request
+    // order is fixed and the server's KV-prefix reuse is identical between
+    // them - this proves the engine itself is bit-exact, independent of the
+    // quality pass's throughput concurrency. (The quality pass above may run
+    // at concurrency > 1; comparing it here would surface harmless KV-reuse
+    // noise, not engine nondeterminism.)
+    const passA = await runCrossEncoderBatchedShape(
+      retrievals,
+      {},
+      false,
+      cachePath,
+      crossEncoderReranker!,
+      1,
     )
+    const passB = await runCrossEncoderBatchedShape(
+      retrievals,
+      {},
+      false,
+      cachePath,
+      crossEncoderReranker!,
+      1,
+    )
+    assertDeterministic(retrievals, passA, passB)
   }
 
-  console.log(`## pointwise shape (1 call/candidate, ${subsample.length} queries x 20 = ${subsample.length * 20} calls)`)
-  console.log(``)
-  const { outcomes: pointwiseOutcomes, stats: pointwiseStats } = await runPointwiseShape(subsample, cache, useCache, cachePath)
+  let subsample: ReadonlyArray<RetrievalResult> = []
+  let subsampleIds = new Set<string>()
+  let pointwiseOutcomes: RerankOutcome[] = []
+  let pointwiseStats = freshStats()
+  if (CROSS_ENCODER_MODE) {
+    console.log(
+      `[rerank] NOTE: pointwise shape skipped - the cross-encoder scores all candidates in one production-shaped request; one-candidate calls would only imitate the claude CLI comparison.`,
+    )
+    console.log(``)
+  } else {
+    // Subsample selection for the pointwise shape, in corpus order.
+    const vocabWant = Number(process.env["LUNA_RERANK_SUBSAMPLE_VOCAB"] ?? "12")
+    const paraphraseWant = Number(process.env["LUNA_RERANK_SUBSAMPLE_PARAPHRASE"] ?? "6")
+    const negativeWant = Number(process.env["LUNA_RERANK_SUBSAMPLE_NEGATIVE"] ?? "6")
+    const bySlice = (s: QuerySlice, want: number) => retrievals.filter((r) => r.slice === s).slice(0, want)
+    subsample = [
+      ...bySlice("vocab-mismatch", vocabWant),
+      ...bySlice("paraphrase", paraphraseWant),
+      ...bySlice("negative", negativeWant),
+    ]
+    subsampleIds = new Set(subsample.map((r) => r.queryId))
+    if (subsample.length < vocabWant + paraphraseWant + negativeWant) {
+      console.log(
+        `[rerank] NOTE: subsample smaller than requested (${subsample.length} of ${vocabWant + paraphraseWant + negativeWant}) - --limit likely cut into slice availability`,
+      )
+    }
+
+    console.log(`## pointwise shape (1 call/candidate, ${subsample.length} queries x 20 = ${subsample.length * 20} calls)`)
+    console.log(``)
+    const pointwiseRun = await runPointwiseShape(subsample, cache, useCache, cachePath)
+    pointwiseOutcomes = pointwiseRun.outcomes
+    pointwiseStats = pointwiseRun.stats
+  }
 
   // Final flush unconditionally (incremental flushing only fires every
   // CACHE_FLUSH_INTERVAL writes, so the last partial batch needs this).
@@ -1142,24 +1464,26 @@ async function main(): Promise<void> {
   const batchedSubsampleTable = slicesTable(batchedOnSubsample)
   const pointwiseTable = slicesTable(pointwiseScored)
 
-  console.log(`## (b) batched vs pointwise, subsample queries (${subsample.length} queries)`)
-  console.log(``)
-  console.log(`### batched (subsample, ${batchedOnSubsample.length} of ${subsample.length} queries)`)
-  console.log(``)
-  console.log(tabulateSlices([...batchedSubsampleTable.rows, batchedSubsampleTable.overall, batchedSubsampleTable.macro]))
-  console.log(``)
-  console.log(
-    `excluded ${batchedSubsampleExcluded} fallback quer${batchedSubsampleExcluded === 1 ? "y" : "ies"} from the batched (subsample) rows above`,
-  )
-  console.log(``)
-  console.log(`### pointwise (subsample, ${pointwiseScored.length} of ${subsample.length} queries)`)
-  console.log(``)
-  console.log(tabulateSlices([...pointwiseTable.rows, pointwiseTable.overall, pointwiseTable.macro]))
-  console.log(``)
-  console.log(
-    `excluded ${pointwiseExcluded} fallback quer${pointwiseExcluded === 1 ? "y" : "ies"} from the pointwise (subsample) rows above`,
-  )
-  console.log(``)
+  if (!CROSS_ENCODER_MODE) {
+    console.log(`## (b) batched vs pointwise, subsample queries (${subsample.length} queries)`)
+    console.log(``)
+    console.log(`### batched (subsample, ${batchedOnSubsample.length} of ${subsample.length} queries)`)
+    console.log(``)
+    console.log(tabulateSlices([...batchedSubsampleTable.rows, batchedSubsampleTable.overall, batchedSubsampleTable.macro]))
+    console.log(``)
+    console.log(
+      `excluded ${batchedSubsampleExcluded} fallback quer${batchedSubsampleExcluded === 1 ? "y" : "ies"} from the batched (subsample) rows above`,
+    )
+    console.log(``)
+    console.log(`### pointwise (subsample, ${pointwiseScored.length} of ${subsample.length} queries)`)
+    console.log(``)
+    console.log(tabulateSlices([...pointwiseTable.rows, pointwiseTable.overall, pointwiseTable.macro]))
+    console.log(``)
+    console.log(
+      `excluded ${pointwiseExcluded} fallback quer${pointwiseExcluded === 1 ? "y" : "ies"} from the pointwise (subsample) rows above`,
+    )
+    console.log(``)
+  }
 
   // ---- Table (c): negative separation before/after + injection threshold ----
   const beforeRows = retrievals.map((r) => ({ slice: r.slice, score: r.candidates[0]?.score ?? null }))
@@ -1175,17 +1499,29 @@ async function main(): Promise<void> {
   const positiveTop1 = afterRows.filter((r) => r.slice !== "negative" && r.score !== null).map((r) => r.score as number)
   const negativeTop1 = afterRows.filter((r) => r.slice === "negative" && r.score !== null).map((r) => r.score as number)
   const threshold = computeInjectionThreshold(positiveTop1, negativeTop1)
+  // Hoisted so the committed JSON below carries the SAME gate evidence the
+  // console prints (finding: the baseline artifact lacked holdout + band).
+  let holdout: ReturnType<typeof holdoutThresholdEstimate> = null
+  let fragileBandCount: number | null = null
   if (threshold === null) {
     console.log(`suggested injection threshold: n/a (insufficient positive or negative samples)`)
   } else {
+    fragileBandCount = CROSS_ENCODER_MODE
+      ? Array.from(
+          (batchedRun as CrossEncoderBatchedRun).scoresByQuery.values(),
+          (scores) => Array.from(scores.values()),
+        )
+          .flat()
+          .filter((score) => Math.abs(score - threshold.threshold) <= 5).length
+      : null
     console.log(
       `suggested injection threshold: score >= ${threshold.threshold} (IN-SAMPLE: keeps ${(threshold.keepPositiveFrac * 100).toFixed(
         1,
       )}% of positive top-1s, rejects ${(threshold.rejectNegativeFrac * 100).toFixed(1)}% of negative top-1s - fit and scored on the same queries, so optimistic)${
         threshold.meetsGoal ? "" : " - does NOT meet the 95%/80% goal, best effort shown"
-      }`,
+      }${fragileBandCount === null ? "" : ` - fragile band +/-5: ${fragileBandCount} scored candidates`}`,
     )
-    const holdout = holdoutThresholdEstimate(positiveTop1, negativeTop1)
+    holdout = holdoutThresholdEstimate(positiveTop1, negativeTop1)
     if (holdout !== null) {
       console.log(
         `holdout estimate (2-fold CV): keeps ${(holdout.meanKeepFrac * 100).toFixed(1)}% / rejects ${(holdout.meanRejectFrac * 100).toFixed(1)}% on unseen queries`,
@@ -1198,10 +1534,14 @@ async function main(): Promise<void> {
   console.log(`## (d) LLM call latency`)
   console.log(``)
   console.log(
-    tabulateLatency([
-      latencyFor("batched (per query, 1 call)", batchedStats.latenciesMs),
-      latencyFor("pointwise (per call, ~20/query)", pointwiseStats.latenciesMs),
-    ]),
+    tabulateLatency(
+      CROSS_ENCODER_MODE
+        ? [latencyFor("cross-encoder (per query)", batchedStats.latenciesMs)]
+        : [
+            latencyFor("batched (per query, 1 call)", batchedStats.latenciesMs),
+            latencyFor("pointwise (per call, ~20/query)", pointwiseStats.latenciesMs),
+          ],
+    ),
   )
   console.log(``)
 
@@ -1215,15 +1555,17 @@ async function main(): Promise<void> {
       batchedFailRate * 100
     ).toFixed(1)}%), cache hits ${batchedStats.cacheHits} / misses ${batchedStats.cacheMisses}`,
   )
-  console.log(
-    `pointwise: ${pointwiseStats.failedQueries}/${pointwiseStats.totalQueries} queries fell back to hybrid order (${(
-      pointwiseFailRate * 100
-    ).toFixed(1)}%), cache hits ${pointwiseStats.cacheHits} / misses ${pointwiseStats.cacheMisses}`,
-  )
+  if (!CROSS_ENCODER_MODE) {
+    console.log(
+      `pointwise: ${pointwiseStats.failedQueries}/${pointwiseStats.totalQueries} queries fell back to hybrid order (${(
+        pointwiseFailRate * 100
+      ).toFixed(1)}%), cache hits ${pointwiseStats.cacheHits} / misses ${pointwiseStats.cacheMisses}`,
+    )
+  }
   if (batchedFailRate > 0.05) {
     console.log(`[rerank] WARNING: batched parse-failure rate ${(batchedFailRate * 100).toFixed(1)}% exceeds 5%`)
   }
-  if (pointwiseFailRate > 0.05) {
+  if (!CROSS_ENCODER_MODE && pointwiseFailRate > 0.05) {
     console.log(`[rerank] WARNING: pointwise parse-failure rate ${(pointwiseFailRate * 100).toFixed(1)}% exceeds 5%`)
   }
   console.log(``)
@@ -1236,13 +1578,15 @@ async function main(): Promise<void> {
         {
           corpus: { records: corpus.records.length, queries: retrievals.length },
           embedder: embedderChoice,
-          model: MODEL,
+          model: CROSS_ENCODER_MODE ? `cross-encoder|${CROSS_ENCODER_URL}` : MODEL,
           hybrid: hybridTable,
           batched: batchedTable,
           batchedOnSubsample: batchedSubsampleTable,
           pointwise: pointwiseTable,
           separation: { before: separationRow("hybrid", beforeRows), after: separationRow("llm", afterRows) },
           injectionThreshold: threshold,
+          injectionThresholdHoldout: holdout,
+          fragileBandCount,
           latency: { batched: latencyFor("batched", batchedStats.latenciesMs), pointwise: latencyFor("pointwise", pointwiseStats.latenciesMs) },
           parseFailure: { batchedRate: batchedFailRate, pointwiseRate: pointwiseFailRate },
           excludedFallback: {

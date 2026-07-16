@@ -1,0 +1,219 @@
+{
+  "corpus": {
+    "records": 200,
+    "queries": 230
+  },
+  "embedder": "ollama",
+  "model": "cross-encoder|http://127.0.0.1:8181",
+  "hybrid": {
+    "rows": [
+      {
+        "slice": "verbatim",
+        "queries": 40,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "mrr": 1,
+        "ndcg10": 1
+      },
+      {
+        "slice": "paraphrase",
+        "queries": 60,
+        "recallAt1": 0.8666666666666667,
+        "recallAt5": 0.9666666666666667,
+        "recallAt10": 0.9666666666666667,
+        "mrr": 0.9107638888888888,
+        "ndcg10": 0.924239926205987
+      },
+      {
+        "slice": "vocab-mismatch",
+        "queries": 60,
+        "recallAt1": 0.48333333333333334,
+        "recallAt5": 0.6833333333333333,
+        "recallAt10": 0.85,
+        "mrr": 0.5749519530034235,
+        "ndcg10": 0.6371366626002334
+      },
+      {
+        "slice": "temporal",
+        "queries": 30,
+        "recallAt1": 0.6166666666666667,
+        "recallAt5": 0.861111111111111,
+        "recallAt10": 0.9444444444444444,
+        "mrr": 0.7322619047619047,
+        "ndcg10": 0.7753949686218028
+      }
+    ],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 190,
+      "recallAt1": 0.7342105263157894,
+      "recallAt5": 0.8675438596491228,
+      "recallAt10": 0.9333333333333333,
+      "mrr": 0.7953200402968206,
+      "ndcg10": 0.82602339151067
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 4,
+      "recallAt1": 0.7416666666666667,
+      "recallAt5": 0.8777777777777779,
+      "recallAt10": 0.9402777777777778,
+      "mrr": 0.8044944366635542,
+      "ndcg10": 0.8341928893570058
+    }
+  },
+  "batched": {
+    "rows": [
+      {
+        "slice": "verbatim",
+        "queries": 40,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "mrr": 1,
+        "ndcg10": 1
+      },
+      {
+        "slice": "paraphrase",
+        "queries": 60,
+        "recallAt1": 0.9166666666666666,
+        "recallAt5": 0.9833333333333333,
+        "recallAt10": 0.9833333333333333,
+        "mrr": 0.95,
+        "ndcg10": 0.9587286502380972
+      },
+      {
+        "slice": "vocab-mismatch",
+        "queries": 60,
+        "recallAt1": 0.5666666666666667,
+        "recallAt5": 0.8166666666666667,
+        "recallAt10": 0.8833333333333333,
+        "mrr": 0.6839351851851851,
+        "ndcg10": 0.7325033349757164
+      },
+      {
+        "slice": "temporal",
+        "queries": 30,
+        "recallAt1": 0.6944444444444444,
+        "recallAt5": 0.9444444444444444,
+        "recallAt10": 0.9444444444444444,
+        "mrr": 0.8277777777777777,
+        "ndcg10": 0.840156525399671
+      }
+    ],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 190,
+      "recallAt1": 0.7885964912280702,
+      "recallAt5": 0.9280701754385965,
+      "recallAt10": 0.9491228070175439,
+      "mrr": 0.8572076023391814,
+      "ndcg10": 0.8772558677622044
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 4,
+      "recallAt1": 0.7944444444444445,
+      "recallAt5": 0.9361111111111111,
+      "recallAt10": 0.9527777777777777,
+      "mrr": 0.8654282407407408,
+      "ndcg10": 0.8828471276533711
+    }
+  },
+  "batchedOnSubsample": {
+    "rows": [],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 0,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "mrr": 0,
+      "ndcg10": 0
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 0,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "mrr": 0,
+      "ndcg10": 0
+    }
+  },
+  "pointwise": {
+    "rows": [],
+    "overall": {
+      "slice": "OVERALL",
+      "queries": 0,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "mrr": 0,
+      "ndcg10": 0
+    },
+    "macro": {
+      "slice": "MACRO",
+      "queries": 0,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "mrr": 0,
+      "ndcg10": 0
+    }
+  },
+  "separation": {
+    "before": {
+      "label": "hybrid",
+      "negMedian": 0.01639344262295082,
+      "negP90": 0.01639344262295082,
+      "posMedian": 0.01639344262295082,
+      "posP90": 0.03278688524590164
+    },
+    "after": {
+      "label": "llm",
+      "negMedian": 1,
+      "negP90": 9.200000000000003,
+      "posMedian": 100,
+      "posP90": 100
+    }
+  },
+  "injectionThreshold": {
+    "threshold": 3,
+    "keepPositiveFrac": 0.9578947368421052,
+    "rejectNegativeFrac": 0.75,
+    "meetsGoal": false
+  },
+  "injectionThresholdHoldout": {
+    "meanKeepFrac": 0.9526315789473684,
+    "meanRejectFrac": 0.725,
+    "folds": 2
+  },
+  "fragileBandCount": 4073,
+  "latency": {
+    "batched": {
+      "label": "batched",
+      "mean": 525.369298182609,
+      "p50": 501.8624584999998,
+      "p95": 663.2341002999972,
+      "calls": 230
+    },
+    "pointwise": {
+      "label": "pointwise",
+      "mean": 0,
+      "p50": null,
+      "p95": null,
+      "calls": 0
+    }
+  },
+  "parseFailure": {
+    "batchedRate": 0,
+    "pointwiseRate": 0
+  },
+  "excludedFallback": {
+    "batched": 0,
+    "batchedOnSubsample": 0,
+    "pointwise": 0
+  }
+}
