@@ -28,11 +28,14 @@ const response = (body: unknown, status = 200): Response =>
 
 const healthResponse = () => response({ status: "ok" })
 
+// The probe sends 3 candidates (relevant, irrelevant, longform batch-capacity
+// check), so a well-formed probe response must score all three (strict 1:1).
 const goodProbeResponse = () =>
   response({
     results: [
       { index: 0, relevance_score: 0.91 },
       { index: 1, relevance_score: 0.08 },
+      { index: 2, relevance_score: 0.55 },
     ],
   })
 
@@ -44,6 +47,21 @@ const hangingResponse = (init: RequestInit): Promise<Response> =>
     init.signal!.addEventListener("abort", () => reject((init.signal as AbortSignal).reason), {
       once: true,
     })
+  })
+
+// Resolves with `body` after `delayMs`, but rejects early if the request is
+// aborted first (via the fetch AbortSignal / fiber interruption).
+const delayedResponse = (init: RequestInit, delayMs: number, body: unknown): Promise<Response> =>
+  new Promise<Response>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(response(body)), delayMs)
+    init.signal!.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer)
+        reject((init.signal as AbortSignal).reason)
+      },
+      { once: true },
+    )
   })
 
 const runRerank = (
@@ -84,12 +102,16 @@ describe("CrossEncoderRerankerLayer", () => {
     delete process.env["LUNA_RERANK_CE_URL"]
     delete process.env["LUNA_RERANK_CE_TIMEOUT_MS"]
     delete process.env["LUNA_RERANK_CE_MAX_INPUT_CHARS"]
+    // The probe floor (30s in prod, for slow CPU sidecars) would make the
+    // hanging-response timeout tests wait 30s; drive it low here.
+    process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"] = "50"
   })
 
   afterEach(() => {
     delete process.env["LUNA_RERANK_CE_URL"]
     delete process.env["LUNA_RERANK_CE_TIMEOUT_MS"]
     delete process.env["LUNA_RERANK_CE_MAX_INPUT_CHARS"]
+    delete process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"]
     restoreFetch()
     vi.restoreAllMocks()
   })
@@ -215,6 +237,7 @@ describe("CrossEncoderRerankerLayer", () => {
               results: [
                 { index: 0, relevance_score: 4.5e-23 },
                 { index: 1, relevance_score: 4.5e-23 },
+                { index: 2, relevance_score: 4.5e-23 },
               ],
             }),
       ),
@@ -256,10 +279,14 @@ describe("CrossEncoderRerankerLayer", () => {
   })
 
   it("retries a failed probe on the next rerank call", async () => {
+    // All 3 probe candidates scored (satisfies the 1:1 bijection) but with a
+    // near-zero collapse, so the failure is the broken-GGUF score check, not a
+    // count mismatch - i.e. this exercises the calibration-reject path.
     const broken = response({
       results: [
         { index: 0, relevance_score: 4.5e-23 },
         { index: 1, relevance_score: 4.5e-23 },
+        { index: 2, relevance_score: 4.5e-23 },
       ],
     })
     const fetchMock = vi
@@ -284,7 +311,8 @@ describe("CrossEncoderRerankerLayer", () => {
         ),
       ),
     )
-    expect(values.first._tag).toBe("Failure")
+    // Reached the calibration score check (broken-GGUF), not the bijection.
+    expect(failureOf(values.first).message).toMatch(/broken-GGUF|cls\.output\.weight/i)
     expect(values.second).toEqual([{ id: "a", llmScore: 77 }])
     expect(fetchMock).toHaveBeenCalledTimes(5)
   })
@@ -461,13 +489,63 @@ describe("CrossEncoderRerankerLayer", () => {
     expect(error.message).toMatch(/repeated document index/i)
   })
 
+  it("calibration surfaces a batch-size hint when the long probe doc 500s (batch-512 server)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse())
+      // server 500s on the ~860-token longform probe doc (n_ubatch too small)
+      .mockResolvedValueOnce(response({ error: "input too large" }, 500))
+    setFetch(fetchMock as unknown as typeof globalThis.fetch)
+    const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect((exit.cause.error as RerankError).message).toMatch(/batch|n_ubatch|500/i)
+    }
+    // Guard the guardrail: the calibration request must actually carry the
+    // long batch-capacity document (all 3 candidates, the 3rd ~3,445 chars),
+    // or a truncated/removed probe doc would silently stop testing batch size.
+    const calibBody = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)
+    expect(calibBody.documents).toHaveLength(3)
+    expect((calibBody.documents[2] as string).length).toBe(3445)
+  })
+
+  it("a slow-but-correct first calibration is NOT killed by the per-call scoring budget", async () => {
+    // Codex-review Critical: the probe is a one-time startup cost with its own
+    // deadline; the per-call scoring budget (here 200ms) must bound ONLY the
+    // scoring request, not the calibration probe. Probe floor generous (5000ms),
+    // calibration takes 250ms (> the 200ms scoring budget), scoring is fast.
+    process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"] = "5000"
+    const fetchMock = vi.fn((url: string, init: RequestInit) => {
+      if (url.endsWith("/health")) return Promise.resolve(healthResponse())
+      const body = JSON.parse(init.body as string)
+      // The 3-doc calibration probe is the slow one; real scoring is fast.
+      return body.documents.length === 3
+        ? delayedResponse(init, 250, {
+            results: [
+              { index: 0, relevance_score: 0.9 },
+              { index: 1, relevance_score: 0.05 },
+              { index: 2, relevance_score: 0.5 },
+            ],
+          })
+        : Promise.resolve(response({ results: [{ index: 0, relevance_score: 0.88 }] }))
+    })
+    setFetch(fetchMock as unknown as typeof globalThis.fetch)
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const reranker = yield* MemoryReranker
+        return yield* reranker.rerank({ queryText: "q", candidates: candidates(["a"]) })
+      }).pipe(Effect.provide(CrossEncoderRerankerLayer({ url: "http://cross-encoder.test", timeoutMs: 200 }))),
+    )
+    expect(exit).toMatchObject({ _tag: "Success", value: [{ id: "a", llmScore: 88 }] })
+  })
+
   it("calibration rejects a logit-scale server (raw scores outside [0,1]) so the gate can't degenerate to sign", async () => {
     // relevant > irrelevant AND relevant*100 clamps to 100 (>50), so the old
     // checks would PASS; the scale check must catch that these are logits.
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(healthResponse())
-      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 8.2 }, { index: 1, relevance_score: -3.1 }] }))
+      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 8.2 }, { index: 1, relevance_score: -3.1 }, { index: 2, relevance_score: 2.0 }] }))
     setFetch(fetchMock as unknown as typeof globalThis.fetch)
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")

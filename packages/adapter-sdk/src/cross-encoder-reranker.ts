@@ -300,6 +300,21 @@ function probeHealth(url: string, timeoutMs: number): Effect.Effect<void, Rerank
   })
 }
 
+// 3,445 chars / ~860 tokens (at the 4-chars/token heuristic) of realistic
+// prose - safely past the 512-token clamp. In rerank/embedding mode
+// llama-server clamps the physical batch to n_ubatch and forces both to 512
+// when misconfigured, so any single (query + document) pair over ~512 tokens
+// returns HTTP 500. Real memories are frequently this long; a short-only probe
+// would PASS against a batch-512 server and then silently 500-and-fall-back on
+// every long memory in production (found in Phase 5 real-data calibration).
+// Including this long probe document forces that failure to surface at
+// calibration. (The single sentence is repeated; JS precedence binds .repeat
+// to the last operand only, so this is one literal.)
+const PROBE_LONGFORM_DOC =
+  "The deployment runbook covers how updates reach the stable environment, long-lived memories in this store frequently exceed two thousand characters because they capture full incident write-ups, architecture decisions, and operator preferences with their rationale. ".repeat(
+    13,
+  )
+
 function probeWithTimeout(
   url: string,
   timeoutMs: number,
@@ -311,9 +326,37 @@ function probeWithTimeout(
     candidates: [
       { id: "relevant", text: "the server listens on port 4753", retrievalScore: 0 },
       { id: "irrelevant", text: "bananas are yellow", retrievalScore: 0 },
+      // Batch-capacity probe: if the server can't process this long pair it
+      // 500s, and the remap below points at the batch size rather than
+      // letting the misconfiguration hide until real long memories arrive.
+      { id: "longform", text: PROBE_LONGFORM_DOC, retrievalScore: 0 },
     ],
   } satisfies RerankArgs
-  const calibrate = requestScores(normalizedUrl, timeoutMs, resolveMaxInputChars(), args)
+  // A large fixed split budget (not the caller's LUNA_RERANK_CE_MAX_INPUT_CHARS)
+  // so the longform batch-capacity doc is always sent as ONE request - the
+  // whole point is to make the server process a long single pair, which
+  // splitting would defeat.
+  // Probe latency floor is a one-time startup cost, and an ~860-token doc on
+  // a CPU-only sidecar can take several seconds - well past the per-CALL
+  // DEFAULT_CROSS_ENCODER_TIMEOUT_MS (2000ms). Give calibration a generous
+  // floor so a correct-but-slow server isn't misdiagnosed as broken. The floor
+  // is env-tunable (also lets tests drive fast timeouts).
+  const probeFloorMs = positiveTimeout(
+    Number(process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"]),
+    30_000,
+  )
+  const probeTimeoutMs = Math.max(timeoutMs, probeFloorMs)
+  const calibrate = requestScores(normalizedUrl, probeTimeoutMs, 1_000_000, args).pipe(
+    Effect.mapError((error) =>
+      error.op === "parse" && /HTTP 500/.test(error.message)
+        ? new RerankError({
+            op: "parse",
+            message: `cross-encoder returned HTTP 500 on an ~860-token calibration document. Most likely the sidecar's physical batch is too small (rerank mode clamps n_batch=n_ubatch to 512 unless started with --batch-size --ubatch-size >= the longest memory's tokens), which would make long memories silently fall back to un-reranked order; a 500 can also mean an out-of-memory or an unrelated server error, so check the sidecar log`,
+            cause: error,
+          })
+        : error,
+    ),
+  )
 
   return probeHealth(normalizedUrl, timeoutMs).pipe(
     Effect.andThen(
@@ -327,7 +370,7 @@ function probeWithTimeout(
                 error.op === "timeout"
                   ? new RerankError({
                       op: "timeout",
-                      message: `cross-encoder server at ${normalizedUrl} is reachable but not responding to reranking requests within ${timeoutMs}ms after one retry`,
+                      message: `cross-encoder server at ${normalizedUrl} is reachable but not responding to reranking requests within ${probeTimeoutMs}ms after one retry`,
                       cause: error,
                     })
                   : error,
@@ -409,29 +452,31 @@ export function CrossEncoderRerankerLayer(
 
       const rerank: MemoryRerankerApi["rerank"] = (args) => {
         if (args.candidates.length === 0) return Effect.succeed([])
-        // args.timeoutMs is a per-CALL wall-clock ceiling covering the probe
-        // AND every sub-batch (the split path scores sequentially). A single
-        // deadline over the whole body honors that contract; the per-fetch
-        // AbortSignal.timeout still aborts individual sockets, and on the
-        // outer timeout the fetch is interrupted (see AbortSignal.any above).
+        // args.timeoutMs is the per-CALL scoring budget. It bounds ONLY the
+        // post-probe scoring request, NOT the one-time calibration probe: the
+        // probe is a startup cost with its own health/calibrate/retry deadlines
+        // (and its own 30s floor for slow CPU sidecars), so wrapping it in the
+        // 2s scoring budget would kill a correct-but-slow first calibration and
+        // never let probePassed flip (Codex review: reproduced a 2.5s probe
+        // dying at 2000ms). The per-fetch AbortSignal.timeout still aborts
+        // individual sockets, and interruption propagates via AbortSignal.any.
         const budgetMs = positiveTimeout(args.timeoutMs, timeoutMs)
-        const body = Effect.gen(function* () {
+        return Effect.gen(function* () {
           yield* ensureProbed
           // `/v1/rerank` has no sampling parameters. Identical inputs must
           // produce identical scores, which is the Phase 4 enable-blocker.
-          const scores = yield* requestScores(url, timeoutMs, maxInputChars, args)
+          const scores = yield* requestScores(url, timeoutMs, maxInputChars, args).pipe(
+            Effect.timeoutFail({
+              duration: `${budgetMs} millis`,
+              onTimeout: () =>
+                new RerankError({
+                  op: "timeout",
+                  message: `cross-encoder scoring exceeded the per-call budget of ${budgetMs}ms (${args.candidates.length} candidates)`,
+                }),
+            }),
+          )
           return scores.map(({ id, llmScore }) => ({ id, llmScore }))
         })
-        return body.pipe(
-          Effect.timeoutFail({
-            duration: `${budgetMs} millis`,
-            onTimeout: () =>
-              new RerankError({
-                op: "timeout",
-                message: `cross-encoder rerank exceeded the per-call budget of ${budgetMs}ms (probe + ${args.candidates.length} candidates)`,
-              }),
-          }),
-        )
       }
 
       return { rerank }
