@@ -24,6 +24,16 @@ export {
   RERANK_RUBRIC,
 } from "./memory-reranker.js"
 export {
+  CrossEncoderRerankerLayer,
+  probeCrossEncoder,
+  normalizeCrossEncoderScore,
+  DEFAULT_CROSS_ENCODER_URL,
+  DEFAULT_CROSS_ENCODER_TIMEOUT_MS,
+  DEFAULT_CROSS_ENCODER_MAX_INPUT_CHARS,
+  type CrossEncoderRerankerOptions,
+  type ProbeResult,
+} from "./cross-encoder-reranker.js"
+export {
   WakeReasonerDefault,
   buildWakePrompt,
   parseDigest as parseWakeDigest,

@@ -20,5 +20,8 @@
     "@luna/core": "workspace:*",
     "effect": "^3.21.0",
     "vectorlite": "^0.2.0"
+  },
+  "devDependencies": {
+    "@luna/adapter-sdk": "workspace:*"
   }
 }

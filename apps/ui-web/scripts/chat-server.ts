@@ -301,6 +301,7 @@ import {
   JobRunToolsProviderTag,
   ChatThreadPosterTag,
   MemoryRerankerDefault,
+  CrossEncoderRerankerLayer,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -2310,16 +2311,18 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
-  // Phase 3 production reranker (PR #332 bench): closes over the SAME boot
-  // identities as dreamWorkerReasonerL below (sdkClientL, brokerL) - a
-  // fully self-contained Layer<MemoryReranker, never, never>. Always built
-  // (cheap - just closes a `rerank` function, no SDK call until invoked);
+  // The Phase 3 reranker closes over the SAME boot identities as
+  // dreamWorkerReasonerL below. LUNA_RERANK_ENGINE=cross-encoder selects the
+  // dependency-free local layer; any other value preserves the Haiku layer.
   // ACTUAL reranking stays gated per-request by LUNA_MEMORY_RERANK=1 /
   // LUNA_RECALL_RERANK=1 (both DEFAULT OFF) inside memory-tools.
-  const memoryRerankerL = MemoryRerankerDefault.pipe(
-    Layer.provide(sdkClientL),
-    Layer.provide(brokerL),
-  )
+  const memoryRerankerL =
+    process.env["LUNA_RERANK_ENGINE"] === "cross-encoder"
+      ? CrossEncoderRerankerLayer()
+      : MemoryRerankerDefault.pipe(
+          Layer.provide(sdkClientL),
+          Layer.provide(brokerL),
+        )
   const threadToolsL = ThreadToolsProviderLayer(
     BELIEF_REFRESH_INTERVAL_MS,
     memoryRerankerL,
