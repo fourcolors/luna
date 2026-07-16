@@ -11,12 +11,15 @@ LUNA_RERANK_ENGINE=cross-encoder bun packages/memory/bench/rerank-eval.ts
 ```
 
 The sidecar defaults to `http://127.0.0.1:8181`. Override the client endpoint
-with `LUNA_RERANK_CE_URL` and its fail-fast ceiling with
+with `LUNA_RERANK_CE_URL` and its per-call scoring ceiling with
 `LUNA_RERANK_CE_TIMEOUT_MS`. `LUNA_RERANK_CE_MAX_INPUT_CHARS` controls the
 whole-candidate request splitting budget. Its 48,000-character default assumes
 four characters per token and leaves context headroom when used with the
-sidecar script's 16,384-token context. `LUNA_RERANK_CE_CONCURRENCY` (default 1)
-and `LUNA_RERANK_CE_MODEL_TAG` are described below.
+sidecar script's 16,384-token context. `LUNA_RERANK_CE_PROBE_TIMEOUT_MS`
+(default 30,000) is the floor for the one-time calibration probe, kept
+separate from the per-call scoring ceiling because an ~860-token probe
+document on a CPU-only sidecar can take several seconds. `LUNA_RERANK_CE_CONCURRENCY`
+(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below.
 
 ### The physical batch size is load-bearing (read before deploying)
 

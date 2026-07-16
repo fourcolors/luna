@@ -370,7 +370,7 @@ function probeWithTimeout(
                 error.op === "timeout"
                   ? new RerankError({
                       op: "timeout",
-                      message: `cross-encoder server at ${normalizedUrl} is reachable but not responding to reranking requests within ${timeoutMs}ms after one retry`,
+                      message: `cross-encoder server at ${normalizedUrl} is reachable but not responding to reranking requests within ${probeTimeoutMs}ms after one retry`,
                       cause: error,
                     })
                   : error,
@@ -452,29 +452,31 @@ export function CrossEncoderRerankerLayer(
 
       const rerank: MemoryRerankerApi["rerank"] = (args) => {
         if (args.candidates.length === 0) return Effect.succeed([])
-        // args.timeoutMs is a per-CALL wall-clock ceiling covering the probe
-        // AND every sub-batch (the split path scores sequentially). A single
-        // deadline over the whole body honors that contract; the per-fetch
-        // AbortSignal.timeout still aborts individual sockets, and on the
-        // outer timeout the fetch is interrupted (see AbortSignal.any above).
+        // args.timeoutMs is the per-CALL scoring budget. It bounds ONLY the
+        // post-probe scoring request, NOT the one-time calibration probe: the
+        // probe is a startup cost with its own health/calibrate/retry deadlines
+        // (and its own 30s floor for slow CPU sidecars), so wrapping it in the
+        // 2s scoring budget would kill a correct-but-slow first calibration and
+        // never let probePassed flip (Codex review: reproduced a 2.5s probe
+        // dying at 2000ms). The per-fetch AbortSignal.timeout still aborts
+        // individual sockets, and interruption propagates via AbortSignal.any.
         const budgetMs = positiveTimeout(args.timeoutMs, timeoutMs)
-        const body = Effect.gen(function* () {
+        return Effect.gen(function* () {
           yield* ensureProbed
           // `/v1/rerank` has no sampling parameters. Identical inputs must
           // produce identical scores, which is the Phase 4 enable-blocker.
-          const scores = yield* requestScores(url, timeoutMs, maxInputChars, args)
+          const scores = yield* requestScores(url, timeoutMs, maxInputChars, args).pipe(
+            Effect.timeoutFail({
+              duration: `${budgetMs} millis`,
+              onTimeout: () =>
+                new RerankError({
+                  op: "timeout",
+                  message: `cross-encoder scoring exceeded the per-call budget of ${budgetMs}ms (${args.candidates.length} candidates)`,
+                }),
+            }),
+          )
           return scores.map(({ id, llmScore }) => ({ id, llmScore }))
         })
-        return body.pipe(
-          Effect.timeoutFail({
-            duration: `${budgetMs} millis`,
-            onTimeout: () =>
-              new RerankError({
-                op: "timeout",
-                message: `cross-encoder rerank exceeded the per-call budget of ${budgetMs}ms (probe + ${args.candidates.length} candidates)`,
-              }),
-          }),
-        )
       }
 
       return { rerank }
