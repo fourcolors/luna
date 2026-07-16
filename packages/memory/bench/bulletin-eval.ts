@@ -22,7 +22,8 @@
  *   LUNA_BULLETIN_CONCURRENCY  parallel claude calls (default 6)
  *   LUNA_BULLETIN_FILE         path to a generated digest to evaluate
  *
- * Exit codes: 0 ok; 3 config/fixture error; 5 claude CLI unavailable.
+ * Exit codes: 0 ok; 3 config/fixture error; 4 generated digest fails the
+ * BULLETIN.md decision gate; 5 claude CLI unavailable.
  *
  * The claude CLI plumbing mirrors rerank-eval.ts deliberately (neutral cwd,
  * json output, tool lockdown, EPIPE guard); it is duplicated rather than
@@ -212,6 +213,16 @@ function buildPrompt(nowIso: string, digest: string | null, question: string): s
 
 function scoreAnswer(probe: Probe, answer: string): boolean {
   const a = answer.toLowerCase()
+  // Negative/exclusion probes require "no-record" as their only keyword. The
+  // answer protocol instructs the model to reply with EXACTLY "NO-RECORD" in
+  // that case, so these are scored by exact match rather than substring
+  // containment. A loose substring check would let an answer that pads
+  // "NO-RECORD" with leaked details (e.g. archived-thread content the
+  // forbiddenKeywords list doesn't happen to name) pass anyway.
+  const isNoRecordProbe = probe.requiredKeywords.length === 1 && probe.requiredKeywords[0]!.toLowerCase() === "no-record"
+  if (isNoRecordProbe) {
+    return /^no-record[.!]?$/.test(a.trim())
+  }
   for (const kw of probe.requiredKeywords) {
     if (!a.includes(kw.toLowerCase())) return false
   }
@@ -275,6 +286,14 @@ function accuracyRate(results: ReadonlyArray<ProbeResult>): number {
   return results.filter((r) => r.correct).length / results.length
 }
 
+const GUARD_CATEGORIES = ["negative", "exclusion"]
+
+function guardRate(results: ReadonlyArray<ProbeResult>): number {
+  const pool = results.filter((r) => GUARD_CATEGORIES.includes(r.category))
+  if (pool.length === 0) return 1
+  return pool.filter((r) => r.correct).length / pool.length
+}
+
 async function main(): Promise<void> {
   const probe = spawnSync("claude", ["--version"], { stdio: "ignore" })
   if (probe.error !== undefined || probe.status !== 0) {
@@ -332,7 +351,24 @@ async function main(): Promise<void> {
   const gen = runs.find((r) => r.name === "generated")
   if (gen !== undefined) {
     const closed = gap > 0 ? (accuracyRate(gen.results) - accuracyRate(none.results)) / gap : 0
+    const genGuardRate = guardRate(gen.results)
+    const withinTokenCap = generated !== null && estimateTokens(generated) <= 1_500
+    const closurePass = closed >= 0.7
+    const guardPass = genGuardRate >= 0.9
     console.log(`generated closes ${(closed * 100).toFixed(1)}% of the gap`)
+    console.log(`generated negative/exclusion accuracy: ${(genGuardRate * 100).toFixed(1)}% (floor 90%)`)
+    // Enforces the full decision gate from BULLETIN.md, not just the headline
+    // gap-closure number: closure alone can pass while the digest craters the
+    // negative/exclusion floor or blows the token cap, and both would still
+    // be a ship-blocking failure per the documented gate.
+    const gatePass = closurePass && guardPass && withinTokenCap
+    console.log(
+      `DECISION GATE: ${gatePass ? "PASS" : "FAIL"} ` +
+        `(gap-closure ${closurePass ? "ok" : "FAIL"} >=70%, ` +
+        `negative/exclusion ${guardPass ? "ok" : "FAIL"} >=90%, ` +
+        `token cap ${withinTokenCap ? "ok" : "FAIL"} <=1500) - see BULLETIN.md decision gate`,
+    )
+    if (!gatePass) process.exitCode = 4
   }
 
   const outPath = resolve(BENCH_DIR, `bulletin-baseline-${new Date().toISOString().slice(0, 10)}.json`)

@@ -17,15 +17,23 @@ A future generator is judged by the same probes via a pluggable condition, and i
 
 ## What the bulletin must be (requirements for the future mechanism)
 
-- **Hard token budget.** Injected content is paid on every turn of every active session. Target is <= 1,200 tokens, hard cap 1,500.
-- **Wiki-bookkeeper maintenance.** The digest follows the LLM-Wiki curation rules: update canonical entries instead of appending duplicates, decay stale items, distinguish one-off events from ongoing work, keep a stable shape.
-- **Injection-fenced.** Bulletin text derives from thread content, which makes it a prompt-injection surface into every session. It must pass through the same Unicode fence-neutralization used for rerank candidates before injection.
-- **Privacy boundaries.** Archived and hidden threads are excluded. The bulletin is delivered on a private channel; it must never be written into `workspace.md`, which is public and prompt-injected.
-- **Freshness.** Regenerated on a background cadence (the existing JobTicker is the natural home), not on the request path.
+- **Hard token budget.**
+  Injected content is paid on every turn of every active session.
+  Target is <= 1,200 tokens, hard cap 1,500.
+- **Wiki-bookkeeper maintenance.**
+  The digest follows the LLM-Wiki curation rules: update canonical entries instead of appending duplicates, decay stale items, distinguish one-off events from ongoing work, keep a stable shape.
+- **Injection-fenced.**
+  Bulletin text derives from thread content, which makes it a prompt-injection surface into every session.
+  It must pass through the same Unicode fence-neutralization used for rerank candidates before injection.
+- **Privacy boundaries.**
+  Archived and hidden threads are excluded.
+  The bulletin is delivered on a private channel; it must never be written into `workspace.md`, which is public and prompt-injected.
+- **Freshness.**
+  Regenerated on a background cadence (the existing JobTicker is the natural home), not on the request path.
 
 ## The probe set
 
-The fixture (`bulletin-fixture.json`) is a fully synthetic product-development universe: ten threads over five simulated days with fixed timestamps, an `oracleBulletin` written to the token budget, and labeled probes.
+The fixture (`bulletin-fixture.json`) is a fully synthetic product-development universe: ten threads over six simulated days with fixed timestamps, an `oracleBulletin` written to the token budget, and labeled probes.
 No real memory content, names, or infrastructure appear in the fixture; the repository is public.
 
 Probe categories:
@@ -41,13 +49,15 @@ Probe categories:
 
 The answering model is instructed: answer briefly from the recent-activity digest if one is present, and if you have no information, reply exactly `NO-RECORD`.
 Scoring is deterministic keyword matching on the model's answer: a probe is correct when every `requiredKeywords` entry appears (case-insensitive) and no `forbiddenKeywords` entry appears.
-Positive probes forbid `no-record`; negative and exclusion probes require it.
+Positive probes forbid `no-record`; negative and exclusion probes require it, and for those the match is exact (the trimmed answer must be `NO-RECORD` plus optional trailing punctuation) rather than substring containment, so a padded answer cannot leak archived content past a narrow forbidden-keyword list.
 Because LLM answers vary run to run, every probe runs N samples (default 3) and the report shows per-probe flip counts; there is deliberately NO response cache, since a cached replay is one draw pretending to be a distribution.
 
 ## Conditions
 
-- `none`: no digest injected; the model knows only the current-thread framing. This is today's production behavior.
-- `oracle`: the hand-written ideal digest from the fixture. This is the ceiling.
+- `none`: no digest injected; the model knows only the current-thread framing.
+  This is today's production behavior.
+- `oracle`: the hand-written ideal digest from the fixture.
+  This is the ceiling.
 - `generated`: reads a digest from `LUNA_BULLETIN_FILE`; this is how a future generator plugs in unchanged.
 
 ## Decision gate
