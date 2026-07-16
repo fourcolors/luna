@@ -28,11 +28,14 @@ const response = (body: unknown, status = 200): Response =>
 
 const healthResponse = () => response({ status: "ok" })
 
+// The probe sends 3 candidates (relevant, irrelevant, longform batch-capacity
+// check), so a well-formed probe response must score all three (strict 1:1).
 const goodProbeResponse = () =>
   response({
     results: [
       { index: 0, relevance_score: 0.91 },
       { index: 1, relevance_score: 0.08 },
+      { index: 2, relevance_score: 0.55 },
     ],
   })
 
@@ -215,6 +218,7 @@ describe("CrossEncoderRerankerLayer", () => {
               results: [
                 { index: 0, relevance_score: 4.5e-23 },
                 { index: 1, relevance_score: 4.5e-23 },
+                { index: 2, relevance_score: 4.5e-23 },
               ],
             }),
       ),
@@ -461,13 +465,27 @@ describe("CrossEncoderRerankerLayer", () => {
     expect(error.message).toMatch(/repeated document index/i)
   })
 
+  it("calibration surfaces a batch-size hint when the long probe doc 500s (batch-512 server)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse())
+      // server 500s on the ~600-token longform probe doc (n_ubatch too small)
+      .mockResolvedValueOnce(response({ error: "input too large" }, 500))
+    setFetch(fetchMock as unknown as typeof globalThis.fetch)
+    const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect((exit.cause.error as RerankError).message).toMatch(/batch|n_ubatch|500/i)
+    }
+  })
+
   it("calibration rejects a logit-scale server (raw scores outside [0,1]) so the gate can't degenerate to sign", async () => {
     // relevant > irrelevant AND relevant*100 clamps to 100 (>50), so the old
     // checks would PASS; the scale check must catch that these are logits.
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(healthResponse())
-      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 8.2 }, { index: 1, relevance_score: -3.1 }] }))
+      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 8.2 }, { index: 1, relevance_score: -3.1 }, { index: 2, relevance_score: 2.0 }] }))
     setFetch(fetchMock as unknown as typeof globalThis.fetch)
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")

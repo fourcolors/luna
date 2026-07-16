@@ -300,6 +300,21 @@ function probeHealth(url: string, timeoutMs: number): Effect.Effect<void, Rerank
   })
 }
 
+// ~2,400 chars / ~600 tokens of realistic prose. In rerank/embedding mode
+// llama-server clamps the physical batch to n_ubatch and forces both to 512
+// when misconfigured, so any single (query + document) pair over ~512 tokens
+// returns HTTP 500. Real memories are frequently this long; a short-only probe
+// would PASS against a batch-512 server and then silently 500-and-fall-back on
+// every long memory in production (found in Phase 5 real-data calibration).
+// Including a long probe document forces that failure to surface at calibration.
+// ~3,300 chars / ~700 tokens - safely past the 512-token clamp so a
+// misconfigured sidecar 500s here. (The whole sentence is repeated; note JS
+// precedence binds .repeat to the last operand only, so this is one literal.)
+const PROBE_LONGFORM_DOC =
+  "The deployment runbook covers how updates reach the stable environment, long-lived memories in this store frequently exceed two thousand characters because they capture full incident write-ups, architecture decisions, and operator preferences with their rationale. ".repeat(
+    13,
+  )
+
 function probeWithTimeout(
   url: string,
   timeoutMs: number,
@@ -311,9 +326,27 @@ function probeWithTimeout(
     candidates: [
       { id: "relevant", text: "the server listens on port 4753", retrievalScore: 0 },
       { id: "irrelevant", text: "bananas are yellow", retrievalScore: 0 },
+      // Batch-capacity probe: if the server can't process this long pair it
+      // 500s, and the remap below points at the batch size rather than
+      // letting the misconfiguration hide until real long memories arrive.
+      { id: "longform", text: PROBE_LONGFORM_DOC, retrievalScore: 0 },
     ],
   } satisfies RerankArgs
-  const calibrate = requestScores(normalizedUrl, timeoutMs, resolveMaxInputChars(), args)
+  // A large fixed split budget (not the caller's LUNA_RERANK_CE_MAX_INPUT_CHARS)
+  // so the longform batch-capacity doc is always sent as ONE request - the
+  // whole point is to make the server process a long single pair, which
+  // splitting would defeat.
+  const calibrate = requestScores(normalizedUrl, timeoutMs, 1_000_000, args).pipe(
+    Effect.mapError((error) =>
+      error.op === "parse" && /HTTP 500/.test(error.message)
+        ? new RerankError({
+            op: "parse",
+            message: `cross-encoder returned HTTP 500 on a ~600-token calibration document; the sidecar's physical batch is likely too small (rerank mode clamps n_batch=n_ubatch to 512 unless started with --batch-size --ubatch-size >= the longest memory's tokens). Long memories would silently fail and fall back to un-reranked order`,
+            cause: error,
+          })
+        : error,
+    ),
+  )
 
   return probeHealth(normalizedUrl, timeoutMs).pipe(
     Effect.andThen(
