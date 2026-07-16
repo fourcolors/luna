@@ -50,7 +50,7 @@ const hangingResponse = (init: RequestInit): Promise<Response> =>
   })
 
 // Resolves with `body` after `delayMs`, but rejects early if the request is
-// aborted first (so an outer timeout still cancels it).
+// aborted first (via the fetch AbortSignal / fiber interruption).
 const delayedResponse = (init: RequestInit, delayMs: number, body: unknown): Promise<Response> =>
   new Promise<Response>((resolve, reject) => {
     const timer = setTimeout(() => resolve(response(body)), delayMs)
@@ -512,7 +512,7 @@ describe("CrossEncoderRerankerLayer", () => {
   it("a slow-but-correct first calibration is NOT killed by the per-call scoring budget", async () => {
     // Codex-review Critical: the probe is a one-time startup cost with its own
     // deadline; the per-call scoring budget (here 200ms) must bound ONLY the
-    // scoring request, not the calibration probe. Probe floor generous (400ms),
+    // scoring request, not the calibration probe. Probe floor generous (5000ms),
     // calibration takes 250ms (> the 200ms scoring budget), scoring is fast.
     process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"] = "5000"
     const fetchMock = vi.fn((url: string, init: RequestInit) => {
