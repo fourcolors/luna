@@ -301,14 +301,17 @@ export const makeMemoryTools = (
         }
 
         const startMs = Date.now()
-        // Rerank only the top-N retrieved candidates: the cross-encoder scores
-        // each in a separate forward pass, so latency is ~linear in count.
-        // Pool is at least `limit` so a returned result set can still be
-        // filled; candidates beyond the pool keep retrieval order and are
-        // never gated. Gating is applied over the reranked pool ONLY, so a
-        // negative query whose whole pool scores low returns few/no results
-        // instead of backfilling junk from beyond the cap.
-        const rerankPool = filtered.slice(0, Math.max(resolveRerankMaxCandidates(), limit))
+        // HARD cap on how many candidates reach the cross-encoder: it scores
+        // each in a separate forward pass, so latency is ~linear in count and
+        // this cap is the latency bound. It is NOT raised to meet `limit` - a
+        // large limit must not silently blow the latency budget - so when
+        // limit > cap the reranked result set is bounded by the cap (the
+        // reranker returns its best gated candidates, precision over quota).
+        // Candidates beyond the cap are NOT reranked and do NOT appear in the
+        // reranked output; the gate is applied over the reranked pool ONLY, so
+        // a negative query whose pool scores low returns few/no results rather
+        // than backfilling ungated candidates from beyond the cap.
+        const rerankPool = filtered.slice(0, resolveRerankMaxCandidates())
         // catchAllDefect + either: DEFECTS in SDK/broker plumbing degrade to
         // un-reranked results (memory_search must never fail because
         // reranking failed), while genuine fiber INTERRUPTS still propagate

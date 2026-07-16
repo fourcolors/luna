@@ -84,6 +84,26 @@ live DB), with the batch size correctly configured:
   rather than the full pool, and why `LUNA_RECALL_RERANK` (per-turn) stays off
   by default - reranking is for the explicit `memory_search` tool.
 
+### Cap sweep (LUNA_BENCH_CAP_SWEEP=1)
+
+The committed, reproducible artifact behind the cap default. Post-hoc recall
+over the 190 positive synthetic queries when only the top-`cap` retrieved
+candidates are reranked (no extra model calls):
+
+| cap | ~latency | recall@1 | recall@5 |
+|---:|---:|---:|---:|
+|   3 | ~1.8s | 0.755 | 0.868 |
+|   5 | ~3.0s | 0.762 | 0.868 |
+|   8 | ~4.8s | 0.768 | 0.907 |
+|  12 | ~7.2s | 0.778 | 0.918 |
+|  20 | ~12.0s | 0.789 | 0.928 |
+
+So on this adversarial synthetic set the cap IS a real (small) tradeoff: cap=8
+costs ~2 points recall@1 versus the full 20-pool for a ~2.5x speedup. On a
+real-DB-copy sample (personal data, not committed) every labeled target sat
+within retrieval rank 6, so cap=8 lost nothing there. Default 8; raise it if
+you observe misses, lower it for speed.
+
 `LUNA_RERANK_CE_MODEL_TAG` (default `qwen3-reranker-0.6b-q4km`) is folded into
 the response cache key: the client cannot fingerprint the sidecar's GGUF, so
 bump this tag whenever you change the model, or a cache populated by a

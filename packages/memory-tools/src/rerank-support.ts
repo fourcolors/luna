@@ -25,16 +25,20 @@ export function resolveRerankThreshold(
 }
 
 /**
- * How many of the (retrieval-ordered) candidates to actually rerank. The
- * cross-encoder scores each candidate in a SEPARATE forward pass, so latency
- * is ~linear in candidate count (measured ~0.6s/candidate on the target GPU
- * sidecar). Real-data calibration showed retrieval already places the correct
- * memory within its top ~6 for every labeled query, and reranking the top 8
- * matched reranking the full pool on rank-1 quality - so capping at 8 keeps
- * quality while bounding latency to ~5s per explicit memory_search. Candidates
- * beyond the cap keep their retrieval order (they are simply not sent to the
- * reranker). Set LUNA_RERANK_MAX_CANDIDATES lower (e.g. 5 -> ~3s) to trade a
- * little recall on queries whose target sits at retrieval rank 6-8 for speed.
+ * HARD cap on how many of the (retrieval-ordered) candidates memory_search
+ * sends to the cross-encoder. The reranker scores each candidate in a SEPARATE
+ * forward pass, so latency is ~linear in candidate count (measured
+ * ~0.6s/candidate on the target GPU sidecar), and this cap is the latency
+ * bound. It is a pure latency/recall knob: candidates beyond the cap are not
+ * reranked (they keep retrieval order and are absent from the reranked output).
+ *
+ * The default of 8 (~5s) is a tradeoff, not a proven no-loss point. The
+ * committed cap-sweep in packages/memory/bench/rerank-eval.ts (LUNA_BENCH_CAP_SWEEP)
+ * shows recall@k across caps on the synthetic corpus; a separate real-DB-copy
+ * sample (personal data, not committed - see the Phase 5 PR) put every labeled
+ * target within retrieval rank 6. Raise the cap if you observe misses on a
+ * query whose target sits deeper in retrieval; lower it (e.g. 5 -> ~3s) for
+ * speed at some recall risk on deep targets.
  */
 export const DEFAULT_RERANK_MAX_CANDIDATES = 8
 
