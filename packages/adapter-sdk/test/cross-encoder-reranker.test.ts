@@ -434,4 +434,46 @@ describe("CrossEncoderRerankerLayer", () => {
     })
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
+
+  // --- hardening added after the adversarial review ---
+
+  it("rejects a partial response (fewer results than candidates) instead of leaving candidates unscored", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse())
+      .mockResolvedValueOnce(goodProbeResponse())
+      // 3 candidates, only 2 scored - would otherwise leave candidate c
+      // "unscored" and bypass the injection gate.
+      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: 0.8 }] }))
+    const error = failureOf(await runRerank(fetchMock, ["a", "b", "c"]))
+    expect(error.op).toBe("parse")
+    expect(error.message).toMatch(/1:1|results for/i)
+  })
+
+  it("rejects a response with a duplicated document index", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse())
+      .mockResolvedValueOnce(goodProbeResponse())
+      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 0.9 }, { index: 0, relevance_score: 0.8 }] }))
+    const error = failureOf(await runRerank(fetchMock, ["a", "b"]))
+    expect(error.op).toBe("parse")
+    expect(error.message).toMatch(/repeated document index/i)
+  })
+
+  it("calibration rejects a logit-scale server (raw scores outside [0,1]) so the gate can't degenerate to sign", async () => {
+    // relevant > irrelevant AND relevant*100 clamps to 100 (>50), so the old
+    // checks would PASS; the scale check must catch that these are logits.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse())
+      .mockResolvedValueOnce(response({ results: [{ index: 0, relevance_score: 8.2 }, { index: 1, relevance_score: -3.1 }] }))
+    setFetch(fetchMock as unknown as typeof globalThis.fetch)
+    const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect((exit.cause.error as RerankError).op).toBe("parse")
+      expect((exit.cause.error as RerankError).message).toMatch(/logit|out-of-\[0,1\]/i)
+    }
+  })
 })

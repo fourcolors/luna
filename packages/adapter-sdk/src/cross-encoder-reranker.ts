@@ -97,7 +97,20 @@ function parseResponse(
     })
   }
 
-  return results.map((entry, resultIndex) => {
+  // Every candidate must get EXACTLY ONE score. A short response or a
+  // duplicated index would leave some candidate unscored, and applyRerank
+  // treats an unscored candidate as a coverage gap that survives the
+  // injection gate ungated - so a partial/duplicated server response would
+  // silently let junk bypass the >=threshold filter. Enforce a strict 1:1
+  // index->candidate bijection; any deviation is a protocol violation the
+  // caller must degrade on (fall back to retrieval order), not paper over.
+  if (results.length !== candidates.length) {
+    throw new Error(
+      `rerank response returned ${results.length} results for ${candidates.length} candidates (expected 1:1)`,
+    )
+  }
+  const seenIndices = new Set<number>()
+  const scores = results.map((entry, resultIndex) => {
     if (entry === null || typeof entry !== "object") {
       throw new Error(`rerank result ${resultIndex} is not an object`)
     }
@@ -107,6 +120,10 @@ function parseResponse(
     if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= candidates.length) {
       throw new Error(`rerank result ${resultIndex} has an invalid document index`)
     }
+    if (seenIndices.has(index as number)) {
+      throw new Error(`rerank response repeated document index ${index as number}`)
+    }
+    seenIndices.add(index as number)
     if (typeof rawScore !== "number" || !Number.isFinite(rawScore)) {
       throw new Error(`rerank result ${resultIndex} is missing a finite relevance_score`)
     }
@@ -116,6 +133,11 @@ function parseResponse(
       rawScore,
     }
   })
+  // Redundant given the bijection above, but a cheap invariant tripwire.
+  if (seenIndices.size !== candidates.length) {
+    throw new Error("rerank response did not cover every candidate index exactly once")
+  }
+  return scores
 }
 
 function requestScoreBatch(
@@ -129,7 +151,12 @@ function requestScoreBatch(
     const requestTimeoutMs = positiveTimeout(args.timeoutMs, timeoutMs)
     const signal = AbortSignal.timeout(requestTimeoutMs)
     const response = yield* Effect.tryPromise({
-      try: () =>
+      // Arity-1 callback: `interrupt` is Effect's fiber-interruption signal.
+      // AbortSignal.any aborts the socket when EITHER the per-request timeout
+      // fires OR the caller's fiber is interrupted (e.g. recallForTurn's outer
+      // recall deadline), so an interrupted rerank never leaves an orphaned
+      // fetch holding a sidecar slot.
+      try: (interrupt) =>
         fetch(`${url}/v1/rerank`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -139,7 +166,7 @@ function requestScoreBatch(
             documents: args.candidates.map((candidate) => candidate.text),
             top_n: args.candidates.length,
           }),
-          signal,
+          signal: AbortSignal.any([signal, interrupt]),
         }),
       catch: (cause) => {
         if (signal.aborted) {
@@ -250,7 +277,8 @@ function probeHealth(url: string, timeoutMs: number): Effect.Effect<void, Rerank
     const healthTimeoutMs = Math.min(timeoutMs, HEALTH_TIMEOUT_MS)
     const signal = AbortSignal.timeout(healthTimeoutMs)
     const response = yield* Effect.tryPromise({
-      try: () => fetch(`${url}/health`, { method: "GET", signal }),
+      try: (interrupt) =>
+        fetch(`${url}/health`, { method: "GET", signal: AbortSignal.any([signal, interrupt]) }),
       catch: (cause) =>
         new RerankError({
           op: "acquire",
@@ -325,6 +353,22 @@ function probeWithTimeout(
           }),
         )
       }
+      // Scale check: normalizeCrossEncoderScore assumes /v1/rerank returns a
+      // bounded [0,1] probability (Qwen3 rank-pooling softmax). A GGUF/server
+      // that returns raw LOGITS instead would separate relevant>irrelevant
+      // and clear llmScore>50 above, yet the clamp in normalize would collapse
+      // the whole scale to near-0/near-100, degenerating the threshold gate to
+      // sign(logit) and mis-scoring every mid-relevance memory. Reject any raw
+      // score outside a small tolerance around [0,1] so a scale mismatch fails
+      // loudly at calibration instead of silently corrupting the gate.
+      if (relevant.rawScore > 1.05 || irrelevant.rawScore < -0.05) {
+        return Effect.fail(
+          new RerankError({
+            op: "parse",
+            message: `cross-encoder returned out-of-[0,1] scores (relevant=${relevant.rawScore}, irrelevant=${irrelevant.rawScore}); the server appears to emit raw logits, not softmax probabilities, so score normalization and the injection gate would be invalid`,
+          }),
+        )
+      }
       return Effect.succeed({
         relevantRawScore: relevant.rawScore,
         irrelevantRawScore: irrelevant.rawScore,
@@ -347,21 +391,48 @@ export function CrossEncoderRerankerLayer(
       const timeoutMs = resolveTimeoutMs(opts.timeoutMs)
       const maxInputChars = resolveMaxInputChars()
       const probePassed = yield* Ref.make(false)
+      // Single-flight guard for the lazy calibration probe: without it, N
+      // concurrent first rerank() calls each read false and each run the full
+      // health + calibrate (+ retry) sequence, multiplying first-wave load on
+      // a sidecar the header warns is queue-sensitive. The semaphore serializes
+      // the check-and-run so exactly one fiber probes while the rest await; a
+      // failed probe leaves probePassed false so the next call retries.
+      const probeGate = yield* Effect.makeSemaphore(1)
 
-      const rerank: MemoryRerankerApi["rerank"] = (args) =>
+      const ensureProbed = probeGate.withPermits(1)(
         Effect.gen(function* () {
-          if (args.candidates.length === 0) return []
+          if (yield* Ref.get(probePassed)) return
+          yield* probeWithTimeout(url, timeoutMs)
+          yield* Ref.set(probePassed, true)
+        }),
+      )
 
-          if (!(yield* Ref.get(probePassed))) {
-            yield* probeWithTimeout(url, timeoutMs)
-            yield* Ref.set(probePassed, true)
-          }
-
+      const rerank: MemoryRerankerApi["rerank"] = (args) => {
+        if (args.candidates.length === 0) return Effect.succeed([])
+        // args.timeoutMs is a per-CALL wall-clock ceiling covering the probe
+        // AND every sub-batch (the split path scores sequentially). A single
+        // deadline over the whole body honors that contract; the per-fetch
+        // AbortSignal.timeout still aborts individual sockets, and on the
+        // outer timeout the fetch is interrupted (see AbortSignal.any above).
+        const budgetMs = positiveTimeout(args.timeoutMs, timeoutMs)
+        const body = Effect.gen(function* () {
+          yield* ensureProbed
           // `/v1/rerank` has no sampling parameters. Identical inputs must
           // produce identical scores, which is the Phase 4 enable-blocker.
           const scores = yield* requestScores(url, timeoutMs, maxInputChars, args)
           return scores.map(({ id, llmScore }) => ({ id, llmScore }))
         })
+        return body.pipe(
+          Effect.timeoutFail({
+            duration: `${budgetMs} millis`,
+            onTimeout: () =>
+              new RerankError({
+                op: "timeout",
+                message: `cross-encoder rerank exceeded the per-call budget of ${budgetMs}ms (probe + ${args.candidates.length} candidates)`,
+              }),
+          }),
+        )
+      }
 
       return { rerank }
     }),

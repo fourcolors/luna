@@ -86,11 +86,11 @@
       {
         "slice": "vocab-mismatch",
         "queries": 60,
-        "recallAt1": 0.5833333333333334,
+        "recallAt1": 0.5666666666666667,
         "recallAt5": 0.8166666666666667,
         "recallAt10": 0.8833333333333333,
-        "mrr": 0.6922685185185186,
-        "ndcg10": 0.7386545057495255
+        "mrr": 0.6839351851851851,
+        "ndcg10": 0.7325033349757164
       },
       {
         "slice": "temporal",
@@ -105,20 +105,20 @@
     "overall": {
       "slice": "OVERALL",
       "queries": 190,
-      "recallAt1": 0.793859649122807,
+      "recallAt1": 0.7885964912280702,
       "recallAt5": 0.9280701754385965,
       "recallAt10": 0.9491228070175439,
-      "mrr": 0.8598391812865498,
-      "ndcg10": 0.8791983427434072
+      "mrr": 0.8572076023391814,
+      "ndcg10": 0.8772558677622044
     },
     "macro": {
       "slice": "MACRO",
       "queries": 4,
-      "recallAt1": 0.7986111111111112,
+      "recallAt1": 0.7944444444444445,
       "recallAt5": 0.9361111111111111,
       "recallAt10": 0.9527777777777777,
-      "mrr": 0.867511574074074,
-      "ndcg10": 0.8843849203468235
+      "mrr": 0.8654282407407408,
+      "ndcg10": 0.8828471276533711
     }
   },
   "batchedOnSubsample": {
@@ -185,13 +185,19 @@
     "rejectNegativeFrac": 0.75,
     "meetsGoal": false
   },
+  "injectionThresholdHoldout": {
+    "meanKeepFrac": 0.9526315789473684,
+    "meanRejectFrac": 0.725,
+    "folds": 2
+  },
+  "fragileBandCount": 4073,
   "latency": {
     "batched": {
       "label": "batched",
-      "mean": 0,
-      "p50": null,
-      "p95": null,
-      "calls": 0
+      "mean": 525.369298182609,
+      "p50": 501.8624584999998,
+      "p95": 663.2341002999972,
+      "calls": 230
     },
     "pointwise": {
       "label": "pointwise",

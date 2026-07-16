@@ -707,7 +707,15 @@ function cacheKey(
   queryText: string,
   candidateTexts: ReadonlyArray<string>,
 ): string {
-  const engineKey = CROSS_ENCODER_MODE ? `cross-encoder|${CROSS_ENCODER_URL}` : MODEL
+  // Include a model-identity tag for the cross-encoder: the client can't
+  // fingerprint the server's GGUF, so without this a cache populated by a
+  // DIFFERENT model would silently serve stale scores (the committed baseline
+  // must never be replayed from a mismatched cache). Operators changing the
+  // sidecar model must bump LUNA_RERANK_CE_MODEL_TAG.
+  const ceModelTag = process.env["LUNA_RERANK_CE_MODEL_TAG"]?.trim() || "qwen3-reranker-0.6b-q4km"
+  const engineKey = CROSS_ENCODER_MODE
+    ? `cross-encoder|${CROSS_ENCODER_URL}|${ceModelTag}`
+    : MODEL
   const raw = `${engineKey}|${shape}|${PROMPT_VERSION}|${queryText}|${candidateTexts.join("\u0000")}`
   return createHash("sha256").update(raw).digest("hex").slice(0, 24)
 }
@@ -1047,7 +1055,18 @@ function assertDeterministic(
       })
     process.exit(4)
   }
-  console.log(`determinism: PASS (${identical}/${identical} identical)`)
+  // Scope the claim honestly. Two SEQUENTIAL passes (concurrency 1) prove
+  // "identical request order + identical server state -> identical scores",
+  // which is what a same-order production caller gets. It does NOT prove
+  // unconditional determinism: a server started with --parallel > 1 serving
+  // genuinely concurrent clients can still reorder matmul reductions across
+  // co-batched requests (measured: +/-1 point on ~0.2% of pairs). The check
+  // keeps ONE request in flight, so it cannot exercise or detect that path -
+  // hence the ce-server.sh --parallel 1 default and the CE_PARALLEL warning.
+  console.log(`determinism: PASS (${identical}/${identical} identical, two sequential passes)`)
+  console.log(
+    `[rerank] NOTE: proves same-order/same-state reproducibility; a --parallel>1 sidecar under concurrent load can still drift +/-1 (kept off by ce-server.sh's --parallel 1 default).`,
+  )
   console.log(``)
 }
 
@@ -1270,6 +1289,16 @@ async function main(): Promise<void> {
       console.log(
         `[rerank] preflight OK - engine=cross-encoder url=${CROSS_ENCODER_URL} relevant=${probe.relevantRawScore} irrelevant=${probe.irrelevantRawScore}`,
       )
+      if (CROSS_ENCODER_CONCURRENCY > 1) {
+        // The determinism CHECK is always forced sequential and will still
+        // print PASS, but the QUALITY tables below are scored at this
+        // concurrency and can carry +/-1 KV-reuse noise that the check does
+        // not cover. Warn so a concurrent quality run is never mistaken for a
+        // reproducible one.
+        console.log(
+          `[rerank] WARNING: LUNA_RERANK_CE_CONCURRENCY=${CROSS_ENCODER_CONCURRENCY} (>1) - quality tables may carry +/-1 KV-reuse noise; the determinism PASS below only covers the forced-sequential check, not these tables. Use concurrency 1 for reproducible numbers.`,
+        )
+      }
       crossEncoderReranker = await Effect.runPromise(
         Effect.gen(function* () {
           return yield* MemoryReranker
@@ -1470,10 +1499,14 @@ async function main(): Promise<void> {
   const positiveTop1 = afterRows.filter((r) => r.slice !== "negative" && r.score !== null).map((r) => r.score as number)
   const negativeTop1 = afterRows.filter((r) => r.slice === "negative" && r.score !== null).map((r) => r.score as number)
   const threshold = computeInjectionThreshold(positiveTop1, negativeTop1)
+  // Hoisted so the committed JSON below carries the SAME gate evidence the
+  // console prints (finding: the baseline artifact lacked holdout + band).
+  let holdout: ReturnType<typeof holdoutThresholdEstimate> = null
+  let fragileBandCount: number | null = null
   if (threshold === null) {
     console.log(`suggested injection threshold: n/a (insufficient positive or negative samples)`)
   } else {
-    const fragileBandCount = CROSS_ENCODER_MODE
+    fragileBandCount = CROSS_ENCODER_MODE
       ? Array.from(
           (batchedRun as CrossEncoderBatchedRun).scoresByQuery.values(),
           (scores) => Array.from(scores.values()),
@@ -1488,7 +1521,7 @@ async function main(): Promise<void> {
         threshold.meetsGoal ? "" : " - does NOT meet the 95%/80% goal, best effort shown"
       }${fragileBandCount === null ? "" : ` - fragile band +/-5: ${fragileBandCount} scored candidates`}`,
     )
-    const holdout = holdoutThresholdEstimate(positiveTop1, negativeTop1)
+    holdout = holdoutThresholdEstimate(positiveTop1, negativeTop1)
     if (holdout !== null) {
       console.log(
         `holdout estimate (2-fold CV): keeps ${(holdout.meanKeepFrac * 100).toFixed(1)}% / rejects ${(holdout.meanRejectFrac * 100).toFixed(1)}% on unseen queries`,
@@ -1552,6 +1585,8 @@ async function main(): Promise<void> {
           pointwise: pointwiseTable,
           separation: { before: separationRow("hybrid", beforeRows), after: separationRow("llm", afterRows) },
           injectionThreshold: threshold,
+          injectionThresholdHoldout: holdout,
+          fragileBandCount,
           latency: { batched: latencyFor("batched", batchedStats.latenciesMs), pointwise: latencyFor("pointwise", pointwiseStats.latenciesMs) },
           parseFailure: { batchedRate: batchedFailRate, pointwiseRate: pointwiseFailRate },
           excludedFallback: {
