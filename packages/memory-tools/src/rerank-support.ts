@@ -24,6 +24,28 @@ export function resolveRerankThreshold(
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : DEFAULT_RERANK_THRESHOLD
 }
 
+/**
+ * How many of the (retrieval-ordered) candidates to actually rerank. The
+ * cross-encoder scores each candidate in a SEPARATE forward pass, so latency
+ * is ~linear in candidate count (measured ~0.6s/candidate on the target GPU
+ * sidecar). Real-data calibration showed retrieval already places the correct
+ * memory within its top ~6 for every labeled query, and reranking the top 8
+ * matched reranking the full pool on rank-1 quality - so capping at 8 keeps
+ * quality while bounding latency to ~5s per explicit memory_search. Candidates
+ * beyond the cap keep their retrieval order (they are simply not sent to the
+ * reranker). Set LUNA_RERANK_MAX_CANDIDATES lower (e.g. 5 -> ~3s) to trade a
+ * little recall on queries whose target sits at retrieval rank 6-8 for speed.
+ */
+export const DEFAULT_RERANK_MAX_CANDIDATES = 8
+
+export function resolveRerankMaxCandidates(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env["LUNA_RERANK_MAX_CANDIDATES"]?.trim()
+  const n = raw ? Number(raw) : DEFAULT_RERANK_MAX_CANDIDATES
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_RERANK_MAX_CANDIDATES
+}
+
 /** Both lanes are DEFAULT OFF, gated by their own env flag (separate flags -
  * per-turn recall's latency budget is unproven independent of the MCP tool
  * path). A flag is "on" only for the literal value "1". */

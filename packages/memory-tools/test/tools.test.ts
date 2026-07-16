@@ -639,6 +639,28 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     expect(hits[0]!.llmScore).toBe(92)
   })
 
+  it("flag ON: caps the reranked candidates at LUNA_RERANK_MAX_CANDIDATES (latency bound)", async () => {
+    // Seed 6 records so retrieval over-fetches a pool > the cap.
+    await seedRecords(
+      Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, text: `record number ${i} about coffee` })),
+    )
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    process.env["LUNA_RERANK_MAX_CANDIDATES"] = "3"
+    process.env["LUNA_RERANK_THRESHOLD"] = "0"
+    let sentCount = -1
+    const spy: MemoryRerankerApi = {
+      rerank: (args) => {
+        sentCount = args.candidates.length
+        return Effect.succeed(args.candidates.map((c) => ({ id: c.id, llmScore: 90 })))
+      },
+    }
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: spy })
+    await searchTool.handler({ query: "coffee", limit: 3 }, undefined)
+    // Only the top-3 (limit=3, cap=3) go to the cross-encoder, not all 6.
+    expect(sentCount).toBe(3)
+    delete process.env["LUNA_RERANK_MAX_CANDIDATES"]
+  })
+
   it("flag ON: unscored candidates (reranker returned nothing for them) survive ungated at the tail", async () => {
     await seedRecords([
       { id: "scored-low", text: "irrelevant record" },

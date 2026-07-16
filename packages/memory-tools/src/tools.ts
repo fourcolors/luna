@@ -66,6 +66,7 @@ import {
   emitRerankObservability,
   logRerankFailureOnce,
   rerankFlagEnabled,
+  resolveRerankMaxCandidates,
   resolveRerankThreshold,
 } from "./rerank-support.js"
 
@@ -300,6 +301,14 @@ export const makeMemoryTools = (
         }
 
         const startMs = Date.now()
+        // Rerank only the top-N retrieved candidates: the cross-encoder scores
+        // each in a separate forward pass, so latency is ~linear in count.
+        // Pool is at least `limit` so a returned result set can still be
+        // filled; candidates beyond the pool keep retrieval order and are
+        // never gated. Gating is applied over the reranked pool ONLY, so a
+        // negative query whose whole pool scores low returns few/no results
+        // instead of backfilling junk from beyond the cap.
+        const rerankPool = filtered.slice(0, Math.max(resolveRerankMaxCandidates(), limit))
         // catchAllDefect + either: DEFECTS in SDK/broker plumbing degrade to
         // un-reranked results (memory_search must never fail because
         // reranking failed), while genuine fiber INTERRUPTS still propagate
@@ -309,7 +318,7 @@ export const makeMemoryTools = (
         const outcome = yield* reranker!
           .rerank({
             queryText: args.query,
-            candidates: filtered.map((h) => ({
+            candidates: rerankPool.map((h) => ({
               id: h.record.id,
               text: extractText(h.record.content),
               retrievalScore: h.score,
@@ -336,7 +345,7 @@ export const makeMemoryTools = (
         const threshold = resolveRerankThreshold()
         const byId = new Map(filtered.map((h) => [h.record.id, h] as const))
         const { kept, droppedCount } = applyRerank(
-          filtered.map((h) => ({ id: h.record.id })),
+          rerankPool.map((h) => ({ id: h.record.id })),
           outcome.right,
           { threshold },
         )

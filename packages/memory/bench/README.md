@@ -19,7 +19,7 @@ sidecar script's 16,384-token context. `LUNA_RERANK_CE_PROBE_TIMEOUT_MS`
 (default 30,000) is the floor for the one-time calibration probe, kept
 separate from the per-call scoring ceiling because an ~860-token probe
 document on a CPU-only sidecar can take several seconds. `LUNA_RERANK_CE_CONCURRENCY`
-(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below.
+(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below. `LUNA_RERANK_MAX_CANDIDATES` (default 8) caps how many retrieved candidates memory_search sends to the reranker, since latency is ~linear in candidate count (~0.6s each on the GPU sidecar); 8 covers the real-data retrieval ranks with ~5s latency, 5 gives ~3s.
 
 ### The physical batch size is load-bearing (read before deploying)
 
