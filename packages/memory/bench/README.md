@@ -1,5 +1,9 @@
 # Memory rerank bench
 
+(For the hot-tier bulletin eval - the cross-thread digest probes - see
+[BULLETIN.md](./BULLETIN.md) and `bench:bulletin`. This file covers the
+cold-tier reranking work.)
+
 ## Local cross-encoder
 
 Start the verified Qwen3-Reranker-0.6B llama-server sidecar from the repository

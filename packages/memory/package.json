@@ -14,7 +14,8 @@
     "bench:memory": "bun bench/memory-suite.ts",
     "bench:rerank": "bun bench/rerank-eval.ts",
     "eval:locomo": "bun src/adapters/locomo-eval/run.ts",
-    "eval:locomo:judge-rescore": "bun src/adapters/locomo-eval/judge-rescore.ts"
+    "eval:locomo:judge-rescore": "bun src/adapters/locomo-eval/judge-rescore.ts",
+    "bench:bulletin": "bun bench/bulletin-eval.ts"
   },
   "dependencies": {
     "@luna/core": "workspace:*",
