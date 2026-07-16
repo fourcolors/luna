@@ -24,16 +24,19 @@
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import {
   Clock,
   EmbedderService,
   LunaSqliteBootstrap,
+  MemoryReranker,
   ObservabilityService,
   StubEmbedderLayer,
   makeOllamaEmbedderLayer,
   type EmbedderError,
   type MemoryBackendError,
+  type MemoryRerankerApi,
+  type ObservabilityApi,
 } from "@luna/core"
 import {
   MemoryLayer,
@@ -46,7 +49,7 @@ import type {
   McpSdkServerConfigWithInstance,
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk"
-import { makeMemoryTools } from "./tools.js"
+import { makeMemoryTools, type MakeMemoryToolsOptions } from "./tools.js"
 
 /**
  * Resolve the on-disk path for the sqlite-vector store. `:memory:` skips
@@ -126,13 +129,16 @@ export function selectEmbedderLayer(): Layer.Layer<
  */
 export const buildMemoryMcpServer = (
   router: Parameters<typeof makeMemoryTools>[0],
+  toolOptions?: MakeMemoryToolsOptions,
 ): McpSdkServerConfigWithInstance => {
   // The tuple has heterogeneous shapes; widen to the SDK's catch-all
   // shape for the registry. Safe because makeSdkMcpServer treats the
   // schema field opaquely until the MCP server is actually serving.
-  const tools = makeMemoryTools(router) as unknown as ReadonlyArray<
-    SdkMcpToolDefinition<AnyZodRawShape>
-  >
+  const tools = makeMemoryTools(
+    router,
+    undefined,
+    toolOptions,
+  ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
   return makeSdkMcpServer("memory", "0.1.0", tools)
 }
 
@@ -190,6 +196,15 @@ export interface MemoryToolsLayerOptions {
   readonly dbPath?: string
   /** Override the embedder Layer. Default: `selectEmbedderLayer()`. */
   readonly embedder?: Layer.Layer<EmbedderService, EmbedderError>
+  /**
+   * Optional MemoryReranker layer (e.g. adapter-sdk's MemoryRerankerDefault).
+   * When provided, memory_search CAN rerank - actually doing so is still
+   * gated per-request by LUNA_MEMORY_RERANK=1 (see tools.ts). DEFAULT
+   * undefined: today's un-reranked behavior with zero wiring changes
+   * required. Kept SDK-free here (memory-tools does not depend on
+   * adapter-sdk) - the caller builds the SDK-backed layer and passes it in.
+   */
+  readonly rerankerLayer?: Layer.Layer<MemoryReranker, never, never>
 }
 
 /**
@@ -212,20 +227,36 @@ export const MemoryToolsLayer = (
   const embedderL = opts?.embedder ?? selectEmbedderLayer()
   const createConfig = (
     router: Parameters<typeof buildMemoryMcpServer>[0],
+    reranker: MemoryRerankerApi | undefined,
+    observability: ObservabilityApi,
   ): MemoryToolsSessionConfig => ({
     serverName: "memory" as const,
-    server: buildMemoryMcpServer(router),
+    server: buildMemoryMcpServer(router, {
+      ...(reranker !== undefined ? { reranker } : {}),
+      observability,
+    }),
     systemPromptAddendum: MEMORY_SYSTEM_PROMPT_ADDENDUM,
   })
-  return Layer.scoped(
+  const base = Layer.scoped(
     MemoryToolsService,
     Effect.gen(function* () {
       const router = yield* MemoryRouterTag
-      const config = createConfig(router)
+      const observability = yield* ObservabilityService
+      // Effect.serviceOption -> R=never (does NOT add MemoryReranker to this
+      // layer's declared requirements above). Resolves only when
+      // opts.rerankerLayer was composed directly below via Layer.provide, so
+      // callers who never pass a rerankerLayer see byte-identical behavior:
+      // reranker stays undefined and tools.ts never calls it.
+      const rerankerOpt = yield* Effect.serviceOption(MemoryReranker)
+      const reranker = Option.getOrUndefined(rerankerOpt)
+      const config = createConfig(router, reranker, observability)
       return {
         ...config,
-        createSessionBinding: () => createConfig(router),
+        createSessionBinding: () => createConfig(router, reranker, observability),
       }
     }),
   ).pipe(Layer.provide(MemoryRouterLayer(dbPath)), Layer.provide(embedderL))
+  return opts?.rerankerLayer !== undefined
+    ? base.pipe(Layer.provide(opts.rerankerLayer))
+    : base
 }

@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, afterEach } from "vitest"
 import { Effect, Stream } from "effect"
+import {
+  RerankError,
+  type MemoryRerankerApi,
+  type RerankScore,
+} from "@luna/core"
 import {
   InMemoryBackend,
   makeRecord,
@@ -121,6 +126,167 @@ describe("turn memory", () => {
     // The previous 20-at-recall request multiplied to 80 backend hits.
     expect(backendTopK).toBe(40)
     expect(packed).toBeNull()
+  })
+
+  describe("recallForTurn reranking", () => {
+    afterEach(() => {
+      delete process.env["LUNA_RECALL_RERANK"]
+      delete process.env["LUNA_RERANK_THRESHOLD"]
+    })
+
+    // InMemoryBackend has no real search() implementation (put/get/query
+    // only - see packages/memory/src/backends/in-memory.ts) - same reason
+    // the "keeps scoped backend over-fetch bounded" test above overrides
+    // `search` directly rather than relying on it. Mirror that pattern here
+    // with two fixed records so the FAKE reranker below has something to
+    // reorder/gate.
+    const seededRouter = () => {
+      const backend = Object.assign(new InMemoryBackend(), {
+        search: () =>
+          Stream.fromIterable([
+            {
+              record: makeRecord({
+                id: "good",
+                namespace: "notes",
+                kind: "semantic",
+                content: { text: "operator's favorite coffee is espresso" },
+              }),
+              score: 0.9,
+            },
+            {
+              record: makeRecord({
+                id: "junk",
+                namespace: "notes",
+                kind: "semantic",
+                content: { text: "the weather in Lisbon was sunny yesterday" },
+              }),
+              score: 0.5,
+            },
+          ]),
+      })
+      return makeRouter([{ pattern: "*", backend }])
+    }
+
+    const fakeRerankerOf = (scoresById: Record<string, number>): MemoryRerankerApi => ({
+      rerank: (args) =>
+        Effect.succeed(
+          args.candidates
+            .filter((c) => c.id in scoresById)
+            .map((c): RerankScore => ({ id: c.id, llmScore: scoresById[c.id]! })),
+        ),
+    })
+
+    it("flag OFF: never calls the reranker even when one is provided", async () => {
+      let called = false
+      const reranker: MemoryRerankerApi = {
+        rerank: () => {
+          called = true
+          return Effect.succeed([])
+        },
+      }
+      const packed = await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "coffee preferences",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      expect(called).toBe(false)
+      expect(packed?.hits.length).toBeGreaterThan(0)
+    })
+
+    it("flag ON: reranks and packs only the surviving hit", async () => {
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      process.env["LUNA_RERANK_THRESHOLD"] = "75"
+      const reranker = fakeRerankerOf({ good: 92, junk: 10 })
+      const packed = await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "favorite coffee",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      expect(packed?.hits.map((h) => h.id)).toEqual(["good"])
+    })
+
+    it("flag ON: falls back to un-reranked packing when the reranker fails", async () => {
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      const reranker: MemoryRerankerApi = {
+        rerank: () =>
+          Effect.fail(new RerankError({ op: "timeout", message: "simulated timeout" })),
+      }
+      const packed = await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "coffee preferences",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      // Falls back to the plain hybrid pack - both records still present.
+      expect(packed?.hits.length).toBe(2)
+    })
+
+    it("flag ON: falls back to un-reranked packing when the reranker DIES (defect), never nulls recall", async () => {
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      const reranker: MemoryRerankerApi = {
+        rerank: () => Effect.die(new Error("unexpected plumbing throw")),
+      }
+      const packed = await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "coffee preferences",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      // Codex-review finding: a DEFECT previously escaped either() to the
+      // pipeline's catchAllCause and nulled the whole recall context. It
+      // must degrade to the plain pack exactly like a typed RerankError.
+      expect(packed).not.toBeNull()
+      expect(packed?.hits.length).toBe(2)
+    })
+
+    it("flag ON: caps the rerank call's timeout under the outer recall budget", async () => {
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      delete process.env["LUNA_RECALL_RERANK_TIMEOUT_MS"]
+      let seenTimeoutMs: number | undefined
+      const reranker: MemoryRerankerApi = {
+        rerank: (args) => {
+          seenTimeoutMs = args.timeoutMs
+          return Effect.succeed([])
+        },
+      }
+      await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "coffee preferences",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      // chat-service's outer recall timeout (2.5s default) NULLS the whole
+      // recall when it fires - the rerank call must give up well inside it
+      // so recall degrades to the plain pack instead of vanishing.
+      expect(seenTimeoutMs).toBe(1500)
+    })
   })
 })
 

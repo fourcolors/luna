@@ -36,17 +36,48 @@
  *     surface is intentionally unchanged so the blast radius stays small.
  *   - Tools live in @luna/memory-tools (not @luna/tools) so the @luna/tools
  *     package stays a domain-free Runtime helper.
+ *   - memory_search reranking (Phase 3, PR #332 bench): when
+ *     LUNA_MEMORY_RERANK=1 AND a MemoryReranker was passed to
+ *     makeMemoryTools, search over-fetches to at least 20 candidates,
+ *     reranks them, and gates via applyRerank (score>=LUNA_RERANK_THRESHOLD,
+ *     default 75) before slicing to `limit`. DEFAULT OFF - with no reranker
+ *     passed and/or the flag unset, behavior is byte-identical to before.
+ *     A rerank failure (timeout/parse/SDK error) falls back to the
+ *     un-reranked hybrid order; it never fails the tool call.
  */
 import { Effect, Stream } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
 import {
+  applyRerank,
+  RerankError,
+  type MemoryRerankerApi,
+  type ObservabilityApi,
+} from "@luna/core"
+import {
   makeRecord,
   matchesMemoryScope,
   OPERATOR_MEMORY_SCOPE,
+  type MemoryRecord,
   type MemoryRouter,
   type MemoryScope,
 } from "@luna/memory"
+import {
+  emitRerankObservability,
+  logRerankFailureOnce,
+  rerankFlagEnabled,
+  resolveRerankThreshold,
+} from "./rerank-support.js"
+
+/** Minimum over-fetch when rerank is active - matches the bench's TOP_K=20
+ * (packages/memory/bench/rerank-eval.ts), the pool size the 0.734 -> 0.878
+ * recall@1 lift was measured against. */
+const RERANK_OVERFETCH_TOP_K = 20
+
+export interface MakeMemoryToolsOptions {
+  readonly reranker?: MemoryRerankerApi
+  readonly observability?: ObservabilityApi
+}
 
 const DEFAULT_NAMESPACE = "notes"
 const DEFAULT_KIND = "semantic"
@@ -129,6 +160,38 @@ function extractText(content: unknown): string {
 }
 
 /**
+ * Build the wire DTO for one search hit. `llmScore` is present only when
+ * memory_search reranked this result (LUNA_MEMORY_RERANK=1 + a reranker was
+ * provided) - absent on the default, un-reranked path, so the DTO shape is
+ * byte-identical to before when rerank isn't in play.
+ */
+function toSearchHitDTO(
+  hit: { readonly record: MemoryRecord; readonly score: number },
+  llmScore?: number,
+) {
+  return {
+    id: hit.record.id,
+    text: extractText(hit.record.content),
+    score: hit.score,
+    tags: hit.record.tags,
+    kind: hit.record.kind,
+    namespace: hit.record.namespace,
+    createdAt: hit.record.createdAt,
+    updatedAt: hit.record.updatedAt,
+    ...(llmScore !== undefined ? { llmScore } : {}),
+    ...(hit.record.scope !== undefined
+      ? {
+          scope: {
+            observerId: hit.record.scope.observerId,
+            subjectId: hit.record.scope.subjectId,
+            visibility: hit.record.scope.visibility,
+          },
+        }
+      : {}),
+  }
+}
+
+/**
  * Build the three memory tools bound to a resolved MemoryRouter handle.
  *
  * `defineTool` requires handlers with no Effect requirements (the SDK
@@ -139,7 +202,9 @@ function extractText(content: unknown): string {
 export const makeMemoryTools = (
   router: MemoryRouter,
   scope: MemoryScope = OPERATOR_MEMORY_SCOPE,
+  options: MakeMemoryToolsOptions = {},
 ) => {
+  const { reranker, observability } = options
   const save = defineTool({
     name: "memory_save",
     description:
@@ -191,12 +256,18 @@ export const makeMemoryTools = (
         const limit = args.limit ?? 5
         const namespace = args.namespace ?? DEFAULT_NAMESPACE
         const kindFilter = args.kind
-        // Over-fetch when a kind filter is set so the post-filter still
-        // has enough candidates to return `limit` matches. 4× with a floor
-        // of 20 is a heuristic — good enough for the local store sizes
-        // we see in practice.
-        const fetchTopK =
+        const rerankRequested =
+          reranker !== undefined && rerankFlagEnabled("LUNA_MEMORY_RERANK")
+        // Over-fetch when a kind filter is set so the post-filter still has
+        // enough candidates to return `limit` matches (4× with a floor of
+        // 20 - a heuristic good enough for the local store sizes we see in
+        // practice), OR when rerank is active (floor of RERANK_OVERFETCH_TOP_K,
+        // the pool size the bench's recall lift was measured against).
+        const kindOverfetch =
           kindFilter !== undefined ? Math.max(limit * 4, 20) : limit
+        const fetchTopK = rerankRequested
+          ? Math.max(kindOverfetch, RERANK_OVERFETCH_TOP_K)
+          : kindOverfetch
         const hits = yield* Stream.runCollect(
           router.search({
             queryText: args.query,
@@ -223,25 +294,65 @@ export const makeMemoryTools = (
           kindFilter !== undefined
             ? all.filter((h) => h.record.kind === kindFilter)
             : all
-        return filtered.slice(0, limit).map((h) => ({
-          id: h.record.id,
-          text: extractText(h.record.content),
-          score: h.score,
-          tags: h.record.tags,
-          kind: h.record.kind,
-          namespace: h.record.namespace,
-          createdAt: h.record.createdAt,
-          updatedAt: h.record.updatedAt,
-          ...(h.record.scope !== undefined
-            ? {
-                scope: {
-                  observerId: h.record.scope.observerId,
-                  subjectId: h.record.scope.subjectId,
-                  visibility: h.record.scope.visibility,
-                },
-              }
-            : {}),
-        }))
+
+        if (!rerankRequested) {
+          return filtered.slice(0, limit).map((h) => toSearchHitDTO(h))
+        }
+
+        const startMs = Date.now()
+        // catchAllDefect + either: DEFECTS in SDK/broker plumbing degrade to
+        // un-reranked results (memory_search must never fail because
+        // reranking failed), while genuine fiber INTERRUPTS still propagate
+        // so cancelling the tool call cancels the in-flight rerank - a
+        // sandbox+either combo would capture the interrupt as data and
+        // return fallback results instead of cancelling.
+        const outcome = yield* reranker!
+          .rerank({
+            queryText: args.query,
+            candidates: filtered.map((h) => ({
+              id: h.record.id,
+              text: extractText(h.record.content),
+              retrievalScore: h.score,
+            })),
+          })
+          .pipe(
+            Effect.catchAllDefect((defect) =>
+              Effect.fail(
+                new RerankError({
+                  op: "defect",
+                  message: `rerank defect: ${String(defect)}`,
+                  cause: defect,
+                }),
+              ),
+            ),
+            Effect.either,
+          )
+
+        if (outcome._tag === "Left") {
+          yield* logRerankFailureOnce("memory_search", outcome.left)
+          return filtered.slice(0, limit).map((h) => toSearchHitDTO(h))
+        }
+
+        const threshold = resolveRerankThreshold()
+        const byId = new Map(filtered.map((h) => [h.record.id, h] as const))
+        const { kept, droppedCount } = applyRerank(
+          filtered.map((h) => ({ id: h.record.id })),
+          outcome.right,
+          { threshold },
+        )
+        const rerankMs = Date.now() - startMs
+        yield* emitRerankObservability(observability, {
+          queryText: args.query,
+          namespace,
+          mode: "hybrid",
+          rerankMs,
+          kept: kept.length,
+          dropped: droppedCount,
+        })
+
+        return kept.slice(0, limit).map(({ candidate, llmScore }) =>
+          toSearchHitDTO(byId.get(candidate.id)!, llmScore),
+        )
       }),
   })
 

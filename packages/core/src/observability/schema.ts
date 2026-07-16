@@ -124,21 +124,50 @@ export const CostAccruedSchema = Schema.Struct({
   estimatedUsd: Schema.Number,
 })
 
-const RetrievalCallSchema = Schema.Struct({
+const RetrievalCallBase = {
   ...Base,
   kind: Schema.Literal("RetrievalCall"),
   sessionId: Schema.optional(Schema.String),
   namespace: Schema.optional(Schema.String),
   mode: Schema.Literal("vec", "hybrid", "bm25", "hybrid-terms"),
-  queryDigest: Schema.String,
-  embedderProvider: Schema.String,
-  embedderModel: Schema.String,
-  embedderDimension: Schema.Number,
   candidateCount: Schema.Number,
   topScore: Schema.optional(Schema.Number),
   durationMs: Schema.Number,
   status: Schema.Literal("success", "error"),
-})
+} as const
+
+// Reranker widening (Phase 3 production reranker, PR #332 bench): a rerank
+// stage has no embedder of its own to report, so it can't satisfy the
+// embedder-field guardrail the plain-retrieval variant enforces below. Rather
+// than weaken that guardrail for everyone (a genuine retrieval event missing
+// its embedder identity IS a bug), RetrievalCall is a discriminated union of
+// two shapes:
+//   - the event MemoryRouter.search() itself emits (embedder fields
+//     required, byte-identical to before this widening),
+//   - the SEPARATE rerank-stage event memory_search / recallForTurn emit
+//     after the underlying retrieval already logged its own event above
+//     (reranked: true; no embedder fields; rerank stats required instead).
+// An object satisfying NEITHER variant (e.g. missing embedderModel and not
+// marked reranked: true) is correctly rejected - this preserves the
+// pre-existing "rejects RetrievalCall missing embedderModel" guardrail.
+const RetrievalCallSchema = Schema.Union(
+  Schema.Struct({
+    ...RetrievalCallBase,
+    queryDigest: Schema.String,
+    embedderProvider: Schema.String,
+    embedderModel: Schema.String,
+    embedderDimension: Schema.Number,
+    reranked: Schema.optional(Schema.Literal(false)),
+  }),
+  Schema.Struct({
+    ...RetrievalCallBase,
+    queryDigest: Schema.optional(Schema.String),
+    reranked: Schema.Literal(true),
+    rerankMs: Schema.Number,
+    kept: Schema.Number,
+    dropped: Schema.Number,
+  }),
+)
 
 export const ErrorEventSchema = Schema.Struct({
   ...Base,

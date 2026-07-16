@@ -24,7 +24,10 @@ import {
   Clock,
   EmbedderService,
   ObservabilityService,
+  RerankError,
   StubEmbedderLayer,
+  type MemoryRerankerApi,
+  type RerankScore,
 } from "@luna/core"
 import {
   LunaSqliteBootstrapLive,
@@ -535,5 +538,167 @@ describe("selectEmbedderLayer", () => {
       ).pipe(Effect.provide(layer)),
     )
     expect(provider).toBe("ollama")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// memory_search reranking (Phase 3, PR #332 bench) - LUNA_MEMORY_RERANK gate,
+// fallback-on-failure, and the unscored-candidate-stays-ungated policy.
+// ---------------------------------------------------------------------------
+describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
+  const baseLayer = Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const backend = yield* SqliteVectorBackend
+      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
+    }),
+  ).pipe(
+    Layer.provideMerge(SqliteVectorBackend.fromPath(":memory:")),
+    Layer.provideMerge(StubEmbedderLayer),
+    Layer.provideMerge(LunaSqliteBootstrapLive),
+    Layer.provideMerge(ObservabilityService.Default),
+    Layer.provideMerge(Clock.Default),
+  )
+
+  let runtime: ManagedRuntime.ManagedRuntime<typeof MemoryRouterTag.Service, never>
+  let router: MemoryRouter
+
+  beforeEach(async () => {
+    runtime = ManagedRuntime.make(baseLayer) as never
+    router = await runtime.runPromise(
+      Effect.gen(function* () {
+        return yield* MemoryRouterTag
+      }),
+    )
+    delete process.env["LUNA_MEMORY_RERANK"]
+    delete process.env["LUNA_RERANK_THRESHOLD"]
+  })
+
+  afterEach(async () => {
+    await runtime.dispose()
+    delete process.env["LUNA_MEMORY_RERANK"]
+    delete process.env["LUNA_RERANK_THRESHOLD"]
+  })
+
+  const seedRecords = async (records: ReadonlyArray<{ id: string; text: string }>) => {
+    for (const r of records) {
+      await runtime.runPromise(
+        router.put(
+          makeRecord({ id: r.id, namespace: "notes", kind: "semantic", content: { text: r.text } }),
+        ),
+      )
+    }
+  }
+
+  const fakeRerankerOf = (scoresById: Record<string, number>): MemoryRerankerApi => ({
+    rerank: (args) =>
+      Effect.succeed(
+        args.candidates
+          .filter((c) => c.id in scoresById)
+          .map((c): RerankScore => ({ id: c.id, llmScore: scoresById[c.id]! })),
+      ),
+  })
+
+  const failingReranker = (): MemoryRerankerApi => ({
+    rerank: () =>
+      Effect.fail(new RerankError({ op: "timeout", message: "simulated rerank timeout" })),
+  })
+
+  it("flag OFF: does not call the reranker even when one is provided (byte-identical to before)", async () => {
+    await seedRecords([
+      { id: "m1", text: "operator likes espresso" },
+      { id: "m2", text: "operator dislikes decaf" },
+    ])
+    let called = false
+    const reranker: MemoryRerankerApi = {
+      rerank: () => {
+        called = true
+        return Effect.succeed([])
+      },
+    }
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "espresso" }, undefined),
+    )
+    expect(called).toBe(false)
+    expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
+  })
+
+  it("flag ON: reranks and drops junk below the threshold", async () => {
+    await seedRecords([
+      { id: "good", text: "operator's favorite coffee is espresso" },
+      { id: "junk", text: "the weather in Lisbon was sunny yesterday" },
+    ])
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    process.env["LUNA_RERANK_THRESHOLD"] = "75"
+    const reranker = fakeRerankerOf({ good: 92, junk: 10 })
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "favorite coffee" }, undefined),
+    )
+    expect(hits.map((h) => h.id)).toEqual(["good"])
+    expect(hits[0]!.llmScore).toBe(92)
+  })
+
+  it("flag ON: unscored candidates (reranker returned nothing for them) survive ungated at the tail", async () => {
+    await seedRecords([
+      { id: "scored-low", text: "irrelevant record" },
+      { id: "unscored", text: "another record the reranker never scored" },
+    ])
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    process.env["LUNA_RERANK_THRESHOLD"] = "75"
+    // Only "scored-low" comes back, below threshold -> dropped. "unscored" is
+    // never mentioned by the reranker -> must still be returned (ungated).
+    const reranker = fakeRerankerOf({ "scored-low": 5 })
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "record", limit: 10 }, undefined),
+    )
+    expect(hits.map((h) => h.id)).toEqual(["unscored"])
+    expect(hits[0]!.llmScore).toBeUndefined()
+  })
+
+  it("flag ON: falls back to un-reranked order when the reranker fails", async () => {
+    await seedRecords([
+      { id: "m1", text: "operator likes espresso" },
+      { id: "m2", text: "operator likes tea" },
+    ])
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: failingReranker() })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "espresso" }, undefined),
+    )
+    // Falls back to plain hybrid search - still returns results, none reranked.
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
+  })
+
+  it("flag ON: falls back to un-reranked order when the reranker DIES (defect, not typed error)", async () => {
+    await seedRecords([
+      { id: "m1", text: "operator likes espresso" },
+      { id: "m2", text: "operator likes tea" },
+    ])
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    const dyingReranker: MemoryRerankerApi = {
+      rerank: () => Effect.die(new Error("unexpected plumbing throw")),
+    }
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: dyingReranker })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "espresso" }, undefined),
+    )
+    // A defect must degrade exactly like a typed RerankError - memory_search
+    // never fails because reranking failed.
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
+  })
+
+  it("no reranker provided + flag ON: behaves exactly as flag OFF (no reranker to call)", async () => {
+    await seedRecords([{ id: "m1", text: "operator likes espresso" }])
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    const [, searchTool] = makeMemoryTools(router) // no options -> no reranker
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler({ query: "espresso" }, undefined),
+    )
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
   })
 })
