@@ -988,11 +988,13 @@ async function runCrossEncoderBatchedShape(
 
 /**
  * Post-hoc cap sweep: given the full-pool rerank scores, recompute recall@k
- * as if only the top-`cap` RETRIEVAL-ordered candidates had been reranked
- * (candidates beyond the cap keep retrieval order at the tail). Pure
- * computation on already-collected scores - no extra model calls. Shows the
- * latency/recall tradeoff behind LUNA_RERANK_MAX_CANDIDATES on the synthetic
- * corpus (positive slices only).
+ * modelling PRODUCTION exactly - memory_search returns kept.slice(0, limit)
+ * sourced solely from the top-`cap` reranked candidates, so the returned set
+ * is at most `cap` results and candidates beyond the cap NEVER appear. So the
+ * sweep ranks only the reranked head (no tail passthrough); a below-K cap
+ * therefore cannot exceed recall@cap (e.g. cap=3 can never beat recall@3, so
+ * its recall@5 equals its recall@3). Pure computation on already-collected
+ * scores - no extra model calls. Positive slices only.
  */
 function reportCapSweep(
   retrievals: ReadonlyArray<RetrievalResult>,
@@ -1009,16 +1011,14 @@ function reportCapSweep(
     let r5 = 0
     for (const r of positives) {
       const scores = scoresByQuery.get(r.queryId)
-      // Reranked order for the top-`cap` retrieved, by score desc (retrieval
-      // order breaks ties); candidates beyond the cap keep retrieval order.
-      const head = r.candidates.slice(0, cap)
-      const tail = r.candidates.slice(cap)
-      const rankedHead = [...head]
+      // Only the top-`cap` retrieved candidates are reranked and returnable
+      // (production drops everything beyond the cap), so rank ONLY this head.
+      const rankedHead = r.candidates
+        .slice(0, cap)
         .map((c, i) => ({ id: c.id, score: scores?.get(c.id) ?? -1, i }))
         .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.i - b.i))
         .map((x) => x.id)
-      const order = [...rankedHead, ...tail.map((c) => c.id)]
-      const ranks = relevantRanks(order, r.relevantIds)
+      const ranks = relevantRanks(rankedHead, r.relevantIds)
       r1 += recallAtK(ranks, 1, r.relevantIds.size)
       r5 += recallAtK(ranks, 5, r.relevantIds.size)
     }

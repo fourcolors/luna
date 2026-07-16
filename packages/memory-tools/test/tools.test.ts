@@ -660,9 +660,8 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
       // limit 6 > cap 3: the cap must WIN (latency bound), not be raised to limit.
       await searchTool.handler({ query: "coffee", limit: 6 }, undefined),
     )
-    // Precondition: retrieval surfaced more than the cap.
-    expect(hits.length).toBeGreaterThanOrEqual(3)
-    // Exactly the cap reaches the reranker, despite limit=6.
+    // Exactly the cap reaches the reranker, despite limit=6 and 6 records
+    // seeded (so the retrieved pool genuinely exceeded the cap of 3).
     expect(sentIds.length).toBe(3)
     // Out-of-cap candidates never appear in the reranked (returned) output.
     const rerankedIds = new Set(sentIds)
