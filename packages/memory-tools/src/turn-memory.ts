@@ -181,7 +181,9 @@ function rerankHits(
   // Outer budget 0 means chat-service applies NO recall timeout at all
   // (recallTimeoutMs > 0 gate there), so only the configured cap applies.
   const outerBudgetMs = resolveOuterRecallBudgetMs()
-  const elapsedMs = Date.now() - args.recallStartedAtMs
+  // Clamped at 0: a wall-clock rollback mid-recall must not inflate the
+  // computed remainder past the configured cap.
+  const elapsedMs = Math.max(0, Date.now() - args.recallStartedAtMs)
   const remainingMs =
     outerBudgetMs <= 0
       ? resolveRecallRerankTimeoutMs()

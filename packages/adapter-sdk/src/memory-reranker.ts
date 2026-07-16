@@ -128,13 +128,16 @@ export const RERANK_RUBRIC = `- 61-100: the candidate memory contains what the q
 export function neutralizeFenceMarkers(text: string): string {
   return (
     text
-      // Strip invisible/zero-width characters FIRST: they are not \s in
-      // JS regex, so "<<<​CANDIDATE" byte-bypassed the marker match
-      // (Codex round-3 executed PoC). They carry no relevance semantics,
-      // so removing them from this ephemeral prompt copy is loss-free.
-      // U+200B/C/D zero-widths, U+2060 word joiner, U+FEFF BOM, U+00AD
-      // soft hyphen (escapes, not literals, so the class is auditable).
-      .replace(/[\u200B\u200C\u200D\u2060\uFEFF\u00AD]/g, "")
+      // Strip invisible/format-control characters FIRST: they are not \s
+      // in JS regex, so "<<<[U+200B]CANDIDATE" byte-bypassed the marker
+      // match (Codex round-3/4 executed PoCs). Stripped by Unicode CLASS,
+      // not an allowlist - a fixed character list lost this arms race three
+      // rounds running. \p{Cf} covers all format-category chars (bidi
+      // marks/isolates, ZWJ/ZWNJ, Arabic letter mark); Default_Ignorable
+      // adds invisible non-Cf chars (Hangul filler, variation selectors,
+      // word joiner, BOM). Loss-free for relevance scoring on this
+      // ephemeral prompt copy.
+      .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
       // Break opening marker shapes.
       .replace(/<{3,}(\s*(?:END\s+)?CANDIDATE)/gi, "<<$1")
       // Break closing runs attached to a CANDIDATE-ish tail, so hostile
