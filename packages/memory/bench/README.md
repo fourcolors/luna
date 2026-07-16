@@ -76,9 +76,13 @@ live DB), with the batch size correctly configured:
   whose committed artifact correctly shows zero fallbacks.)
 - Determinism holds on real long memories: 0/15 fallbacks, 0/15 kept-set churn,
   bit-exact.
-- Latency is ~1.2s p50 per query on real memories (longer than synthetic).
-  Fine for the explicit `memory_search` tool; over the per-turn recall budget,
-  so `LUNA_RECALL_RERANK` stays off by default.
+- Latency is hardware-bound and ~LINEAR in candidate count. On an Apple
+  Metal GPU it was ~1.2s for 20 candidates; on the production box (jax-box,
+  AMD Radeon Pro Vega 20 via Vulkan) it is ~0.6s PER CANDIDATE (CPU-only was
+  15-26s and contends with the chat-server, so GPU is required). This is why
+  `memory_search` reranks only `LUNA_RERANK_MAX_CANDIDATES` (default 8 -> ~5s)
+  rather than the full pool, and why `LUNA_RECALL_RERANK` (per-turn) stays off
+  by default - reranking is for the explicit `memory_search` tool.
 
 `LUNA_RERANK_CE_MODEL_TAG` (default `qwen3-reranker-0.6b-q4km`) is folded into
 the response cache key: the client cannot fingerprint the sidecar's GGUF, so
