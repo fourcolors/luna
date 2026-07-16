@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { Effect, Stream } from "effect"
 import {
   applyRerank,
+  RerankError,
   type MemoryRerankerApi,
   type ObservabilityApi,
 } from "@luna/core"
@@ -168,6 +169,21 @@ function rerankHits(
     retrievalScore: h.score,
   }))
   return args.reranker.rerank({ queryText: args.query, candidates }).pipe(
+    // catchAllDefect (not sandbox): a DEFECT in reranker plumbing must
+    // degrade to the un-reranked packing below - without this it escapes
+    // either() to the pipeline's catchAllCause and nulls the WHOLE recall
+    // context. catchAllDefect deliberately does NOT catch interrupts, so
+    // genuine cancellation still propagates (a sandbox+either combo would
+    // swallow it and return fallback results instead of cancelling).
+    Effect.catchAllDefect((defect) =>
+      Effect.fail(
+        new RerankError({
+          op: "defect",
+          message: `rerank defect: ${String(defect)}`,
+          cause: defect,
+        }),
+      ),
+    ),
     Effect.either,
     Effect.flatMap((outcome) => {
       if (outcome._tag === "Left") {

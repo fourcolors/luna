@@ -237,6 +237,29 @@ describe("turn memory", () => {
       // Falls back to the plain hybrid pack - both records still present.
       expect(packed?.hits.length).toBe(2)
     })
+
+    it("flag ON: falls back to un-reranked packing when the reranker DIES (defect), never nulls recall", async () => {
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      const reranker: MemoryRerankerApi = {
+        rerank: () => Effect.die(new Error("unexpected plumbing throw")),
+      }
+      const packed = await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "coffee preferences",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      // Codex-review finding: a DEFECT previously escaped either() to the
+      // pipeline's catchAllCause and nulled the whole recall context. It
+      // must degrade to the plain pack exactly like a typed RerankError.
+      expect(packed).not.toBeNull()
+      expect(packed?.hits.length).toBe(2)
+    })
   })
 })
 

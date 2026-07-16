@@ -45,12 +45,17 @@ import {
 
 /**
  * Wall-clock ceiling for one rerank turn when the caller doesn't pass
- * `args.timeoutMs`. 8s is the number the task spec calls out - rerank sits
- * on the hot recall path (unlike the nightly dream's 10 min default), so a
- * wedged call must fail fast and let the caller degrade to un-reranked
- * order rather than blow the turn's latency budget.
+ * `args.timeoutMs`. Real-data validation measured ~17-21s of fixed
+ * SDK-session floor plus ~9s median for 20 uncapped candidates (max
+ * observed 37s), so an 8s default would make every default-configured call
+ * time out and silently no-op the feature (Codex review finding). 45s
+ * covers the observed max with headroom. This does NOT endanger the chat
+ * turn: recallForTurn is bounded externally by chat-service's
+ * recallTimeoutMs, and memory_search is an explicit tool call with an
+ * agent-turn budget. Tighten via LUNA_RERANK_TIMEOUT_MS when a faster
+ * engine (Phase 4 cross-encoder) is in play.
  */
-export const DEFAULT_RERANK_TIMEOUT_MS = 8_000
+export const DEFAULT_RERANK_TIMEOUT_MS = 45_000
 
 /**
  * Resolve the rerank lane's model: LUNA_RERANK_MODEL, falling back to the
@@ -107,6 +112,17 @@ export const RERANK_RUBRIC = `- 61-100: the candidate memory contains what the q
 // sibling candidates - so each candidate is fenced in explicit delimiters and
 // the prompt states that delimited content is data to score, never
 // instructions to follow.
+/**
+ * Neutralize fence-marker sequences inside untrusted text so a hostile
+ * candidate cannot close its own fence and reopen a fake one (Codex review
+ * PoC: candidate text containing a literal "<<<END CANDIDATE 1>>>" escapes
+ * every declared-untrusted region). Any run of 3+ angle brackets is
+ * collapsed to 2, which can never form the 3-bracket markers.
+ */
+export function neutralizeFenceMarkers(text: string): string {
+  return text.replace(/<{3,}/g, "<<").replace(/>{3,}/g, ">>")
+}
+
 export function buildRerankPrompt(
   queryText: string,
   candidates: ReadonlyArray<RerankCandidateInput>,
@@ -114,7 +130,7 @@ export function buildRerankPrompt(
   const numbered = candidates
     .map(
       (c, i) =>
-        `<<<CANDIDATE ${i + 1}>>>\n${c.text}\n<<<END CANDIDATE ${i + 1}>>>`,
+        `<<<CANDIDATE ${i + 1}>>>\n${neutralizeFenceMarkers(c.text)}\n<<<END CANDIDATE ${i + 1}>>>`,
     )
     .join("\n")
   return [
@@ -183,7 +199,7 @@ export function parseScores(
   const out: RerankScore[] = []
   candidates.forEach((c, i) => {
     const v = scoresObj[String(i + 1)]
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100) {
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 100) {
       out.push({ id: c.id, llmScore: v })
     }
     // else: silently skip - this candidate is "unscored" per applyRerank's contract.

@@ -56,7 +56,7 @@ export interface MemoryRerankerApi {
 }
 
 export class RerankError extends Data.TaggedError("RerankError")<{
-  readonly op: "acquire" | "timeout" | "stream" | "parse" | "empty"
+  readonly op: "acquire" | "timeout" | "stream" | "parse" | "empty" | "defect"
   readonly message: string
   readonly cause?: unknown
 }> {}

@@ -865,7 +865,13 @@ export const ThreadToolsProviderLayer = (
         "[luna/memory] turn pipeline:",
         `recall=${autoRecallEnabled ? "on" : "off"}`,
         `extraction=${turnExtractionEnabled ? "on" : "off"}`,
-        `recallRerank=${recallReranker !== undefined ? "available" : "off"}`,
+        // Reflect the actual runtime gate (flag AND service), not mere layer
+        // construction - "available" when the flag is off misread as enabled.
+        `recallRerank=${
+          process.env["LUNA_RECALL_RERANK"] === "1" && recallReranker !== undefined
+            ? "on"
+            : "off"
+        }`,
       )
 
       // Plain mutable holder — read synchronously by decorate().

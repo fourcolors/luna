@@ -50,6 +50,7 @@ import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
 import {
   applyRerank,
+  RerankError,
   type MemoryRerankerApi,
   type ObservabilityApi,
 } from "@luna/core"
@@ -299,10 +300,12 @@ export const makeMemoryTools = (
         }
 
         const startMs = Date.now()
-        // sandbox() (not just either()) so DEFECTS in SDK/broker plumbing
-        // degrade to un-reranked results too - memory_search must never
-        // fail because reranking failed, matching recallForTurn's
-        // catchAllCause guarantee.
+        // catchAllDefect + either: DEFECTS in SDK/broker plumbing degrade to
+        // un-reranked results (memory_search must never fail because
+        // reranking failed), while genuine fiber INTERRUPTS still propagate
+        // so cancelling the tool call cancels the in-flight rerank - a
+        // sandbox+either combo would capture the interrupt as data and
+        // return fallback results instead of cancelling.
         const outcome = yield* reranker!
           .rerank({
             queryText: args.query,
@@ -312,7 +315,18 @@ export const makeMemoryTools = (
               retrievalScore: h.score,
             })),
           })
-          .pipe(Effect.sandbox, Effect.either)
+          .pipe(
+            Effect.catchAllDefect((defect) =>
+              Effect.fail(
+                new RerankError({
+                  op: "defect",
+                  message: `rerank defect: ${String(defect)}`,
+                  cause: defect,
+                }),
+              ),
+            ),
+            Effect.either,
+          )
 
         if (outcome._tag === "Left") {
           yield* logRerankFailureOnce("memory_search", outcome.left)
