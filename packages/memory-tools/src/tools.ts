@@ -66,6 +66,7 @@ import {
   emitRerankObservability,
   logRerankFailureOnce,
   rerankFlagEnabled,
+  resolveRerankMaxCandidates,
   resolveRerankThreshold,
 } from "./rerank-support.js"
 
@@ -300,6 +301,17 @@ export const makeMemoryTools = (
         }
 
         const startMs = Date.now()
+        // HARD cap on how many candidates reach the cross-encoder: it scores
+        // each in a separate forward pass, so latency is ~linear in count and
+        // this cap is the latency bound. It is NOT raised to meet `limit` - a
+        // large limit must not silently blow the latency budget - so when
+        // limit > cap the reranked result set is bounded by the cap (the
+        // reranker returns its best gated candidates, precision over quota).
+        // Candidates beyond the cap are NOT reranked and do NOT appear in the
+        // reranked output; the gate is applied over the reranked pool ONLY, so
+        // a negative query whose pool scores low returns few/no results rather
+        // than backfilling ungated candidates from beyond the cap.
+        const rerankPool = filtered.slice(0, resolveRerankMaxCandidates())
         // catchAllDefect + either: DEFECTS in SDK/broker plumbing degrade to
         // un-reranked results (memory_search must never fail because
         // reranking failed), while genuine fiber INTERRUPTS still propagate
@@ -309,7 +321,7 @@ export const makeMemoryTools = (
         const outcome = yield* reranker!
           .rerank({
             queryText: args.query,
-            candidates: filtered.map((h) => ({
+            candidates: rerankPool.map((h) => ({
               id: h.record.id,
               text: extractText(h.record.content),
               retrievalScore: h.score,
@@ -336,7 +348,7 @@ export const makeMemoryTools = (
         const threshold = resolveRerankThreshold()
         const byId = new Map(filtered.map((h) => [h.record.id, h] as const))
         const { kept, droppedCount } = applyRerank(
-          filtered.map((h) => ({ id: h.record.id })),
+          rerankPool.map((h) => ({ id: h.record.id })),
           outcome.right,
           { threshold },
         )

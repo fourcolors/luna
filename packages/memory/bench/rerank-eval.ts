@@ -986,6 +986,50 @@ async function runCrossEncoderBatchedShape(
   return { outcomes, stats, scoresByQuery }
 }
 
+/**
+ * Post-hoc cap sweep: given the full-pool rerank scores, recompute recall@k
+ * modelling PRODUCTION exactly - memory_search returns kept.slice(0, limit)
+ * sourced solely from the top-`cap` reranked candidates, so the returned set
+ * is at most `cap` results and candidates beyond the cap NEVER appear. So the
+ * sweep ranks only the reranked head (no tail passthrough); a below-K cap
+ * therefore cannot exceed recall@cap (e.g. cap=3 can never beat recall@3, so
+ * its recall@5 equals its recall@3). Pure computation on already-collected
+ * scores - no extra model calls. Positive slices only.
+ */
+function reportCapSweep(
+  retrievals: ReadonlyArray<RetrievalResult>,
+  scoresByQuery: ReadonlyMap<string, ReadonlyMap<string, number>>,
+): void {
+  const caps = [3, 5, 8, 12, 20]
+  const positives = retrievals.filter((r) => r.slice !== "negative")
+  console.log(`## cap sweep (recall over ${positives.length} positive queries; ~0.6s/candidate on the GPU sidecar)`)
+  console.log(``)
+  console.log(`| cap | ~latency | recall@1 | recall@5 |`)
+  console.log(`|---:|---:|---:|---:|`)
+  for (const cap of caps) {
+    let r1 = 0
+    let r5 = 0
+    for (const r of positives) {
+      const scores = scoresByQuery.get(r.queryId)
+      // Only the top-`cap` retrieved candidates are reranked and returnable
+      // (production drops everything beyond the cap), so rank ONLY this head.
+      const rankedHead = r.candidates
+        .slice(0, cap)
+        .map((c, i) => ({ id: c.id, score: scores?.get(c.id) ?? -1, i }))
+        .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.i - b.i))
+        .map((x) => x.id)
+      const ranks = relevantRanks(rankedHead, r.relevantIds)
+      r1 += recallAtK(ranks, 1, r.relevantIds.size)
+      r5 += recallAtK(ranks, 5, r.relevantIds.size)
+    }
+    const n = positives.length
+    console.log(
+      `| ${String(cap).padStart(3)} | ~${(cap * 0.6).toFixed(1)}s | ${(r1 / n).toFixed(3)} | ${(r5 / n).toFixed(3)} |`,
+    )
+  }
+  console.log(``)
+}
+
 function assertDeterministic(
   retrievals: ReadonlyArray<RetrievalResult>,
   first: CrossEncoderBatchedRun,
@@ -1371,6 +1415,14 @@ async function main(): Promise<void> {
       1,
     )
     assertDeterministic(retrievals, passA, passB)
+
+    // Cap sweep: post-hoc (no extra LLM calls) - reuse the batched scores to
+    // show how recall@k degrades when only the top-`cap` retrieved candidates
+    // are reranked (the LUNA_RERANK_MAX_CANDIDATES latency/recall knob). This
+    // is the committed, reproducible artifact behind the cap-default choice.
+    if (process.env["LUNA_BENCH_CAP_SWEEP"] === "1") {
+      reportCapSweep(retrievals, (batchedRun as CrossEncoderBatchedRun).scoresByQuery)
+    }
   }
 
   let subsample: ReadonlyArray<RetrievalResult> = []

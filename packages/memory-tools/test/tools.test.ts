@@ -577,6 +577,7 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     await runtime.dispose()
     delete process.env["LUNA_MEMORY_RERANK"]
     delete process.env["LUNA_RERANK_THRESHOLD"]
+    delete process.env["LUNA_RERANK_MAX_CANDIDATES"]
   })
 
   const seedRecords = async (records: ReadonlyArray<{ id: string; text: string }>) => {
@@ -637,6 +638,35 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     )
     expect(hits.map((h) => h.id)).toEqual(["good"])
     expect(hits[0]!.llmScore).toBe(92)
+  })
+
+  it("flag ON: HARD-caps reranked candidates at LUNA_RERANK_MAX_CANDIDATES even when limit exceeds it", async () => {
+    // Seed 6 records so retrieval yields a pool larger than the cap.
+    await seedRecords(
+      Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, text: `record number ${i} about coffee` })),
+    )
+    process.env["LUNA_MEMORY_RERANK"] = "1"
+    process.env["LUNA_RERANK_MAX_CANDIDATES"] = "3"
+    process.env["LUNA_RERANK_THRESHOLD"] = "0"
+    let sentIds: ReadonlyArray<string> = []
+    const spy: MemoryRerankerApi = {
+      rerank: (args) => {
+        sentIds = args.candidates.map((c) => c.id)
+        return Effect.succeed(args.candidates.map((c) => ({ id: c.id, llmScore: 90 })))
+      },
+    }
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: spy })
+    const hits = parseTextResult<ReadonlyArray<{ id: string }>>(
+      // limit 6 > cap 3: the cap must WIN (latency bound), not be raised to limit.
+      await searchTool.handler({ query: "coffee", limit: 6 }, undefined),
+    )
+    // Exactly the cap reaches the reranker, despite limit=6 and 6 records
+    // seeded (so the retrieved pool genuinely exceeded the cap of 3).
+    expect(sentIds.length).toBe(3)
+    // Out-of-cap candidates never appear in the reranked (returned) output.
+    const rerankedIds = new Set(sentIds)
+    expect(hits.every((h) => rerankedIds.has(h.id))).toBe(true)
+    expect(hits.length).toBe(3)
   })
 
   it("flag ON: unscored candidates (reranker returned nothing for them) survive ungated at the tail", async () => {

@@ -19,7 +19,7 @@ sidecar script's 16,384-token context. `LUNA_RERANK_CE_PROBE_TIMEOUT_MS`
 (default 30,000) is the floor for the one-time calibration probe, kept
 separate from the per-call scoring ceiling because an ~860-token probe
 document on a CPU-only sidecar can take several seconds. `LUNA_RERANK_CE_CONCURRENCY`
-(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below.
+(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below. `LUNA_RERANK_MAX_CANDIDATES` (default 8) caps how many retrieved candidates memory_search sends to the reranker, since latency is ~linear in candidate count (~0.6s each on the GPU sidecar); 8 covers the real-data retrieval ranks with ~5s latency, 5 gives ~3s.
 
 ### The physical batch size is load-bearing (read before deploying)
 
@@ -76,9 +76,36 @@ live DB), with the batch size correctly configured:
   whose committed artifact correctly shows zero fallbacks.)
 - Determinism holds on real long memories: 0/15 fallbacks, 0/15 kept-set churn,
   bit-exact.
-- Latency is ~1.2s p50 per query on real memories (longer than synthetic).
-  Fine for the explicit `memory_search` tool; over the per-turn recall budget,
-  so `LUNA_RECALL_RERANK` stays off by default.
+- Latency is hardware-bound and ~LINEAR in candidate count. On an Apple
+  Metal GPU it was ~1.2s for 20 candidates; on the production box (jax-box,
+  AMD Radeon Pro Vega 20 via Vulkan) it is ~0.6s PER CANDIDATE (CPU-only was
+  15-26s and contends with the chat-server, so GPU is required). This is why
+  `memory_search` reranks only `LUNA_RERANK_MAX_CANDIDATES` (default 8 -> ~5s)
+  rather than the full pool, and why `LUNA_RECALL_RERANK` (per-turn) stays off
+  by default - reranking is for the explicit `memory_search` tool.
+
+### Cap sweep (LUNA_BENCH_CAP_SWEEP=1)
+
+The committed, reproducible artifact behind the cap default. Post-hoc recall
+over the 190 positive synthetic queries when only the top-`cap` retrieved
+candidates are reranked (no extra model calls):
+
+| cap | ~latency | recall@1 | recall@5 |
+|---:|---:|---:|---:|
+|   3 | ~1.8s | 0.755 | 0.818 |
+|   5 | ~3.0s | 0.762 | 0.868 |
+|   8 | ~4.8s | 0.768 | 0.907 |
+|  12 | ~7.2s | 0.778 | 0.918 |
+|  20 | ~12.0s | 0.789 | 0.928 |
+
+Recall is modelled the way production returns results: only the top-`cap`
+reranked candidates are returnable, so a below-K cap cannot exceed recall@cap
+(cap=3's recall@5 = its recall@3 = 0.818). On this adversarial synthetic set
+the cap is a real tradeoff: cap=8 costs ~2 points recall@1 and ~2 points
+recall@5 versus the full 20-pool for a ~2.5x speedup; cap=5 costs another ~4
+points recall@5. On a real-DB-copy sample (personal data, not committed) every
+labeled target sat within retrieval rank 6, so cap=8 lost nothing there.
+Default 8; raise it if you observe misses, lower it for speed.
 
 `LUNA_RERANK_CE_MODEL_TAG` (default `qwen3-reranker-0.6b-q4km`) is folded into
 the response cache key: the client cannot fingerprint the sidecar's GGUF, so

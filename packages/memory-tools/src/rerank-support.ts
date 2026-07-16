@@ -24,6 +24,32 @@ export function resolveRerankThreshold(
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : DEFAULT_RERANK_THRESHOLD
 }
 
+/**
+ * HARD cap on how many of the (retrieval-ordered) candidates memory_search
+ * sends to the cross-encoder. The reranker scores each candidate in a SEPARATE
+ * forward pass, so latency is ~linear in candidate count (measured
+ * ~0.6s/candidate on the target GPU sidecar), and this cap is the latency
+ * bound. It is a pure latency/recall knob: candidates beyond the cap are not
+ * reranked (they keep retrieval order and are absent from the reranked output).
+ *
+ * The default of 8 (~5s) is a tradeoff, not a proven no-loss point. The
+ * committed cap-sweep in packages/memory/bench/rerank-eval.ts (LUNA_BENCH_CAP_SWEEP)
+ * shows recall@k across caps on the synthetic corpus; a separate real-DB-copy
+ * sample (personal data, not committed - see the Phase 5 PR) put every labeled
+ * target within retrieval rank 6. Raise the cap if you observe misses on a
+ * query whose target sits deeper in retrieval; lower it (e.g. 5 -> ~3s) for
+ * speed at some recall risk on deep targets.
+ */
+export const DEFAULT_RERANK_MAX_CANDIDATES = 8
+
+export function resolveRerankMaxCandidates(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env["LUNA_RERANK_MAX_CANDIDATES"]?.trim()
+  const n = raw ? Number(raw) : DEFAULT_RERANK_MAX_CANDIDATES
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_RERANK_MAX_CANDIDATES
+}
+
 /** Both lanes are DEFAULT OFF, gated by their own env flag (separate flags -
  * per-turn recall's latency budget is unproven independent of the MCP tool
  * path). A flag is "on" only for the literal value "1". */
