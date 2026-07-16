@@ -128,16 +128,27 @@ export const RERANK_RUBRIC = `- 61-100: the candidate memory contains what the q
 export function neutralizeFenceMarkers(text: string): string {
   return (
     text
-      // Strip invisible/format-control characters FIRST: they are not \s
-      // in JS regex, so "<<<[U+200B]CANDIDATE" byte-bypassed the marker
-      // match (Codex round-3/4 executed PoCs). Stripped by Unicode CLASS,
-      // not an allowlist - a fixed character list lost this arms race three
-      // rounds running. \p{Cf} covers all format-category chars (bidi
-      // marks/isolates, ZWJ/ZWNJ, Arabic letter mark); Default_Ignorable
-      // adds invisible non-Cf chars (Hangul filler, variation selectors,
-      // word joiner, BOM). Loss-free for relevance scoring on this
-      // ephemeral prompt copy.
-      .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
+      // Strip invisible/control characters FIRST, by Unicode CLASS, never
+      // an allowlist (fixed lists lost this arms race four Codex rounds
+      // running): \p{Cc} all C0/C1 controls, \p{Cf} format chars (bidi
+      // marks/isolates, ZWNJ, Arabic letter mark), Default_Ignorable
+      // (Hangul filler, variation selectors, word joiner, BOM),
+      // Noncharacter_Code_Point (U+FDD0.. etc). Exemptions: \t \n \r are
+      // legitimate whitespace, and U+200D ZWJ is kept because stripping it
+      // shreds multi-codepoint emoji into separate glyphs (Codex round-5
+      // regression PoC: a family emoji became 4 graphemes), distorting
+      // scoring of legitimate memories. ACCEPTED RESIDUAL: a ZWJ-laced or
+      // homoglyph fake marker survives as a fuzzy LOOKALIKE (never
+      // byte-equal to a real fence); the untrusted-data instruction is the
+      // second defense layer, and the Phase 4 cross-encoder (no generative
+      // prompt at all) retires this entire defense.
+      .replace(
+        /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Noncharacter_Code_Point}]/gu,
+        (ch) =>
+          ch === "\t" || ch === "\n" || ch === "\r" || ch === "\u200D"
+            ? ch
+            : "",
+      )
       // Break opening marker shapes.
       .replace(/<{3,}(\s*(?:END\s+)?CANDIDATE)/gi, "<<$1")
       // Break closing runs attached to a CANDIDATE-ish tail, so hostile
