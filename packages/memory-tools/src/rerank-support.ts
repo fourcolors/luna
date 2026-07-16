@@ -57,6 +57,32 @@ export function resolveRecallRerankTimeoutMs(
 }
 
 /**
+ * The OUTER per-turn recall budget - the same env chat-service's
+ * parseRecallTimeoutMs reads (packages/chat-service/src/chat-service.ts),
+ * default 2500ms there too. Read here so the rerank stage can budget from
+ * the REMAINDER of that window after retrieval spends its share; when that
+ * outer timeout fires it nulls the whole recall context, bypassing every
+ * degrade path (Codex probe: 1.1s retrieval + a static 1.5s rerank cap =
+ * 2506ms = TimeoutException, zero context). Keep the default in lockstep
+ * with chat-service's DEFAULT_RECALL_TIMEOUT_MS.
+ */
+export function resolveOuterRecallBudgetMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env["LUNA_CHAT_RECALL_TIMEOUT_MS"]?.trim()
+  const n = raw ? Number(raw) : 2500
+  return Number.isFinite(n) && n >= 0 ? n : 2500
+}
+
+/** Reserved for packing + timer skew when computing the rerank's share of
+ * the outer recall window. */
+export const RECALL_RERANK_SAFETY_MARGIN_MS = 400
+
+/** Below this remaining budget, starting a rerank call is pointless - skip
+ * it and pack un-reranked instead of launching a doomed call. */
+export const RECALL_RERANK_MIN_USEFUL_MS = 250
+
+/**
  * "Log once per process" failure policy, keyed by a caller-supplied lane
  * name so memory_search's first failure doesn't suppress recallForTurn's
  * (and vice versa). A module-level Set is intentional here - this process

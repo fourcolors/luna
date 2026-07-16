@@ -16,7 +16,10 @@ import {
 import {
   emitRerankObservability,
   logRerankFailureOnce,
+  RECALL_RERANK_MIN_USEFUL_MS,
+  RECALL_RERANK_SAFETY_MARGIN_MS,
   rerankFlagEnabled,
+  resolveOuterRecallBudgetMs,
   resolveRecallRerankTimeoutMs,
   resolveRerankThreshold,
 } from "./rerank-support.js"
@@ -162,8 +165,30 @@ function rerankHits(
     readonly reranker: MemoryRerankerApi
     readonly observability: ObservabilityApi | undefined
     readonly options: RecallContextOptions
+    /** Epoch ms when recallForTurn STARTED - retrieval (embedding included)
+     * has already consumed part of the outer recall budget by the time we
+     * get here, so the rerank budget is computed from what REMAINS, not
+     * from a static cap (Codex probe: 1.1s retrieval + a static 1.5s cap
+     * overran chat-service's 2.5s outer timeout, which nulls the whole
+     * recall context). */
+    readonly recallStartedAtMs: number
   },
 ): Effect.Effect<PackedRecallContext | null, never> {
+  // Remaining share of the outer recall budget (same env chat-service's
+  // parseRecallTimeoutMs reads), minus a safety margin for packing and
+  // timer skew. This also inherently clamps LUNA_RECALL_RERANK_TIMEOUT_MS -
+  // an operator override can never push the rerank past the outer deadline.
+  const outerBudgetMs = resolveOuterRecallBudgetMs()
+  const elapsedMs = Date.now() - args.recallStartedAtMs
+  const remainingMs = Math.min(
+    resolveRecallRerankTimeoutMs(),
+    outerBudgetMs - elapsedMs - RECALL_RERANK_SAFETY_MARGIN_MS,
+  )
+  if (remainingMs < RECALL_RERANK_MIN_USEFUL_MS) {
+    // Retrieval ate the budget - skip reranking entirely rather than start
+    // a call that must be abandoned; recall degrades to the plain pack.
+    return Effect.succeed(packRecallContext(hits, args.options))
+  }
   const candidates = hits.map((h) => ({
     id: h.record.id,
     text: memoryText(h.record) ?? "",
@@ -173,10 +198,7 @@ function rerankHits(
     .rerank({
       queryText: args.query,
       candidates,
-      // Must give up inside chat-service's 2.5s outer recall budget - see
-      // resolveRecallRerankTimeoutMs. Without this cap the outer timeout
-      // fires first and nulls the whole recall context.
-      timeoutMs: resolveRecallRerankTimeoutMs(),
+      timeoutMs: remainingMs,
     })
     .pipe(
     // catchAllDefect (not sandbox): a DEFECT in reranker plumbing must
@@ -244,6 +266,9 @@ export function recallForTurn(input: {
   const options = input.options ?? DEFAULT_RECALL_CONTEXT_OPTIONS
   const query = input.query.trim().slice(0, 2_000)
   if (query.length === 0) return Effect.succeed(null)
+  // Captured BEFORE retrieval: the rerank stage budgets itself from what
+  // remains of the outer recall window after retrieval spends its share.
+  const recallStartedAtMs = Date.now()
   const rerankRequested =
     input.reranker !== undefined && rerankFlagEnabled("LUNA_RECALL_RERANK")
   // MemoryRouter already over-fetches scoped searches by 4x before its
@@ -272,6 +297,7 @@ export function recallForTurn(input: {
             reranker: input.reranker!,
             observability: input.observability,
             options,
+            recallStartedAtMs,
           })
         : Effect.succeed(packRecallContext(hits, options))
     }),

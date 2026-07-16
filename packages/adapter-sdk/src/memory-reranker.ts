@@ -126,7 +126,21 @@ export const RERANK_RUBRIC = `- 61-100: the candidate memory contains what the q
  * fence - at worst they add visual noise inside one.
  */
 export function neutralizeFenceMarkers(text: string): string {
-  return text.replace(/<{3,}(\s*(?:END\s+)?CANDIDATE)/gi, "<<$1")
+  return (
+    text
+      // Strip invisible/zero-width characters FIRST: they are not \s in
+      // JS regex, so "<<<​CANDIDATE" byte-bypassed the marker match
+      // (Codex round-3 executed PoC). They carry no relevance semantics,
+      // so removing them from this ephemeral prompt copy is loss-free.
+      // U+200B/C/D zero-widths, U+2060 word joiner, U+FEFF BOM, U+00AD
+      // soft hyphen (escapes, not literals, so the class is auditable).
+      .replace(/[\u200B\u200C\u200D\u2060\uFEFF\u00AD]/g, "")
+      // Break opening marker shapes.
+      .replace(/<{3,}(\s*(?:END\s+)?CANDIDATE)/gi, "<<$1")
+      // Break closing runs attached to a CANDIDATE-ish tail, so hostile
+      // text can't emit "...CANDIDATE 1>>>" as a convincing fuzzy close.
+      .replace(/((?:END\s+)?CANDIDATE[^<>\n]{0,16})>{3,}/gi, "$1>>")
+  )
 }
 
 export function buildRerankPrompt(
