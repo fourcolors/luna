@@ -1,0 +1,113 @@
+{
+  "meta": {
+    "description": "Fully synthetic multi-thread fixture for the bulletin eval. A fictional team builds a fictional app ('Aurora'). No real memory content, names, or infrastructure.",
+    "nowIso": "2026-07-17T09:00:00Z"
+  },
+  "threads": [
+    {
+      "id": "t-deploy",
+      "title": "Deploy pipeline hardening",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-15T10:12:00Z", "role": "user", "text": "The staging deploy failed twice this morning with a checksum mismatch on the asset bundle." },
+        { "ts": "2026-07-15T10:40:00Z", "role": "assistant", "text": "Root cause: the CDN cache was serving a stale bundle manifest. Added a cache-bust header and a post-deploy verification step that compares the manifest checksum." },
+        { "ts": "2026-07-16T09:05:00Z", "role": "user", "text": "Verification step caught a bad deploy on the first try today. Keep it." }
+      ]
+    },
+    {
+      "id": "t-pngbug",
+      "title": "PNG upload bug",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-16T14:02:00Z", "role": "user", "text": "Users report PNG uploads over 4MB fail silently in Aurora." },
+        { "ts": "2026-07-16T15:30:00Z", "role": "assistant", "text": "Reproduced. The EXIF-stripping pass runs out of buffer on large PNGs and swallows the error. Fix drafted: stream the EXIF strip and surface upload errors to the UI. Awaiting review." }
+      ]
+    },
+    {
+      "id": "t-billing",
+      "title": "Billing provider decision",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-14T11:00:00Z", "role": "user", "text": "We need to pick a billing provider for Aurora subscriptions this week." },
+        { "ts": "2026-07-15T16:45:00Z", "role": "assistant", "text": "Comparison done. Decision: go with Lemonpay because of its usage-based invoicing API and EU tax handling. Integration spike scheduled for next week." }
+      ]
+    },
+    {
+      "id": "t-release",
+      "title": "Release v1.4",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-16T18:20:00Z", "role": "assistant", "text": "Aurora v1.4 shipped to production this evening: dark mode, the new export dialog, and the Finnish translation. Rollout is at 100% with error rates flat." }
+      ]
+    },
+    {
+      "id": "t-onboarding",
+      "title": "Onboarding redesign",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-16T08:15:00Z", "role": "user", "text": "Design review for the new onboarding flow is booked for Friday. The prototype swaps the six-step wizard for a two-step checklist." },
+        { "ts": "2026-07-16T08:20:00Z", "role": "assistant", "text": "Noted. I will prepare the funnel numbers comparing wizard completion against the checklist prototype for the review." }
+      ]
+    },
+    {
+      "id": "t-ratelimit",
+      "title": "API rate-limit incident",
+      "status": "idle",
+      "messages": [
+        { "ts": "2026-07-13T07:50:00Z", "role": "user", "text": "Partners hit 429s overnight on the sync API." },
+        { "ts": "2026-07-13T09:10:00Z", "role": "assistant", "text": "Incident resolved: a partner retry loop amplified traffic 40x. Added per-key burst budgets and an alert. No action items remain open." }
+      ]
+    },
+    {
+      "id": "t-docs",
+      "title": "Docs rewrite",
+      "status": "idle",
+      "messages": [
+        { "ts": "2026-07-12T13:00:00Z", "role": "user", "text": "The API docs rewrite is drafted but stalled waiting on the new auth examples." }
+      ]
+    },
+    {
+      "id": "t-trip",
+      "title": "Team offsite planning",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-15T19:30:00Z", "role": "user", "text": "Offsite is confirmed for the second week of September in Lisbon. Need to book the workshop room by end of this month." }
+      ]
+    },
+    {
+      "id": "t-perf",
+      "title": "Dashboard performance",
+      "status": "active",
+      "messages": [
+        { "ts": "2026-07-17T07:45:00Z", "role": "user", "text": "The analytics dashboard takes nine seconds to load for large workspaces since the v1.4 release. Started profiling this morning; the chart aggregation query looks like the suspect." }
+      ]
+    },
+    {
+      "id": "t-legacy",
+      "title": "Legacy importer retirement",
+      "status": "archived",
+      "messages": [
+        { "ts": "2026-06-02T10:00:00Z", "role": "assistant", "text": "The legacy CSV importer was retired in June. Its replacement uses the bulk ingest endpoint with a Vermillion-format mapping file." }
+      ]
+    }
+  ],
+  "oracleBulletin": "RECENT ACTIVITY DIGEST (as of Thu 2026-07-17 morning)\n\nIn progress:\n- PNG upload bug (active, yesterday): uploads over 4MB fail silently; root cause is the EXIF-stripping pass running out of buffer and swallowing the error. Fix drafted (streamed EXIF strip + surfaced errors), awaiting review.\n- Dashboard performance (active, this morning): analytics dashboard loads in ~9s for large workspaces since v1.4; profiling started, chart aggregation query is the suspect.\n- Onboarding redesign (active): design review booked for Friday; prototype replaces the six-step wizard with a two-step checklist; funnel numbers being prepared.\n- Team offsite (active): confirmed for the second week of September in Lisbon; workshop room must be booked by end of month.\n\nRecently shipped / decided:\n- Aurora v1.4 shipped yesterday evening: dark mode, new export dialog, Finnish translation; rollout 100%, error rates flat.\n- Billing decision (Tue): going with Lemonpay for usage-based invoicing and EU tax handling; integration spike next week.\n- Deploy pipeline (Tue-Wed): staging failures traced to a stale CDN bundle manifest; cache-bust header plus post-deploy checksum verification added, already caught one bad deploy.\n\nQuiet / resolved:\n- API rate-limit incident (Mon): resolved; partner retry loop amplified traffic 40x; per-key burst budgets and alerting added, nothing open.\n- Docs rewrite: stalled waiting on new auth examples.",
+  "probes": [
+    { "id": "p1", "category": "cross-thread", "question": "What is the current state of the PNG upload bug?", "requiredKeywords": ["exif"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p2", "category": "cross-thread", "question": "What went wrong with the staging deploys earlier this week, and what was done about it?", "requiredKeywords": ["manifest", "checksum"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p3", "category": "cross-thread", "question": "Is anything happening with the analytics dashboard?", "requiredKeywords": ["aggregation"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p4", "category": "status", "question": "What engineering work is currently in progress and not yet finished?", "requiredKeywords": ["png", "dashboard"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p5", "category": "status", "question": "Is anything blocked or stalled right now, and on what?", "requiredKeywords": ["auth"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p6", "category": "temporal", "question": "What shipped yesterday?", "requiredKeywords": ["1.4"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p7", "category": "temporal", "question": "What is booked for Friday?", "requiredKeywords": ["onboarding"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p8", "category": "temporal", "question": "What deadline is coming up at the end of this month?", "requiredKeywords": ["workshop"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p9", "category": "decision", "question": "Which billing provider did the team choose, and why?", "requiredKeywords": ["lemonpay"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p10", "category": "decision", "question": "What is included in the v1.4 release?", "requiredKeywords": ["dark", "export"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p11", "category": "cross-thread", "question": "How did the API rate-limit incident end up?", "requiredKeywords": ["resolved"], "forbiddenKeywords": ["no-record"] },
+    { "id": "p12", "category": "negative", "question": "What did the team decide about database sharding?", "requiredKeywords": ["no-record"], "forbiddenKeywords": [] },
+    { "id": "p13", "category": "negative", "question": "What is the status of the mobile app rewrite?", "requiredKeywords": ["no-record"], "forbiddenKeywords": [] },
+    { "id": "p14", "category": "negative", "question": "What did the security audit conclude?", "requiredKeywords": ["no-record"], "forbiddenKeywords": [] },
+    { "id": "p15", "category": "exclusion", "question": "What file format does the retired legacy CSV importer's replacement use for mapping?", "requiredKeywords": ["no-record"], "forbiddenKeywords": ["vermillion"] },
+    { "id": "p16", "category": "exclusion", "question": "When was the legacy importer retired?", "requiredKeywords": ["no-record"], "forbiddenKeywords": ["june"] }
+  ]
+}
