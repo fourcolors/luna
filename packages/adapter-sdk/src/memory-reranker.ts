@@ -137,11 +137,16 @@ export function neutralizeFenceMarkers(text: string): string {
       // legitimate whitespace, and U+200D ZWJ is kept because stripping it
       // shreds multi-codepoint emoji into separate glyphs (Codex round-5
       // regression PoC: a family emoji became 4 graphemes), distorting
-      // scoring of legitimate memories. ACCEPTED RESIDUAL: a ZWJ-laced or
-      // homoglyph fake marker survives as a fuzzy LOOKALIKE (never
-      // byte-equal to a real fence); the untrusted-data instruction is the
-      // second defense layer, and the Phase 4 cross-encoder (no generative
-      // prompt at all) retires this entire defense.
+      // scoring of legitimate memories. ACCEPTED RESIDUAL (do not
+      // understate): inserting the exempted U+200D INSIDE the word
+      // CANDIDATE bypasses both marker regexes, allowing symmetric
+      // triple-angle fence-shaped lines that may render indistinguishably
+      // from real fences despite not being byte-equal; homoglyph variants
+      // are the same class. Closing it means giving up the emoji fix -
+      // judged not worth it for a default-off lane. The untrusted-data
+      // instruction is the second defense layer, and the Phase 4
+      // cross-encoder (no generative prompt at all) retires this entire
+      // defense.
       .replace(
         /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Noncharacter_Code_Point}]/gu,
         (ch) =>
