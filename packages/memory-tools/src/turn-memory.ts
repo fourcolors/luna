@@ -178,12 +178,17 @@ function rerankHits(
   // parseRecallTimeoutMs reads), minus a safety margin for packing and
   // timer skew. This also inherently clamps LUNA_RECALL_RERANK_TIMEOUT_MS -
   // an operator override can never push the rerank past the outer deadline.
+  // Outer budget 0 means chat-service applies NO recall timeout at all
+  // (recallTimeoutMs > 0 gate there), so only the configured cap applies.
   const outerBudgetMs = resolveOuterRecallBudgetMs()
   const elapsedMs = Date.now() - args.recallStartedAtMs
-  const remainingMs = Math.min(
-    resolveRecallRerankTimeoutMs(),
-    outerBudgetMs - elapsedMs - RECALL_RERANK_SAFETY_MARGIN_MS,
-  )
+  const remainingMs =
+    outerBudgetMs <= 0
+      ? resolveRecallRerankTimeoutMs()
+      : Math.min(
+          resolveRecallRerankTimeoutMs(),
+          outerBudgetMs - elapsedMs - RECALL_RERANK_SAFETY_MARGIN_MS,
+        )
   if (remainingMs < RECALL_RERANK_MIN_USEFUL_MS) {
     // Retrieval ate the budget - skip reranking entirely rather than start
     // a call that must be abandoned; recall degrades to the plain pack.
