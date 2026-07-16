@@ -29,7 +29,7 @@ falls back to un-reranked order - the feature looks healthy but does almost
 nothing. `ce-server.sh` therefore starts with `--batch-size 4096 --ubatch-size
 4096` (equal and large), admitting single pairs up to ~4,096 tokens. **Any
 production sidecar MUST carry the same sizing.** As a backstop the calibration
-probe now scores a ~700-token document, so a misconfigured sidecar fails loudly
+probe now scores an ~860-token document, so a misconfigured sidecar fails loudly
 at startup instead of degrading in production.
 
 ## What the baseline shows (ce-rerank-baseline-2026-07-16.json)
@@ -60,13 +60,17 @@ scorer it replaces:
 Measured against a snapshot of the real store (isolation rule: copy, never the
 live DB), with the batch size correctly configured:
 
-- The injection gate TRANSFERS cleanly to real memories. On a labeled set (15
-  queries whose answer is verified present, 12 whose topic is verified absent),
-  real answers score a median of 100 and real junk scores a median of 0 (max
-  2). A threshold anywhere from ~30-50 keeps 93-100% of correct memories and
-  rejects 100% of junk. (The synthetic "rejects only 72.5%" figure was an
-  artifact of the 512-token batch bug making every long memory fall back to
-  un-scored; it is not the real behavior.)
+- The injection gate performs BETTER on real memories than the synthetic
+  holdout predicted. On a labeled set (15 queries whose answer is verified
+  present, 12 whose topic is verified absent), real answers score a median of
+  100 and real junk scores a median of 0 (max 2). A threshold anywhere from
+  ~30-50 keeps 93-100% of correct memories and rejects 100% of junk. The
+  synthetic "rejects only 72.5%" figure was a genuine synthetic measurement,
+  not a batch artifact: its negative queries were adversarially constructed to
+  be topically plausible, whereas real queries about genuinely-absent topics
+  score near 0, so the gate separates them cleanly. (The 512-token batch bug
+  affected the real-data DETERMINISM run, not the synthetic gate baseline,
+  whose committed artifact correctly shows zero fallbacks.)
 - Determinism holds on real long memories: 0/15 fallbacks, 0/15 kept-set churn,
   bit-exact.
 - Latency is ~1.2s p50 per query on real memories (longer than synthetic).

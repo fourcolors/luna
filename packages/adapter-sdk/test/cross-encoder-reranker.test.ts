@@ -87,12 +87,16 @@ describe("CrossEncoderRerankerLayer", () => {
     delete process.env["LUNA_RERANK_CE_URL"]
     delete process.env["LUNA_RERANK_CE_TIMEOUT_MS"]
     delete process.env["LUNA_RERANK_CE_MAX_INPUT_CHARS"]
+    // The probe floor (30s in prod, for slow CPU sidecars) would make the
+    // hanging-response timeout tests wait 30s; drive it low here.
+    process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"] = "50"
   })
 
   afterEach(() => {
     delete process.env["LUNA_RERANK_CE_URL"]
     delete process.env["LUNA_RERANK_CE_TIMEOUT_MS"]
     delete process.env["LUNA_RERANK_CE_MAX_INPUT_CHARS"]
+    delete process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"]
     restoreFetch()
     vi.restoreAllMocks()
   })
@@ -260,10 +264,14 @@ describe("CrossEncoderRerankerLayer", () => {
   })
 
   it("retries a failed probe on the next rerank call", async () => {
+    // All 3 probe candidates scored (satisfies the 1:1 bijection) but with a
+    // near-zero collapse, so the failure is the broken-GGUF score check, not a
+    // count mismatch - i.e. this exercises the calibration-reject path.
     const broken = response({
       results: [
         { index: 0, relevance_score: 4.5e-23 },
         { index: 1, relevance_score: 4.5e-23 },
+        { index: 2, relevance_score: 4.5e-23 },
       ],
     })
     const fetchMock = vi
@@ -289,6 +297,10 @@ describe("CrossEncoderRerankerLayer", () => {
       ),
     )
     expect(values.first._tag).toBe("Failure")
+    if (values.first._tag === "Failure" && values.first.cause._tag === "Fail") {
+      // Reached the calibration score check (broken-GGUF), not the bijection.
+      expect((values.first.cause.error as RerankError).message).toMatch(/broken-GGUF|cls\.output\.weight/i)
+    }
     expect(values.second).toEqual([{ id: "a", llmScore: 77 }])
     expect(fetchMock).toHaveBeenCalledTimes(5)
   })
@@ -469,7 +481,7 @@ describe("CrossEncoderRerankerLayer", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(healthResponse())
-      // server 500s on the ~600-token longform probe doc (n_ubatch too small)
+      // server 500s on the ~860-token longform probe doc (n_ubatch too small)
       .mockResolvedValueOnce(response({ error: "input too large" }, 500))
     setFetch(fetchMock as unknown as typeof globalThis.fetch)
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
@@ -477,6 +489,12 @@ describe("CrossEncoderRerankerLayer", () => {
     if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
       expect((exit.cause.error as RerankError).message).toMatch(/batch|n_ubatch|500/i)
     }
+    // Guard the guardrail: the calibration request must actually carry the
+    // long batch-capacity document (all 3 candidates, the 3rd ~3,445 chars),
+    // or a truncated/removed probe doc would silently stop testing batch size.
+    const calibBody = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)
+    expect(calibBody.documents).toHaveLength(3)
+    expect((calibBody.documents[2] as string).length).toBe(3445)
   })
 
   it("calibration rejects a logit-scale server (raw scores outside [0,1]) so the gate can't degenerate to sign", async () => {
