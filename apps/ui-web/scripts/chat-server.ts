@@ -868,7 +868,7 @@ export const ThreadToolsProviderLayer = (
         // Reflect the actual runtime gate (flag AND service), not mere layer
         // construction - "available" when the flag is off misread as enabled.
         `recallRerank=${
-          process.env["LUNA_RECALL_RERANK"] === "1" && recallReranker !== undefined
+          process.env["LUNA_RECALL_RERANK"]?.trim() === "1" && recallReranker !== undefined
             ? "on"
             : "off"
         }`,

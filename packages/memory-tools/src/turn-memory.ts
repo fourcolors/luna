@@ -17,6 +17,7 @@ import {
   emitRerankObservability,
   logRerankFailureOnce,
   rerankFlagEnabled,
+  resolveRecallRerankTimeoutMs,
   resolveRerankThreshold,
 } from "./rerank-support.js"
 
@@ -168,7 +169,16 @@ function rerankHits(
     text: memoryText(h.record) ?? "",
     retrievalScore: h.score,
   }))
-  return args.reranker.rerank({ queryText: args.query, candidates }).pipe(
+  return args.reranker
+    .rerank({
+      queryText: args.query,
+      candidates,
+      // Must give up inside chat-service's 2.5s outer recall budget - see
+      // resolveRecallRerankTimeoutMs. Without this cap the outer timeout
+      // fires first and nulls the whole recall context.
+      timeoutMs: resolveRecallRerankTimeoutMs(),
+    })
+    .pipe(
     // catchAllDefect (not sandbox): a DEFECT in reranker plumbing must
     // degrade to the un-reranked packing below - without this it escapes
     // either() to the pipeline's catchAllCause and nulls the WHOLE recall

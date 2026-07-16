@@ -35,6 +35,28 @@ export function rerankFlagEnabled(
 }
 
 /**
+ * Per-call rerank budget for the PER-TURN recall path. recallForTurn runs
+ * inside chat-service's outer recall timeout (DEFAULT_RECALL_TIMEOUT_MS =
+ * 2500ms), and that outer timeout nulls the ENTIRE recall context when it
+ * fires - it never reaches our degrade-to-un-reranked fallback (Codex
+ * review finding). So the rerank call must give up comfortably inside that
+ * budget: fail fast, degrade to the plain pack, keep recall alive. 1500ms
+ * default leaves ~1s for retrieval + packing. Note: the Phase 3 Haiku
+ * engine (~30s/call) can never finish inside this budget - per-turn rerank
+ * only becomes functional with a fast engine (Phase 4 cross-encoder);
+ * until then the flag degrades safely instead of nulling recall.
+ * memory_search (explicit tool call, no 2.5s outer bound) is unaffected
+ * and uses the engine's own default timeout.
+ */
+export function resolveRecallRerankTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env["LUNA_RECALL_RERANK_TIMEOUT_MS"]?.trim()
+  const n = raw ? Number(raw) : 1500
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1500
+}
+
+/**
  * "Log once per process" failure policy, keyed by a caller-supplied lane
  * name so memory_search's first failure doesn't suppress recallForTurn's
  * (and vice versa). A module-level Set is intentional here - this process
@@ -50,9 +72,10 @@ export function logRerankFailureOnce(
 ): Effect.Effect<void> {
   if (loggedLanes.has(lane)) return Effect.void
   loggedLanes.add(lane)
-  // Accepts a bare RerankError or a full Cause: memory_search sandboxes the
-  // rerank call so DEFECTS (not just typed failures) degrade to un-reranked
-  // order, and a defect arrives here as a Cause.
+  // Accepts a bare RerankError or a full Cause for flexibility. Both call
+  // sites now convert defects to RerankError via catchAllDefect (so
+  // interrupts propagate), but a Cause-shaped failure still formats sanely
+  // if a future call site passes one.
   const detail = Cause.isCause(failure)
     ? Cause.pretty(failure).split("\n")[0]
     : `${failure.op}: ${failure.message}`

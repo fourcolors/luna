@@ -260,6 +260,33 @@ describe("turn memory", () => {
       expect(packed).not.toBeNull()
       expect(packed?.hits.length).toBe(2)
     })
+
+    it("flag ON: caps the rerank call's timeout under the outer recall budget", async () => {
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      delete process.env["LUNA_RECALL_RERANK_TIMEOUT_MS"]
+      let seenTimeoutMs: number | undefined
+      const reranker: MemoryRerankerApi = {
+        rerank: (args) => {
+          seenTimeoutMs = args.timeoutMs
+          return Effect.succeed([])
+        },
+      }
+      await Effect.runPromise(
+        recallForTurn({
+          router: seededRouter(),
+          query: "coffee preferences",
+          scope: {
+            observerId: OPERATOR_MEMORY_SCOPE.observerId,
+            subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
+          },
+          reranker,
+        }),
+      )
+      // chat-service's outer recall timeout (2.5s default) NULLS the whole
+      // recall when it fires - the rerank call must give up well inside it
+      // so recall degrades to the plain pack instead of vanishing.
+      expect(seenTimeoutMs).toBe(1500)
+    })
   })
 })
 
