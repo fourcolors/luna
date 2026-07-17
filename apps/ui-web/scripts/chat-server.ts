@@ -2630,8 +2630,18 @@ export const buildBaseLayer = (
               ),
             )
             const activeIds = new Set(activeRows.map((r) => r.id))
-            const threads = (yield* chat.listThreads(50)).filter((t) =>
-              activeIds.has(t.id),
+            // DUAL eligibility (Codex round 2): registry-active alone is not
+            // enough - closeThread() (the user's "remove from sidebar") only
+            // sets the SessionStore status to "closed" and never tells the
+            // registry, so a closed thread stays registry-active. Require
+            // BOTH: registry says active (catches archived, fail-closed
+            // above) AND the store status is a live one (catches
+            // user-closed and errored threads). "idle" is a quiet-but-live
+            // thread and legitimately included.
+            const threads = (yield* chat.listThreads(50)).filter(
+              (t) =>
+                activeIds.has(t.id) &&
+                (t.status === "active" || t.status === "idle"),
             )
             const maxActivity = threads.reduce(
               (m, t) => Math.max(m, t.lastMessageAt ?? 0),
