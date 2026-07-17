@@ -1,0 +1,598 @@
+{
+  "model": "haiku",
+  "samples": 3,
+  "at": "2026-07-17T04:49:27.903Z",
+  "runs": [
+    {
+      "name": "none",
+      "results": [
+        {
+          "probeId": "p1",
+          "category": "cross-thread",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p2",
+          "category": "cross-thread",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD\n\nI have no information about staging deploys or incidents this week. To help you with this, I'd need to check project records, memory files, or communication channels where this was documented."
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p3",
+          "category": "cross-thread",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p4",
+          "category": "status",
+          "answers": [
+            "NO-RECORD\n\nI can see there are several Lavish Editor review sessions open across your projects (luna, flow-industry, git-box), but I don't have information about what specific engineering tasks are currently in progress. You could check your task management system or ask directly about work you'd like to discuss.",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p5",
+          "category": "status",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p6",
+          "category": "temporal",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p7",
+          "category": "temporal",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p8",
+          "category": "temporal",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p9",
+          "category": "decision",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p10",
+          "category": "decision",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p11",
+          "category": "cross-thread",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p12",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p13",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p14",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p15",
+          "category": "exclusion",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p16",
+          "category": "exclusion",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        }
+      ]
+    },
+    {
+      "name": "oracle",
+      "results": [
+        {
+          "probeId": "p1",
+          "category": "cross-thread",
+          "answers": [
+            "The PNG upload bug is active: uploads over 4MB fail silently due to the EXIF-stripping pass running out of buffer and swallowing the error. A fix has been drafted (streamed EXIF strip with surfaced errors) and is currently awaiting review.",
+            "The PNG upload bug is active with a known root cause: the EXIF-stripping pass runs out of buffer on uploads over 4MB and silently swallows the error. A fix has been drafted (streamed EXIF strip with surfaced errors) and is awaiting review.",
+            "The PNG upload bug is active and affects uploads over 4MB, which fail silently due to the EXIF-stripping pass running out of buffer and swallowing the error. A fix has been drafted that implements streamed EXIF stripping and surfaces errors, and it's currently awaiting review."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p2",
+          "category": "cross-thread",
+          "answers": [
+            "Staging failures were traced to a stale CDN bundle manifest. A cache-bust header and post-deploy checksum verification were added to fix it, which has already caught one bad deploy.",
+            "Staging failures were traced to a stale CDN bundle manifest. The fix added a cache-bust header and post-deploy checksum verification, which has already caught one bad deploy.",
+            "Staging failures were traced to a stale CDN bundle manifest. The fix added a cache-bust header and post-deploy checksum verification, which has already caught one bad deploy."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p3",
+          "category": "cross-thread",
+          "answers": [
+            "Yes - the analytics dashboard is experiencing a performance issue in progress as of this morning. Since v1.4, it's loading in ~9s for large workspaces, and profiling has started with the chart aggregation query identified as the suspect.",
+            "Yes, the analytics dashboard is experiencing a performance issue - it loads in ~9s for large workspaces since v1.4. Profiling is underway this morning, with the chart aggregation query identified as the likely suspect.",
+            "Yes - the analytics dashboard has a performance issue that became active this morning. It's loading in ~9s for large workspaces since v1.4, profiling has started, and the chart aggregation query is the suspected culprit."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p4",
+          "category": "status",
+          "answers": [
+            "Three engineering items are in progress: a PNG upload bug fix (draft ready, awaiting review) for uploads over 4MB failing silently, dashboard performance work (profiling underway) addressing ~9s load times for large workspaces, and an onboarding redesign (prototype complete, design review booked for Friday) replacing a six-step wizard with a two-step checklist.",
+            "Three pieces of engineering work are in progress: the PNG upload bug (fix drafted, awaiting review), dashboard performance investigation (profiling underway to address ~9s load times), and the onboarding redesign (prototype ready, design review Friday).",
+            "Three engineering initiatives are in progress: a PNG upload bug fix (over 4MB uploads fail; fix drafted and awaiting review), dashboard performance optimization (analytics loads in ~9s for large workspaces; profiling underway with chart aggregation as the suspect), and an onboarding redesign (design review Friday; prototype condenses six-step wizard to two-step checklist)."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p5",
+          "category": "status",
+          "answers": [
+            "Yes: the docs rewrite is stalled waiting on new auth examples. The PNG upload bug fix is also awaiting review, so it's blocked on that step.",
+            "Yes: the docs rewrite is stalled waiting on new auth examples. The PNG upload bug fix is drafted and awaiting review, but not explicitly called out as stalled.",
+            "Yes, two items are stalled: the PNG upload bug fix is awaiting review, and the docs rewrite is stalled waiting on new auth examples."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p6",
+          "category": "temporal",
+          "answers": [
+            "Aurora v1.4 shipped yesterday evening with dark mode, a new export dialog, and Finnish translation. Rollout hit 100% with error rates remaining flat.",
+            "Aurora v1.4 shipped yesterday evening with dark mode, a new export dialog, and Finnish translation support. The rollout reached 100% with error rates remaining flat.",
+            "Aurora v1.4 shipped yesterday evening with dark mode, a new export dialog, and Finnish translation; rollout reached 100% with flat error rates."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p7",
+          "category": "temporal",
+          "answers": [
+            "A design review for the onboarding redesign is booked for Friday, where the team will review a prototype that replaces the six-step wizard with a two-step checklist.",
+            "A design review for the onboarding redesign is booked for Friday.",
+            "A design review for the onboarding redesign is booked for Friday. The prototype replaces the six-step wizard with a two-step checklist, and funnel numbers are being prepared for the review."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p8",
+          "category": "temporal",
+          "answers": [
+            "The workshop room for the team offsite (scheduled for the second week of September in Lisbon) must be booked by end of month.",
+            "The workshop room for the team offsite in September must be booked by the end of this month.",
+            "The workshop room for the September offsite in Lisbon must be booked by end of month."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p9",
+          "category": "decision",
+          "answers": [
+            "The team chose Lemonpay for its usage-based invoicing capabilities and EU tax handling support. The decision was made on Wednesday, with an integration spike planned for the following week.",
+            "The team chose Lemonpay for usage-based invoicing and EU tax handling. An integration spike is scheduled for next week.",
+            "The team chose Lemonpay for usage-based invoicing and EU tax handling. The integration spike is scheduled for next week."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p10",
+          "category": "decision",
+          "answers": [
+            "Aurora v1.4 shipped yesterday evening with dark mode, a new export dialog, and Finnish translation. The rollout is at 100% with flat error rates.",
+            "Aurora v1.4 shipped yesterday with dark mode, a new export dialog, and Finnish translation. The rollout is at 100% with flat error rates.",
+            "Aurora v1.4 includes dark mode, a new export dialog, and Finnish translation. It shipped yesterday evening with a 100% rollout and flat error rates."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p11",
+          "category": "cross-thread",
+          "answers": [
+            "The API rate-limit incident was resolved on Monday; a partner's retry loop amplified traffic 40x. The fix added per-key burst budgets and alerting, and nothing remains open on it.",
+            "The incident was resolved after discovering that a partner's retry loop amplified traffic 40x. Per-key burst budgets and alerting were added to prevent recurrence, and nothing remains open.",
+            "The API rate-limit incident was resolved on Monday. A partner retry loop had amplified traffic 40x, and the fix involved adding per-key burst budgets and alerting. There's nothing still open on it."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p12",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p13",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p14",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p15",
+          "category": "exclusion",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p16",
+          "category": "exclusion",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        }
+      ]
+    },
+    {
+      "name": "generated",
+      "results": [
+        {
+          "probeId": "p1",
+          "category": "cross-thread",
+          "answers": [
+            "A fix has been drafted for silent failures on PNGs larger than 4MB and is currently awaiting review.",
+            "A fix has been drafted for silent failures on PNGs larger than 4MB, and it's currently awaiting review.",
+            "A fix for silent failures on PNGs over 4MB has been drafted and is currently awaiting review."
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p2",
+          "category": "cross-thread",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD\n\nThe digest mentions a deploy pipeline verification step was added (which caught a bad deploy), but contains no specific details about staging deploy issues earlier this week.",
+            "NO-RECORD"
+          ],
+          "correctVotes": 0,
+          "correct": false,
+          "flipped": false
+        },
+        {
+          "probeId": "p3",
+          "category": "cross-thread",
+          "answers": [
+            "Yes. The analytics dashboard is experiencing performance issues post-v1.4, with load times exceeding 9 seconds on large workspaces. Profiling started this morning, with chart aggregation suspected as the cause.",
+            "Yes. The analytics dashboard is slow on large workspaces following the v1.4 release, taking 9+ seconds to load. Profiling started this morning, with chart aggregation suspected as the cause.",
+            "Yes—the analytics dashboard is experiencing performance issues on large workspaces post-v1.4, with load times reaching 9+ seconds. Profiling started this morning, with chart aggregation suspected as the cause."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p4",
+          "category": "status",
+          "answers": [
+            "Four engineering tasks are in progress: dashboard performance optimization (9+ sec load on large workspaces, profiling underway with chart aggregation suspected), a PNG upload bug fix for files >4MB (drafted, awaiting review), onboarding redesign (design review scheduled Friday), and API docs rewrite (stalled pending new auth examples).",
+            "Four engineering projects are in progress: dashboard performance optimization (9+ sec load times on large workspaces, profiling underway with chart aggregation suspected), a PNG upload bug fix for files >4MB (drafted, awaiting review), an onboarding redesign (design review Friday), and API docs rewrite (stalled pending new auth examples).",
+            "Four items are currently in progress: dashboard performance optimization (9+ sec load time on large workspaces, chart aggregation suspected), a PNG upload bug fix for files over 4MB (awaiting review), onboarding redesign with design review Friday, and an API docs rewrite (currently stalled waiting for new auth examples)."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p5",
+          "category": "status",
+          "answers": [
+            "Yes - the API docs rewrite is stalled awaiting new auth examples.",
+            "Yes, two things are stalled: the PNG upload bug fix is awaiting review, and the API docs rewrite is stalled waiting for new auth examples.",
+            "Yes. The PNG upload bug fix is awaiting review, and the API docs rewrite is stalled waiting for new auth examples."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p6",
+          "category": "temporal",
+          "answers": [
+            "Aurora v1.4 shipped yesterday with dark mode, an export dialog, and Finnish translation; it's at 100% rollout with flat error rates.",
+            "Aurora v1.4 shipped yesterday with dark mode, export dialog, and Finnish translation; it's at 100% rollout with flat error rates.",
+            "Aurora v1.4 released yesterday with dark mode, export dialog, and Finnish translation; it's at 100% rollout with flat error rates."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p7",
+          "category": "temporal",
+          "answers": [
+            "Design review for the onboarding redesign prototype, which replaces a 6-step wizard with a 2-step checklist.",
+            "Design review for the onboarding redesign is scheduled for Friday.",
+            "The onboarding redesign design review is scheduled for Friday."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p8",
+          "category": "temporal",
+          "answers": [
+            "Workshop room booking for the September team offsite in Lisbon is due at the end of this month.",
+            "Workshop room booking for the team offsite in Lisbon (scheduled for the second week of September) is due at the end of this month.",
+            "The workshop room booking for the team offsite in Lisbon (scheduled for the second week of September) is due at the end of this month."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p9",
+          "category": "decision",
+          "answers": [
+            "Lemonpay was chosen for usage-based invoicing and EU tax handling. Integration work is planned for next week.",
+            "Lemonpay was chosen for usage-based invoicing and EU tax handling. An integration spike is scheduled for next week.",
+            "Lemonpay was chosen for usage-based invoicing and EU tax handling. An integration spike is planned for next week."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p10",
+          "category": "decision",
+          "answers": [
+            "Aurora v1.4 was released yesterday and includes dark mode, an export dialog, and Finnish translation support. The rollout is at 100% with flat error rates.",
+            "Aurora v1.4, released yesterday, includes dark mode, an export dialog, and Finnish translation. It achieved 100% rollout with flat error rates.",
+            "Aurora v1.4 includes dark mode, an export dialog, and Finnish translation. It shipped yesterday and has reached 100% rollout with flat error rates."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p11",
+          "category": "cross-thread",
+          "answers": [
+            "The API rate-limit incident was resolved four days ago (July 13) with burst budgets and alerts deployed as the fix.",
+            "The API rate-limit incident was resolved four days ago; burst budgets and alerts were deployed as the fix.",
+            "The API rate-limit incident was resolved four days ago (July 13) by deploying burst budgets and alerts. The fix is in place and has stabilized the system."
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p12",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p13",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p14",
+          "category": "negative",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p15",
+          "category": "exclusion",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        },
+        {
+          "probeId": "p16",
+          "category": "exclusion",
+          "answers": [
+            "NO-RECORD",
+            "NO-RECORD",
+            "NO-RECORD"
+          ],
+          "correctVotes": 3,
+          "correct": true,
+          "flipped": false
+        }
+      ]
+    }
+  ]
+}

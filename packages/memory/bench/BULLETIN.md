@@ -65,6 +65,27 @@ Because LLM answers vary run to run, every probe runs N samples (default 3) and 
 Build and ship a bulletin generator only if, on this probe set, the generated digest closes at least 70% of the oracle-vs-none accuracy gap while staying within the 1,500-token hard cap, without regressing the negative and exclusion categories below 90%.
 If the oracle itself does not decisively beat `none`, the probes or the premise are wrong, and the mechanism should not be built either way.
 
+## The shipped generator (Phase 6b)
+
+The production mechanism follows the design above and lives in three places.
+`@luna/core` `bulletin/` holds the PURE composition core: `shapeActivitySnapshot` (lookback, thread cap, message truncation), `composeBulletinPrompt` (wiki-bookkeeper rules, fenced data-not-instructions threads, previous-digest continuity), `neutralizeBulletinText` (Unicode-class invisible stripping plus THREAD/BULLETIN marker breaking), and `buildBulletinInjectionBlock`.
+`@luna/adapter-sdk` `bulletin-writer.ts` is the SDK-backed `BulletinWriter` (default model `haiku` via `LUNA_BULLETIN_MODEL`), with one corrective retry when the digest exceeds the hard cap and a fail-closed error after that.
+The chat-server hosts a holder read synchronously by `decorate()` (beside the beliefs holder) and a refresh loop in its own layer: activity-gated (a tick spends a writer call only when some active thread's `lastMessageAt` moved), persisted to `bulletin.md` next to `luna.db` for warm restarts, fail-safe (any tick failure keeps the previous digest), and default OFF behind `LUNA_BULLETIN=1` (`LUNA_BULLETIN_REFRESH_MS` cadence, default 15 minutes).
+Thread eligibility is FAIL-CLOSED and DUAL: a thread reaches the writer only when the thread registry positively lists it as active (catches archived; the tick aborts, keeping the previous digest, when that read fails) AND its session-store status is a live one (`active` or `idle`; catches user-CLOSED and errored threads, which never touch the registry).
+This is deliberately stricter than the sidebar's `listThreads`, whose archived-exclusion degrades open under registry failures as a UX tradeoff - a leniency a privacy guarantee must not inherit.
+A thread not yet upserted into the registry is conservatively excluded until its first turn registers it.
+The excluded lifecycle states by name: archived (registry), closed (session store, the user's "remove from sidebar"), errored (session store), and hidden empty-probe threads (no user message; excluded by the store query itself).
+
+Known limitation (shared with the beliefs holder, a deliberate architecture): `decorate()` samples the holder once per thread creation, so an already-open thread keeps the bulletin it started with until it is recreated.
+New sessions always get the freshest digest; whether long-lived sessions should live-refresh is an open product decision tracked outside this PR.
+
+`bulletin-generate.ts` runs the SAME core composition over this fixture and writes the digest the gate judges, so a gate PASS transfers to production:
+
+```sh
+bun packages/memory/bench/bulletin-generate.ts
+LUNA_BULLETIN_FILE=packages/memory/bench/bulletin-generated.txt bun packages/memory/bench/bulletin-eval.ts
+```
+
 ## Running it
 
 ```sh

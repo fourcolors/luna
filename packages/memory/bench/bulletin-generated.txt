@@ -1,0 +1,16 @@
+RECENT ACTIVITY DIGEST (as of Thursday, July 17, 2026)
+
+**In progress:**
+- Dashboard performance: Analytics dashboard slow on large workspaces post-v1.4 (9+ sec load); profiling started this morning, chart aggregation suspected.
+- PNG upload bug: Fix drafted for silent failures on PNGs >4MB; awaiting review.
+- Onboarding redesign: Design review Friday; prototype swaps 6-step wizard for 2-step checklist; funnel metrics in prep.
+- API docs rewrite: Stalled awaiting new auth examples.
+
+**Recently shipped / decided:**
+- Aurora v1.4: Released yesterday (dark mode, export dialog, Finnish translation); 100% rollout, flat error rates.
+- Deploy pipeline: Verification step added; caught a bad deploy immediately, keep it.
+- Billing provider: Lemonpay chosen for usage-based invoicing and EU tax handling; integration spike next week.
+- API rate-limit incident: Resolved four days ago; burst budgets and alerts deployed.
+
+**Quiet / resolved:**
+- Team offsite: Second week of September, Lisbon; workshop room booking due end of month.
