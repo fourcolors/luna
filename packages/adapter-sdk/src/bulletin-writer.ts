@@ -103,7 +103,19 @@ export const BulletinWriterDefault: Layer.Layer<
               }),
           },
         })
-        return unwrapDigestText(turn.text)
+        const text = unwrapDigestText(turn.text)
+        // Reject empty/whitespace output at the source: an empty digest
+        // trivially passes the cap check and would silently ERASE the
+        // previous digest from the holder (Codex review of #342).
+        if (text.length === 0) {
+          return yield* Effect.fail(
+            new BulletinError({
+              op: "empty",
+              message: "bulletin writer returned an empty digest",
+            }),
+          )
+        }
+        return text
       })
 
     const write: BulletinWriterApi["write"] = (args: BulletinWriterArgs) =>

@@ -2587,6 +2587,7 @@ export const buildBaseLayer = (
           const chat = yield* ChatService
           const store = yield* SessionStore
           const writer = yield* BulletinWriter
+          const registry = yield* ThreadRegistryService
           const refreshMs = (() => {
             const raw = process.env["LUNA_BULLETIN_REFRESH_MS"]?.trim()
             const n = raw ? Number(raw) : 900_000
@@ -2610,7 +2611,28 @@ export const buildBaseLayer = (
           }
 
           const tick = Effect.gen(function* () {
-            const threads = yield* chat.listThreads(50)
+            // FAIL-CLOSED eligibility (Codex review of #342): listThreads'
+            // archived exclusion deliberately degrades OPEN under registry
+            // read failures (an acceptable sidebar-UX tradeoff; a stale row
+            // flashing in a list self-heals). The bulletin's privacy
+            // guarantee cannot inherit that leniency - a leaked archived
+            // thread would be summarized, persisted, and injected into every
+            // session for a whole refresh cycle. So the tick requires a
+            // POSITIVE active-status allowlist straight from the registry
+            // and aborts (keeping the previous digest) when that read dies.
+            // A thread not yet upserted into the registry is conservatively
+            // excluded until its first turn registers it.
+            const activeRows = yield* registry.listByStatus("active").pipe(
+              Effect.catchAllDefect((defect) =>
+                Effect.fail(
+                  new Error(`registry active-list unavailable (fail-closed, keeping previous digest): ${String(defect)}`),
+                ),
+              ),
+            )
+            const activeIds = new Set(activeRows.map((r) => r.id))
+            const threads = (yield* chat.listThreads(50)).filter((t) =>
+              activeIds.has(t.id),
+            )
             const maxActivity = threads.reduce(
               (m, t) => Math.max(m, t.lastMessageAt ?? 0),
               0,
@@ -2656,7 +2678,11 @@ export const buildBaseLayer = (
             lastActivityMs = maxActivity
             bulletinHolder.current = buildBulletinInjectionBlock(digest)
             try {
-              writeFileSync(bulletinFilePath, digest)
+              // Atomic persist (temp + rename): a crash mid-write must not
+              // leave a torn file that warm-start would inject on restart.
+              const tmp = `${bulletinFilePath}.${process.pid}.tmp`
+              writeFileSync(tmp, digest)
+              renameSync(tmp, bulletinFilePath)
             } catch (e) {
               console.warn("[luna/bulletin] persist failed (digest still live in-memory):", e)
             }
@@ -2691,6 +2717,7 @@ export const buildBaseLayer = (
       ).pipe(
         Layer.provide(chatL),
         Layer.provide(storeL),
+        Layer.provide(threadRegistryWithMigrationL),
         Layer.provide(
           BulletinWriterDefault.pipe(Layer.provide(sdkClientL), Layer.provide(brokerL)),
         ),

@@ -71,7 +71,12 @@ The production mechanism follows the design above and lives in three places.
 `@luna/core` `bulletin/` holds the PURE composition core: `shapeActivitySnapshot` (lookback, thread cap, message truncation), `composeBulletinPrompt` (wiki-bookkeeper rules, fenced data-not-instructions threads, previous-digest continuity), `neutralizeBulletinText` (Unicode-class invisible stripping plus THREAD/BULLETIN marker breaking), and `buildBulletinInjectionBlock`.
 `@luna/adapter-sdk` `bulletin-writer.ts` is the SDK-backed `BulletinWriter` (default model `haiku` via `LUNA_BULLETIN_MODEL`), with one corrective retry when the digest exceeds the hard cap and a fail-closed error after that.
 The chat-server hosts a holder read synchronously by `decorate()` (beside the beliefs holder) and a refresh loop in its own layer: activity-gated (a tick spends a writer call only when some active thread's `lastMessageAt` moved), persisted to `bulletin.md` next to `luna.db` for warm restarts, fail-safe (any tick failure keeps the previous digest), and default OFF behind `LUNA_BULLETIN=1` (`LUNA_BULLETIN_REFRESH_MS` cadence, default 15 minutes).
-Thread eligibility comes entirely from `chat.listThreads` (active status), which already excludes archived, hidden, and empty-probe threads.
+Thread eligibility is FAIL-CLOSED: each tick requires a positive active-status allowlist read directly from the thread registry, and aborts (keeping the previous digest) when that read fails.
+This is deliberately stricter than the sidebar's `listThreads`, whose archived-exclusion degrades open under registry failures as a UX tradeoff - a leniency a privacy guarantee must not inherit.
+A thread not yet upserted into the registry is conservatively excluded until its first turn registers it.
+
+Known limitation (shared with the beliefs holder, a deliberate architecture): `decorate()` samples the holder once per thread creation, so an already-open thread keeps the bulletin it started with until it is recreated.
+New sessions always get the freshest digest; whether long-lived sessions should live-refresh is an open product decision tracked outside this PR.
 
 `bulletin-generate.ts` runs the SAME core composition over this fixture and writes the digest the gate judges, so a gate PASS transfers to production:
 

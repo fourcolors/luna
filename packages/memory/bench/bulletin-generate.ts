@@ -30,6 +30,7 @@ import {
   BULLETIN_TOKEN_HARD_CAP,
   type BulletinActivitySnapshot,
 } from "@luna/core"
+import { unwrapDigestText } from "@luna/adapter-sdk"
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const MODEL = process.env["LUNA_BULLETIN_MODEL"] ?? "haiku"
@@ -114,16 +115,21 @@ if (probe.error !== undefined || probe.status !== 0) {
 }
 
 console.log(`[bulletin-generate] model=${MODEL} threads=${snapshot.length} (archived excluded: ${fixture.threads.length - eligible.length})`)
-let digest = (await callClaude(prompt)).trim()
-const fenced = /^```[a-z]*\n([\s\S]*?)\n```$/.exec(digest)
-if (fenced) digest = fenced[1]!.trim()
+// Same unwrap + cap-retry-fail-closed pipeline as the production writer
+// (unwrapDigestText is the writer's own export - bench/prod parity).
+let digest = unwrapDigestText(await callClaude(prompt))
 
 if (!bulletinWithinCap(digest)) {
-  // Same corrective retry the production writer performs.
   console.log(`[bulletin-generate] over cap (~${estimateBulletinTokens(digest)} tokens), corrective retry...`)
-  digest = (await callClaude(
+  digest = unwrapDigestText(await callClaude(
     `${prompt}\n\nYour previous attempt was ~${estimateBulletinTokens(digest)} tokens, OVER the ${BULLETIN_TOKEN_HARD_CAP}-token limit. Rewrite the digest far more tersely; keep the same structure and rules.`,
-  )).trim()
+  ))
+}
+if (!bulletinWithinCap(digest) || digest.length === 0) {
+  // Fail closed exactly like production: an over-cap or empty digest is
+  // never written for the gate to accidentally bless.
+  console.error(`[bulletin-generate] FAIL-CLOSED: digest ${digest.length === 0 ? "empty" : `still over cap (~${estimateBulletinTokens(digest)} tokens)`} after corrective retry`)
+  process.exit(4)
 }
 
 const outPath = resolve(BENCH_DIR, "bulletin-generated.txt")
