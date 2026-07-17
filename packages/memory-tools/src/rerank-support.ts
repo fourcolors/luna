@@ -10,10 +10,16 @@ import { createHash } from "node:crypto"
 import { Cause, Effect } from "effect"
 import type { ObservabilityApi, RerankError } from "@luna/core"
 
-/** Matches the bench's holdout-validated gate (packages/memory/bench/
- * rerank-eval.ts): score>=75 rejects 97.5% of junk while keeping 93.7% of
- * good hits. Overridable via LUNA_RERANK_THRESHOLD. */
-export const DEFAULT_RERANK_THRESHOLD = 75
+/**
+ * Cross-encoder reranker score threshold: keeps 93-100% of correct memories
+ * and rejects 100% of junk on the Phase 5 real-data sample (n=27, see
+ * packages/memory/bench/README.md:61-76). Value of 40 is the midpoint of the
+ * validated safe range (~30-50). The original 75 was calibrated for the
+ * retired Haiku-based reranker and does not hold for the cross-encoder engine
+ * in production today. Synthetic-corpus calibration alone (without real-query
+ * validation) would suggest ~3; real data shows correct answers score 30-50.
+ * Overridable via LUNA_RERANK_THRESHOLD. */
+export const DEFAULT_RERANK_THRESHOLD = 40
 
 export function resolveRerankThreshold(
   env: Record<string, string | undefined> = process.env,
