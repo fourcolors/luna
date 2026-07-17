@@ -114,6 +114,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -256,6 +257,14 @@ import {
   openUiFeedbackStatusStore,
   type FeedbackListRow,
   MemoryReranker,
+  BulletinWriter,
+  shapeActivitySnapshot,
+  buildBulletinInjectionBlock,
+  estimateBulletinTokens,
+  BULLETIN_MAX_THREADS,
+  projectChatMessages,
+  type BulletinThreadActivity,
+  type ChatMessage,
 } from "@luna/core"
 import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
@@ -302,6 +311,7 @@ import {
   ChatThreadPosterTag,
   MemoryRerankerDefault,
   CrossEncoderRerankerLayer,
+  BulletinWriterDefault,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -310,6 +320,7 @@ import {
   defaultEffortForModel,
   type EffortOption,
   type ThreadToolsProvider,
+  stripClientMarker,
 } from "@luna/chat-service"
 import { composeInterceptors, defaultSafetyInterceptors, mcpToolGate, type McpServerPolicy } from "@luna/tools"
 import {
@@ -705,6 +716,12 @@ const BELIEF_REFRESH_INTERVAL_MS = 30_000
 export const ThreadToolsProviderLayer = (
   refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS,
   memoryRerankerL?: Layer.Layer<MemoryReranker, never, never>,
+  // Hot-tier bulletin (BULLETIN.md): decorate() reads holder.current
+  // synchronously, exactly like the beliefs holder above it - but the
+  // REFRESH loop lives outside this layer (bulletinRefresherL in main),
+  // because it needs ChatService + SessionStore, which are not in this
+  // layer's dependency graph. Default undefined: byte-identical to before.
+  bulletinHolder?: { readonly current: string },
 ) => {
   const base = Layer.scoped(
     ThreadToolsProviderTag,
@@ -943,6 +960,7 @@ export const ThreadToolsProviderLayer = (
               ? buildSessionMetadata({ channelContext: opts.channelMeta })
               : sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
+            bulletinHolder?.current ?? "", // hot-tier recent-activity bulletin ("" until first refresh or when LUNA_BULLETIN is off - filtered below)
             skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
@@ -2323,9 +2341,19 @@ export const buildBaseLayer = (
           Layer.provide(sdkClientL),
           Layer.provide(brokerL),
         )
+  // Hot-tier bulletin (BULLETIN.md): a plain mutable holder read
+  // synchronously by decorate() (same doctrine as the beliefs holder), a
+  // digest file next to luna.db for warm restarts, and a refresh loop that
+  // lives in its own layer BELOW (bulletinRefresherL) because it needs
+  // ChatService + SessionStore. Default OFF: everything is inert unless
+  // LUNA_BULLETIN=1.
+  const bulletinEnabled = process.env["LUNA_BULLETIN"]?.trim() === "1"
+  const bulletinHolder = { current: "" }
+  const bulletinFilePath = join(dirname(paths.lunaDbPath), "bulletin.md")
   const threadToolsL = ThreadToolsProviderLayer(
     BELIEF_REFRESH_INTERVAL_MS,
     memoryRerankerL,
+    bulletinHolder,
   ).pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     // PRD Part B: skill_tools (skill_load) + the registry snapshot read by
@@ -2543,6 +2571,131 @@ export const buildBaseLayer = (
     }),
   ).pipe(Layer.provide(chatL))
 
+  // Hot-tier bulletin refresher (BULLETIN.md). Separate layer because it
+  // needs ChatService + SessionStore + BulletinWriter; the holder is shared
+  // by closure with ThreadToolsProviderLayer's decorate() above.
+  // ACTIVITY-GATED: a tick only spends a writer call when some thread's
+  // lastMessageAt moved past the last successful generation, so an idle
+  // server costs nothing. Fail-safe: any tick failure keeps the previous
+  // digest. Eligibility comes ENTIRELY from chat.listThreads (active
+  // status), which already excludes archived, hidden, and empty-probe
+  // threads (#306) - the exclusion the eval fixture's leak probes test.
+  const bulletinRefresherL = !bulletinEnabled
+    ? Layer.empty
+    : Layer.scopedDiscard(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const writer = yield* BulletinWriter
+          const refreshMs = (() => {
+            const raw = process.env["LUNA_BULLETIN_REFRESH_MS"]?.trim()
+            const n = raw ? Number(raw) : 900_000
+            return Number.isFinite(n) && n >= 60_000 ? n : 900_000
+          })()
+          let lastDigest: string | null = null
+          let lastActivityMs = 0
+          // Warm start: serve the persisted digest from t=0 after a restart,
+          // and treat the file's mtime as the last-generation watermark so a
+          // plain restart does not trigger a gratuitous regeneration.
+          try {
+            const text = readFileSync(bulletinFilePath, "utf8")
+            if (text.trim().length > 0) {
+              lastDigest = text
+              lastActivityMs = statSync(bulletinFilePath).mtimeMs
+              bulletinHolder.current = buildBulletinInjectionBlock(text)
+              console.log(`[luna/bulletin] warm-started from ${bulletinFilePath}`)
+            }
+          } catch {
+            // No persisted digest yet - first tick will write one.
+          }
+
+          const tick = Effect.gen(function* () {
+            const threads = yield* chat.listThreads(50)
+            const maxActivity = threads.reduce(
+              (m, t) => Math.max(m, t.lastMessageAt ?? 0),
+              0,
+            )
+            if (maxActivity <= lastActivityMs) return
+            const activity: BulletinThreadActivity[] = []
+            for (const t of threads) {
+              if (t.lastMessageAt === null) continue
+              const msgs: ChatMessage[] = yield* projectChatMessages(
+                store.readMessages(t.id),
+              ).pipe(
+                Stream.runCollect,
+                Effect.map((c) => Array.from(c)),
+                // A single unreadable thread must not sink the whole tick.
+                Effect.catchAll(() => Effect.succeed([] as ChatMessage[])),
+              )
+              const texts = msgs
+                .filter((m) => m.text.trim().length > 0)
+                .map((m) => ({
+                  ts: new Date(m.ts).toISOString(),
+                  role: m.role,
+                  text: stripClientMarker(m.text),
+                }))
+              if (texts.length === 0) continue
+              activity.push({
+                id: t.id,
+                title: t.title ?? "(untitled)",
+                lastMessageAt: new Date(t.lastMessageAt).toISOString(),
+                messages: texts,
+              })
+              // Reading messages is the expensive part of a tick; stop once
+              // we have more threads than the snapshot shaper will keep.
+              if (activity.length >= BULLETIN_MAX_THREADS * 2) break
+            }
+            const snapshot = shapeActivitySnapshot(activity, Date.now())
+            if (snapshot.length === 0) return
+            const digest = yield* writer.write({
+              nowIso: new Date().toISOString(),
+              previousBulletin: lastDigest,
+              activity: snapshot,
+            })
+            lastDigest = digest
+            lastActivityMs = maxActivity
+            bulletinHolder.current = buildBulletinInjectionBlock(digest)
+            try {
+              writeFileSync(bulletinFilePath, digest)
+            } catch (e) {
+              console.warn("[luna/bulletin] persist failed (digest still live in-memory):", e)
+            }
+            console.log(
+              `[luna/bulletin] refreshed: ~${estimateBulletinTokens(digest)} tokens from ${snapshot.length} thread(s)`,
+            )
+          }).pipe(
+            Effect.catchAllCause((cause) =>
+              Effect.sync(() =>
+                console.warn(
+                  "[luna/bulletin] tick failed (keeping previous digest):",
+                  String(cause).slice(0, 300),
+                ),
+              ),
+            ),
+          )
+
+          // First tick shortly after boot (let stores settle), then steady
+          // cadence. forkScoped ties the fiber to this layer's Scope.
+          yield* Effect.forkScoped(
+            Effect.sleep("20 seconds").pipe(
+              Effect.zipRight(tick),
+              Effect.zipRight(
+                Effect.forever(Effect.sleep(refreshMs).pipe(Effect.zipRight(tick))),
+              ),
+            ),
+          )
+          console.log(
+            `[luna/bulletin] enabled: refresh every ${refreshMs}ms, persisted at ${bulletinFilePath}`,
+          )
+        }),
+      ).pipe(
+        Layer.provide(chatL),
+        Layer.provide(storeL),
+        Layer.provide(
+          BulletinWriterDefault.pipe(Layer.provide(sdkClientL), Layer.provide(brokerL)),
+        ),
+      )
+
   // V2 registry: ONE empty registry seeded with the prompt + workflow workers
   // (adapter-sdk) AND the dream + wake workers (scheduler-v2 dream/wake
   // migration, M1 + M2). buildWorkerRegistryLayer is the SAME factory the M3
@@ -2643,6 +2796,7 @@ export const buildBaseLayer = (
     vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
     threadRegistryWithMigrationL, // Phase 1: durable thread index (luna.db threads table)
     channelServiceL, // Communication channels (Telegram, …): adapters registered + started in buildMain
+    bulletinRefresherL, // Hot-tier bulletin (BULLETIN.md): Layer.empty unless LUNA_BULLETIN=1
   )
 }
 
