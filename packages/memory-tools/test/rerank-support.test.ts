@@ -11,7 +11,7 @@ import {
 } from "../src/rerank-support.js"
 
 describe("resolveRerankThreshold", () => {
-  it("defaults to 75 when unset", () => {
+  it("defaults to 40 when unset", () => {
     expect(resolveRerankThreshold({})).toBe(DEFAULT_RERANK_THRESHOLD)
   })
 
