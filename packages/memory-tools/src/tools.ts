@@ -40,7 +40,7 @@
  *     LUNA_MEMORY_RERANK=1 AND a MemoryReranker was passed to
  *     makeMemoryTools, search over-fetches to at least 20 candidates,
  *     reranks them, and gates via applyRerank (score>=LUNA_RERANK_THRESHOLD,
- *     default 75) before slicing to `limit`. DEFAULT OFF - with no reranker
+ *     default 40) before slicing to `limit`. DEFAULT OFF - with no reranker
  *     passed and/or the flag unset, behavior is byte-identical to before.
  *     A rerank failure (timeout/parse/SDK error) falls back to the
  *     un-reranked hybrid order; it never fails the tool call.
