@@ -357,7 +357,7 @@ describe("real agent files (regression)", () => {
     expect(advisor.description).not.toBe(">-")
     expect(advisor.description).not.toBe(">")
     expect(advisor.description.length).toBeGreaterThan(30)
-    expect(advisor.model).toBe("opus")
+    expect(advisor.model).toBe("fable")
     expect(advisor.effort).toBe("max")
     expect(advisor.tools).toContain("Read")
     // Memory opt-in shipped in feat/subagents-opt-in-memory — observations
