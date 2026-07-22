@@ -46,6 +46,8 @@ OLLAMA_BASE_URL="${LUNA_OLLAMA_BASE_URL:-}"
 OLLAMA_EMBED_MODEL="${LUNA_OLLAMA_EMBED_MODEL:-}"
 OLLAMA_EMBED_DIMENSION="${LUNA_OLLAMA_EMBED_DIMENSION:-}"
 OLLAMA_PROBE_TIMEOUT_MS="${LUNA_OLLAMA_PROBE_TIMEOUT_MS:-}"
+OLLAMA_PROBE_ATTEMPTS="${LUNA_OLLAMA_PROBE_ATTEMPTS:-}"
+OLLAMA_PROBE_BACKOFF_MS="${LUNA_OLLAMA_PROBE_BACKOFF_MS:-}"
 # Fence ACL — isolate container from bridge peers while preserving gateway access.
 # Default OFF: zero behaviour change for existing callers. Enable with --fence or
 # LUNA_FENCE=true. See docs/runbooks/incus-fence-acl.md for the full rationale.
@@ -82,6 +84,9 @@ Options:
   --ollama-embed-dimension <n> Optional expected embedding dimension.
   --ollama-probe-timeout-ms <n>
                                Optional startup probe timeout.
+  --ollama-probe-attempts <n>  Optional max probe retry attempts (clamped to 5, default 3).
+  --ollama-probe-backoff-ms <n>
+                               Optional probe backoff interval in milliseconds.
   --fence                      Create a bridge-isolation ACL for this container.
                                Default OFF. Enable via LUNA_FENCE=true.
                                See docs/runbooks/incus-fence-acl.md.
@@ -127,6 +132,8 @@ while [[ $# -gt 0 ]]; do
     --ollama-embed-model) OLLAMA_EMBED_MODEL="${2:?missing --ollama-embed-model value}"; shift 2 ;;
     --ollama-embed-dimension) OLLAMA_EMBED_DIMENSION="${2:?missing --ollama-embed-dimension value}"; shift 2 ;;
     --ollama-probe-timeout-ms) OLLAMA_PROBE_TIMEOUT_MS="${2:?missing --ollama-probe-timeout-ms value}"; shift 2 ;;
+    --ollama-probe-attempts) OLLAMA_PROBE_ATTEMPTS="${2:?missing --ollama-probe-attempts value}"; shift 2 ;;
+    --ollama-probe-backoff-ms) OLLAMA_PROBE_BACKOFF_MS="${2:?missing --ollama-probe-backoff-ms value}"; shift 2 ;;
     --fence) FENCE=true; shift ;;
     --fence-acl-name) FENCE_ACL_NAME="${2:?missing --fence-acl-name value}"; shift 2 ;;
     --fence-bridge) FENCE_BRIDGE="${2:?missing --fence-bridge value}"; shift 2 ;;
@@ -494,6 +501,8 @@ luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_BASE_URL" "$OLLAMA_BASE_URL"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_EMBED_MODEL" "$OLLAMA_EMBED_MODEL"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_EMBED_DIMENSION" "$OLLAMA_EMBED_DIMENSION"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_PROBE_TIMEOUT_MS" "$OLLAMA_PROBE_TIMEOUT_MS"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_PROBE_ATTEMPTS" "$OLLAMA_PROBE_ATTEMPTS"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_PROBE_BACKOFF_MS" "$OLLAMA_PROBE_BACKOFF_MS"
 
 if luna_env_has_token "$STATE_PATH/.env"; then
   luna_info "Existing UI token found; preserving it"
