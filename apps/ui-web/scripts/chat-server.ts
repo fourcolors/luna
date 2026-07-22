@@ -739,7 +739,7 @@ export const ThreadToolsProviderLayer = (
       // rebuilds it inside every mutation), so a settings toggle is
       // reflected in the very next thread without a restart or a tick.
       // (The ~/.luna/skills hot-load fiber lives in skillRegistryL, where
-      // the prefs store is in scope for the new-skill quarantine.)
+      // the prefs store is in scope for hydration/write-through.)
       const skillRegistry = yield* SkillRegistry
       // PRD Part A (Connectors): connected services' MCP servers. Same
       // sync-snapshot discipline — refreshMounts() rebuilds on connect/
@@ -2177,13 +2177,12 @@ export const buildBaseLayer = (
   // ui-ws skill frames see the SAME registry instance.
   //
   // This layer also OWNS the ~/.luna/skills hot-load fiber (boot scan +
-  // 30s refresh, the beliefs-holder pattern) because the quarantine needs
-  // the prefs store: a NEVER-DECIDED user skill registers DISABLED until
-  // the operator enables it in the Skills tab (review finding: the agent
-  // can write ~/.luna/skills via local-shell, so auto-enabling new files
-  // would be a persistent prompt-injection channel). Catalog deltas ping
-  // notifySkillCatalogChanged so ui-ws broadcasts a fresh catalog to
-  // long-lived clients.
+  // 30s refresh, the beliefs-holder pattern) because it needs the prefs
+  // store for hydration/write-through. New user skills register ENABLED
+  // by default (Chairman decision, 2026-07-22, superseding the prior
+  // quarantine-on-create policy — see user-skills-loader.ts docstring).
+  // Catalog deltas ping notifySkillCatalogChanged so ui-ws broadcasts a
+  // fresh catalog to long-lived clients.
   // LunaSqliteBootstrap flows up from the prefs store and is satisfied at
   // the bottom of buildServerLayer, same as every other SQLite layer here.
   const skillPrefsL = SkillPrefsStore.makeLayer(paths.lunaDbPath).pipe(
@@ -2219,8 +2218,7 @@ export const buildBaseLayer = (
       const userSkillsDir = join(resolveRuntimePaths().lunaHome, "skills")
       const refreshUserSkills = Effect.gen(function* () {
         const scan = scanUserSkills(userSkillsDir)
-        const approvedIds = new Set(yield* prefs.knownIds())
-        const summary = yield* syncUserSkills(registry, scan, { approvedIds })
+        const summary = yield* syncUserSkills(registry, scan)
         if (summary.added + summary.updated + summary.removed > 0) {
           console.log(
             `[luna/skills] user skills synced: +${summary.added} ~${summary.updated} -${summary.removed}`,
@@ -2228,13 +2226,6 @@ export const buildBaseLayer = (
           // Long-lived clients (the Moon) must see hot-load deltas without
           // a reconnect — ui-ws registered this via skillsWsHandle.changes.
           notifySkillCatalogChanged?.()
-        }
-        if (summary.quarantined.length > 0) {
-          console.warn(
-            "[luna/skills] NEW user skill(s) found and DISABLED pending your approval " +
-              "(enable in Settings → Skills):",
-            summary.quarantined.join(", "),
-          )
         }
         if (summary.conflicts.length > 0) {
           console.warn(

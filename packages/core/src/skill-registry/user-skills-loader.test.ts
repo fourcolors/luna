@@ -117,28 +117,28 @@ describe("syncUserSkills", () => {
     body,
   })
 
-  it("quarantine: a NEVER-DECIDED new skill registers DISABLED; known ids enable normally", async () => {
+  it("new skills register ENABLED by default (2026-07-22 decision, supersedes prior quarantine-on-create); explicit operator disable still survives re-sync", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const reg = yield* SkillRegistry
 
-        // "previously-approved" has a prefs row (operator decided before a
-        // restart); "brand-new" has none → quarantined.
+        // `approvedIds` is accepted but no longer gates anything — both a
+        // previously-known id and a brand-new one register enabled.
         const summary = yield* syncUserSkills(
           reg,
           { manifests: [user("previously-approved"), user("brand-new")], warnings: [] },
           { approvedIds: new Set(["previously-approved"]) },
         )
-        expect(summary.quarantined).toEqual(["brand-new"])
+        expect(summary.quarantined).toEqual([])
         const cat = yield* reg.catalog()
         expect(cat.find((e) => e.id === "previously-approved")?.enabled).toBe(true)
-        expect(cat.find((e) => e.id === "brand-new")?.enabled).toBe(false)
-        // the quarantined body must not be in the prompt
-        expect(reg.promptSnapshotSync()).not.toContain("USER-brand-new")
+        expect(cat.find((e) => e.id === "brand-new")?.enabled).toBe(true)
+        expect(reg.promptSnapshotSync()).toContain("USER-brand-new")
 
-        // Operator approves → enabled; the NEXT sync round (id now known)
-        // must NOT re-quarantine it.
-        yield* reg.setEnabled("brand-new", true)
+        // Operator can still explicitly disable a skill; that choice is
+        // durable and must survive the next sync round (live disabled-set,
+        // unchanged from before).
+        yield* reg.setEnabled("brand-new", false)
         const round2 = yield* syncUserSkills(
           reg,
           { manifests: [user("previously-approved"), user("brand-new")], warnings: [] },
@@ -147,7 +147,7 @@ describe("syncUserSkills", () => {
         expect(round2.quarantined).toEqual([])
         expect(
           (yield* reg.catalog()).find((e) => e.id === "brand-new")?.enabled,
-        ).toBe(true)
+        ).toBe(false)
       }).pipe(Effect.provide(SkillRegistry.Default)),
     )
   })
