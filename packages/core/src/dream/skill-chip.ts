@@ -2,8 +2,9 @@
  * skill-chip.ts — pure mapping from skill_improvement DreamOps to
  * SuggestedActions.propose inputs. No I/O. Dream applyOps owns emission.
  *
- * Policy (operator decision A, 2026-07-14):
- *   - mode=create → actionType create_skill (quarantined disabled on accept)
+ * Policy (operator decision A, 2026-07-14; quarantine-on-create superseded
+ * 2026-07-22, see user-skills-loader.ts docstring):
+ *   - mode=create → actionType create_skill (registers ENABLED on accept)
  *   - mode=update → actionType task (rewrite existing user skill under ~/.luna/skills)
  *   - NEVER auto-apply skill files from dream
  */

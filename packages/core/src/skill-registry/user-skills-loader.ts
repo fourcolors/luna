@@ -21,6 +21,11 @@
  * Enabled state survives re-registration (the registry's live disabled-set;
  * see skill-registry.ts). Built-in ids win conflicts — a user skill cannot
  * shadow a built-in.
+ *
+ * New skills register ENABLED by default (Chairman decision, 2026-07-22,
+ * superseding the 2026-07-14 quarantine-on-create policy). The operator can
+ * still disable any skill explicitly from the Skills tab at any time — that
+ * choice is durable and survives re-sync (the live disabled-set below).
  */
 import { Effect } from "effect"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
@@ -132,14 +137,11 @@ const sameManifest = (a: SkillManifest, b: SkillManifest): boolean =>
 
 export interface SyncUserSkillsOptions {
   /**
-   * Ids the operator has already decided on (any skill_preferences row).
-   * A scanned skill NOT in this set and not already registered is NEW and
-   * registers DISABLED (quarantine) — the operator enables it once in the
-   * Skills tab. Review finding: the agent itself can write ~/.luna/skills
-   * (local-shell full access shipped), so auto-enabling new files would be
-   * a persistent prompt-injection channel; the operator's toggle is the
-   * approval gate, consistent with propose→approve everywhere else.
-   * Omitted (undefined) = no quarantine (unit-test convenience).
+   * Formerly gated the quarantine-on-create decision (superseded
+   * 2026-07-22 — see the module docstring). Kept as a no-op parameter so
+   * existing callers/tests compile unchanged; no longer read by
+   * `syncUserSkills`. A future policy that needs "ids the operator has
+   * already seen" can still source it from `SkillPrefsStore.knownIds()`.
    */
   readonly approvedIds?: ReadonlySet<string>
 }
@@ -158,7 +160,10 @@ export const syncUserSkills = (
   readonly updated: number
   readonly removed: number
   readonly conflicts: ReadonlyArray<string>
-  /** NEW skills registered disabled, awaiting operator enable. */
+  /**
+   * Always empty since the 2026-07-22 decision (kept for API stability —
+   * new skills no longer quarantine on create).
+   */
   readonly quarantined: ReadonlyArray<string>
 }> =>
   Effect.gen(function* () {
@@ -184,20 +189,10 @@ export const syncUserSkills = (
       }
       const cur = existingUser.get(id)
       if (cur === undefined) {
+        // Registers enabled (registry.register's default) — no quarantine
+        // step. See module docstring for the 2026-07-22 decision.
         yield* registry.register(manifest).pipe(Effect.catchAll(() => Effect.void))
         added++
-        if (
-          options.approvedIds !== undefined &&
-          !options.approvedIds.has(id)
-        ) {
-          // Never seen, never decided → disabled until the operator says so.
-          // setEnabled also write-throughs a row, so the quarantine fires
-          // exactly once per skill (it is "approved-as-disabled" after).
-          yield* registry
-            .setEnabled(id, false)
-            .pipe(Effect.catchAll(() => Effect.void))
-          quarantined.push(id)
-        }
       } else if (!sameManifest(cur, manifest)) {
         yield* registry.unregister(id)
         yield* registry.register(manifest).pipe(Effect.catchAll(() => Effect.void))

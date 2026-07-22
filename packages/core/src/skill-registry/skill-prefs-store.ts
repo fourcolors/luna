@@ -48,10 +48,10 @@ export interface SkillPrefsApi {
   readonly disabledIds: () => Effect.Effect<ReadonlyArray<string>>
   /**
    * Every id with ANY row (enabled or disabled) — "the operator has seen
-   * and decided on this skill". Drives the new-user-skill quarantine: a
-   * scanned skill with no row has never been approved and registers
-   * disabled (review finding: auto-enabling agent-writable SKILL.md files
-   * is a persistent prompt-injection channel).
+   * and decided on this skill". No longer drives a quarantine decision
+   * (superseded 2026-07-22 — new user skills register enabled by default,
+   * see user-skills-loader.ts); kept as a general-purpose query in case a
+   * future feature needs "ids the operator has touched."
    */
   readonly knownIds: () => Effect.Effect<ReadonlyArray<string>>
   /** Upsert the toggle delta. Infallible by signature — a SQLite failure

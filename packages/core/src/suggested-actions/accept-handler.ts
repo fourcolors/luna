@@ -48,8 +48,7 @@ const PROMPT_PREFACE: Record<string, string> = {
   research: "Research task — investigate thoroughly and report findings.",
   create_skill:
     "Create a new Luna skill: author a SKILL.md under ~/.luna/skills/<slug>/ " +
-    "following the skill format. It will be registered DISABLED (quarantined) " +
-    "until the operator enables it.",
+    "following the skill format. It will be registered and ENABLED immediately.",
   create_workflow:
     "Create and work through a workflow to accomplish the following.",
 }
