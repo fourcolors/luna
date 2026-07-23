@@ -1489,7 +1489,32 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.querySelector('.msg.assistant .msg-copy')).not.toBeNull()
     })
 
-    it('Scenario: a rejected clipboard write leaves the glyph unchanged (no false "copied")', async () => {
+    it('Scenario: a rejected clipboard write falls back to execCommand and still confirms (regression: #60)', async () => {
+      // Root cause of the "copy no longer works" regression: chat panels
+      // became independent floating native windows (#274/#320), so a copy
+      // click can land on a panel that isn't the OS's key window yet —
+      // WKWebView then rejects the async navigator.clipboard.writeText for
+      // that non-key window. Previously a reject was swallowed silently (no
+      // fallback, no confirmation, nothing copied). Now it retries via the
+      // synchronous execCommand('copy') path, which isn't gated on
+      // key-window status.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'something' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'something' } })
+      const btn = chat.querySelector('.msg.assistant .msg-copy') as HTMLButtonElement
+
+      ;(navigator as any).clipboard = {
+        writeText: () => Promise.reject(new Error('denied for non-key window')),
+      }
+      const execSpy = vi.fn(() => true)
+      ;(document as any).execCommand = execSpy
+      btn.click()
+      await Promise.resolve()
+      await Promise.resolve()   // flush the .then(flashDone, legacyCopy) rejection branch
+      expect(execSpy).toHaveBeenCalledWith('copy')
+      expect(btn.dataset.copied).toBe('1')
+    })
+
+    it('Scenario: a rejected clipboard write with no working fallback leaves the glyph unchanged (no false "copied")', async () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'something' })
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'something' } })
       const btn = chat.querySelector('.msg.assistant .msg-copy') as HTMLButtonElement
@@ -1497,7 +1522,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(navigator as any).clipboard = {
         writeText: () => Promise.reject(new Error('insecure context')),
       }
+      // Genuinely unrecoverable environment (e.g. execCommand unsupported too).
+      ;(document as any).execCommand = () => { throw new Error('not supported'); }
       btn.click()
+      await Promise.resolve()
       await Promise.resolve()
       // No confirmation state, and the copy glyph (two squares = a <rect>) stays.
       expect(btn.dataset.copied).toBeUndefined()
