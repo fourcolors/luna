@@ -160,6 +160,11 @@ export interface ChatPanelProps {
   readonly onDismissSuggestion?: (id: string) => void
   /** Called when the user clicks "see all" — opens the actions panel. */
   readonly onSeeAllSuggestions?: () => void
+  // ── Conversation forking (#221) ────────────────────────────────────────
+  /** Pending fork markers for the active thread. */
+  readonly forkProposals?: ReadonlyArray<import("@luna/ui-shared").ForkProposalWire>
+  readonly onAcceptFork?: (proposalId: string) => void
+  readonly onDismissFork?: (proposalId: string) => void
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
@@ -329,6 +334,47 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
             <For each={thread().messages}>
               {(m) => <MessageBubble message={m} />}
             </For>
+            {/* ── Fork proposals (#221) — click-to-enter sibling thread ── */}
+            <Show when={props.forkProposals && props.onAcceptFork && props.onDismissFork}>
+              <For each={(props.forkProposals ?? []).filter((p) => p.status === "pending")}>
+                {(fp) => (
+                  <div
+                    class="bubble assistant"
+                    style={{
+                      "border-left": "2px solid var(--color-ring-primary, #8ab4f8)",
+                      "padding-left": "0.5rem",
+                      "margin-top": "0.5rem",
+                    }}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div class="bubble-role muted small">Forked topic</div>
+                    <div style={{ "font-weight": "600", margin: "0.2rem 0" }}>{fp.title}</div>
+                    <div class="muted small" style={{ "margin-bottom": "0.3rem" }}>
+                      {fp.summary}
+                    </div>
+                    <div style={{ display: "flex", gap: "0.4rem", "flex-wrap": "wrap" }}>
+                      <button
+                        type="button"
+                        class="chip small"
+                        style={{ color: "var(--color-success, #4ade80)" }}
+                        onClick={() => props.onAcceptFork!(fp.id)}
+                      >
+                        Continue in new thread →
+                      </button>
+                      <button
+                        type="button"
+                        class="chip small"
+                        style={{ color: "var(--color-muted, #888)" }}
+                        onClick={() => props.onDismissFork!(fp.id)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </For>
+            </Show>
             {/* ── Suggested action inline chip ────────────────────────────
                 Shows the NEWEST proposed action (highest createdAt) when
                 handlers are wired in — matching Moon's chip. The store array is

@@ -37,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.57",
+      "version": "0.0.59",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -80,6 +80,7 @@
         "@luna/secret-tools": "workspace:*",
         "@luna/skill-tools": "workspace:*",
         "@luna/suggested-actions-tools": "workspace:*",
+        "@luna/thread-tools": "workspace:*",
         "@luna/tools": "workspace:*",
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-transport": "workspace:*",
@@ -382,6 +383,24 @@
       "version": "0.0.1",
       "dependencies": {
         "@luna/core": "workspace:*",
+        "@luna/tools": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.202",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
+        "zod": "^4.0.0",
+      },
+    },
+    "packages/thread-tools": {
+      "name": "@luna/thread-tools",
+      "version": "0.0.1",
+      "dependencies": {
         "@luna/tools": "workspace:*",
         "effect": "^3.21.0",
       },
@@ -722,6 +741,8 @@
     "@luna/skill-tools": ["@luna/skill-tools@workspace:packages/skill-tools"],
 
     "@luna/suggested-actions-tools": ["@luna/suggested-actions-tools@workspace:packages/suggested-actions-tools"],
+
+    "@luna/thread-tools": ["@luna/thread-tools@workspace:packages/thread-tools"],
 
     "@luna/tools": ["@luna/tools@workspace:packages/tools"],
 

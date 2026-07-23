@@ -61,6 +61,7 @@ const CLIENT_INFO = { name: "luna-web", version: "0.0.1", platform: "browser" } 
 const selectThreadList = (state: UIState) => state.threadList
 const selectSelectedThreadId = (state: UIState) => state.selectedThreadId
 const selectSuggestedActions = (state: UIState) => state.suggestedActions
+const selectForkProposals = (state: UIState) => state.forkProposals
 const selectMcpCapable = (state: UIState): boolean => state.capabilities.mcpApps === true
 
 /**
@@ -137,6 +138,9 @@ export interface LunaData {
   readonly suggestedActions: ReadonlyArray<SuggestedActionWire>
   /** Accept (auto-executes server-side) or dismiss one suggested action. */
   readonly respondToAction: (actionId: string, decision: "accept" | "dismiss") => void
+  /** Pending fork markers for the active thread (#221). */
+  readonly forkProposals: ReadonlyArray<import("@luna/ui-shared").ForkProposalWire>
+  readonly respondToFork: (proposalId: string, decision: "accept" | "dismiss") => void
   readonly send: (frame: ClientFrame) => void
   /** Subscribe to every raw ServerFrame as it arrives, in addition to the
    *  reducer dispatch. For frame types the reducer intentionally no-ops
@@ -180,6 +184,7 @@ export function useLunaData(): LunaData {
   const threadList = useUiSelector(store, selectThreadList)
   const selectedThreadId = useUiSelector(store, selectSelectedThreadId)
   const suggestedActionsByThread = useUiSelector(store, selectSuggestedActions)
+  const forkProposalsByThread = useUiSelector(store, selectForkProposals)
   const mcpCapable = useUiSelector(store, selectMcpCapable)
   const dispatch = store.dispatch
   // Reactive persisted config (the Settings panel edits url/token/model/account);
@@ -296,7 +301,17 @@ export function useLunaData(): LunaData {
         if (frame.type === "open-artifact-widget") {
           setFocusArtifact({ id: frame.artifactId, nonce: ++focusNonceRef.current })
         } else if (frame.type === "widget-open") {
-          if (WIDGET_DIRECTORY.some((w) => w.kind === frame.kind)) {
+          // #221: fork accept opens a chat panel pinned to the child thread.
+          // Prefer deep-link navigation so the operator actually lands there
+          // (widget-open alone only focused the existing chat panel).
+          const threadParam = frame.params?.thread
+          if (
+            frame.kind === "chat" &&
+            typeof threadParam === "string" &&
+            threadParam.length > 0
+          ) {
+            requestDeepLink(threadParam)
+          } else if (WIDGET_DIRECTORY.some((w) => w.kind === frame.kind)) {
             setWidgetOpen({ kind: frame.kind, nonce: ++widgetOpenNonceRef.current })
           }
         } else if (frame.type === "mcp-resource-result" || frame.type === "mcp-tool-result") {
@@ -315,7 +330,7 @@ export function useLunaData(): LunaData {
           }
         }
       }),
-    [onServerFrame],
+    [onServerFrame, requestDeepLink],
   )
 
   // Drop the grace timer on unmount so a late fire cannot touch a dead store.
@@ -689,6 +704,21 @@ export function useLunaData(): LunaData {
     [selectedThreadId, send],
   )
 
+  const forkProposals = useMemo(() => {
+    const threadId = selectedThreadId
+    if (!threadId) return []
+    return forkProposalsByThread.get(threadId) ?? []
+  }, [selectedThreadId, forkProposalsByThread])
+
+  const respondToFork = useCallback(
+    (proposalId: string, decision: "accept" | "dismiss"): void => {
+      const threadId = selectedThreadId
+      if (!threadId) return
+      send({ type: "fork-proposal-respond", threadId, proposalId, decision })
+    },
+    [selectedThreadId, send],
+  )
+
   const mcp = useMemo<WebMcpRelay | undefined>(
     () => (mcpCapable ? { readResource: mcpReadResource, callTool: mcpCallTool } : undefined),
     [mcpCapable, mcpReadResource, mcpCallTool],
@@ -704,6 +734,8 @@ export function useLunaData(): LunaData {
     threadNote,
     suggestedActions,
     respondToAction,
+    forkProposals,
+    respondToFork,
     send,
     onServerFrame,
     config,

@@ -435,6 +435,13 @@ import {
   parseExternalMcpServersEnv,
   type LiveExternalServer,
 } from "./external-mcp-app-registry.js"
+import {
+  ThreadToolsLayer,
+  ThreadToolsService,
+  ForkProposalStore,
+  toForkProposalWire,
+  FORK_CHILD_TAG,
+} from "@luna/thread-tools"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
@@ -740,6 +747,7 @@ export const ThreadToolsProviderLayer = (
       const skillTools = yield* SkillToolsService
       const widgetTools = yield* WidgetToolsService // PRD Part C/W4: widget_write
       const suggestedActionTools = yield* SuggestedActionToolsService // suggest_action
+      const threadTools = yield* ThreadToolsService // fork_thread (#221)
       // PRD Part B (Skills): the managed skill catalog. decorate() reads
       // promptSnapshotSync() — synchronous and never stale (the registry
       // rebuilds it inside every mutation), so a settings toggle is
@@ -939,6 +947,7 @@ export const ThreadToolsProviderLayer = (
           const widgetThreadTools = widgetTools.createSessionBinding()
           const suggestedActionThreadTools =
             suggestedActionTools.createSessionBinding()
+          const forkThreadTools = threadTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -949,6 +958,7 @@ export const ThreadToolsProviderLayer = (
               secretThreadTools.serverName,
               skillThreadTools.serverName,
               widgetThreadTools.serverName,
+              forkThreadTools.serverName,
             ].join(", "),
           )
           // Sync read of the live-refresh holder — refreshed every
@@ -975,6 +985,7 @@ export const ThreadToolsProviderLayer = (
             localShellThreadTools.systemPromptAddendum,
             secretThreadTools.systemPromptAddendum,
             suggestedActionThreadTools.systemPromptAddendum,
+            forkThreadTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -988,6 +999,7 @@ export const ThreadToolsProviderLayer = (
             [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
             [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
             [suggestedActionThreadTools.serverName]: suggestedActionThreadTools.server, // suggest_action (propose follow-ups)
+            [forkThreadTools.serverName]: forkThreadTools.server, // #221 fork_thread (propose sibling)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
             // HOLE 1 FIX: operator MCP servers are only mounted when the
             // thread's permission gate (canUseTool) will actually run.
@@ -1062,6 +1074,8 @@ export const ThreadToolsProviderLayer = (
               localShellThreadTools.bindSession(sessionId)
               secretThreadTools.bindSession(sessionId)
               suggestedActionThreadTools.bindSession(sessionId)
+              // Fork-loop guard: threads tagged forked-from-parent cannot re-propose.
+              forkThreadTools.bindSession(sessionId, { tags: opts.tags })
               if (sandboxLocalShell.enabled) {
                 const reattach = () =>
                   attachSandboxLocalShell({
@@ -1088,6 +1102,7 @@ export const ThreadToolsProviderLayer = (
               // delete() on an absent key (sandbox disabled) is a safe no-op.
               sandboxReattachers.delete(sessionId)
               localShellThreadTools.clearSession(sessionId)
+              forkThreadTools.clearSession(sessionId)
             },
           }
         },
@@ -2369,6 +2384,8 @@ export const buildBaseLayer = (
     // the service (same memoized instance the chat layer + accept handle use).
     Layer.provide(SuggestedActionToolsLayer),
     Layer.provide(suggestedActionsL),
+    // #221 conversation forking: fork_thread MCP tool + in-memory proposal store.
+    Layer.provide(ThreadToolsLayer),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(mcpServerStoreL), // official MCP support: durable registry read by boot-sync
     Layer.provide(mcpRegistryL), // official MCP support: runtime projection read by decorate()
@@ -4056,6 +4073,100 @@ const buildServerLayer = (
         },
       }
 
+      // #221 conversation forking: list/respond/changes for ui-ws.
+      const forkStore = yield* ForkProposalStore
+      const threadForksHandle = {
+        listPending: (threadId: string) =>
+          forkStore.listPendingByThread(threadId).pipe(
+            Effect.map((rows) => rows.map(toForkProposalWire)),
+          ),
+        changes: Stream.map(forkStore.changes, toForkProposalWire),
+        respond: (input: {
+          readonly threadId: string
+          readonly proposalId: string
+          readonly decision: "accept" | "dismiss"
+        }) =>
+          Effect.gen(function* () {
+            if (input.decision === "dismiss") {
+              const dismissed = yield* forkStore.dismiss(
+                input.proposalId,
+                input.threadId,
+              )
+              return dismissed
+                ? { ok: true as const }
+                : { ok: false as const, message: "proposal not found or not pending" }
+            }
+
+            // Claim first (atomic pending → accepting) so a concurrent second
+            // accept cannot create an orphaned empty thread.
+            const claimed = yield* forkStore.claim(input.proposalId, input.threadId)
+            if (claimed === null) {
+              return {
+                ok: false as const,
+                message: "proposal not found or not pending",
+              }
+            }
+
+            // Resume-fork: inherit parent SDK session when known.
+            let resumeFromSessionId: string | undefined
+            if (Option.isSome(threadRegistryOption)) {
+              const row = yield* threadRegistryOption.value.get(input.threadId)
+              if (row?.sdkSessionId) resumeFromSessionId = row.sdkSessionId
+            }
+
+            const child = yield* chat.createThread({
+              title: claimed.title,
+              parentSessionId: input.threadId,
+              tags: [FORK_CHILD_TAG],
+              ...(resumeFromSessionId !== undefined
+                ? { resumeFromSessionId }
+                : {}),
+            })
+
+            const accepted = yield* forkStore.completeAccept(
+              claimed.id,
+              input.threadId,
+              child.id,
+            )
+            if (accepted === null) {
+              return {
+                ok: false as const,
+                message: "proposal already resolved",
+              }
+            }
+
+            // Seed the sibling so the agent turn starts on the pivoted topic.
+            yield* chat.send(child.id, claimed.seed)
+
+            // Parent breadcrumb: one-line note that the topic moved.
+            yield* chat.deliverResult({
+              threadId: input.threadId,
+              text: `↪ Moved "${claimed.title}" to a new thread.`,
+              source: "thread-fork",
+              label: claimed.title,
+            })
+
+            // Telemetry for accept-rate gating of future auto-fork.
+            // (EventSink is optional; best-effort via console when sparse.)
+            writeSync(
+              1,
+              `[luna/thread-fork] accepted "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
+            )
+
+            return {
+              ok: true as const,
+              childThreadId: child.id,
+            }
+          }).pipe(
+            Effect.catchAll((e) =>
+              Effect.succeed({
+                ok: false as const,
+                message: e instanceof Error ? e.message : String(e),
+              }),
+            ),
+          ),
+      }
+
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
       // for the agent — they never reach clients, and stripping here (not
@@ -4377,6 +4488,7 @@ const buildServerLayer = (
         artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
         workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery
         suggestedActions: suggestedActionsHandle, // Suggested Actions: accept/dismiss routing
+        threadForks: threadForksHandle, // #221 conversation forking: propose/accept
         vaultService: vaultWsHandle, // Vault V1: registry CRUD (values never cross down)
         localShellBridge,
         onLocalShellRelease: reattachSandbox,

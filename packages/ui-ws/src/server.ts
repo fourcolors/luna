@@ -487,6 +487,33 @@ export interface UIWebSocketServerConfig {
     }) => import("effect").Effect.Effect<void>
   } | null
   /**
+   * Optional conversation-forking handle (#221). When provided, the server
+   * advertises `capabilities.threadForks`, routes `fork-proposal-respond`,
+   * replays pending proposals on subscribe, and fans out live
+   * `fork-proposal-update` frames from `changes`. Accept creates the sibling
+   * thread (resume-fork), seeds it, and opens a chat widget for the accepting
+   * connection.
+   */
+  readonly threadForks?: {
+    readonly listPending: (
+      threadId: string,
+    ) => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").ForkProposalWire>
+    >
+    readonly respond: (input: {
+      readonly threadId: string
+      readonly proposalId: string
+      readonly decision: "accept" | "dismiss"
+    }) => import("effect").Effect.Effect<{
+      readonly ok: boolean
+      readonly childThreadId?: string
+      readonly message?: string
+    }>
+    readonly changes: import("effect").Stream.Stream<
+      import("./protocol.js").ForkProposalWire
+    >
+  } | null
+  /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
@@ -1050,6 +1077,7 @@ export const startUIWebSocketServer = (
     const artifactStore = config.artifactStore ?? null
     const workflowGallery = config.workflowGallery ?? null
     const suggestedActions = config.suggestedActions ?? null
+    const threadForks = config.threadForks ?? null
     const vaultService = config.vaultService ?? null
     const modelRoutingService = config.modelRoutingService ?? null
     const feedbackSink = config.feedbackSink ?? null
@@ -1342,6 +1370,28 @@ export const startUIWebSocketServer = (
       )
     }
 
+    // #221: live fork-proposal updates → every connected client. Clients
+    // filter by the thread they have open. Seed never crosses the wire.
+    if (threadForks !== null) {
+      yield* Effect.forkScoped(
+        threadForks.changes.pipe(
+          Stream.runForEach((proposal) =>
+            Effect.gen(function* () {
+              const sockets = yield* Ref.get(activeSockets)
+              for (const sock of sockets) {
+                send(sock, {
+                  type: "fork-proposal-update",
+                  threadId: proposal.parentThreadId,
+                  proposal,
+                })
+              }
+            }),
+          ),
+          Effect.catchAllCause(() => Effect.void),
+        ),
+      )
+    }
+
     // The connection-handler effect: it OWNS its own scope (so we can use
     // addFinalizer for queue cleanup) but lives until the ws closes —
     // which we signal via a Deferred resolved from the ws "close" handler.
@@ -1406,6 +1456,7 @@ export const startUIWebSocketServer = (
                 artifacts: artifactStore !== null,
                 workflows: workflowGallery !== null,
                 suggestedActions: suggestedActions !== null,
+                threadForks: threadForks !== null,
                 vault: vaultService !== null,
                 mcpApps: mcpAppHost !== null,
                 effortSelection: chat !== null,
@@ -1442,6 +1493,8 @@ export const startUIWebSocketServer = (
             // PRD Part C/W3: read-only workflow gallery over the jobs store.
             workflows: workflowGallery !== null,
             suggestedActions: suggestedActions !== null,
+            // Conversation forking (#221): fork markers + click-to-enter.
+            threadForks: threadForks !== null,
             // Luna Vault (V1): credential registry + put/delete/sync routing.
             // Clients hide the Vault section when absent/false.
             vault: vaultService !== null,
@@ -2093,7 +2146,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null || feedbackSink !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || threadForks !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null || feedbackSink !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -2238,12 +2291,56 @@ export const startUIWebSocketServer = (
                     }
                     return
                   }
+                  case "fork-proposal-respond": {
+                    // Accept (create sibling + open chat) or dismiss a fork
+                    // marker. Live updates fan out via threadForks.changes.
+                    if (threadForks !== null) {
+                      const result = yield* threadForks
+                        .respond({
+                          threadId: frame.threadId,
+                          proposalId: frame.proposalId,
+                          decision: frame.decision,
+                        })
+                        .pipe(
+                          Effect.catchAllCause(() =>
+                            Effect.succeed({
+                              ok: false as const,
+                              message: "fork respond failed",
+                            }),
+                          ),
+                        )
+                      if (
+                        result.ok &&
+                        frame.decision === "accept" &&
+                        result.childThreadId
+                      ) {
+                        send(ws, {
+                          type: "widget-open",
+                          kind: "chat",
+                          params: { thread: result.childThreadId },
+                        })
+                      }
+                    }
+                    return
+                  }
                   case "subscribe": {
                     if (chat === null) return
                     yield* subscribeChatThread(frame.threadId)
                     // Make this connection the secret-entry target for the
                     // thread, so the agent's `request_secret` tool can reach it.
                     registerSecretClient(frame.threadId)
+                    // Replay pending fork proposals for this thread (not part
+                    // of the chat snapshot stream).
+                    if (threadForks !== null) {
+                      const proposals = yield* threadForks
+                        .listPending(frame.threadId)
+                        .pipe(Effect.catchAllCause(() => Effect.succeed([])))
+                      send(ws, {
+                        type: "fork-proposal-set",
+                        threadId: frame.threadId,
+                        proposals,
+                      })
+                    }
                     // Smart bar: the snapshot frame (sent by the forwarder fiber
                     // after subscribe completes) triggers a push — no need to
                     // push here too, as it would add an extra frame before the
