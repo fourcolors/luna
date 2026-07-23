@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Effect } from "effect"
 import { MemoryReranker, RerankError, type RerankCandidateInput } from "@luna/core"
@@ -537,6 +538,109 @@ describe("CrossEncoderRerankerLayer", () => {
       }).pipe(Effect.provide(CrossEncoderRerankerLayer({ url: "http://cross-encoder.test", timeoutMs: 200 }))),
     )
     expect(exit).toMatchObject({ _tag: "Success", value: [{ id: "a", llmScore: 88 }] })
+  })
+
+  // issue #338: mocked hangingResponse tests can pass while a real runtime
+  // (Bun fetch + AbortSignal.any + Effect.timeoutFail) fails to enforce the
+  // ceiling. Drive a real loopback HTTP server that delays the scoring
+  // response past the budget and assert the typed timeout fires under the
+  // actual fetch implementation of this runtime.
+  it("real fetch: scoring past the per-call budget fails typed timeout (#338)", async () => {
+    process.env["LUNA_RERANK_CE_PROBE_TIMEOUT_MS"] = "5000"
+    // Restore real fetch - the suite's hanging-mock helpers swap globalThis.fetch.
+    restoreFetch()
+
+    const budgetMs = 400
+    const scoreDelayMs = 2500
+    let server: Server | undefined
+    const port = await new Promise<number>((resolve, reject) => {
+      server = createServer((req, res) => {
+        if (req.url === "/health") {
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify({ status: "ok" }))
+          return
+        }
+        if (req.url === "/v1/rerank") {
+          let raw = ""
+          req.on("data", (chunk) => {
+            raw += chunk
+          })
+          req.on("end", () => {
+            const parsed = JSON.parse(raw || "{}") as { documents?: unknown[] }
+            const n = Array.isArray(parsed.documents) ? parsed.documents.length : 1
+            // Probe is 3 documents and must stay fast; scoring is deliberately slow.
+            const delayMs = n === 3 ? 20 : scoreDelayMs
+            const results =
+              n === 3
+                ? [
+                    { index: 0, relevance_score: 0.91 },
+                    { index: 1, relevance_score: 0.08 },
+                    { index: 2, relevance_score: 0.55 },
+                  ]
+                : Array.from({ length: n }, (_, i) => ({
+                    index: i,
+                    relevance_score: 0.88,
+                  }))
+            setTimeout(() => {
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify({ results }))
+            }, delayMs)
+          })
+          return
+        }
+        res.writeHead(404)
+        res.end()
+      })
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server!.address()
+        if (addr === null || typeof addr === "string") {
+          reject(new Error("expected TCP address"))
+          return
+        }
+        resolve(addr.port)
+      })
+    })
+
+    const started = Date.now()
+    try {
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const reranker = yield* MemoryReranker
+          return yield* reranker.rerank({
+            queryText: "query",
+            candidates: candidates(["a"]),
+          })
+        }).pipe(
+          Effect.provide(
+            CrossEncoderRerankerLayer({
+              url: `http://127.0.0.1:${port}`,
+              timeoutMs: budgetMs,
+            }),
+          ),
+        ),
+      )
+      const elapsed = Date.now() - started
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag !== "Failure" || exit.cause._tag !== "Fail") {
+        throw new Error(`expected Fail cause, got ${String(exit)}`)
+      }
+      expect(exit.cause.error).toBeInstanceOf(RerankError)
+      expect((exit.cause.error as RerankError).op).toBe("timeout")
+      expect((exit.cause.error as RerankError).message).toMatch(
+        /per-call budget of 400ms|timed out after 400ms/,
+      )
+      // Must fail near the budget, not after the 2.5s slow body completes.
+      expect(elapsed).toBeLessThan(scoreDelayMs)
+      expect(elapsed).toBeGreaterThanOrEqual(budgetMs - 50)
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        if (!server) {
+          resolve()
+          return
+        }
+        server.close((err) => (err ? reject(err) : resolve()))
+      })
+    }
   })
 
   it("calibration rejects a logit-scale server (raw scores outside [0,1]) so the gate can't degenerate to sign", async () => {
