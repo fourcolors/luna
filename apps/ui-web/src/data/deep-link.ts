@@ -33,7 +33,6 @@ function tauri(): TauriGlobal["__TAURI__"] {
  * unknown threads return an empty stream and never confirm).
  */
 export const DEEP_LINK_CONFIRM_GRACE_MS = 4_000
-export const DEEP_LINK_MAX_GRACE_MS = 15_000
 
 export type DeepLinkShieldDecision =
   | { readonly action: "keep" }

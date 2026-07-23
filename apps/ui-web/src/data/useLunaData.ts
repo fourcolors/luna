@@ -27,7 +27,6 @@ import {
 import { loadConfig, saveConfig, type PersistedConfig } from "./config"
 import {
   DEEP_LINK_CONFIRM_GRACE_MS,
-  DEEP_LINK_MAX_GRACE_MS,
   deepLinkShieldDecision,
   onDeepLinkThread,
   takeLaunchThreadId,
