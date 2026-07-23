@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-capture-window-screenshot"
+description = "Allows capturing a PNG screenshot of the calling window via native macOS window compositing (feedback flow)"
+
+[permission.commands]
+allow = [
+  "capture_window_screenshot"
+]
