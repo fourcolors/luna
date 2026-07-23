@@ -2211,6 +2211,58 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
     })
 
+    it('Scenario: bug #56 — a fast-path resubscribe also refreshes an already-open thread drawer', async () => {
+      // Root cause: subscribe-only resync paths never sent list-threads, so a
+      // drawer that was already open (persisted `luna.sidebar.open` pref, or
+      // left open across a reconnect) never got fed a thread-list frame and
+      // rendered "No threads yet." forever even though threads existed.
+      const m = M()
+      stubInvoke()
+      m.State.ws = fakeOpenSocket()          // WebSocketEngine.isConnected() must read true
+      m.State.activeThreadId = 'live-thread'
+      m.State.skipLastThreadFile = false
+      m.State.threadDrawerOpen = true
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    it('Scenario: a fast-path resubscribe leaves a CLOSED drawer alone (no spurious list-threads)', async () => {
+      const m = M()
+      stubInvoke()
+      m.State.ws = fakeOpenSocket()
+      m.State.activeThreadId = 'live-thread'
+      m.State.skipLastThreadFile = false
+      m.State.threadDrawerOpen = false
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    it('Scenario: bug #56 — a cold-start file-based subscribe also refreshes an already-open thread drawer', async () => {
+      const m = M()
+      const invoke = stubInvoke((cmd) =>
+        Promise.resolve(cmd === 'get_last_thread_id' ? 'file-thread' : null),
+      )
+      m.State.ws = fakeOpenSocket()
+      m.State.activeThreadId = null
+      m.State.skipLastThreadFile = false
+      m.State.threadDrawerOpen = true
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(invoke).toHaveBeenCalledWith('get_last_thread_id')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'file-thread' })
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
     it('Scenario: a server switch ignores BOTH the stale in-memory id and the file, listing fresh', async () => {
       const m = M()
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
