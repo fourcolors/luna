@@ -97,7 +97,7 @@ export function SettingsPanel({ ctx }) {
     } catch (error) {
       if (
         error instanceof Error &&
-        (error.name === "RestartRefusedError" || error.message.startsWith("Server restart HTTP error:"))
+        (error.name === "RestartRefusedError" || error.name === "RestartHttpError" || error.message.startsWith("Server restart HTTP error:"))
       ) {
         setRestartError(error.message);
         setRestarting(false);

@@ -27,6 +27,7 @@ import {
 import { loadConfig, saveConfig, type PersistedConfig } from "./config"
 import {
   DEEP_LINK_CONFIRM_GRACE_MS,
+  DEEP_LINK_MAX_GRACE_MS,
   deepLinkShieldDecision,
   onDeepLinkThread,
   takeLaunchThreadId,
@@ -115,6 +116,13 @@ export interface FocusArtifactSignal {
 
 export class RestartRefusedError extends Error {
   override readonly name = "RestartRefusedError"
+}
+
+export class RestartHttpError extends Error {
+  override readonly name = "RestartHttpError"
+  constructor(readonly status: number) {
+    super(`Server restart HTTP error: ${status}`)
+  }
 }
 
 export interface LunaData {
@@ -242,6 +250,7 @@ export function useLunaData(): LunaData {
   const deepLinkConfirmedRef = useRef(false)
   const deepLinkGraceUntilRef = useRef(0)
   const deepLinkGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const deepLinkMaxGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dlNonce = useRef(0)
   const [deepLinkNonce, setDeepLinkNonce] = useState(0)
   const [deepLinkDrained, setDeepLinkDrained] = useState(false)
@@ -322,23 +331,31 @@ export function useLunaData(): LunaData {
           frame.threadId === routedDeepLinkRef.current
         ) {
           // Deep-linked thread is real (subscribe always snapshots known ids).
-          // Clear the grace timer — the top-50 list shield may stay forever.
+          // Clear grace timers — the top-50 list shield may stay forever.
           deepLinkConfirmedRef.current = true
           if (deepLinkGraceTimerRef.current !== null) {
             clearTimeout(deepLinkGraceTimerRef.current)
             deepLinkGraceTimerRef.current = null
+          }
+          if (deepLinkMaxGraceTimerRef.current !== null) {
+            clearTimeout(deepLinkMaxGraceTimerRef.current)
+            deepLinkMaxGraceTimerRef.current = null
           }
         }
       }),
     [onServerFrame, requestDeepLink],
   )
 
-  // Drop the grace timer on unmount so a late fire cannot touch a dead store.
+  // Drop grace timers on unmount so a late fire cannot touch a dead store.
   useEffect(
     () => () => {
       if (deepLinkGraceTimerRef.current !== null) {
         clearTimeout(deepLinkGraceTimerRef.current)
         deepLinkGraceTimerRef.current = null
+      }
+      if (deepLinkMaxGraceTimerRef.current !== null) {
+        clearTimeout(deepLinkMaxGraceTimerRef.current)
+        deepLinkMaxGraceTimerRef.current = null
       }
     },
     [],
@@ -415,7 +432,7 @@ export function useLunaData(): LunaData {
       body: JSON.stringify({ json: null }),
     })
     if (!res.ok) {
-      throw new Error(`Server restart HTTP error: ${res.status}`)
+      throw new RestartHttpError(res.status)
     }
     // control.restart can now REFUSE (ok:false — e.g. no supervisor detected
     // on the server side); a refused restart must not look like a silent
