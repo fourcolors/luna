@@ -4620,7 +4620,7 @@
       isPinnedWindow() { return !!State.pinnedThread; },
 
       requestList() {
-        if (WebSocketEngine.isConnected()) {
+        if (State.threadDrawerOpen && WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'list-threads' });
         }
       },
@@ -5611,6 +5611,13 @@
         if (!skipFile && State.activeThreadId) {
           Logger.info(`Syncing (fast path): re-subscribing to in-memory thread "${State.activeThreadId}"`);
           this.send({ type: 'subscribe', threadId: State.activeThreadId });
+          // Bug #56: a resubscribe never lists. The drawer's ONLY data source
+          // is the thread-list frame (applyList), and this fast path returns
+          // without ever requesting one — so a drawer that's open at boot
+          // (persisted pref) or stays open across a reconnect renders
+          // "No threads yet." forever even though threads exist. Nudge it
+          // here; requestList() is itself a no-op when the drawer is closed.
+          if (State.threadDrawerOpen) ThreadDrawerEngine.requestList();
           this.startSubscribeTimeout();
           return;
         }
@@ -5660,6 +5667,10 @@
           State.activeThreadId = fileThreadId;
           Logger.info(`Syncing (direct): subscribing to stored id "${fileThreadId}"`);
           this.send({ type: 'subscribe', threadId: fileThreadId });
+          // Bug #56: same gap as the fast path above — a direct/blind
+          // subscribe never lists, so a drawer that's already open (typical
+          // cold app boot with a persisted open pref) stays empty forever.
+          if (State.threadDrawerOpen) ThreadDrawerEngine.requestList();
         } else {
           // No known thread → list threads (subscribes to most-recent or mints fresh).
           Logger.info("No known thread; listing threads instead");
@@ -6106,6 +6117,10 @@
         if (!skipFile && State.activeThreadId) {
           Logger.info(`[PoolEngine] Syncing (fast path): re-subscribing to in-memory thread "${State.activeThreadId}"`);
           this.send({ type: 'subscribe', threadId: State.activeThreadId });
+          // Bug #56 (mirrors WebSocketEngine.syncThread above): a resubscribe
+          // never lists, so a drawer already open at boot/reconnect stays
+          // empty forever without this nudge.
+          if (State.threadDrawerOpen) ThreadDrawerEngine.requestList();
           this.startSubscribeTimeout();
           return;
         }
@@ -6141,6 +6156,8 @@
           State.activeThreadId = fileThreadId;
           Logger.info(`[PoolEngine] Syncing (direct): subscribing to stored id "${fileThreadId}"`);
           this.send({ type: 'subscribe', threadId: fileThreadId });
+          // Bug #56 (mirrors WebSocketEngine.syncThread above).
+          if (State.threadDrawerOpen) ThreadDrawerEngine.requestList();
         } else {
           Logger.info('[PoolEngine] No known thread; listing threads instead');
           State.threadListAutoSelectPending = true;
