@@ -821,8 +821,8 @@ A row click (or Enter/Space on a focused row) switches that thread in place and 
 ✅ **As-built rider (single-window switcher, `a91055d` / #274):** the original geometry-based drag-in redock (left-strip hit test on native window drag, redock arming strip, popped-row greying) proved fragile in real multi-window use and was removed. The sidebar remains a ChatGPT-style in-window switcher; pinned `?thread=…` windows remain spawnable via `open_widget` (⤢ / ⌘-click).
 
 ✅ **Chrome-tab multi-window loop (#380):** restored a **minimal reliable** redock path without replaying the fragile dock geometry:
-- **Drag-out:** HTML5 drag on a sidebar row past a 48px threshold spawns `open_widget('chat', { thread, redockTo })` at the pointer.
-- **Redock:** pinned floaters that know their owner show an explicit **Redock** title-bar button; `redock_thread` focuses the owner, emits `redock-thread` (thread id + optional draft), and closes the floater. No left-strip hit test.
+- **Drag-out / redock evolution:** the long-term interaction contract is **`docs/chrome-tab-interaction.md`** (Chromium TabDragController two-phase model: Attached strip vs Detached OS window, content continuity, strip-band redock). Treat that file as the rulebook for further work.
+- **As-shipped baseline:** pointer pull-out / `open_widget('chat', { thread, redockTo })`, native free-window drag (`startDragging`), optional `begin_redock_drag` preview arming, explicit **Redock** button via `redock_thread`. Do not regress OS-owned motion (`docs/window-drag-snap.md`).
 - One-window-per-thread still comes from `panel_instance_label` (same thread params focus the same instance).
 The drag/snap geometry lives in `docs/window-drag-snap.md`.
 

@@ -2,6 +2,11 @@
 
 Moon panels and artifact cards are independent native macOS windows.
 
+**Related:** thread sidebar pull-out / redock (Chrome-tab model) lives in
+`docs/chrome-tab-interaction.md`. That file is the rulebook for Attached vs
+Detached thread drags. This file remains the law for **OS window** drag and
+resize only.
+
 ## Title bar
 
 - Tauri creates decorated macOS windows with an overlay title bar.

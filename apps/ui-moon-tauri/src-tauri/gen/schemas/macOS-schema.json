@@ -483,10 +483,10 @@
           "markdownDescription": "Allows opening a SYSTEM widget by registry kind (panel-* windows). The registry maps kinds only to shipped pages, so no content input can become a system panel."
         },
         {
-          "description": "Allows the redock_thread command - focus owner, emit redock-thread, close caller",
+          "description": "Allows redock_thread + begin_redock_drag - native drag arm, preview emit, redock close",
           "type": "string",
           "const": "allow-redock-thread",
-          "markdownDescription": "Allows the redock_thread command - focus owner, emit redock-thread, close caller"
+          "markdownDescription": "Allows redock_thread + begin_redock_drag - native drag arm, preview emit, redock close"
         },
         {
           "description": "Allows writing the mode-600 WS connection file",

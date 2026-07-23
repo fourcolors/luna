@@ -1,5 +1,5 @@
 # Redock a pinned chat floater back into its owner window (issue #380).
 [[permission]]
 identifier = "allow-redock-thread"
-description = "Allows the redock_thread command - focus owner, emit redock-thread, close caller"
-commands.allow = ["redock_thread"]
+description = "Allows redock_thread + begin_redock_drag - native drag arm, preview emit, redock close"
+commands.allow = ["redock_thread", "begin_redock_drag"]

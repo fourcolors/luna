@@ -1670,7 +1670,13 @@ async fn open_widget(
         )
     };
     // Singleton (or same-params instance): already open → show + focus.
+    // When the caller passes x/y (drag-out pull / re-drop), also re-place so
+    // an early-spawned floater can track the final drop point without a second
+    // IPC surface from JS.
     if let Some(win) = app.get_webview_window(&label) {
+        if let (Some(px), Some(py)) = (x, y) {
+            let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(px, py)));
+        }
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(label);
@@ -1774,18 +1780,18 @@ fn is_closable_widget_label(label: &str) -> bool {
 
 /// Redock a pinned chat floater into its owner window (issue #380).
 ///
-/// Deliberately geometry-free: the previous drag-release redock used a left-
-/// strip hit test that failed in real multi-window use (#274). This command is
-/// for the **explicit Redock button** (and any future reliable affordance):
-/// focus the owner, emit `redock-thread` with thread id + optional draft, then
-/// close the caller. Returns false (no error) when the call is invalid so the
-/// page can fall back to just closing.
+/// Used by the explicit Redock button and by live drag-release when the floater
+/// center is over the owner's left dock strip. Focuses the owner, emits
+/// `redock-thread` with thread id + optional draft + insert hint, then closes
+/// the caller. Returns false (no error) when the call is invalid so the page
+/// can fall back to just closing.
 #[tauri::command]
 async fn redock_thread(
     window: tauri::WebviewWindow,
     thread_id: String,
     owner_label: String,
     draft: Option<String>,
+    y_ratio: Option<f64>,
 ) -> Result<bool, String> {
     let app = window.app_handle().clone();
     let caller_label = window.label().to_string();
@@ -1808,6 +1814,12 @@ async fn redock_thread(
     let _ = owner.unminimize();
     let _ = owner.show();
     let _ = owner.set_focus();
+    // Clear any live preview chrome before the adopt event.
+    let _ = app.emit_to(
+        tauri::EventTarget::labeled(&owner_label),
+        "redock-preview",
+        serde_json::json!({ "active": false, "threadId": thread_id, "from": caller_label }),
+    );
     app.emit_to(
         tauri::EventTarget::labeled(&owner_label),
         "redock-thread",
@@ -1815,11 +1827,69 @@ async fn redock_thread(
             "threadId": thread_id,
             "draft": draft,
             "from": caller_label,
+            "yRatio": y_ratio,
         }),
     )
     .map_err(|e| e.to_string())?;
     window.close().map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// Pure center-in-rect test (testable without a webview). `(px,py)` is the
+/// floater's center; `(rx,ry,rw,rh)` the owner rect — all in the same px space.
+/// Edges are inclusive so a drop exactly on the border still redocks.
+fn center_in_rect(px: f64, py: f64, rx: f64, ry: f64, rw: f64, rh: f64) -> bool {
+    px >= rx && px <= rx + rw && py >= ry && py <= ry + rh
+}
+
+/// Horizontal proximity to the owner's left dock strip, in `[0, 1]`.
+/// Ramps from 0 outside an approach band to 1 deep inside the strip.
+fn redock_proximity(center_x: f64, owner_x: f64, strip_w: f64, owner_w: f64) -> f64 {
+    let strip_right = owner_x + strip_w;
+    let approach = strip_w.max(80.0); // soft band to the right of the strip
+    if center_x <= strip_right {
+        // Inside strip: full proximity once past the left edge.
+        if center_x < owner_x {
+            return 0.0;
+        }
+        return 1.0;
+    }
+    // To the right of the strip: fall off across `approach` px.
+    let dist = center_x - strip_right;
+    if dist >= approach {
+        return 0.0;
+    }
+    let _ = owner_w; // reserved for future full-window attraction
+    (1.0 - dist / approach).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod redock_geometry_tests {
+    use super::{center_in_rect, redock_proximity};
+
+    #[test]
+    fn center_in_rect_inside_outside_and_edges() {
+        // Owner at (100,100), 400x300 → spans x[100,500], y[100,400].
+        assert!(center_in_rect(300.0, 250.0, 100.0, 100.0, 400.0, 300.0)); // dead center
+        assert!(center_in_rect(100.0, 100.0, 100.0, 100.0, 400.0, 300.0)); // top-left corner
+        assert!(center_in_rect(500.0, 400.0, 100.0, 100.0, 400.0, 300.0)); // bottom-right
+        assert!(!center_in_rect(99.0, 250.0, 100.0, 100.0, 400.0, 300.0)); // just left
+        assert!(!center_in_rect(300.0, 401.0, 100.0, 100.0, 400.0, 300.0)); // just below
+        assert!(!center_in_rect(600.0, 250.0, 100.0, 100.0, 400.0, 300.0)); // far right
+    }
+
+    #[test]
+    fn redock_proximity_ramps_into_strip() {
+        let owner_x = 100.0;
+        let strip = 300.0;
+        // Deep inside strip
+        assert!((redock_proximity(200.0, owner_x, strip, 800.0) - 1.0).abs() < 1e-9);
+        // Far to the right of strip+approach
+        assert!((redock_proximity(1000.0, owner_x, strip, 800.0) - 0.0).abs() < 1e-9);
+        // Just outside strip edge (strip_right = 400): mid approach
+        let mid = redock_proximity(400.0 + 150.0, owner_x, strip, 800.0);
+        assert!(mid > 0.4 && mid < 0.6, "mid proximity was {mid}");
+    }
 }
 
 // ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
@@ -2395,6 +2465,264 @@ fn begin_native_resize(_window: tauri::WebviewWindow, _direction: String) -> Res
     Ok(())
 }
 
+// ── Native drag-to-redock (macOS) ─────────────────────────────────────────────
+//
+// Redock-capable floaters MUST keep AppKit `startDragging` for window motion —
+// a JS setPosition/setSize loop was tried and felt glitchy (same class of lag
+// `begin_native_resize` was written to eliminate). Instead:
+//
+//   1. JS arms `begin_redock_drag` then calls `startDragging` (native move).
+//   2. Rust installs NSEvent monitors (same pattern as native resize).
+//   3. On LeftMouseDragged: pure geometry probe + throttled emit to owner
+//      (insert gap) and to the floater (CSS scale only — never setSize).
+//   4. On LeftMouseUp: emit `redock-drag-ended` so JS can redock with draft.
+//
+// No IPC from JS on the hot path. No modal event loop. Cocoa screen coords.
+
+/// Shared monitor tokens for one redock-drag gesture (main thread only).
+#[cfg(target_os = "macos")]
+struct RedockMonitors {
+    local: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    global: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    ended: bool,
+    last_over: bool,
+    last_prox: f64,
+    last_y: f64,
+}
+
+/// Cocoa-space hit test: floater center vs owner's left dock strip.
+/// Returns `(over, proximity, y_ratio)` with y_ratio 0 at owner top, 1 at bottom.
+#[cfg(target_os = "macos")]
+unsafe fn redock_hit_cocoa(
+    floater: &objc2_app_kit::NSWindow,
+    owner: &objc2_app_kit::NSWindow,
+) -> (bool, f64, f64) {
+    let ff = floater.frame();
+    let of = owner.frame();
+    let ccx = ff.origin.x + ff.size.width / 2.0;
+    let ccy = ff.origin.y + ff.size.height / 2.0;
+    let strip = 300.0_f64.min(of.size.width);
+    let over = center_in_rect(ccx, ccy, of.origin.x, of.origin.y, strip, of.size.height);
+    let proximity = redock_proximity(ccx, of.origin.x, strip, of.size.width);
+    let y_ratio = if of.size.height > 1.0 {
+        ((of.origin.y + of.size.height - ccy) / of.size.height).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    (over, proximity, y_ratio)
+}
+
+/// Arm live redock tracking for the calling floater. Call immediately before
+/// `startDragging()`. Each arm is independent; mouse-up tears monitors down.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn begin_redock_drag(
+    window: tauri::WebviewWindow,
+    owner_label: String,
+    thread_id: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    let thread_id = thread_id.trim().to_string();
+    if thread_id.is_empty() {
+        return Ok(());
+    }
+    if !is_dock_label(&owner_label) {
+        return Ok(());
+    }
+    let caller_label = window.label().to_string();
+    if !is_closable_widget_label(&caller_label) || owner_label == caller_label {
+        return Ok(());
+    }
+
+    with_appkit_main_thread(window.clone(), move |win| {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
+        use std::cell::RefCell;
+        use std::ptr::NonNull;
+        use std::rc::Rc;
+
+        let floater_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        let app = win.app_handle().clone();
+        let owner = match app.get_webview_window(&owner_label) {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+        let owner_ptr = owner.ns_window().map_err(|e| e.to_string())?;
+
+        let state = Rc::new(RefCell::new(RedockMonitors {
+            local: None,
+            global: None,
+            ended: false,
+            last_over: false,
+            last_prox: -1.0,
+            last_y: -1.0,
+        }));
+
+        let title = title.unwrap_or_default();
+
+        // Emit throttled previews while the native drag is in flight.
+        let tick = {
+            let owner_label = owner_label.clone();
+            let thread_id = thread_id.clone();
+            let caller_label = caller_label.clone();
+            let title = title.clone();
+            let app = app.clone();
+            let win = win.clone();
+            let state = state.clone();
+            move || {
+                let (over, proximity, y_ratio) = unsafe {
+                    let floater: &NSWindow = &*floater_ptr.cast();
+                    let owner_w: &NSWindow = &*owner_ptr.cast();
+                    redock_hit_cocoa(floater, owner_w)
+                };
+                {
+                    let mut s = state.borrow_mut();
+                    let prox_delta = (proximity - s.last_prox).abs();
+                    let y_delta = (y_ratio - s.last_y).abs();
+                    let changed = over != s.last_over || prox_delta > 0.04 || y_delta > 0.025;
+                    if !changed && s.last_prox >= 0.0 {
+                        return;
+                    }
+                    s.last_over = over;
+                    s.last_prox = proximity;
+                    s.last_y = y_ratio;
+                }
+                let _ = app.emit_to(
+                    tauri::EventTarget::labeled(&owner_label),
+                    "redock-preview",
+                    serde_json::json!({
+                        "active": true,
+                        "over": over,
+                        "proximity": proximity,
+                        "yRatio": y_ratio,
+                        "threadId": thread_id,
+                        "title": title,
+                        "from": caller_label,
+                    }),
+                );
+                let _ = win.emit(
+                    "redock-self-preview",
+                    serde_json::json!({
+                        "active": true,
+                        "over": over,
+                        "proximity": proximity,
+                    }),
+                );
+            }
+        };
+
+        let end = {
+            let state = state.clone();
+            let app = app.clone();
+            let win = win.clone();
+            let owner_label = owner_label.clone();
+            let thread_id = thread_id.clone();
+            let caller_label = caller_label.clone();
+            move || {
+                let (local, global) = {
+                    let mut s = state.borrow_mut();
+                    if s.ended {
+                        return;
+                    }
+                    s.ended = true;
+                    (s.local.take(), s.global.take())
+                };
+                unsafe {
+                    if let Some(tok) = local.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                    if let Some(tok) = global.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                }
+                let (over, _prox, y_ratio) = unsafe {
+                    let floater: &NSWindow = &*floater_ptr.cast();
+                    let owner_w: &NSWindow = &*owner_ptr.cast();
+                    redock_hit_cocoa(floater, owner_w)
+                };
+                let _ = app.emit_to(
+                    tauri::EventTarget::labeled(&owner_label),
+                    "redock-preview",
+                    serde_json::json!({
+                        "active": false,
+                        "threadId": thread_id,
+                        "from": caller_label,
+                    }),
+                );
+                let _ = win.emit(
+                    "redock-self-preview",
+                    serde_json::json!({ "active": false, "over": false, "proximity": 0.0 }),
+                );
+                let _ = win.emit(
+                    "redock-drag-ended",
+                    serde_json::json!({
+                        "over": over,
+                        "yRatio": y_ratio,
+                        "threadId": thread_id,
+                        "ownerLabel": owner_label,
+                    }),
+                );
+            }
+        };
+
+        let local_block = {
+            let end = end.clone();
+            let tick = tick.clone();
+            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                let ev = unsafe { event.as_ref() };
+                let up = ev.r#type() == NSEventType::LeftMouseUp
+                    || NSEvent::pressedMouseButtons() & 1 == 0;
+                if up {
+                    end();
+                } else {
+                    tick();
+                }
+                event.as_ptr()
+            })
+        };
+
+        let global_block = {
+            let end = end.clone();
+            block2::RcBlock::new(move |_event: NonNull<NSEvent>| {
+                end();
+            })
+        };
+
+        unsafe {
+            let local: Option<Retained<AnyObject>> =
+                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+                    &local_block,
+                );
+            let global: Option<Retained<AnyObject>> =
+                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseUp,
+                    &global_block,
+                );
+            let mut s = state.borrow_mut();
+            s.local = local;
+            s.global = global;
+        }
+
+        tick();
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn begin_redock_drag(
+    _window: tauri::WebviewWindow,
+    _owner_label: String,
+    _thread_id: String,
+    _title: Option<String>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 // ── Phase-2 C3: client route config + session state ──────────────────────────
 //
 // Reads ~/.luna/client.toml (bootstrap route config) and manages per-panel
@@ -2759,6 +3087,7 @@ fn main() {
         hub_event,
         close_widget,
         redock_thread,
+        begin_redock_drag,
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,
@@ -2810,6 +3139,7 @@ fn main() {
         hub_event,
         close_widget,
         redock_thread,
+        begin_redock_drag,
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,

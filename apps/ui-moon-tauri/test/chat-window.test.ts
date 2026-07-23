@@ -71,6 +71,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
     loadVendorInto(window, 'moon-dock.js')
+    loadVendorInto(window, 'thread-drag-session.js')
 
     // Clean localStorage so persisted-prefs tests don't leak across cases.
     localStorage.clear()
@@ -4950,7 +4951,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
         core: { invoke },
       }
-      m.ThreadDrawerEngine.openInNewWindow('thr-42')
+      await m.ThreadDrawerEngine.openInNewWindow('thr-42')
       expect(invoke).toHaveBeenCalledWith('open_widget', {
         kind: 'chat',
         params: { thread: 'thr-42' },
@@ -4964,7 +4965,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
         core: { invoke },
       }
-      m.ThreadDrawerEngine.openInNewWindow('thr-99', 120.4, 340.6)
+      await m.ThreadDrawerEngine.openInNewWindow('thr-99', 120.4, 340.6)
       expect(invoke).toHaveBeenCalledWith('open_widget', {
         kind: 'chat',
         params: { thread: 'thr-99', redockTo: 'panel-chat' },
@@ -4973,16 +4974,65 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
     })
 
-    it('Scenario: sidebar rows are draggable for drag-out (#380)', () => {
+    it('Scenario: sidebar rows use pointer pull-out (not HTML5 drag) (#380)', () => {
       const m = M()
       m.State.threads = [
-        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: Date.now() },
+        { id: 'a', title: 'Alpha', lastMessagePreview: 'hello', lastActiveAt: Date.now() },
       ]
       m.ThreadDrawerEngine.openPanel()
       m.ThreadDrawerEngine.render()
       const row = document.querySelector('.thread-row[data-thread-id="a"]') as HTMLElement | null
       expect(row).toBeTruthy()
-      expect(row?.draggable).toBe(true)
+      // Global * { -webkit-user-drag: none } kills HTML5 DnD in WKWebView;
+      // pull-out is pointer-capture based with a card ghost + ThreadDragSession.
+      expect(row?.draggable).toBe(false)
+      expect(htmlContent).toMatch(/thread-drag-ghost/)
+      expect(htmlContent).toMatch(/threadDragActive/)
+      expect(htmlContent).toMatch(/setPointerCapture/)
+      expect(htmlContent).toMatch(/LunaThreadDrag/)
+      expect(htmlContent).toMatch(/_seedFloaterCache/)
+      expect((window as any).LunaThreadDrag?.createSession).toBeTypeOf('function')
+      const ghost = m.ThreadDrawerEngine._makeGhost({
+        id: 'a',
+        title: 'Alpha',
+        lastMessagePreview: 'hello',
+      })
+      expect(ghost.className).toBe('thread-drag-ghost')
+      expect(ghost.querySelector('.thread-drag-ghost-title')?.textContent).toBe('Alpha')
+      expect(ghost.querySelector('.thread-drag-ghost-preview')?.textContent).toBe('hello')
+      ghost.remove()
+    })
+
+    it('Scenario: Attached path seeds cache only on detach helper (Phase C)', () => {
+      const m = M()
+      m.ThreadCache.put('thr-seed', [{ role: 'user', text: 'hi' }], 3)
+      m.ThreadDrawerEngine._seedFloaterCache('thr-seed')
+      const raw = sessionStorage.getItem('luna.threadSeed.thr-seed')
+      expect(raw).toBeTruthy()
+      const seed = JSON.parse(raw!)
+      expect(seed.messages).toEqual([{ role: 'user', text: 'hi' }])
+      expect(seed.throughSeq).toBe(3)
+      sessionStorage.removeItem('luna.threadSeed.thr-seed')
+    })
+
+    it('Scenario: ThreadDragSession wired — open_widget only after detach action', () => {
+      // Contract: createSession.pointerMove while in strip never implies spawn.
+      // The shipped wire uses action === 'detach' as the sole spawn gate.
+      expect(htmlContent).toMatch(/move\.action === 'detach'/)
+      expect(htmlContent).toMatch(/outcome === 'reorder'/)
+      expect(htmlContent).toMatch(/LunaThreadDrag\.createSession/)
+      // Detach is the only action that calls placeFloater from the move handler.
+      const detachGate = htmlContent.match(
+        /if \(move\.action === 'detach'\) \{[\s\S]{0,280}?placeFloater/,
+      )
+      expect(detachGate).toBeTruthy()
+      // enter_attached path updates chrome, does not open_widget
+      expect(htmlContent).toMatch(
+        /move\.action === 'enter_attached'[\s\S]{0,120}showAttachedChrome/,
+      )
+      expect(htmlContent).not.toMatch(
+        /move\.action === 'enter_attached'[\s\S]{0,120}placeFloater/,
+      )
     })
 
     it('Scenario: redock button is only visible on pinned floaters with redockTo (#380)', () => {
@@ -4991,6 +5041,51 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(htmlContent).toMatch(/id="redock-btn"/)
       expect(htmlContent).toMatch(/#title-bar \.redock-btn\[hidden\]/)
       expect(htmlContent).toMatch(/redock_thread/)
+      expect(htmlContent).toMatch(/begin_redock_drag/)
+      expect(htmlContent).toMatch(/redock-preview/)
+      expect(htmlContent).toMatch(/redock-drag-ended/)
+      expect(htmlContent).toMatch(/thread-row-insert-gap/)
+    })
+
+    it('Scenario: redock preview opens an insert gap and marks the source row (#380)', () => {
+      const m = M()
+      m.State.threads = [
+        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: 3 },
+        { id: 'b', title: 'Beta', lastMessagePreview: '', lastActiveAt: 2 },
+        { id: 'c', title: 'Gamma', lastMessagePreview: '', lastActiveAt: 1 },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.applyRedockPreview({
+        active: true,
+        over: true,
+        threadId: 'b',
+        title: 'Beta',
+        yRatio: 0.0,
+      })
+      const gap = document.querySelector('.thread-row-insert-gap.active')
+      expect(gap).toBeTruthy()
+      expect(gap?.getAttribute('data-label')).toBe('Beta')
+      expect(document.querySelector('.thread-drawer')?.classList.contains('redock-target')).toBe(true)
+      expect(document.querySelector('.thread-row[data-thread-id="b"]')?.classList.contains('redock-source')).toBe(true)
+
+      m.ThreadDrawerEngine.applyRedockPreview({ active: false })
+      expect(document.querySelector('.thread-row-insert-gap.active')).toBeNull()
+      expect(document.querySelector('.thread-drawer')?.classList.contains('redock-target')).toBe(false)
+    })
+
+    it('Scenario: adoptAtIndex pins session-local order after redock (#380)', () => {
+      const m = M()
+      m.State.threads = [
+        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: 30 },
+        { id: 'b', title: 'Beta', lastMessagePreview: '', lastActiveAt: 20 },
+        { id: 'c', title: 'Gamma', lastMessagePreview: '', lastActiveAt: 10 },
+      ]
+      m.ThreadDrawerEngine.adoptAtIndex('c', 0)
+      expect(m.ThreadDrawerEngine._visibleThreads().map((t: { id: string }) => t.id)).toEqual([
+        'c',
+        'a',
+        'b',
+      ])
     })
 
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {

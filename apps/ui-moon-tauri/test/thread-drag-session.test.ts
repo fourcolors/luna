@@ -1,0 +1,224 @@
+// @vitest-environment node
+/**
+ * Pure unit tests for LunaThreadDrag session (chrome-tab-interaction Phase A/B).
+ * Loads the shipped vendor module — no reimplementation of the state machine.
+ */
+import { describe, it, expect, beforeAll } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
+import vm from 'node:vm'
+
+type Session = {
+  getState: () => string
+  pointerMove: (p: {
+    clientX: number
+    clientY: number
+    stripRect: { left: number; top: number; right: number; bottom: number } | null
+    rowCount?: number
+  }) => { state: string; action: string; insertIndex: number; inStrip: boolean }
+  pointerUp: (p: {
+    clientX: number
+    clientY: number
+    stripRect: { left: number; top: number; right: number; bottom: number } | null
+    rowCount?: number
+  }) => {
+    state: string
+    outcome: string
+    insertIndex: number
+    inStrip: boolean
+    detachedOnce: boolean
+  }
+  cancel: () => unknown
+  constants: { ELASTICITY_PX: number; VERTICAL_MAGNET_PX: number }
+}
+
+type LunaThreadDragApi = {
+  STATE: Record<string, string>
+  ELASTICITY_PX: number
+  VERTICAL_MAGNET_PX: number
+  pointInStripBand: (
+    stripRect: { left: number; top: number; right: number; bottom: number } | null,
+    cx: number,
+    cy: number,
+    magnetY?: number,
+  ) => boolean
+  insertIndexForRatio: (n: number, yRatio: number) => number
+  createSession: (opts: {
+    threadId: string
+    startClientX: number
+    startClientY: number
+    rowCount?: number
+    elasticityPx?: number
+    magnetYPx?: number
+  }) => Session
+}
+
+function loadShippedModule(): LunaThreadDragApi {
+  const file = path.resolve(__dirname, '../frontend/vendor/thread-drag-session.js')
+  const src = fs.readFileSync(file, 'utf8')
+  const sandbox: { window: Record<string, unknown>; LunaThreadDrag?: LunaThreadDragApi } = {
+    window: {},
+  }
+  sandbox.window = sandbox as unknown as Record<string, unknown>
+  vm.runInNewContext(src, sandbox, { filename: 'thread-drag-session.js' })
+  const api = (sandbox as { LunaThreadDrag?: LunaThreadDragApi }).LunaThreadDrag
+    || (sandbox.window as { LunaThreadDrag?: LunaThreadDragApi }).LunaThreadDrag
+  if (!api) throw new Error('LunaThreadDrag not exported by shipped vendor module')
+  return api
+}
+
+const STRIP = { left: 0, top: 0, right: 200, bottom: 400 }
+
+describe('LunaThreadDrag session (Phase A/B contract)', () => {
+  let API: LunaThreadDragApi
+
+  beforeAll(() => {
+    API = loadShippedModule()
+  })
+
+  it('starts not_started and stays until elasticity is exceeded', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+      rowCount: 3,
+    })
+    expect(s.getState()).toBe(API.STATE.NOT_STARTED)
+    const r = s.pointerMove({
+      clientX: 50 + 5,
+      clientY: 100,
+      stripRect: STRIP,
+      rowCount: 3,
+    })
+    expect(r.action).toBe('none')
+    expect(s.getState()).toBe(API.STATE.NOT_STARTED)
+  })
+
+  it('enters attached after elasticity while still in strip (no detach)', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+      rowCount: 4,
+      elasticityPx: 10,
+    })
+    const r = s.pointerMove({
+      clientX: 50 + 12,
+      clientY: 120,
+      stripRect: STRIP,
+      rowCount: 4,
+    })
+    expect(r.action).toBe('enter_attached')
+    expect(s.getState()).toBe(API.STATE.ATTACHED)
+    expect(r.inStrip).toBe(true)
+  })
+
+  it('does not report detach while attached inside strip', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+    })
+    s.pointerMove({ clientX: 70, clientY: 100, stripRect: STRIP })
+    const r = s.pointerMove({ clientX: 80, clientY: 150, stripRect: STRIP, rowCount: 5 })
+    expect(r.action).toBe('stay_attached')
+    expect(s.getState()).toBe(API.STATE.ATTACHED)
+  })
+
+  it('detaches only after leaving the strip band (with magnetism)', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+      magnetYPx: 15,
+    })
+    s.pointerMove({ clientX: 70, clientY: 100, stripRect: STRIP }) // attached
+    // Still within vertical magnet below bottom (400 + 10)
+    const still = s.pointerMove({
+      clientX: 100,
+      clientY: 410,
+      stripRect: STRIP,
+    })
+    expect(still.action).toBe('stay_attached')
+    // Outside magnet
+    const det = s.pointerMove({
+      clientX: 250,
+      clientY: 200,
+      stripRect: STRIP,
+    })
+    expect(det.action).toBe('detach')
+    expect(s.getState()).toBe(API.STATE.DETACHED)
+  })
+
+  it('pointerUp inside strip after attached yields reorder (never keep_floater without detach)', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+      rowCount: 3,
+    })
+    s.pointerMove({ clientX: 70, clientY: 100, stripRect: STRIP, rowCount: 3 })
+    const up = s.pointerUp({ clientX: 80, clientY: 200, stripRect: STRIP, rowCount: 3 })
+    expect(up.outcome).toBe('reorder')
+    expect(up.detachedOnce).toBe(false)
+    expect(s.getState()).toBe(API.STATE.STOPPED)
+  })
+
+  it('pointerUp without movement yields click', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+    })
+    const up = s.pointerUp({ clientX: 52, clientY: 101, stripRect: STRIP })
+    expect(up.outcome).toBe('click')
+  })
+
+  it('pointerUp after detach outside strip yields keep_floater', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+    })
+    s.pointerMove({ clientX: 70, clientY: 100, stripRect: STRIP })
+    s.pointerMove({ clientX: 300, clientY: 200, stripRect: STRIP })
+    const up = s.pointerUp({ clientX: 320, clientY: 220, stripRect: STRIP })
+    expect(up.outcome).toBe('keep_floater')
+    expect(up.detachedOnce).toBe(true)
+  })
+
+  it('pointerUp after detach over strip yields redock', () => {
+    const s = API.createSession({
+      threadId: 't1',
+      startClientX: 50,
+      startClientY: 100,
+      rowCount: 4,
+    })
+    s.pointerMove({ clientX: 70, clientY: 100, stripRect: STRIP })
+    s.pointerMove({ clientX: 300, clientY: 200, stripRect: STRIP })
+    const up = s.pointerUp({ clientX: 100, clientY: 50, stripRect: STRIP, rowCount: 4 })
+    expect(up.outcome).toBe('redock')
+    expect(up.inStrip).toBe(true)
+  })
+
+  it('insertIndexForRatio maps 0..1 onto 0..n slots', () => {
+    expect(API.insertIndexForRatio(0, 0.5)).toBe(0)
+    expect(API.insertIndexForRatio(4, 0)).toBe(0)
+    expect(API.insertIndexForRatio(4, 1)).toBe(4)
+    expect(API.insertIndexForRatio(4, 0.5)).toBe(2)
+  })
+
+  it('pointInStripBand uses vertical magnetism', () => {
+    expect(API.pointInStripBand(STRIP, 100, 200, 15)).toBe(true)
+    expect(API.pointInStripBand(STRIP, 100, 410, 15)).toBe(true)
+    expect(API.pointInStripBand(STRIP, 100, 420, 15)).toBe(false)
+    expect(API.pointInStripBand(STRIP, 250, 200, 15)).toBe(false)
+  })
+
+  it('constants match chrome-tab-interaction elasticity/magnetism defaults', () => {
+    expect(API.ELASTICITY_PX).toBe(10)
+    expect(API.VERTICAL_MAGNET_PX).toBe(15)
+  })
+})
