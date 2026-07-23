@@ -96,15 +96,40 @@
     }
     .chat-panel.sidebar-resizing { transition: none; } /* 1:1 while dragging the divider */
 
-    /* ── Mic button (lives in the composer control bar as a .bar-btn). Its voice
-       state paints as watercolor washes (flat pigment pools, edge-feathered) —
-       never a glossy LED. ── */
+    /* ── Mic button (task #59: relocated from the composer control bar into
+       the input shell, nested inline next to .send-btn — "switch between
+       voice mode and texting" belongs right where you'd reach for send, not
+       buried a row down). Its voice state paints as watercolor washes (flat
+       pigment pools, edge-feathered) — never a glossy LED. ── */
     .mic-btn { position: relative; }
-    /* `hidden` loses to .bar-btn's `display: flex` by cascade (the UA
-       [hidden] rule is non-important) — without this the dead mic button
-       renders in every voice-less build. Same trap as .user-ask-panel. */
+    /* `hidden` loses to `display: flex` by cascade (the UA [hidden] rule is
+       non-important) — without this the dead mic button renders in every
+       voice-less build. Same trap as .user-ask-panel. */
     .mic-btn[hidden] { display: none !important; }
     .mic-btn.voice-mode-off { opacity: 0.45; }
+    /* Positioned like .send-btn (absolute, bottom-right of the input shell)
+       but one slot to its left so the two nest inline without colliding. */
+    .composer-input-wrap .mic-btn {
+      position: absolute;
+      right: 42px;
+      bottom: 6px;
+      width: 30px;
+      height: 30px;
+      background: transparent;
+      border: none;
+      border-radius: 50%;
+      color: var(--ink-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.18s, color 0.18s, opacity 0.15s ease;
+    }
+    .composer-input-wrap .mic-btn:hover {
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      color: var(--ink);
+    }
+    .composer-input-wrap .mic-btn svg { width: 18px; height: 18px; }
     .mic-btn[data-voice-state="listening"] {
       color: var(--ink);
       background: radial-gradient(circle closest-side,
@@ -2130,8 +2155,8 @@
     .cfg-deferred-hint.visible { opacity: 1; }
 
     /* Watercolor composer input — paper background, ink-faint border, accent
-       focus ring. Right padding leaves room for the inline watercolor send button
-       nested at the bottom-right (see .send-btn). */
+       focus ring. Right padding leaves room for the two inline watercolor
+       buttons nested at the bottom-right (see .send-btn / .mic-btn). */
     .chat-input {
       flex: 1;
       width: 100%;
@@ -2143,7 +2168,7 @@
       background: var(--paper);
       border: 1.4px solid var(--ink-faint);
       border-radius: 14px;
-      padding: 10px 44px 10px 14px;  /* right pad clears the inline send button */
+      padding: 10px 76px 10px 14px;  /* right pad clears the inline mic + send buttons */
       font-family: var(--font-chat);
       font-size: calc(0.84rem * var(--font-scale));
       line-height: 1.4;
@@ -2716,9 +2741,25 @@
       <input type="file" id="file-input" multiple hidden>
 
       <!-- Tier 1 — the input shell: a full-width textarea with the small
-           watercolor send button nested inline at its bottom-right corner. -->
+           watercolor mic + send buttons nested inline at its bottom-right
+           corner (task #59: mic moved next to send so a single glance/click
+           switches between voice mode and texting). -->
       <div class="composer-input-wrap">
         <textarea class="chat-input" id="message-input" placeholder="Message Luna…" rows="1" autocomplete="off" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
+        <!-- Voice mic — sits immediately left of send, inside the input shell.
+             type="button" is REQUIRED now it lives inside the <form>, else a
+             click submits. Hidden until VoiceEngine confirms the Rust voice
+             pipeline. Voice defaults OFF (luna_voice_mode unset → 'off'); a
+             click while off switches straight into hands-free mode instead of
+             detouring through Settings. Press-and-hold is push-to-talk in ptt
+             mode. data-voice-state mirrors the moon's. -->
+        <button type="button" class="mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+            <line x1="12" y1="18" x2="12" y2="22"></line>
+          </svg>
+        </button>
         <button type="submit" class="send-btn" aria-label="Send message" title="Send (Enter)">
           <!-- ↵ return/enter glyph: vertical down-then-left + a left arrowhead. -->
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2728,7 +2769,7 @@
         </button>
       </div>
 
-      <!-- Tier 2 — the control bar: icon buttons (machine access, attach, voice)
+      <!-- Tier 2 — the control bar: icon buttons (machine access, attach)
            on the left, the model/effort cluster on the right. -->
       <div class="composer-bar">
         <div class="composer-bar-left">
@@ -2744,18 +2785,6 @@
             <!-- paperclip -->
             <svg viewBox="0 0 24 24">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-            </svg>
-          </button>
-          <!-- Voice mic — relocated here from the header. type="button" is
-               REQUIRED now it lives inside the <form>, else a click submits.
-               Hidden until VoiceEngine confirms the Rust voice pipeline. Click
-               toggles hands-free listening; press-and-hold is push-to-talk in
-               ptt mode. data-voice-state mirrors the moon's. -->
-          <button type="button" class="bar-btn mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
-              <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
-              <line x1="12" y1="18" x2="12" y2="22"></line>
             </svg>
           </button>
           <!-- Feedback (crosshair) — point at any element in the window and tell
@@ -9529,11 +9558,15 @@
         if (!this.available) return;
         if (this.mode === 'ptt') return;           // press-and-hold owns ptt
         if (this.mode === 'off') {
-          // Discoverability: voice is off — take them to the switch (the
-          // settings.voice panel window; the hub modal is gone from here).
-          if (window.__TAURI__ && window.__TAURI__.core) {
-            window.__TAURI__.core.invoke('open_widget', { kind: 'settings.voice' }).catch(() => {});
-          }
+          // Task #59 ("voice button doesn't work at all"): a click used to
+          // just open the settings.voice panel window and leave voice off —
+          // from the composer the button LOOKED dead since nothing in this
+          // window changed. The whole point of a mic sitting next to send is
+          // "switch between voice mode and texting" in one click, so it now
+          // flips straight into hands-free (auto) mode here. Push-to-talk /
+          // voice-picker / silence-hang tuning stay reachable via the normal
+          // Settings → Voice navigation.
+          this.setMode('auto');
           return;
         }
         // auto: toggle listening. Runtime-only pause — the persisted
