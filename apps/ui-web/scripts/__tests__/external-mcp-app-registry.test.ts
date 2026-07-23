@@ -72,6 +72,20 @@ describe("parseExternalMcpServersEnv (LUNA_EXTERNAL_MCP_SERVERS, #161)", () => {
       { id: "second", command: "node" },
     ])
   })
+
+  it("drops __proto__/constructor/prototype keys from env without polluting", () => {
+    // Raw string: JSON.stringify({__proto__: "x"}) is "{}" in JS; the wire form
+    // operators would paste still carries the key name.
+    const raw =
+      '[{"id":"proto","command":"bun","env":{"__proto__":"nope","SAFE":"yes"}}]'
+    const specs = parseExternalMcpServersEnv(raw)
+    expect(specs).toHaveLength(1)
+    expect(specs[0]!.id).toBe("proto")
+    expect(specs[0]!.env).toEqual({ SAFE: "yes" })
+    expect(Object.prototype.hasOwnProperty.call(specs[0]!.env, "__proto__")).toBe(false)
+    // Sanity: we did not poison Object.prototype.
+    expect(({} as { nope?: string }).nope).toBeUndefined()
+  })
 })
 
 async function linkInMemory(): Promise<{
