@@ -4494,7 +4494,18 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
     })
 
-    it('Scenario: under the PoolEngine dark flag requestList still sends list-threads (engine-aware gate)', () => {
+    it('Scenario: requestList is a true no-op when the drawer is closed (State.threadDrawerOpen false)', () => {
+      const m = M()
+      m.State.ws = { readyState: 1, send: () => {} }
+      m.State.threadDrawerOpen = false
+      const send = vi.spyOn(m.WebSocketEngine, 'send')
+
+      m.ThreadDrawerEngine.requestList()
+
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it('Scenario: under the PoolEngine dark flag requestList still sends list-threads when drawer is open', () => {
       // The pool path never assigns State.ws, so a raw readyState gate would
       // silently skip the list request and the sidebar would render empty.
       loadVendorInto(window, 'pool-engine.js')
@@ -4509,11 +4520,112 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
       m.PoolEngine._isConnected = true
+      m.State.threadDrawerOpen = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
 
       m.ThreadDrawerEngine.requestList()
 
       expect(send).toHaveBeenCalledWith({ type: 'list-threads' })
+      localStorage.removeItem('luna_pool_engine')
+    })
+
+    it('Scenario: under the PoolEngine dark flag a fast-path resubscribe refreshes an already-open thread drawer (State.threadDrawerOpen true)', async () => {
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      m.State.activeThreadId = 'live-thread'
+      m.State.skipLastThreadFile = false
+      m.State.threadDrawerOpen = true
+      const sendSpy = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      await m.PoolEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+      localStorage.removeItem('luna_pool_engine')
+    })
+
+    it('Scenario: under the PoolEngine dark flag a fast-path resubscribe leaves a CLOSED drawer alone (State.threadDrawerOpen false)', async () => {
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      m.State.activeThreadId = 'live-thread'
+      m.State.skipLastThreadFile = false
+      m.State.threadDrawerOpen = false
+      const sendSpy = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      await m.PoolEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+      localStorage.removeItem('luna_pool_engine')
+    })
+
+    it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is closed (State.threadDrawerOpen false)', async () => {
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      m.State.activeThreadId = null
+      m.State.skipLastThreadFile = true
+      m.State.threadDrawerOpen = false
+      const sendSpy = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      await m.PoolEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(m.State.threadListAutoSelectPending).toBe(true)
+      localStorage.removeItem('luna_pool_engine')
+    })
+
+    it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is open (State.threadDrawerOpen true)', async () => {
+      loadVendorInto(window, 'pool-engine.js')
+      localStorage.setItem('luna_pool_engine', '1')
+      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((s) => s[1])
+        .filter((s) => s.includes('WebSocketEngine'))
+      new Function(inlineScripts[0])()
+      const m = M()
+      expect(m.USE_POOL_ENGINE).toBe(true)
+      m.State.ws = null
+      m.PoolEngine._isConnected = true
+      m.State.activeThreadId = null
+      m.State.skipLastThreadFile = true
+      m.State.threadDrawerOpen = true
+      const sendSpy = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
+
+      await m.PoolEngine.syncThread()
+
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(m.State.threadListAutoSelectPending).toBe(true)
       localStorage.removeItem('luna_pool_engine')
     })
 

@@ -4544,7 +4544,7 @@
       isPinnedWindow() { return !!State.pinnedThread; },
 
       requestList() {
-        if (WebSocketEngine.isConnected()) {
+        if (State.threadDrawerOpen && WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'list-threads' });
         }
       },
