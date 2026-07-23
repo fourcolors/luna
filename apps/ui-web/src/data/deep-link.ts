@@ -32,7 +32,7 @@ function tauri(): TauriGlobal["__TAURI__"] {
  * waiting for a `thread-snapshot` (real threads always emit one on subscribe;
  * unknown threads return an empty stream and never confirm).
  */
-export const DEEP_LINK_CONFIRM_GRACE_MS = 4_000
+export const DEEP_LINK_CONFIRM_GRACE_MS = 15_000
 
 export type DeepLinkShieldDecision =
   | { readonly action: "keep" }
@@ -43,8 +43,8 @@ export type DeepLinkShieldDecision =
  * Bootstrap shield for a deep-linked selection that may be absent from the
  * windowed thread-list (top 50). A real thread confirms via `thread-snapshot`
  * and keeps the shield forever; a missing/deleted/wrong-server id never
- * confirms and must fall through after the grace window so selection is not
- * stranded on an empty thread across reconnects.
+ * confirms and must fall through after the 15s grace window so selection is not
+ * stranded on an empty thread across reconnects (#364).
  */
 export function deepLinkShieldDecision(args: {
   readonly selectedThreadId: string | null
