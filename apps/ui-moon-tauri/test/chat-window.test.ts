@@ -3167,14 +3167,36 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).not.toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })  // …not "pause" it
     })
 
-    it('Scenario: mic click while voice is OFF opens the settings.voice panel (discoverability)', () => {
-      const invoke = vi.fn(async () => null)
+    // Task #59 ("voice button doesn't work at all"): this used to open the
+    // settings.voice panel window and leave voice off — from the composer
+    // that read as a dead button, since nothing in THIS window changed. A
+    // click while off now switches straight into hands-free mode.
+    it('Scenario: mic click while voice is OFF switches straight into hands-free mode', () => {
+      const invoke = vi.fn(async (cmd: string) =>
+        cmd === 'voice_set_mode' ? { state: 'starting', mode: 'auto', modelPresent: true, silenceHangMs: 600 } : null)
       ;(window as any).__TAURI__.core = { invoke }
       const V = M().VoiceEngine
       V.available = true
       V.mode = 'off'
       document.getElementById('voice-mic-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.voice' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(invoke.mock.calls.some((c: any[]) => c[0] === 'open_widget')).toBe(false)
+      expect(V.mode).toBe('auto')
+      expect(localStorage.getItem('luna_voice_mode')).toBe('auto')
+    })
+
+    // Task #59: voice must default OFF with no persisted preference — the
+    // dimmed mic ('voice-mode-off') is the only affordance before the first
+    // click, no separate hidden "on by default" state to trip over.
+    it('Scenario: with no persisted preference, voice boots OFF and the mic reflects it as dimmed', async () => {
+      expect(localStorage.getItem('luna_voice_mode')).toBeNull()
+      const invoke = vi.fn(async (cmd: string) =>
+        cmd === 'voice_status' ? { state: 'off', mode: 'off', modelPresent: true } : null)
+      ;(window as any).__TAURI__.core = { invoke }
+      await M().VoiceEngine.init()
+      expect(M().VoiceEngine.mode).toBe('off')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
+      expect(document.getElementById('voice-mic-btn')!.classList.contains('voice-mode-off')).toBe(true)
     })
   })
 
