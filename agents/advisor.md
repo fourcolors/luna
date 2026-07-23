@@ -7,7 +7,7 @@ description: >-
   "should I do X or Y?", or when you are uncertain about tradeoffs. The advisor does
   not write code — it critiques plans, surfaces hidden assumptions, flags risks, and
   recommends a path. Use it early, not as a post-hoc review.
-model: opus
+model: fable
 effort: max
 memory: user
 skills:
