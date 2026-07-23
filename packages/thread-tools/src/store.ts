@@ -83,20 +83,24 @@ export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
 
       const claim: ForkProposalStoreApi["claim"] = (id, parentThreadId) =>
         Effect.gen(function* () {
-          const result = yield* Ref.modify(rows, (m) => {
-            const current = m.get(id)
-            if (
-              current === undefined ||
-              current.parentThreadId !== parentThreadId ||
-              current.status !== "pending"
-            ) {
-              return [null as ForkProposal | null, m] as const
-            }
-            const next: ForkProposal = { ...current, status: "accepting" }
-            const map = new Map(m)
-            map.set(id, next)
-            return [next, map] as const
-          })
+          // Atomic pending → accepting via Ref.modify (tuple return form).
+          const result: ForkProposal | null = yield* Ref.modify(
+            rows,
+            (m): [ForkProposal | null, Map<string, ForkProposal>] => {
+              const current = m.get(id)
+              if (
+                current === undefined ||
+                current.parentThreadId !== parentThreadId ||
+                current.status !== "pending"
+              ) {
+                return [null, m]
+              }
+              const next: ForkProposal = { ...current, status: "accepting" }
+              const map = new Map(m)
+              map.set(id, next)
+              return [next, map]
+            },
+          )
           if (result !== null) yield* emit(result)
           return result
         })
