@@ -16,7 +16,7 @@
  *     system_prompt?: string
  *     model?:         string         (e.g. "claude-sonnet-4-5")
  *     allowed_tools?: string[]       (e.g. ["mcp__memory__memory_search"])
- *     max_turns?:     number         (default 1)
+ *     max_turns?:     number         (default DEFAULT_PROMPT_MAX_TURNS = 15)
  *     timeout_ms?:    number         (wall-clock; default 10 min)
  *     deliver_to?:    DeliverySink
  *   }
@@ -76,6 +76,15 @@ import {
 
 // ── Public payload types ────────────────────────────────────────────────────
 
+/**
+ * Default maxTurns for prompt jobs when the payload omits `max_turns`.
+ * Was 1 (issue #256) — any tool-using prompt exhausted the budget on the
+ * first tool round-trip. 15 matches schedule_create / suggested-action
+ * create-time stamps so legacy unstamped rows and new jobs share a usable
+ * budget. Callers that need a true single-shot must stamp max_turns: 1.
+ */
+export const DEFAULT_PROMPT_MAX_TURNS = 15
+
 export type DeliverySink =
   | { readonly kind: "obs_note"; readonly kind_tag?: string; readonly session_id?: string }
   | { readonly kind: "log" }
@@ -134,6 +143,20 @@ export function parsePromptPayload(raw: unknown): PromptPayload | string {
   }
   if (typeof p["max_turns"] === "number" && Number.isFinite(p["max_turns"])) {
     out.max_turns = Math.max(1, Math.trunc(p["max_turns"] as number))
+  }
+  // #256: tool-using prompts need room for a tool round-trip. Explicit
+  // max_turns: 1 + non-empty allowed_tools is almost always a footgun
+  // (create-time stamps use 15; only intentional single-shot replies omit tools).
+  if (
+    (out.allowed_tools?.length ?? 0) > 0 &&
+    out.max_turns !== undefined &&
+    out.max_turns <= 1
+  ) {
+    return (
+      "max_turns must be > 1 when allowed_tools is non-empty " +
+      `(got max_turns=${out.max_turns} with ${out.allowed_tools!.length} tool(s)); ` +
+      "a single turn cannot complete a tool call round-trip"
+    )
   }
   if (typeof p["timeout_ms"] === "number" && Number.isFinite(p["timeout_ms"])) {
     out.timeout_ms = Math.max(1, Math.trunc(p["timeout_ms"] as number))
@@ -307,7 +330,7 @@ export const buildPromptWorker = (
         {
           prompt,
           options: {
-            maxTurns: parsed.max_turns ?? 1,
+            maxTurns: parsed.max_turns ?? DEFAULT_PROMPT_MAX_TURNS,
             ...(allowedTools.length > 0 ? { allowedTools } : {}),
             ...(binding
               ? { mcpServers: { [binding.serverName]: binding.server } }

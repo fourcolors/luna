@@ -56,6 +56,7 @@ export {
   PromptWorkerLayer,
   buildPromptWorker,
   parsePromptPayload,
+  DEFAULT_PROMPT_MAX_TURNS,
   type PromptPayload,
   type PromptWorkerLayerOptions,
   type DeliverySink,
