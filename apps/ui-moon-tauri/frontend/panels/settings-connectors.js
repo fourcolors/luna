@@ -31,6 +31,74 @@
   'use strict';
   g.LunaPanelTypes = g.LunaPanelTypes || {};
 
+  /**
+   * Turn a raw loopback / provider failure into an operator-actionable banner.
+   * Exported on the panel module for unit tests (pure, no DOM).
+   *
+   * Covers the traps from issue #107:
+   *   - provider error= redirect (access_denied, etc.) vs 5-minute timeout
+   *   - Testing-mode apps that only admit listed test users
+   *   - Workspace org policies that block unverified third-party apps
+   *   - cancelled / abandoned consent
+   */
+  function formatOauthConsentError(raw) {
+    // Tauri invoke rejects with string OR Error/object depending on the bridge.
+    var msg = '';
+    if (typeof raw === 'string') {
+      msg = raw.trim();
+    } else if (raw && typeof raw === 'object') {
+      if (typeof raw.message === 'string' && raw.message.trim()) msg = raw.message.trim();
+      else {
+        try { msg = String(raw); } catch (_) { msg = ''; }
+        if (msg === '[object Object]') msg = '';
+      }
+    } else if (raw != null) {
+      msg = String(raw).trim();
+    }
+    if (!msg) msg = 'The consent flow did not complete.';
+    var lower = msg.toLowerCase();
+
+    // Explicit cancel (Cancel button or oauth_loopback_cancel) - leave alone.
+    if (/oauth flow cancelled|cancelled by the user|canceled by the user/.test(lower)) {
+      return 'Consent cancelled. Click Connect again when you are ready.';
+    }
+
+    // Loopback wait deadline - distinct from a provider denial.
+    if (/timed out waiting for the browser consent|timed out/.test(lower)) {
+      return (
+        'Timed out waiting for browser consent. Keep the consent tab open, finish the grant, ' +
+        'then click Connect again. If Google showed "Something went wrong", pick a personal ' +
+        'Gmail account (not a Workspace org that blocks unverified apps) and retry.'
+      );
+    }
+
+    // Workspace org admin policy / admin_policy_enforced.
+    if (/admin_policy_enforced|org(?:anization)? policy|blocked by your organization|access blocked/.test(lower)) {
+      return (
+        msg +
+        ' - a Google Workspace org policy is blocking this unverified app. Use a personal ' +
+        'Gmail account, or ask your Workspace admin to allow the OAuth client.'
+      );
+    }
+
+    // Classic Testing-mode / unverified-app denial.
+    if (/access_denied|not.{0,8}verified|consent was declined/.test(lower)) {
+      return (
+        msg +
+        ' - if the OAuth app is still in Testing mode, add this Google account as a test user ' +
+        '(or Publish the consent screen to Production) in Google Cloud Console. ' +
+        'Workspace org accounts may also block unverified apps - try a personal Gmail, or ' +
+        'use Advanced -> "Go to <app>" on the unverified-app interstitial.'
+      );
+    }
+
+    return msg;
+  }
+
+  // Test seam: pure helpers reachable without booting the full panel.
+  g.LunaConnectorsPanelHelpers = g.LunaConnectorsPanelHelpers || {};
+  g.LunaConnectorsPanelHelpers.formatOauthConsentError = formatOauthConsentError;
+
   g.LunaPanelTypes['settings.connectors'] = {
     title: 'Connectors',
 
@@ -179,14 +247,8 @@
             oauthCodeSent = true;
           })
           .catch(function (e) {
-            var msg = typeof e === 'string' ? e : 'The consent flow did not complete.';
-            // The classic multi-account trap: a Testing-mode OAuth app only
-            // admits listed test users — every other Google account gets
-            // access_denied. Say so instead of leaving a bare error code.
-            if (/access_denied|not.{0,8}verified/i.test(msg)) {
-              msg += ' — if your OAuth app is in Testing mode, add this Google account as a test user (or publish the app) in the Google Cloud Console.';
-            }
-            cancelOauth(msg);
+            // Timeout vs provider denial vs cancel - see formatOauthConsentError.
+            cancelOauth(formatOauthConsentError(e));
           });
       }
 
@@ -531,10 +593,95 @@
               var explainer = document.createElement('div');
               explainer.className = 'connector-client-explainer';
               explainer.style.cssText = 'font-size:0.64rem;color:var(--muted);line-height:1.5;';
-              explainer.textContent =
-                'Uses YOUR own Google OAuth client — create one in the Google Cloud Console' +
-                ' (Desktop app), then paste it here.';
+              // Google Workspace (and any google-* def) gets the guided ritual
+              // with Console deep links + the publish-to-production trap.
+              // Built with createElement/textContent only (panel.html: safe DOM).
+              var isGoogle = /google|gws/i.test(String(def.id || '') + ' ' + String(def.name || ''));
+              if (isGoogle) {
+                function appendText(parent, text) {
+                  parent.appendChild(document.createTextNode(text));
+                }
+                function appendStrong(parent, text) {
+                  var s = document.createElement('strong');
+                  s.textContent = text;
+                  parent.appendChild(s);
+                }
+                function appendLink(parent, href, label) {
+                  var a = document.createElement('a');
+                  a.href = href;
+                  a.target = '_blank';
+                  a.rel = 'noopener noreferrer';
+                  a.textContent = label;
+                  parent.appendChild(a);
+                }
+                function appendLi(ol, build) {
+                  var li = document.createElement('li');
+                  build(li);
+                  ol.appendChild(li);
+                }
+
+                appendText(explainer, 'Uses ');
+                appendStrong(explainer, 'your own');
+                appendText(explainer, ' Google OAuth client (Desktop app). One-time setup, about 10 minutes:');
+
+                var steps = document.createElement('ol');
+                steps.className = 'connector-setup-steps';
+                steps.style.cssText = 'margin:6px 0 0 1.1em;padding:0;line-height:1.55;';
+                appendLi(steps, function (li) {
+                  appendText(li, 'Open ');
+                  appendLink(li, 'https://console.cloud.google.com/projectcreate', 'Google Cloud Console');
+                  appendText(li, ' and create a project.');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'Enable ');
+                  appendLink(li, 'https://console.cloud.google.com/apis/library/gmail.googleapis.com', 'Gmail');
+                  appendText(li, ', ');
+                  appendLink(li, 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com', 'Calendar');
+                  appendText(li, ', and ');
+                  appendLink(li, 'https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Drive');
+                  appendText(li, ' APIs.');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'OAuth consent screen → External → ');
+                  appendStrong(li, 'Publish to Production');
+                  appendText(li, ' (Testing mode refresh tokens die every 7 days).');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'Credentials → Create OAuth client ID → ');
+                  appendStrong(li, 'Desktop app');
+                  appendText(li, '.');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'Paste the Client ID and secret below.');
+                });
+                explainer.appendChild(steps);
+
+                var foot = document.createElement('div');
+                foot.style.marginTop = '6px';
+                appendText(foot, 'First Connect shows Google\'s unverified-app warning once - ');
+                appendText(foot, 'Advanced → "Go to <app>" is the sanctioned personal-use path. ');
+                appendText(foot, 'Workspace org accounts may block unverified apps; use a personal Gmail if so. ');
+                appendText(foot, 'Full guide: docs/connectors-google-oauth-setup.md');
+                explainer.appendChild(foot);
+              } else {
+                explainer.textContent =
+                  'Uses YOUR own OAuth client. Create a Desktop-app client with the provider, then paste it here.';
+              }
               setup.appendChild(explainer);
+
+              // Panel links open in the system browser (same allowlist as OAuth).
+              if (isGoogle && ctx.hasTauri && typeof ctx.invoke === 'function') {
+                setup.addEventListener('click', function (ev) {
+                  var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+                  if (!a) return;
+                  var href = a.getAttribute('href') || '';
+                  if (!/^https:\/\//i.test(href)) return;
+                  ev.preventDefault();
+                  ctx.invoke('open_external_url', { url: href }).catch(function (err) {
+                    console.warn('[connectors] open_external_url failed', href, err);
+                  });
+                });
+              }
 
               var idRow = document.createElement('div');
               idRow.className = 'connector-client-row';

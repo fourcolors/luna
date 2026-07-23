@@ -13,19 +13,20 @@
  *   GOOGLE_OAUTH_CLIENT_ID=<your client id> \
  *   uvx workspace-mcp --transport streamable-http --port 8765
  *
- * Auth: PER-OPERATOR Google OAuth client (PRD §23 — Google policy forbids
+ * Auth: PER-OPERATOR Google OAuth client (PRD §23 - Google policy forbids
  * shipping client credentials in a public repo, and shared clients get
  * quota-throttled; the rclone lesson). One-time setup, ~10 minutes:
  *   1. console.cloud.google.com → new project
  *   2. Enable the Gmail, Calendar and Drive APIs
  *   3. OAuth consent screen → External → PUBLISH TO PRODUCTION
  *      (skipping this leaves the app in "Testing" where refresh tokens
- *      die every 7 days — the verified trap)
+ *      die every 7 days - the verified trap)
  *   4. Credentials → OAuth client ID → Desktop app
  *   5. Put GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET in
- *      ~/.luna/.env
- * First Connect shows Google's "unverified app" warning once —
+ *      ~/.luna/.env (or paste into the Moon Connectors form)
+ * First Connect shows Google's "unverified app" warning once -
  * Advanced → "Go to <app>" is the sanctioned personal-use path.
+ * Operator guide: docs/connectors-google-oauth-setup.md (issue #107).
  *
  * Scopes (verified classifications): gmail.readonly + drive.readonly are
  * RESTRICTED (work unverified for personal use), calendar is sensitive,

@@ -420,6 +420,9 @@ describe('settings.connectors panel', () => {
     const setup = document.querySelector('.connector-client-setup')
     expect(setup).toBeTruthy()
     expect(setup!.textContent).toContain('Client ID')
+    // Guided Google ritual (issue #107): publish-to-production trap + Console deep links
+    expect(setup!.textContent).toContain('Publish to Production')
+    expect(setup!.querySelectorAll('a[href*="console.cloud.google.com"]').length).toBeGreaterThan(0)
     // Connect button should NOT be present (clientSetup not configured)
     const connectBtn = document.querySelector('.connector-actions .connector-btn')
     expect(connectBtn).toBeFalsy()
@@ -616,5 +619,100 @@ describe('settings.connectors panel', () => {
       if (!err.textContent!.includes('access_denied')) throw new Error('missing provider reason')
       if (!err.textContent!.includes('test user')) throw new Error('missing test-user hint')
     })
+  })
+
+  // 17. Consent timeout is a distinct, actionable banner (not a silent hang).
+  it('shows timeout-specific retry guidance when loopback wait times out', async () => {
+    bootPanel({
+      type: 'settings.connectors',
+      invoke: (cmd) => {
+        if (cmd === 'oauth_loopback_start') return 54321
+        if (cmd === 'oauth_loopback_wait') {
+          throw 'timed out waiting for the browser consent'
+        }
+        return null
+      },
+    })
+    await fireFrame({ type: 'hello', capabilities: { connectors: true } })
+    await fireFrame({ type: 'connector-catalog', connectors: [OAUTH_DEF] })
+
+    const connectBtn = document.querySelector('.connector-actions .connector-btn') as HTMLButtonElement
+    connectBtn.click()
+    const goBtn = document.querySelector('.connector-consent .panel-btn.primary') as HTMLButtonElement
+    goBtn.click()
+
+    const sock = await waitForSocket()
+    await vi.waitFor(() => sock.sentFrames().some((f) => f.type === 'connector-oauth-begin'))
+    const beginFrame = sock.sentFrames().find((f) => f.type === 'connector-oauth-begin')!
+
+    sock.fire('message', {
+      data: JSON.stringify({
+        type: 'connector-oauth-redirect',
+        requestId: beginFrame.requestId,
+        authUrl: 'https://accounts.google.com/oauth?state=xyz',
+        pendingId: 'pend_timeout',
+      }),
+    })
+
+    await vi.waitFor(() => {
+      const err = document.getElementById('connectors-error')!
+      if (err.hidden) throw new Error('error not shown')
+      if (!/Timed out waiting for browser consent/i.test(err.textContent || '')) {
+        throw new Error('missing timeout guidance: ' + err.textContent)
+      }
+      if (!/personal Gmail/i.test(err.textContent || '')) {
+        throw new Error('missing account-chooser hint: ' + err.textContent)
+      }
+    })
+  })
+})
+
+// ── Pure helper: formatOauthConsentError (issue #107) ────────────────────────
+describe('LunaConnectorsPanelHelpers.formatOauthConsentError', () => {
+  function loadHelpers() {
+    const moduleFile = path.resolve(__dirname, '../frontend/panels/settings-connectors.js')
+    new Function('globalThis', fs.readFileSync(moduleFile, 'utf8'))(window)
+    return (window as any).LunaConnectorsPanelHelpers.formatOauthConsentError as (raw: unknown) => string
+  }
+
+  it('maps access_denied to test-user + Workspace guidance', () => {
+    const fmt = loadHelpers()
+    const out = fmt('consent was declined by the provider: access_denied')
+    expect(out).toContain('access_denied')
+    expect(out).toMatch(/test user/i)
+    expect(out).toMatch(/Publish/i)
+    expect(out).toMatch(/Workspace/i)
+  })
+
+  it('maps admin_policy_enforced to org-policy guidance', () => {
+    const fmt = loadHelpers()
+    const out = fmt('consent was declined by the provider: admin_policy_enforced')
+    expect(out).toMatch(/org policy|Workspace org/i)
+    expect(out).toMatch(/personal Gmail|admin/i)
+  })
+
+  it('maps timeout to retry + account-chooser guidance', () => {
+    const fmt = loadHelpers()
+    const out = fmt('timed out waiting for the browser consent')
+    expect(out).toMatch(/Timed out waiting for browser consent/i)
+    expect(out).toMatch(/Click Connect again|retry/i)
+    expect(out).toMatch(/personal Gmail/i)
+  })
+
+  it('maps cancel cleanly', () => {
+    const fmt = loadHelpers()
+    expect(fmt('OAuth flow cancelled')).toMatch(/Consent cancelled/i)
+  })
+
+  it('passes through unknown provider messages', () => {
+    const fmt = loadHelpers()
+    expect(fmt('provider returned weird_error')).toBe('provider returned weird_error')
+  })
+
+  it('coerces Error objects from Tauri invoke rejects', () => {
+    const fmt = loadHelpers()
+    const out = fmt(new Error('consent was declined by the provider: access_denied'))
+    expect(out).toContain('access_denied')
+    expect(out).toMatch(/test user/i)
   })
 })

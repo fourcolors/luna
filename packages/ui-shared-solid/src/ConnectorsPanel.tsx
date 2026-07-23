@@ -225,8 +225,11 @@ const OAuthClientSetupForm: Component<{
       }}
     >
       <span class="skill-desc" style={{ "line-height": "1.4" }}>
-        This connector uses YOUR own Google OAuth client. Create one in the
-        Google Cloud Console (Desktop app), then paste it here.
+        This connector uses YOUR own OAuth client (Desktop app). Create a Google
+        Cloud project, enable Gmail/Calendar/Drive APIs, publish the consent
+        screen to Production (Testing mode tokens die every 7 days), create a
+        Desktop OAuth client, then paste the Client ID and secret here. Full
+        guide: docs/connectors-google-oauth-setup.md
       </span>
       <input
         type="text"
