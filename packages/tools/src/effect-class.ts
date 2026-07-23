@@ -17,8 +17,17 @@ export type ToolEffectClass =
   | "spend"   // consumes paid external API credits
   | "meta"    // tool management, MCP tools, or anything unrecognised
 
-/** All tool names that map to "egress". */
+/** Built-in tool names that map to "egress". */
 const EGRESS_TOOLS = new Set(["WebFetch", "WebSearch"])
+
+/**
+ * MCP tool *suffix* tokens (after `mcp__<slug>__`) that imply network reach.
+ * Matched case-insensitively against the full tool name. Keep this list
+ * intentional - unknown MCP tools stay `"meta"` until classified here or
+ * denied by the fail-closed path when they present a URL-like argument.
+ */
+const EGRESS_MCP_NAME_RE =
+  /mcp__[a-z0-9-]+__(?:.*_)?(?:web_?fetch|web_?search|http_?(?:get|post|request|fetch)?|fetch_url|browse|browser|request_url)(?:_.*)?$/i
 
 /** All tool names that map to "read". */
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "NotebookRead"])
@@ -32,12 +41,13 @@ const EXEC_TOOLS = new Set(["Bash", "mcp__local_shell__local_shell_run"])
 /**
  * Return the {@link ToolEffectClass} for a given tool name.
  *
- * Unknown tool names — including arbitrary `mcp__*` names not listed above —
- * fall through to `"meta"`. This is intentionally conservative: an unknown
- * tool is not assumed to be safe for egress or filesystem write.
+ * Unknown tool names fall through to `"meta"`. Network-capable MCP tools
+ * are classified as `"egress"` when their name matches a known network
+ * verb pattern (see {@link EGRESS_MCP_NAME_RE}).
  */
 export const classifyTool = (toolName: string): ToolEffectClass => {
   if (EGRESS_TOOLS.has(toolName)) return "egress"
+  if (EGRESS_MCP_NAME_RE.test(toolName)) return "egress"
   if (READ_TOOLS.has(toolName)) return "read"
   if (WRITE_TOOLS.has(toolName)) return "write"
   if (EXEC_TOOLS.has(toolName)) return "exec"

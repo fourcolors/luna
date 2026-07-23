@@ -1,8 +1,15 @@
 import { describe, it, expect } from "vitest"
 import { Effect } from "effect"
-import { egressAllowlist, type EgressDecision } from "../src/egress-policy"
+import {
+  egressAllowlist,
+  parseEgressAllowedHosts,
+  DEFAULT_EGRESS_ALLOWED_HOSTS,
+  extractEgressTargetHost,
+  makeEgressPreToolUseHook,
+  type EgressDecision,
+  type PolicySubject,
+} from "../src/egress-policy"
 import { classifyTool } from "../src/effect-class"
-import type { PolicySubject } from "../src/egress-policy"
 import type { InterceptorVerdict } from "../src/interception"
 
 /* -------------------------------------------------------------------------- */
@@ -55,6 +62,18 @@ describe("classifyTool", () => {
   it("classifies egress tools", () => {
     expect(classifyTool("WebFetch")).toBe("egress")
     expect(classifyTool("WebSearch")).toBe("egress")
+  })
+
+  it("classifies network-capable MCP tools as egress (#247)", () => {
+    expect(classifyTool("mcp__browser__web_fetch")).toBe("egress")
+    expect(classifyTool("mcp__http__http_request")).toBe("egress")
+    expect(classifyTool("mcp__research__web_search")).toBe("egress")
+    expect(classifyTool("mcp__x__fetch_url")).toBe("egress")
+  })
+
+  it("does not classify non-network MCP tools as egress", () => {
+    expect(classifyTool("mcp__memory__search")).toBe("meta")
+    expect(classifyTool("mcp__github__list_issues")).toBe("meta")
   })
 
   it("classifies read tools", () => {
@@ -419,5 +438,110 @@ describe("egressAllowlist: audit trail", () => {
       { url: "https://anthropic.com/x" },
     )
     expect(verdict).toMatchObject({ behavior: "allow" })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Config + MCP egress + PreToolUse (#247)                                    */
+/* -------------------------------------------------------------------------- */
+
+describe("parseEgressAllowedHosts", () => {
+  it("returns defaults for unset / empty", () => {
+    expect(parseEgressAllowedHosts(undefined)).toEqual(DEFAULT_EGRESS_ALLOWED_HOSTS)
+    expect(parseEgressAllowedHosts("")).toEqual(DEFAULT_EGRESS_ALLOWED_HOSTS)
+    expect(parseEgressAllowedHosts("   ")).toEqual(DEFAULT_EGRESS_ALLOWED_HOSTS)
+  })
+
+  it("parses comma-separated hosts and lowercases them", () => {
+    expect(parseEgressAllowedHosts("GitHub.com, API.Anthropic.com")).toEqual([
+      "github.com",
+      "api.anthropic.com",
+    ])
+  })
+
+  it("treats * as allow-all sentinel", () => {
+    expect(parseEgressAllowedHosts("*")).toEqual(["*"])
+  })
+})
+
+describe("extractEgressTargetHost", () => {
+  it("extracts host from url / bare hostname keys", () => {
+    expect(extractEgressTargetHost({ url: "https://api.github.com/x" })).toBe(
+      "api.github.com",
+    )
+    expect(extractEgressTargetHost({ host: "docs.anthropic.com" })).toBe(
+      "docs.anthropic.com",
+    )
+    expect(extractEgressTargetHost({ endpoint: "https://x.ai/v1" })).toBe("x.ai")
+  })
+
+  it("returns null when no usable target is present", () => {
+    expect(extractEgressTargetHost({})).toBeNull()
+    expect(extractEgressTargetHost({ query: "hello" })).toBeNull()
+  })
+})
+
+describe("egressAllowlist: MCP network tools", () => {
+  it("allows an MCP web_fetch tool when the host is allow-listed", () => {
+    const { verdict, records } = runWithRecords(
+      { allowedHosts: ["github.com"] },
+      "mcp__browser__web_fetch",
+      { url: "https://api.github.com/repos/x" },
+    )
+    expect(verdict).toMatchObject({ behavior: "allow" })
+    expect(only(records).rule).toBe("host-allowlisted")
+    expect(only(records).target).toBe("api.github.com")
+  })
+
+  it("denies an MCP http tool against a non-allow-listed host", () => {
+    const { verdict, records } = runWithRecords(
+      { allowedHosts: ["github.com"] },
+      "mcp__http__http_request",
+      { url: "https://evil.example.com/x" },
+    )
+    expect(verdict).toMatchObject({ behavior: "deny" })
+    expect(only(records).rule).toBe("host-not-allowlisted")
+  })
+
+  it("allows any host when allow-list is *", () => {
+    const { verdict } = runWithRecords(
+      { allowedHosts: ["*"] },
+      "WebFetch",
+      { url: "https://anywhere.example/x" },
+    )
+    expect(verdict).toMatchObject({ behavior: "allow" })
+  })
+})
+
+describe("makeEgressPreToolUseHook", () => {
+  it("denies PreToolUse for a blocked WebFetch target", async () => {
+    const hook = makeEgressPreToolUseHook({ allowedHosts: ["github.com"] })
+    const out = await hook({
+      hook_event_name: "PreToolUse",
+      tool_name: "WebFetch",
+      tool_input: { url: "https://evil.example.com/x" },
+    })
+    expect(out).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+      },
+    })
+  })
+
+  it("returns empty object for non-egress / allow paths", async () => {
+    const hook = makeEgressPreToolUseHook({ allowedHosts: ["github.com"] })
+    const pass = await hook({
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "/tmp/x" },
+    })
+    expect(pass).toEqual({})
+    const allow = await hook({
+      hook_event_name: "PreToolUse",
+      tool_name: "WebFetch",
+      tool_input: { url: "https://api.github.com/x" },
+    })
+    expect(allow).toEqual({})
   })
 })

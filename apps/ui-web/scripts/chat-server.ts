@@ -322,7 +322,16 @@ import {
   type ThreadToolsProvider,
   stripClientMarker,
 } from "@luna/chat-service"
-import { composeInterceptors, defaultSafetyInterceptors, mcpToolGate, type McpServerPolicy } from "@luna/tools"
+import {
+  composeInterceptors,
+  defaultSafetyInterceptors,
+  mcpToolGate,
+  egressAllowlist,
+  makeEgressPreToolUseHook,
+  parseEgressAllowedHosts,
+  type EgressDecision,
+  type McpServerPolicy,
+} from "@luna/tools"
 import {
   ChannelService,
   ChannelServiceLayer,
@@ -4780,19 +4789,69 @@ const bootstrap = async (): Promise<void> => {
   // "default"; LUNA_TRUSTED_LOCAL=1 (bypassPermissions) skips canUseTool
   // entirely — the explicit full-trust opt-in (no rails).
   //
+  // Tool ACL v1 (#247): egressAllowlist gates WebFetch/WebSearch and
+  // network-classified MCP tools against LUNA_EGRESS_ALLOWED_HOSTS (defaults
+  // in @luna/tools). PreToolUse hook covers auto-approved mcp__* tools that
+  // skip canUseTool. Subject is main-thread for the live gate; subagent /
+  // background-job deny-all is available when a subject is injected later.
+  //
   // This is now the FIRST runPromise on the runtime, so it forces the layer
   // graph to build — a boot-time layer failure surfaces HERE, ahead of
   // buildMain's catch. Mirror that diagnostic so a fail-fast boot stays loud
   // instead of becoming a silent unhandled rejection.
+  const egressAllowedHosts = parseEgressAllowedHosts(
+    process.env["LUNA_EGRESS_ALLOWED_HOSTS"],
+  )
+  const egressOnDecision = (d: EgressDecision): void => {
+    // Structured one-line audit into stdout (captured by journald / events
+    // pipeline operators already scrape). Failures must never throw.
+    try {
+      writeSync(
+        1,
+        `[luna/tool-acl] ${d.decision} tool=${d.tool} target=${d.target ?? "-"} ` +
+          `rule=${d.rule} subject=${d.subject}\n`,
+      )
+    } catch {
+      /* best-effort */
+    }
+  }
+  const egressOpts = {
+    allowedHosts: egressAllowedHosts,
+    subject: "main-thread" as const,
+    onDecision: egressOnDecision,
+  }
+  writeSync(
+    1,
+    `[luna/tool-acl] egress allow-list active (${egressAllowedHosts.length === 1 && egressAllowedHosts[0] === "*" ? "ALLOW-ALL (*)" : `${egressAllowedHosts.length} host suffix(es)`}); override via LUNA_EGRESS_ALLOWED_HOSTS\n`,
+  )
+
   await runtime
     .runPromise(
       Effect.gen(function* () {
         const adapter = yield* SDKAdapter
         yield* adapter.setPermissionCallback(
           composeInterceptors([
+            // First-wins: egress deny must beat any later allow.
+            egressAllowlist(egressOpts),
             ...defaultSafetyInterceptors(),
             mcpToolGate((slug) => mcpToolPolicyHolder.get(slug)),
           ]),
+        )
+        // PreToolUse covers tools that never hit canUseTool (auto-approved
+        // mcp__*, and calls under permission modes that skip the callback).
+        // forkDaemon + scoped + never keeps the registration's Scope open for
+        // the process lifetime so the hook is not torn down after install.
+        yield* Effect.forkDaemon(
+          Effect.scoped(
+            Effect.gen(function* () {
+              yield* adapter.registerHook(
+                "PreToolUse",
+                undefined,
+                makeEgressPreToolUseHook(egressOpts) as never,
+              )
+              yield* Effect.never
+            }),
+          ),
         )
       }),
     )
