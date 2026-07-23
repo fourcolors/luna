@@ -1772,6 +1772,56 @@ fn is_closable_widget_label(label: &str) -> bool {
     is_dock_label(label)
 }
 
+/// Redock a pinned chat floater into its owner window (issue #380).
+///
+/// Deliberately geometry-free: the previous drag-release redock used a left-
+/// strip hit test that failed in real multi-window use (#274). This command is
+/// for the **explicit Redock button** (and any future reliable affordance):
+/// focus the owner, emit `redock-thread` with thread id + optional draft, then
+/// close the caller. Returns false (no error) when the call is invalid so the
+/// page can fall back to just closing.
+#[tauri::command]
+async fn redock_thread(
+    window: tauri::WebviewWindow,
+    thread_id: String,
+    owner_label: String,
+    draft: Option<String>,
+) -> Result<bool, String> {
+    let app = window.app_handle().clone();
+    let caller_label = window.label().to_string();
+    let thread_id = thread_id.trim().to_string();
+    if thread_id.is_empty() {
+        return Ok(false);
+    }
+    // Only a dockable panel/widget may be closed this way; never redock into self.
+    if !is_closable_widget_label(&caller_label) || owner_label == caller_label {
+        return Ok(false);
+    }
+    // Owner must be a real dock window (main line is panel-chat; never the hub).
+    if !is_dock_label(&owner_label) {
+        return Ok(false);
+    }
+    let owner = match app.get_webview_window(&owner_label) {
+        Some(w) => w,
+        None => return Ok(false),
+    };
+    let _ = owner.unminimize();
+    let _ = owner.show();
+    let _ = owner.set_focus();
+    app.emit_to(
+        tauri::EventTarget::labeled(&owner_label),
+        "redock-thread",
+        serde_json::json!({
+            "threadId": thread_id,
+            "draft": draft,
+            "from": caller_label,
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+    window.close().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 // ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
 //
 // The moon orb (window "main") and the widget windows (panel-* / widget-*) are
@@ -2708,6 +2758,7 @@ fn main() {
         open_widget,
         hub_event,
         close_widget,
+        redock_thread,
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,
@@ -2758,6 +2809,7 @@ fn main() {
         open_widget,
         hub_event,
         close_widget,
+        redock_thread,
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,

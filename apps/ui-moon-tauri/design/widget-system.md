@@ -818,7 +818,12 @@ It is a real left column whose width is `--sidebar-w` (0 = collapsed); `#chat-pa
 Drag the right-edge divider (or its collapsed grabber pill parked at the window's left edge) to open / resize / collapse, and the divider is keyboard-resizable (`role=separator`, Arrow/Home/End to resize, Enter/Space to toggle).
 The preferred open width and the open/collapsed flag persist across launches in `localStorage` (`luna.sidebar.w` / `luna.sidebar.open`); the sidebar re-clamps to at most 70% of the panel when the window shrinks without losing that preferred width.
 A row click (or Enter/Space on a focused row) switches that thread in place and LEAVES the sidebar open (Things-3 behavior); the sidebar's "+ New" mints a fresh thread in THIS window.
-✅ **As-built rider (single-window switcher, `a91055d`):** the row drag-out / drag-in redock machinery the sidebar briefly shipped with (drag a row out to spawn a `redockTo` floater, `redock_thread`, the "drop to redock" strip, `floater-closed`, popped-row greying) proved fragile in real multi-window use and was removed; the sidebar is a pure single-window switcher, and pinned `?thread=…` windows remain spawnable via `open_widget`.
+✅ **As-built rider (single-window switcher, `a91055d` / #274):** the original geometry-based drag-in redock (left-strip hit test on native window drag, redock arming strip, popped-row greying) proved fragile in real multi-window use and was removed. The sidebar remains a ChatGPT-style in-window switcher; pinned `?thread=…` windows remain spawnable via `open_widget` (⤢ / ⌘-click).
+
+✅ **Chrome-tab multi-window loop (#380):** restored a **minimal reliable** redock path without replaying the fragile dock geometry:
+- **Drag-out:** HTML5 drag on a sidebar row past a 48px threshold spawns `open_widget('chat', { thread, redockTo })` at the pointer.
+- **Redock:** pinned floaters that know their owner show an explicit **Redock** title-bar button; `redock_thread` focuses the owner, emits `redock-thread` (thread id + optional draft), and closes the floater. No left-strip hit test.
+- One-window-per-thread still comes from `panel_instance_label` (same thread params focus the same instance).
 The drag/snap geometry lives in `docs/window-drag-snap.md`.
 
 **Server track (parallel):**

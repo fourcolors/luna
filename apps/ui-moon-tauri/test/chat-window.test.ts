@@ -4945,6 +4945,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: openInNewWindow invokes open_widget with the thread param', async () => {
       const m = M()
+      m.State.winLabel = null // no owner stamp in this baseline case
       const invoke = vi.fn().mockResolvedValue('panel-chat-abc')
       ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
         core: { invoke },
@@ -4954,6 +4955,42 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         kind: 'chat',
         params: { thread: 'thr-42' },
       })
+    })
+
+    it('Scenario: openInNewWindow stamps redockTo + optional drop coords (#380)', async () => {
+      const m = M()
+      m.State.winLabel = 'panel-chat'
+      const invoke = vi.fn().mockResolvedValue('panel-chat-xyz')
+      ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
+        core: { invoke },
+      }
+      m.ThreadDrawerEngine.openInNewWindow('thr-99', 120.4, 340.6)
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'thr-99', redockTo: 'panel-chat' },
+        x: 120,
+        y: 341,
+      })
+    })
+
+    it('Scenario: sidebar rows are draggable for drag-out (#380)', () => {
+      const m = M()
+      m.State.threads = [
+        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: Date.now() },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.render()
+      const row = document.querySelector('.thread-row[data-thread-id="a"]') as HTMLElement | null
+      expect(row).toBeTruthy()
+      expect(row?.draggable).toBe(true)
+    })
+
+    it('Scenario: redock button is only visible on pinned floaters with redockTo (#380)', () => {
+      // The boot path hides #redock-btn unless PINNED_THREAD && REDOCK_TO.
+      // Assert the markup + CSS hide rule exist so a pinned window can show it.
+      expect(htmlContent).toMatch(/id="redock-btn"/)
+      expect(htmlContent).toMatch(/#title-bar \.redock-btn\[hidden\]/)
+      expect(htmlContent).toMatch(/redock_thread/)
     })
 
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {

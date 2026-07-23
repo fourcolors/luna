@@ -1532,6 +1532,23 @@
     .thread-row:hover .thread-row-pop,
     .thread-row:focus-within .thread-row-pop { opacity: 1; }
     .thread-row-pop:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); color: var(--ink); border-color: color-mix(in oklab, var(--ink) 12%, transparent); }
+    /* HTML5 drag-out cue (#380): grabbing a row signals it can leave the window. */
+    .thread-row[draggable="true"] { cursor: grab; }
+    .thread-row[draggable="true"]:active { cursor: grabbing; }
+    /* Redock button — pinned ?thread= floaters only (#380). */
+    #title-bar .redock-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 4px; height: 26px; padding: 0 10px; margin-right: 6px;
+      border-radius: 8px; border: 1px solid color-mix(in oklab, var(--ink) 12%, transparent);
+      background: color-mix(in oklab, var(--ink) 4%, transparent); color: var(--ink);
+      font-size: 0.72rem; font-weight: 600; cursor: pointer;
+      -webkit-app-region: no-drag; app-region: no-drag;
+    }
+    #title-bar .redock-btn:hover {
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 28%, transparent);
+    }
+    #title-bar .redock-btn[hidden] { display: none !important; }
     .thread-drawer-empty {
       font-size: 0.76rem; color: var(--ink-soft); text-align: center;
       padding: 26px 12px; font-style: italic;
@@ -2421,6 +2438,12 @@
     <!-- Reserves the exact native traffic-light footprint. -->
     <div class="bar-start" aria-hidden="true"></div>
     <span class="bar-title" id="bar-title">Luna</span>
+    <!-- Redock — pinned floaters only (#380). Folds this window's thread back
+         into the owner main-line chat (panel-chat or redockTo), then closes. -->
+    <button class="redock-btn" id="redock-btn" type="button" hidden
+            title="Redock into main window" aria-label="Redock into main window">
+      Redock
+    </button>
     <!-- New thread — the promoted action, alone on the right. Mints a fresh
          thread in THIS window (single-window model; same as the sidebar's
          "+ New"). Hidden and inert in pinned ?thread=<id> windows. -->
@@ -3130,6 +3153,9 @@
       // The pinned thread id for ?thread=<id> windows (injectable for tests).
       // Set once at boot from PINNED_THREAD; tests may set m.State.pinnedThread directly.
       pinnedThread: null,
+      // Tauri window label for this webview (set at boot). Used so drag-out
+      // floaters can redock back to the owner (#380).
+      winLabel: null,
       // The pending scheduleReconnect() timer.
       reconnectTimer: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
@@ -4674,6 +4700,9 @@
         row.setAttribute('role', 'listitem');
         row.tabIndex = 0;
         row.dataset.threadId = t.id;
+        // HTML5 drag-out (#380): drag a row outside the window to spawn a
+        // Phase 8 floater. Clicks without a real drag still switch in place.
+        row.draggable = true;
         if (t.id === State.activeThreadId) row.classList.add('active');
         if (ThreadCache.isBusy(t.id) && t.id !== State.activeThreadId) row.classList.add('busy');
         // Static skeleton (icons only); text set via textContent to avoid any
@@ -4684,11 +4713,11 @@
             '<span class="thread-row-title"></span>' +
             '<span class="thread-row-preview"></span>' +
           '</span>' +
-          '<button type="button" class="thread-row-pop" title="Open in new window" aria-label="Open in new window">⤢</button>';
+          '<button type="button" class="thread-row-pop" title="Open in new window" aria-label="Open in new window" draggable="false">⤢</button>';
         row.querySelector('.thread-row-title').textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
         const preview = (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || this._relTime(t);
         row.querySelector('.thread-row-preview').textContent = preview;
-        // Click (or Enter/Space) opens the thread in place — ChatGPT-style switcher.
+        // Click (or Enter/Space) opens the thread in place - ChatGPT-style switcher.
         // Meta/Ctrl-click (or the ⤢ button) opens a Phase 8 pinned window instead.
         row.addEventListener('click', (e) => {
           if (e.metaKey || e.ctrlKey) {
@@ -4704,6 +4733,26 @@
             if (e.metaKey || e.ctrlKey) this.openInNewWindow(t.id);
             else this.onRowClick(t.id);
           }
+        });
+        // Drag-out: after a meaningful drag, spawn a floater at the drop point.
+        // Threshold avoids turning a normal click into an accidental pop-out.
+        let dragOrigin = null;
+        row.addEventListener('dragstart', (e) => {
+          dragOrigin = { x: e.screenX, y: e.screenY };
+          try {
+            e.dataTransfer.setData('text/luna-thread-id', t.id);
+            e.dataTransfer.effectAllowed = 'copyMove';
+          } catch (_) { /* some hosts reject setData */ }
+        });
+        row.addEventListener('dragend', (e) => {
+          const origin = dragOrigin;
+          dragOrigin = null;
+          if (!origin) return;
+          const dx = e.screenX - origin.x;
+          const dy = e.screenY - origin.y;
+          if (Math.hypot(dx, dy) < 48) return; // click-or-wiggle, not a drag-out
+          // Spawn at the pointer so the floater appears under the cursor.
+          this.openInNewWindow(t.id, e.screenX, e.screenY);
         });
         const pop = row.querySelector('.thread-row-pop');
         if (pop) {
@@ -4724,17 +4773,30 @@
 
       /**
        * Open a Phase 8 direct-line window pinned to this thread.
-       * Different threads can generate in parallel — server already supports
+       * Different threads can generate in parallel - server already supports
        * concurrent runtimes; this is the multi-window surface.
+       * Optional screenX/screenY place the floater under a drag-out drop (#380).
+       * redockTo tells the floater which owner to fold back into on Redock.
        */
-      openInNewWindow(id) {
+      openInNewWindow(id, screenX, screenY) {
         if (!id) return;
         if (!(window.__TAURI__ && window.__TAURI__.core)) {
           Logger.warn('[ThreadDrawer] openInNewWindow requires Tauri');
           return;
         }
+        const params = { thread: id };
+        // Prefer State.winLabel (set at boot); fall back for early calls.
+        const owner = State.winLabel || null;
+        if (owner) params.redockTo = owner;
+        const args = { kind: 'chat', params };
+        if (typeof screenX === 'number' && Number.isFinite(screenX)) {
+          args.x = Math.round(screenX);
+        }
+        if (typeof screenY === 'number' && Number.isFinite(screenY)) {
+          args.y = Math.round(screenY);
+        }
         window.__TAURI__.core
-          .invoke('open_widget', { kind: 'chat', params: { thread: id } })
+          .invoke('open_widget', args)
           .catch((e) => Logger.warn('open_widget chat window failed:', e));
       },
 
@@ -10359,6 +10421,9 @@
     const _threadParam = new URLSearchParams(location.search).get('thread') || null;
     const SPAWN_FRESH = _threadParam === 'new';
     const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
+    // Owner label for a drag-out floater (#380). When set, the Redock button
+    // folds this window back into that owner via redock_thread.
+    const REDOCK_TO = new URLSearchParams(location.search).get('redockTo') || null;
     // Max stall-recovery rounds before we give up and surface "Reattach stalled".
     // 3 rounds covers: one tombstone advance + one validation miss + one final retry.
     const MAX_REATTACH_ROUNDS = 3;
@@ -10377,6 +10442,7 @@
         winLabel = W.label;
       }
     } catch (_) { /* not in Tauri (tests/browser) */ }
+    State.winLabel = winLabel;
 
     // Collapse-into-moon is a Luna-specific workspace action, intentionally
     // separate from the native yellow button's per-window minimize behavior.
@@ -10402,6 +10468,33 @@
       });
     }
 
+    // Redock button (#380) — only on pinned floaters that know their owner.
+    // Geometry-free: explicit click, not the fragile drag-release strip.
+    const redockBtn = document.getElementById('redock-btn');
+    if (redockBtn) {
+      const canRedock = !!(State.pinnedThread && REDOCK_TO);
+      redockBtn.hidden = !canRedock;
+      if (canRedock) {
+        redockBtn.addEventListener('click', () => {
+          if (!(window.__TAURI__ && window.__TAURI__.core)) return;
+          const draft = (DOM.messageInput && DOM.messageInput.value) || '';
+          window.__TAURI__.core
+            .invoke('redock_thread', {
+              threadId: State.pinnedThread,
+              ownerLabel: REDOCK_TO,
+              draft: draft || null,
+            })
+            .then((ok) => {
+              // If owner is gone, just close this floater so the user is not stuck.
+              if (!ok && W && typeof W.close === 'function') {
+                W.close().catch(() => {});
+              }
+            })
+            .catch((e) => Logger.warn('redock_thread failed:', e));
+        });
+      }
+    }
+
     // ── Thread sidebar wiring ───────────────────────────────────────────────
     // Pinned ?thread=<id> windows are single-thread: hide the toggle + divider
     // and skip wiring so the switcher can never open there.
@@ -10425,6 +10518,23 @@
       // Drawer "+ New" mints a fresh thread IN THIS window (single-window model).
       if (DOM.threadDrawerNew) DOM.threadDrawerNew.addEventListener('click', () => { try { ChatEngine.newConversation(); } catch (_) {} });
       if (DOM.threadDrawerSearch) DOM.threadDrawerSearch.addEventListener('input', (e) => ThreadDrawerEngine.setSearch(e.target.value));
+      // Redock return channel (#380): a floater's Redock button emits
+      // redock-thread to this owner. Switch to that thread and restore draft.
+      try {
+        if (W && typeof W.listen === 'function') {
+          W.listen('redock-thread', (e) => {
+            const p = e && e.payload;
+            const id = p && p.threadId;
+            if (!id) return;
+            ThreadDrawerEngine.onRowClick(id);
+            const draft = p && p.draft;
+            if (draft && DOM.messageInput && !DOM.messageInput.value) {
+              DOM.messageInput.value = draft;
+              try { ChatEngine.autoGrowMessageInput(); } catch (_) {}
+            }
+          }).catch(() => {});
+        }
+      } catch (_) { /* off-Tauri */ }
     }
 
     // Hand title-bar gestures directly to the native macOS window drag.
