@@ -245,7 +245,7 @@ describe("classify - the 7 rows", () => {
     expect(hit).toBeNull()
   })
 
-  it("job-input-request -> needs-input, prompt body, null threadId", () => {
+  it("job-input-request -> needs-input, prompt body, null threadId (broadcast, no owning thread)", () => {
     const hit = classify(
       asFrame({
         type: "job-input-request",
@@ -261,6 +261,7 @@ describe("classify - the 7 rows", () => {
       kind: "needs-input",
       title: "Luna needs your input",
       body: "Which draft?",
+      // Jobs have no owning chat thread - banner is awareness-only (#362).
       threadId: null,
       seenKey: "job:r1",
       ts: null,
@@ -282,11 +283,12 @@ describe("classify - the 7 rows", () => {
     expect(hit?.body).toBe("Fallback job")
   })
 
-  it("secret-request -> needs-input, prompt body", () => {
+  it("secret-request -> needs-input with summoning threadId (#362)", () => {
     const hit = classify(
       asFrame({
         type: "secret-request",
         requestId: "s1",
+        threadId: "t-secret-456",
         prompt: "Paste your OpenAI key",
         destinationLabel: "env:OPENAI_API_KEY",
       }),
@@ -295,7 +297,7 @@ describe("classify - the 7 rows", () => {
       kind: "needs-input",
       title: "Luna needs your input",
       body: "Paste your OpenAI key",
-      threadId: null,
+      threadId: "t-secret-456",
       seenKey: "secret:s1",
       ts: null,
     })
@@ -306,11 +308,13 @@ describe("classify - the 7 rows", () => {
       asFrame({
         type: "secret-request",
         requestId: "s2",
+        threadId: "t2",
         prompt: "",
         destinationLabel: "env:FOO",
       }),
     )
     expect(hit?.body).toBe("env:FOO")
+    expect(hit?.threadId).toBe("t2")
   })
 
   it("unrelated frame -> null", () => {

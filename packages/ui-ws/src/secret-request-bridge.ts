@@ -215,6 +215,9 @@ export const createSecretRequestBridge = (
       send({
         type: "secret-request",
         requestId,
+        // #362: consumers (Studio native banners) need the summoning thread
+        // for focus-regain routing; delivery still uses the thread-keyed client map.
+        threadId: input.threadId,
         prompt: input.prompt,
         destinationLabel: input.destinationLabel,
       })

@@ -72,6 +72,7 @@ describe("SecretRequestBridge — happy path", () => {
     // request frame went out (with prompt + label, NO secret field)
     const reqFrame = h.sent[0] as SecretRequestFrame
     expect(reqFrame.type).toBe("secret-request")
+    expect(reqFrame.threadId).toBe("T1")
     expect(reqFrame.prompt).toBe("Paste token")
     expect(reqFrame.destinationLabel).toBe("1Password token for primary")
     expect((reqFrame as Record<string, unknown>).secret).toBeUndefined()
