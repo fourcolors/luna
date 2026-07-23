@@ -42,7 +42,20 @@
    *   - cancelled / abandoned consent
    */
   function formatOauthConsentError(raw) {
-    var msg = typeof raw === 'string' && raw.trim() ? raw.trim() : 'The consent flow did not complete.';
+    // Tauri invoke rejects with string OR Error/object depending on the bridge.
+    var msg = '';
+    if (typeof raw === 'string') {
+      msg = raw.trim();
+    } else if (raw && typeof raw === 'object') {
+      if (typeof raw.message === 'string' && raw.message.trim()) msg = raw.message.trim();
+      else {
+        try { msg = String(raw); } catch (_) { msg = ''; }
+        if (msg === '[object Object]') msg = '';
+      }
+    } else if (raw != null) {
+      msg = String(raw).trim();
+    }
+    if (!msg) msg = 'The consent flow did not complete.';
     var lower = msg.toLowerCase();
 
     // Explicit cancel (Cancel button or oauth_loopback_cancel) - leave alone.
@@ -582,25 +595,74 @@
               explainer.style.cssText = 'font-size:0.64rem;color:var(--muted);line-height:1.5;';
               // Google Workspace (and any google-* def) gets the guided ritual
               // with Console deep links + the publish-to-production trap.
+              // Built with createElement/textContent only (panel.html: safe DOM).
               var isGoogle = /google|gws/i.test(String(def.id || '') + ' ' + String(def.name || ''));
               if (isGoogle) {
-                explainer.innerHTML =
-                  'Uses <strong>your own</strong> Google OAuth client (Desktop app). ' +
-                  'One-time setup, about 10 minutes:' +
-                  '<ol class="connector-setup-steps" style="margin:6px 0 0 1.1em;padding:0;line-height:1.55;">' +
-                  '<li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">Google Cloud Console</a> and create a project.</li>' +
-                  '<li>Enable <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener noreferrer">Gmail</a>, ' +
-                  '<a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener noreferrer">Calendar</a>, and ' +
-                  '<a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener noreferrer">Drive</a> APIs.</li>' +
-                  '<li>OAuth consent screen → External → <strong>Publish to Production</strong> ' +
-                  '(Testing mode refresh tokens die every 7 days).</li>' +
-                  '<li>Credentials → Create OAuth client ID → <strong>Desktop app</strong>.</li>' +
-                  '<li>Paste the Client ID and secret below.</li>' +
-                  '</ol>' +
-                  '<div style="margin-top:6px;">First Connect shows Google\'s unverified-app warning once - ' +
-                  'Advanced → "Go to &lt;app&gt;" is the sanctioned personal-use path. ' +
-                  'Workspace org accounts may block unverified apps; use a personal Gmail if so. ' +
-                  'Full guide: docs/connectors-google-oauth-setup.md</div>';
+                function appendText(parent, text) {
+                  parent.appendChild(document.createTextNode(text));
+                }
+                function appendStrong(parent, text) {
+                  var s = document.createElement('strong');
+                  s.textContent = text;
+                  parent.appendChild(s);
+                }
+                function appendLink(parent, href, label) {
+                  var a = document.createElement('a');
+                  a.href = href;
+                  a.target = '_blank';
+                  a.rel = 'noopener noreferrer';
+                  a.textContent = label;
+                  parent.appendChild(a);
+                }
+                function appendLi(ol, build) {
+                  var li = document.createElement('li');
+                  build(li);
+                  ol.appendChild(li);
+                }
+
+                appendText(explainer, 'Uses ');
+                appendStrong(explainer, 'your own');
+                appendText(explainer, ' Google OAuth client (Desktop app). One-time setup, about 10 minutes:');
+
+                var steps = document.createElement('ol');
+                steps.className = 'connector-setup-steps';
+                steps.style.cssText = 'margin:6px 0 0 1.1em;padding:0;line-height:1.55;';
+                appendLi(steps, function (li) {
+                  appendText(li, 'Open ');
+                  appendLink(li, 'https://console.cloud.google.com/projectcreate', 'Google Cloud Console');
+                  appendText(li, ' and create a project.');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'Enable ');
+                  appendLink(li, 'https://console.cloud.google.com/apis/library/gmail.googleapis.com', 'Gmail');
+                  appendText(li, ', ');
+                  appendLink(li, 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com', 'Calendar');
+                  appendText(li, ', and ');
+                  appendLink(li, 'https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Drive');
+                  appendText(li, ' APIs.');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'OAuth consent screen → External → ');
+                  appendStrong(li, 'Publish to Production');
+                  appendText(li, ' (Testing mode refresh tokens die every 7 days).');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'Credentials → Create OAuth client ID → ');
+                  appendStrong(li, 'Desktop app');
+                  appendText(li, '.');
+                });
+                appendLi(steps, function (li) {
+                  appendText(li, 'Paste the Client ID and secret below.');
+                });
+                explainer.appendChild(steps);
+
+                var foot = document.createElement('div');
+                foot.style.marginTop = '6px';
+                appendText(foot, 'First Connect shows Google\'s unverified-app warning once - ');
+                appendText(foot, 'Advanced → "Go to <app>" is the sanctioned personal-use path. ');
+                appendText(foot, 'Workspace org accounts may block unverified apps; use a personal Gmail if so. ');
+                appendText(foot, 'Full guide: docs/connectors-google-oauth-setup.md');
+                explainer.appendChild(foot);
               } else {
                 explainer.textContent =
                   'Uses YOUR own OAuth client. Create a Desktop-app client with the provider, then paste it here.';
@@ -615,7 +677,9 @@
                   var href = a.getAttribute('href') || '';
                   if (!/^https:\/\//i.test(href)) return;
                   ev.preventDefault();
-                  ctx.invoke('open_external_url', { url: href }).catch(function () {});
+                  ctx.invoke('open_external_url', { url: href }).catch(function (err) {
+                    console.warn('[connectors] open_external_url failed', href, err);
+                  });
                 });
               }
 

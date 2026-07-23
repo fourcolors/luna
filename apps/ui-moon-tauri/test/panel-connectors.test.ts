@@ -708,4 +708,11 @@ describe('LunaConnectorsPanelHelpers.formatOauthConsentError', () => {
     const fmt = loadHelpers()
     expect(fmt('provider returned weird_error')).toBe('provider returned weird_error')
   })
+
+  it('coerces Error objects from Tauri invoke rejects', () => {
+    const fmt = loadHelpers()
+    const out = fmt(new Error('consent was declined by the provider: access_denied'))
+    expect(out).toContain('access_denied')
+    expect(out).toMatch(/test user/i)
+  })
 })
