@@ -46,6 +46,10 @@ fn local_ui_token(env_text: &str) -> Option<String> {
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
+            let line = match line.strip_prefix("export") {
+                Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+                _ => line,
+            };
             let (name, raw) = line.split_once('=')?;
             (name.trim() == key).then(|| unquote_env_value(raw).to_owned())
         }) {
@@ -356,5 +360,38 @@ mod tests {
     fn local_token_rejects_short_or_missing_values() {
         assert_eq!(local_ui_token("UI_WS_TOKEN=short\n"), None);
         assert_eq!(local_ui_token("OTHER=value\n"), None);
+    }
+
+    #[test]
+    fn local_token_parses_export_prefix_with_various_whitespace() {
+        let env_space = "export UI_WS_TOKEN=space-token-123456\n";
+        assert_eq!(
+            local_ui_token(env_space).as_deref(),
+            Some("space-token-123456")
+        );
+
+        let env_multi_space = "export   UI_WS_TOKEN=multi-space-token-123456\n";
+        assert_eq!(
+            local_ui_token(env_multi_space).as_deref(),
+            Some("multi-space-token-123456")
+        );
+
+        let env_tab = "export\tUI_WS_TOKEN=tab-token-123456789\n";
+        assert_eq!(
+            local_ui_token(env_tab).as_deref(),
+            Some("tab-token-123456789")
+        );
+
+        let env_legacy_export = "export LUNA_UI_WS_TOKEN=legacy-export-token-123456\n";
+        assert_eq!(
+            local_ui_token(env_legacy_export).as_deref(),
+            Some("legacy-export-token-123456")
+        );
+    }
+
+    #[test]
+    fn local_token_rejects_export_key_prefix_false_matches() {
+        let env = "export_UI_WS_TOKEN=false-match-token-123456\nexport_LUNA_UI_WS_TOKEN=false-match-token-123456\n";
+        assert_eq!(local_ui_token(env), None);
     }
 }
