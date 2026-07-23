@@ -10,6 +10,20 @@
 #      (`master \`2349697a…\`` in a .md) WITHOUT tripping on the legitimate
 #      `sk-ant-oat-totally-bogus` test fixtures / redaction docs in the repo.
 #
+#   6. Moon WS-contract harness       — apps/ui-moon-tauri/test/ws-contract.test.ts
+#      (numbering matches the inline "HARD GATE 6" step comment below; gates
+#      3-5, the Moon/Studio/Server version-lockstep checks, predate this list
+#      and are documented only inline near their own steps.)
+#      drives frontend/chat.html's WebSocketEngine (reconnect backoff,
+#      connGen supersession, thread-switch resubscribe) through a scriptable
+#      FakeWebSocket double under realistic async timing. Task #45 of the
+#      Moon stability-audit batch — the prior stub never fired real events,
+#      so reconnect/thread-switch races were never exercised. This ONE file
+#      is blocking (separately from the whole-package vitest run below, which
+#      stays non-blocking on unrelated pre-existing failures) so regressions
+#      in this exact seam are caught automatically instead of relying on a
+#      human to notice stale-thread-content bleed in the running app.
+#
 # TEST RUNNERS — Luna's suite runs under TWO runners, and CI runs BOTH
 # (see TESTING.md). This split is the fix for the bun:sqlite FALSE failures:
 #   - `bun run test`     (vitest) — most suites. The bun:sqlite-backed suites
@@ -148,10 +162,21 @@ jobs:
         continue-on-error: true
         run: bun run typecheck
 
+      # HARD GATE 6: Moon WS-contract harness (task #45, Moon stability-audit
+      # batch). Runs BEFORE the whole-package (non-blocking) vitest pass below
+      # so a reconnect/connGen/thread-switch regression here fails the build
+      # even while the broader suite is still non-blocking on unrelated
+      # pre-existing failures (see header + KNOWN-RED below).
+      - name: Test — Moon WS-contract harness (HARD GATE)
+        run: bun run test -- apps/ui-moon-tauri/test/ws-contract.test.ts
+
       # Surfaced, NON-BLOCKING (see header). The bun:sqlite FALSE failures are
       # gone (excluded from vitest → run under Bun below), but a macOS-only
       # baseline (keychain-helper / deploy-scripts / ui-models) stays red on the
-      # Linux runner, so vitest is not a hard gate yet.
+      # Linux runner, so vitest is not a hard gate yet. (Known-red within
+      # apps/ui-moon-tauri specifically: chat-window.test.ts's single-fire-guard
+      # + voice-boot scenarios and slash-menu.test.ts — 8 pre-existing failures,
+      # unrelated to WS reconnect/connGen and unchanged by the HARD GATE above.)
       - name: Test — vitest (non-blocking)
         continue-on-error: true
         run: bun run test
