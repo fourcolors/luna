@@ -262,18 +262,68 @@ export const makeOllamaEmbedderLayer = (
       const degradeOnProbeFailure = opts?.degradeOnProbeFailure ?? false
       const knownDimension = opts?.dimension
 
-      const makeApi = (dimension: number): EmbedderApi => ({
-        provider: "ollama",
-        model,
-        dimension,
-        embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
-        embed: (text) =>
-          Effect.tryPromise({
-            try: () => ollamaEmbedHttp(baseUrl, model, text),
-            catch: (cause) =>
-              new EmbedderError({ provider: "ollama", op: "embed", cause }),
-          }),
-      })
+      /**
+       * Build the EmbedderApi.
+       *
+       * When `degraded` is true we skipped the boot-time declared-vs-probed
+       * dimension check (probe failed). On the first *successful* real embed
+       * we re-check vector length vs the declared dimension so a wrong
+       * LUNA_OLLAMA_EMBED_DIMENSION surfaces as a loud EmbedderError instead
+       * of a wall of per-write sqlite-vector failures (issue #264).
+       */
+      const makeApi = (
+        dimension: number,
+        degraded: boolean = false,
+      ): EmbedderApi => {
+        // Sticky mismatch after first successful embed in degraded mode —
+        // once we know the declared dim is wrong, do not keep calling Ollama
+        // only to re-discover the same config error.
+        let stickyMismatch: EmbedderError | null = null
+        let mismatchChecked = !degraded
+
+        return {
+          provider: "ollama",
+          model,
+          dimension,
+          embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
+          embed: (text) =>
+            Effect.gen(function* () {
+              if (stickyMismatch !== null) {
+                return yield* Effect.fail(stickyMismatch)
+              }
+              const vec = yield* Effect.tryPromise({
+                try: () => ollamaEmbedHttp(baseUrl, model, text),
+                catch: (cause) =>
+                  new EmbedderError({
+                    provider: "ollama",
+                    op: "embed",
+                    cause,
+                  }),
+              })
+              if (!mismatchChecked) {
+                mismatchChecked = true
+                if (vec.length !== dimension) {
+                  const cause = new Error(
+                    `dimension mismatch after degraded boot: declared=${dimension} got=${vec.length}`,
+                  )
+                  stickyMismatch = new EmbedderError({
+                    provider: "ollama",
+                    op: "embed",
+                    cause,
+                  })
+                  console.error(
+                    `[embedder] FATAL dimension mismatch after degraded boot: ` +
+                      `declared=${dimension} got=${vec.length} ` +
+                      `provider=ollama baseUrl=${baseUrl} model=${model} — ` +
+                      `fix LUNA_OLLAMA_EMBED_DIMENSION (or the model) and restart`,
+                  )
+                  return yield* Effect.fail(stickyMismatch)
+                }
+              }
+              return vec
+            }),
+        }
+      }
 
       // Probe-on-init: a real embedding call doubles as the health check
       // and tells us the dimension if the caller didn't pre-declare it.
@@ -324,7 +374,8 @@ export const makeOllamaEmbedderLayer = (
               `booting anyway with declared dimension - real embed() calls still hit ollama and self-heal: ` +
               `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts} cause=${errorMessage(cause)}`,
           )
-          return makeApi(knownDimension)
+          // Degraded: first successful embed() re-checks declared vs actual dim (#264).
+          return makeApi(knownDimension, true)
         }
         return yield* Effect.fail(
           new EmbedderError({ provider: "ollama", op: "init", cause }),
@@ -356,7 +407,7 @@ export const makeOllamaEmbedderLayer = (
         )
       }
 
-      return makeApi(knownDimension ?? probe.length)
+      return makeApi(knownDimension ?? probe.length, false)
     }),
   )
 

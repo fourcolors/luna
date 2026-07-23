@@ -363,6 +363,73 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     expect(probeAttemptCount(mockFetch)).toBe(1)
   })
 
+  it("degraded boot: first successful embed re-checks declared dimension (#264)", async () => {
+    // Probe window fails → degraded boot with declared dim 768.
+    mockFetch.mockResolvedValue(emptyBodyOk())
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 768,
+      degradeOnProbeFailure: true,
+      probeBackoffMs: 1,
+    })
+
+    const embedder = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* EmbedderService
+      }).pipe(Effect.provide(layer)),
+    )
+    expect(embedder.dimension).toBe(768)
+
+    // Ollama recovers but returns a different dimension than declared.
+    mockFetch.mockReset()
+    mockFetch.mockResolvedValue(okJson({ embeddings: [[1, 0, 0]] })) // length 3
+
+    const first = await Effect.runPromise(Effect.either(embedder.embed("hello")))
+    expect(first._tag).toBe("Left")
+    if (first._tag === "Left") {
+      expect(first.left).toBeInstanceOf(EmbedderError)
+      expect(first.left.op).toBe("embed")
+      expect(String(first.left.cause)).toMatch(/dimension mismatch after degraded boot/)
+    }
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("FATAL dimension mismatch after degraded boot"),
+      ),
+    ).toBe(true)
+
+    // Sticky: second call fails without another HTTP round-trip.
+    mockFetch.mockClear()
+    const second = await Effect.runPromise(Effect.either(embedder.embed("again")))
+    expect(second._tag).toBe("Left")
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it("degraded boot: matching dimension on first real embed is fine (#264)", async () => {
+    mockFetch.mockResolvedValue(emptyBodyOk())
+
+    const layer = makeOllamaEmbedderLayer({
+      baseUrl: "http://ollama.test:11434",
+      model: "embeddinggemma",
+      dimension: 3,
+      degradeOnProbeFailure: true,
+      probeBackoffMs: 1,
+    })
+
+    const embedder = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* EmbedderService
+      }).pipe(Effect.provide(layer)),
+    )
+
+    mockFetch.mockReset()
+    mockFetch.mockResolvedValue(okJson({ embeddings: [[1, 0, 0]] })) // length 3
+
+    const vec = await Effect.runPromise(embedder.embed("hello"))
+    expect(vec.length).toBe(3)
+  })
+
   it("maxProbeAttempts=1 restores today's fail-fast-on-first-attempt behavior", async () => {
     mockFetch.mockResolvedValue(emptyBodyOk())
 
