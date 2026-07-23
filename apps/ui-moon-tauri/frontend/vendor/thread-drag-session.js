@@ -224,13 +224,74 @@
     };
   }
 
+  // ── Phase C continuity seed (cross-webview) ─────────────────────────────
+  // sessionStorage is isolated per Tauri WebviewWindow / top-level browsing
+  // context, so a seed written in the owner would be invisible to a floater.
+  // Use a *shared* Storage (localStorage in production). TTL + consume-delete
+  // keep seeds from surviving restarts or stale detach paths.
+  var SEED_PREFIX = 'luna.threadSeed.';
+  var SEED_TTL_MS = 30000;
+
+  /**
+   * @param {Storage} storage shared store (localStorage in Moon)
+   * @param {string} threadId
+   * @param {{ messages: any[], throughSeq?: number }} entry
+   * @param {number} [now]
+   */
+  function writeThreadSeed(storage, threadId, entry, now) {
+    if (!storage || !threadId || !entry || !Array.isArray(entry.messages)) return false;
+    try {
+      storage.setItem(SEED_PREFIX + threadId, JSON.stringify({
+        messages: entry.messages,
+        throughSeq: entry.throughSeq,
+        ts: typeof now === 'number' ? now : Date.now(),
+      }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Read + delete seed. Returns null if missing, invalid, or expired.
+   * @param {Storage} storage
+   * @param {string} threadId
+   * @param {number} [now]
+   * @returns {{ messages: any[], throughSeq: number } | null}
+   */
+  function consumeThreadSeed(storage, threadId, now) {
+    if (!storage || !threadId) return null;
+    var key = SEED_PREFIX + threadId;
+    var raw = null;
+    try { raw = storage.getItem(key); } catch (_) { return null; }
+    if (!raw) return null;
+    try { storage.removeItem(key); } catch (_) { /* best-effort */ }
+    try {
+      var seed = JSON.parse(raw);
+      if (!seed || !Array.isArray(seed.messages)) return null;
+      var ts = Number(seed.ts) || 0;
+      var t = typeof now === 'number' ? now : Date.now();
+      if (t - ts >= SEED_TTL_MS) return null;
+      return {
+        messages: seed.messages,
+        throughSeq: Number.isFinite(seed.throughSeq) ? seed.throughSeq : -1,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   g.LunaThreadDrag = {
     STATE: STATE,
     ELASTICITY_PX: ELASTICITY_PX,
     VERTICAL_MAGNET_PX: VERTICAL_MAGNET_PX,
+    SEED_PREFIX: SEED_PREFIX,
+    SEED_TTL_MS: SEED_TTL_MS,
     pointInStripBand: pointInStripBand,
     insertIndexForRatio: insertIndexForRatio,
     yRatioInStrip: yRatioInStrip,
     createSession: createSession,
+    writeThreadSeed: writeThreadSeed,
+    consumeThreadSeed: consumeThreadSeed,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -5003,16 +5003,56 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ghost.remove()
     })
 
-    it('Scenario: Attached path seeds cache only on detach helper (Phase C)', () => {
+    it('Scenario: Attached path seeds cache via shared localStorage (Phase C)', () => {
       const m = M()
+      // Must use localStorage - sessionStorage is isolated per Tauri webview.
       m.ThreadCache.put('thr-seed', [{ role: 'user', text: 'hi' }], 3)
       m.ThreadDrawerEngine._seedFloaterCache('thr-seed')
-      const raw = sessionStorage.getItem('luna.threadSeed.thr-seed')
+      const raw = localStorage.getItem('luna.threadSeed.thr-seed')
       expect(raw).toBeTruthy()
       const seed = JSON.parse(raw!)
       expect(seed.messages).toEqual([{ role: 'user', text: 'hi' }])
       expect(seed.throughSeq).toBe(3)
-      sessionStorage.removeItem('luna.threadSeed.thr-seed')
+      // Floater boot path consumes via LunaThreadDrag.consumeThreadSeed(localStorage)
+      const consumed = (window as any).LunaThreadDrag.consumeThreadSeed(localStorage, 'thr-seed')
+      expect(consumed).toEqual({ messages: [{ role: 'user', text: 'hi' }], throughSeq: 3 })
+      expect(localStorage.getItem('luna.threadSeed.thr-seed')).toBeNull()
+    })
+
+    it('Scenario: Phase C seed is invisible across isolated Storage (why not sessionStorage)', () => {
+      // Two Storage contexts (owner webview vs floater webview):
+      // sessionStorage-like isolation means write on A is invisible on B.
+      const LTD = (window as any).LunaThreadDrag
+      const makeStore = () => {
+        const map = new Map<string, string>()
+        return {
+          getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+          setItem: (k: string, v: string) => { map.set(k, v) },
+          removeItem: (k: string) => { map.delete(k) },
+        }
+      }
+      const ownerSession = makeStore() // isolated (sessionStorage analog)
+      const floaterSession = makeStore()
+      const sharedLocal = makeStore() // shared (localStorage analog)
+
+      expect(LTD.writeThreadSeed(ownerSession, 't-iso', {
+        messages: [{ role: 'user', text: 'x' }],
+        throughSeq: 1,
+      }, 1000)).toBe(true)
+      // Isolated consume fails - this is the multi-window failure mode for sessionStorage
+      expect(LTD.consumeThreadSeed(floaterSession, 't-iso', 1001)).toBeNull()
+      // Shared store succeeds (owner write, floater consume)
+      expect(LTD.writeThreadSeed(sharedLocal, 't-shared', {
+        messages: [{ role: 'assistant', text: 'y' }],
+        throughSeq: 2,
+      }, 2000)).toBe(true)
+      const seed = LTD.consumeThreadSeed(sharedLocal, 't-shared', 2001)
+      expect(seed).toEqual({ messages: [{ role: 'assistant', text: 'y' }], throughSeq: 2 })
+      // Floater boot paints from consumed seed into ThreadCache (real path)
+      const m = M()
+      m.ThreadCache.put('t-shared', seed.messages, seed.throughSeq)
+      expect(m.ThreadCache.get('t-shared')?.messages).toEqual([{ role: 'assistant', text: 'y' }])
+      expect(m.ThreadCache.paint('t-shared')).toBe(true)
     })
 
     it('Scenario: ThreadDragSession wired — open_widget only after detach action', () => {

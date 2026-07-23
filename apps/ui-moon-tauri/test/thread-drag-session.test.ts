@@ -34,10 +34,17 @@ type Session = {
   constants: { ELASTICITY_PX: number; VERTICAL_MAGNET_PX: number }
 }
 
+type StorageLike = {
+  getItem: (k: string) => string | null
+  setItem: (k: string, v: string) => void
+  removeItem: (k: string) => void
+}
+
 type LunaThreadDragApi = {
   STATE: Record<string, string>
   ELASTICITY_PX: number
   VERTICAL_MAGNET_PX: number
+  SEED_TTL_MS: number
   pointInStripBand: (
     stripRect: { left: number; top: number; right: number; bottom: number } | null,
     cx: number,
@@ -45,6 +52,17 @@ type LunaThreadDragApi = {
     magnetY?: number,
   ) => boolean
   insertIndexForRatio: (n: number, yRatio: number) => number
+  writeThreadSeed: (
+    storage: StorageLike,
+    threadId: string,
+    entry: { messages: unknown[]; throughSeq?: number },
+    now?: number,
+  ) => boolean
+  consumeThreadSeed: (
+    storage: StorageLike,
+    threadId: string,
+    now?: number,
+  ) => { messages: unknown[]; throughSeq: number } | null
   createSession: (opts: {
     threadId: string
     startClientX: number
@@ -220,5 +238,43 @@ describe('LunaThreadDrag session (Phase A/B contract)', () => {
   it('constants match chrome-tab-interaction elasticity/magnetism defaults', () => {
     expect(API.ELASTICITY_PX).toBe(10)
     expect(API.VERTICAL_MAGNET_PX).toBe(15)
+  })
+
+  it('Phase C seed: isolated Storage cannot transfer; shared Storage can (cross-webview)', () => {
+    const makeStore = () => {
+      const map = new Map<string, string>()
+      return {
+        getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+        setItem: (k: string, v: string) => { map.set(k, v) },
+        removeItem: (k: string) => { map.delete(k) },
+      }
+    }
+    const ownerOnly = makeStore()
+    const floaterOnly = makeStore()
+    const shared = makeStore()
+    const entry = { messages: [{ role: 'user', text: 'seed' }], throughSeq: 9 }
+
+    expect(API.writeThreadSeed(ownerOnly, 'tid', entry, 1000)).toBe(true)
+    // sessionStorage-like isolation: other context sees nothing
+    expect(API.consumeThreadSeed(floaterOnly, 'tid', 1001)).toBeNull()
+    // localStorage-like shared origin store
+    expect(API.writeThreadSeed(shared, 'tid', entry, 1000)).toBe(true)
+    expect(API.consumeThreadSeed(shared, 'tid', 1001)).toEqual({
+      messages: [{ role: 'user', text: 'seed' }],
+      throughSeq: 9,
+    })
+    // consume-delete
+    expect(API.consumeThreadSeed(shared, 'tid', 1002)).toBeNull()
+  })
+
+  it('Phase C seed: TTL expires stale seeds', () => {
+    const map = new Map<string, string>()
+    const store = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => { map.set(k, v) },
+      removeItem: (k: string) => { map.delete(k) },
+    }
+    API.writeThreadSeed(store, 'old', { messages: [{ role: 'user', text: 'x' }], throughSeq: 0 }, 0)
+    expect(API.consumeThreadSeed(store, 'old', API.SEED_TTL_MS + 1)).toBeNull()
   })
 })

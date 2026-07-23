@@ -161,7 +161,7 @@ What is true today (do not regress):
 - **`LunaThreadDrag` session** (`frontend/vendor/thread-drag-session.js`): `not_started | attached | detached | stopped`
 - Pull-out uses pointer capture + session (HTML5 DnD forbidden); **`open_widget` only on `detach`**
 - Attached drop reorders session-local (`adoptAtIndex`); no spawn
-- Detach seeds `sessionStorage` ThreadCache for floater first-paint (Phase C ceiling without prewarm)
+- Detach seeds `localStorage` ThreadCache (shared across Tauri webviews; sessionStorage is isolated per window) for floater first-paint
 - Strip-band geometry: elasticity 10px, vertical magnet 15px; native redock strip ~300pt
 
 Still open follow-ups (not blocking):

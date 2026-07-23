@@ -5192,18 +5192,18 @@
       /**
        * Phase C: write a short-lived ThreadCache seed so a detaching floater
        * can paint transcript before the first WS snapshot.
+       * Uses localStorage (shared across Tauri WebviewWindows). sessionStorage
+       * is isolated per top-level browsing context and would never be visible
+       * to the floater - see LunaThreadDrag.writeThreadSeed.
        */
       _seedFloaterCache(threadId) {
         if (!threadId) return;
         const entry = ThreadCache.get(threadId);
         if (!entry || !Array.isArray(entry.messages)) return;
         try {
-          const key = 'luna.threadSeed.' + threadId;
-          sessionStorage.setItem(key, JSON.stringify({
-            messages: entry.messages,
-            throughSeq: entry.throughSeq,
-            ts: Date.now(),
-          }));
+          if (window.LunaThreadDrag && typeof window.LunaThreadDrag.writeThreadSeed === 'function') {
+            window.LunaThreadDrag.writeThreadSeed(localStorage, threadId, entry);
+          }
         } catch (_) { /* private mode / quota */ }
       },
 
@@ -10909,18 +10909,16 @@
 
     // Phase C: consume ThreadCache seed written by the owner on detach so a
     // floater paints transcript immediately (before first WS snapshot).
+    // localStorage is shared across Tauri webviews; sessionStorage is not.
     if (PINNED_THREAD) {
       try {
-        const key = 'luna.threadSeed.' + PINNED_THREAD;
-        const raw = sessionStorage.getItem(key);
-        if (raw) {
-          sessionStorage.removeItem(key);
-          const seed = JSON.parse(raw);
-          if (seed && Array.isArray(seed.messages) && (Date.now() - (seed.ts || 0)) < 30000) {
-            ThreadCache.put(PINNED_THREAD, seed.messages, seed.throughSeq);
-            State.activeThreadId = PINNED_THREAD;
-            ThreadCache.paint(PINNED_THREAD);
-          }
+        const seed = (window.LunaThreadDrag && typeof window.LunaThreadDrag.consumeThreadSeed === 'function')
+          ? window.LunaThreadDrag.consumeThreadSeed(localStorage, PINNED_THREAD)
+          : null;
+        if (seed && Array.isArray(seed.messages)) {
+          ThreadCache.put(PINNED_THREAD, seed.messages, seed.throughSeq);
+          State.activeThreadId = PINNED_THREAD;
+          ThreadCache.paint(PINNED_THREAD);
         }
       } catch (_) { /* best-effort continuity */ }
     }
