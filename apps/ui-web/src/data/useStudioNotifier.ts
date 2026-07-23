@@ -38,7 +38,11 @@ export interface NotifyHit {
   readonly kind: NotifyKind
   readonly title: string
   readonly body: string
-  /** null for needs-input (awareness-only, no focus-regain route). */
+  /**
+   * Thread to focus on banner click / focus-regain. null when the frame has
+   * no owning thread (e.g. broadcast `job-input-request` - jobs are not
+   * thread-bound; see protocol JobInputRequestFrame).
+   */
   readonly threadId: string | null
   /**
    * Stable identity for the reconnect-replay seen-guard. DONE hits from the
@@ -65,6 +69,9 @@ export function classify(frame: ServerFrame): NotifyHit | null {
   // ── ui-ws-only frames (narrow by the string tag, then cast the typed shape).
   if (type === "job-input-request") {
     const f = frame as unknown as JobInputRequestFrame
+    // Broadcast frame with no owning chat thread (protocol). Stay null so
+    // native focus-regain does not invent a route; the job-input UI surfaces
+    // on every connected client without thread focus.
     return {
       kind: "needs-input",
       title: "Luna needs your input",
@@ -76,11 +83,13 @@ export function classify(frame: ServerFrame): NotifyHit | null {
   }
   if (type === "secret-request") {
     const f = frame as unknown as SecretRequestFrame
+    // #362: secret-request is thread-targeted; preserve threadId so banner
+    // click / focus-regain opens the summoning conversation.
     return {
       kind: "needs-input",
       title: "Luna needs your input",
       body: f.prompt || f.destinationLabel,
-      threadId: null,
+      threadId: f.threadId,
       seenKey: `secret:${f.requestId}`,
       ts: null,
     }

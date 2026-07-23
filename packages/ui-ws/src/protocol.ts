@@ -1010,7 +1010,14 @@ export interface RegisterOpTokenStatusFrame {
 export interface SecretRequestFrame {
   readonly type: "secret-request"
   readonly requestId: string
-  /** What to enter — shown above the secure field. */
+  /**
+   * Luna thread that summoned the secret entry. Carried on the wire so
+   * Studio/Moon notification banners can focus-regain the right thread
+   * (issue #362). The bridge already routes the frame to this thread's
+   * registered client; the field is for the consumer, not for delivery.
+   */
+  readonly threadId: string
+  /** What to enter - shown above the secure field. */
   readonly prompt: string
   /** Human-readable destination for operator consent (never the raw descriptor). */
   readonly destinationLabel: string
