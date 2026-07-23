@@ -41,6 +41,10 @@ fn unquote_env_value(raw: &str) -> &str {
 
 fn local_ui_token(env_text: &str) -> Option<String> {
     for key in ["UI_WS_TOKEN", "LUNA_UI_WS_TOKEN"] {
+        // Filter len >= 16 INSIDE find_map so a short/dummy earlier line for
+        // the same key does not abort the scan (issue #361). Returning None
+        // from find_map continues to the next line; only a long-enough value
+        // short-circuits the key loop.
         if let Some(value) = env_text.lines().find_map(|line| {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -51,11 +55,13 @@ fn local_ui_token(env_text: &str) -> Option<String> {
                 _ => line,
             };
             let (name, raw) = line.split_once('=')?;
-            (name.trim() == key).then(|| unquote_env_value(raw).to_owned())
-        }) {
-            if value.len() >= 16 {
-                return Some(value);
+            if name.trim() != key {
+                return None;
             }
+            let value = unquote_env_value(raw);
+            (value.len() >= 16).then(|| value.to_owned())
+        }) {
+            return Some(value);
         }
     }
     None
@@ -393,5 +399,33 @@ mod tests {
     fn local_token_rejects_export_key_prefix_false_matches() {
         let env = "export_UI_WS_TOKEN=false-match-token-123456\nexport_LUNA_UI_WS_TOKEN=false-match-token-123456\n";
         assert_eq!(local_ui_token(env), None);
+    }
+
+    #[test]
+    fn local_token_continues_line_scan_when_candidate_under_16_chars() {
+        // A short first match must not abort the key scan (#361).
+        let env = "UI_WS_TOKEN=short\nUI_WS_TOKEN=valid-second-token-123456\n";
+        assert_eq!(
+            local_ui_token(env).as_deref(),
+            Some("valid-second-token-123456")
+        );
+    }
+
+    #[test]
+    fn local_token_short_primary_falls_through_or_continues_to_valid_token() {
+        // Short primary key falls through to a valid legacy key.
+        let env1 = "UI_WS_TOKEN=short\nLUNA_UI_WS_TOKEN=valid-legacy-token-123456\n";
+        assert_eq!(
+            local_ui_token(env1).as_deref(),
+            Some("valid-legacy-token-123456")
+        );
+
+        // Short export primary continues to a later valid export primary.
+        let env2 =
+            "export UI_WS_TOKEN=too_short\nexport UI_WS_TOKEN=valid-export-token-123456\n";
+        assert_eq!(
+            local_ui_token(env2).as_deref(),
+            Some("valid-export-token-123456")
+        );
     }
 }
