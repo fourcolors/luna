@@ -248,8 +248,18 @@ export class SessionStore extends Effect.Service<SessionStore>()(
           ]
         }).pipe(Effect.flatten)
 
+      /**
+       * `opts.limit`, when given, bounds the returned stream to the most
+       * recent N messages (seq order preserved) instead of the full history.
+       * Mirrors the SQLite backend's bounded `readMessages` — see
+       * session-store-sqlite.ts for the perf rationale (subscribe()'s
+       * initial-snapshot read no longer scans/parses unbounded history).
+       * Omitted `opts`/`opts.limit` preserves the original full-history
+       * behavior for existing callers (findStoredById, dream gatherInputs).
+       */
       const readMessages = (
         sessionId: string,
+        opts?: { readonly limit?: number },
       ): Stream.Stream<StoredMessage, IntegrityError> =>
         Stream.unwrap(
           Ref.get(ref).pipe(
@@ -264,7 +274,12 @@ export class SessionStore extends Effect.Service<SessionStore>()(
                   }),
                 )
               }
-              return Stream.fromIterable(msgs)
+              const limit = opts?.limit
+              const bounded =
+                limit !== undefined && limit >= 0 && limit < msgs.length
+                  ? msgs.slice(msgs.length - limit)
+                  : msgs
+              return Stream.fromIterable(bounded)
             }),
           ),
         )

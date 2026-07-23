@@ -473,4 +473,33 @@ describe("SessionStore (in-memory)", () => {
     expect(result.ultra?.effort).toBe("ultracode")
     expect(result.none?.effort).toBeUndefined()
   })
+
+  it("readMessages with { limit } returns only the most recent N messages, still in insertion order", async () => {
+    const ids = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({ id: "bounded", options: { model: "m" }, createdAt: 0 })
+        for (let i = 0; i < 10; i++) {
+          yield* store.appendMessage({
+            sessionId: "bounded",
+            messageId: `m${i}`,
+            ts: i,
+            parentId: null,
+            kind: "user" as const,
+            payload: makeMsg("bounded", `t${i}`),
+          })
+        }
+        const all = yield* Stream.runCollect(store.readMessages("bounded"))
+        const bounded = yield* Stream.runCollect(
+          store.readMessages("bounded", { limit: 3 }),
+        )
+        return {
+          all: Array.from(all).map((m) => m.id),
+          bounded: Array.from(bounded).map((m) => m.id),
+        }
+      }),
+    )
+    expect(ids.all).toEqual(["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"])
+    expect(ids.bounded).toEqual(["m7", "m8", "m9"])
+  })
 })

@@ -91,6 +91,27 @@ const SCHEMA_V2 = `
     ON messages(session_id) WHERE kind = 'user' AND parent_id IS NULL;
 `
 
+// Version 3: perf fix (2026-07-23) for `list()`'s ordering. Diagnostic
+// (2026-07-14, agent_notes ced34ec3-4420-4e65-a245-03d9356469c5) found
+// `list()` had no SQL-level ORDER BY/LIMIT at all — it loaded every row in
+// `sessions`, then filtered/sorted/sliced in JS. `list()` below now pushes
+// status/parentId/tag/hasUserMessage filtering AND ordering AND limit into
+// SQL; these two indexes back the two ORDER BY shapes it uses:
+//   - default (orderBy: "createdAt"): idx_sessions_status_created covers the
+//     common "status = ? ORDER BY created_at DESC" shape (status is the most
+//     selective filter callers pass) and also serves a plain unfiltered
+//     `ORDER BY created_at DESC` scan.
+//   - orderBy: "lastMessageAt" (the chat-sidebar's default — see
+//     chat-service.ts's `listActive`): lastMessageAt is NOT a column, it's
+//     `meta_json.lastMessageAt`, so an expression index on the json_extract
+//     is the only way SQLite can avoid re-deriving it per row at sort time.
+const SCHEMA_V3 = `
+  CREATE INDEX IF NOT EXISTS idx_sessions_status_created
+    ON sessions(status, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_sessions_lastmsgat
+    ON sessions(json_extract(meta_json, '$.lastMessageAt'));
+`
+
 // ── Row shapes (mirror SQL columns 1:1) ────────────────────────────────────
 interface SessionDbRow {
   id: string
@@ -286,6 +307,7 @@ export const makeSessionStoreSqlite = (
       ensureSchemaVersions(db)
       applyMigration(db, "sessions", 1, SCHEMA_V1, Date.now())
       applyMigration(db, "sessions", 2, SCHEMA_V2, Date.now())
+      applyMigration(db, "sessions", 3, SCHEMA_V3, Date.now())
 
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -331,6 +353,18 @@ export const makeSessionStoreSqlite = (
       const messagesAll = db.query(
         `SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC`,
       )
+      // Bounded twin of `messagesAll` — perf fix (2026-07-23, see
+      // subscribe()'s DEFAULT_SNAPSHOT_MESSAGE_LIMIT in chat-service.ts).
+      // Takes the last `limit` rows by seq (DESC, so the index backs it),
+      // then re-sorts that small set ASC so callers see normal seq order.
+      // `messagesAll` above is unchanged and still used whenever `opts.limit`
+      // is omitted (findStoredById, dream's gatherInputs — full-history
+      // callers that must not silently truncate).
+      const messagesRecent = db.query(
+        `SELECT * FROM (
+           SELECT * FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT ?
+         ) ORDER BY seq ASC`,
+      )
       // Bounded lookup for the thread's first top-level user message — used by
       // sidebar title derivation. LIMIT 1 so it never materializes the whole
       // message log (the reason readMessages was too costly for derive-on-read).
@@ -338,22 +372,15 @@ export const makeSessionStoreSqlite = (
         `SELECT * FROM messages WHERE session_id = ? AND kind = 'user' ` +
           `AND parent_id IS NULL ORDER BY seq ASC LIMIT 1`,
       )
-      const sessionsList = db.query(`SELECT * FROM sessions`)
       // Single source of truth for the "real thread" predicate: a session with
-      // a top-level user message - mirrors `firstUserMessage`. Both list filters
-      // (the `hasUserMessage` plain path and the `excludeIds` path) compose this
-      // exact string so they can never drift on what counts as a real thread.
-      // The correlated EXISTS is served by the partial index
+      // a top-level user message - mirrors `firstUserMessage`. `list()` below
+      // composes this exact string so it can never drift on what counts as a
+      // real thread. The correlated EXISTS is served by the partial index
       // `idx_messages_toplevel_user`, so it is a per-session index seek that
       // stops at the first match rather than a full scan of `messages`.
       const hasUserExists =
         `EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id ` +
         `AND m.kind = 'user' AND m.parent_id IS NULL)`
-      // Same as `sessionsList` but restricted to real threads, so list()'s
-      // `hasUserMessage` filter drops empty/probe threads BEFORE the limit.
-      const sessionsListWithUser = db.query(
-        `SELECT * FROM sessions s WHERE ${hasUserExists}`,
-      )
 
       const create = (input: {
         readonly id: string
@@ -619,8 +646,18 @@ export const makeSessionStoreSqlite = (
           }
         })
 
+      /**
+       * `opts.limit`, when given, bounds the query to the most recent N
+       * messages (by seq) instead of the full history — see subscribe()'s
+       * DEFAULT_SNAPSHOT_MESSAGE_LIMIT (chat-service.ts) for why this
+       * matters: every thread open used to run this SELECT with no LIMIT,
+       * including the heavy `content_json` column, over the entire message
+       * log. Omitted `opts`/`opts.limit` is the original unbounded query —
+       * existing callers (findStoredById, dream gatherInputs) are unaffected.
+       */
       const readMessages = (
         sessionId: string,
+        opts?: { readonly limit?: number },
       ): Stream.Stream<StoredMessage, IntegrityError> =>
         Stream.unwrap(
           Effect.sync(() => {
@@ -632,7 +669,11 @@ export const makeSessionStoreSqlite = (
                 integrity("session_exists", `session ${sessionId} not found`),
               )
             }
-            const rows = messagesAll.all(sessionId) as MessageDbRow[]
+            const limit = opts?.limit
+            const rows =
+              limit !== undefined && limit >= 0
+                ? (messagesRecent.all(sessionId, limit) as MessageDbRow[])
+                : (messagesAll.all(sessionId) as MessageDbRow[])
             return Stream.fromIterable(rows.map(rowToMessage))
           }),
         )
@@ -655,53 +696,72 @@ export const makeSessionStoreSqlite = (
           }
         })
 
+      /**
+       * Perf fix (2026-07-23, diagnostic agent_notes
+       * ced34ec3-4420-4e65-a245-03d9356469c5): this used to run one of three
+       * `SELECT *` shapes with NO SQL-level WHERE beyond hasUserMessage/
+       * excludeIds, then filter status/parentId/tag, sort, and slice to
+       * `limit` — all in JS, over every row in `sessions`. All of that is now
+       * pushed into one dynamic, parameterized SQL query: filters become
+       * WHERE clauses, `orderBy` becomes ORDER BY (backed by
+       * `idx_sessions_status_created` for the default createdAt order and
+       * `idx_sessions_lastmsgat` for lastMessageAt — see SCHEMA_V3), and
+       * `limit` becomes a SQL LIMIT so the DB — not JS — decides which rows
+       * to materialize. `tag` filtering uses `json_each` over the `tags`
+       * JSON array column (bun:sqlite ships JSON1), an exact equivalent of
+       * the old `tags.includes(q.tag)` JS check.
+       *
+       * The query text is rebuilt per call (not a single prepared statement)
+       * because its WHERE/ORDER BY shape varies with which SessionQuery
+       * fields are set — `list()` is not a hot-loop call like `appendMessage`,
+       * so paying SQLite's parse cost per call is the right tradeoff versus
+       * juggling a matrix of pre-compiled statement variants.
+       */
       const list = (
         q: SessionQuery = {},
       ): Stream.Stream<SessionSummary, never> =>
         Stream.unwrap(
           Effect.sync(() => {
-            const excludeIds =
-              q.excludeIds && q.excludeIds.length > 0 ? q.excludeIds : null
-            const rawRows = excludeIds
-              ? (() => {
-                  const clauses: string[] = []
-                  if (q.hasUserMessage) clauses.push(hasUserExists)
-                  // One bound parameter per excluded id, so the count is capped
-                  // by SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766 on older
-                  // builds, 65535 on the current bun:sqlite bundle). Callers
-                  // pass only archived thread ids, which never reach that scale.
-                  clauses.push(
-                    `s.id NOT IN (${excludeIds.map(() => "?").join(", ")})`,
-                  )
-                  return db
-                    .query(
-                      `SELECT * FROM sessions s WHERE ${clauses.join(" AND ")}`,
-                    )
-                    .all(...excludeIds)
-                })()
-              : (
-                  q.hasUserMessage ? sessionsListWithUser : sessionsList
-                ).all()
-            const rows = rawRows as SessionDbRow[]
-            const summaries = rows.map(rowToSummary)
-            let filtered = summaries
-            if (q.status)
-              filtered = filtered.filter((r) => r.status === q.status)
-            if (q.parentId)
-              filtered = filtered.filter((r) => r.parentId === q.parentId)
-            if (q.tag)
-              filtered = filtered.filter((r) => r.tags.includes(q.tag!))
-            if (q.orderBy === "lastMessageAt") {
-              filtered.sort(
-                (a, b) =>
-                  (b.lastMessageAt ?? b.createdAt) -
-                  (a.lastMessageAt ?? a.createdAt),
+            const clauses: string[] = []
+            const params: unknown[] = []
+            if (q.hasUserMessage) clauses.push(hasUserExists)
+            if (q.excludeIds && q.excludeIds.length > 0) {
+              // One bound parameter per excluded id, so the count is capped
+              // by SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766 on older
+              // builds, 65535 on the current bun:sqlite bundle). Callers
+              // pass only archived thread ids, which never reach that scale.
+              clauses.push(
+                `s.id NOT IN (${q.excludeIds.map(() => "?").join(", ")})`,
               )
-            } else {
-              filtered.sort((a, b) => b.createdAt - a.createdAt)
+              params.push(...q.excludeIds)
             }
-            if (q.limit !== undefined) filtered = filtered.slice(0, q.limit)
-            return Stream.fromIterable(filtered)
+            if (q.status) {
+              clauses.push(`s.status = ?`)
+              params.push(q.status)
+            }
+            if (q.parentId) {
+              clauses.push(`s.parent_id = ?`)
+              params.push(q.parentId)
+            }
+            if (q.tag) {
+              clauses.push(
+                `EXISTS (SELECT 1 FROM json_each(s.tags) WHERE value = ?)`,
+              )
+              params.push(q.tag)
+            }
+            const where =
+              clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""
+            const orderExpr =
+              q.orderBy === "lastMessageAt"
+                ? `COALESCE(json_extract(s.meta_json, '$.lastMessageAt'), s.created_at) DESC`
+                : `s.created_at DESC`
+            const limitClause = q.limit !== undefined ? `LIMIT ?` : ""
+            const sql =
+              `SELECT * FROM sessions s ${where} ORDER BY ${orderExpr} ${limitClause}`.trim()
+            const allParams =
+              q.limit !== undefined ? [...params, q.limit] : params
+            const rows = db.query(sql).all(...allParams) as SessionDbRow[]
+            return Stream.fromIterable(rows.map(rowToSummary))
           }),
         )
 

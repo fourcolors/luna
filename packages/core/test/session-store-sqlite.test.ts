@@ -662,4 +662,56 @@ d("SessionStore.fromPath (sqlite)", () => {
       cleanupTmp(dbPath)
     }
   })
+
+  it("readMessages with { limit } returns only the most recent N messages, still in ascending seq order", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({ id: "bounded", options: { model: "m" }, createdAt: 0 })
+        for (let i = 0; i < 10; i++) {
+          yield* store.appendMessage({
+            sessionId: "bounded",
+            messageId: `m${i}`,
+            ts: i,
+            parentId: null,
+            kind: "user",
+            payload: { text: String(i) },
+          })
+        }
+        const all = yield* Stream.runCollect(store.readMessages("bounded"))
+        const bounded = yield* Stream.runCollect(
+          store.readMessages("bounded", { limit: 3 }),
+        )
+        return {
+          all: Array.from(all).map((m) => m.id),
+          bounded: Array.from(bounded).map((m) => m.id),
+        }
+      }),
+    )
+    expect(ids.all).toEqual(["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"])
+    // last 3 by seq, still in ascending order (not reversed)
+    expect(ids.bounded).toEqual(["m7", "m8", "m9"])
+  })
+
+  it("readMessages with no opts (existing callers) is unaffected by the bounded read path", async () => {
+    const ids = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({ id: "unbounded", options: { model: "m" }, createdAt: 0 })
+        for (let i = 0; i < 4; i++) {
+          yield* store.appendMessage({
+            sessionId: "unbounded",
+            messageId: `u${i}`,
+            ts: i,
+            parentId: null,
+            kind: "user",
+            payload: {},
+          })
+        }
+        const all = yield* Stream.runCollect(store.readMessages("unbounded"))
+        return Array.from(all).map((m) => m.id)
+      }),
+    )
+    expect(ids).toEqual(["u0", "u1", "u2", "u3"])
+  })
 })
