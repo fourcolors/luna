@@ -1508,9 +1508,30 @@
       opacity: 0; transition: opacity 0.14s ease;
     }
     .thread-row.active .thread-row-dot { opacity: 1; }
+    /* Background turn still running on a non-active thread (ChatGPT-style). */
+    .thread-row.busy .thread-row-dot {
+      opacity: 1;
+      background: color-mix(in oklab, var(--accent) 88%, white);
+      box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 45%, transparent);
+      animation: thread-busy-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes thread-busy-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 40%, transparent); }
+      50% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 0%, transparent); }
+    }
     .thread-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
     .thread-row-title { font-size: 0.79rem; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thread-row-preview { font-size: 0.66rem; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread-row-pop {
+      flex-shrink: 0; width: 24px; height: 24px; border-radius: 6px;
+      border: 1px solid transparent; background: transparent;
+      color: var(--ink-soft); font-size: 0.78rem; line-height: 1;
+      cursor: pointer; opacity: 0; transition: opacity 0.12s ease, background 0.12s ease;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .thread-row:hover .thread-row-pop,
+    .thread-row:focus-within .thread-row-pop { opacity: 1; }
+    .thread-row-pop:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); color: var(--ink); border-color: color-mix(in oklab, var(--ink) 12%, transparent); }
     .thread-drawer-empty {
       font-size: 0.76rem; color: var(--ink-soft); text-align: center;
       padding: 26px 12px; font-style: italic;
@@ -3140,6 +3161,13 @@
       lastOpenWidth: 240,       // remembered width so a toggle reopens where you left it
       threads: [],              // SessionSummary[] from thread-list — the sidebar render source
       threadSearch: '',         // live filter text for the sidebar
+      // Per-thread transcript cache (threadId → { messages, throughSeq }).
+      // Instant paint on switch; server re-snapshot is the authoritative refresh.
+      // Plain object (not Map) so tests can JSON-roundtrip State easily.
+      threadCache: Object.create(null),
+      // Threads with an in-flight agentic turn (any threadId, not just active).
+      // Sidebar shows a busy pulse so background work is visible while you chat elsewhere.
+      busyThreads: Object.create(null),
       // Model + effort switcher (§1 wire contract). effortSelection cap gates
       // whether the server accepts set-thread-config + computes efforts per model.
       // Defaults false; `hello` corrects to true when the server supports it.
@@ -4366,6 +4394,54 @@
     //   artifact-pin       → pin()
     //   artifact-unpin     → unpin()
     //
+    // ── Thread cache ─────────────────────────────────────────────────────────
+    // Per-thread transcript cache for ChatGPT-style switching. Server
+    // re-snapshot on re-subscribe is the source of truth; this cache removes
+    // the blank-flash and makes A→B→A feel instant. Plain module object (Moon
+    // is a single HTML page — no zustand/jotai needed).
+    const ThreadCache = {
+      put(threadId, messages, throughSeq) {
+        if (!threadId) return;
+        const list = Array.isArray(messages) ? messages.slice() : [];
+        State.threadCache[threadId] = {
+          messages: list,
+          throughSeq: Number.isFinite(throughSeq) ? throughSeq : -1,
+        };
+      },
+      get(threadId) {
+        if (!threadId) return null;
+        return State.threadCache[threadId] || null;
+      },
+      /** Paint ChatState from cache. Returns true if a cache entry existed. */
+      paint(threadId) {
+        const entry = this.get(threadId);
+        if (!entry) return false;
+        try { ChatState.reset(); } catch (_) { /* ChatState may not be ready in early boot tests */ }
+        try { ChatState.loadHistory(entry.messages); } catch (_) { return false; }
+        try { ChatLoop.flush(); } catch (_) { /* renderer optional in unit tests */ }
+        return true;
+      },
+      clear(threadId) {
+        if (!threadId) return;
+        delete State.threadCache[threadId];
+      },
+      markBusy(threadId) {
+        if (!threadId) return;
+        if (State.busyThreads[threadId]) return;
+        State.busyThreads[threadId] = true;
+        try { ThreadDrawerEngine.render(); } catch (_) { /* sidebar may be closed */ }
+      },
+      clearBusy(threadId) {
+        if (!threadId) return;
+        if (!State.busyThreads[threadId]) return;
+        delete State.busyThreads[threadId];
+        try { ThreadDrawerEngine.render(); } catch (_) { /* best-effort */ }
+      },
+      isBusy(threadId) {
+        return !!(threadId && State.busyThreads[threadId]);
+      },
+    };
+
     // ── Thread drawer engine ─────────────────────────────────────────────────
     // Left-edge single-window thread switcher: a Things-3-style resizable
     // split-pane sidebar that pushes the chat over. Renders the thread-list
@@ -4599,6 +4675,7 @@
         row.tabIndex = 0;
         row.dataset.threadId = t.id;
         if (t.id === State.activeThreadId) row.classList.add('active');
+        if (ThreadCache.isBusy(t.id) && t.id !== State.activeThreadId) row.classList.add('busy');
         // Static skeleton (icons only); text set via textContent to avoid any
         // markup injection from server-provided titles/previews.
         row.innerHTML =
@@ -4606,13 +4683,35 @@
           '<span class="thread-row-info">' +
             '<span class="thread-row-title"></span>' +
             '<span class="thread-row-preview"></span>' +
-          '</span>';
+          '</span>' +
+          '<button type="button" class="thread-row-pop" title="Open in new window" aria-label="Open in new window">⤢</button>';
         row.querySelector('.thread-row-title').textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
         const preview = (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || this._relTime(t);
         row.querySelector('.thread-row-preview').textContent = preview;
-        // Click (or Enter/Space) opens the thread in place — single-window switcher.
-        row.addEventListener('click', () => this.onRowClick(t.id));
-        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.onRowClick(t.id); } });
+        // Click (or Enter/Space) opens the thread in place — ChatGPT-style switcher.
+        // Meta/Ctrl-click (or the ⤢ button) opens a Phase 8 pinned window instead.
+        row.addEventListener('click', (e) => {
+          if (e.metaKey || e.ctrlKey) {
+            e.preventDefault();
+            this.openInNewWindow(t.id);
+            return;
+          }
+          this.onRowClick(t.id);
+        });
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            if (e.metaKey || e.ctrlKey) this.openInNewWindow(t.id);
+            else this.onRowClick(t.id);
+          }
+        });
+        const pop = row.querySelector('.thread-row-pop');
+        if (pop) {
+          pop.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.openInNewWindow(t.id);
+          });
+        }
         return row;
       },
 
@@ -4621,6 +4720,22 @@
         if (!ms) return '';
         try { if (typeof formatRelTime === 'function') return formatRelTime(ms); } catch (_) { /* fall through */ }
         return new Date(ms).toLocaleDateString();
+      },
+
+      /**
+       * Open a Phase 8 direct-line window pinned to this thread.
+       * Different threads can generate in parallel — server already supports
+       * concurrent runtimes; this is the multi-window surface.
+       */
+      openInNewWindow(id) {
+        if (!id) return;
+        if (!(window.__TAURI__ && window.__TAURI__.core)) {
+          Logger.warn('[ThreadDrawer] openInNewWindow requires Tauri');
+          return;
+        }
+        window.__TAURI__.core
+          .invoke('open_widget', { kind: 'chat', params: { thread: id } })
+          .catch((e) => Logger.warn('open_widget chat window failed:', e));
       },
 
       // --- open thread in THIS window (row click) ----------------------------
@@ -4636,14 +4751,18 @@
         State.activeTurnId = null;
         State.pendingUserMessage = null;
         try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
-        // Drop the outgoing thread's in-memory turns so a late assistant-delta
-        // or tool frame for the OLD thread can't re-render into the NEW one
-        // before its snapshot arrives (the streaming handlers also gate on
-        // frame.threadId). Reset the transient "thinking" face too; the new
-        // thread re-arms it if it streams.
-        try { ChatState.reset(); } catch (_) {}
-        try { MoonFace.setBusy(false); } catch (_) {}
-        if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';   // instant feedback; snapshot rebuilds
+        // Instant paint from per-thread cache when available (ChatGPT-style).
+        // Server re-snapshot is still sent below — it is the authoritative
+        // refresh. Without the cache, the transcript flashes empty on every
+        // switch (and used to stay empty on A→B→A due to subscribe no-op).
+        const painted = ThreadCache.paint(id);
+        if (!painted) {
+          try { ChatState.reset(); } catch (_) {}
+          if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';
+        }
+        // Face follows the viewed thread only; background busy shows on the
+        // sidebar row, not the moon face.
+        try { MoonFace.setBusy(!!State.busyThreads[id]); } catch (_) {}
         if (WebSocketEngine.isConnected()) {
           WebSocketEngine.send({ type: 'subscribe', threadId: id });
           WebSocketEngine.startSubscribeTimeout();
@@ -6964,6 +7083,12 @@
     });
 
     MoonFrames.register('thread-snapshot', (frame) => {
+      // Always refresh the per-thread cache — even a late snapshot for a
+      // non-active thread keeps switch-back instant (and correct after a
+      // background turn finished while we were elsewhere).
+      if (frame && frame.threadId) {
+        ThreadCache.put(frame.threadId, frame.messages || [], frame.throughSeq);
+      }
       // This connection may still have forwarders for previously viewed
       // threads. A late snapshot must never replace the transcript for the
       // newly selected/created thread (or the fresh surface while no id exists).
@@ -7011,6 +7136,9 @@
     });
 
     MoonFrames.register('assistant-delta', (frame) => {
+      // Any thread with live deltas is "busy" for the sidebar pulse —
+      // including background threads you switched away from.
+      if (frame && frame.threadId) ThreadCache.markBusy(frame.threadId);
       // Thread isolation: drop deltas for any thread that isn't in view. A
       // mid-stream thread switch would otherwise stream the OLD thread's
       // tokens into the NEW thread until its snapshot lands.
@@ -7037,6 +7165,7 @@
       // with NO preceding deltas (so there is no in-flight turn to finish).
       // Detect it by the delivery marker and push a complete turn directly.
       if (frame.message && frame.message.delivery) {
+        if (frame.threadId) ThreadCache.clearBusy(frame.threadId);
         if (sameThread) {
           WebSocketEngine.clearTurnTimeout();
           State.activeTurnId = null;
@@ -7067,6 +7196,7 @@
     });
 
     MoonFrames.register('assistant-error', (frame) => {
+      if (frame && frame.threadId) ThreadCache.clearBusy(frame.threadId);
       if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       WebSocketEngine.clearTurnTimeout();
       const errTurnId = frame.turnId || State.activeTurnId;
@@ -7077,6 +7207,9 @@
     });
 
     MoonFrames.register('turn-complete', (frame) => {
+      // Whole agentic turn ended — clear busy for this thread whether or not
+      // it is in view (background work finished).
+      if (frame && frame.threadId) ThreadCache.clearBusy(frame.threadId);
       if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
       // The whole agentic turn ended (SDK `result`). Settle the trailing
       // assistant run so its grouped activity timeline auto-collapses to
@@ -9275,6 +9408,9 @@
         // actually went out (online path only — offline returned above).
         this.showTypingIndicator();
         MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
+        // Mark this thread busy for the sidebar pulse so a mid-turn switch
+        // still shows background work on the other row.
+        if (State.activeThreadId) ThreadCache.markBusy(State.activeThreadId);
         WebSocketEngine.startTurnTimeout();
       }
     };
@@ -10394,6 +10530,7 @@
       window.__MoonInternals.MoonBar = MoonBar;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
+      window.__MoonInternals.ThreadCache = ThreadCache;
       window.__MoonInternals.ThreadCreateState = ThreadCreateState;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.FeedbackEngine = FeedbackEngine;

@@ -4711,6 +4711,87 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.threadDrawerOpen).toBe(true)
     })
 
+    it('Scenario: A→B→A paints from ThreadCache instantly and still re-subscribes for a fresh snapshot', () => {
+      // Regression: server used to no-op re-subscribe, and the client wiped
+      // ChatState with no cache — switch-back left an empty transcript.
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'a'
+      m.ThreadCache.put('a', [
+        { role: 'user', text: 'hello from A', ts: 1 },
+        { role: 'assistant', text: 'reply A', ts: 2 },
+      ], 2)
+      m.ThreadCache.put('b', [
+        { role: 'user', text: 'hello from B', ts: 3 },
+      ], 1)
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      m.ThreadDrawerEngine.onRowClick('b')
+      expect(m.State.activeThreadId).toBe('b')
+      expect(m.ChatState.turns.some((t: { role: string; segments?: { raw?: string }[] }) =>
+        t.role === 'user' && t.segments?.some((s) => s.raw === 'hello from B'),
+      )).toBe(true)
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
+
+      m.ThreadDrawerEngine.onRowClick('a')
+      expect(m.State.activeThreadId).toBe('a')
+      expect(m.ChatState.turns.some((t: { role: string; segments?: { raw?: string }[] }) =>
+        t.role === 'user' && t.segments?.some((s) => s.raw === 'hello from A'),
+      )).toBe(true)
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'a' })
+    })
+
+    it('Scenario: thread-snapshot fills ThreadCache even when it is not the active thread', () => {
+      const m = M()
+      m.State.activeThreadId = 'active'
+      m.handleFrame({
+        type: 'thread-snapshot',
+        threadId: 'background',
+        throughSeq: 4,
+        messages: [{ role: 'user', text: 'bg', ts: 9 }],
+      })
+      const entry = m.ThreadCache.get('background')
+      expect(entry).toBeTruthy()
+      expect(entry.messages[0].text).toBe('bg')
+      // Active transcript must NOT have been overwritten by a background snapshot.
+      expect(m.State.activeThreadId).toBe('active')
+    })
+
+    it('Scenario: background assistant-delta marks the thread busy; turn-complete clears it', () => {
+      const m = M()
+      m.State.activeThreadId = 'viewing'
+      m.State.threads = [
+        { id: 'viewing', title: 'V', lastMessagePreview: '', lastActiveAt: Date.now() },
+        { id: 'bg', title: 'BG', lastMessagePreview: '', lastActiveAt: Date.now() },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.handleFrame({
+        type: 'assistant-delta',
+        threadId: 'bg',
+        turnId: 't1',
+        text: 'still working…',
+      })
+      expect(m.ThreadCache.isBusy('bg')).toBe(true)
+      const row = document.querySelector('.thread-row[data-thread-id="bg"]')
+      expect(row?.classList.contains('busy')).toBe(true)
+
+      m.handleFrame({ type: 'turn-complete', threadId: 'bg' })
+      expect(m.ThreadCache.isBusy('bg')).toBe(false)
+    })
+
+    it('Scenario: openInNewWindow invokes open_widget with the thread param', async () => {
+      const m = M()
+      const invoke = vi.fn().mockResolvedValue('panel-chat-abc')
+      ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
+        core: { invoke },
+      }
+      m.ThreadDrawerEngine.openInNewWindow('thr-42')
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'thr-42' },
+      })
+    })
+
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {
       const m = M()
       m.State.pinnedThread = 't-pinned'

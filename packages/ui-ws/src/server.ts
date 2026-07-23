@@ -1973,9 +1973,14 @@ export const startUIWebSocketServer = (
         }
 
         // Fork a forwarder fiber that subscribes to a thread and sends
-        // every ChatFrame as a ServerFrame. Idempotent — a duplicate
-        // subscribe to the same threadId is a no-op so we don't double
-        // up snapshots or fan-out fibers.
+        // every ChatFrame as a ServerFrame.
+        //
+        // Re-subscribe (same threadId already has a live fiber) re-emits a
+        // one-shot snapshot without dual-forking the live stream. Moon
+        // switches threads by clearing the local transcript and sending
+        // subscribe again; without the re-snapshot, re-entering a previously
+        // viewed thread leaves the UI empty forever (the fiber map still
+        // holds the old forwarder, so a pure no-op never re-paints).
         //
         // Snapshot frames bypass the obs drop budget intentionally:
         // they're one fat JSON blob (per advisor §E1), not a stream of
@@ -1990,7 +1995,16 @@ export const startUIWebSocketServer = (
           Effect.gen(function* () {
             if (chat === null) return
             const m = yield* Ref.get(chatFibers)
-            if (m.has(threadId)) return // idempotent
+            if (m.has(threadId)) {
+              // Already forwarding live frames — re-paint only.
+              const frames = yield* chat.snapshot(threadId)
+              if (ws.readyState === ws.OPEN) {
+                for (const f of frames) {
+                  send(ws, chatFrameToWire(f))
+                }
+              }
+              return
+            }
 
             const stream = chat.subscribe(threadId)
             // Fork into the CONNECTION scope (not the per-message handler

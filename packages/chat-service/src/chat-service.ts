@@ -2477,6 +2477,85 @@ export class ChatService extends Effect.Service<ChatService>()(
        *  via `Stream.unwrapScoped` — when the consumer terminates the
        *  Stream, the subscription is released. Callers do NOT need a Scope
        *  in their Effect environment. */
+      /**
+       * Build the one-shot `snapshot` (+ optional suggested-action-set) frames
+       * for a live thread without opening a PubSub subscription.
+       *
+       * Used by `subscribe` (prefix before the live stream) and by
+       * `snapshot` (re-emit on an already-subscribed connection so a client
+       * that switched away and back can re-paint without dual live fibers).
+       */
+      const buildSnapshotFrames = (
+        threadId: string,
+      ): Effect.Effect<ReadonlyArray<ChatFrame>, never> =>
+        Effect.gen(function* () {
+          // Bounded read — only the most recent `snapshotMessageLimit`
+          // messages are loaded to build the snapshot frame (0 = legacy
+          // unbounded full-history load). Other readMessages callers
+          // (findStoredById, dream's gatherInputs) pass no options and
+          // keep full-history semantics.
+          const collected = yield* store
+            .readMessages(
+              threadId,
+              snapshotMessageLimit > 0 ? { limit: snapshotMessageLimit } : undefined,
+            )
+            .pipe(Stream.runCollect, Effect.orDie)
+          const stored = Array.from(Chunk.toReadonlyArray(collected))
+          const projected: ChatMessage[] = []
+          let throughSeq = -1
+          for (const s of stored) {
+            const p = projectOne(s)
+            if (p !== null) projected.push(p)
+            if (s.seq > throughSeq) throughSeq = s.seq
+          }
+          const snapshotFrame: ChatFrame = {
+            type: "snapshot",
+            threadId,
+            throughSeq,
+            messages: projected,
+          }
+
+          // Replay-on-open: surface this thread's non-terminal suggested
+          // actions (including any Dream proposed while no client was
+          // attached) as ONE set frame right after the snapshot. Best-effort
+          // — a store error must not break the subscribe / snapshot path.
+          const frames: ChatFrame[] = [snapshotFrame]
+          yield* Option.match(suggestedActions, {
+            onNone: () => Effect.void,
+            onSome: (sa) =>
+              sa
+                .listByThread(threadId, { status: ACTIVE_STATUSES })
+                .pipe(
+                  Effect.catchAll(() => Effect.succeed([] as const)),
+                  Effect.map((rows) => {
+                    if (rows.length > 0) {
+                      frames.push({
+                        type: "suggested-action-set",
+                        threadId,
+                        actions: rows.map(toView),
+                      })
+                    }
+                  }),
+                ),
+          })
+          return frames
+        })
+
+      /**
+       * One-shot snapshot for an already-known thread — no live PubSub
+       * subscription. Returns empty array when the thread cannot be
+       * recovered (unknown / pruned). Callers (ui-ws re-subscribe) use this
+       * to re-paint a client without dual-forking a live forwarder.
+       */
+      const snapshot = (
+        threadId: string,
+      ): Effect.Effect<ReadonlyArray<ChatFrame>, never> =>
+        Effect.gen(function* () {
+          const recovered = yield* ensureThreadLive(threadId)
+          if (Option.isNone(recovered)) return [] as ReadonlyArray<ChatFrame>
+          return yield* buildSnapshotFrames(threadId)
+        })
+
       const subscribe = (
         threadId: string,
       ): Stream.Stream<ChatFrame, never> =>
@@ -2495,60 +2574,10 @@ export class ChatService extends Effect.Service<ChatService>()(
             // via `seq <= throughSeq` if any frames overlap.
             const liveQueue = yield* PubSub.subscribe(entry.pubsub)
             const liveStream = Stream.fromQueue(liveQueue)
-
-            // Bounded read — only the most recent `snapshotMessageLimit`
-            // messages are loaded to build the snapshot frame (0 = legacy
-            // unbounded full-history load). Other readMessages callers
-            // (findStoredById, dream's gatherInputs) pass no options and
-            // keep full-history semantics.
-            const collected = yield* store
-              .readMessages(
-                threadId,
-                snapshotMessageLimit > 0 ? { limit: snapshotMessageLimit } : undefined,
-              )
-              .pipe(Stream.runCollect, Effect.orDie)
-            const stored = Array.from(Chunk.toReadonlyArray(collected))
-            const projected: ChatMessage[] = []
-            let throughSeq = -1
-            for (const s of stored) {
-              const p = projectOne(s)
-              if (p !== null) projected.push(p)
-              if (s.seq > throughSeq) throughSeq = s.seq
-            }
-            const snapshotFrame: ChatFrame = {
-              type: "snapshot",
-              threadId,
-              throughSeq,
-              messages: projected,
-            }
-
-            // Replay-on-open: surface this thread's non-terminal suggested
-            // actions (including any Dream proposed while no client was
-            // attached) as ONE set frame right after the snapshot, before the
-            // live stream. Best-effort — a store error must not break the
-            // subscribe.
-            const replayFrames: ChatFrame[] = []
-            yield* Option.match(suggestedActions, {
-              onNone: () => Effect.void,
-              onSome: (sa) =>
-                sa
-                  .listByThread(threadId, { status: ACTIVE_STATUSES })
-                  .pipe(
-                    Effect.catchAll(() => Effect.succeed([] as const)),
-                    Effect.map((rows) => {
-                      if (rows.length > 0) {
-                        replayFrames.push({
-                          type: "suggested-action-set",
-                          threadId,
-                          actions: rows.map(toView),
-                        })
-                      }
-                    }),
-                  ),
-            })
+            const prefix = yield* buildSnapshotFrames(threadId)
 
             return Stream.concat(
-              Stream.make(snapshotFrame, ...replayFrames),
+              Stream.fromIterable(prefix),
               liveStream,
             )
           }),
@@ -2880,6 +2909,8 @@ export class ChatService extends Effect.Service<ChatService>()(
         interrupt,
         setThreadConfig,
         subscribe,
+        /** One-shot snapshot without a live PubSub sub (re-paint on re-entry). */
+        snapshot,
         listThreads,
         searchMemory,
         closeThread,

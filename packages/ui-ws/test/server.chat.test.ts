@@ -502,6 +502,69 @@ describe("UIWebSocketServer (chat routing)", () => {
     }
   })
 
+  it("re-subscribe without unsubscribe re-emits a thread-snapshot (Moon switcher A→B→A)", async () => {
+    // Moon never unsubscribes on thread switch. The live fiber stays in the
+    // map, so a pure no-op re-subscribe left the client with a cleared
+    // transcript and no snapshot. Re-entry must re-paint.
+    rig = await startChatRig()
+    let threadA = ""
+    let threadB = ""
+    const frames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [{ type: "new-thread", model: "claude-test" }],
+        },
+        {
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap, all) => {
+            if (snap.type !== "thread-snapshot") return []
+            const created = all.find((x) => x.type === "thread-created")
+            if (created?.type !== "thread-created") return []
+            threadA = created.thread.id
+            return [{ type: "new-thread", model: "claude-test" }]
+          },
+        },
+        {
+          waitFor: (f, all) =>
+            f.type === "thread-snapshot" &&
+            all.filter((x) => x.type === "thread-snapshot").length >= 2,
+          thenSend: (_snap, all) => {
+            const created = all
+              .filter((x) => x.type === "thread-created")
+              .at(-1)
+            if (created?.type !== "thread-created") return []
+            threadB = created.thread.id
+            // Re-enter A without unsubscribe — the switcher path.
+            return [{ type: "subscribe", threadId: threadA }]
+          },
+        },
+        {
+          waitFor: (f, all) =>
+            f.type === "thread-snapshot" &&
+            f.threadId === threadA &&
+            all.filter(
+              (x) => x.type === "thread-snapshot" && x.threadId === threadA,
+            ).length >= 2,
+          thenSend: () => [],
+        },
+      ],
+      // hello + 2×thread-created + 3×thread-snapshot (+ optional obs events)
+      10,
+      8000,
+    )
+    const chatFrames = frames.filter((f) => f.type !== "event")
+    const snapsA = chatFrames.filter(
+      (f) => f.type === "thread-snapshot" && f.threadId === threadA,
+    )
+    const snapsB = chatFrames.filter(
+      (f) => f.type === "thread-snapshot" && f.threadId === threadB,
+    )
+    expect(snapsA.length).toBeGreaterThanOrEqual(2)
+    expect(snapsB.length).toBeGreaterThanOrEqual(1)
+  })
+
   it("unsubscribe + resubscribe under the same threadId keeps the new forwarder alive", async () => {
     // Regression for the observer CAS bug: without identity-based delete,
     // the observer for fiber A (which completes when the client
