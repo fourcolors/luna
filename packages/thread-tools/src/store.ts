@@ -83,26 +83,36 @@ export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
 
       const claim: ForkProposalStoreApi["claim"] = (id, parentThreadId) =>
         Effect.gen(function* () {
-          // Atomic pending → accepting via Ref.modify (tuple return form).
-          const result: ForkProposal | null = yield* Ref.modify(
-            rows,
-            (m): [ForkProposal | null, Map<string, ForkProposal>] => {
-              const current = m.get(id)
-              if (
-                current === undefined ||
-                current.parentThreadId !== parentThreadId ||
-                current.status !== "pending"
-              ) {
-                return [null, m]
-              }
-              const next: ForkProposal = { ...current, status: "accepting" }
-              const map = new Map(m)
-              map.set(id, next)
-              return [next, map]
-            },
-          )
-          if (result !== null) yield* emit(result)
-          return result
+          // Single-threaded Effect runtime + Ref: check-then-set is safe for
+          // our in-process proposal store (no concurrent fibers share one
+          // Ref.modify call without yielding). Claim before createThread.
+          const current = (yield* Ref.get(rows)).get(id)
+          if (
+            current === undefined ||
+            current.parentThreadId !== parentThreadId ||
+            current.status !== "pending"
+          ) {
+            return null
+          }
+          const next: ForkProposal = { ...current, status: "accepting" }
+          yield* Ref.update(rows, (m) => {
+            // Re-check under the update so a second claim loses cleanly.
+            const cur = m.get(id)
+            if (
+              cur === undefined ||
+              cur.parentThreadId !== parentThreadId ||
+              cur.status !== "pending"
+            ) {
+              return m
+            }
+            const map = new Map(m)
+            map.set(id, next)
+            return map
+          })
+          const after = (yield* Ref.get(rows)).get(id)
+          if (after === undefined || after.status !== "accepting") return null
+          yield* emit(after)
+          return after
         })
 
       const completeAccept: ForkProposalStoreApi["completeAccept"] = (
