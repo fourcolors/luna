@@ -1,0 +1,143 @@
+/**
+ * In-memory ForkProposalStore — propose/accept/dismiss + change stream.
+ *
+ * Frame-agnostic (mirrors SuggestedActionsStore): chat-server / ui-ws
+ * subscribe to `changes` and project wire frames. Proposals are not durable
+ * across process restarts (v1); a restart simply drops unaccepted markers.
+ */
+import { Effect, Layer, PubSub, Ref, Stream } from "effect"
+import type {
+  AcceptForkResult,
+  ForkProposal,
+  ForkProposalWire,
+  ProposeForkInput,
+} from "./types.js"
+
+const newId = (): string =>
+  `fork_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+
+export interface ForkProposalStoreApi {
+  readonly propose: (input: ProposeForkInput) => Effect.Effect<ForkProposal>
+  readonly accept: (
+    id: string,
+    parentThreadId: string,
+    childThreadId: string,
+  ) => Effect.Effect<AcceptForkResult | null>
+  readonly dismiss: (
+    id: string,
+    parentThreadId: string,
+  ) => Effect.Effect<ForkProposal | null>
+  readonly getById: (id: string) => Effect.Effect<ForkProposal | null>
+  readonly listPendingByThread: (
+    threadId: string,
+  ) => Effect.Effect<ReadonlyArray<ForkProposal>>
+  readonly changes: Stream.Stream<ForkProposal>
+}
+
+export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
+  ForkProposalStore,
+  ForkProposalStoreApi
+>() {
+  static readonly Memory: Layer.Layer<ForkProposalStore> = Layer.scoped(
+    ForkProposalStore,
+    Effect.gen(function* () {
+      const rows = yield* Ref.make(new Map<string, ForkProposal>())
+      const hub = yield* PubSub.unbounded<ForkProposal>()
+      const emit = (row: ForkProposal) =>
+        PubSub.publish(hub, row).pipe(Effect.asVoid)
+
+      const propose: ForkProposalStoreApi["propose"] = (input) =>
+        Effect.gen(function* () {
+          const row: ForkProposal = {
+            id: newId(),
+            parentThreadId: input.parentThreadId,
+            title: input.title.trim(),
+            summary: input.summary.trim(),
+            seed: input.seed,
+            status: "pending",
+            createdAt: input.nowMs,
+          }
+          yield* Ref.update(rows, (m) => {
+            const next = new Map(m)
+            next.set(row.id, row)
+            return next
+          })
+          yield* emit(row)
+          return row
+        })
+
+      const accept: ForkProposalStoreApi["accept"] = (id, parentThreadId, childThreadId) =>
+        Effect.gen(function* () {
+          const current = (yield* Ref.get(rows)).get(id)
+          if (current === undefined) return null
+          if (current.parentThreadId !== parentThreadId) return null
+          if (current.status === "accepted" && current.childThreadId === childThreadId) {
+            return { proposal: current, newlyAccepted: false }
+          }
+          if (current.status !== "pending") return null
+          const next: ForkProposal = {
+            ...current,
+            status: "accepted",
+            childThreadId,
+          }
+          yield* Ref.update(rows, (m) => {
+            const map = new Map(m)
+            map.set(id, next)
+            return map
+          })
+          yield* emit(next)
+          return { proposal: next, newlyAccepted: true }
+        })
+
+      const dismiss: ForkProposalStoreApi["dismiss"] = (id, parentThreadId) =>
+        Effect.gen(function* () {
+          const current = (yield* Ref.get(rows)).get(id)
+          if (current === undefined) return null
+          if (current.parentThreadId !== parentThreadId) return null
+          if (current.status !== "pending") return null
+          const next: ForkProposal = { ...current, status: "dismissed" }
+          yield* Ref.update(rows, (m) => {
+            const map = new Map(m)
+            map.set(id, next)
+            return map
+          })
+          yield* emit(next)
+          return next
+        })
+
+      const getById: ForkProposalStoreApi["getById"] = (id) =>
+        Ref.get(rows).pipe(Effect.map((m) => m.get(id) ?? null))
+
+      const listPendingByThread: ForkProposalStoreApi["listPendingByThread"] = (
+        threadId,
+      ) =>
+        Ref.get(rows).pipe(
+          Effect.map((m) =>
+            [...m.values()].filter(
+              (r) => r.parentThreadId === threadId && r.status === "pending",
+            ),
+          ),
+        )
+
+      return {
+        propose,
+        accept,
+        dismiss,
+        getById,
+        listPendingByThread,
+        changes: Stream.fromPubSub(hub),
+      } satisfies ForkProposalStoreApi
+    }),
+  )
+}
+
+/** Project a full proposal to the wire shape (no seed). */
+export const toForkProposalWire = (p: ForkProposal): ForkProposalWire => ({
+  id: p.id,
+  parentThreadId: p.parentThreadId,
+  title: p.title,
+  summary: p.summary,
+  status: p.status,
+  createdAt: p.createdAt,
+  ...(p.childThreadId !== undefined ? { childThreadId: p.childThreadId } : {}),
+})

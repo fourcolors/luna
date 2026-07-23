@@ -150,6 +150,9 @@ export interface HelloFrame {
      *  older servers; clients hide the inline chip + Actions panel when missing.
      *  Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
     readonly suggestedActions?: boolean
+    /** Conversation forking (#221): fork-proposal-set/update + respond.
+     *  OPTIONAL — clients hide fork markers when absent. */
+    readonly threadForks?: boolean
     /** Luna Vault (V1): server routes vault-put/delete/sync-config/import and
      *  pushes vault-list after hello. OPTIONAL/additive. */
     readonly vault?: boolean
@@ -638,6 +641,34 @@ export interface SuggestedActionRespondFrame {
   readonly decision: "accept" | "dismiss"
 }
 
+/* Conversation forking (#221) — wire mirrors packages/ui-ws/src/protocol.ts. */
+export type ForkProposalStatus = "pending" | "accepted" | "dismissed"
+export interface ForkProposalWire {
+  readonly id: string
+  readonly parentThreadId: string
+  readonly title: string
+  readonly summary: string
+  readonly status: ForkProposalStatus
+  readonly createdAt: number
+  readonly childThreadId?: string
+}
+export interface ForkProposalSetFrame {
+  readonly type: "fork-proposal-set"
+  readonly threadId: string
+  readonly proposals: ReadonlyArray<ForkProposalWire>
+}
+export interface ForkProposalUpdateFrame {
+  readonly type: "fork-proposal-update"
+  readonly threadId: string
+  readonly proposal: ForkProposalWire
+}
+export interface ForkProposalRespondFrame {
+  readonly type: "fork-proposal-respond"
+  readonly threadId: string
+  readonly proposalId: string
+  readonly decision: "accept" | "dismiss"
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
@@ -966,6 +997,8 @@ export type ServerFrame =
   | WorkflowRunsFrame
   | SuggestedActionSetFrame
   | SuggestedActionUpdateFrame
+  | ForkProposalSetFrame
+  | ForkProposalUpdateFrame
   | TurnCompleteFrame
   | ResultDeliveredFrame
   | PtyOutputFrame
@@ -1111,6 +1144,7 @@ export type ClientFrame =
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
   | SuggestedActionRespondFrame
+  | ForkProposalRespondFrame
   | PtyInputFrame
   | PtyResizeFrame
   | VaultPutFrame

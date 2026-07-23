@@ -61,6 +61,7 @@ const CLIENT_INFO = { name: "luna-web", version: "0.0.1", platform: "browser" } 
 const selectThreadList = (state: UIState) => state.threadList
 const selectSelectedThreadId = (state: UIState) => state.selectedThreadId
 const selectSuggestedActions = (state: UIState) => state.suggestedActions
+const selectForkProposals = (state: UIState) => state.forkProposals
 const selectMcpCapable = (state: UIState): boolean => state.capabilities.mcpApps === true
 
 /**
@@ -137,6 +138,9 @@ export interface LunaData {
   readonly suggestedActions: ReadonlyArray<SuggestedActionWire>
   /** Accept (auto-executes server-side) or dismiss one suggested action. */
   readonly respondToAction: (actionId: string, decision: "accept" | "dismiss") => void
+  /** Pending fork markers for the active thread (#221). */
+  readonly forkProposals: ReadonlyArray<import("@luna/ui-shared").ForkProposalWire>
+  readonly respondToFork: (proposalId: string, decision: "accept" | "dismiss") => void
   readonly send: (frame: ClientFrame) => void
   /** Subscribe to every raw ServerFrame as it arrives, in addition to the
    *  reducer dispatch. For frame types the reducer intentionally no-ops
@@ -180,6 +184,7 @@ export function useLunaData(): LunaData {
   const threadList = useUiSelector(store, selectThreadList)
   const selectedThreadId = useUiSelector(store, selectSelectedThreadId)
   const suggestedActionsByThread = useUiSelector(store, selectSuggestedActions)
+  const forkProposalsByThread = useUiSelector(store, selectForkProposals)
   const mcpCapable = useUiSelector(store, selectMcpCapable)
   const dispatch = store.dispatch
   // Reactive persisted config (the Settings panel edits url/token/model/account);
@@ -689,6 +694,21 @@ export function useLunaData(): LunaData {
     [selectedThreadId, send],
   )
 
+  const forkProposals = useMemo(() => {
+    const threadId = selectedThreadId
+    if (!threadId) return []
+    return forkProposalsByThread.get(threadId) ?? []
+  }, [selectedThreadId, forkProposalsByThread])
+
+  const respondToFork = useCallback(
+    (proposalId: string, decision: "accept" | "dismiss"): void => {
+      const threadId = selectedThreadId
+      if (!threadId) return
+      send({ type: "fork-proposal-respond", threadId, proposalId, decision })
+    },
+    [selectedThreadId, send],
+  )
+
   const mcp = useMemo<WebMcpRelay | undefined>(
     () => (mcpCapable ? { readResource: mcpReadResource, callTool: mcpCallTool } : undefined),
     [mcpCapable, mcpReadResource, mcpCallTool],
@@ -704,6 +724,8 @@ export function useLunaData(): LunaData {
     threadNote,
     suggestedActions,
     respondToAction,
+    forkProposals,
+    respondToFork,
     send,
     onServerFrame,
     config,

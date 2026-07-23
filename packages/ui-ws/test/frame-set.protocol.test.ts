@@ -100,6 +100,9 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   // PR #114 (Suggested Actions) — additive behind capabilities.suggestedActions.
   "suggested-action-set",
   "suggested-action-update",
+  // #221 conversation forking — additive behind capabilities.threadForks.
+  "fork-proposal-set",
+  "fork-proposal-update",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -160,6 +163,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "workflow-refresh",
   // PR #114 (Suggested Actions) — additive behind capabilities.suggestedActions.
   "suggested-action-respond",
+  // #221 conversation forking — additive behind capabilities.threadForks.
+  "fork-proposal-respond",
   "pty-input",
   "pty-resize",
   "vault-put",
@@ -312,8 +317,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // capability-execute (client) → 58 server / 42 client. Point-at-the-UI
     // feedback (gated on capabilities.feedback) adds feedback-ack (server) and
     // feedback-submit (client) → 59 server / 43 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(59)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(43)
+    // Conversation forking (#221) adds fork-proposal-set + fork-proposal-update
+    // (server) and fork-proposal-respond (client) → 61 server / 44 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(61)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(44)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

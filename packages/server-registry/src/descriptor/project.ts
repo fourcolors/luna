@@ -41,6 +41,7 @@ export interface LunaDescriptorInputs {
     readonly artifacts?: boolean
     readonly workflows?: boolean
     readonly suggestedActions?: boolean
+    readonly threadForks?: boolean
     readonly vault?: boolean
     readonly mcpApps?: boolean
     readonly effortSelection?: boolean

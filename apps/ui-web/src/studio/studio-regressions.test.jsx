@@ -31,6 +31,7 @@ const { mockLuna } = vi.hoisted(() => {
     workflowRuns: new Map(),
     pinnedArtifacts: [],
     suggestedActions: new Map(),
+    forkProposals: new Map(),
     accounts: [],
     selectedAccountId: null,
     availableModels: null,

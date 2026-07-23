@@ -145,6 +145,12 @@ export interface HelloFrame {
      */
     readonly suggestedActions?: boolean
     /**
+     * Conversation forking (#221): server stages fork markers via
+     * `fork-proposal-set/update` and routes `fork-proposal-respond`. Accept
+     * creates a resume-fork sibling thread and opens a chat panel. OPTIONAL.
+     */
+    readonly threadForks?: boolean
+    /**
      * Luna Vault (V1): the server has a VaultService bound — it pushes a
      * `vault-list` frame after `hello` and routes `vault-put` /
      * `vault-delete` / `vault-sync-config` / `vault-import`. OPTIONAL/additive
@@ -750,6 +756,36 @@ export interface SuggestedActionRespondFrame {
   readonly type: "suggested-action-respond"
   readonly threadId: string
   readonly actionId: string
+  readonly decision: "accept" | "dismiss"
+}
+
+/* Conversation forking (#221) — propose-mode markers, click-to-enter.
+ * Seed text never crosses the wire; accept creates the sibling server-side. */
+export type ForkProposalStatus = "pending" | "accepted" | "dismissed"
+export interface ForkProposalWire {
+  readonly id: string
+  readonly parentThreadId: string
+  readonly title: string
+  readonly summary: string
+  readonly status: ForkProposalStatus
+  readonly createdAt: number
+  readonly childThreadId?: string
+}
+export interface ForkProposalSetFrame {
+  readonly type: "fork-proposal-set"
+  readonly threadId: string
+  readonly proposals: ReadonlyArray<ForkProposalWire>
+}
+export interface ForkProposalUpdateFrame {
+  readonly type: "fork-proposal-update"
+  readonly threadId: string
+  readonly proposal: ForkProposalWire
+}
+/** Client→server: accept (create sibling + open) or dismiss a fork marker. */
+export interface ForkProposalRespondFrame {
+  readonly type: "fork-proposal-respond"
+  readonly threadId: string
+  readonly proposalId: string
   readonly decision: "accept" | "dismiss"
 }
 
@@ -1436,6 +1472,8 @@ export type ServerFrame =
   | WorkflowRunsFrame
   | SuggestedActionSetFrame
   | SuggestedActionUpdateFrame
+  | ForkProposalSetFrame
+  | ForkProposalUpdateFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
@@ -1823,6 +1861,7 @@ export type ClientFrame =
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
   | SuggestedActionRespondFrame
+  | ForkProposalRespondFrame
   | WidgetDirectoryFrame
   | SubagentTreeRequestFrame
   | McpResourceReadFrame

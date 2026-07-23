@@ -23,6 +23,7 @@ import type {
   SkillCatalogItem,
   SmartBarItem,
   SuggestedActionWire,
+  ForkProposalWire,
   VaultStorageWire,
   VaultSyncWire,
   VaultWireItem,
@@ -146,6 +147,8 @@ export interface UIState {
    *  `proposed` entry; the Actions panel renders the whole thread array.
    *  Gated on capabilities.suggestedActions. */
   readonly suggestedActions: ReadonlyMap<string, ReadonlyArray<SuggestedActionWire>>
+  /** Conversation forking (#221) — pending fork markers keyed by parent thread. */
+  readonly forkProposals: ReadonlyMap<string, ReadonlyArray<ForkProposalWire>>
   /** Luna Vault (V1) — credential registry (metadata + opaque pointers only;
    *  never credential values). Gated on capabilities.vault. */
   readonly vaultItems: ReadonlyArray<VaultWireItem>
@@ -199,6 +202,7 @@ export const initialState: UIState = {
   workflows: [],
   workflowRuns: new Map(),
   suggestedActions: new Map(),
+  forkProposals: new Map(),
   vaultItems: [],
   vaultSync: null,
   vaultStorage: null,
@@ -515,6 +519,26 @@ export const reduce = (state: UIState, action: Action): UIState => {
           : [...cur, frame.action],
       )
       return { ...state, suggestedActions: next }
+    }
+    case "fork-proposal-set": {
+      const next = new Map(state.forkProposals)
+      next.set(frame.threadId, frame.proposals)
+      return { ...state, forkProposals: next }
+    }
+    case "fork-proposal-update": {
+      const next = new Map(state.forkProposals)
+      const cur = next.get(frame.threadId) ?? []
+      const seen = cur.some((p) => p.id === frame.proposal.id)
+      const updated = seen
+        ? cur.map((p) => (p.id === frame.proposal.id ? frame.proposal : p))
+        : [...cur, frame.proposal]
+      // Drop terminal proposals from the active list so the marker disappears
+      // after accept/dismiss (seed never lives client-side).
+      next.set(
+        frame.threadId,
+        updated.filter((p) => p.status === "pending"),
+      )
+      return { ...state, forkProposals: next }
     }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the
