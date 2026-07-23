@@ -86,17 +86,17 @@ describe("rename: dev-server-chat -> chat-server", () => {
     });
   });
 
-  describe("CLAUDE.md (project root)", () => {
+  describe("AGENTS.md (project root)", () => {
     it("references 'server:chat' when present", () => {
-      if (!existsSync(r("CLAUDE.md"))) return;
-      expect(read("CLAUDE.md")).toContain(
+      if (!existsSync(r("AGENTS.md"))) return;
+      expect(read("AGENTS.md")).toContain(
         "bun run --filter '@luna/ui-web' server:chat",
       );
     });
 
     it("does NOT reference 'dev:server:chat' when present", () => {
-      if (!existsSync(r("CLAUDE.md"))) return;
-      expect(read("CLAUDE.md")).not.toContain("dev:server:chat");
+      if (!existsSync(r("AGENTS.md"))) return;
+      expect(read("AGENTS.md")).not.toContain("dev:server:chat");
     });
   });
 
