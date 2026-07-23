@@ -95,12 +95,15 @@ export function SettingsPanel({ ctx }) {
       // picks it back up once launchd respawns it.
       disconnect();
     } catch (error) {
-      if (error instanceof Error && error.name === "RestartRefusedError") {
+      if (
+        error instanceof Error &&
+        (error.name === "RestartRefusedError" || error.message.startsWith("Server restart HTTP error:"))
+      ) {
         setRestartError(error.message);
         setRestarting(false);
         return;
       }
-      // Server may have gone down before responding to the restart call —
+      // Server may have gone down before responding to the restart call (network fetch drop) —
       // that's the expected happy path, not a failure to surface.
       disconnect();
     }
