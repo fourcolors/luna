@@ -414,6 +414,9 @@ export function useLunaData(): LunaData {
       },
       body: JSON.stringify({ json: null }),
     })
+    if (!res.ok) {
+      throw new Error(`Server restart HTTP error: ${res.status}`)
+    }
     // control.restart can now REFUSE (ok:false — e.g. no supervisor detected
     // on the server side); a refused restart must not look like a silent
     // success to the operator.
