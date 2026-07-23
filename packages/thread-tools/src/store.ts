@@ -192,6 +192,8 @@ export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
 
       return {
         propose,
+        claim,
+        completeAccept,
         accept,
         dismiss,
         getById,
