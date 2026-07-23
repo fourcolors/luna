@@ -96,7 +96,7 @@ describe("deepLinkShieldDecision", () => {
     ).toEqual({ action: "clear-and-fallthrough" })
   })
 
-  it("exposes a multi-second grace constant for subscribe snapshot latency", () => {
-    expect(DEEP_LINK_CONFIRM_GRACE_MS).toBeGreaterThanOrEqual(1_000)
+  it("exposes a 15-second grace constant for subscribe snapshot latency (#364)", () => {
+    expect(DEEP_LINK_CONFIRM_GRACE_MS).toBe(15_000)
   })
 })
