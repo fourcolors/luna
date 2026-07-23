@@ -117,6 +117,13 @@ export class RestartRefusedError extends Error {
   override readonly name = "RestartRefusedError"
 }
 
+export class RestartHttpError extends Error {
+  override readonly name = "RestartHttpError"
+  constructor(readonly status: number) {
+    super(`Server restart HTTP error: ${status}`)
+  }
+}
+
 export interface LunaData {
   /** Selector-capable reducer store. Live panels subscribe to owned slices
    *  instead of receiving the entire UIState through the Studio board. */
@@ -414,6 +421,9 @@ export function useLunaData(): LunaData {
       },
       body: JSON.stringify({ json: null }),
     })
+    if (!res.ok) {
+      throw new RestartHttpError(res.status)
+    }
     // control.restart can now REFUSE (ok:false — e.g. no supervisor detected
     // on the server side); a refused restart must not look like a silent
     // success to the operator.

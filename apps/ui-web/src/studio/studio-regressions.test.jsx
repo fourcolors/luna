@@ -196,6 +196,30 @@ describe("Studio regression coverage", () => {
     expect(ctx.connect).not.toHaveBeenCalled();
   });
 
+  it("shows an explicit HTTP restart error in settings panel without disconnecting", async () => {
+    vi.useFakeTimers();
+    const httpErr = Object.assign(new Error("Server restart HTTP error: 500"), {
+      name: "RestartHttpError",
+    });
+    const ctx = settingsCtx({ restartServer: vi.fn().mockRejectedValue(httpErr) });
+    const container = mount(<SettingsPanel ctx={ctx} />);
+    const restart = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent.includes("Restart Server"),
+    );
+    expect(restart).not.toBeUndefined();
+
+    await act(async () => restart.click());
+
+    expect(container.textContent).toContain("Server restart HTTP error: 500");
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(ctx.disconnect).not.toHaveBeenCalled();
+    expect(ctx.connect).not.toHaveBeenCalled();
+  });
+
   it("schedules the delayed reconnect after an accepted restart", async () => {
     vi.useFakeTimers();
     const ctx = settingsCtx({ restartServer: vi.fn().mockResolvedValue(undefined) });
