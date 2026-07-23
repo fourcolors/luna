@@ -132,7 +132,10 @@ export const makeSchedulerTools = (
       "Register a recurring schedule. On each cron tick Luna runs an autonomous " +
       "agent turn driven by your `prompt` and delivers the result to the operator " +
       "as a note. Schedules are durable across restarts (persisted in luna.db). " +
-      `Default max_turns is ${DEFAULT_SCHEDULE_MAX_TURNS} (pass max_turns to override). ` +
+      `Default max_turns is ${DEFAULT_SCHEDULE_MAX_TURNS} (pass max_turns to override; do not set 1 for tool-using work). ` +
+      "Prompt jobs are headless agent turns — they do not mount interactive chat MCP " +
+      "tools (local_shell / memory / observability) unless you have a workflow with " +
+      "shell steps. Prefer a clear self-contained prompt for reminders and reports. " +
       "Returns a triggerId you pass to schedule_cancel to stop it. Use standard " +
       "5-field cron syntax interpreted in UTC: minute hour day-of-month month day-of-week.",
     inputSchema: createShape,

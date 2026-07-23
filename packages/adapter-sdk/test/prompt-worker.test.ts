@@ -161,6 +161,25 @@ describe("parsePromptPayload", () => {
     expect((parsePromptPayload({ user_prompt: "x", max_turns: -3 }) as PromptPayload).max_turns).toBe(1)
     expect((parsePromptPayload({ user_prompt: "x", max_turns: 2.7 }) as PromptPayload).max_turns).toBe(2)
   })
+
+  it("rejects allowed_tools with explicit max_turns <= 1 (#256)", () => {
+    const r = parsePromptPayload({
+      user_prompt: "x",
+      allowed_tools: ["mcp__memory__memory_search"],
+      max_turns: 1,
+    })
+    expect(typeof r).toBe("string")
+    expect(r).toMatch(/max_turns must be > 1/)
+  })
+
+  it("allows allowed_tools when max_turns is omitted (runtime defaults to 15)", () => {
+    const r = parsePromptPayload({
+      user_prompt: "x",
+      allowed_tools: ["mcp__memory__memory_search"],
+    }) as PromptPayload
+    expect(r.allowed_tools).toEqual(["mcp__memory__memory_search"])
+    expect(r.max_turns).toBeUndefined()
+  })
 })
 
 // ── buildPromptWorker (direct closure tests, no Layer plumbing) ─────────────
