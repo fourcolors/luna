@@ -417,12 +417,19 @@ and a lean footprint (`zod` + `eventsource-parser`; `zod` already used). Added t
   fall-through. **0 tsc errors.** Screenshot-verified: the external app renders +
   auto-themes (G1.5) + populates via the relayed `tools/call`, dark + light.
 
-**Remaining (deliberate, deferred to a focused step):** wire
-`createExternalMcpAppRegistry(...)` into `composeAppRegistries` at
-`chat-server.ts:2897`, sourcing servers from config (env-gated, **default NONE** →
-the provider is inert → production behavior unchanged), with async connect at boot
-+ `close()` on shutdown woven into the Effect server lifecycle (the chat-server's
-memory-leak history makes the subprocess lifecycle a care-point). Separately, the
-SEP's **double-iframe sandbox-proxy** is required on the *web* client before
-rendering UNTRUSTED remote servers (Moon/Tauri is exempt; trusted/in-repo servers
-are fine on today's single cage).
+**Wired into production (issue #161):** chat-server reads
+`LUNA_EXTERNAL_MCP_SERVERS` (JSON array of `{ id, command, args?, env? }`),
+connects each stdio server at boot (best-effort), composes
+`createExternalMcpAppRegistry(...)` as the third `composeAppRegistries` provider,
+and `close()`s every live server via an Effect scope finalizer on shutdown.
+Unset / empty / invalid env ⇒ zero subprocesses and an inert provider (default-off).
+
+Example (local demo with the in-repo example server):
+
+```bash
+export LUNA_EXTERNAL_MCP_SERVERS='[{"id":"example","command":"bun","args":["run","apps/ui-web/scripts/example-mcp-ui-server.ts"]}]'
+```
+
+Separately, the SEP's **double-iframe sandbox-proxy** is still required on the
+*web* client before rendering UNTRUSTED remote servers (Moon/Tauri is exempt;
+trusted/in-repo servers are fine on today's single cage).
