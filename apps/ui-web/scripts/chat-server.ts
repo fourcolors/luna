@@ -4097,12 +4097,10 @@ const buildServerLayer = (
                 : { ok: false as const, message: "proposal not found or not pending" }
             }
 
-            const proposal = yield* forkStore.getById(input.proposalId)
-            if (
-              proposal === null ||
-              proposal.parentThreadId !== input.threadId ||
-              proposal.status !== "pending"
-            ) {
+            // Claim first (atomic pending → accepting) so a concurrent second
+            // accept cannot create an orphaned empty thread.
+            const claimed = yield* forkStore.claim(input.proposalId, input.threadId)
+            if (claimed === null) {
               return {
                 ok: false as const,
                 message: "proposal not found or not pending",
@@ -4117,7 +4115,7 @@ const buildServerLayer = (
             }
 
             const child = yield* chat.createThread({
-              title: proposal.title,
+              title: claimed.title,
               parentSessionId: input.threadId,
               tags: [FORK_CHILD_TAG],
               ...(resumeFromSessionId !== undefined
@@ -4125,13 +4123,12 @@ const buildServerLayer = (
                 : {}),
             })
 
-            const accepted = yield* forkStore.accept(
-              proposal.id,
+            const accepted = yield* forkStore.completeAccept(
+              claimed.id,
               input.threadId,
               child.id,
             )
             if (accepted === null) {
-              // Lost race (double-accept) — still open existing child if any.
               return {
                 ok: false as const,
                 message: "proposal already resolved",
@@ -4139,21 +4136,21 @@ const buildServerLayer = (
             }
 
             // Seed the sibling so the agent turn starts on the pivoted topic.
-            yield* chat.send(child.id, proposal.seed)
+            yield* chat.send(child.id, claimed.seed)
 
             // Parent breadcrumb: one-line note that the topic moved.
             yield* chat.deliverResult({
               threadId: input.threadId,
-              text: `↪ Moved "${proposal.title}" to a new thread.`,
+              text: `↪ Moved "${claimed.title}" to a new thread.`,
               source: "thread-fork",
-              label: proposal.title,
+              label: claimed.title,
             })
 
             // Telemetry for accept-rate gating of future auto-fork.
             // (EventSink is optional; best-effort via console when sparse.)
             writeSync(
               1,
-              `[luna/thread-fork] accepted "${proposal.title}" → ${child.id} (from ${input.threadId})\n`,
+              `[luna/thread-fork] accepted "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
             )
 
             return {

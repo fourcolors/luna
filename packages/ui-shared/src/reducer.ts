@@ -532,8 +532,8 @@ export const reduce = (state: UIState, action: Action): UIState => {
       const updated = seen
         ? cur.map((p) => (p.id === frame.proposal.id ? frame.proposal : p))
         : [...cur, frame.proposal]
-      // Drop terminal proposals from the active list so the marker disappears
-      // after accept/dismiss (seed never lives client-side).
+      // Drop non-pending proposals so the marker disappears after claim/accept
+      // or dismiss (seed never lives client-side).
       next.set(
         frame.threadId,
         updated.filter((p) => p.status === "pending"),

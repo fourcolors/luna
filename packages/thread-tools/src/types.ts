@@ -6,7 +6,7 @@
  * seeds the opening message, and opens a chat panel pinned to it.
  */
 
-export type ForkProposalStatus = "pending" | "accepted" | "dismissed"
+export type ForkProposalStatus = "pending" | "accepting" | "accepted" | "dismissed"
 
 /** Wire-safe proposal (no seed body — that stays server-side until accept). */
 export interface ForkProposalWire {

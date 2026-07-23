@@ -642,7 +642,7 @@ export interface SuggestedActionRespondFrame {
 }
 
 /* Conversation forking (#221) — wire mirrors packages/ui-ws/src/protocol.ts. */
-export type ForkProposalStatus = "pending" | "accepted" | "dismissed"
+export type ForkProposalStatus = "pending" | "accepting" | "accepted" | "dismissed"
 export interface ForkProposalWire {
   readonly id: string
   readonly parentThreadId: string

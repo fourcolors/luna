@@ -18,6 +18,21 @@ const newId = (): string =>
 
 export interface ForkProposalStoreApi {
   readonly propose: (input: ProposeForkInput) => Effect.Effect<ForkProposal>
+  /**
+   * Atomic claim: pending → accepting. Call BEFORE createThread so a concurrent
+   * second accept cannot create an orphaned sibling. Returns null if already
+   * claimed / not pending.
+   */
+  readonly claim: (
+    id: string,
+    parentThreadId: string,
+  ) => Effect.Effect<ForkProposal | null>
+  /** Finalize after createThread: accepting → accepted with childThreadId. */
+  readonly completeAccept: (
+    id: string,
+    parentThreadId: string,
+    childThreadId: string,
+  ) => Effect.Effect<AcceptForkResult | null>
   readonly accept: (
     id: string,
     parentThreadId: string,
@@ -66,7 +81,31 @@ export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
           return row
         })
 
-      const accept: ForkProposalStoreApi["accept"] = (id, parentThreadId, childThreadId) =>
+      const claim: ForkProposalStoreApi["claim"] = (id, parentThreadId) =>
+        Effect.gen(function* () {
+          const result = yield* Ref.modify(rows, (m) => {
+            const current = m.get(id)
+            if (
+              current === undefined ||
+              current.parentThreadId !== parentThreadId ||
+              current.status !== "pending"
+            ) {
+              return [null as ForkProposal | null, m] as const
+            }
+            const next: ForkProposal = { ...current, status: "accepting" }
+            const map = new Map(m)
+            map.set(id, next)
+            return [next, map] as const
+          })
+          if (result !== null) yield* emit(result)
+          return result
+        })
+
+      const completeAccept: ForkProposalStoreApi["completeAccept"] = (
+        id,
+        parentThreadId,
+        childThreadId,
+      ) =>
         Effect.gen(function* () {
           const current = (yield* Ref.get(rows)).get(id)
           if (current === undefined) return null
@@ -74,7 +113,7 @@ export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
           if (current.status === "accepted" && current.childThreadId === childThreadId) {
             return { proposal: current, newlyAccepted: false }
           }
-          if (current.status !== "pending") return null
+          if (current.status !== "accepting" && current.status !== "pending") return null
           const next: ForkProposal = {
             ...current,
             status: "accepted",
@@ -87,6 +126,24 @@ export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
           })
           yield* emit(next)
           return { proposal: next, newlyAccepted: true }
+        })
+
+      const accept: ForkProposalStoreApi["accept"] = (id, parentThreadId, childThreadId) =>
+        Effect.gen(function* () {
+          // Convenience: claim + complete in one step (single-caller paths).
+          const claimed = yield* claim(id, parentThreadId)
+          if (claimed === null) {
+            const current = (yield* Ref.get(rows)).get(id)
+            if (
+              current &&
+              current.status === "accepted" &&
+              current.childThreadId === childThreadId
+            ) {
+              return { proposal: current, newlyAccepted: false }
+            }
+            return null
+          }
+          return yield* completeAccept(id, parentThreadId, childThreadId)
         })
 
       const dismiss: ForkProposalStoreApi["dismiss"] = (id, parentThreadId) =>

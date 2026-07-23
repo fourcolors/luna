@@ -761,7 +761,7 @@ export interface SuggestedActionRespondFrame {
 
 /* Conversation forking (#221) — propose-mode markers, click-to-enter.
  * Seed text never crosses the wire; accept creates the sibling server-side. */
-export type ForkProposalStatus = "pending" | "accepted" | "dismissed"
+export type ForkProposalStatus = "pending" | "accepting" | "accepted" | "dismissed"
 export interface ForkProposalWire {
   readonly id: string
   readonly parentThreadId: string

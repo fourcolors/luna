@@ -301,7 +301,17 @@ export function useLunaData(): LunaData {
         if (frame.type === "open-artifact-widget") {
           setFocusArtifact({ id: frame.artifactId, nonce: ++focusNonceRef.current })
         } else if (frame.type === "widget-open") {
-          if (WIDGET_DIRECTORY.some((w) => w.kind === frame.kind)) {
+          // #221: fork accept opens a chat panel pinned to the child thread.
+          // Prefer deep-link navigation so the operator actually lands there
+          // (widget-open alone only focused the existing chat panel).
+          const threadParam = frame.params?.thread
+          if (
+            frame.kind === "chat" &&
+            typeof threadParam === "string" &&
+            threadParam.length > 0
+          ) {
+            requestDeepLink(threadParam)
+          } else if (WIDGET_DIRECTORY.some((w) => w.kind === frame.kind)) {
             setWidgetOpen({ kind: frame.kind, nonce: ++widgetOpenNonceRef.current })
           }
         } else if (frame.type === "mcp-resource-result" || frame.type === "mcp-tool-result") {
@@ -320,7 +330,7 @@ export function useLunaData(): LunaData {
           }
         }
       }),
-    [onServerFrame],
+    [onServerFrame, requestDeepLink],
   )
 
   // Drop the grace timer on unmount so a late fire cannot touch a dead store.

@@ -6,7 +6,7 @@ const run = <A>(effect: Effect.Effect<A, never, ForkProposalStore>) =>
   Effect.runPromise(effect.pipe(Effect.provide(ForkProposalStore.Memory)))
 
 describe("ForkProposalStore", () => {
-  it("propose → listPending → accept transitions once", async () => {
+  it("propose → claim → completeAccept transitions once", async () => {
     await run(
       Effect.gen(function* () {
         const store = yield* ForkProposalStore
@@ -23,14 +23,19 @@ describe("ForkProposalStore", () => {
         const pending = yield* store.listPendingByThread("thr_parent")
         expect(pending).toHaveLength(1)
 
-        const accepted = yield* store.accept(row.id, "thr_parent", "thr_child")
+        const claimed = yield* store.claim(row.id, "thr_parent")
+        expect(claimed?.status).toBe("accepting")
+        // Concurrent claim loses.
+        expect(yield* store.claim(row.id, "thr_parent")).toBeNull()
+
+        const accepted = yield* store.completeAccept(
+          row.id,
+          "thr_parent",
+          "thr_child",
+        )
         expect(accepted?.newlyAccepted).toBe(true)
         expect(accepted?.proposal.status).toBe("accepted")
         expect(accepted?.proposal.childThreadId).toBe("thr_child")
-
-        // Second accept is idempotent when same child.
-        const again = yield* store.accept(row.id, "thr_parent", "thr_child")
-        expect(again?.newlyAccepted).toBe(false)
 
         const pendingAfter = yield* store.listPendingByThread("thr_parent")
         expect(pendingAfter).toHaveLength(0)
