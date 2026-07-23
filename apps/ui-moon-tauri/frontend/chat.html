@@ -8282,6 +8282,38 @@
       } catch (_) { /* sidebar refresh is best-effort */ }
     });
 
+    // Attempt to deliver a message the composer stashed in
+    // `State.pendingUserMessage` for a thread that didn't exist yet at
+    // submit time (new-thread mint) or wasn't confirmed live yet (a
+    // reconnect mid-mint). Only ever cleared once the frame is actually
+    // handed to a live socket — the previous version nulled the stash
+    // and fired the real send after a blind 100ms `setTimeout`, so a
+    // WebSocket drop inside that window silently lost the message with
+    // no way to recover it (issue: "first message in new thread silently
+    // vanishes on drop"). Now: send immediately when connected (no
+    // arbitrary delay -- the server has already registered the thread's
+    // inbox by the time `thread-created` reaches the client, so there is
+    // nothing to wait out), otherwise leave the stash in place so the
+    // next `thread-snapshot` for this thread (post subscribe / post
+    // reconnect) can retry it.
+    function flushPendingUserMessage(threadId) {
+      if (!State.pendingUserMessage) return;
+      if (!threadId || threadId !== State.activeThreadId) return;
+      if (!WebSocketEngine.isConnected()) {
+        Logger.warn(`flushPendingUserMessage: not connected yet for "${threadId}"; keeping queued for retry`);
+        return;
+      }
+      const pending = State.pendingUserMessage;
+      State.pendingUserMessage = null;
+      WebSocketEngine.send({
+        type: 'user-message',
+        threadId,
+        text: pending.text,
+        client: MoonClient.CLIENT_INFO,
+        ...(pending.attachments ? { attachments: pending.attachments } : {})
+      });
+    }
+
     MoonFrames.register('thread-created', (frame) => {
       // Record the summary's model/effort as the thread's truth (the server
       // clamps/normalizes at creation, so this is authoritative).
@@ -8304,20 +8336,7 @@
         // Surface the brand-new thread in the drawer if it's open.
         try { if (State.threadDrawerOpen) ThreadDrawerEngine.requestList(); } catch (_) { /* best-effort */ }
 
-        if (State.pendingUserMessage) {
-          const pending = State.pendingUserMessage;
-          State.pendingUserMessage = null;
-          // Wait slightly for subscription to settle, then send message
-          setTimeout(() => {
-            WebSocketEngine.send({
-              type: 'user-message',
-              threadId: createdThreadId,
-              text: pending.text,
-              client: MoonClient.CLIENT_INFO,
-              ...(pending.attachments ? { attachments: pending.attachments } : {})
-            });
-          }, 100);
-        }
+        flushPendingUserMessage(createdThreadId);
       }
     });
 
@@ -8347,6 +8366,12 @@
       // threads. A late snapshot must never replace the transcript for the
       // newly selected/created thread (or the fresh surface while no id exists).
       if (frame && frame.threadId && frame.threadId !== State.activeThreadId) return;
+      // A first-message send may have been deferred (thread-created arrived
+      // while this connection wasn't open yet, or a reconnect happened
+      // before the flush above fired). This is the next proof this
+      // connection can deliver to `frame.threadId` -- retry any stashed
+      // message now instead of relying on a timer.
+      flushPendingUserMessage(frame.threadId);
       // Whole-history replay from the server. Build state from scratch
       // and flush a single render — ChatRenderer reconciles the entire
       // chat-messages container against ChatState in one pass.

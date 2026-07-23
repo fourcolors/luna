@@ -2793,23 +2793,66 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(M().State.activeThreadId).toBe('th-current')
     })
 
-    it('thread-created subscribes and flushes the queued user message after the settle delay', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
-      M().State.pendingUserMessage = { text: 'queued hello', attachments: undefined }
-      M().State.threadCreateIntent = 'attach'
-      M().handleFrame({ type: 'thread-created', thread: { id: 'th-fresh' } })
-      expect(M().State.activeThreadId).toBe('th-fresh')
+    it('thread-created subscribes and immediately flushes the queued user message when connected (task 41)', () => {
+      // Task 41 root cause: the OLD code cleared State.pendingUserMessage as
+      // soon as thread-created arrived and armed a blind setTimeout(..., 100)
+      // to fire the real send. A socket drop inside that 100ms window landed
+      // the send on a dead/superseded connection with no way to recover --
+      // the message just vanished. The fix removes the timer entirely: send
+      // synchronously, in the same tick as the subscribe, whenever a live
+      // connection is already proven (which it is here -- this handler only
+      // runs because a message just arrived on an open socket).
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      m.State.pendingUserMessage = { text: 'queued hello', attachments: undefined }
+      m.State.threadCreateIntent = 'attach'
+      m.handleFrame({ type: 'thread-created', thread: { id: 'th-fresh' } })
+      expect(m.State.activeThreadId).toBe('th-fresh')
       expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-fresh' })
-      expect(M().State.pendingUserMessage).toBeNull()  // claimed before the delay
-      // A newer selection during the 100ms settle delay must not retarget the
-      // queued message away from the thread whose creation it triggered.
-      M().State.activeThreadId = 'newer-selection'
-      vi.advanceTimersByTime(100)
+      expect(m.State.pendingUserMessage).toBeNull()
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
         type: 'user-message',
         threadId: 'th-fresh',
         text: 'queued hello',
         client: expect.objectContaining({ name: 'luna-moon' }),
+      }))
+    })
+
+    it('M41 regression: a drop right as thread-created lands keeps the queued message queued (never silently dropped), and it is retried on the next thread-snapshot instead of a timer', () => {
+      const m = M()
+      // The socket is already gone by the time this connection's queued
+      // thread-created is processed (e.g. a reconnect raced the mint). The
+      // OLD code would still fire its setTimeout(..., 100) blindly and lose
+      // the message on the dead socket. The fix must neither send on a dead
+      // socket nor drop the stash -- it leaves it queued for the retry path.
+      m.State.ws = { readyState: WebSocket.CLOSED, send: vi.fn() }
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      m.State.pendingUserMessage = { text: 'queued while dropping', attachments: undefined }
+      m.State.threadCreateIntent = 'attach'
+
+      m.handleFrame({ type: 'thread-created', thread: { id: 'th-fresh' } })
+
+      expect(sendSpy).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'user-message' }))
+      expect(m.State.pendingUserMessage).not.toBeNull()
+      expect(m.State.pendingUserMessage!.text).toBe('queued while dropping')
+
+      // Reconnect resubscribes to the same (already-active) thread; the
+      // server replays a thread-snapshot -- the next proof this connection
+      // can deliver. That is what retries the stashed send now, not a timer.
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      // thread-snapshot's restart-survival tail calls window.__TAURI__.core.invoke
+      // when a core bridge is present (see the `stubInvoke` convention used
+      // elsewhere in this file); stub it so that fire-and-forget call doesn't
+      // throw in this jsdom harness.
+      ;(window as any).__TAURI__.core = { invoke: vi.fn(() => Promise.resolve(null)) }
+      m.handleFrame({ type: 'thread-snapshot', threadId: 'th-fresh', messages: [] })
+
+      expect(m.State.pendingUserMessage).toBeNull()
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'user-message',
+        threadId: 'th-fresh',
+        text: 'queued while dropping',
       }))
     })
   })
