@@ -182,6 +182,42 @@ export const parseRecallTimeoutMs = (raw: string | undefined): number => {
 }
 
 /**
+ * Default cap on how many of a thread's most-recent stored messages
+ * subscribe() loads to build the initial `snapshot` ChatFrame: 500.
+ *
+ * Perf fix (2026-07-23): subscribe() used to call `store.readMessages()`
+ * with NO bound, so every thread open/switch did a full `SELECT * FROM
+ * messages WHERE session_id=? ORDER BY seq ASC` (including the heavy
+ * `content_json` column) followed by `Stream.runCollect` + `projectOne`
+ * over the ENTIRE history — cost scaled with total thread length, not with
+ * what the UI actually renders on open. This bounds the snapshot to the
+ * most recent N messages (by seq) while leaving `readMessages` itself
+ * unbounded by default, so callers that legitimately need full history
+ * (dream's gatherInputs distillation, findStoredById's by-id lookup) are
+ * unaffected — only subscribe()'s initial-snapshot call opts in.
+ *
+ * Risk: a thread with more than this many stored messages will no longer
+ * show its full history in the initial snapshot after this change — there
+ * is currently no "load older messages" pagination endpoint, so anything
+ * before the cutoff is not reachable from the UI until one is added. 500
+ * is chosen to comfortably exceed a normal chat session; flagged as a
+ * known limitation in the PR, not silently absorbed.
+ */
+export const DEFAULT_SNAPSHOT_MESSAGE_LIMIT = 500
+
+/**
+ * Parse the LUNA_CHAT_SNAPSHOT_MESSAGE_LIMIT env override.
+ *  - absent / empty / non-numeric / negative → DEFAULT_SNAPSHOT_MESSAGE_LIMIT
+ *  - `0` → 0 (disables the bound; subscribe() loads full history, legacy behavior)
+ *  - any positive number → that many messages
+ */
+export const parseSnapshotMessageLimit = (raw: string | undefined): number => {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SNAPSHOT_MESSAGE_LIMIT
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SNAPSHOT_MESSAGE_LIMIT
+}
+
+/**
  * Pure decision: should a thread be reaped right now? A thread is reapable iff
  * the reaper is enabled (idleReapMs > 0), it has no in-flight turn, and it has
  * been quiet for at least the idle window. Kept pure so the policy is tested
@@ -495,6 +531,11 @@ export class ChatService extends Effect.Service<ChatService>()(
       // can never stall a turn (0 disables). Read once at construction.
       const recallTimeoutMs: number = parseRecallTimeoutMs(
         process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"],
+      )
+      // Perf fix (2026-07-23): bounds subscribe()'s initial-snapshot read —
+      // see DEFAULT_SNAPSHOT_MESSAGE_LIMIT doc comment for rationale/risk.
+      const snapshotMessageLimit: number = parseSnapshotMessageLimit(
+        process.env["LUNA_CHAT_SNAPSHOT_MESSAGE_LIMIT"],
       )
       // Optional — when the app provides it, EVERY thread (new or resumed)
       // gets its MCP servers + merged system prompt + post-create binding.
@@ -2455,8 +2496,16 @@ export class ChatService extends Effect.Service<ChatService>()(
             const liveQueue = yield* PubSub.subscribe(entry.pubsub)
             const liveStream = Stream.fromQueue(liveQueue)
 
+            // Bounded read — only the most recent `snapshotMessageLimit`
+            // messages are loaded to build the snapshot frame (0 = legacy
+            // unbounded full-history load). Other readMessages callers
+            // (findStoredById, dream's gatherInputs) pass no options and
+            // keep full-history semantics.
             const collected = yield* store
-              .readMessages(threadId)
+              .readMessages(
+                threadId,
+                snapshotMessageLimit > 0 ? { limit: snapshotMessageLimit } : undefined,
+              )
               .pipe(Stream.runCollect, Effect.orDie)
             const stored = Array.from(Chunk.toReadonlyArray(collected))
             const projected: ChatMessage[] = []
