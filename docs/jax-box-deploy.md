@@ -115,9 +115,18 @@ incus exec luna-dev -- bash -lc '
     --skip-deps \
     --embedder ollama \
     --ollama-base-url http://<ollama-host>:11434 \
-    --ollama-embed-model embeddinggemma
+    --ollama-embed-model embeddinggemma \
+    --ollama-embed-dimension 768 \
+    --ollama-probe-timeout-ms 3000 \
+    --ollama-probe-attempts 3 \
+    --ollama-probe-backoff-ms 200
 '
 ```
+
+Optional Ollama probe knobs (written to `.env` as `LUNA_OLLAMA_*`):
+`--ollama-embed-dimension`, `--ollama-probe-timeout-ms`,
+`--ollama-probe-attempts` (default 3, clamped to 5),
+`--ollama-probe-backoff-ms` (default 200).
 
 Create the dev container:
 
@@ -137,8 +146,10 @@ scripts/luna-container-create \
   --embedder ollama \
   --ollama-base-url http://<ollama-host>:11434 \
   --ollama-embed-model embeddinggemma \
+  --ollama-embed-dimension 768 \
   --token '<dev-ui-ws-token>'
 ```
+
 
 Use `--dry-run` first to inspect the Incus commands. Use `--replace` only when
 you intend to delete and recreate the existing dev container. If `luna-dev`
