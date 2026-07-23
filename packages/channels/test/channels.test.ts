@@ -229,19 +229,25 @@ const makeTurnCompleteFrame = (threadId: string): ChatFrame => ({
   threadId,
 })
 
-const makeAssistantDoneFrame = (threadId: string, text: string, seq = 1): ChatFrame => ({
+const makeAssistantDoneFrame = (
+  threadId: string,
+  text: string,
+  seq = 1,
+  delivery?: { readonly source: string; readonly label?: string },
+): ChatFrame => ({
   type: "assistant-done",
   threadId,
   turnId: "turn-1",
   seq,
   message: {
-    id: "msg-1",
+    id: `msg-${seq}`,
     seq,
     ts: Date.now(),
     role: "assistant",
     text,
     toolUses: [],
     attachments: [],
+    ...(delivery !== undefined ? { delivery } : {}),
   },
 })
 
@@ -884,6 +890,138 @@ describe("delivery — stream-edit", () => {
     const lastDelivery = fakeCtx.deliveries[fakeCtx.deliveries.length - 1]
     expect(lastDelivery?.opts.isFinal).toBe(true)
     expect(lastDelivery?.content).toBe("Hello world")
+  })
+
+  // issue #375: deliverResult only emits assistant-done with message.delivery
+  it("delivers a background job assistant-done as a standalone final without turn-complete (#375)", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-bg-1", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-bg-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          // No deltas, no turn-complete - only a deliverResult-shaped frame.
+          yield* PubSub.publish(
+            pub,
+            makeAssistantDoneFrame(threadId, "Job finished: 3 items.", 9, {
+              source: "background-job",
+              label: "Nightly research",
+            }),
+          )
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries).toHaveLength(1)
+    expect(fakeCtx.deliveries[0]?.content).toBe("Job finished: 3 items.")
+    expect(fakeCtx.deliveries[0]?.opts.isFinal).toBe(true)
+    expect(fakeCtx.deliveries[0]?.opts.standalone).toBe(true)
+  })
+
+  it("background delivery does not collapse a concurrent live stream-edit turn (#375)", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-bg-live", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-bg-live-pm" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          // Live turn starts streaming.
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "Live…"))
+          yield* Effect.sleep("20 millis")
+          // Background job result lands mid-turn.
+          yield* PubSub.publish(
+            pub,
+            makeAssistantDoneFrame(threadId, "Background result.", 2, {
+              source: "background-job",
+            }),
+          )
+          yield* Effect.sleep("20 millis")
+          // Live turn completes.
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "Live reply done."))
+          yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "Live reply done.", 3))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("200 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const contents = fakeCtx.deliveries.map((d) => d.content)
+    expect(contents).toContain("Background result.")
+    expect(contents.some((c) => c.includes("Live reply done."))).toBe(true)
+    const bg = fakeCtx.deliveries.find((d) => d.content === "Background result.")
+    expect(bg?.opts.standalone).toBe(true)
+    // Live finalization is NOT marked standalone.
+    const liveFinal = fakeCtx.deliveries.find(
+      (d) => d.content.includes("Live reply done.") && d.opts.isFinal && !d.opts.standalone,
+    )
+    expect(liveFinal).toBeDefined()
+  })
+})
+
+describe("delivery — final-only background (#375)", () => {
+  it("delivers a background job assistant-done immediately without turn-complete", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("final-bg-1", "final-only", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "final-bg-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(
+            pub,
+            makeAssistantDoneFrame(threadId, "Final-only job result.", 1, {
+              source: "suggested-action",
+              label: "Accept research",
+            }),
+          )
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries).toHaveLength(1)
+    expect(fakeCtx.deliveries[0]?.content).toBe("Final-only job result.")
+    expect(fakeCtx.deliveries[0]?.opts.isFinal).toBe(true)
+    expect(fakeCtx.deliveries[0]?.opts.standalone).toBe(true)
   })
 })
 

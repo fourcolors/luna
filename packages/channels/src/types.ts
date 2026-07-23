@@ -129,16 +129,20 @@ export interface DeliveryTarget {
 
 /**
  * Options passed to `ChannelAdapter.deliver`.
- * `isPartial` — true while the turn is still in-flight (stream-edit mode).
- * `isFinal`   — true on the last chunk of a completed turn.
- * `chunkIndex`/ `totalChunks` — populated when a single response had to be
+ * `isPartial` - true while the turn is still in-flight (stream-edit mode).
+ * `isFinal`   - true on the last chunk of a completed turn.
+ * `chunkIndex`/ `totalChunks` - populated when a single response had to be
  *   split across multiple messages (maxMessageLength exceeded).
+ * `standalone` - one-shot message outside the live stream-edit turn (e.g.
+ *   `chat_thread` background delivery, issue #375). Adapters must send a
+ *   fresh message and must not clear or mutate in-flight stream-edit state.
  */
 export interface DeliverOptions {
   readonly isPartial: boolean
   readonly isFinal: boolean
   readonly chunkIndex: number
   readonly totalChunks: number
+  readonly standalone?: boolean
 }
 
 /**

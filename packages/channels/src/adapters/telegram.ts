@@ -1627,6 +1627,28 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         // The inbound message's update_id is the turn key for stream-edit state.
         const turnKey = target.inReplyTo.platformMessageId
 
+        // Background/job one-shots (#375 standalone): always send a fresh
+        // message and never touch the live stream-edit message-id map. A
+        // concurrent live turn on the same chat must keep editing its own
+        // placeholder; isFinal must not clear that entry for a standalone.
+        if (opts.standalone) {
+          const chatTypeStandalone = target.address["chatType"]
+          const inboundMessageIdStandalone = target.address["messageId"]
+          const replyParamsStandalone =
+            typeof chatTypeStandalone === "string" &&
+            chatTypeStandalone !== "private" &&
+            typeof inboundMessageIdStandalone === "number"
+              ? { reply_parameters: { message_id: inboundMessageIdStandalone } }
+              : {}
+          yield* sendFormatted(
+            transport,
+            "sendMessage",
+            { chat_id: chatId, ...threadParams, ...replyParamsStandalone },
+            content,
+          )
+          return
+        }
+
         // Capture the edit-routing entry, then drop it UP-FRONT on final
         // deliveries: the turn is over whether or not the send below
         // succeeds, and cleanup placed after a yield* would be skipped by a
