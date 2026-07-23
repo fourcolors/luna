@@ -7454,6 +7454,28 @@
         }, MSG_COPY_FLASH_MS);
       };
 
+      // execCommand fallback: used both when the async Clipboard API is
+      // entirely absent (older WKWebView) AND — regression fix — when
+      // navigator.clipboard.writeText EXISTS but REJECTS at runtime. That
+      // reject case is real and common now that chat panels are independent
+      // floating native windows (#274/#320): a copy click can land on a
+      // panel that isn't the OS's key window yet, and WKWebView denies the
+      // async Clipboard write for a non-key window. The synchronous
+      // execCommand path isn't gated on key-window status, so it recovers
+      // the copy in exactly that case instead of silently doing nothing.
+      const legacyCopy = () => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(ta);
+        if (ok) flashDone();
+      };
+
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         // Deliberately DON'T stopPropagation: WKWebView doesn't focus a
@@ -7462,22 +7484,12 @@
         // message's relative time. The bubble-level handlers it reaches are
         // safe for the copy button (the luna-link handler ignores non-links).
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          // Only confirm on a real success — a rejected write (insecure
-          // context / denied permission) leaves the glyph unchanged.
-          navigator.clipboard.writeText(text).then(flashDone, () => {});
+          // On success, confirm normally. On rejection, retry via the
+          // execCommand fallback rather than swallowing the failure — see
+          // legacyCopy() above for why a reject is recoverable here.
+          navigator.clipboard.writeText(text).then(flashDone, legacyCopy);
         } else {
-          // execCommand fallback for older WKWebView contexts (same path the
-          // code-block copy uses).
-          const ta = document.createElement('textarea');
-          ta.value = text;
-          ta.style.position = 'fixed';
-          ta.style.opacity = '0';
-          document.body.appendChild(ta);
-          ta.select();
-          let ok = false;
-          try { ok = document.execCommand('copy'); } catch (_) {}
-          document.body.removeChild(ta);
-          if (ok) flashDone();
+          legacyCopy();
         }
       });
       return btn;
