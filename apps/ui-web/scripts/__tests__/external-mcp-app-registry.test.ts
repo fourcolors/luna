@@ -17,8 +17,62 @@ import { createExampleServer, EXAMPLE_APP_URI, EXAMPLE_TOOL } from "../example-m
 import {
   createExternalMcpAppRegistry,
   connectExternalStdioServer,
+  parseExternalMcpServersEnv,
   type ConnectedExternalServer,
 } from "../external-mcp-app-registry.js"
+
+describe("parseExternalMcpServersEnv (LUNA_EXTERNAL_MCP_SERVERS, #161)", () => {
+  it("returns [] for unset / empty / whitespace (default-off)", () => {
+    expect(parseExternalMcpServersEnv(undefined)).toEqual([])
+    expect(parseExternalMcpServersEnv(null)).toEqual([])
+    expect(parseExternalMcpServersEnv("")).toEqual([])
+    expect(parseExternalMcpServersEnv("   ")).toEqual([])
+  })
+
+  it("returns [] for invalid JSON or non-array root", () => {
+    expect(parseExternalMcpServersEnv("{not json")).toEqual([])
+    expect(parseExternalMcpServersEnv('{"id":"x"}')).toEqual([])
+    expect(parseExternalMcpServersEnv("null")).toEqual([])
+  })
+
+  it("parses a well-formed array of stdio specs", () => {
+    const raw = JSON.stringify([
+      {
+        id: "example",
+        command: "bun",
+        args: ["run", "example-mcp-ui-server.ts"],
+        env: { FOO: "bar" },
+      },
+    ])
+    expect(parseExternalMcpServersEnv(raw)).toEqual([
+      {
+        id: "example",
+        command: "bun",
+        args: ["run", "example-mcp-ui-server.ts"],
+        env: { FOO: "bar" },
+      },
+    ])
+  })
+
+  it("skips invalid entries and duplicate ids; keeps valid siblings", () => {
+    const raw = JSON.stringify([
+      { id: "ok", command: "bun", args: ["run", "a.ts"] },
+      { id: "", command: "bun" },
+      { id: "no-cmd", command: "  " },
+      { id: "ok", command: "dupe-ignored" },
+      { command: "only-cmd" },
+      { id: "bad-args", command: "bun", args: [1, "x"] },
+      { id: "bad-env", command: "bun", env: { A: 1 } },
+      null,
+      "string-entry",
+      { id: "second", command: "node" },
+    ])
+    expect(parseExternalMcpServersEnv(raw)).toEqual([
+      { id: "ok", command: "bun", args: ["run", "a.ts"] },
+      { id: "second", command: "node" },
+    ])
+  })
+})
 
 async function linkInMemory(): Promise<{
   server: ConnectedExternalServer

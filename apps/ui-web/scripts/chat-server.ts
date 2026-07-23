@@ -429,6 +429,12 @@ import {
   type ValidatedMemoryListArgs,
   type ValidatedMemorySearchArgs,
 } from "./core-apps.js"
+import {
+  connectExternalStdioServer,
+  createExternalMcpAppRegistry,
+  parseExternalMcpServersEnv,
+  type LiveExternalServer,
+} from "./external-mcp-app-registry.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
@@ -3804,6 +3810,66 @@ const buildServerLayer = (
         return uiFeedbackStatusStore.setStatus(args, Date.now())
       }
 
+      // ── G4 external MCP-app stdio relay (#161) ─────────────────────────────
+      // Env-gated, default-off: LUNA_EXTERNAL_MCP_SERVERS unset/empty ⇒ no
+      // subprocesses, inert third provider, production behavior unchanged.
+      // Spec is a JSON array of { id, command, args?, env? }. Each server is
+      // best-effort at boot (one bad connect does not fail the chat server);
+      // every successful LiveExternalServer is closed on scope teardown so
+      // subprocess handles do not leak across restarts.
+      const externalMcpSpecs = parseExternalMcpServersEnv(
+        process.env["LUNA_EXTERNAL_MCP_SERVERS"],
+      )
+      const liveExternalServers: LiveExternalServer[] = []
+      if (externalMcpSpecs.length > 0) {
+        writeSync(
+          1,
+          `[luna/mcp-apps] G4: connecting ${externalMcpSpecs.length} external MCP server(s) from LUNA_EXTERNAL_MCP_SERVERS\n`,
+        )
+        for (const spec of externalMcpSpecs) {
+          const connected = yield* Effect.tryPromise({
+            try: () => connectExternalStdioServer(spec),
+            catch: (cause) =>
+              new Error(
+                `external MCP "${spec.id}" connect failed: ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+              ),
+          }).pipe(
+            Effect.catchAll((err) => {
+              writeSync(
+                1,
+                `[luna/mcp-apps] G4: ${err instanceof Error ? err.message : String(err)}\n`,
+              )
+              return Effect.succeed(null as LiveExternalServer | null)
+            }),
+          )
+          if (connected !== null) {
+            liveExternalServers.push(connected)
+            writeSync(
+              1,
+              `[luna/mcp-apps] G4: connected "${connected.id}" ` +
+                `(${connected.resourceUris.size} resource(s), ${connected.toolNames.size} tool(s))\n`,
+            )
+          }
+        }
+        if (liveExternalServers.length > 0) {
+          const toClose = liveExternalServers.slice()
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(async () => {
+              for (const s of toClose) {
+                try {
+                  await s.close()
+                } catch {
+                  // best-effort: a failed subprocess close on shutdown must not throw
+                }
+              }
+            }),
+          )
+        }
+      }
+      const externalMcpAppRegistry = createExternalMcpAppRegistry(liveExternalServers)
+
       const mcpAppHost = createMcpAppHost(
         composeAppRegistries(
           // Static, compile-time core apps (the Luna server as first provider).
@@ -3866,6 +3932,9 @@ const buildServerLayer = (
               (tool !== "memory-delete" || artifactId === "mcp-app:memory-browser") &&
               (tool !== "feedback-set-status" || artifactId === "mcp-app:feedback-queue"),
           }),
+          // G4 third-party relay: ui:// from external stdio MCP servers
+          // (same-server tool rule enforced inside createExternalMcpAppRegistry).
+          externalMcpAppRegistry,
         ),
       )
 

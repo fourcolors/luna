@@ -126,6 +126,74 @@ export interface StdioServerSpec {
   readonly env?: Record<string, string>
 }
 
+/**
+ * Parse `LUNA_EXTERNAL_MCP_SERVERS` (JSON array of StdioServerSpec).
+ *
+ * Env-gated, default-off (#161): empty / unset / invalid JSON ⇒ `[]` so the
+ * chat-server wires an inert external registry and production behavior is
+ * unchanged. Invalid array entries are skipped (never throw).
+ *
+ * Shape per entry: `{ "id": string, "command": string, "args"?: string[],
+ * "env"?: Record<string, string> }`.
+ */
+export const parseExternalMcpServersEnv = (
+  raw: string | undefined | null,
+): ReadonlyArray<StdioServerSpec> => {
+  if (raw === undefined || raw === null) return []
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const out: StdioServerSpec[] = []
+  const seenIds = new Set<string>()
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue
+    const rec = entry as Record<string, unknown>
+    const id = typeof rec.id === "string" ? rec.id.trim() : ""
+    const command = typeof rec.command === "string" ? rec.command.trim() : ""
+    if (id.length === 0 || command.length === 0) continue
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+    let args: ReadonlyArray<string> | undefined
+    if (Array.isArray(rec.args)) {
+      const cleaned = rec.args.filter((a): a is string => typeof a === "string")
+      if (cleaned.length === rec.args.length) args = cleaned
+      else continue // mixed-type args = reject the entry
+    } else if (rec.args !== undefined) {
+      continue
+    }
+    let env: Record<string, string> | undefined
+    if (rec.env !== undefined) {
+      if (rec.env === null || typeof rec.env !== "object" || Array.isArray(rec.env)) {
+        continue
+      }
+      const envOut: Record<string, string> = {}
+      let envOk = true
+      for (const [k, v] of Object.entries(rec.env as Record<string, unknown>)) {
+        if (typeof v !== "string") {
+          envOk = false
+          break
+        }
+        envOut[k] = v
+      }
+      if (!envOk) continue
+      env = envOut
+    }
+    out.push({
+      id,
+      command,
+      ...(args !== undefined ? { args } : {}),
+      ...(env !== undefined ? { env } : {}),
+    })
+  }
+  return out
+}
+
 /** A connected server plus a `close()` that tears the subprocess down (important:
  *  the chat-server has a memory-leak history — every connection must be disposed). */
 export type LiveExternalServer = ConnectedExternalServer & {
