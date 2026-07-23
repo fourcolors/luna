@@ -2385,7 +2385,11 @@ export const buildBaseLayer = (
     Layer.provide(SuggestedActionToolsLayer),
     Layer.provide(suggestedActionsL),
     // #221 conversation forking: fork_thread MCP tool + in-memory proposal store.
-    Layer.provide(ThreadToolsLayer),
+    // provideMerge (not provide): ForkProposalStore must stay VISIBLE above this
+    // layer — buildMain resolves it for the ui-ws threadForks handle. A plain
+    // provide hid the store and crashed boot with
+    // "Service not found: luna/ForkProposalStore" on every stable deploy after #355.
+    Layer.provideMerge(ThreadToolsLayer),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(mcpServerStoreL), // official MCP support: durable registry read by boot-sync
     Layer.provide(mcpRegistryL), // official MCP support: runtime projection read by decorate()
