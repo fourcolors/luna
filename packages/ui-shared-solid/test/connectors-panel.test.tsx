@@ -107,6 +107,16 @@ const type = (el: HTMLInputElement, value: string) => {
 }
 
 describe("ConnectorsPanel — OAuth client setup (M2.6)", () => {
+  it("mentions publish-to-production trap in the setup form", () => {
+    const rig = mount([gw(false)])
+    try {
+      expect(rig.container.textContent).toMatch(/Production/i)
+      expect(rig.container.textContent).toMatch(/7 days/i)
+    } finally {
+      rig.dispose()
+    }
+  })
+
   it("configured:false renders the form; Save disabled until an id is typed", () => {
     const rig = mount([gw(false)])
     try {
