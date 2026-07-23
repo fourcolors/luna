@@ -27,11 +27,18 @@
  * converted by ChatService). `assistant-done` marks one assistant message
  * within a possibly multi-step agentic turn.
  *
+ * Background job results (#124 `chat_thread` / issue #375): ChatService.
+ * deliverResult publishes ONLY `assistant-done` (with `message.delivery`
+ * set), never `turn-complete`, so a concurrent live turn is not collapsed.
+ * Those frames are delivered as standalone one-shot finals for every
+ * capability - including stream-edit (Telegram) and final-only - without
+ * touching live stream-edit edit state.
+ *
  * Chunking: `splitToChunks` splits on the maxMessageLength limit, preferring
  * paragraph (double-newline) and sentence (period/exclamation/question) breaks
  * over hard character cuts.
  *
- * This module does NOT create threads or modify ChatService — it is a
+ * This module does NOT create threads or modify ChatService - it is a
  * PURE DOWNSTREAM CONSUMER of chat.subscribe(), exactly as ui-ws is.
  */
 import { Effect, Fiber, Ref, Schedule, Scope, Stream } from "effect"
@@ -267,12 +274,15 @@ const STREAM_EDIT_THROTTLE_MS = 1500
 /**
  * Deliver a sequence of text chunks to the adapter.
  * Sets isPartial/isFinal/chunkIndex/totalChunks on each deliver call.
+ * When `standalone` is true (background job delivery), adapters must not
+ * mutate live stream-edit turn state (#375).
  */
 const deliverChunks = (
   adapter: ChannelAdapter,
   target: DeliveryTarget,
   chunks: string[],
   isPartial: boolean,
+  standalone = false,
 ): Effect.Effect<void> => {
   const total = chunks.length
   return Effect.forEach(
@@ -283,6 +293,7 @@ const deliverChunks = (
         isFinal: !isPartial && i === total - 1,
         chunkIndex: i,
         totalChunks: total,
+        ...(standalone ? { standalone: true as const } : {}),
       }).pipe(Effect.catchAllCause(() => Effect.void)),
     { discard: true },
   )
@@ -421,6 +432,19 @@ export const subscribeAndDeliver = (
               case "assistant-done": {
                 const text = frame.message.text
 
+                // Background job / chat_thread delivery (#375): deliverResult
+                // stamps message.delivery and never emits turn-complete. Fan
+                // out immediately as a standalone final so stream-edit
+                // (Telegram) and final-only adapters receive it without
+                // waiting for turn-complete or mutating a live stream-edit.
+                if (frame.message.delivery !== undefined) {
+                  if (text.trim().length > 0) {
+                    const chunks = splitToChunks(text, maxLen)
+                    yield* deliverChunks(adapter, target, chunks, false, true)
+                  }
+                  break
+                }
+
                 if (capability === "final-only") {
                   yield* Ref.update(turnBuffer, (prev) =>
                     prev.length > 0 ? prev + "\n\n" + text : text,
@@ -429,6 +453,7 @@ export const subscribeAndDeliver = (
                   const chunks = splitToChunks(text, maxLen)
                   yield* deliverChunks(adapter, target, chunks, false)
                 }
+                // stream-edit: live turns wait for turn-complete (unchanged)
                 break
               }
 
