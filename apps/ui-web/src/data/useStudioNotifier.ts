@@ -38,7 +38,7 @@ export interface NotifyHit {
   readonly kind: NotifyKind
   readonly title: string
   readonly body: string
-  /** null for needs-input (awareness-only, no focus-regain route). */
+  /** Thread identity; null when the frame has none (e.g. global broadcast needs-input request). */
   readonly threadId: string | null
   /**
    * Stable identity for the reconnect-replay seen-guard. DONE hits from the
@@ -69,7 +69,7 @@ export function classify(frame: ServerFrame): NotifyHit | null {
       kind: "needs-input",
       title: "Luna needs your input",
       body: f.prompt || f.jobName,
-      threadId: null,
+      threadId: (f as { readonly threadId?: string }).threadId ?? null,
       seenKey: `job:${f.requestId}`,
       ts: null,
     }
@@ -80,7 +80,7 @@ export function classify(frame: ServerFrame): NotifyHit | null {
       kind: "needs-input",
       title: "Luna needs your input",
       body: f.prompt || f.destinationLabel,
-      threadId: null,
+      threadId: (f as { readonly threadId?: string }).threadId ?? null,
       seenKey: `secret:${f.requestId}`,
       ts: null,
     }

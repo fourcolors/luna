@@ -245,7 +245,7 @@ describe("classify - the 7 rows", () => {
     expect(hit).toBeNull()
   })
 
-  it("job-input-request -> needs-input, prompt body, null threadId", () => {
+  it("job-input-request -> needs-input, prompt body, null threadId when omitted", () => {
     const hit = classify(
       asFrame({
         type: "job-input-request",
@@ -267,6 +267,29 @@ describe("classify - the 7 rows", () => {
     })
   })
 
+  it("job-input-request preserves threadId when present on frame", () => {
+    const hit = classify(
+      asFrame({
+        type: "job-input-request",
+        requestId: "r1",
+        runId: 7,
+        jobId: "j1",
+        jobName: "Nightly",
+        prompt: "Which draft?",
+        timeoutMs: 60000,
+        threadId: "t-job-123",
+      }),
+    )
+    expect(hit).toEqual<NotifyHit>({
+      kind: "needs-input",
+      title: "Luna needs your input",
+      body: "Which draft?",
+      threadId: "t-job-123",
+      seenKey: "job:r1",
+      ts: null,
+    })
+  })
+
   it("job-input-request falls back to jobName when prompt is empty", () => {
     const hit = classify(
       asFrame({
@@ -282,7 +305,7 @@ describe("classify - the 7 rows", () => {
     expect(hit?.body).toBe("Fallback job")
   })
 
-  it("secret-request -> needs-input, prompt body", () => {
+  it("secret-request -> needs-input, prompt body, null threadId when omitted", () => {
     const hit = classify(
       asFrame({
         type: "secret-request",
@@ -296,6 +319,26 @@ describe("classify - the 7 rows", () => {
       title: "Luna needs your input",
       body: "Paste your OpenAI key",
       threadId: null,
+      seenKey: "secret:s1",
+      ts: null,
+    })
+  })
+
+  it("secret-request preserves threadId when present on frame", () => {
+    const hit = classify(
+      asFrame({
+        type: "secret-request",
+        requestId: "s1",
+        prompt: "Paste your OpenAI key",
+        destinationLabel: "env:OPENAI_API_KEY",
+        threadId: "t-secret-456",
+      }),
+    )
+    expect(hit).toEqual<NotifyHit>({
+      kind: "needs-input",
+      title: "Luna needs your input",
+      body: "Paste your OpenAI key",
+      threadId: "t-secret-456",
       seenKey: "secret:s1",
       ts: null,
     })
