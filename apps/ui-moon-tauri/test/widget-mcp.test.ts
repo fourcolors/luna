@@ -3,12 +3,21 @@
  * widget-mcp.test.ts — widget.html's kind='mcp-app' render path
  * (widget-system.md Phase 7).
  *
- * Drives the REAL inline script over the panel-test MockWebSocket harness:
- * an mcp-app artifact (content = its ui:// uri) must fetch the app template
+ * Drives the REAL inline script — now frontend-react/widget.html, the page
+ * that actually ships (see src-tauri/tauri.conf.json's `frontendDist`); the
+ * superseded frontend/widget.html this suite used to read has been deleted
+ * (nothing else imported it) — over the panel-test MockWebSocket harness: an
+ * mcp-app artifact (content = its ui:// uri) must fetch the app template
  * through the `mcp-resource-read` relay frame, mount it in the SAME sandbox
  * cage WITHOUT the luna.* shim, stamp every app `tools/call` with its OWN
  * appUri on the `mcp-tool-call` frame, and degrade honestly when the server
  * lacks the mcpApps capability.
+ *
+ * The title-bar text used to be a `#bar-title` textContent write; it is now
+ * React-owned (src/widget/WidgetChrome.tsx) — the inline script only calls
+ * `window.__widgetChrome.setTitle(text)`, stubbed below, and that call is
+ * what this suite asserts on instead of reading DOM text (the React
+ * component's own rendering is covered separately by widget-chrome.test.tsx).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
@@ -48,7 +57,7 @@ function loadVendorInto(target: unknown, file: string) {
   new Function('globalThis', src)(target)
 }
 
-const html = fs.readFileSync(path.resolve(__dirname, '../frontend/widget.html'), 'utf8')
+const html = fs.readFileSync(path.resolve(__dirname, '../frontend-react/widget.html'), 'utf8')
 
 const ARTIFACT_ID = 'probe-mcp-pulse'
 const APP_URI = 'ui://luna/workspace-pulse'
@@ -79,6 +88,10 @@ async function boot(opts: { mcpApps?: boolean; content?: string } = {}) {
   // No `window` key → W stays null; LunaDock is not loaded (guarded ref).
   ;(window as any).__TAURI__ = { core: { invoke } }
   ;(window as any).WebSocket = MockWebSocket
+  // The title-bar chrome is React-owned (widget/widget-chrome-mount.tsx);
+  // stub the handle the inline script calls instead of writing DOM directly.
+  const setTitle = vi.fn()
+  ;(window as any).__widgetChrome = { setTitle }
   window.history.replaceState({}, '', '/widget.html?id=' + ARTIFACT_ID)
 
   loadVendorInto(window, 'moon-protocol.js')
@@ -116,6 +129,7 @@ afterEach(() => {
   MockWebSocket.instances = []
   delete (window as any).__TAURI__
   delete (window as any).WebSocket
+  delete (window as any).__widgetChrome
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
   delete (window as any).LunaWidgetSandbox
@@ -145,8 +159,9 @@ describe('widget.html — kind=mcp-app renders through LunaMcpHost', () => {
     expect(iframe.srcdoc).toContain(APP_HTML)
     expect(iframe.srcdoc).toContain("connect-src 'none'")
     expect(iframe.srcdoc).not.toContain('window.luna')
-    // Title bar renders like any artifact window.
-    expect(document.getElementById('bar-title')!.textContent).toBe('Workspace Pulse (MCP) · v1')
+    // Title bar updates like any artifact window — via the React handle, not
+    // a direct DOM write (see widget-chrome.test.tsx for what it renders).
+    expect((window as any).__widgetChrome.setTitle).toHaveBeenCalledWith('Workspace Pulse (MCP) · v1')
   })
 
   it("relays the app's tools/call stamped with ITS OWN appUri and routes the result back in", async () => {

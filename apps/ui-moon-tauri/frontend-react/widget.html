@@ -125,19 +125,21 @@
        native window drag. The close button is intentionally NOT drag-region. -->
   <div class="title-bar" id="title-bar">
     <div class="bar-start" aria-hidden="true"></div>
-    <span class="bar-title" id="bar-title">Loading…</span>
+    <!-- React 19 + Astryx chrome (src/widget/widget-chrome-mount.tsx) owns
+         both slots below. #bar-title-root keeps the ORIGINAL classed span
+         (still the real .bar-title flex item; "Loading…" is the pre-mount
+         fallback, matching WIDGET_DEFAULT_TITLE) — React mounts a nested
+         <Text className="bar-title"> inside it, only ever replacing its text.
+         #bar-end-root stays the real, boxed .bar-end child exactly like the
+         superseded static markup, so the mounted collapse button lands in the
+         same DOM position. The inline script below never reads or writes
+         either slot directly (see its render() → window.__widgetChrome.setTitle
+         call). -->
+    <span class="bar-title" id="bar-title-root">Loading…</span>
     <!-- Right cluster balances the lights so the title stays centered; also
          houses the collapse-to-moon glyph (on the right, clear of native
          traffic lights which sit top-left). -->
-    <div class="bar-end">
-      <button class="collapse-moon-btn" id="collapse-moon-btn"
-              title="Collapse into the moon" aria-label="Collapse into the moon">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"
-             stroke="none" aria-hidden="true">
-          <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.5 6.5 0 1 1-7.54-7.54A9.05 9.05 0 0 0 12 3z"/>
-        </svg>
-      </button>
-    </div>
+    <div class="bar-end" id="bar-end-root"></div>
   </div>
   <!-- CONTENT AREA — pre/code populated by JS -->
   <div class="content-area" id="content-area">
@@ -163,18 +165,17 @@
   } catch (_) { /* non-Tauri env — best-effort */ }
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
-  var barTitle = document.getElementById('bar-title');
   var codeEl = document.getElementById('code-block');
   var contentArea = document.getElementById('content-area');
 
-  // Collapse-into-moon is a Luna-specific workspace action, intentionally
-  // separate from the native yellow button's per-window minimize behavior.
-  var collapseMoonBtn = document.getElementById('collapse-moon-btn');
-  collapseMoonBtn && collapseMoonBtn.addEventListener('click', function () {
-    if (window.__TAURI__ && window.__TAURI__.core) {
-      try { window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {}); } catch (_) {}
-    }
-  });
+  // Title-bar chrome (the .bar-title text + the collapse-into-moon glyph) is
+  // owned by React 19 + Astryx now — see src/widget/widget-chrome-mount.tsx
+  // and src/main-widget.tsx, which mount it into #bar-title-root/#bar-end-root
+  // and assign window.__widgetChrome before this script's render() can ever
+  // fire. This script never touches that DOM directly; render() below calls
+  // window.__widgetChrome.setTitle(...) instead of the superseded
+  // `barTitle.textContent = ...` assignment, and the collapse click handler
+  // that used to live here moved into CollapseMoonButton's onClick.
 
   // ── External links: open in the system browser, never navigate this webview ─
   // A kind='markdown' artifact can contain http(s)/mailto anchors (the shared
@@ -416,9 +417,10 @@
   function render(artifact) {
     if (!artifact) return;
 
-    // Title bar: "filename.sh · v2"
+    // Title bar: "filename.sh · v2" — React-owned (see the DOM-refs comment
+    // above); never write #bar-title-root's text directly from here.
     var titleText = (artifact.title || 'Artifact') + ' · v' + (artifact.version || 1);
-    barTitle.textContent = titleText;
+    if (window.__widgetChrome) window.__widgetChrome.setTitle(titleText);
 
     if (artifact.kind === 'mcp-app') {
       renderMcpApp(artifact);
@@ -562,10 +564,13 @@
   if (window.LunaDock) LunaDock.wire({ win: W, label: label });
 })();
 </script>
-  <!-- React 19 + Astryx 0.1.8 boot layer (scaffold phase) - mounts an invisible
-       boot probe alongside this page's unchanged vanilla content. See
-       ../src/boot.tsx. Deferred module load: always runs after every
-       classic-script above, including moon-appearance.js's pre-paint stamp. -->
+  <!-- React 19 + Astryx 0.1.8: mounts the invisible boot probe (see
+       ../src/boot.tsx) plus the title-bar chrome (the .bar-title text and
+       the collapse-into-moon glyph — see ../src/widget/WidgetChrome.tsx).
+       #content-area above stays entirely vanilla, unchanged. Deferred module
+       load: always runs after every classic-script above, including
+       moon-appearance.js's pre-paint stamp, and always finishes before the
+       inline script's async WS-driven render() calls can fire. -->
   <script type="module" src="/src/main-widget.tsx"></script>
 </body>
 </html>

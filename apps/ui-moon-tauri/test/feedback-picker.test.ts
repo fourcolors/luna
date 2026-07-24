@@ -24,7 +24,7 @@ describe('FeedbackEngine (chat.html)', () => {
 
   beforeEach(() => {
     const htmlContent = fs.readFileSync(
-      path.resolve(__dirname, '../frontend/chat.html'),
+      path.resolve(__dirname, '../frontend-react/chat.html'),
       'utf8',
     )
     const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)

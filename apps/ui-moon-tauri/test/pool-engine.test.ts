@@ -270,7 +270,7 @@ function loadVendorInto(target: any, file: string) {
 
 function bootChatPage(target: any) {
   const htmlContent = fsSync.readFileSync(
-    pathSync.resolve(__dirname, '../frontend/chat.html'),
+    pathSync.resolve(__dirname, '../frontend-react/chat.html'),
     'utf8'
   )
   // Extract and run the inline <script> block (the big one after all vendor <script> tags)

@@ -1,0 +1,57 @@
+/*
+ * VoicePanel.css - layout for the settings.voice panel.
+ *
+ * The row rhythm (.panel-row spacing, .panel-status color) is inherited from
+ * panel.html's own page-level <style> block (shared chrome across every
+ * settings panel - see panel.html) - this file only adds the handful of
+ * classes specific to VoicePanel's own layout that no shared class covers.
+ * Loaded via a plain `import "./VoicePanel.css"` (Vite injects a <style>
+ * tag), same convention as FlowPanel.css.
+ */
+.voice-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.voice-select-label {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-width: 100px;
+}
+
+#voice-voice-select {
+  background: rgba(138, 180, 248, 0.08);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-model-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.voice-model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-model-label {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+#voice-model-progress {
+  width: 100%;
+  max-width: 220px;
+}

@@ -6,9 +6,15 @@ import * as path from 'node:path'
 /**
  * widget-render.test.ts — kind-aware rendering in widget.html (Slice 2).
  *
- * Drives the REAL page script: an `artifact-update` frame for the window's own
- * id flows through the frame registry to render(). Asserts each kind takes its
- * SAFE path:
+ * Drives the REAL page script — now frontend-react/widget.html, the page
+ * that actually ships (see src-tauri/tauri.conf.json's `frontendDist`); the
+ * superseded frontend/widget.html this suite used to read has been deleted
+ * (nothing else imported it). Only the title-bar chrome moved to React (see
+ * widget-chrome.test.tsx) — every content-area render path this suite
+ * exercises is the same inline script, unchanged.
+ *
+ * An `artifact-update` frame for the window's own id flows through the frame
+ * registry to render(). Asserts each kind takes its SAFE path:
  *   - kind=html      → a live sandboxed <iframe> (allow-scripts, NO
  *                      allow-same-origin, strict-CSP srcdoc), content executes
  *                      only inside the cage
@@ -41,7 +47,7 @@ describe('widget.html — kind-aware render', () => {
     window.history.replaceState({}, '', '/?id=' + encodeURIComponent(ART_ID))
 
     const html = fs.readFileSync(
-      path.resolve(__dirname, '../frontend/widget.html'),
+      path.resolve(__dirname, '../frontend-react/widget.html'),
       'utf8',
     )
     const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/)

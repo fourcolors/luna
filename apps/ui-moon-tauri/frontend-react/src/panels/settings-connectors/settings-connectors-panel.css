@@ -1,0 +1,55 @@
+/*
+ * settings-connectors-panel.css - layout for the React 19 + Astryx Connectors
+ * panel (ConnectorsPanel.tsx), ported from the inline `style.cssText` the
+ * vanilla frontend/panels/settings-connectors.js module set on each element
+ * at render time. Unlayered, so it sits at the same cascade tier as
+ * vendor/moon-theme.css and beats Astryx's own `@layer astryx-base` rules
+ * without needing !important anywhere here - same convention as
+ * workflows-panel.css.
+ */
+
+.settings-connectors-panel { display: flex; flex-direction: column; gap: 10px; }
+
+.connector-card {
+  border: 1px solid rgba(138, 180, 248, 0.12);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(138, 180, 248, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.connector-card.status-idle,
+.connector-card.status-error { opacity: 0.92; }
+
+.connector-head { display: flex; align-items: center; gap: 10px; }
+.connector-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.connector-name-row { display: flex; align-items: center; gap: 8px; }
+.connector-actions { display: flex; gap: 8px; align-items: center; }
+
+.connector-instance-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.connector-instance-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.connector-instance-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+
+.connector-client-configured {
+  font-size: 0.64rem; color: #6ee7b7;
+  display: flex; align-items: center; gap: 5px; padding-top: 6px;
+}
+.connector-client-setup {
+  display: flex; flex-direction: column; gap: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  padding-top: 10px; margin-top: 6px;
+}
+.connector-client-explainer { font-size: 0.64rem; color: var(--muted); line-height: 1.5; }
+.connector-setup-steps { margin: 6px 0 0 1.1em; padding: 0; line-height: 1.55; }
+
+.connector-consent {
+  display: flex; flex-direction: column; gap: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  padding-top: 8px; margin-top: 6px;
+}
+
+#connectors-error[hidden] { display: none !important; }

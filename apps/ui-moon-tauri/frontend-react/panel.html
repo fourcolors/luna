@@ -270,6 +270,11 @@
     },
   };
 
+  // Hand-off point for React-owned panel types (see below): the deferred
+  // module script (src/main-panel.tsx) runs after this inline script and
+  // needs the same invoke bridge without re-deriving it from __TAURI__.
+  window.__panelCtx = ctx;
+
   function bootModule(mod) {
     if (mod) {
       barTitle.textContent = mod.title;
@@ -289,8 +294,19 @@
     window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, lastNotice: null };
   }
 
+  // React-owned panel types: rendered entirely by the deferred React module
+  // below (main-panel.tsx -> src/panel-boot.tsx), which reuses window.__panelCtx
+  // set above. Skip the legacy dynamic panels/<type>.js loader for these so
+  // there's no vanilla-fetch-404/"Unknown panel type" flash before the module
+  // mounts — this is what makes it safe to delete a converted type's old
+  // frontend/panels/<type>.js source file once nothing else references it.
+  var REACT_PANEL_TYPES = { flow: true, settings: true, 'settings-launcher': true, 'settings.general': true, agents: true, 'settings.skills': true, workflows: true, 'settings.apps': true, 'settings.voice': true, actions: true, 'settings.appearance': true, briefing: true, now: true, 'settings.models': true, 'settings.connection': true, 'settings.updates': true, 'settings.connectors': true, 'settings.vault': true };
+
   var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
-  if (registered) {
+  if (REACT_PANEL_TYPES[type]) {
+    // Nothing to do here — src/panel-boot.tsx owns content-area/bar-title
+    // for this type once the deferred module below runs.
+  } else if (registered) {
     bootModule(registered);
   } else if (/^[a-z0-9.]+$/.test(type)) {
     var s = document.createElement('script');

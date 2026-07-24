@@ -6,7 +6,8 @@
  * stamped before first paint (no flash of the default palette).
  *
  * Preferences live in localStorage under individual keys (same convention as
- * luna_always_on_top & friends in panels/settings-general.js):
+ * luna_always_on_top & friends in
+ * frontend-react/src/panels/settings-general/SettingsGeneralPanel.tsx):
  *
  *   luna_palette  — 'dawn' | 'meadow' | 'tide'              (default 'tide')
  *   luna_theme    — 'light' | 'dark'                        (default 'dark')

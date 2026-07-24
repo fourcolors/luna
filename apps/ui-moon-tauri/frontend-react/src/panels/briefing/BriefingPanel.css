@@ -1,0 +1,87 @@
+/**
+ * BriefingPanel.css — ported 1:1 from the inline <style> the vanilla
+ * frontend/panels/briefing.js module injected into document.head at render
+ * time. Moved to a real stylesheet (Vite bundles this import) since React
+ * components must never poke the DOM directly — see BriefingPanel.tsx.
+ * Class names, colors and spacing are unchanged so this is a visual no-op.
+ */
+.bf-section {
+  margin-bottom: 14px;
+}
+.bf-section-label {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.bf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 9px;
+  padding: 7px 10px;
+  margin-bottom: 5px;
+}
+.bf-row.attention {
+  border-color: rgba(248, 201, 130, 0.22);
+  background: rgba(248, 201, 130, 0.05);
+}
+.bf-row-info {
+  flex: 1;
+  min-width: 0;
+}
+.bf-row-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bf-row-meta {
+  font-size: 0.66rem;
+  color: var(--muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bf-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.bf-status-dot.waiting {
+  background: #f8c982;
+}
+.bf-status-dot.failed {
+  background: #f08c8c;
+}
+.bf-status-dot.success {
+  background: #7ee2a8;
+}
+.bf-status-dot.running {
+  background: var(--accent);
+}
+.bf-status-dot.queued,
+.bf-status-dot.cancelled {
+  background: var(--muted);
+}
+.bf-open-btn {
+  flex-shrink: 0;
+}
+.bf-empty {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: italic;
+  padding: 4px 0 8px;
+}
+.bf-refresh-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}

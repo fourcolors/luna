@@ -309,7 +309,7 @@ security posture. Recommendations are mine; the call is the operator's.
 | Client host | `packages/ui-shared/src/mcp-app-host.ts`, `apps/ui-moon-tauri/frontend/vendor/mcp-app-host.js` |
 | Server registry | `apps/ui-web/scripts/core-apps.ts`; wired in `apps/ui-web/scripts/chat-server.ts` (`createMcpAppHost`, ~2896) |
 | Wire protocol | `packages/ui-ws/src/protocol.ts`, `packages/ui-ws/src/mcp-app-host.ts`, `packages/ui-shared/src/wire.ts` (`ArtifactKind`, relay frames) |
-| Render / sandbox | `packages/ui-shared-solid/src/ArtifactPanel.tsx`, `packages/ui-shared/src/widget-sandbox.ts`, `apps/ui-moon-tauri/frontend/widget.html` |
+| Render / sandbox | `packages/ui-shared-solid/src/ArtifactPanel.tsx`, `packages/ui-shared/src/widget-sandbox.ts`, `apps/ui-moon-tauri/frontend-react/widget.html` |
 | Producer tools | `packages/widget-tools/src/tools.ts`, `packages/core/src/artifacts/types.ts` |
 | Theming tokens | `apps/ui-moon-tauri/frontend/vendor/moon-palette.css`, `apps/ui-web/src/watercolor.css` |
 | Theme apply | `apps/ui-moon-tauri/frontend/vendor/moon-appearance.js`, `apps/ui-web/src/appearance.ts` |

@@ -585,6 +585,38 @@ export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
 }
 
+/* Job input requests — a running workflow/job pauses and asks the operator a
+ * question (e.g. "which draft should I finalize?"). Surfaced as an answer
+ * card in the "Now" rail, newest-on-top, independent of the workflow-list
+ * gallery re-rendering (a card must survive a workflow-list refresh while it
+ * awaits an answer). Mirror ui-ws/protocol.ts — keep in sync. */
+export interface JobInputRequestFrame {
+  readonly type: "job-input-request"
+  readonly requestId: string
+  readonly runId: number
+  readonly jobId: string
+  readonly jobName: string
+  readonly prompt: string
+  /** Milliseconds until the request auto-expires client-side; 0/absent = no timeout. */
+  readonly timeoutMs?: number
+}
+/** Server→client: settles a pending job-input-request (answered elsewhere,
+ *  already answered, or otherwise resolved without this client's input). */
+export interface JobInputStatusFrame {
+  readonly type: "job-input-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message?: string
+}
+/** Client→server: the operator's answer (or a cancellation) for a pending
+ *  job-input-request. */
+export interface JobInputResultFrame {
+  readonly type: "job-input-result"
+  readonly requestId: string
+  readonly answer?: string
+  readonly cancelled?: boolean
+}
+
 /* Suggested Actions — Luna proposes actions ("do a task", "create a skill", …)
  * inline in a thread; they collect in a per-thread Actions panel. PER-THREAD
  * scope: every action carries its owning threadId. `set` is a full per-thread
@@ -995,6 +1027,8 @@ export type ServerFrame =
   | McpToolResultFrame
   | WorkflowListFrame
   | WorkflowRunsFrame
+  | JobInputRequestFrame
+  | JobInputStatusFrame
   | SuggestedActionSetFrame
   | SuggestedActionUpdateFrame
   | ForkProposalSetFrame
@@ -1143,6 +1177,7 @@ export type ClientFrame =
   | McpToolCallFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | JobInputResultFrame
   | SuggestedActionRespondFrame
   | ForkProposalRespondFrame
   | PtyInputFrame

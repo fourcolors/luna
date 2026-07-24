@@ -2636,7 +2636,12 @@
   <div class="title-bar" id="title-bar">
     <!-- Reserves the exact native traffic-light footprint. -->
     <div class="bar-start" aria-hidden="true"></div>
-    <span class="bar-title" id="bar-title">Luna</span>
+    <!-- React 19 + Astryx title-bar chrome (src/chat/chat-chrome-mount.tsx)
+         mounts a Text node INSIDE this span, one level nested so this outer
+         element stays the real `.bar-title` flex item (flex/ellipsis only
+         apply to a direct child of `.title-bar`'s flex box) - "Luna" is the
+         pre-mount fallback, identical to the pre-conversion static text. -->
+    <span class="bar-title" id="bar-title-root">Luna</span>
     <!-- Redock — pinned floaters only (#380). Folds this window's thread back
          into the owner main-line chat (panel-chat or redockTo), then closes. -->
     <button class="redock-btn" id="redock-btn" type="button" hidden
@@ -2661,15 +2666,13 @@
     </button>
     <!-- Collapse the whole workspace back into the moon orb (Luna-specific
          gesture; the yellow native button does OS-minimize instead). Sits at
-         the far right so it clears the native traffic lights on the left. -->
-    <button class="collapse-moon-btn" id="collapse-moon-btn"
-            title="Collapse into the moon" aria-label="Collapse into the moon">
-      <!-- Half-moon glyph: simple filled crescent via overlapping circles. -->
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"
-           stroke="none" aria-hidden="true">
-        <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.5 6.5 0 1 1-7.54-7.54A9.05 9.05 0 0 0 12 3z"/>
-      </svg>
-    </button>
+         the far right so it clears the native traffic lights on the left.
+         React-owned (src/chat/chat-chrome-mount.tsx, reusing widget.html's
+         CollapseMoonButton verbatim - same affordance, same ctx contract).
+         Bare host: no class of its own, so it adds zero box-model footprint
+         as a `.title-bar` flex child - the mounted Astryx Button carries the
+         original `collapse-moon-btn` class itself. -->
+    <span id="collapse-moon-btn-root"></span>
   </div>
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
@@ -11635,18 +11638,9 @@
     } catch (_) { /* not in Tauri (tests/browser) */ }
     State.winLabel = winLabel;
 
-    // Collapse-into-moon is a Luna-specific workspace action, intentionally
-    // separate from the native yellow button's per-window minimize behavior.
-    const collapseMoonBtn = document.getElementById('collapse-moon-btn');
-    if (collapseMoonBtn) {
-      collapseMoonBtn.addEventListener('click', () => {
-        try {
-          if (window.__TAURI__ && window.__TAURI__.core) {
-            window.__TAURI__.core.invoke('collapse_to_moon').catch(() => {});
-          }
-        } catch (_) { /* best-effort */ }
-      });
-    }
+    // Collapse-into-moon: React-owned now (src/chat/chat-chrome-mount.tsx,
+    // mounted by main-chat.tsx into #collapse-moon-btn-root) — this inline
+    // script no longer touches that DOM or wires its click handler.
 
     // New-thread button → mint a FRESH thread in THIS window (single-window
     // model; the title-bar + and the sidebar "+ New" now do the same thing —
@@ -11775,8 +11769,11 @@
               return { stripWidth: 240, stripTopInset: 80, stripHeight: 400 };
             },
             title: () => {
+              // #bar-title-root is React-owned now (chat-chrome-mount.tsx);
+              // its textContent still reflects the rendered title (recursive
+              // text-node concatenation), so this read-only lookup is unchanged.
               try {
-                const t = document.getElementById('bar-title');
+                const t = document.getElementById('bar-title-root');
                 return (t && t.textContent && t.textContent.trim()) || null;
               } catch (_) { return null; }
             },

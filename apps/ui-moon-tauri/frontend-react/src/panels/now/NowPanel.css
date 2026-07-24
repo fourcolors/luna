@@ -1,0 +1,166 @@
+/*
+ * NowPanel.css — adapted from the vanilla panels/now.js module's injected
+ * <style> block. Astryx components (Badge/Button/TextInput) are skinned
+ * globally by ../../styles/astryx-moon-bridge.css; these rules only own the
+ * hand-rolled layout/status-color surface the vanilla module owned (rail
+ * rows, status dots, answer cards) that has no Astryx equivalent.
+ *
+ * DEVIATION FROM THE VANILLA MODULE: the original inline <style> hardcoded
+ * a single dark-theme palette (e.g. `color:#e2e8f0` for the prompt text,
+ * `background:rgba(255,255,255,0.02)` for rail rows) because vanilla Moon
+ * panels always composited on a dark surface. The Astryx conversion runs
+ * across every watercolor palette in BOTH light and dark mode (see
+ * boot.tsx's `.moon-astryx-root` bridge), so every color below is either a
+ * theme token (var(--text)/var(--muted)/var(--accent)) or an explicit
+ * light/dark pair - mirroring panel.html's own established convention for
+ * this exact problem (see its inline `.panel-status.ok`/`.panel-status.warn`
+ * + `html[data-theme='dark'] .panel-status.*` overrides).
+ */
+
+.now-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── answer cards ── */
+.now-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 12px;
+}
+.now-answer-card {
+  background: color-mix(in oklab, var(--accent) 8%, var(--paper-2));
+  border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.now-answer-card-job {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9a6b1f;
+  font-weight: 700;
+}
+html[data-theme="dark"] .now-answer-card-job {
+  color: #f8c982;
+}
+.now-answer-card-prompt {
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+.now-answer-card-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.now-answer-card-input-row .now-answer-input {
+  flex: 1;
+}
+.now-card-hint {
+  font-size: 0.68rem;
+  color: #9a6b1f;
+}
+html[data-theme="dark"] .now-card-hint {
+  color: #f8c982;
+}
+.now-card-hint.error {
+  color: #b3261e;
+}
+html[data-theme="dark"] .now-card-hint.error {
+  color: #fda4af;
+}
+.now-card-settled {
+  font-size: 0.72rem;
+  color: #4a7d3a;
+}
+html[data-theme="dark"] .now-card-settled {
+  color: #7ee2a8;
+}
+.now-card-settled.warn {
+  color: var(--muted);
+}
+.now-card-timeout {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ── workflow rail ── */
+.now-section-label {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.now-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+.now-wf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+  border: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.now-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.now-status-dot.success {
+  background: #4a7d3a;
+}
+html[data-theme="dark"] .now-status-dot.success {
+  background: #7ee2a8;
+}
+.now-status-dot.failed {
+  background: #b3261e;
+}
+html[data-theme="dark"] .now-status-dot.failed {
+  background: #f08c8c;
+}
+.now-status-dot.running {
+  background: var(--accent);
+}
+.now-status-dot.waiting {
+  background: #9a6b1f;
+}
+html[data-theme="dark"] .now-status-dot.waiting {
+  background: #f8c982;
+}
+.now-status-dot.queued {
+  background: var(--muted);
+}
+.now-status-dot.cancelled {
+  background: var(--muted);
+}
+.now-wf-name {
+  flex: 1;
+  font-size: 0.78rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-wf-badge,
+.now-wf-status-label {
+  flex-shrink: 0;
+}
+.now-empty {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-style: italic;
+}

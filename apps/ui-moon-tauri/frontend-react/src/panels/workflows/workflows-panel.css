@@ -1,0 +1,71 @@
+/*
+ * workflows-panel.css — ported verbatim from the inline <style> the vanilla
+ * frontend/panels/workflows.js module injected into document.head at render
+ * time. Same selectors, same values — only the delivery mechanism changed
+ * (a real, Vite-bundled, unlayered stylesheet instead of a runtime-appended
+ * <style> tag), so this panel keeps reading Moon's page-level watercolor
+ * tokens (--ink, --muted, --accent, …) exactly as before. Unlayered, so it
+ * sits at the same cascade tier as vendor/moon-theme.css and beats Astryx's
+ * own `@layer astryx-base` rules without needing !important anywhere here.
+ */
+
+.wfs-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.wfs-header[hidden] { display: none !important; }
+.wfs-count { font-size: 0.66rem; color: var(--muted); }
+.wfs-count.stale { color: #f8c982; }
+.wfs-header .panel-btn { margin-left: auto; }
+.wfs-list { display: flex; flex-direction: column; gap: 5px; width: 100%; }
+.wfs-list[hidden] { display: none !important; }
+
+/* Token-based card colors (not rgba-white) so rows read on BOTH the light
+   and dark watercolor papers. */
+.wfs-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+  border: 1px solid var(--ink-faint);
+  border-radius: 9px; padding: 7px 10px; text-align: left; width: 100%;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.wfs-row:hover {
+  border-color: color-mix(in oklab, var(--accent) 22%, transparent);
+  background: color-mix(in oklab, var(--accent) 5%, transparent);
+}
+.wfs-row:focus-visible {
+  outline: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  outline-offset: 1px;
+}
+.wfs-row.attention { border-color: rgba(248, 201, 130, 0.22); background: rgba(248, 201, 130, 0.05); }
+.wfs-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.wfs-dot.success { background: #7ee2a8; }
+.wfs-dot.failed { background: #f08c8c; }
+.wfs-dot.running { background: var(--accent); }
+.wfs-dot.waiting { background: #f8c982; }
+.wfs-dot.queued, .wfs-dot.cancelled, .wfs-dot.never { background: var(--muted); }
+.wfs-info { flex: 1; min-width: 0; }
+.wfs-name-row { display: flex; align-items: center; gap: 6px; }
+.wfs-name {
+  font-size: 0.78rem; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wfs-badge {
+  font-size: 0.58rem; font-weight: 600; padding: 1px 6px; flex-shrink: 0;
+  border-radius: 8px; line-height: 1.5; letter-spacing: 0.02em;
+}
+.wfs-badge.scheduled {
+  background: color-mix(in oklab, var(--accent) 15%, transparent); color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+}
+.wfs-badge.on-demand {
+  background: rgba(148, 163, 184, 0.10); color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.20);
+}
+.wfs-badge.paused {
+  background: rgba(239, 68, 68, 0.10); color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.22);
+}
+.wfs-meta {
+  font-size: 0.64rem; color: var(--muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wfs-more { font-size: 0.64rem; color: var(--muted); font-style: italic; padding: 4px 0; }
+.wfs-empty { font-size: 0.76rem; color: var(--muted); font-style: italic; padding: 10px 0; }

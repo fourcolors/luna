@@ -1,0 +1,130 @@
+/*
+ * FlowPanel.css - styles for the 'flow' panel (per-job run inspector).
+ *
+ * Ported verbatim (selectors, values) from the vanilla panels/flow.js
+ * inline <style> block so the covering tests' class-name assertions
+ * (.flow-run-row, .flow-run-dot.<status>, .flow-badge.<kind>, etc.) keep
+ * matching real DOM, and the panel keeps its existing look. Loaded via a
+ * plain `import "./FlowPanel.css"` (Vite injects a <style> tag) rather than
+ * the old imperative `document.head.appendChild(style)` - static CSS has no
+ * business living in a WS-frame handler or a render effect.
+ */
+.flow-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.flow-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.flow-job-id {
+  flex: 1;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-subtitle {
+  font-size: 0.62rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.flow-subtitle[hidden] { display: none !important; }
+
+.flow-badge {
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.flow-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+
+.flow-run-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 7px 10px;
+  transition: border-color 0.18s ease;
+}
+.flow-run-row:hover { border-color: rgba(138, 180, 248, 0.20); }
+
+.flow-run-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.flow-run-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.flow-run-dot.success { background: #7ee2a8; }
+.flow-run-dot.failed { background: #f08c8c; }
+.flow-run-dot.running { background: var(--accent); }
+.flow-run-dot.waiting { background: #f8c982; }
+.flow-run-dot.queued { background: var(--muted); }
+.flow-run-dot.cancelled { background: var(--muted); }
+
+.flow-run-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  min-width: 54px;
+}
+.flow-run-status.success { color: #7ee2a8; }
+.flow-run-status.failed { color: #f08c8c; }
+.flow-run-status.running { color: var(--accent); }
+.flow-run-status.waiting { color: #f8c982; }
+.flow-run-status.queued { color: var(--muted); }
+.flow-run-status.cancelled { color: var(--muted); }
+
+.flow-run-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.62rem;
+  color: #64748b;
+  flex: 1;
+}
+.flow-run-time { flex-shrink: 0; }
+.flow-run-dur { flex-shrink: 0; }
+.flow-run-attempt { flex-shrink: 0; font-size: 0.58rem; color: #475569; }
+
+.flow-run-err {
+  font-size: 0.62rem;
+  color: #f08c8c;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+}
+
+.flow-empty {
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-style: italic;
+  padding: 10px 0;
+}

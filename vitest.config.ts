@@ -34,7 +34,16 @@ const BUN_RUNTIME_TESTS = [
 export default defineConfig({
   test: {
     globals: false,
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "test/**/*.test.ts"],
+    include: [
+      "packages/**/*.test.ts",
+      "apps/**/*.test.ts",
+      "test/**/*.test.ts",
+      // React-component tests need JSX (see apps/ui-moon-tauri's Astryx
+      // panel conversions) - mirrors the .test.ts patterns above.
+      "packages/**/*.test.tsx",
+      "apps/**/*.test.tsx",
+      "test/**/*.test.tsx",
+    ],
     exclude: ["**/node_modules/**", "**/dist/**", ...BUN_RUNTIME_TESTS],
     reporters: ["default"],
     testTimeout: 10_000,

@@ -263,7 +263,7 @@ Deliverables:
 | Concern | Home |
 | --- | --- |
 | OS window drag / redock arm | `frontend/vendor/moon-dock.js`, `src-tauri` native commands |
-| Attached strip session | `frontend/chat.html` ThreadDrawer / future `thread-drag-session` module |
+| Attached strip session | `frontend-react/chat.html` ThreadDrawer / future `thread-drag-session` module |
 | Native strip hit-test / drag end | `src-tauri/src/main.rs` (NSEvent monitors; follow `begin_native_resize`) |
 | ThreadCache instant paint | Existing ThreadCache paths in `chat.html` |
 | Prewarm pool | New small module + Tauri show/hide; not a second product |

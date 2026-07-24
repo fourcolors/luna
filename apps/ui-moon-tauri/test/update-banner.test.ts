@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 //
 // update-banner.test.ts — Slice C, surface #2: the in-chat composer update
-// banner (frontend/chat.html UpdateBanner engine). Mirrors the chat-window.test
-// harness: load chat.html's body + the WebSocketEngine inline script, stub the
-// Tauri window surface, and drive UpdateBanner through __MoonInternals.
+// banner (frontend-react/chat.html UpdateBanner engine — this is what
+// actually ships, see chat-window.test.ts's module doc). Mirrors the
+// chat-window.test harness: load chat.html's body + the WebSocketEngine
+// inline script, stub the Tauri window surface, and drive UpdateBanner
+// through __MoonInternals.
 //
 // Coverage (per SPEC.md Slice C "Tests"):
 //   - onReady inserts the bar as a sibling directly ABOVE .composer-input-wrap
@@ -28,7 +30,7 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
 
   beforeEach(() => {
     // 1. Load chat.html body structure.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/chat.html'), 'utf8')
+    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
     const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 

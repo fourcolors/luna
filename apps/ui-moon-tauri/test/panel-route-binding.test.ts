@@ -14,6 +14,18 @@
 // Approach: register a minimal stub panel type that calls ctx.connectWs(…), then
 // boot panel.html's inline script and flush microtasks. Assert on __PanelInternals
 // and the DOM .notice element.
+//
+// Ported to boot frontend-react/panel.html (React 19 + Astryx edition)
+// instead of frontend/panel.html: src-tauri/tauri.conf.json's frontendDist
+// now points at frontend-react/dist (see vite.config.ts's doc comment), so
+// frontend/panel.html is no longer what ships — this suite must exercise the
+// real boot file. The ctx/connectWs waterfall under test is byte-for-byte
+// identical between the two files (see panel-ctx.ts's module doc on why that
+// stays vanilla — no parallel connection/transport logic to keep in sync),
+// so every behavioral assertion below is unchanged from the pre-port
+// suite; only the html fixture path moved. The stub panel type this suite
+// registers (`stub.ws`) is never React-owned, so it always takes the
+// still-vanilla bootModule() path panel.html's inline script has always had.
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import * as fs from 'node:fs'
@@ -26,7 +38,7 @@ function loadVendorInto(target: any, file: string) {
   new Function('globalThis', src)(target)
 }
 
-const html = fs.readFileSync(path.resolve(__dirname, '../frontend/panel.html'), 'utf8')
+const html = fs.readFileSync(path.resolve(__dirname, '../frontend-react/panel.html'), 'utf8')
 
 // ── Route fixtures ────────────────────────────────────────────────────────────
 

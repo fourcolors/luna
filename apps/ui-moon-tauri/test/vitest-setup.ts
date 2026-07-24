@@ -61,3 +61,27 @@ installInstance(window, 'localStorage')
 installInstance(window, 'sessionStorage')
 installInstance(globalThis as any, 'localStorage')
 installInstance(globalThis as any, 'sessionStorage')
+
+// jsdom does not implement window.matchMedia. @astryxdesign/core's useTheme
+// (pulled in by, among others, Spinner - rendered by Switch/ToggleButton
+// while isLoading/isPending) calls it unconditionally via its own
+// useMediaQuery hook, so any test that mounts a real Astryx component tree
+// needs this stub present before React renders. Static "no match, no
+// listeners fire" implementation - none of these tests assert on live
+// media-query changes, only that mounting doesn't throw.
+if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
+  window.matchMedia = function matchMedia(query: string): MediaQueryList {
+    return {
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener() {},
+      removeListener() {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {
+        return false
+      },
+    } as MediaQueryList
+  }
+}

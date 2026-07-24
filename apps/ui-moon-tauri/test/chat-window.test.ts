@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 //
-// chat-window.test.ts — behavioral suite for frontend/chat.html, the chat
-// WIDGET WINDOW (widget-system.md Phase 4 "extraction-as-new-page").
+// chat-window.test.ts — behavioral suite for frontend-react/chat.html (this
+// is what actually ships — see src-tauri/tauri.conf.json's `frontendDist`;
+// the superseded frontend/chat.html copy was deleted, see
+// frontend-react/src/chat/chat-chrome-mount.tsx), the chat WIDGET WINDOW
+// (widget-system.md Phase 4 "extraction-as-new-page").
 //
 // The chat-scope describes are COPIES of their moon-app.test.ts originals
 // (which keep covering the hub's dormant chat code until the Phase 6
@@ -36,7 +39,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     window.history.replaceState({}, '', '/')
 
     // 1. Load chat.html content + body structure.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/chat.html'), 'utf8')
+    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
     const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
@@ -4228,18 +4231,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: the Luna-specific workspace-collapse action remains separate from
-  // AppKit's native per-window controls.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: window chrome (collapse into moon)', () => {
-    it('Scenario: the moon action invokes collapse_to_moon', () => {
-      const invoke = vi.fn(async () => null)
-      ;(window as any).__TAURI__.core = { invoke }
-      document.getElementById('collapse-moon-btn')!.click()
-      expect(invoke).toHaveBeenCalledWith('collapse_to_moon')
-    })
-  })
-
+  // Feature: window chrome (collapse into moon) — moved. The Luna-specific
+  // workspace-collapse action is now a React-mounted Astryx Button
+  // (frontend-react/src/chat/chat-chrome-mount.tsx, reusing widget.html's
+  // CollapseMoonButton verbatim), not static markup with an inline listener,
+  // so its "clicking it invokes collapse_to_moon" behavior is verified at
+  // the component level in chat-chrome.test.tsx instead of by clicking
+  // #collapse-moon-btn (that id no longer exists — see chat-chrome.test.tsx's
+  // markup assertions).
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: title-bar + button — mints a fresh thread IN THIS window
   // (single-window model), and is disarmed entirely in pinned windows

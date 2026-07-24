@@ -22,13 +22,19 @@ import { reduce, initialState, type UIState, type Action } from "@luna/ui-shared
 
 type StoreListener = () => void
 
-export interface MoonStore {
-  readonly getState: () => UIState
-  readonly dispatch: (action: Action) => void
+// Generic over state/action so panel-local reducers (e.g. the Agents panel's
+// subagent-tree state, which has no business living in the shared
+// @luna/ui-shared UIState) can reuse the exact same getState/dispatch/
+// subscribe shape and the useMoonSelector hook below. Defaults keep every
+// existing UIState-bound call site (boot.tsx, createMoonStore, useMoonStore)
+// compiling unchanged.
+export interface MoonStore<S = UIState, A = Action> {
+  readonly getState: () => S
+  readonly dispatch: (action: A) => void
   readonly subscribe: (listener: StoreListener) => () => void
 }
 
-export type MoonSelector<T> = (state: UIState) => T
+export type MoonSelector<S, T> = (state: S) => T
 export type MoonEquality<T> = (previous: T, next: T) => boolean
 
 export function shallowEqual<T>(previous: T, next: T): boolean {
@@ -45,13 +51,24 @@ export function shallowEqual<T>(previous: T, next: T): boolean {
   )
 }
 
-export function createMoonStore(seed: UIState = initialState): MoonStore {
+/**
+ * Generic external-store factory: wraps any pure `(state, action) => state`
+ * reducer in the getState/dispatch/subscribe shape useSyncExternalStore
+ * needs. createMoonStore below is this specialized to the shared
+ * @luna/ui-shared reducer; panel-local state calls it directly with its own
+ * reducer instead (see useLocalStore, and src/panels/agents/agentsReducer.ts
+ * for the first consumer).
+ */
+export function createStore<S, A>(
+  reducer: (state: S, action: A) => S,
+  seed: S,
+): MoonStore<S, A> {
   let state = seed
   const listeners = new Set<StoreListener>()
 
-  const getState = (): UIState => state
-  const dispatch = (action: Action): void => {
-    const next = reduce(state, action)
+  const getState = (): S => state
+  const dispatch = (action: A): void => {
+    const next = reducer(state, action)
     if (Object.is(next, state)) return
     state = next
     listeners.forEach((listener) => listener())
@@ -64,9 +81,28 @@ export function createMoonStore(seed: UIState = initialState): MoonStore {
   return { getState, dispatch, subscribe }
 }
 
-export function useMoonStore(): MoonStore {
-  const storeRef = useRef<MoonStore | null>(null)
+export function createMoonStore(seed: UIState = initialState): MoonStore<UIState, Action> {
+  return createStore(reduce, seed)
+}
+
+export function useMoonStore(): MoonStore<UIState, Action> {
+  const storeRef = useRef<MoonStore<UIState, Action> | null>(null)
   if (storeRef.current === null) storeRef.current = createMoonStore()
+  return storeRef.current
+}
+
+/**
+ * Panel-local equivalent of useMoonStore: creates one store per component
+ * instance (via the same lazy-ref-init pattern) from a caller-supplied
+ * reducer, instead of always binding to the shared UIState reducer. The
+ * store is stable for the component's mounted lifetime.
+ */
+export function useLocalStore<S, A>(
+  reducer: (state: S, action: A) => S,
+  initial: S,
+): MoonStore<S, A> {
+  const storeRef = useRef<MoonStore<S, A> | null>(null)
+  if (storeRef.current === null) storeRef.current = createStore(reducer, initial)
   return storeRef.current
 }
 
@@ -74,14 +110,14 @@ export function useMoonStore(): MoonStore {
  * Select one reducer slice. Composite selectors can supply shallowEqual (or a
  * domain equality) so unrelated transitions preserve the prior snapshot.
  */
-export function useMoonSelector<T>(
-  store: MoonStore,
-  selector: MoonSelector<T>,
+export function useMoonSelector<S, T>(
+  store: MoonStore<S, any>,
+  selector: MoonSelector<S, T>,
   isEqual: MoonEquality<T> = Object.is,
 ): T {
   const cacheRef = useRef<{
-    state: UIState
-    selector: MoonSelector<T>
+    state: S
+    selector: MoonSelector<S, T>
     selection: T
   } | null>(null)
   const getSnapshot = useCallback(

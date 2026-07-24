@@ -11,9 +11,17 @@ const theme = fs.readFileSync(
   path.resolve(__dirname, '../frontend/vendor/moon-theme.css'),
   'utf8',
 )
-const pages = ['chat.html', 'panel.html', 'widget.html'].map((name) =>
-  fs.readFileSync(path.resolve(__dirname, '../frontend', name), 'utf8'),
-)
+// widget.html and chat.html have converted title-bar chrome (React 19 +
+// Astryx, see frontend-react/src/widget/WidgetChrome.tsx and
+// frontend-react/src/chat/chat-chrome-mount.tsx) — their superseded
+// frontend/ copies were deleted since nothing else imported them, so both
+// read from frontend-react/ here. panel.html is still an unconverted shell
+// and reads from frontend/ as before.
+const pages = [
+  path.resolve(__dirname, '../frontend-react/chat.html'),
+  path.resolve(__dirname, '../frontend/panel.html'),
+  path.resolve(__dirname, '../frontend-react/widget.html'),
+].map((p) => fs.readFileSync(p, 'utf8'))
 
 describe('native macOS titlebar ownership', () => {
   it('configures AppKit traffic lights once when each native window is created', () => {

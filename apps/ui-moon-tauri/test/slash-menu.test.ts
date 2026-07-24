@@ -20,7 +20,7 @@ describe('SlashMenu (chat.html)', () => {
   let mockMe: any
 
   beforeEach(() => {
-    const htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/chat.html'), 'utf8')
+    const htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
     const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 

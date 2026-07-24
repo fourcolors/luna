@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   ConnectorCatalogItem,
   ConnectorInstanceItem,
+  JobInputRequestFrame,
   ObsEvent,
   PinnedArtifactItem,
   ServerDescriptor,
@@ -34,6 +35,22 @@ import type {
 export interface InFlightTurn {
   readonly turnId: string
   readonly text: string
+}
+
+/** One pending (or just-settled) job-input-request answer card, keyed by
+ *  requestId. `status` starts "pending" and transitions exactly once, driven
+ *  either by a server `job-input-status` frame ("answered"/"rejected") or by
+ *  the panel's own client-side timeout ("expired"); dismissal removes the
+ *  entry outright rather than transitioning it. */
+export interface PendingInputRequest {
+  readonly requestId: string
+  readonly runId: number
+  readonly jobId: string
+  readonly jobName: string
+  readonly prompt: string
+  readonly timeoutMs: number | undefined
+  readonly status: "pending" | "answered" | "rejected" | "expired"
+  readonly message: string | null
 }
 
 export interface ThreadView {
@@ -142,6 +159,11 @@ export interface UIState {
    *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
   readonly workflows: ReadonlyArray<WorkflowGalleryItem>
   readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
+  /** PRD Part C (W3) — pending job-input-request answer cards for the "Now"
+   *  rail, newest-first. A card survives workflow-list re-renders and only
+   *  leaves this list via an explicit remove-input-request (dismiss, or the
+   *  brief post-settle/expiry cleanup delay owned by the panel). */
+  readonly pendingInputRequests: ReadonlyArray<PendingInputRequest>
   /** Suggested Actions — Luna's proposed actions, keyed by owning threadId
    *  (per-thread scope). The inline chip reads the active thread's latest
    *  `proposed` entry; the Actions panel renders the whole thread array.
@@ -201,6 +223,7 @@ export const initialState: UIState = {
   pinnedArtifacts: [],
   workflows: [],
   workflowRuns: new Map(),
+  pendingInputRequests: [],
   suggestedActions: new Map(),
   forkProposals: new Map(),
   vaultItems: [],
@@ -261,6 +284,12 @@ export type ChatLocalAction =
       readonly threadId: string
       readonly text: string
     }
+  /** Client-side timeout elapsed for a still-pending job-input-request
+   *  (no-op if it already settled/was removed). */
+  | { readonly tag: "expire-input-request"; readonly requestId: string }
+  /** Drop a job-input-request card outright — an explicit dismiss, or the
+   *  panel's brief post-settle/expiry cleanup delay. */
+  | { readonly tag: "remove-input-request"; readonly requestId: string }
 
 export type Action = ServerFrame | ChatLocalAction
 
@@ -299,6 +328,24 @@ export const reduce = (state: UIState, action: Action): UIState => {
         // No-op visual marker for now — real "user-accepted" frame will
         // append the actual ChatMessage. Future: pending bubble.
         return state
+      case "expire-input-request": {
+        const cur = state.pendingInputRequests.find((r) => r.requestId === action.requestId)
+        if (!cur || cur.status !== "pending") return state
+        return {
+          ...state,
+          pendingInputRequests: state.pendingInputRequests.map((r) =>
+            r.requestId === action.requestId ? { ...r, status: "expired" } : r,
+          ),
+        }
+      }
+      case "remove-input-request":
+        if (!state.pendingInputRequests.some((r) => r.requestId === action.requestId)) return state
+        return {
+          ...state,
+          pendingInputRequests: state.pendingInputRequests.filter(
+            (r) => r.requestId !== action.requestId,
+          ),
+        }
     }
   }
 
@@ -496,6 +543,36 @@ export const reduce = (state: UIState, action: Action): UIState => {
       const next = new Map(state.workflowRuns)
       next.set(frame.jobId, frame.runs)
       return { ...state, workflowRuns: next }
+    }
+    case "job-input-request": {
+      // Ignore a duplicate requestId (already pinned) rather than double-add.
+      if (state.pendingInputRequests.some((r) => r.requestId === frame.requestId)) return state
+      const card: PendingInputRequest = {
+        requestId: frame.requestId,
+        runId: frame.runId,
+        jobId: frame.jobId,
+        jobName: frame.jobName,
+        prompt: frame.prompt,
+        timeoutMs: frame.timeoutMs,
+        status: "pending",
+        message: null,
+      }
+      // Newest-on-top: prepend.
+      return { ...state, pendingInputRequests: [card, ...state.pendingInputRequests] }
+    }
+    case "job-input-status": {
+      const cur = state.pendingInputRequests.find((r) => r.requestId === frame.requestId)
+      // Unknown requestId (already removed/never seen) or already settled —
+      // a late/duplicate status ack must not resurrect or re-settle a card.
+      if (!cur || cur.status !== "pending") return state
+      return {
+        ...state,
+        pendingInputRequests: state.pendingInputRequests.map((r) =>
+          r.requestId === frame.requestId
+            ? { ...r, status: frame.ok ? "answered" : "rejected", message: frame.message ?? null }
+            : r,
+        ),
+      }
     }
     case "suggested-action-set": {
       // Server-authored full set for one thread (initial paint + replay-on-open
