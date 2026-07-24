@@ -2027,6 +2027,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     const setActiveThread = (id: string) => {
+      // A connected socket: WebSocketEngine.isConnected() gates handleSubmit's
+      // send path on State.ws.readyState (see WebSocketEngine.isConnected's
+      // own doc comment) — without it every submit below would silently take
+      // the offline branch and never call WebSocketEngine.send at all.
+      M().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
       // Model the real new-thread → thread-created acknowledgement sequence.
       M().State.threadCreateIntent = 'attach'
       M().handleFrame({ type: 'thread-created', thread: { id } })
@@ -3273,6 +3278,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(document.getElementById('voice-mic-btn')!.hidden).toBe(false)
 
       // A captured voice-transcript event routes through the real send path.
+      // handleTranscript dispatches a form submit, so it needs the same
+      // connected-socket gate as ChatEngine.handleSubmit (see
+      // WebSocketEngine.isConnected's doc comment).
+      M().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
       M().State.activeThreadId = 'th-boot'
       M().VoiceEngine.micPaused = false
