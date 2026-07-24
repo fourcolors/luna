@@ -20,13 +20,13 @@ The target is **Chrome’s interaction contract**: continuous content, OS-owned 
 Treat these as the source of truth for the interaction model:
 
 1. **`TabDragController` header** - state machine, attach/detach API surface  
-   https://chromium.googlesource.com/chromium/src/+/e3bffecfec785d4ba38fbbd03d7f5d8d92dcf0f1/chrome/browser/ui/views/tabs/tab_drag_controller.h
+   https://chromium.googlesource.com/chromium/src/+/e3bffecfec78/chrome/browser/ui/views/tabs/tab_drag_controller.h
 
 2. **`TabDragController` implementation** - attach, detach, `RunMoveLoop`, strip hit-test  
-   https://chromium.googlesource.com/chromium/src/+/e3bffecfec785d4ba38fbbd03d7f5d8d92dcf0f1/chrome/browser/ui/views/tabs/tab_drag_controller.cc
+   https://chromium.googlesource.com/chromium/src/+/e3bffecfec78/chrome/browser/ui/views/tabs/tab_drag_controller.cc
 
 3. **Tab strip** - where drag sessions start from the strip UI  
-   https://chromium.googlesource.com/chromium/src/+/45d901b56f578a74b19ba0d10fa5c4c467f19303/chrome/browser/ui/views/tabs/tab_strip.cc
+   https://chromium.googlesource.com/chromium/src/+/45d901b56f57/chrome/browser/ui/views/tabs/tab_strip.cc
 
 4. **Moon OS window contract** (local) - never reintroduce live magnet / JS window drag  
    `apps/ui-moon-tauri/docs/window-drag-snap.md`
