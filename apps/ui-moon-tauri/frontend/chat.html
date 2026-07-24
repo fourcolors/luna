@@ -1556,6 +1556,7 @@
       pointer-events: none;
       opacity: 0.97;
       will-change: transform;
+      transition: box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.12s ease;
     }
     .thread-drag-ghost-chrome {
       display: flex; align-items: center; gap: 5px;
@@ -1604,11 +1605,18 @@
       background: transparent;
       overflow: hidden;
       pointer-events: none;
-      transition: height 0.12s ease, margin 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+      opacity: 0;
+      transition:
+        height 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+        margin 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 0.18s ease,
+        background 0.18s ease;
     }
     .thread-row-insert-gap.active {
       height: 38px;
       margin: 3px 6px;
+      opacity: 1;
       border-color: color-mix(in oklab, var(--accent) 50%, transparent);
       background: color-mix(in oklab, var(--accent) 12%, transparent);
       box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 10%, transparent);
@@ -1623,16 +1631,11 @@
       padding: 0 10px;
     }
     .thread-row.redock-source {
-      opacity: 0.4;
-      outline: 1.5px dashed color-mix(in oklab, var(--accent) 40%, transparent);
+      opacity: 0.45;
+      transition: opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    /* Floater shrink cue while approaching the owner dock. */
-    /* GPU-only shrink while approaching the dock — never setSize mid-drag. */
-    .widget-shell.redock-shrinking {
-      transform-origin: top center;
-      will-change: transform;
-      transition: transform 0.06s linear;
-    }
+    /* NEVER scale .widget-shell for redock preview: native traffic lights are
+       AppKit chrome outside the CSS box and desync from the scaled panel. */
     .thread-drawer-empty {
       font-size: 0.76rem; color: var(--ink-soft); text-align: center;
       padding: 26px 12px; font-style: italic;
@@ -4984,9 +4987,9 @@
       },
 
       // --- click vs drag-out gesture -----------------------------------------
-      // Chrome-tab session (docs/chrome-tab-interaction.md Phases A–E):
-      // LunaThreadDrag owns Attached vs Detached. open_widget only on detach.
-      // Free window motion after spawn is AppKit (startDragging), not JS geometry.
+      // Chrome-tab session: Attached (strip) vs Detached (floater follows pointer).
+      // Never scale the floater webview (breaks native traffic lights).
+      // Mid-drag open_widget uses focus:false so focus does not thrash.
       _wireRow(row, t) {
         const self = this;
         const originOffset = (sx, sy) => ({
@@ -4996,11 +4999,13 @@
         let session = null;
         let pid = null;
         let raf = 0;
-        let lastX = 0, lastY = 0;
+        let lastX = 0, lastY = 0, lastSX = 0, lastSY = 0;
         let floatedLabel = null;
-        let spawnInFlight = false;
+        let spawnPromise = null;
         let cancelled = false;
         let attachedVisual = false;
+        let lastInsertAt = -1;
+        let pendingPos = null;
 
         const stripRect = () => {
           try {
@@ -5014,42 +5019,69 @@
           try { return self._visibleThreads().length; } catch (_) { return 0; }
         };
 
-        const placeFloater = (sx, sy) => {
+        /**
+         * @param {number} sx
+         * @param {number} sy
+         * @param {{ focus?: boolean, seed?: boolean }} [opts]
+         */
+        const placeFloater = (sx, sy, opts) => {
+          const focus = !!(opts && opts.focus);
+          const seed = !opts || opts.seed !== false;
           const { x, y } = originOffset(sx, sy);
-          // Phase C: seed floater ThreadCache before open so paint is instant.
-          try { self._seedFloaterCache(t.id); } catch (_) { /* best-effort */ }
-          spawnInFlight = true;
-          return self.openInNewWindow(t.id, x, y)
-            .then((label) => {
-              spawnInFlight = false;
-              if (cancelled) {
-                if (label) self._closeFloater(label);
+          if (seed) {
+            try { self._seedFloaterCache(t.id); } catch (_) { /* best-effort */ }
+          }
+          // Coalesce mid-drag repositions onto one in-flight invoke.
+          if (spawnPromise && !focus) {
+            pendingPos = { x, y };
+            return spawnPromise;
+          }
+          const run = () => {
+            const px = pendingPos ? pendingPos.x : x;
+            const py = pendingPos ? pendingPos.y : y;
+            pendingPos = null;
+            return self.openInNewWindow(t.id, px, py, { focus })
+              .then((label) => {
+                if (cancelled) {
+                  if (label) self._closeFloater(label);
+                  spawnPromise = null;
+                  return null;
+                }
+                floatedLabel = label || floatedLabel;
+                if (pendingPos && !cancelled) {
+                  spawnPromise = run();
+                  return spawnPromise;
+                }
+                spawnPromise = null;
+                return floatedLabel;
+              })
+              .catch((err) => {
+                spawnPromise = null;
+                Logger.warn('thread drag-out spawn failed:', err);
                 return null;
-              }
-              floatedLabel = label || floatedLabel;
-              return floatedLabel;
-            })
-            .catch((err) => {
-              spawnInFlight = false;
-              Logger.warn('thread drag-out spawn failed:', err);
-              return null;
-            });
+              });
+          };
+          spawnPromise = run();
+          return spawnPromise;
         };
 
         const showAttachedChrome = (insertAt) => {
           attachedVisual = true;
           row.classList.add('dragging');
           if (!self._ghost) self._ghost = self._makeGhost(t);
+          if (insertAt === lastInsertAt && DOM.threadDrawer
+              && DOM.threadDrawer.classList.contains('redock-target')) {
+            return; // avoid gap thrash
+          }
+          lastInsertAt = insertAt;
+          const n = rowCount();
+          const yRatio = n > 0 ? Math.min(1, Math.max(0, insertAt / n)) : 0.5;
           State.redockPreview = {
             threadId: t.id,
             title: (t.title && String(t.title).trim()) || null,
-            yRatio: 0.5,
+            yRatio,
             over: true,
           };
-          // Reuse insert-gap path with an explicit index via yRatio approximation.
-          const n = rowCount();
-          const yRatio = n > 0 ? Math.min(1, Math.max(0, insertAt / n)) : 0.5;
-          State.redockPreview.yRatio = yRatio;
           try { self._placeInsertGap(State.redockPreview); } catch (_) {}
           try { self._markRedockSource(t.id); } catch (_) {}
           if (DOM.threadDrawer) DOM.threadDrawer.classList.add('redock-target');
@@ -5057,6 +5089,7 @@
 
         const clearAttachedChrome = () => {
           attachedVisual = false;
+          lastInsertAt = -1;
           row.classList.remove('dragging');
           if (self._ghost) { self._ghost.remove(); self._ghost = null; }
           try { self.applyRedockPreview({ active: false }); } catch (_) {}
@@ -5065,6 +5098,7 @@
         const onMove = (e) => {
           if (!session) return;
           lastX = e.clientX; lastY = e.clientY;
+          lastSX = e.screenX; lastSY = e.screenY;
           const move = session.pointerMove({
             clientX: e.clientX,
             clientY: e.clientY,
@@ -5087,18 +5121,26 @@
             return;
           }
           if (move.action === 'detach') {
-            // Detach once: spawn floater; OS owns free motion after that.
+            // Detach once: drop strip chrome, spawn floater under pointer.
+            // Keep pointer capture so moves outside the owner window still track.
             clearAttachedChrome();
-            if (!floatedLabel && !spawnInFlight) placeFloater(e.screenX, e.screenY);
-            return;
-          }
-          if (move.action === 'reenter_attached') {
-            // Floater exists; only preview strip gap (no JS window move).
-            showAttachedChrome(move.insertIndex);
+            // Keep a lightweight ghost until floater exists so the gesture never freezes.
+            if (!self._ghost) self._ghost = self._makeGhost(t);
+            placeFloater(e.screenX, e.screenY, { focus: false, seed: true });
             return;
           }
           if (move.action === 'stay_detached') {
+            // Floater follows the pointer without stealing focus (agy race fix).
             if (attachedVisual) clearAttachedChrome();
+            if (!self._ghost) self._ghost = self._makeGhost(t);
+            placeFloater(e.screenX, e.screenY, { focus: false, seed: false });
+            return;
+          }
+          if (move.action === 'reenter_attached') {
+            // Over strip again while floater exists: gap preview only.
+            showAttachedChrome(move.insertIndex);
+            placeFloater(e.screenX, e.screenY, { focus: false, seed: false });
+            return;
           }
         };
 
@@ -5135,21 +5177,30 @@
             return;
           }
           if (result.outcome === 'reorder') {
-            // Attached drop: session-local order only; never spawn.
             try { self.adoptAtIndex(t.id, result.insertIndex); } catch (_) {}
             try { self.render(); } catch (_) {}
             return;
           }
           if (result.outcome === 'redock') {
             cancelled = true;
-            if (floatedLabel) self._closeFloater(floatedLabel);
-            try { self.adoptAtIndex(t.id, result.insertIndex); } catch (_) {}
-            self.onRowClick(t.id);
+            const finishRedock = () => {
+              if (floatedLabel) self._closeFloater(floatedLabel);
+              try { self.adoptAtIndex(t.id, result.insertIndex); } catch (_) {}
+              self.onRowClick(t.id);
+            };
+            if (spawnPromise) {
+              spawnPromise.then((label) => {
+                if (label) floatedLabel = label;
+                finishRedock();
+              });
+            } else {
+              finishRedock();
+            }
             return;
           }
           if (result.outcome === 'keep_floater') {
-            if (!floatedLabel && !spawnInFlight) placeFloater(sx, sy);
-            else if (floatedLabel) placeFloater(sx, sy); // re-place at drop
+            // Final place + focus once so the user can type in the floater.
+            placeFloater(sx, sy, { focus: true, seed: !floatedLabel });
             return;
           }
         };
@@ -5158,7 +5209,11 @@
           cancelled = true;
           if (session) session.cancel();
           clearAttachedChrome();
-          if (floatedLabel) self._closeFloater(floatedLabel);
+          if (spawnPromise) {
+            spawnPromise.then((label) => { if (label) self._closeFloater(label); });
+          } else if (floatedLabel) {
+            self._closeFloater(floatedLabel);
+          }
           teardown();
         };
 
@@ -5171,8 +5226,10 @@
           }
           cancelled = false;
           floatedLabel = null;
-          spawnInFlight = false;
+          spawnPromise = null;
+          pendingPos = null;
           attachedVisual = false;
+          lastInsertAt = -1;
           session = window.LunaThreadDrag.createSession({
             threadId: t.id,
             startClientX: e.clientX,
@@ -5180,8 +5237,11 @@
             rowCount: rowCount(),
           });
           lastX = e.clientX; lastY = e.clientY;
+          lastSX = e.screenX; lastSY = e.screenY;
           pid = e.pointerId;
           State.threadDragActive = true;
+          // Capture keeps move events when the pointer leaves the owner window
+          // (otherwise drag-out freezes at the edge).
           try { row.setPointerCapture(e.pointerId); } catch (_) {}
           row.addEventListener('pointermove', onMove);
           row.addEventListener('pointerup', onUp);
@@ -5249,7 +5309,13 @@
        * redockTo tells the floater which owner to fold back into on Redock.
        * Returns the invoke Promise (label) when Tauri is available.
        */
-      openInNewWindow(id, screenX, screenY) {
+      /**
+       * @param {string} id
+       * @param {number} [screenX]
+       * @param {number} [screenY]
+       * @param {{ focus?: boolean }} [opts] focus defaults true; false during drag-follow
+       */
+      openInNewWindow(id, screenX, screenY, opts) {
         if (!id) return Promise.resolve(null);
         if (!(window.__TAURI__ && window.__TAURI__.core)) {
           Logger.warn('[ThreadDrawer] openInNewWindow requires Tauri');
@@ -5266,6 +5332,8 @@
         if (typeof screenY === 'number' && Number.isFinite(screenY)) {
           args.y = Math.round(screenY);
         }
+        // Mid-drag follow must not steal focus (causes freeze / stuck feel).
+        if (opts && opts.focus === false) args.focus = false;
         return window.__TAURI__.core
           .invoke('open_widget', args)
           .catch((e) => {
@@ -10991,36 +11059,12 @@
     if (State.pinnedThread) {
       if (DOM.toggleThreads) DOM.toggleThreads.hidden = true;
       if (winNewThreadBtn) winNewThreadBtn.hidden = true;
-      // Floater: CSS-only shrink cue + commit redock after native drag ends.
-      // Motion is AppKit startDragging; Rust NSEvent monitors emit these events.
+      // Floater: native startDragging + redock-drag-ended (no CSS scale - it
+      // misaligns AppKit traffic lights relative to the panel card).
       try {
         if (W && typeof W.listen === 'function' && REDOCK_TO) {
-          const shell = document.querySelector('.widget-shell');
-          const MIN_SCALE = 0.72;
-          W.listen('redock-self-preview', (e) => {
-            const p = e && e.payload;
-            if (!shell) return;
-            if (!p || p.active === false) {
-              shell.style.transform = '';
-              shell.classList.remove('redock-shrinking');
-              return;
-            }
-            const prox = typeof p.proximity === 'number' ? p.proximity : 0;
-            const scale = 1 - (1 - MIN_SCALE) * Math.max(0, Math.min(1, prox));
-            if (scale < 0.995) {
-              shell.classList.add('redock-shrinking');
-              shell.style.transform = 'scale(' + scale.toFixed(3) + ')';
-            } else {
-              shell.classList.remove('redock-shrinking');
-              shell.style.transform = '';
-            }
-          }).catch(() => {});
           W.listen('redock-drag-ended', (e) => {
             const p = e && e.payload;
-            if (shell) {
-              shell.style.transform = '';
-              shell.classList.remove('redock-shrinking');
-            }
             if (!(p && p.over && window.__TAURI__ && window.__TAURI__.core)) return;
             const draft = (DOM.messageInput && DOM.messageInput.value) || '';
             window.__TAURI__.core

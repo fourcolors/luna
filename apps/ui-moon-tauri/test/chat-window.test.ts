@@ -4974,6 +4974,23 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
     })
 
+    it('Scenario: openInNewWindow can suppress focus for mid-drag follow', async () => {
+      const m = M()
+      m.State.winLabel = 'panel-chat'
+      const invoke = vi.fn().mockResolvedValue('panel-chat-xyz')
+      ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
+        core: { invoke },
+      }
+      await m.ThreadDrawerEngine.openInNewWindow('thr-99', 10, 20, { focus: false })
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'thr-99', redockTo: 'panel-chat' },
+        x: 10,
+        y: 20,
+        focus: false,
+      })
+    })
+
     it('Scenario: sidebar rows use pointer pull-out (not HTML5 drag) (#380)', () => {
       const m = M()
       m.State.threads = [
@@ -5057,21 +5074,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: ThreadDragSession wired — open_widget only after detach action', () => {
       // Contract: createSession.pointerMove while in strip never implies spawn.
-      // The shipped wire uses action === 'detach' as the sole spawn gate.
       expect(htmlContent).toMatch(/move\.action === 'detach'/)
       expect(htmlContent).toMatch(/outcome === 'reorder'/)
       expect(htmlContent).toMatch(/LunaThreadDrag\.createSession/)
-      // Detach is the only action that calls placeFloater from the move handler.
-      const detachGate = htmlContent.match(
-        /if \(move\.action === 'detach'\) \{[\s\S]{0,280}?placeFloater/,
-      )
-      expect(detachGate).toBeTruthy()
-      // enter_attached path updates chrome, does not open_widget
+      expect(htmlContent).toMatch(/focus: false/)
+      // Detach path places floater; enter_attached only updates strip chrome.
       expect(htmlContent).toMatch(
-        /move\.action === 'enter_attached'[\s\S]{0,120}showAttachedChrome/,
+        /move\.action === 'detach'[\s\S]{0,400}placeFloater\([^)]+focus:\s*false/,
+      )
+      expect(htmlContent).toMatch(
+        /move\.action === 'enter_attached'[\s\S]{0,160}showAttachedChrome/,
       )
       expect(htmlContent).not.toMatch(
-        /move\.action === 'enter_attached'[\s\S]{0,120}placeFloater/,
+        /move\.action === 'enter_attached'[\s\S]{0,160}placeFloater/,
       )
     })
 

@@ -6,9 +6,10 @@
  * The operating system owns the drag from pointer-down until release.
  *
  * Optional redock arming: when `opts.redock` is set on a pinned chat floater,
- * we invoke `begin_redock_drag` BEFORE `startDragging` so Rust can install
- * NSEvent monitors for live dock-preview (insert gap / CSS scale). Window
- * motion itself stays 100% AppKit — never a JS setPosition loop.
+ * we await `begin_redock_drag` BEFORE `startDragging` so NSEvent monitors are
+ * live before AppKit takes the gesture. Window motion stays 100% AppKit —
+ * never a JS setPosition loop, never CSS scale of .widget-shell (breaks
+ * native traffic lights).
  *
  * Usage: LunaDock.wire({ win, label, redock?: { owner, threadId, title? } })
  */
@@ -32,39 +33,47 @@
     }
 
     var redock = opts && opts.redock;
+    var dragArming = false;
 
     g.addEventListener('pointerdown', function (event) {
       if (event.button !== 0 || isInteractive(event.target)) return;
       var handle = event.target && event.target.closest &&
         event.target.closest('.title-bar, .chat-header');
       if (!handle || typeof W.startDragging !== 'function') return;
+      if (dragArming) return;
 
-      // Arm native redock tracking first (main-thread NSEvent monitors), then
-      // hand the complete motion gesture to AppKit. Order matters: monitors must
-      // be live before the drag starts delivering LeftMouseDragged.
-      if (redock && g.__TAURI__ && g.__TAURI__.core) {
+      // Prevent the webview from also selecting/dragging content.
+      event.preventDefault();
+
+      var startNative = function () {
+        dragArming = false;
         try {
-          var title = null;
-          if (typeof redock.title === 'function') {
-            try { title = redock.title(); } catch (_) { title = null; }
-          } else if (redock.title != null) {
-            title = redock.title;
-          }
+          var result = W.startDragging();
+          if (result && typeof result.catch === 'function') result.catch(function () {});
+        } catch (_) { /* window chrome must never break the page */ }
+      };
+
+      // Arm native redock tracking first, then hand motion to AppKit.
+      // Awaiting prevents the race where the move loop starts before monitors.
+      if (redock && g.__TAURI__ && g.__TAURI__.core) {
+        dragArming = true;
+        var title = null;
+        if (typeof redock.title === 'function') {
+          try { title = redock.title(); } catch (_) { title = null; }
+        } else if (redock.title != null) {
+          title = redock.title;
+        }
+        Promise.resolve(
           g.__TAURI__.core.invoke('begin_redock_drag', {
             ownerLabel: redock.owner,
             threadId: redock.threadId,
             title: title,
-          }).catch(function () { /* non-fatal; drag still works */ });
-        } catch (_) { /* window chrome must never break the page */ }
+          })
+        ).then(startNative, startNative);
+        return;
       }
 
-      // startDragging hands the complete gesture to AppKit. No pointer-move or
-      // release listener is needed for motion — redock end is native-monitored.
-      event.preventDefault();
-      try {
-        var result = W.startDragging();
-        if (result && typeof result.catch === 'function') result.catch(function () {});
-      } catch (_) { /* window chrome must never break the page */ }
+      startNative();
     }, true);
   }
 

@@ -1650,7 +1650,11 @@ async fn open_widget(
     params: Option<serde_json::Value>,
     x: Option<f64>,
     y: Option<f64>,
+    // When false, show/reposition without stealing keyboard focus (drag-follow).
+    // Defaults to true for normal open paths.
+    focus: Option<bool>,
 ) -> Result<String, String> {
+    let should_focus = focus.unwrap_or(true);
     let desc = registry_lookup(&kind).ok_or_else(|| format!("unknown widget kind: {kind}"))?;
     if desc.trust != "system" {
         return Err(format!("kind {kind} is not a system widget"));
@@ -1669,19 +1673,24 @@ async fn open_widget(
             panel_url_with_params(&desc.page, &params),
         )
     };
-    // Singleton (or same-params instance): already open → show + focus.
+    // Singleton (or same-params instance): already open → show (+ optional focus).
     // When the caller passes x/y (drag-out pull / re-drop), also re-place so
-    // an early-spawned floater can track the final drop point without a second
-    // IPC surface from JS.
+    // an early-spawned floater can track the pointer without a second IPC surface.
+    // Mid-drag follow MUST pass focus=false or AppKit focus thrash freezes the gesture.
     if let Some(win) = app.get_webview_window(&label) {
         if let (Some(px), Some(py)) = (x, y) {
             let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(px, py)));
         }
         let _ = win.show();
-        let _ = win.set_focus();
+        if should_focus {
+            let _ = win.set_focus();
+        }
         return Ok(label);
     }
     let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
+    if should_focus {
+        let _ = win.set_focus();
+    }
     let win_label = win.label().to_string();
     // A new panel is layout-relevant immediately (a crash before the first
     // Moved event must not lose it).
@@ -1949,7 +1958,7 @@ fn expand_out_of_moon(app: &tauri::AppHandle) {
         // (the global-shortcut closure and the sync command wrapper).
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = open_widget(app2, "chat".to_string(), None, None, None).await;
+            let _ = open_widget(app2, "chat".to_string(), None, None, None, None).await;
         });
     }
 }
