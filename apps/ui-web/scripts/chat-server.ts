@@ -613,7 +613,8 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  */
 const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
   { id: "claude-sonnet-5",     label: "Claude Sonnet 5 — balanced default" },
-  { id: "claude-fable-5",       label: "Fable 5 (1M context)" },
+  { id: "claude-fable-5",       label: "Fable 5 (1M context, xhigh reasoning)" },
+  { id: "claude-mythos-5",      label: "Mythos 5 (1M context, first-party only)" },
   { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — most capable" },
   { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — prior gen" },
   { id: "claude-haiku-4-5",     label: "Claude Haiku 4.5 — fastest" },
