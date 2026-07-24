@@ -44,6 +44,37 @@ describe('Moon independent native windows', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  it('awaits begin_redock_drag before startDragging when redock opts are set', async () => {
+    document.body.innerHTML =
+      '<div class="widget-shell"><div class="title-bar" id="title-bar"><span>Title</span></div></div>'
+    const win = { label: 'panel-chat-floater', startDragging: vi.fn().mockResolvedValue(undefined) }
+    let resolveInvoke: (v?: unknown) => void
+    const invoke = vi.fn().mockImplementation(
+      () => new Promise((r) => { resolveInvoke = r }),
+    )
+    ;(window as any).__TAURI__ = { core: { invoke } }
+    loadVendorInto(window, 'moon-dock.js')
+    ;(window as any).LunaDock.wire({
+      win,
+      label: 'panel-chat-floater',
+      redock: { owner: 'panel-chat', threadId: 'thr-1', title: 'Hello' },
+    })
+    document.getElementById('title-bar')!.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
+    )
+    expect(invoke).toHaveBeenCalledWith('begin_redock_drag', {
+      ownerLabel: 'panel-chat',
+      threadId: 'thr-1',
+      title: 'Hello',
+    })
+    // Must not start native drag until monitors are armed.
+    expect(win.startDragging).not.toHaveBeenCalled()
+    resolveInvoke!(undefined)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(win.startDragging).toHaveBeenCalledTimes(1)
+  })
+
   it('does not hijack buttons or non-primary clicks', () => {
     const win = wire()
     pointer(document.getElementById('action')!)

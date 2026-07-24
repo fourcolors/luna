@@ -16,6 +16,8 @@
   <script src="vendor/moon-markdown.js"></script>
   <script src="vendor/moon-dock.js"></script>
   <script src="vendor/moon-resize.js"></script>
+  <!-- Chrome-tab Attached/Detached session (docs/chrome-tab-interaction.md). -->
+  <script src="vendor/thread-drag-session.js"></script>
   <!-- Watercolor font families: Albert Sans (body) + Caveat (handwritten accents). -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1494,14 +1496,52 @@
     .thread-drawer-list::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 3px; }
     .thread-row {
       display: flex; align-items: center; gap: 8px;
-      padding: 7px 9px; border-radius: 9px;
+      padding: 7px 9px 7px 6px; border-radius: 9px;
       border: 1px solid transparent;
-      cursor: pointer; user-select: none;
-      transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+      /* grab: pointer-drag pull-out (HTML5 drag is dead under global -webkit-user-drag:none) */
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
+      /* Kill blue selection flash while dragging rows */
+      -webkit-touch-callout: none;
+      transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease, transform 0.14s ease;
+      touch-action: none; /* keep pointer capture for drag-out on trackpads */
     }
+    .thread-row *,
+    .thread-drawer-list {
+      user-select: none !important;
+      -webkit-user-select: none !important;
+    }
+    body.thread-dragging,
+    body.thread-dragging * {
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      cursor: grabbing !important;
+    }
+    /* Subtle grip: teach "this row drags" without a coachmark wall. */
+    .thread-row-grip {
+      flex-shrink: 0; width: 10px; height: 16px;
+      display: inline-grid; grid-template-columns: 3px 3px; grid-template-rows: repeat(3, 3px);
+      gap: 2px; align-content: center; justify-content: center;
+      opacity: 0; transition: opacity 0.12s ease;
+      pointer-events: none;
+    }
+    .thread-row-grip span {
+      width: 3px; height: 3px; border-radius: 50%;
+      background: color-mix(in oklab, var(--ink) 32%, transparent);
+    }
+    .thread-row:hover .thread-row-grip,
+    .thread-row:focus-visible .thread-row-grip { opacity: 0.85; }
+    .thread-row.dragging .thread-row-grip { opacity: 0.4; }
     .thread-row:hover { background: color-mix(in oklab, var(--accent) 10%, transparent); border-color: color-mix(in oklab, var(--accent) 20%, transparent); }
     .thread-row:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent); outline-offset: -2px; }
     .thread-row.active { background: color-mix(in oklab, var(--accent) 17%, transparent); border-color: color-mix(in oklab, var(--accent) 34%, transparent); }
+    .thread-row.dragging {
+      opacity: 0.28;
+      cursor: grabbing;
+      transform: scale(0.98);
+    }
     .thread-row-dot {
       flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
       background: color-mix(in oklab, var(--accent) 72%, transparent);
@@ -1532,23 +1572,182 @@
     .thread-row:hover .thread-row-pop,
     .thread-row:focus-within .thread-row-pop { opacity: 1; }
     .thread-row-pop:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); color: var(--ink); border-color: color-mix(in oklab, var(--ink) 12%, transparent); }
-    /* HTML5 drag-out cue (#380): grabbing a row signals it can leave the window. */
-    .thread-row[draggable="true"] { cursor: grab; }
-    .thread-row[draggable="true"]:active { cursor: grabbing; }
-    /* Redock button — pinned ?thread= floaters only (#380). */
+    /* Drag ghost: mini chat card that trails the pointer so pull-out feels continuous. */
+    .thread-drag-ghost {
+      position: fixed; top: 0; left: 0; z-index: 9999;
+      width: 220px; max-width: 42vw;
+      padding: 10px 12px 12px;
+      border-radius: 12px;
+      background: var(--paper-2, color-mix(in oklab, var(--paper) 92%, white));
+      border: 1px solid color-mix(in oklab, var(--accent) 36%, transparent);
+      box-shadow:
+        0 1px 0 color-mix(in oklab, var(--ink) 6%, transparent),
+        0 18px 40px -14px color-mix(in oklab, var(--ink) 55%, transparent);
+      color: var(--ink);
+      pointer-events: none;
+      opacity: 0.97;
+      will-change: transform;
+      transition: box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.12s ease;
+    }
+    .thread-drag-ghost-chrome {
+      display: flex; align-items: center; gap: 5px;
+      margin: -2px 0 8px; opacity: 0.55;
+    }
+    .thread-drag-ghost-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: color-mix(in oklab, var(--ink) 28%, transparent);
+    }
+    .thread-drag-ghost-title {
+      font-size: 0.78rem; font-weight: 650; line-height: 1.25;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .thread-drag-ghost-preview {
+      margin-top: 2px;
+      font-size: 0.66rem; font-weight: 500; color: var(--ink-soft);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Redock — compact icon control on pinned ?thread= floaters only (#380). */
     #title-bar .redock-btn {
       display: inline-flex; align-items: center; justify-content: center;
-      gap: 4px; height: 26px; padding: 0 10px; margin-right: 6px;
-      border-radius: 8px; border: 1px solid color-mix(in oklab, var(--ink) 12%, transparent);
-      background: color-mix(in oklab, var(--ink) 4%, transparent); color: var(--ink);
-      font-size: 0.72rem; font-weight: 600; cursor: pointer;
+      width: 28px; height: 26px; padding: 0; margin-right: 4px;
+      border-radius: 8px; border: 1px solid transparent;
+      background: transparent; color: var(--ink-soft);
+      cursor: pointer;
       -webkit-app-region: no-drag; app-region: no-drag;
+      transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
     }
     #title-bar .redock-btn:hover {
       background: color-mix(in oklab, var(--accent) 12%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 28%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 24%, transparent);
+      color: var(--ink);
     }
     #title-bar .redock-btn[hidden] { display: none !important; }
+    /* Live drag-to-redock: owner sidebar lights up and opens an insert slot. */
+    .thread-drawer.redock-target {
+      border-right-color: color-mix(in oklab, var(--accent) 55%, transparent);
+      background: color-mix(in oklab, var(--accent) 7%, var(--paper-2, transparent));
+      box-shadow: inset -2px 0 0 color-mix(in oklab, var(--accent) 35%, transparent);
+    }
+    /*
+     * Insert SLOT — a fake thread that opens so neighbors ease out of the way.
+     * Uses grid 0fr→1fr (smooth open without layout thrash on every sample).
+     * The inner .thread-row-insert-preview looks like a real row (title + preview).
+     */
+    .thread-row-insert-gap {
+      display: grid;
+      grid-template-rows: 0fr;
+      margin: 0 4px;
+      pointer-events: none;
+      transition: grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .thread-row-insert-gap.active {
+      grid-template-rows: 1fr;
+    }
+    .thread-row-insert-gap-inner {
+      min-height: 0;
+      overflow: hidden;
+    }
+    .thread-row-insert-preview {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 2px 2px;
+      padding: 7px 9px 7px 6px;
+      border-radius: 9px;
+      border: 1.5px dashed color-mix(in oklab, var(--accent) 48%, transparent);
+      background:
+        linear-gradient(90deg,
+          color-mix(in oklab, var(--accent) 16%, transparent),
+          color-mix(in oklab, var(--accent) 8%, transparent));
+      box-shadow:
+        inset 0 0 0 1px color-mix(in oklab, var(--accent) 12%, transparent),
+        0 0 0 0 color-mix(in oklab, var(--accent) 0%, transparent);
+      opacity: 0;
+      transform: scale(0.97);
+      transition:
+        opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+        transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+        box-shadow 0.4s ease;
+    }
+    .thread-row-insert-gap.active .thread-row-insert-preview {
+      opacity: 1;
+      transform: scale(1);
+      animation: insert-slot-breathe 1.6s ease-in-out infinite;
+    }
+    @keyframes insert-slot-breathe {
+      0%, 100% {
+        box-shadow:
+          inset 0 0 0 1px color-mix(in oklab, var(--accent) 12%, transparent),
+          0 0 0 0 color-mix(in oklab, var(--accent) 0%, transparent);
+      }
+      50% {
+        box-shadow:
+          inset 0 0 0 1px color-mix(in oklab, var(--accent) 22%, transparent),
+          0 0 12px -2px color-mix(in oklab, var(--accent) 28%, transparent);
+      }
+    }
+    .thread-row-insert-preview .thread-row-dot {
+      opacity: 0.7;
+      background: color-mix(in oklab, var(--accent) 80%, white);
+    }
+    .thread-row-insert-preview .thread-row-title {
+      color: color-mix(in oklab, var(--ink) 88%, var(--accent));
+    }
+    .thread-row-insert-preview .thread-row-preview {
+      color: var(--ink-soft);
+      font-style: italic;
+    }
+    /* Neighbors ease when the slot opens or moves (FLIP applies temporary transform). */
+    .thread-drawer-list.redocking .thread-row {
+      transition:
+        transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+        background 0.14s ease,
+        border-color 0.14s ease,
+        opacity 0.18s ease;
+      will-change: transform;
+    }
+    .thread-row.redock-source {
+      opacity: 0.45;
+      transition: opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    /* Landed row after redock adopt — soft settle. */
+    .thread-row.just-landed {
+      animation: thread-land 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    @keyframes thread-land {
+      0% {
+        opacity: 0.35;
+        transform: scale(0.96);
+        background: color-mix(in oklab, var(--accent) 22%, transparent);
+      }
+      55% {
+        background: color-mix(in oklab, var(--accent) 18%, transparent);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+    /* Detached into a floater: leave the strip entirely (Chrome tab detach). */
+    .thread-row.floated-away {
+      display: none !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .thread-row-insert-gap,
+      .thread-row-insert-preview,
+      .thread-drawer-list.redocking .thread-row,
+      .thread-row.just-landed {
+        transition: none !important;
+        animation: none !important;
+      }
+      .thread-row-insert-gap.active .thread-row-insert-preview {
+        animation: none !important;
+        opacity: 1;
+        transform: none;
+      }
+    }
+    /* NEVER scale .widget-shell for redock preview: native traffic lights are
+       AppKit chrome outside the CSS box and desync from the scaled panel. */
     .thread-drawer-empty {
       font-size: 0.76rem; color: var(--ink-soft); text-align: center;
       padding: 26px 12px; font-style: italic;
@@ -2442,7 +2641,13 @@
          into the owner main-line chat (panel-chat or redockTo), then closes. -->
     <button class="redock-btn" id="redock-btn" type="button" hidden
             title="Redock into main window" aria-label="Redock into main window">
-      Redock
+      <!-- Lucide "panel-left-close" (ISC) — fold floater back into the owner. -->
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect width="18" height="18" x="3" y="3" rx="2"/>
+        <path d="M9 3v18"/>
+        <path d="m16 15-3-3 3-3"/>
+      </svg>
     </button>
     <!-- New thread — the promoted action, alone on the right. Mints a fresh
          thread in THIS window (single-window model; same as the sidebar's
@@ -3156,6 +3361,15 @@
       // Tauri window label for this webview (set at boot). Used so drag-out
       // floaters can redock back to the owner (#380).
       winLabel: null,
+      // True while a sidebar row is being pointer-dragged for pull-out. Defers
+      // list rebuilds so the captured node is never detached mid-gesture.
+      threadDragActive: false,
+      // Live drag-to-redock preview on the OWNER window (from a floater).
+      redockPreview: null, // { threadId, title, yRatio, over } | null
+      // Session-local thread order after drag-to-redock inserts (ids[]).
+      threadOrder: null,
+      /** Thread ids currently open as floater windows - hidden from the owner strip (Chrome detach). */
+      floatedThreadIds: Object.create(null),
       // The pending scheduleReconnect() timer.
       reconnectTimer: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
@@ -4468,6 +4682,106 @@
       },
     };
 
+    // ── Drag debug + E2E surface (observe-only; never affects product path) ──
+    // Consumed by apps/ui-moon-tauri/e2e WebdriverIO specs and agent tooling.
+    // Ring-buffer of recent session events + last floater open timings.
+    const MOON_DRAG_DEBUG_MAX = 96;
+    function moonDragDebugNote(kind, data) {
+      try {
+        if (!window.__moonDragDebug) {
+          window.__moonDragDebug = {
+            version: 1,
+            events: [],
+            last: null,
+            lastFloater: null,
+            lastAction: null,
+            lastOutcome: null,
+          };
+        }
+        const dbg = window.__moonDragDebug;
+        const entry = {
+          t: Date.now(),
+          kind: kind,
+          data: data || null,
+        };
+        dbg.events.push(entry);
+        if (dbg.events.length > MOON_DRAG_DEBUG_MAX) {
+          dbg.events.splice(0, dbg.events.length - MOON_DRAG_DEBUG_MAX);
+        }
+        dbg.last = entry;
+        if (data && data.action) dbg.lastAction = data.action;
+        if (data && data.outcome) dbg.lastOutcome = data.outcome;
+        if (kind === 'floater' && data) dbg.lastFloater = data;
+        if (data && data.session) dbg.session = data.session;
+      } catch (_) { /* never throw from debug */ }
+    }
+
+    /**
+     * Stable hooks for automated UI tests (WDIO / inject). Prefer these over
+     * fragile CSS-only flows when validating multi-window contracts.
+     */
+    function installMoonE2E() {
+      window.__moonE2E = {
+        version: 1,
+        getDragDebug() {
+          return window.__moonDragDebug || null;
+        },
+        listThreadIds() {
+          try {
+            return (ThreadDrawerEngine._visibleThreads() || []).map((t) => t.id);
+          } catch (_) {
+            return [];
+          }
+        },
+        hasLunaThreadDrag() {
+          return !!(window.LunaThreadDrag && typeof window.LunaThreadDrag.createSession === 'function');
+        },
+        /**
+         * Pure session walk: elasticity → attached → detach. Does not open windows.
+         * Used to prove the in-app state machine under WebDriver without OS mouse.
+         */
+        simulateSessionDetach() {
+          if (!window.LunaThreadDrag) return null;
+          const strip = { left: 0, top: 0, right: 200, bottom: 400 };
+          const s = window.LunaThreadDrag.createSession({
+            threadId: 'e2e-sim',
+            startClientX: 40,
+            startClientY: 40,
+            rowCount: 3,
+            onEvent: (ev) => moonDragDebugNote(ev.kind, {
+              action: ev.extra && ev.extra.action,
+              outcome: ev.extra && ev.extra.outcome,
+              session: ev.session,
+            }),
+          });
+          // Stay inside strip past elasticity → attached
+          let m = s.pointerMove({ clientX: 40, clientY: 80, stripRect: strip, rowCount: 3 });
+          // Leave strip → detach
+          m = s.pointerMove({ clientX: 360, clientY: 80, stripRect: strip, rowCount: 3 });
+          const up = s.pointerUp({ clientX: 360, clientY: 80, stripRect: strip, rowCount: 3 });
+          return { lastMove: m, up: up, snapshot: s.snapshot() };
+        },
+        /**
+         * Open a floater via the same open_widget path as drag-out (focus:false).
+         * Returns a Promise of the window label.
+         */
+        openFloater(threadId, x, y) {
+          const id = threadId || (this.listThreadIds()[0]) || 'e2e-thread';
+          try { ThreadDrawerEngine._seedFloaterCache(id); } catch (_) { /* ok empty */ }
+          return ThreadDrawerEngine.openInNewWindow(
+            id,
+            typeof x === 'number' ? x : 420,
+            typeof y === 'number' ? y : 220,
+            { focus: false },
+          );
+        },
+        closeFloater(label) {
+          try { ThreadDrawerEngine._closeFloater(label); } catch (_) {}
+        },
+      };
+    }
+    try { installMoonE2E(); } catch (_) { /* best-effort */ }
+
     // ── Thread drawer engine ─────────────────────────────────────────────────
     // Left-edge single-window thread switcher: a Things-3-style resizable
     // split-pane sidebar that pushes the chat over. Renders the thread-list
@@ -4670,28 +4984,355 @@
       _visibleThreads() {
         const q = (State.threadSearch || '').trim().toLowerCase();
         let rows = (State.threads || []).filter((t) => t && t.id && !t.system);
+        // Detached floaters leave the strip (Chrome-like) until redock / close.
+        const floated = State.floatedThreadIds;
+        if (floated) {
+          rows = rows.filter((t) => !floated[t.id]);
+        }
         if (q) {
           rows = rows.filter((t) =>
             ((t.title || '') + ' ' + (t.lastMessagePreview || '')).toLowerCase().includes(q));
+        }
+        // Session-local order from drag-to-redock inserts (does not rewrite server).
+        const order = State.threadOrder;
+        if (Array.isArray(order) && order.length) {
+          const rank = new Map(order.map((id, i) => [id, i]));
+          return rows.sort((a, b) => {
+            const ra = rank.has(a.id) ? rank.get(a.id) : 1e9;
+            const rb = rank.has(b.id) ? rank.get(b.id) : 1e9;
+            if (ra !== rb) return ra - rb;
+            return this._ts(b) - this._ts(a);
+          });
         }
         return rows.sort((a, b) => this._ts(b) - this._ts(a));
       },
 
       // --- render -------------------------------------------------------------
       render() {
+        // A row drag-out holds pointer capture on a live DOM node. Rebuilding
+        // the list mid-gesture detaches that node and silently aborts the pull.
+        if (State.threadDragActive) {
+          this._renderPendingDuringDrag = true;
+          return;
+        }
         const listEl = DOM.threadDrawerList;
         if (!listEl) return;
-        // Drop existing rows (keep the empty-state node).
-        listEl.querySelectorAll('.thread-row').forEach((n) => n.remove());
+        // Drop existing rows (keep the empty-state node + we'll rebuild gap).
+        listEl.querySelectorAll('.thread-row, .thread-row-insert-gap').forEach((n) => n.remove());
         const rows = this._visibleThreads();
         if (DOM.threadDrawerEmpty) {
           DOM.threadDrawerEmpty.style.display = rows.length ? 'none' : '';
           DOM.threadDrawerEmpty.textContent =
             (State.threadSearch || '').trim() ? 'No matching threads.' : 'No threads yet.';
         }
+        const preview = State.redockPreview;
+        const insertAt = preview && preview.over
+          ? this._insertIndexForRatio(rows.length, preview.yRatio)
+          : -1;
         const frag = document.createDocumentFragment();
-        for (const t of rows) frag.appendChild(this._renderRow(t));
+        for (let i = 0; i < rows.length; i++) {
+          if (i === insertAt) frag.appendChild(this._makeInsertGap(preview));
+          const row = this._renderRow(rows[i]);
+          if (preview && preview.threadId && rows[i].id === preview.threadId) {
+            row.classList.add('redock-source');
+          }
+          frag.appendChild(row);
+        }
+        if (insertAt === rows.length) frag.appendChild(this._makeInsertGap(preview));
         listEl.appendChild(frag);
+        if (DOM.threadDrawer) {
+          DOM.threadDrawer.classList.toggle('redock-target', !!(preview && preview.over));
+        }
+      },
+
+      _insertIndexForRatio(n, yRatio) {
+        if (n <= 0) return 0;
+        const r = Math.max(0, Math.min(1, Number(yRatio) || 0));
+        // Map vertical ratio onto [0..n] insert slots (before, between, after).
+        return Math.min(n, Math.max(0, Math.round(r * n)));
+      },
+
+      /**
+       * Live strip geometry for native redock (logical points, webview top-left).
+       * Rust maps mouse Y through stripTopInset + stripHeight so drop order
+       * matches the cursor, not the full window / floater center.
+       */
+      measureStripMetrics() {
+        let metrics = { stripWidth: 240, stripTopInset: 80, stripHeight: 400 };
+        try {
+          const list = DOM.threadDrawerList || DOM.threadDrawer;
+          if (list) {
+            const r = list.getBoundingClientRect();
+            metrics = {
+              stripWidth: Math.max(80, r.width || 240),
+              stripTopInset: Math.max(0, r.top || 0),
+              stripHeight: Math.max(40, r.height || 400),
+            };
+          }
+        } catch (_) { /* defaults */ }
+        // Publish for floater title-bar redock (other webview reads localStorage).
+        try {
+          window.__moonStripMetrics = metrics;
+          localStorage.setItem('luna.moonStripMetrics', JSON.stringify(metrics));
+        } catch (_) { /* private mode */ }
+        return metrics;
+      },
+
+      _makeInsertGap(preview) {
+        const gap = document.createElement('div');
+        gap.className = 'thread-row-insert-gap';
+        gap.setAttribute('aria-hidden', 'true');
+        const title = (preview && preview.title && String(preview.title).trim())
+          || 'Drop to redock';
+        const previewText = (preview && preview.preview && String(preview.preview).trim())
+          || 'Release to place here';
+        gap.innerHTML =
+          '<div class="thread-row-insert-gap-inner">' +
+            '<div class="thread-row-insert-preview">' +
+              '<span class="thread-row-dot" aria-hidden="true"></span>' +
+              '<span class="thread-row-info">' +
+                '<span class="thread-row-title"></span>' +
+                '<span class="thread-row-preview"></span>' +
+              '</span>' +
+            '</div>' +
+          '</div>';
+        const titleEl = gap.querySelector('.thread-row-title');
+        const prevEl = gap.querySelector('.thread-row-preview');
+        if (titleEl) titleEl.textContent = title;
+        if (prevEl) prevEl.textContent = previewText;
+        gap.dataset.label = title;
+        return gap;
+      },
+
+      _updateInsertGapContent(gap, preview) {
+        if (!gap || !preview) return;
+        const title = (preview.title && String(preview.title).trim()) || 'Drop to redock';
+        const previewText = (preview.preview && String(preview.preview).trim())
+          || 'Release to place here';
+        const titleEl = gap.querySelector('.thread-row-title');
+        const prevEl = gap.querySelector('.thread-row-preview');
+        if (titleEl) titleEl.textContent = title;
+        if (prevEl) prevEl.textContent = previewText;
+        gap.dataset.label = title;
+      },
+
+      /**
+       * Owner window: live preview while a floater is dragged over the dock.
+       * One insert-slot node + FLIP on neighbors — no full list rebuild.
+       */
+      applyRedockPreview(payload) {
+        if (!payload || payload.active === false) {
+          // Keep lastInsertIndex for the imminent redock-thread event (cleared
+          // after adopt). Still tear down live chrome.
+          if (State.redockPreview && State.redockPreview.over) {
+            State._lastRedockInsert = {
+              threadId: State.redockPreview.threadId,
+              insertIndex: State.redockPreview.insertIndex,
+              yRatio: State.redockPreview.yRatio,
+            };
+          }
+          State.redockPreview = null;
+          if (DOM.threadDrawer) DOM.threadDrawer.classList.remove('redock-target');
+          if (DOM.threadDrawerList) DOM.threadDrawerList.classList.remove('redocking');
+          this._closeInsertGap();
+          this._clearRedockSource();
+          return;
+        }
+        // Open the sidebar so the insert gap is visible (once).
+        if (!State.threadDrawerOpen || State.sidebarWidth === 0) {
+          try { this.openPanel(); } catch (_) { /* best-effort */ }
+        }
+        try { this.measureStripMetrics(); } catch (_) { /* best-effort */ }
+        const yRatio = typeof payload.yRatio === 'number' ? payload.yRatio : 0.5;
+        // Count visible rows (floated source already excluded).
+        const n = this._visibleThreads().length;
+        const insertIndex = this._insertIndexForRatio(n, yRatio);
+        // Resolve title/preview for the fake thread from the thread list if possible.
+        let title = payload.title || null;
+        let previewText = null;
+        if (payload.threadId && Array.isArray(State.threads)) {
+          const t = State.threads.find((x) => x && x.id === payload.threadId);
+          if (t) {
+            if (!title) title = (t.title && String(t.title).trim()) || null;
+            previewText = (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || null;
+          }
+        }
+        const next = {
+          threadId: payload.threadId || null,
+          title,
+          preview: previewText,
+          yRatio,
+          over: !!payload.over,
+          insertIndex,
+        };
+        State.redockPreview = next;
+        if (next.over) {
+          State._lastRedockInsert = {
+            threadId: next.threadId,
+            insertIndex: next.insertIndex,
+            yRatio: next.yRatio,
+          };
+        }
+        if (DOM.threadDrawer) DOM.threadDrawer.classList.toggle('redock-target', !!next.over);
+        if (DOM.threadDrawerList) DOM.threadDrawerList.classList.add('redocking');
+        this._placeInsertGap(next);
+        this._markRedockSource(next.threadId);
+      },
+
+      _clearInsertGap() {
+        const list = DOM.threadDrawerList;
+        if (!list) return;
+        list.querySelectorAll('.thread-row-insert-gap').forEach((n) => n.remove());
+        list.classList.remove('redocking');
+      },
+
+      /** Soft-close the slot (animate shut) then remove. */
+      _closeInsertGap() {
+        const list = DOM.threadDrawerList;
+        if (!list) return;
+        const gap = list.querySelector('.thread-row-insert-gap');
+        if (!gap) {
+          list.classList.remove('redocking');
+          return;
+        }
+        gap.classList.remove('active');
+        const finish = () => {
+          try { if (gap.parentNode) gap.remove(); } catch (_) {}
+          try { list.classList.remove('redocking'); } catch (_) {}
+        };
+        // Prefer transition end; fall back so we never leave a ghost node.
+        let done = false;
+        const once = () => {
+          if (done) return;
+          done = true;
+          finish();
+        };
+        gap.addEventListener('transitionend', once, { once: true });
+        setTimeout(once, 320);
+      },
+
+      _clearRedockSource() {
+        const list = DOM.threadDrawerList;
+        if (!list) return;
+        list.querySelectorAll('.thread-row.redock-source').forEach((n) => {
+          n.classList.remove('redock-source');
+        });
+      },
+
+      _markRedockSource(threadId) {
+        const list = DOM.threadDrawerList;
+        if (!list) return;
+        list.querySelectorAll('.thread-row').forEach((row) => {
+          const on = !!(threadId && row.dataset.threadId === threadId);
+          row.classList.toggle('redock-source', on);
+        });
+      },
+
+      /**
+       * FLIP: capture Y of rows, move the slot, invert transforms, play forward
+       * so neighbors ease out of the way instead of jumping.
+       */
+      _flipRows(list, mutate) {
+        if (!list || typeof mutate !== 'function') {
+          try { mutate && mutate(); } catch (_) {}
+          return;
+        }
+        const rows = Array.from(list.querySelectorAll('.thread-row:not(.floated-away)'));
+        const first = new Map();
+        rows.forEach((el) => {
+          try { first.set(el, el.getBoundingClientRect().top); } catch (_) {}
+        });
+        mutate();
+        // Double-rAF so layout commits before we measure last.
+        const play = () => {
+          rows.forEach((el) => {
+            if (!first.has(el)) return;
+            let lastTop = 0;
+            try { lastTop = el.getBoundingClientRect().top; } catch (_) { return; }
+            const dy = first.get(el) - lastTop;
+            if (Math.abs(dy) < 0.5) return;
+            el.style.transition = 'none';
+            el.style.transform = 'translateY(' + dy + 'px)';
+            // Force reflow then animate to identity.
+            void el.offsetWidth;
+            el.style.transition = '';
+            el.style.transform = '';
+          });
+        };
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => requestAnimationFrame(play));
+        } else {
+          setTimeout(play, 16);
+        }
+      },
+
+      _placeInsertGap(preview) {
+        const list = DOM.threadDrawerList;
+        if (!list) return;
+        if (!preview || !preview.over) {
+          this._closeInsertGap();
+          return;
+        }
+        const rows = Array.from(list.querySelectorAll('.thread-row:not(.floated-away)'));
+        const at = typeof preview.insertIndex === 'number' && Number.isFinite(preview.insertIndex)
+          ? Math.max(0, Math.min(rows.length, preview.insertIndex))
+          : this._insertIndexForRatio(rows.length, preview.yRatio);
+        let gap = list.querySelector('.thread-row-insert-gap');
+        const wasActive = !!(gap && gap.classList.contains('active'));
+        const prevAt = gap ? Number(gap.dataset.atIndex) : -1;
+        const before = rows[at] || null;
+
+        const moveNode = () => {
+          if (!gap) {
+            gap = this._makeInsertGap(preview);
+            if (before) list.insertBefore(gap, before);
+            else list.appendChild(gap);
+            // Open on next frame so 0fr→1fr actually animates.
+            requestAnimationFrame(() => {
+              try { gap.classList.add('active'); } catch (_) {}
+            });
+          } else {
+            this._updateInsertGapContent(gap, preview);
+            // Only relocate when the slot index changes.
+            if (prevAt !== at) {
+              if (before) list.insertBefore(gap, before);
+              else list.appendChild(gap);
+            }
+            if (!wasActive) {
+              requestAnimationFrame(() => {
+                try { gap.classList.add('active'); } catch (_) {}
+              });
+            } else {
+              gap.classList.add('active');
+            }
+          }
+          if (gap) gap.dataset.atIndex = String(at);
+        };
+
+        // FLIP neighbors when the slot opens or jumps to a new index.
+        if (!gap || !wasActive || prevAt !== at) {
+          this._flipRows(list, moveNode);
+        } else {
+          moveNode();
+        }
+      },
+
+      /**
+       * Reorder the session-local thread order so the redocked thread lands at
+       * insertIndex. Server list-threads still refreshes content; this only pins
+       * relative order for the open session.
+       */
+      adoptAtIndex(threadId, insertIndex) {
+        if (!threadId) return;
+        const ids = this._visibleThreads().map((t) => t.id).filter(Boolean);
+        const from = ids.indexOf(threadId);
+        if (from >= 0) ids.splice(from, 1);
+        let to = typeof insertIndex === 'number' && Number.isFinite(insertIndex)
+          ? insertIndex
+          : 0;
+        to = Math.max(0, Math.min(ids.length, to));
+        ids.splice(to, 0, threadId);
+        State.threadOrder = ids;
       },
 
       _renderRow(t) {
@@ -4700,33 +5341,25 @@
         row.setAttribute('role', 'listitem');
         row.tabIndex = 0;
         row.dataset.threadId = t.id;
-        // HTML5 drag-out (#380): drag a row outside the window to spawn a
-        // Phase 8 floater. Clicks without a real drag still switch in place.
-        row.draggable = true;
         if (t.id === State.activeThreadId) row.classList.add('active');
         if (ThreadCache.isBusy(t.id) && t.id !== State.activeThreadId) row.classList.add('busy');
         // Static skeleton (icons only); text set via textContent to avoid any
         // markup injection from server-provided titles/previews.
         row.innerHTML =
+          '<span class="thread-row-grip" aria-hidden="true">' +
+            '<span></span><span></span><span></span><span></span><span></span><span></span>' +
+          '</span>' +
           '<span class="thread-row-dot" aria-hidden="true"></span>' +
           '<span class="thread-row-info">' +
             '<span class="thread-row-title"></span>' +
             '<span class="thread-row-preview"></span>' +
           '</span>' +
-          '<button type="button" class="thread-row-pop" title="Open in new window" aria-label="Open in new window" draggable="false">⤢</button>';
+          '<button type="button" class="thread-row-pop" title="Open in new window" aria-label="Open in new window">⤢</button>';
         row.querySelector('.thread-row-title').textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
         const preview = (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || this._relTime(t);
         row.querySelector('.thread-row-preview').textContent = preview;
-        // Click (or Enter/Space) opens the thread in place - ChatGPT-style switcher.
-        // Meta/Ctrl-click (or the ⤢ button) opens a Phase 8 pinned window instead.
-        row.addEventListener('click', (e) => {
-          if (e.metaKey || e.ctrlKey) {
-            e.preventDefault();
-            this.openInNewWindow(t.id);
-            return;
-          }
-          this.onRowClick(t.id);
-        });
+        // Enter/Space opens in place; Meta/Ctrl-Enter opens a Phase 8 window.
+        // Primary click/drag is handled by _wireRow (pointer capture).
         row.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
@@ -4734,28 +5367,10 @@
             else this.onRowClick(t.id);
           }
         });
-        // Drag-out: after a meaningful drag, spawn a floater at the drop point.
-        // Threshold avoids turning a normal click into an accidental pop-out.
-        let dragOrigin = null;
-        row.addEventListener('dragstart', (e) => {
-          dragOrigin = { x: e.screenX, y: e.screenY };
-          try {
-            e.dataTransfer.setData('text/luna-thread-id', t.id);
-            e.dataTransfer.effectAllowed = 'copyMove';
-          } catch (_) { /* some hosts reject setData */ }
-        });
-        row.addEventListener('dragend', (e) => {
-          const origin = dragOrigin;
-          dragOrigin = null;
-          if (!origin) return;
-          const dx = e.screenX - origin.x;
-          const dy = e.screenY - origin.y;
-          if (Math.hypot(dx, dy) < 48) return; // click-or-wiggle, not a drag-out
-          // Spawn at the pointer so the floater appears under the cursor.
-          this.openInNewWindow(t.id, e.screenX, e.screenY);
-        });
+        this._wireRow(row, t);
         const pop = row.querySelector('.thread-row-pop');
         if (pop) {
+          pop.addEventListener('pointerdown', (e) => e.stopPropagation());
           pop.addEventListener('click', (e) => {
             e.stopPropagation();
             this.openInNewWindow(t.id);
@@ -4771,18 +5386,514 @@
         return new Date(ms).toLocaleDateString();
       },
 
+      // --- click vs drag-out gesture -----------------------------------------
+      // Chrome-tab session: Attached (strip) vs Detached (floater follows pointer).
+      // Never scale the floater webview (breaks native traffic lights).
+      // Mid-drag open_widget uses focus:false so focus does not thrash.
+      _wireRow(row, t) {
+        const self = this;
+        // Cursor sits this far inside the floater top-left (logical points, y down).
+        // Must match begin_native_pullout_drag grab defaults so the window sticks.
+        const GRAB_OFF_X = 36;
+        const GRAB_OFF_Y = 18;
+        const originOffset = (sx, sy) => ({
+          x: Math.round(sx - GRAB_OFF_X),
+          y: Math.round(sy - GRAB_OFF_Y),
+        });
+        let session = null;
+        let pid = null;
+        let raf = 0;
+        let lastX = 0, lastY = 0, lastSX = 0, lastSY = 0;
+        let floatedLabel = null;
+        let spawnPromise = null;
+        let cancelled = false;
+        let attachedVisual = false;
+        let lastInsertAt = -1;
+        /** Sticky insert: require two consecutive samples at a new index. */
+        let stickyPendingAt = -1;
+        let stickyPendingCount = 0;
+        let pendingPos = null;
+        /** First detach spawn start time (for open budget). */
+        let detachStartedAt = 0;
+        /** Hard promote: only one open_widget; OS owns free motion after. */
+        let nativePulloutArmed = false;
+
+        const markFloatedAway = (label) => {
+          if (!State.floatedThreadIds) State.floatedThreadIds = Object.create(null);
+          State.floatedThreadIds[t.id] = label || true;
+          try { row.classList.add('floated-away'); } catch (_) {}
+          // Owner must not keep viewing a thread that just left the strip.
+          if (State.activeThreadId === t.id) {
+            try {
+              const next = self._visibleThreads().find((r) => r.id !== t.id);
+              if (next) self.onRowClick(next.id);
+            } catch (_) { /* best-effort */ }
+          }
+        };
+
+        const clearFloatedAway = () => {
+          if (State.floatedThreadIds) delete State.floatedThreadIds[t.id];
+          try { row.classList.remove('floated-away'); } catch (_) {}
+        };
+
+        const stripRect = () => {
+          try {
+            return DOM.threadDrawer ? DOM.threadDrawer.getBoundingClientRect() : null;
+          } catch (_) {
+            return null;
+          }
+        };
+
+        const stripWidth = () => {
+          const r = stripRect();
+          return r && r.width > 40 ? r.width : 240;
+        };
+
+        const rowCount = () => {
+          try { return self._visibleThreads().length; } catch (_) { return 0; }
+        };
+
+        /**
+         * Hard promote: spawn floater ONCE under the cursor, drop the mini ghost,
+         * then hand free motion to AppKit (begin_native_pullout_drag). Never
+         * chase with open_widget/set_position on later moves.
+         * @param {number} sx
+         * @param {number} sy
+         */
+        const hardPromoteFloater = (sx, sy) => {
+          if (floatedLabel || spawnPromise || nativePulloutArmed) return spawnPromise;
+          const { x, y } = originOffset(sx, sy);
+          try { self._seedFloaterCache(t.id); } catch (_) { /* best-effort */ }
+          if (!detachStartedAt) detachStartedAt = Date.now();
+          // Leave the strip immediately (Chrome detach) even before the window resolves.
+          markFloatedAway(true);
+          const invokeStarted = Date.now();
+          spawnPromise = self.openInNewWindow(t.id, x, y, { focus: false })
+            .then((label) => {
+              spawnPromise = null;
+              if (cancelled) {
+                if (label) self._closeFloater(label);
+                clearFloatedAway();
+                return null;
+              }
+              floatedLabel = label || floatedLabel;
+              markFloatedAway(floatedLabel);
+              // Single object under the finger: drop CSS ghost once the OS window exists.
+              if (self._ghost) { self._ghost.remove(); self._ghost = null; }
+              try {
+                moonDragDebugNote('floater', {
+                  label: floatedLabel,
+                  focus: false,
+                  seed: true,
+                  x: x,
+                  y: y,
+                  hardPromote: true,
+                  grabX: GRAB_OFF_X,
+                  grabY: GRAB_OFF_Y,
+                  invokeMs: Date.now() - invokeStarted,
+                  sinceDetachMs: detachStartedAt ? Date.now() - detachStartedAt : null,
+                });
+              } catch (_) { /* debug */ }
+              if (floatedLabel && window.__TAURI__ && window.__TAURI__.core) {
+                nativePulloutArmed = true;
+                const title = (t.title && String(t.title).trim()) || null;
+                const owner = State.winLabel || null;
+                if (owner) {
+                  const metrics = self.measureStripMetrics();
+                  window.__TAURI__.core
+                    .invoke('begin_native_pullout_drag', {
+                      floaterLabel: floatedLabel,
+                      ownerLabel: owner,
+                      threadId: t.id,
+                      title: title,
+                      stripWidth: metrics.stripWidth,
+                      stripTopInset: metrics.stripTopInset,
+                      stripHeight: metrics.stripHeight,
+                      grabOffsetX: GRAB_OFF_X,
+                      grabOffsetY: GRAB_OFF_Y,
+                    })
+                    .catch((err) => {
+                      Logger.warn('begin_native_pullout_drag failed:', err);
+                      nativePulloutArmed = false;
+                    });
+                }
+              }
+              return floatedLabel;
+            })
+            .catch((err) => {
+              spawnPromise = null;
+              clearFloatedAway();
+              try { moonDragDebugNote('floater_error', { message: String(err) }); } catch (_) {}
+              Logger.warn('thread drag-out spawn failed:', err);
+              return null;
+            });
+          return spawnPromise;
+        };
+
+        const showAttachedChrome = (insertAt) => {
+          attachedVisual = true;
+          row.classList.add('dragging');
+          // Ghost only while still attached (or waiting for promote). After
+          // hard promote the OS window is the single object.
+          if (!floatedLabel && !self._ghost) self._ghost = self._makeGhost(t);
+          // Sticky insert index: avoid thrashing adjacent slots every sample.
+          if (insertAt === lastInsertAt && DOM.threadDrawer
+              && DOM.threadDrawer.classList.contains('redock-target')) {
+            return;
+          }
+          if (insertAt !== lastInsertAt) {
+            if (insertAt === stickyPendingAt) {
+              stickyPendingCount += 1;
+              if (stickyPendingCount < 2) return;
+            } else {
+              stickyPendingAt = insertAt;
+              stickyPendingCount = 1;
+              return;
+            }
+          }
+          lastInsertAt = insertAt;
+          stickyPendingAt = -1;
+          stickyPendingCount = 0;
+          const n = rowCount();
+          const yRatio = n > 0 ? Math.min(1, Math.max(0, insertAt / n)) : 0.5;
+          State.redockPreview = {
+            threadId: t.id,
+            title: (t.title && String(t.title).trim()) || null,
+            preview: (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || null,
+            yRatio,
+            over: true,
+            insertIndex: insertAt,
+          };
+          State._lastRedockInsert = {
+            threadId: t.id,
+            insertIndex: insertAt,
+            yRatio,
+          };
+          if (DOM.threadDrawerList) DOM.threadDrawerList.classList.add('redocking');
+          try { self._placeInsertGap(State.redockPreview); } catch (_) {}
+          try { self._markRedockSource(t.id); } catch (_) {}
+          if (DOM.threadDrawer) DOM.threadDrawer.classList.add('redock-target');
+        };
+
+        const clearAttachedChrome = () => {
+          attachedVisual = false;
+          lastInsertAt = -1;
+          stickyPendingAt = -1;
+          stickyPendingCount = 0;
+          row.classList.remove('dragging');
+          // Keep ghost only until hard promote shows a window.
+          if (self._ghost && floatedLabel) {
+            self._ghost.remove();
+            self._ghost = null;
+          }
+          try { self.applyRedockPreview({ active: false }); } catch (_) {}
+        };
+
+        const onMove = (e) => {
+          if (!session) return;
+          lastX = e.clientX; lastY = e.clientY;
+          lastSX = e.screenX; lastSY = e.screenY;
+          const move = session.pointerMove({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            stripRect: stripRect(),
+            rowCount: rowCount(),
+          });
+
+          if (!raf) {
+            raf = requestAnimationFrame(() => {
+              raf = 0;
+              // Ghost only bridges until hard promote; OS owns motion after.
+              if (self._ghost && !floatedLabel) {
+                self._ghost.style.transform =
+                  'translate(' + lastX + 'px,' + lastY + 'px) translate(-18px,-14px)';
+              }
+            });
+          }
+
+          if (move.action === 'enter_attached' || move.action === 'stay_attached') {
+            showAttachedChrome(move.insertIndex);
+            return;
+          }
+          if (move.action === 'detach') {
+            // Hard promote: drop strip chrome, spawn ONCE, OS free motion.
+            clearAttachedChrome();
+            if (!self._ghost && !floatedLabel) self._ghost = self._makeGhost(t);
+            hardPromoteFloater(e.screenX, e.screenY);
+            return;
+          }
+          if (move.action === 'stay_detached') {
+            // No IPC chase. Native pullout owns the window; optional ghost bridge.
+            if (attachedVisual) clearAttachedChrome();
+            if (!floatedLabel && !spawnPromise) {
+              if (!self._ghost) self._ghost = self._makeGhost(t);
+              hardPromoteFloater(e.screenX, e.screenY);
+            }
+            return;
+          }
+          if (move.action === 'reenter_attached') {
+            // Strip gap only; floater still OS-driven (redock-preview from Rust).
+            showAttachedChrome(move.insertIndex);
+            return;
+          }
+        };
+
+        const blockSelect = (ev) => {
+          try { ev.preventDefault(); } catch (_) {}
+          return false;
+        };
+
+        const clearDomSelection = () => {
+          try {
+            const sel = window.getSelection && window.getSelection();
+            if (sel && sel.removeAllRanges) sel.removeAllRanges();
+          } catch (_) { /* ignore */ }
+        };
+
+        const teardown = () => {
+          row.removeEventListener('pointermove', onMove);
+          row.removeEventListener('pointerup', onUp);
+          row.removeEventListener('pointercancel', onCancel);
+          try { document.removeEventListener('selectstart', blockSelect, true); } catch (_) {}
+          try { document.body.classList.remove('thread-dragging'); } catch (_) {}
+          if (raf) { cancelAnimationFrame(raf); raf = 0; }
+          try { if (pid != null) row.releasePointerCapture(pid); } catch (_) {}
+          pid = null;
+          session = null;
+          State.threadDragActive = false;
+          clearDomSelection();
+          if (self._renderPendingDuringDrag) {
+            self._renderPendingDuringDrag = false;
+            self.render();
+          }
+        };
+
+        const onUp = (e) => {
+          if (!session) { teardown(); return; }
+          const result = session.pointerUp({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            stripRect: stripRect(),
+            rowCount: rowCount(),
+          });
+          const sx = e.screenX, sy = e.screenY;
+          clearAttachedChrome();
+          teardown();
+
+          if (result.outcome === 'click') {
+            if (e.metaKey || e.ctrlKey) self.openInNewWindow(t.id);
+            else self.onRowClick(t.id);
+            return;
+          }
+          if (result.outcome === 'reorder') {
+            try { self.adoptAtIndex(t.id, result.insertIndex); } catch (_) {}
+            try { self.render(); } catch (_) {}
+            return;
+          }
+          if (result.outcome === 'redock') {
+            cancelled = true;
+            // Prefer live preview insert under the cursor; fall back to session index.
+            if (State.redockPreview && State.redockPreview.over
+                && typeof State.redockPreview.insertIndex === 'number') {
+              State._lastRedockInsert = {
+                threadId: t.id,
+                insertIndex: State.redockPreview.insertIndex,
+                yRatio: State.redockPreview.yRatio,
+              };
+            } else {
+              State._lastRedockInsert = {
+                threadId: t.id,
+                insertIndex: result.insertIndex,
+                yRatio: null,
+              };
+            }
+            const finishRedock = () => {
+              if (floatedLabel) self._closeFloater(floatedLabel);
+              try { self.adoptRedockedThread(t.id, null); } catch (_) {
+                clearFloatedAway();
+                try { self.adoptAtIndex(t.id, result.insertIndex); } catch (__) {}
+                try { self.onRowClick(t.id); } catch (__) {}
+              }
+            };
+            if (spawnPromise) {
+              spawnPromise.then((label) => {
+                if (label) floatedLabel = label;
+                finishRedock();
+              });
+            } else {
+              finishRedock();
+            }
+            return;
+          }
+          if (result.outcome === 'keep_floater') {
+            // Focus once so the user can type. Do not re-chase position.
+            // Thread stays out of the strip (floatedThreadIds).
+            if (floatedLabel) {
+              markFloatedAway(floatedLabel);
+              self.openInNewWindow(t.id, undefined, undefined, { focus: true })
+                .catch(() => {});
+            } else if (spawnPromise) {
+              spawnPromise.then((label) => {
+                if (label) {
+                  floatedLabel = label;
+                  markFloatedAway(label);
+                  self.openInNewWindow(t.id, undefined, undefined, { focus: true })
+                    .catch(() => {});
+                } else {
+                  hardPromoteFloater(sx, sy);
+                }
+              });
+            } else {
+              hardPromoteFloater(sx, sy);
+            }
+            // Allow deferred list rebuild now that the row is gone from the strip.
+            try { self.render(); } catch (_) {}
+            return;
+          }
+        };
+
+        const onCancel = () => {
+          cancelled = true;
+          if (session) session.cancel();
+          clearAttachedChrome();
+          if (spawnPromise) {
+            spawnPromise.then((label) => {
+              if (label) self._closeFloater(label);
+              clearFloatedAway();
+              try { self.render(); } catch (_) {}
+            });
+          } else if (floatedLabel) {
+            self._closeFloater(floatedLabel);
+            clearFloatedAway();
+            try { self.render(); } catch (_) {}
+          } else {
+            clearFloatedAway();
+          }
+          teardown();
+        };
+
+        row.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0) return;
+          if (e.target && e.target.closest && e.target.closest('.thread-row-pop')) return;
+          if (!(window.LunaThreadDrag && typeof window.LunaThreadDrag.createSession === 'function')) {
+            Logger.warn('[ThreadDrawer] LunaThreadDrag missing; drag disabled');
+            return;
+          }
+          // Kill text selection highlight — the #1 "annoying flash" during drag.
+          try { e.preventDefault(); } catch (_) {}
+          clearDomSelection();
+          try { document.addEventListener('selectstart', blockSelect, true); } catch (_) {}
+          try { document.body.classList.add('thread-dragging'); } catch (_) {}
+          cancelled = false;
+          floatedLabel = null;
+          spawnPromise = null;
+          pendingPos = null;
+          attachedVisual = false;
+          lastInsertAt = -1;
+          stickyPendingAt = -1;
+          stickyPendingCount = 0;
+          detachStartedAt = 0;
+          nativePulloutArmed = false;
+          session = window.LunaThreadDrag.createSession({
+            threadId: t.id,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            rowCount: rowCount(),
+            onEvent: (ev) => {
+              try {
+                moonDragDebugNote(ev.kind, {
+                  action: ev.extra && ev.extra.action,
+                  outcome: ev.extra && ev.extra.outcome,
+                  session: ev.session,
+                });
+              } catch (_) { /* debug */ }
+            },
+          });
+          lastX = e.clientX; lastY = e.clientY;
+          lastSX = e.screenX; lastSY = e.screenY;
+          pid = e.pointerId;
+          State.threadDragActive = true;
+          try { moonDragDebugNote('down', { threadId: t.id, clientX: e.clientX, clientY: e.clientY }); } catch (_) {}
+          // Capture keeps move events when the pointer leaves the owner window
+          // (otherwise drag-out freezes at the edge).
+          try { row.setPointerCapture(e.pointerId); } catch (_) {}
+          row.addEventListener('pointermove', onMove);
+          row.addEventListener('pointerup', onUp);
+          row.addEventListener('pointercancel', onCancel);
+        });
+      },
+
+      /**
+       * Phase C: write a short-lived ThreadCache seed so a detaching floater
+       * can paint transcript before the first WS snapshot.
+       * Uses localStorage (shared across Tauri WebviewWindows). sessionStorage
+       * is isolated per top-level browsing context and would never be visible
+       * to the floater - see LunaThreadDrag.writeThreadSeed.
+       */
+      _seedFloaterCache(threadId) {
+        if (!threadId) return;
+        const entry = ThreadCache.get(threadId);
+        if (!entry || !Array.isArray(entry.messages)) return;
+        try {
+          if (window.LunaThreadDrag && typeof window.LunaThreadDrag.writeThreadSeed === 'function') {
+            window.LunaThreadDrag.writeThreadSeed(localStorage, threadId, entry);
+          }
+        } catch (_) { /* private mode / quota */ }
+      },
+
+      _makeGhost(t) {
+        const g = document.createElement('div');
+        g.className = 'thread-drag-ghost';
+        const chrome = document.createElement('div');
+        chrome.className = 'thread-drag-ghost-chrome';
+        chrome.setAttribute('aria-hidden', 'true');
+        for (let i = 0; i < 3; i++) {
+          const d = document.createElement('span');
+          d.className = 'thread-drag-ghost-dot';
+          chrome.appendChild(d);
+        }
+        const title = document.createElement('div');
+        title.className = 'thread-drag-ghost-title';
+        title.textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
+        const preview = document.createElement('div');
+        preview.className = 'thread-drag-ghost-preview';
+        preview.textContent =
+          (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || this._relTime(t) || 'Open conversation';
+        g.appendChild(chrome);
+        g.appendChild(title);
+        g.appendChild(preview);
+        document.body.appendChild(g);
+        return g;
+      },
+
+      _closeFloater(label) {
+        if (!label) return;
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('close_widget', { label }).catch(() => {});
+          }
+        } catch (_) { /* best-effort */ }
+      },
+
       /**
        * Open a Phase 8 direct-line window pinned to this thread.
        * Different threads can generate in parallel - server already supports
        * concurrent runtimes; this is the multi-window surface.
        * Optional screenX/screenY place the floater under a drag-out drop (#380).
        * redockTo tells the floater which owner to fold back into on Redock.
+       * Returns the invoke Promise (label) when Tauri is available.
        */
-      openInNewWindow(id, screenX, screenY) {
-        if (!id) return;
+      /**
+       * @param {string} id
+       * @param {number} [screenX]
+       * @param {number} [screenY]
+       * @param {{ focus?: boolean }} [opts] focus defaults true; false during drag-follow
+       */
+      openInNewWindow(id, screenX, screenY, opts) {
+        if (!id) return Promise.resolve(null);
         if (!(window.__TAURI__ && window.__TAURI__.core)) {
           Logger.warn('[ThreadDrawer] openInNewWindow requires Tauri');
-          return;
+          return Promise.resolve(null);
         }
         const params = { thread: id };
         // Prefer State.winLabel (set at boot); fall back for early calls.
@@ -4795,9 +5906,73 @@
         if (typeof screenY === 'number' && Number.isFinite(screenY)) {
           args.y = Math.round(screenY);
         }
-        window.__TAURI__.core
+        // Mid-drag follow must not steal focus (causes freeze / stuck feel).
+        if (opts && opts.focus === false) args.focus = false;
+        return window.__TAURI__.core
           .invoke('open_widget', args)
-          .catch((e) => Logger.warn('open_widget chat window failed:', e));
+          .then((label) => {
+            // Explicit pop (⤢) also leaves the strip until redock / close.
+            if (!(opts && opts.keepInStrip)) {
+              if (!State.floatedThreadIds) State.floatedThreadIds = Object.create(null);
+              State.floatedThreadIds[id] = label || true;
+              try {
+                if (!State.threadDragActive) this.render();
+              } catch (_) { /* best-effort */ }
+            }
+            return label;
+          })
+          .catch((e) => {
+            Logger.warn('open_widget chat window failed:', e);
+            throw e;
+          });
+      },
+
+      /** Called when a floater folds back or is closed so the strip regains the row. */
+      clearFloatedThread(threadId, opts) {
+        if (!threadId || !State.floatedThreadIds) return;
+        delete State.floatedThreadIds[threadId];
+        if (!(opts && opts.skipRender)) {
+          try { this.render(); } catch (_) {}
+        }
+      },
+
+      /**
+       * Adopt a redocked thread at the best-known insert index (last live
+       * preview under the cursor, else yRatio, else top). Plays a soft land.
+       */
+      adoptRedockedThread(threadId, yRatio) {
+        if (!threadId) return;
+        const last = State._lastRedockInsert;
+        let at = null;
+        if (last && last.threadId === threadId && typeof last.insertIndex === 'number') {
+          at = last.insertIndex;
+        } else if (typeof yRatio === 'number' && Number.isFinite(yRatio)) {
+          // Floated id is still excluded from visible until clearFloatedThread.
+          const n = this._visibleThreads().length;
+          at = this._insertIndexForRatio(n, yRatio);
+        } else {
+          at = 0;
+        }
+        this.clearFloatedThread(threadId, { skipRender: true });
+        this.adoptAtIndex(threadId, at);
+        State._lastRedockInsert = null;
+        try { this.render(); } catch (_) {}
+        this.onRowClick(threadId);
+        // Soft land on the adopted row.
+        try {
+          const list = DOM.threadDrawerList;
+          if (list) {
+            const row = Array.from(list.querySelectorAll('.thread-row')).find(
+              (el) => el.dataset && el.dataset.threadId === threadId,
+            );
+            if (row) {
+              row.classList.add('just-landed');
+              setTimeout(() => {
+                try { row.classList.remove('just-landed'); } catch (_) {}
+              }, 480);
+            }
+          }
+        } catch (_) { /* missing row */ }
       },
 
       // --- open thread in THIS window (row click) ----------------------------
@@ -10433,6 +11608,22 @@
     // needing to reload the page with a ?thread= param.
     State.pinnedThread = PINNED_THREAD;
 
+    // Phase C: consume ThreadCache seed written by the owner on detach so a
+    // floater paints transcript immediately (before first WS snapshot).
+    // localStorage is shared across Tauri webviews; sessionStorage is not.
+    if (PINNED_THREAD) {
+      try {
+        const seed = (window.LunaThreadDrag && typeof window.LunaThreadDrag.consumeThreadSeed === 'function')
+          ? window.LunaThreadDrag.consumeThreadSeed(localStorage, PINNED_THREAD)
+          : null;
+        if (seed && Array.isArray(seed.messages)) {
+          ThreadCache.put(PINNED_THREAD, seed.messages, seed.throughSeq);
+          State.activeThreadId = PINNED_THREAD;
+          ThreadCache.paint(PINNED_THREAD);
+        }
+      } catch (_) { /* best-effort continuity */ }
+    }
+
     // ── Widget-window chrome (panel.html conventions) ──────────────────────
     let W = null;
     let winLabel = null;
@@ -10469,7 +11660,6 @@
     }
 
     // Redock button (#380) — only on pinned floaters that know their owner.
-    // Geometry-free: explicit click, not the fragile drag-release strip.
     const redockBtn = document.getElementById('redock-btn');
     if (redockBtn) {
       const canRedock = !!(State.pinnedThread && REDOCK_TO);
@@ -10502,6 +11692,28 @@
     if (State.pinnedThread) {
       if (DOM.toggleThreads) DOM.toggleThreads.hidden = true;
       if (winNewThreadBtn) winNewThreadBtn.hidden = true;
+      // Floater: native startDragging + redock-drag-ended (no CSS scale - it
+      // misaligns AppKit traffic lights relative to the panel card).
+      try {
+        if (W && typeof W.listen === 'function' && REDOCK_TO) {
+          W.listen('redock-drag-ended', (e) => {
+            const p = e && e.payload;
+            if (!(p && p.over && window.__TAURI__ && window.__TAURI__.core)) return;
+            const draft = (DOM.messageInput && DOM.messageInput.value) || '';
+            window.__TAURI__.core
+              .invoke('redock_thread', {
+                threadId: State.pinnedThread || p.threadId,
+                ownerLabel: REDOCK_TO || p.ownerLabel,
+                draft: draft || null,
+                yRatio: typeof p.yRatio === 'number' ? p.yRatio : null,
+              })
+              .then((ok) => {
+                if (!ok && W && typeof W.close === 'function') W.close().catch(() => {});
+              })
+              .catch((err) => Logger.warn('redock_thread failed:', err));
+          }).catch(() => {});
+        }
+      } catch (_) { /* off-Tauri */ }
     } else {
       if (DOM.toggleThreads) DOM.toggleThreads.addEventListener('click', () => ThreadDrawerEngine.togglePanel());
       ThreadDrawerEngine.wireDivider(DOM.threadDivider);
@@ -10518,27 +11730,60 @@
       // Drawer "+ New" mints a fresh thread IN THIS window (single-window model).
       if (DOM.threadDrawerNew) DOM.threadDrawerNew.addEventListener('click', () => { try { ChatEngine.newConversation(); } catch (_) {} });
       if (DOM.threadDrawerSearch) DOM.threadDrawerSearch.addEventListener('input', (e) => ThreadDrawerEngine.setSearch(e.target.value));
-      // Redock return channel (#380): a floater's Redock button emits
-      // redock-thread to this owner. Switch to that thread and restore draft.
+      // Redock return channel (#380): floater Redock button / native drag-release.
       try {
         if (W && typeof W.listen === 'function') {
           W.listen('redock-thread', (e) => {
             const p = e && e.payload;
             const id = p && p.threadId;
             if (!id) return;
-            ThreadDrawerEngine.onRowClick(id);
+            // Snapshot insert under cursor BEFORE chrome teardown.
+            ThreadDrawerEngine.applyRedockPreview({ active: false });
+            ThreadDrawerEngine.adoptRedockedThread(
+              id,
+              typeof p.yRatio === 'number' ? p.yRatio : null,
+            );
             const draft = p && p.draft;
             if (draft && DOM.messageInput && !DOM.messageInput.value) {
               DOM.messageInput.value = draft;
               try { ChatEngine.autoGrowMessageInput(); } catch (_) {}
             }
           }).catch(() => {});
+          // Live drag preview from a redock-capable floater (Rust NSEvent path).
+          W.listen('redock-preview', (e) => {
+            ThreadDrawerEngine.applyRedockPreview((e && e.payload) || { active: false });
+          }).catch(() => {});
         }
       } catch (_) { /* off-Tauri */ }
     }
 
-    // Hand title-bar gestures directly to the native macOS window drag.
-    if (window.LunaDock) LunaDock.wire({ win: W, label: winLabel });
+    // Title-bar drag is always AppKit-native. Redock floaters also arm
+    // begin_redock_drag so Rust can preview the dock without hijacking motion.
+    if (window.LunaDock) {
+      const redockOpts = (State.pinnedThread && REDOCK_TO)
+        ? {
+            owner: REDOCK_TO,
+            threadId: State.pinnedThread,
+            // Owner cannot measure the strip from the floater webview; use
+            // last-known metrics if the owner stamped them, else sensible defaults.
+            stripMetrics: () => {
+              try {
+                if (window.__moonStripMetrics) return window.__moonStripMetrics;
+                const raw = localStorage.getItem('luna.moonStripMetrics');
+                if (raw) return JSON.parse(raw);
+              } catch (_) { /* ignore */ }
+              return { stripWidth: 240, stripTopInset: 80, stripHeight: 400 };
+            },
+            title: () => {
+              try {
+                const t = document.getElementById('bar-title');
+                return (t && t.textContent && t.textContent.trim()) || null;
+              } catch (_) { return null; }
+            },
+          }
+        : null;
+      LunaDock.wire({ win: W, label: winLabel, redock: redockOpts });
+    }
 
     // ── hub-event return channel ────────────────────────────────────────────
     // Rust delivers window-targeted hub-events with strict `for:` discipline.
@@ -10658,6 +11903,9 @@
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
       window.__MoonInternals.ThreadCache = ThreadCache;
+      window.__MoonInternals.LunaThreadDrag = window.LunaThreadDrag || null;
+      window.__MoonInternals.moonDragDebug = window.__moonDragDebug || null;
+      window.__MoonInternals.moonE2E = window.__moonE2E || null;
       window.__MoonInternals.ThreadCreateState = ThreadCreateState;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.FeedbackEngine = FeedbackEngine;

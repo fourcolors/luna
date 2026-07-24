@@ -71,6 +71,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
     loadVendorInto(window, 'moon-dock.js')
+    loadVendorInto(window, 'thread-drag-session.js')
 
     // Clean localStorage so persisted-prefs tests don't leak across cases.
     localStorage.clear()
@@ -4950,7 +4951,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
         core: { invoke },
       }
-      m.ThreadDrawerEngine.openInNewWindow('thr-42')
+      await m.ThreadDrawerEngine.openInNewWindow('thr-42')
       expect(invoke).toHaveBeenCalledWith('open_widget', {
         kind: 'chat',
         params: { thread: 'thr-42' },
@@ -4964,7 +4965,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
         core: { invoke },
       }
-      m.ThreadDrawerEngine.openInNewWindow('thr-99', 120.4, 340.6)
+      await m.ThreadDrawerEngine.openInNewWindow('thr-99', 120.4, 340.6)
       expect(invoke).toHaveBeenCalledWith('open_widget', {
         kind: 'chat',
         params: { thread: 'thr-99', redockTo: 'panel-chat' },
@@ -4973,16 +4974,120 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
     })
 
-    it('Scenario: sidebar rows are draggable for drag-out (#380)', () => {
+    it('Scenario: openInNewWindow can suppress focus for mid-drag follow', async () => {
+      const m = M()
+      m.State.winLabel = 'panel-chat'
+      const invoke = vi.fn().mockResolvedValue('panel-chat-xyz')
+      ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
+        core: { invoke },
+      }
+      await m.ThreadDrawerEngine.openInNewWindow('thr-99', 10, 20, { focus: false })
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'thr-99', redockTo: 'panel-chat' },
+        x: 10,
+        y: 20,
+        focus: false,
+      })
+    })
+
+    it('Scenario: sidebar rows use pointer pull-out (not HTML5 drag) (#380)', () => {
       const m = M()
       m.State.threads = [
-        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: Date.now() },
+        { id: 'a', title: 'Alpha', lastMessagePreview: 'hello', lastActiveAt: Date.now() },
       ]
       m.ThreadDrawerEngine.openPanel()
       m.ThreadDrawerEngine.render()
       const row = document.querySelector('.thread-row[data-thread-id="a"]') as HTMLElement | null
       expect(row).toBeTruthy()
-      expect(row?.draggable).toBe(true)
+      // Global * { -webkit-user-drag: none } kills HTML5 DnD in WKWebView;
+      // pull-out is pointer-capture based with a card ghost + ThreadDragSession.
+      expect(row?.draggable).toBe(false)
+      expect(htmlContent).toMatch(/thread-drag-ghost/)
+      expect(htmlContent).toMatch(/threadDragActive/)
+      expect(htmlContent).toMatch(/setPointerCapture/)
+      expect(htmlContent).toMatch(/LunaThreadDrag/)
+      expect(htmlContent).toMatch(/_seedFloaterCache/)
+      expect((window as any).LunaThreadDrag?.createSession).toBeTypeOf('function')
+      const ghost = m.ThreadDrawerEngine._makeGhost({
+        id: 'a',
+        title: 'Alpha',
+        lastMessagePreview: 'hello',
+      })
+      expect(ghost.className).toBe('thread-drag-ghost')
+      expect(ghost.querySelector('.thread-drag-ghost-title')?.textContent).toBe('Alpha')
+      expect(ghost.querySelector('.thread-drag-ghost-preview')?.textContent).toBe('hello')
+      ghost.remove()
+    })
+
+    it('Scenario: Attached path seeds cache via shared localStorage (Phase C)', () => {
+      const m = M()
+      // Must use localStorage - sessionStorage is isolated per Tauri webview.
+      m.ThreadCache.put('thr-seed', [{ role: 'user', text: 'hi' }], 3)
+      m.ThreadDrawerEngine._seedFloaterCache('thr-seed')
+      const raw = localStorage.getItem('luna.threadSeed.thr-seed')
+      expect(raw).toBeTruthy()
+      const seed = JSON.parse(raw!)
+      expect(seed.messages).toEqual([{ role: 'user', text: 'hi' }])
+      expect(seed.throughSeq).toBe(3)
+      // Floater boot path consumes via LunaThreadDrag.consumeThreadSeed(localStorage)
+      const consumed = (window as any).LunaThreadDrag.consumeThreadSeed(localStorage, 'thr-seed')
+      expect(consumed).toEqual({ messages: [{ role: 'user', text: 'hi' }], throughSeq: 3 })
+      expect(localStorage.getItem('luna.threadSeed.thr-seed')).toBeNull()
+    })
+
+    it('Scenario: Phase C seed is invisible across isolated Storage (why not sessionStorage)', () => {
+      // Two Storage contexts (owner webview vs floater webview):
+      // sessionStorage-like isolation means write on A is invisible on B.
+      const LTD = (window as any).LunaThreadDrag
+      const makeStore = () => {
+        const map = new Map<string, string>()
+        return {
+          getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+          setItem: (k: string, v: string) => { map.set(k, v) },
+          removeItem: (k: string) => { map.delete(k) },
+        }
+      }
+      const ownerSession = makeStore() // isolated (sessionStorage analog)
+      const floaterSession = makeStore()
+      const sharedLocal = makeStore() // shared (localStorage analog)
+
+      expect(LTD.writeThreadSeed(ownerSession, 't-iso', {
+        messages: [{ role: 'user', text: 'x' }],
+        throughSeq: 1,
+      }, 1000)).toBe(true)
+      // Isolated consume fails - this is the multi-window failure mode for sessionStorage
+      expect(LTD.consumeThreadSeed(floaterSession, 't-iso', 1001)).toBeNull()
+      // Shared store succeeds (owner write, floater consume)
+      expect(LTD.writeThreadSeed(sharedLocal, 't-shared', {
+        messages: [{ role: 'assistant', text: 'y' }],
+        throughSeq: 2,
+      }, 2000)).toBe(true)
+      const seed = LTD.consumeThreadSeed(sharedLocal, 't-shared', 2001)
+      expect(seed).toEqual({ messages: [{ role: 'assistant', text: 'y' }], throughSeq: 2 })
+      // Floater boot paints from consumed seed into ThreadCache (real path)
+      const m = M()
+      m.ThreadCache.put('t-shared', seed.messages, seed.throughSeq)
+      expect(m.ThreadCache.get('t-shared')?.messages).toEqual([{ role: 'assistant', text: 'y' }])
+      expect(m.ThreadCache.paint('t-shared')).toBe(true)
+    })
+
+    it('Scenario: ThreadDragSession wired — open_widget only after detach action', () => {
+      // Contract: createSession.pointerMove while in strip never implies spawn.
+      expect(htmlContent).toMatch(/move\.action === 'detach'/)
+      expect(htmlContent).toMatch(/outcome === 'reorder'/)
+      expect(htmlContent).toMatch(/LunaThreadDrag\.createSession/)
+      expect(htmlContent).toMatch(/focus: false/)
+      // Detach path places floater; enter_attached only updates strip chrome.
+      expect(htmlContent).toMatch(
+        /move\.action === 'detach'[\s\S]{0,400}placeFloater\([^)]+focus:\s*false/,
+      )
+      expect(htmlContent).toMatch(
+        /move\.action === 'enter_attached'[\s\S]{0,160}showAttachedChrome/,
+      )
+      expect(htmlContent).not.toMatch(
+        /move\.action === 'enter_attached'[\s\S]{0,160}placeFloater/,
+      )
     })
 
     it('Scenario: redock button is only visible on pinned floaters with redockTo (#380)', () => {
@@ -4991,6 +5096,51 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(htmlContent).toMatch(/id="redock-btn"/)
       expect(htmlContent).toMatch(/#title-bar \.redock-btn\[hidden\]/)
       expect(htmlContent).toMatch(/redock_thread/)
+      expect(htmlContent).toMatch(/begin_redock_drag/)
+      expect(htmlContent).toMatch(/redock-preview/)
+      expect(htmlContent).toMatch(/redock-drag-ended/)
+      expect(htmlContent).toMatch(/thread-row-insert-gap/)
+    })
+
+    it('Scenario: redock preview opens an insert gap and marks the source row (#380)', () => {
+      const m = M()
+      m.State.threads = [
+        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: 3 },
+        { id: 'b', title: 'Beta', lastMessagePreview: '', lastActiveAt: 2 },
+        { id: 'c', title: 'Gamma', lastMessagePreview: '', lastActiveAt: 1 },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.applyRedockPreview({
+        active: true,
+        over: true,
+        threadId: 'b',
+        title: 'Beta',
+        yRatio: 0.0,
+      })
+      const gap = document.querySelector('.thread-row-insert-gap.active')
+      expect(gap).toBeTruthy()
+      expect(gap?.getAttribute('data-label')).toBe('Beta')
+      expect(document.querySelector('.thread-drawer')?.classList.contains('redock-target')).toBe(true)
+      expect(document.querySelector('.thread-row[data-thread-id="b"]')?.classList.contains('redock-source')).toBe(true)
+
+      m.ThreadDrawerEngine.applyRedockPreview({ active: false })
+      expect(document.querySelector('.thread-row-insert-gap.active')).toBeNull()
+      expect(document.querySelector('.thread-drawer')?.classList.contains('redock-target')).toBe(false)
+    })
+
+    it('Scenario: adoptAtIndex pins session-local order after redock (#380)', () => {
+      const m = M()
+      m.State.threads = [
+        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: 30 },
+        { id: 'b', title: 'Beta', lastMessagePreview: '', lastActiveAt: 20 },
+        { id: 'c', title: 'Gamma', lastMessagePreview: '', lastActiveAt: 10 },
+      ]
+      m.ThreadDrawerEngine.adoptAtIndex('c', 0)
+      expect(m.ThreadDrawerEngine._visibleThreads().map((t: { id: string }) => t.id)).toEqual([
+        'c',
+        'a',
+        'b',
+      ])
     })
 
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {
