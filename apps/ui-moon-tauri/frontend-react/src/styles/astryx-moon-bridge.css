@@ -1,0 +1,86 @@
+/*
+ * astryx-moon-bridge.css - bridges @astryxdesign/core's semantic CSS custom
+ * properties onto Moon's watercolor palette tokens (vendor/moon-palette.css),
+ * so any Astryx component mounted inside Moon renders in the same
+ * paper/ink/accent look as the rest of the app, across every palette
+ * (dawn/meadow/tide/etc.) and both light and dark mode.
+ *
+ * Ported from apps/ui-web/src/styles/astryx-watercolor-theme.css - Moon's
+ * palette tokens use the EXACT same names (--paper, --paper-2, --ink,
+ * --ink-soft, --ink-faint, --accent - see vendor/moon-palette.css) because
+ * both clients share the same watercolor design vocabulary, so the mapping
+ * ports over verbatim modulo the scope class and the font token (Moon
+ * defines --font-body directly rather than hardcoding a family name).
+ *
+ * WHY PLAIN CSS, NOT ASTRYX'S <Theme> PROVIDER: see the ui-web file for the
+ * full rationale - short version: Moon's own vendor/moon-appearance.js
+ * already owns data-theme/data-palette on <html> pre-paint; mounting
+ * Astryx's <Theme> would fight that. Plain CSS custom-property overrides,
+ * scoped to `.moon-astryx-root`, is a complete lower-risk substitute: any
+ * Astryx component mounted anywhere under `.moon-astryx-root` picks up the
+ * override automatically, nested arbitrarily deep, no wrapper required.
+ *
+ * SAFE TO LOAD ALONGSIDE THE STILL-VANILLA PAGES: Astryx's reset.css and
+ * astryx.css ship every rule inside `@layer reset` / `@layer astryx-base`
+ * (verified against the installed 0.1.8 package). Moon's existing CSS
+ * (vendor/moon-palette.css, moon-skins.css, moon-theme.css, and each page's
+ * inline <style>) is unlayered - per the CSS cascade-layers spec, unlayered
+ * rules always beat layered ones regardless of source order or specificity.
+ * So importing Astryx's CSS cannot regress the current vanilla pages; this
+ * bridge only takes effect once a component is actually mounted under
+ * `.moon-astryx-root` in a later phase.
+ *
+ * Load order (see boot.tsx): astryx/reset.css -> astryx/astryx.css -> this
+ * file. Layers make the ordering non-load-bearing for safety, but keeping it
+ * matches the documented Astryx usage note and the ui-web convention.
+ */
+
+.moon-astryx-root {
+  /* ---- accent ---- */
+  --color-accent: var(--accent);
+  --color-text-accent: var(--accent);
+  --color-icon-accent: var(--accent);
+  /* Text/icon color rendered ON TOP of an accent-filled surface. */
+  --color-on-accent: var(--paper);
+
+  /* ---- surfaces ---- */
+  --color-background-body: var(--paper);
+  --color-background-surface: var(--paper);
+  --color-background-card: var(--paper-2);
+  --color-background-popover: var(--paper);
+  --color-background-inverted: var(--ink);
+  --color-background-muted: color-mix(in oklab, var(--ink) 6%, transparent);
+  --color-neutral: color-mix(in oklab, var(--ink) 10%, transparent);
+
+  /* ---- text / icons ---- */
+  --color-text-primary: var(--ink);
+  --color-text-secondary: var(--ink-soft);
+  --color-text-disabled: var(--ink-faint);
+  --color-icon-primary: var(--ink);
+  --color-icon-secondary: var(--ink-soft);
+  --color-icon-disabled: var(--ink-faint);
+
+  /* ---- borders ---- */
+  --color-border: var(--ink-faint);
+  --color-border-emphasized: var(--ink-soft);
+  --color-skeleton: var(--ink-faint);
+  --color-track: var(--ink-faint);
+
+  /* ---- overlays / interaction states ---- */
+  --color-overlay: color-mix(in oklab, var(--ink) 40%, transparent);
+  --color-overlay-hover: color-mix(in oklab, var(--ink) 9%, transparent);
+  --color-overlay-pressed: color-mix(in oklab, var(--ink) 14%, transparent);
+  --color-tint-hover: var(--ink);
+
+  /* ---- shadow ---- */
+  --color-shadow: rgba(60, 45, 35, 0.16);
+
+  /* ---- radius ----
+     Match Moon's own --radius token (vendor/moon-palette.css: 12px) rather
+     than hardcoding, so a future palette change carries through here too. */
+  --radius-container: var(--radius);
+
+  /* ---- typography ---- */
+  --font-family-body: var(--font-body);
+  --font-family-heading: var(--font-body);
+}

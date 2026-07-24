@@ -1,0 +1,2924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna Moon Native Companion</title>
+  
+  <!-- Premium Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Albert+Sans:wght@400;500;600;700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Watercolor palette tokens (--paper, --ink, --wash-N, bridge tokens).
+       Must come BEFORE the inline <style> so the palette's :root defaults
+       are set, and hub rules that use the bridge tokens (--glass-bg, etc.)
+       will pick up palette values wherever no hub-local override exists. -->
+  <link rel="stylesheet" href="/vendor/moon-palette.css">
+
+  <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html>
+       pre-paint; re-applies live on cross-window localStorage storage events. -->
+  <script src="/vendor/moon-appearance.js"></script>
+
+  <!-- Shared protocol constants + WS frame registry (Phase 1 vendor
+       modules). Loaded synchronously BEFORE the app script, which uses
+       LunaProtocol/LunaWS at definition time. -->
+  <script src="/vendor/moon-protocol.js"></script>
+  <script src="/vendor/moon-ws.js"></script>
+
+  <!-- Phase 2 C2: route-keyed boot helper.  Wraps the C3 Tauri commands
+       (get_panel_route / list_routes / load_route) so boot can resolve the
+       WS endpoint from client.toml instead of the shared luna_ws_url key.
+       Degrades to null gracefully when Tauri is absent or no client.toml
+       exists, letting the legacy load_connection path take over. -->
+  <script src="/vendor/moon-session.js"></script>
+
+  <!-- Phase 2 C6b/C8: PoolEngine helpers (DARK — luna_pool_engine flag).
+       pool-engine.js: frame-tag isolation scaffold + gen-counter + isDarkFlagSet.
+       moon-hub.js:    process-wide DeliveryBus + ConnectionPool + rebindAll
+                       (C8 hub home).  Both are additive no-ops when the flag
+                       is off; the default WebSocketEngine path is unaffected. -->
+  <script src="/vendor/pool-engine.js"></script>
+  <script src="/vendor/moon-hub.js"></script>
+
+  <style>
+    :root {
+      /*
+       * --font-display, --font-body, --font-hand, --radius,
+       * --moon-glow, --moon-bright, --moon-shadow,
+       * --glass-bg, --glass-border, --glass-glow,
+       * --primary (alias for --accent), --bg, --text, --muted, --border
+       * are all defined in vendor/moon-palette.css and must not be
+       * duplicated here — the inline block comes later in cascade order
+       * and would pin them to literal values, defeating the palette.
+       *
+       * SCOPE NOTE: the hub's painted UI (wizard card, crescent, glow)
+       * intentionally keeps its hardcoded dark-glass literals — the moon
+       * is a night object and the wizard pairs hardcoded-dark surfaces
+       * with hardcoded-light text, so it stays self-consistent in every
+       * palette. Only the fonts (+ --moon-glow) flow from the palette
+       * here. Tokenizing the hub fully is deferred to the chat-extraction
+       * cleanup that strips this monolith to hub-only chrome.
+       */
+    }
+    
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    
+    /* Make the base window canvas transparent */
+    html, body {
+      background: rgba(0, 0, 0, 0.005) !important;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      font-family: var(--font-body);
+      color: #f1f5f9;
+      position: relative;
+    }
+    
+    /* 
+      Draggable Moon Widget 
+      Adding data-tauri-drag-region tells Tauri to drag the native window 
+      when clicking and dragging this element.
+    */
+    .needs-input-pip {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #ffe2ae, #f8c982 60%, #d99a3e);
+      box-shadow: 0 0 8px 2px rgba(248, 201, 130, 0.55);
+      z-index: 30;
+      pointer-events: none;
+      animation: pip-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes pip-breathe {
+      0%, 100% { transform: scale(1); opacity: 0.85; }
+      50% { transform: scale(1.25); opacity: 1; }
+    }
+
+    /* Update pip (Slice C) — the needs-input-pip's calmer sibling: a soft glowing
+       accent dot that lights when a verified build is staged. Same size/breathe,
+       but the watercolor --accent glow instead of the amber needs-input tone, so
+       it reads as a gentle "ready" cue rather than an alert. Sits just below the
+       needs-input pip so both can show at once without overlapping. Unlike the
+       needs-input pip it is pointer-events:auto + clickable — tapping it opens
+       the Updates panel (the moon's own click still opens chat). */
+    .update-pip {
+      position: absolute;
+      top: 30px;
+      right: 16px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%,
+        color-mix(in oklab, var(--accent) 92%, white),
+        var(--accent) 60%,
+        color-mix(in oklab, var(--accent) 70%, black) 100%);
+      box-shadow: 0 0 8px 2px color-mix(in oklab, var(--accent) 55%, transparent);
+      z-index: 31;
+      cursor: pointer;
+      pointer-events: auto;
+      animation: pip-breathe 2.4s ease-in-out infinite;
+    }
+
+    .moon-container {
+      position: absolute;
+      left: 15px;
+      top: 15px;
+      width: 110px;
+      height: 110px;
+      cursor: grab;
+      z-index: 100;
+      touch-action: none;
+    }
+    
+    .moon-container:active {
+      cursor: grabbing;
+    }
+    
+    .moon-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+      pointer-events: auto; /* Active pointer events prevent click-through */
+    }
+    
+    /* Always-on dark glow "pool" the moon sits in (subtle — the demo look, at a
+       calm intensity so it's premium on a dark desktop without dimming a light
+       one). Sized to fade FULLY to transparent before the window edge, so there's
+       no hard rectangle; the dark pool is what makes the blue moon-glow read.
+       --moon-aura-d scales it with the window. pointer-events none so it never
+       eats the moon's drag region. */
+    .moon-aura {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: var(--moon-aura-d, 170px);
+      height: var(--moon-aura-d, 170px);
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+      /* `closest-side` is load-bearing: WITHOUT it `circle` defaults to
+         farthest-corner, stretching the gradient ~40% past the element so its
+         alpha is still non-zero at the small 140×185 window edge — the window
+         then clips that into a hard dark RECTANGLE ("boxy glass"). closest-side
+         pins 100% to the element's edge so the fade completes inside the window,
+         leaving a clean circular pool with no box. */
+      background: radial-gradient(circle closest-side,
+        rgba(9, 12, 24, 0.35) 0%,
+        rgba(9, 12, 24, 0.22) 30%,
+        rgba(11, 16, 34, 0.08) 52%,
+        rgba(11, 16, 34, 0) 72%);
+    }
+
+    /* Beautiful Atmospheric Glow */
+    .moon-glow {
+      position: absolute;
+      top: -12px;
+      left: -12px;
+      right: -12px;
+      bottom: -12px;
+      background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138, 180, 248, 0) 70%);
+      border-radius: 50%;
+      opacity: 0.9;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      z-index: 1;
+    }
+    
+    .moon-container:hover .moon-glow {
+      opacity: 1;
+      transform: scale(1.08);
+    }
+    
+    /* Base Moon Sphere with transparency */
+    .moon-sphere {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      background: transparent !important;
+      box-shadow: none !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    }
+    
+    /* Moon SVG Crescent shape styling */
+    .moon-svg {
+      width: 100%;
+      height: 100%;
+      filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.45));
+      transform: translate3d(var(--px, 0px), var(--py, 0px), 0) rotate(var(--rot, 0deg));
+      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1),
+                  filter 0.6s ease;   /* the detached dim fades, never snaps */
+      pointer-events: auto;
+    }
+
+    /* ── Voice states on the moon (data-voice-state, set by VoiceEngine).
+       Painterly like the bead: flat translucent washes, opacity + soft scale
+       only — no gloss, no specular anything. The moon is 30px in a 140px
+       window, so every effect here is deliberately quiet. ── */
+    /* listening: a soft watercolor pulse on the glow; --voice-level (RMS 0–1,
+       ~10 Hz from Rust) scales the pool so the moon visibly "hears" you. The
+       glow's existing 0.3s transitions smooth the level steps. */
+    .moon-wrapper[data-voice-state="listening"] .moon-glow {
+      transform: scale(calc(1 + var(--voice-level, 0) * 0.28));
+      animation: voice-listening-wash 2.8s ease-in-out infinite;
+    }
+    @keyframes voice-listening-wash {
+      0%, 100% { opacity: 0.7; }
+      50%      { opacity: 1; }
+    }
+    /* transcribing: a brief inward shimmer — the pool draws breath while
+       whisper works. Fast cycle; the state itself only lasts a moment. */
+    .moon-wrapper[data-voice-state="transcribing"] .moon-glow {
+      animation: voice-transcribing-shimmer 0.9s ease-in-out infinite;
+    }
+    @keyframes voice-transcribing-shimmer {
+      0%   { transform: scale(1.10); opacity: 0.55; }
+      60%  { transform: scale(0.94); opacity: 0.95; }
+      100% { transform: scale(1.02); opacity: 0.75; }
+    }
+    /* speaking: a gentle outward ripple — a blurred watercolor ring that
+       feathers to nothing inside its own box (closest-side, the aura lesson)
+       so it never clips into a hard edge. */
+    .moon-wrapper[data-voice-state="speaking"]::after {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      pointer-events: none;
+      background: radial-gradient(circle closest-side,
+        rgba(138, 180, 248, 0) 52%,
+        rgba(138, 180, 248, 0.26) 72%,
+        rgba(165, 148, 238, 0.10) 86%,
+        rgba(138, 180, 248, 0) 100%);
+      animation: voice-speaking-ripple 1.9s ease-out infinite;
+    }
+    @keyframes voice-speaking-ripple {
+      0%   { transform: scale(0.72); opacity: 0; }
+      30%  { opacity: 0.9; }
+      100% { transform: scale(1.45); opacity: 0; }
+    }
+
+    /* ── "Absorbed into the moon" pulse ──────────────────────────────────────
+       Played when the workspace collapses INTO the orb (Rust emits moon-absorb
+       after show()ing it). The widgets are separate OS windows so there is no
+       true genie-suck across them; this quick swallow-and-settle on the orb is
+       the cue that "it went into the moon." A class toggle (added on the event,
+       removed on animationend) so it can replay every collapse. */
+    .moon-wrapper.absorbing {
+      animation: moon-absorb 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+    }
+    @keyframes moon-absorb {
+      0%   { transform: scale(1.32); }
+      55%  { transform: scale(0.9); }
+      100% { transform: scale(1); }
+    }
+    .moon-wrapper.absorbing .moon-glow {
+      animation: moon-absorb-glow 0.5s ease-out both;
+    }
+    @keyframes moon-absorb-glow {
+      0%   { opacity: 1; transform: scale(1.5); }
+      100% { opacity: 0.85; transform: scale(1); }
+    }
+
+    /* Close-✕ chrome — survives the settings modal (Phase 6) because the
+       wizard's ✕ reuses it (class="settings-x wizard-x"). */
+    .settings-x {
+      background: none; border: none; color: #64748b; cursor: pointer;
+      width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+      border-radius: 50%; transition: background 0.2s, color 0.2s;
+    }
+    .settings-x:hover { background: rgba(255, 255, 255, 0.06); color: #f1f5f9; }
+    .settings-x svg { width: 16px; height: 16px; }
+
+    /* Text-input chrome shared by the wizard's fields. */
+    .premium-text-input {
+      width: 100%;
+      height: 32px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      padding: 0 10px;
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      color: #e2e8f0;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    
+    .premium-text-input:focus {
+      border-color: rgba(138, 180, 248, 0.4);
+      background: rgba(0, 0, 0, 0.45);
+    }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Setup Wizard — first-run guided install, in the moon's watercolor hand.
+       Fixed full-window overlay: a plain rgba dim (NO backdrop-filter — on
+       this transparent macOS WKWebView window backdrop-filter intermittently
+       composites the whole surface to fully transparent after a repaint) over
+       a solid dark-glass card. All the "watercolor" is pure CSS: layered
+       off-center radial-gradients + an ORGANIC border-radius that a keyframe
+       slowly morphs — the exact recipe the .moon-bead uses, so the wizard
+       reads as the same brush. ══════════════════════════════════════════ */
+    .wizard-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 320;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(4, 6, 14, 0.66);
+      opacity: 0;
+      pointer-events: none;
+      /* visibility (delayed until the fade-out ends) keeps the hidden
+         wizard out of the tab order — opacity alone leaves invisible
+         buttons focusable for keyboard users. */
+      visibility: hidden;
+      transition: opacity 0.25s ease, visibility 0s linear 0.25s;
+    }
+    .wizard-panel.active {
+      opacity: 1;
+      pointer-events: auto;
+      visibility: visible;
+      transition: opacity 0.25s ease;
+    }
+
+    .wizard-card {
+      position: relative;
+      width: 100%;
+      max-width: 600px;
+      max-height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: #0c1020;
+      border-radius: 26px;
+      box-shadow:
+        0 24px 64px rgba(0, 0, 0, 0.55),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+        inset 0 0 22px rgba(138, 180, 248, 0.05);
+      overflow: hidden;
+      transform: translateY(8px) scale(0.98);
+      transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    .wizard-panel.active .wizard-card { transform: none; }
+
+    /* Ambient watercolor wash: three big soft pigment pools drifting behind
+       the content. Each blot is the moon-bead gradient at a larger scale and
+       a lower opacity, with its own slow morph so the card never feels like
+       a static dialog. pointer-events:none — pure paint. */
+    .wizard-wash {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+    .wash-blot {
+      position: absolute;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      filter: blur(6px);
+      animation: wash-drift 16s ease-in-out infinite alternate;
+    }
+    .wash-a {
+      width: 340px; height: 300px;
+      left: -120px; top: -110px;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(138, 180, 248, 0.14) 0%,
+          rgba(118, 162, 240, 0.20) 55%,
+          rgba(104, 146, 232, 0.10) 80%,
+          rgba(104, 146, 232, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.10) 0%, rgba(165, 148, 238, 0) 60%);
+    }
+    .wash-b {
+      width: 300px; height: 280px;
+      right: -120px; top: 30%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(165, 148, 238, 0.12) 0%,
+          rgba(150, 140, 235, 0.15) 50%,
+          rgba(138, 180, 248, 0.07) 82%,
+          rgba(138, 180, 248, 0) 100%);
+      animation-delay: -6s;
+      animation-duration: 19s;
+    }
+    .wash-c {
+      width: 280px; height: 240px;
+      left: 20%; bottom: -130px;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(126, 184, 240, 0.10) 0%,
+          rgba(118, 162, 240, 0.14) 55%,
+          rgba(96, 138, 226, 0) 100%);
+      animation-delay: -11s;
+      animation-duration: 22s;
+    }
+    @keyframes wash-drift {
+      0%   { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; transform: translate(0, 0) rotate(0deg); }
+      50%  { border-radius: 53% 47% 46% 54% / 45% 55% 48% 52%; transform: translate(14px, -10px) rotate(2deg); }
+      100% { border-radius: 49% 51% 55% 45% / 54% 44% 52% 48%; transform: translate(-8px, 8px) rotate(-2deg); }
+    }
+
+    /* All real content floats above the wash. */
+    .wizard-body {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      padding: 22px 26px 20px;
+      overflow-y: auto;
+    }
+    .wizard-body::-webkit-scrollbar { width: 6px; }
+    .wizard-body::-webkit-scrollbar-track { background: transparent; }
+    .wizard-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+
+    .wizard-x {
+      position: absolute;
+      top: 14px; right: 14px;
+      z-index: 2;
+    }
+
+    /* Step progress beads — tiny watercolor blots strung across the top.
+       pending = faint outline pool; active = lit + shimmering; done = filled. */
+    .wizard-beads {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 18px 0 0;
+    }
+    .wizard-bead {
+      width: 11px; height: 11px;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background: rgba(138, 180, 248, 0.12);
+      box-shadow: inset 0 0 0 1px rgba(138, 180, 248, 0.18);
+      transition: background 0.3s, box-shadow 0.3s, transform 0.3s;
+    }
+    .wizard-bead.active {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.5) 0%,
+          rgba(118, 162, 240, 0.85) 70%,
+          rgba(96, 138, 226, 0) 100%);
+      box-shadow: 0 0 10px rgba(138, 180, 248, 0.45);
+      transform: scale(1.25);
+      animation: bead-pulse 2.4s ease-in-out infinite alternate;
+    }
+    .wizard-bead.done {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(138, 180, 248, 0.55) 0%,
+          rgba(165, 148, 238, 0.6) 75%,
+          rgba(165, 148, 238, 0) 100%);
+      box-shadow: none;
+    }
+    @keyframes bead-pulse {
+      from { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
+      to   { border-radius: 53% 47% 45% 55% / 46% 54% 47% 53%; }
+    }
+
+    /* Steps: only the active one renders. */
+    .wizard-step { display: none; }
+    .wizard-step.active {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      animation: step-wash-in 0.35s ease;
+    }
+    @keyframes step-wash-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    .wizard-step h2 {
+      font-family: var(--font-display);
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: #fff;
+      text-align: center;
+      margin: 14px 0 6px;
+    }
+    .wizard-sub {
+      font-size: 0.86rem;
+      line-height: 1.5;
+      color: #9fb0d0;
+      text-align: center;
+      max-width: 420px;
+      margin: 0 auto 18px;
+    }
+
+    /* The welcome step's hero: a big watercolor moon blot. */
+    .wizard-hero-blot {
+      width: 96px; height: 96px;
+      margin: 8px auto 0;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.30) 0%,
+          rgba(138, 180, 248, 0.40) 42%,
+          rgba(118, 162, 240, 0.62) 68%,
+          rgba(104, 146, 232, 0.78) 82%,
+          rgba(96, 138, 226, 0.28) 92%,
+          rgba(96, 138, 226, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.25) 0%, rgba(165, 148, 238, 0) 60%),
+        radial-gradient(circle at 32% 30%, rgba(126, 184, 240, 0.18) 0%, rgba(126, 184, 240, 0) 55%);
+      box-shadow: 0 0 28px rgba(138, 180, 248, 0.30);
+      animation: hero-wash 7s ease-in-out infinite alternate;
+    }
+    @keyframes hero-wash {
+      from { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
+      to   { border-radius: 52% 48% 46% 54% / 47% 55% 45% 53%; }
+    }
+
+    /* Path-choice cards: three painterly tiles. */
+    .wizard-paths {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin: 6px 0 16px;
+    }
+    .wizard-path-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 12px 14px;
+      background: rgba(255, 255, 255, 0.025);
+      border: none;
+      border-radius: 18px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+      cursor: pointer;
+      font-family: var(--font-body);
+      text-align: center;
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.2s, background 0.2s;
+    }
+    .wizard-path-card:hover {
+      transform: translateY(-3px);
+      background: rgba(138, 180, 248, 0.06);
+      box-shadow:
+        inset 0 0 0 1px rgba(138, 180, 248, 0.35),
+        0 8px 22px rgba(0, 0, 0, 0.35),
+        0 0 18px rgba(138, 180, 248, 0.12);
+    }
+    .wizard-path-title {
+      font-family: var(--font-display);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    .wizard-path-desc {
+      font-size: 0.72rem;
+      line-height: 1.45;
+      color: #8aa0c6;
+    }
+
+    /* Blot icon: a small pigment pool with a line glyph floating on it. */
+    .wizard-blot-icon {
+      position: relative;
+      width: 52px; height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(138, 180, 248, 0.22) 0%,
+          rgba(118, 162, 240, 0.42) 60%,
+          rgba(104, 146, 232, 0.18) 88%,
+          rgba(104, 146, 232, 0) 100%),
+        radial-gradient(circle at 62% 66%, rgba(165, 148, 238, 0.22) 0%, rgba(165, 148, 238, 0) 60%);
+      animation: hero-wash 9s ease-in-out infinite alternate;
+    }
+    .wizard-blot-icon svg {
+      width: 24px; height: 24px;
+      stroke: #f0f6ff;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Form bits: reuse the premium text input look; labels match settings. */
+    .wizard-field { margin: 0 0 12px; }
+    .wizard-field label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #cdd9f5;
+      margin-bottom: 6px;
+    }
+    .wizard-field .field-hint {
+      display: block;
+      font-size: 0.72rem;
+      color: #64748b;
+      margin-top: 5px;
+      line-height: 1.45;
+    }
+
+    /* Buttons: a primary watercolor wash pill + a quiet ghost. */
+    .wizard-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: auto;
+      padding-top: 16px;
+    }
+    .wizard-primary-btn {
+      border: none;
+      cursor: pointer;
+      font-family: var(--font-display);
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #0c1020;
+      padding: 11px 26px;
+      border-radius: 999px;
+      background:
+        radial-gradient(circle at 30% 30%, rgba(240, 247, 255, 0.55) 0%, rgba(240, 247, 255, 0) 55%),
+        linear-gradient(135deg, #a6c6fa 0%, #8ab4f8 45%, #9a8ce6 100%);
+      box-shadow: 0 4px 18px rgba(138, 180, 248, 0.35);
+      transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+    }
+    .wizard-primary-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 22px rgba(138, 180, 248, 0.5); }
+    .wizard-primary-btn:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: none; }
+    .wizard-ghost-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      color: #8aa0c6;
+      padding: 10px 14px;
+      border-radius: 999px;
+      transition: color 0.2s, background 0.2s;
+    }
+    .wizard-ghost-btn:hover { color: #e2e8f0; background: rgba(255, 255, 255, 0.05); }
+
+    /* Copy-paste command block (remote path). */
+    .wizard-cmd-block {
+      position: relative;
+      background: #0d1325;
+      border-radius: 12px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+      padding: 12px 14px;
+      margin: 4px 0 10px;
+    }
+    .wizard-cmd-block pre {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.72rem;
+      line-height: 1.55;
+      color: #c8d6f5;
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: text;
+      -webkit-user-select: text;
+      padding-right: 58px;   /* keep the first line clear of the Copy button */
+    }
+    .wizard-copy-btn {
+      position: absolute;
+      top: 8px; right: 8px;
+      background: rgba(138, 180, 248, 0.12);
+      border: none;
+      border-radius: 8px;
+      color: #8ab4f8;
+      font-family: var(--font-body);
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 5px 10px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    .wizard-copy-btn:hover { background: rgba(138, 180, 248, 0.22); color: #f0f6ff; }
+
+    /* Install progress: each task is a row with a blot bead that morphs while
+       running, settles solid on success, and dries red on failure. */
+    .wizard-tasks {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      margin: 6px 0 10px;
+    }
+    .wizard-task {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 9px 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+    .wizard-task-bead {
+      flex-shrink: 0;
+      width: 13px; height: 13px;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background: rgba(138, 180, 248, 0.1);
+      box-shadow: inset 0 0 0 1px rgba(138, 180, 248, 0.18);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .wizard-task.running .wizard-task-bead {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.5) 0%,
+          rgba(118, 162, 240, 0.9) 70%,
+          rgba(96, 138, 226, 0) 100%);
+      box-shadow: 0 0 10px rgba(138, 180, 248, 0.5);
+      animation: bead-pulse 1.1s ease-in-out infinite alternate;
+    }
+    .wizard-task.ok .wizard-task-bead {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(110, 222, 168, 0.55) 0%,
+          rgba(74, 222, 128, 0.7) 70%,
+          rgba(74, 222, 128, 0) 100%);
+      box-shadow: none;
+    }
+    .wizard-task.fail .wizard-task-bead {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(252, 165, 165, 0.5) 0%,
+          rgba(248, 113, 113, 0.7) 70%,
+          rgba(248, 113, 113, 0) 100%);
+      box-shadow: none;
+    }
+    .wizard-task-label {
+      flex: 1;
+      font-size: 0.8rem;
+      color: #cdd9f5;
+    }
+    .wizard-task.fail .wizard-task-label { color: #fca5a5; }
+    .wizard-task-note {
+      font-size: 0.7rem;
+      color: #64748b;
+      max-width: 45%;
+      text-align: right;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wizard-log {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.66rem;
+      line-height: 1.5;
+      color: #7d8db3;
+      background: #0d1325;
+      border-radius: 10px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+      padding: 10px 12px;
+      max-height: 110px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .wizard-log::-webkit-scrollbar { width: 6px; }
+    .wizard-log::-webkit-scrollbar-track { background: transparent; }
+    .wizard-log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+
+    /* Setup-mode note on the done step: server alive, Claude login still
+       missing. Gold — the moon's "needs your input" color. Code spans inherit
+       the dark chip look. */
+    .wizard-setup-note {
+      color: #fbbf24;
+      font-size: 0.76rem;
+      line-height: 1.7;
+    }
+    .wizard-setup-note code {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.72rem;
+      background: #0d1325;
+      border-radius: 6px;
+      padding: 1px 6px;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    /* Environment-detection note under the path cards ("Luna already lives
+       here"). Same quiet-sub voice, success-tinted. */
+    .wizard-detect-note {
+      color: #4ade80;
+      font-size: 0.76rem;
+      margin-bottom: 10px;
+    }
+
+    /* "Advanced options" disclosure on the local step — defaults just work,
+       the folder picker hides until summoned. */
+    .wizard-advanced {
+      margin: 2px 0 12px;
+    }
+    .wizard-advanced summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.76rem;
+      color: #8aa0c6;
+      padding: 6px 2px;
+      transition: color 0.2s;
+    }
+    .wizard-advanced summary::-webkit-details-marker { display: none; }
+    .wizard-advanced summary::before {
+      content: '▸';
+      display: inline-block;
+      margin-right: 6px;
+      transition: transform 0.2s;
+    }
+    .wizard-advanced[open] summary::before { transform: rotate(90deg); }
+    .wizard-advanced summary:hover { color: #cdd9f5; }
+    .wizard-advanced .wizard-field { margin-top: 10px; }
+
+    /* Connection-test status line. */
+    .wizard-connect-status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 22px;
+      font-size: 0.78rem;
+      text-align: center;
+      margin-top: 4px;
+    }
+    .wizard-connect-status.run  { color: #8ab4f8; }
+    .wizard-connect-status.ok   { color: #4ade80; }
+    .wizard-connect-status.fail { color: #f87171; }
+  </style>
+</head>
+<body>
+
+  <!-- The Draggable Moon -->
+  <div class="moon-container" id="moon" data-tauri-drag-region>
+    <!-- Ambient ladder, rung 1 (Phase 5): the needs-input pip. Lights when a
+         job asks for operator input (job-input-request broadcast); clears on
+         the bridge's dismissal broadcast (answered/cancelled/expired). -->
+    <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden></div>
+    <!-- Ambient ladder, update rung (Slice C): a quiet accent-tinted pip that
+         lights when the Rust updater has staged a verified build (update://ready).
+         Mirrors .needs-input-pip but with the watercolor accent glow (updates are
+         good news, not an alert). Clicking it opens the Updates panel; the moon's
+         own click still opens chat (this pip is pointer-events:auto so the click
+         lands on it, not the drag region behind it). -->
+    <div class="update-pip" id="update-pip" aria-hidden="true" hidden></div>
+    <div class="moon-aura" aria-hidden="true"></div>
+    <div class="moon-wrapper" id="moon-wrapper">
+      <div class="moon-glow"></div>
+      <div class="moon-sphere">
+        <!-- Premium Crescent Moon SVG with a glowing lunar gradient and cute craters -->
+        <svg class="moon-svg" viewBox="0 0 100 100">
+          <defs>
+            <linearGradient id="crescent-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#ffffff" />
+              <stop offset="35%" stop-color="#e2ecfd" />
+              <stop offset="70%" stop-color="#8ab4f8" />
+              <stop offset="100%" stop-color="#1b2a4a" />
+            </linearGradient>
+            <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
+          <!-- Crescent Path: perfectly smooth golden/blue crescent curve -->
+          <path d="M 62 12 A 38 38 0 1 0 88 62 A 30 30 0 1 1 62 12 Z" fill="url(#crescent-grad)" filter="url(#glow-filter)" />
+          <!-- Cute Craters inside the crescent body -->
+          <circle cx="40" cy="42" r="4.5" fill="#05070f" opacity="0.35" />
+          <circle cx="34" cy="60" r="3.5" fill="#05070f" opacity="0.35" />
+          <circle cx="48" cy="28" r="3" fill="#05070f" opacity="0.35" />
+          <circle cx="28" cy="48" r="2.5" fill="#05070f" opacity="0.3" />
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       Setup Wizard — multi-step first-run flow. Auto-opens when no
+       connection has ever been configured (SetupWizard.maybeAutoOpen, gated
+       on a real Tauri runtime so jsdom/frontend-dev never see it uninvited);
+       re-runnable from Settings → Connection → Setup wizard. Three paths:
+         · local   — install + start the Luna server on THIS Mac via
+                     local_shell_exec (git clone → bun install → wake → pulse)
+         · remote  — collect a host, hand back a tailored copy-paste install
+                     command, then verify the resulting server
+         · connect — point the moon at a Luna that is already running
+       Every path funnels into the same connect step: a live hello-frame
+       probe against the entered URL, then persist via save_connection. ═══ -->
+  <div class="wizard-panel" id="setup-wizard" aria-hidden="true">
+    <div class="wizard-card" role="dialog" aria-modal="true" aria-label="Luna setup">
+      <div class="wizard-wash" aria-hidden="true">
+        <span class="wash-blot wash-a"></span>
+        <span class="wash-blot wash-b"></span>
+        <span class="wash-blot wash-c"></span>
+      </div>
+      <button type="button" class="settings-x wizard-x" id="wizard-close-x" aria-label="Close setup">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <div class="wizard-beads" id="wizard-beads" aria-hidden="true">
+        <span class="wizard-bead" data-bead="0"></span>
+        <span class="wizard-bead" data-bead="1"></span>
+        <span class="wizard-bead" data-bead="2"></span>
+        <span class="wizard-bead" data-bead="3"></span>
+        <span class="wizard-bead" data-bead="4"></span>
+      </div>
+      <div class="wizard-body">
+
+        <div class="wizard-step active" data-step="welcome">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2>Welcome to Luna</h2>
+          <p class="wizard-sub">Hi — I’m your moon. I just need to know where Luna, my other half, should live. Pick a spot on the next screen and I’ll take care of the rest.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-skip">Skip for now</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-begin">Begin</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="path">
+          <h2>Where should Luna live?</h2>
+          <p class="wizard-sub">You can change your mind any time — this wizard lives in Settings.</p>
+          <div class="wizard-paths">
+            <button type="button" class="wizard-path-card" data-path="local">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect><line x1="8.5" y1="20" x2="15.5" y2="20"></line><line x1="12" y1="16.5" x2="12" y2="20"></line></svg>
+              </span>
+              <span class="wizard-path-title">This Mac</span>
+              <span class="wizard-path-desc" id="wizard-path-local-desc">Everything stays private, right on this computer</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="remote">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="7" rx="1.6"></rect><rect x="3" y="13.5" width="18" height="7" rx="1.6"></rect><circle cx="7" cy="7" r="0.6"></circle><circle cx="7" cy="17" r="0.6"></circle></svg>
+              </span>
+              <span class="wizard-path-title">My own server</span>
+              <span class="wizard-path-desc">For a home server or Linux box you own</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="connect">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+              </span>
+              <span class="wizard-path-title">Already running</span>
+              <span class="wizard-path-desc">Just connect to a Luna that exists somewhere</span>
+            </button>
+          </div>
+          <p class="wizard-sub wizard-detect-note" id="wizard-detect-note" hidden></p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-path-back">Back</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="local">
+          <h2 id="wizard-local-title">Set up Luna on this Mac</h2>
+          <p class="wizard-sub" id="wizard-local-sub">I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.</p>
+          <details class="wizard-advanced">
+            <summary>Advanced options</summary>
+            <div class="wizard-field">
+              <label for="wizard-local-dir">Install folder</label>
+              <input type="text" id="wizard-local-dir" class="premium-text-input" value="~/luna" spellcheck="false" autocomplete="off">
+              <span class="field-hint">Luna’s code lives here; her data and settings live in ~/.luna. The defaults are fine for almost everyone.</span>
+            </div>
+          </details>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-connect" hidden>Just connect to it</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-local-start">Install &amp; start</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="progress">
+          <h2 id="wizard-progress-title">Painting Luna onto this Mac…</h2>
+          <p class="wizard-sub" id="wizard-progress-sub">This can take a few minutes the first time. Feel free to watch the beads.</p>
+          <div class="wizard-tasks" id="wizard-progress-list"></div>
+          <pre class="wizard-log" id="wizard-progress-log" hidden></pre>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-progress-back" hidden>Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-progress-next" hidden>Connect to it</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="remote">
+          <h2>Install on your server</h2>
+          <p class="wizard-sub">Tell me your server’s name and I’ll write the whole command for you. Paste it into the Terminal app, let it finish, then come back here.</p>
+          <div class="wizard-field">
+            <label for="wizard-remote-host">Your server</label>
+            <input type="text" id="wizard-remote-host" class="premium-text-input" placeholder="like: me@my-server" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-cmd-block">
+            <button type="button" class="wizard-copy-btn" id="wizard-remote-copy">Copy</button>
+            <pre id="wizard-remote-cmd"></pre>
+          </div>
+          <div class="wizard-field">
+            <span class="field-hint">When it finishes, the last line it prints is your secret key — keep it handy, you’ll paste it on the next step. (For safety, Luna talks only over your private network, like Tailscale.)</span>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-remote-back">Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-remote-continue">I ran it — continue</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="connect">
+          <h2>Point your moon at Luna</h2>
+          <p class="wizard-sub">Where does Luna live? I’ll listen for her hello before saving anything.</p>
+          <div class="wizard-field">
+            <label for="wizard-connect-url">Luna’s address</label>
+            <input type="text" id="wizard-connect-url" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-field">
+            <label for="wizard-connect-token">Secret key <span style="font-weight:400;color:#64748b;">(optional)</span></label>
+            <input type="password" id="wizard-connect-token" class="premium-text-input" placeholder="Printed during install — leave empty if you don’t have one" autocomplete="off">
+          </div>
+          <div class="wizard-connect-status" id="wizard-connect-status"></div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-connect-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-test-btn">Test connection</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-finish-btn">Save &amp; finish</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="done">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2 id="wizard-done-title">Luna is tethered</h2>
+          <p class="wizard-sub" id="wizard-done-summary">Your moon has a home.</p>
+          <!-- Shown only when the verified hello reported setup mode: the
+               server is alive but has no Claude login yet, so chat would
+               otherwise fail silently. Gold = needs-your-input, per the
+               moon's notification language. -->
+          <p class="wizard-sub wizard-setup-note" id="wizard-done-setup" hidden>Luna is awake, but she hasn’t met Claude yet. In the Terminal app run <code>claude setup-token</code>, copy the token it prints, and add this line to <code>~/.luna/.env</code> on Luna’s machine:<br><code>CLAUDE_CODE_OAUTH_TOKEN=…the token…</code><br>Then restart Luna (re-run this wizard and pick “This Mac” → Update) and she’s ready to chat.</p>
+          <p class="wizard-sub" style="font-size: 0.74rem;">Your moon keeps itself up to date on its own — and any time Luna herself needs a refresh, just re-run this wizard from Settings and pick “This Mac” again.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-primary-btn" id="wizard-done-btn">Start chatting</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+
+    // =========================================================================
+    // ⚠️  WIRE PROTOCOL VERSION — SECOND SOURCE OF TRUTH (KEEP IN SYNC!)  ⚠️
+    // =========================================================================
+    // This MUST match `UI_WS_PROTOCOL_VERSION` in
+    //   packages/ui-ws/src/protocol.ts
+    // index.html is plain vanilla JS with NO imports/build step, so the server's
+    // version constant cannot be imported — it is duplicated here by necessity.
+    //
+    // This literal is INHERENT DRIFT: the server-side snapshot test
+    //   packages/ui-ws/test/frame-set.protocol.test.ts
+    // pins the frame-type SET + the server's version, but it does NOT and CANNOT
+    // see this client-side number. If you bump UI_WS_PROTOCOL_VERSION on the
+    // server, BUMP THIS TOO. The only mitigation is this loud comment + the
+    // runtime hello-handshake check below (which warns the operator on mismatch).
+    // Single source: vendor/moon-protocol.js mirrors packages/ui-ws.
+    const MOON_EXPECTED_PROTOCOL_VERSION = LunaProtocol.PROTOCOL_VERSION;
+
+    // =========================================================================
+    // ── LUNA COMPANION NATIVE MODULE ─────────────────────────────────────────
+    // =========================================================================
+
+    /**
+     * Styled, formatted console logger for native-web runtime monitoring.
+     */
+    const Logger = {
+      prefix: '%c[Luna Companion]',
+      style: 'color: #8ab4f8; font-weight: bold; background: rgba(138, 180, 248, 0.08); padding: 2px 6px; border-radius: 4px;',
+      
+      info(message, ...args) {
+        console.log(this.prefix, this.style, message, ...args);
+      },
+      warn(message, ...args) {
+        console.warn('%c[Luna Warning]', 'color: #f59e0b; font-weight: bold;', message, ...args);
+      },
+      error(message, ...args) {
+        console.error('%c[Luna Error]', 'color: #ef4444; font-weight: bold;', message, ...args);
+      }
+    };
+
+    /**
+     * DOM references cache — Phase 6 (S5) hub-lean set: the moon itself plus
+     * the setup wizard. The chat moved to frontend/chat.html (Phase 4) and
+     * every settings tab is a panel window (Phase 3).
+     */
+    const DOM = {
+      moon: document.getElementById('moon'),
+      moonWrapper: document.getElementById('moon-wrapper'),
+      moonSvg: document.querySelector('.moon-svg'),
+      // Setup-wizard handles.
+      wizardPanel:        document.getElementById('setup-wizard'),
+      wizardCloseX:       document.getElementById('wizard-close-x'),
+      wizardBeads:        document.getElementById('wizard-beads'),
+      wizardBegin:        document.getElementById('wizard-begin'),
+      wizardSkip:         document.getElementById('wizard-skip'),
+      wizardPathBack:     document.getElementById('wizard-path-back'),
+      wizardLocalDir:     document.getElementById('wizard-local-dir'),
+      wizardLocalBack:    document.getElementById('wizard-local-back'),
+      wizardLocalStart:   document.getElementById('wizard-local-start'),
+      wizardLocalConnect: document.getElementById('wizard-local-connect'),
+      wizardLocalTitle:   document.getElementById('wizard-local-title'),
+      wizardLocalSub:     document.getElementById('wizard-local-sub'),
+      wizardDetectNote:   document.getElementById('wizard-detect-note'),
+      wizardPathLocalDesc: document.getElementById('wizard-path-local-desc'),
+      wizardProgressTitle: document.getElementById('wizard-progress-title'),
+      wizardProgressSub:  document.getElementById('wizard-progress-sub'),
+      wizardProgressList: document.getElementById('wizard-progress-list'),
+      wizardProgressLog:  document.getElementById('wizard-progress-log'),
+      wizardProgressBack: document.getElementById('wizard-progress-back'),
+      wizardProgressNext: document.getElementById('wizard-progress-next'),
+      wizardRemoteHost:   document.getElementById('wizard-remote-host'),
+      wizardRemoteCmd:    document.getElementById('wizard-remote-cmd'),
+      wizardRemoteCopy:   document.getElementById('wizard-remote-copy'),
+      wizardRemoteBack:   document.getElementById('wizard-remote-back'),
+      wizardRemoteContinue: document.getElementById('wizard-remote-continue'),
+      wizardConnectUrl:   document.getElementById('wizard-connect-url'),
+      wizardConnectToken: document.getElementById('wizard-connect-token'),
+      wizardConnectStatus: document.getElementById('wizard-connect-status'),
+      wizardConnectBack:  document.getElementById('wizard-connect-back'),
+      wizardTestBtn:      document.getElementById('wizard-test-btn'),
+      wizardFinishBtn:    document.getElementById('wizard-finish-btn'),
+      wizardDoneTitle:    document.getElementById('wizard-done-title'),
+      wizardDoneSummary:  document.getElementById('wizard-done-summary'),
+      wizardDoneSetup:    document.getElementById('wizard-done-setup'),
+      wizardDoneBtn:      document.getElementById('wizard-done-btn')
+    };
+
+    /**
+     * Shared state manager — Phase 6 hub-lean set: connection state
+     * and the moon's press/click discrimination.
+     */
+
+    const State = {
+      pressStartTime: 0,
+      pressStartX: 0,
+      pressStartY: 0,
+      ws: null,
+      wsUrl: 'ws://127.0.0.1:4753/ui',
+      wsToken: '',
+      reconnectAttempts: 0,
+      isManuallyClosing: false,
+      // Last connection-status class. The hub lost its status DOM with the
+      // chat header (the chat window renders its own dot) — kept as state for
+      // logs and tests.
+      connStatus: 'disconnected',
+      // Pending scheduleReconnect() timer (so a fresh connect() can cancel it
+      // before opening a second socket).
+      reconnectTimer: null,
+      // Connection generation counter (fix-6). Bumped each connect(); each
+      // socket's handlers capture their gen and ignore events if superseded.
+      connGen: 0,
+      // version-skew: true once a protocol-version mismatch has been logged, so
+      // reconnects (which re-deliver `hello`) don't spam duplicates.
+      protocolNoticeShown: false
+    };
+
+    /**
+     * Tauri Window & OS integration services.
+     */
+    const TauriService = {
+      // Last logical window size we requested. Kept current by setWindowSize so the
+      // resize grip can read the starting size synchronously (no awaited IPC on grab).
+      // Minimized footprint is 140×185 — taller than wide so the satellites have
+      // room to sit in an arc BELOW the moon (not on top of it).
+      lastSize: { w: 140, h: 185 },
+
+      async setWindowSize(width, height) {
+        if (!window.__TAURI__) return;
+        this.lastSize = { w: width, h: height };
+        try {
+          const { getCurrentWindow, LogicalSize } = window.__TAURI__.window;
+          const appWindow = getCurrentWindow();
+          await appWindow.setSize(new LogicalSize(width, height));
+          Logger.info(`Resized window logical boundary: ${width}x${height}`);
+        } catch (e) {
+          Logger.error("Tauri window resizing failure:", e);
+        }
+      },
+
+      async applyAlwaysOnTop(enabled) {
+        if (!window.__TAURI__) return;
+        try {
+          const { getCurrentWindow } = window.__TAURI__.window;
+          const appWindow = getCurrentWindow();
+          await appWindow.setAlwaysOnTop(enabled);
+          Logger.info(`Window alwaysOnTop state updated: ${enabled}`);
+        } catch (e) {
+          Logger.error("Tauri window always-on-top updates failure:", e);
+        }
+      },
+
+      startDragging() {
+        if (window.__TAURI__) {
+          try {
+            window.__TAURI__.window.getCurrentWindow().startDragging();
+            Logger.info("Initiated native window dragging region");
+          } catch (e) {
+            Logger.error("Tauri window dragging error:", e);
+          }
+        }
+      }
+      // Note: corner resize is NOT done via the native startResizeDragging (unreliable on
+      // a borderless macOS window); the resize-grip handler drives setWindowSize directly.
+    };
+
+    /**
+     * Real WebSocket connection manager and wire protocol implementation.
+     */
+
+    const WebSocketEngine = {
+      connect() {
+        if (State.ws) {
+          this.disconnect();
+        }
+
+        // fix-6: each connect() bumps the generation. Handlers attached below
+        // capture this gen; a superseded socket's late async events (which
+        // cannot be detached because they were added via addEventListener) are
+        // ignored once a newer connect() has incremented State.connGen.
+        const myGen = ++State.connGen;
+        if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
+
+        Logger.info(`Connecting to WebSocket: ${State.wsUrl}`);
+        this.updateStatus('connecting', 'Connecting...');
+        State.isManuallyClosing = false;
+
+        const fullUrl = LunaProtocol.buildWsUrl(State.wsUrl, State.wsToken);
+
+        try {
+          State.ws = new WebSocket(fullUrl);
+        } catch (e) {
+          Logger.error("WebSocket creation error:", e);
+          this.updateStatus('disconnected', 'Connection Error');
+          this.scheduleReconnect();
+          return;
+        }
+
+        State.ws.addEventListener('open', () => {
+          if (myGen !== State.connGen) return;
+          Logger.info("WebSocket connected successfully");
+          State.reconnectAttempts = 0;
+          this.updateStatus('connected', 'Connected');
+          // Phase 4: NO thread sync — the chat WINDOW owns the thread
+          // (one-window-per-thread; a hub subscribe would steal
+          // secret-request/local-shell bindings). The hub connection is
+          // hello-only: the widget directory, ambient broadcasts, capability
+          // caches.
+        });
+
+        State.ws.addEventListener('message', (event) => {
+          if (myGen !== State.connGen) return;
+          try {
+            const frame = JSON.parse(event.data);
+            this.handleFrame(frame);
+          } catch (e) {
+            Logger.warn("Malformed WebSocket frame dropped:", e);
+          }
+        });
+
+        State.ws.addEventListener('close', (event) => {
+          if (myGen !== State.connGen) return;            // fix-6 gen gate — MUST be first line
+          Logger.warn(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
+          this.updateStatus('disconnected', 'Disconnected');
+          if (!State.isManuallyClosing) {
+            this.scheduleReconnect();
+          }
+        });
+
+        State.ws.addEventListener('error', (event) => {
+          if (myGen !== State.connGen) return;
+          Logger.error("WebSocket transport error occurred");
+          this.updateStatus('disconnected', 'Error');
+        });
+      },
+
+      disconnect() {
+        if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
+        if (State.ws) {
+          Logger.info("Disconnecting WebSocket client manually");
+          State.isManuallyClosing = true;
+          try {
+            State.ws.close();
+          } catch (e) {
+            // ignore
+          }
+          State.ws = null;
+        }
+      },
+
+      /**
+       * Summon-by-name: send the widget registry (kind/title/description) as
+       * a widget-directory frame. The registry ships with the app
+       * (vendor/widget-registry.json — the same file Rust compiles in), so
+       * the server learns what is openable FROM the client and the agent can
+       * only ever name kinds this build actually ships.
+       */
+      async sendWidgetDirectory() {
+        if (this._widgetDirectory === undefined) {
+          try {
+            const res = await fetch('vendor/widget-registry.json');
+            const reg = await res.json();
+            this._widgetDirectory = (reg && Array.isArray(reg.widgets) ? reg.widgets : [])
+              .filter((w) => w && typeof w.kind === 'string')
+              .map((w) => ({
+                kind: w.kind,
+                title: typeof w.title === 'string' ? w.title : w.kind,
+                description: typeof w.description === 'string' ? w.description : '',
+              }));
+          } catch (_) {
+            this._widgetDirectory = []; // fetch unavailable (jsdom/dev) — announce nothing
+          }
+        }
+        if (this._widgetDirectory.length > 0) {
+          this.send({ type: 'widget-directory', widgets: this._widgetDirectory });
+        }
+      },
+
+      send(frame) {
+        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+          try {
+            State.ws.send(JSON.stringify(frame));
+          } catch (e) {
+            Logger.error("Failed to send frame over WebSocket:", e);
+          }
+        } else {
+          Logger.warn("Attempted to send frame while WebSocket was not OPEN", frame);
+        }
+      },
+
+      // The hub lost its status DOM with the chat header (Phase 6) — the chat
+      // window renders its own connection dot. Track on State + log only.
+      updateStatus(statusClass, text) {
+        State.connStatus = statusClass;
+        Logger.info(`Connection status: ${statusClass} (${text})`);
+      },
+
+      /**
+       * VERSION-SKEW defence (client half) — log-only in the hub since Phase 6
+       * (no transcript surface here; the chat WINDOW shows the user-facing
+       * banner from its own hello). Philosophy unchanged: never block over a
+       * version bump — warn loudly and keep going.
+       */
+      checkProtocolVersion(frame) {
+        const serverVersion = frame.protocolVersion;
+
+        // Absent — older server that predates protocolVersion. Soft note, once.
+        if (serverVersion === undefined || serverVersion === null) {
+          if (!State.protocolNoticeShown) {
+            State.protocolNoticeShown = true;
+            Logger.warn(
+              `Server did not advertise a protocol version; expected v${MOON_EXPECTED_PROTOCOL_VERSION}. ` +
+              `Assuming compatible (older server). Some features may differ.`
+            );
+          }
+          return;
+        }
+
+        // Match — nothing to do. Leave 'connected' as set by 'open'.
+        if (serverVersion === MOON_EXPECTED_PROTOCOL_VERSION) {
+          return;
+        }
+
+        // MISMATCH — warn loudly, but keep going.
+        Logger.error(
+          `Protocol version mismatch: this app expects v${MOON_EXPECTED_PROTOCOL_VERSION} ` +
+          `but the server speaks v${serverVersion}. Update Luna Moon (or the server).`
+        );
+        this.updateStatus('version-warning', `Connected (protocol v${serverVersion} ≠ v${MOON_EXPECTED_PROTOCOL_VERSION})`);
+        State.protocolNoticeShown = true;
+      },
+
+      /**
+       * Build identity (additive) — cache-only since Phase 6: the hub has no
+       * header element anymore; the chat window renders its own build SHA from
+       * its own hello. Cached for diagnostics/panels.
+       */
+      applyBuildSha(frame) {
+        const sha = frame && typeof frame.buildSha === 'string' ? frame.buildSha.trim() : '';
+        try {
+          if (sha) localStorage.setItem('luna_build_sha', sha);
+          else localStorage.removeItem('luna_build_sha');
+        } catch (_) { /* quota — cosmetic cache only */ }
+      },
+
+      /**
+       * Cache the hello's `availableModels` ids for the settings.connection
+       * PANEL (its window has no hello of its own at open time; it reads this
+       * on render). The hub's own model dropdown died with the settings modal.
+       */
+      applyAvailableModels(frame) {
+        const models = frame && Array.isArray(frame.availableModels) ? frame.availableModels : [];
+        try {
+          localStorage.setItem(
+            'luna_available_models',
+            JSON.stringify(models.filter((m) => m && typeof m.id === 'string' && m.id).map((m) => m.id))
+          );
+        } catch (_) { /* quota/serialization — cosmetic cache only */ }
+      },
+
+      // ── Back on the server (hello landed): signal reconnect success.
+      onReattached() {
+        this.updateStatus('connected', 'Connected');
+      },
+
+      scheduleReconnect() {
+        const delay = Math.min(1000 * Math.pow(2, State.reconnectAttempts), 16000);
+        State.reconnectAttempts++;
+        Logger.info(`Scheduling reconnect attempt #${State.reconnectAttempts} in ${delay}ms`);
+        if (State.reconnectTimer) clearTimeout(State.reconnectTimer);
+        State.reconnectTimer = setTimeout(() => {
+          State.reconnectTimer = null;
+          if (!State.ws || State.ws.readyState === WebSocket.CLOSED) {
+            this.connect();
+          }
+        }, delay);
+      },
+
+      handleFrame(frame) {
+        Logger.info(`Received frame type: "${frame.type}"`, frame);
+        // Dispatch via the vendor frame registry. Unknown frame types are
+        // ignored — exactly the old switch's missing-default behavior.
+        MoonFrames.dispatch(frame);
+      }
+    };
+
+    // ── UI-WS frame handlers ──────────────────────────────────────────────
+    // The hub's COMPLETE frame set (shared registry, vendor/moon-ws.js):
+    // hello + the needs-input pip pair + widget-open + open-artifact-widget.
+    // Everything else is deliberately unregistered —
+    //   · skill-*/connector-*/vault-*/register-op-token-status: the settings
+    //     PANELS consume them on their own WS connections (Phase 3);
+    //   · thread/assistant/tool/survey/secret/local-shell frames: thread-bound
+    //     — only the chat WINDOW subscribes a thread, so the hub can never
+    //     receive them (Phase 4; deleted in the Phase 6 cleanup);
+    //   · artifact-*/workflow-* broadcasts: arrive on every connection, but
+    //     the hub has no artifacts/workflows UI anymore — dropped (Phase 6).
+    // Unknown frames are ignored by MoonFrames.dispatch.
+    const MoonFrames = LunaWS.createFrameRegistry();
+
+    MoonFrames.register('hello', (frame) => {
+      // The server authenticated us. The hub is hello-only (Phase 4): no
+      // thread sync — chat windows own threads.
+      WebSocketEngine.checkProtocolVersion(frame);
+      // Phase 4: hello IS the hub's reattach signal.
+      WebSocketEngine.onReattached();
+      // Summon-by-name (widget-system.md): announce this host's widget
+      // directory so the agent's open_widget tool can summon panels. Sent on
+      // every hello — the server stores it per-connection.
+      WebSocketEngine.sendWidgetDirectory();
+      // Additive caches for other windows (the hub renders neither itself).
+      WebSocketEngine.applyBuildSha(frame);
+      WebSocketEngine.applyAvailableModels(frame);
+    });
+
+    // Ambient ladder rung 1 (Phase 5): a running job asked for input. Light
+    // the pip and summon the NOW rail (singleton — focuses if already open).
+    // The hub's hello-only connection receives these broadcasts; the rail
+    // (its own connection) hosts the actual answer card.
+    const PendingInputs = new Set();
+    const renderPip = () => {
+      const pip = document.getElementById('needs-input-pip');
+      if (pip) pip.hidden = PendingInputs.size === 0;
+    };
+    MoonFrames.register('job-input-request', (frame) => {
+      if (!frame || typeof frame.requestId !== 'string') return;
+      PendingInputs.add(frame.requestId);
+      renderPip();
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('open_widget', { kind: 'now' })
+          .catch((e) => Logger.warn('auto-open now rail failed:', e));
+      }
+    });
+    MoonFrames.register('job-input-status', (frame) => {
+      // Any status for a request settles it (answered/cancelled/expired —
+      // the bridge broadcasts dismissals to every surface).
+      if (!frame || typeof frame.requestId !== 'string') return;
+      PendingInputs.delete(frame.requestId);
+      renderPip();
+    });
+
+    // ── Update pip (ambient ladder, update rung — Slice C surface #3) ──────────
+    // The quietest of the three update nudges: a soft accent pip on the orb that
+    // lights when the Rust updater has staged a VERIFIED build (update://ready).
+    // The composer banner is the primary nudge and the Updates panel is the full
+    // narrative; this is just the ambient hint when no chat window is on screen.
+    // Clicking the pip opens the Updates panel (the moon's own click still opens
+    // chat — the pip is its own pointer target, sitting above the drag region).
+    const showUpdatePip = () => {
+      const pip = document.getElementById('update-pip');
+      if (pip) pip.hidden = false;
+    };
+    const updatePipEl = document.getElementById('update-pip');
+    if (updatePipEl) {
+      updatePipEl.addEventListener('click', (e) => {
+        // The pip is its own pointer target; keep its click from bubbling.
+        // (The moon never listens for `click` — its open-chat fires on
+        // `pointerup` — so the real open-chat guard is the pointerup stop
+        // below; this just keeps the click clean for any future listener.)
+        e.stopPropagation();
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('open_widget', { kind: 'settings.updates' })
+            .catch((err) => Logger.warn('open updates panel failed:', err));
+        }
+      });
+      // The moon opens chat on `pointerup` (and starts its drag on
+      // `pointerdown`/`pointermove`) — it has NO click listener. So a pointer
+      // event that starts on the pip must NOT reach #moon, or a pip tap could
+      // co-trigger open-chat (when a recent moon press left pressStartTime/XY
+      // within the 280ms / 5px open threshold). Stop the whole pointer
+      // sequence so the pip opens ONLY the Updates panel.
+      updatePipEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+      updatePipEl.addEventListener('pointermove', (e) => e.stopPropagation());
+      updatePipEl.addEventListener('pointerup', (e) => e.stopPropagation());
+    }
+    // Light the pip on the app-wide update://ready broadcast; an earlier
+    // update://available is an optional softer hint. Replay-on-boot via
+    // update_state so a build staged before the hub loaded still surfaces.
+    if (window.__TAURI__) {
+      const T = window.__TAURI__;
+      try {
+        if (T.event && typeof T.event.listen === 'function') {
+          T.event.listen('update://ready', () => showUpdatePip()).catch(() => {});
+          T.event.listen('update://available', () => showUpdatePip()).catch(() => {});
+        }
+      } catch (_) { /* best-effort */ }
+      try {
+        if (T.core && typeof T.core.invoke === 'function') {
+          T.core.invoke('update_state')
+            .then((dto) => {
+              if (dto && (dto.phase === 'ready' || dto.phase === 'available')) showUpdatePip();
+            })
+            .catch(() => { /* command absent on older cores → ignore */ });
+        }
+      } catch (_) { /* best-effort */ }
+    }
+
+    MoonFrames.register('widget-open', (frame) => {
+      // Summon-by-name, return leg: the agent asked for a widget by kind.
+      // open_widget resolves it through the COMPILED-IN registry (unknown
+      // kinds are rejected in Rust), so this frame can summon shipped UI but
+      // never conjure anything else.
+      if (window.__TAURI__ && window.__TAURI__.core && typeof frame.kind === 'string') {
+        // Phase 8: optional instance params ride through to Rust, which
+        // appends them to the page URL with fail-closed key validation —
+        // e.g. {thread} opens a direct-line chat window per thread.
+        const args = { kind: frame.kind };
+        if (frame.params && typeof frame.params === 'object') args.params = frame.params;
+        window.__TAURI__.core.invoke('open_widget', args)
+          .catch((e) => Logger.warn('widget-open failed:', e));
+      }
+    });
+
+    MoonFrames.register('open-artifact-widget', (frame) => {
+      // Content-tier sibling of widget-open: the agent built or reopened a
+      // CONTENT artifact (a kind='widget' or kind='mcp-app' pinned artifact).
+      // Pop it via the open_artifact_widget Tauri command, which focuses an
+      // already-open window (idempotent) and renders the artifact in the
+      // sandboxed widget.html cage — it can never open a system panel this way.
+      if (window.__TAURI__ && window.__TAURI__.core &&
+          frame && typeof frame.artifactId === 'string' && frame.artifactId) {
+        window.__TAURI__.core.invoke('open_artifact_widget', {
+          artifactId: frame.artifactId,
+          title: typeof frame.title === 'string' && frame.title ? frame.title : 'Artifact',
+        }).catch((e) => Logger.warn('open-artifact-widget failed:', e));
+      }
+    });
+
+    // Test-only hooks. jsdom suites drive the hub through these instead of a
+    // real socket / Tauri runtime. Production code never reads them.
+    if (typeof window !== 'undefined') {
+      window.__MoonInternals = window.__MoonInternals || {};
+      // Frame-pipeline driver: feed a ws frame straight into the dispatcher.
+      window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
+      window.__MoonInternals.WebSocketEngine = WebSocketEngine;
+      window.__MoonInternals.TauriService = TauriService;
+      // Mutable connection State so tests can drive/assert it.
+      window.__MoonInternals.State = State;
+      // Update-pip driver (Slice C) so the jsdom suite can light the orb pip.
+      window.__MoonInternals.showUpdatePip = showUpdatePip;
+    }
+
+    /**
+     * Settings — Phase 6 hub remainder. The modal died in Phase 3/6 (the gear
+     * lives in the chat header and opens the settings launcher PANEL); what's
+     * left is boot plumbing: load + apply persisted values, persist the
+     * connection pair, and the silent self-update boot check.
+     */
+    const SettingsEngine = {
+      // Persist the (url, token) PAIR to the mode-600 ~/.luna/moon-connection.json
+      // via the Rust save_connection command (keeps the token out of the
+      // XSS-reachable localStorage). No-op outside Tauri so the page still works
+      // in a plain browser during frontend dev.
+      // Returns true if the secure-file write succeeded, false otherwise (or when
+      // not under Tauri). Callers use the result to avoid purging the only
+      // surviving copy of the token before it is safely persisted.
+      async persistConnection(url, token) {
+        if (!(window.__TAURI__ && window.__TAURI__.core)) return false;
+        try {
+          // NOTE: invoke arg keys are the Rust param names (url/token), which are
+          // distinct from the file's JSON keys (wsUrl/wsToken). The Rust
+          // save_connection writes into the ACTIVE profile slot, preserving the
+          // other channel's creds.
+          await window.__TAURI__.core.invoke('save_connection', { url, token });
+          return true;
+        } catch (e) {
+          Logger.error("Failed to invoke save_connection via Tauri:", e);
+          return false;
+        }
+      },
+
+      async load() {
+        Logger.info("Loading saved settings from localStorage...");
+        // The preference CONTROLS live in settings panels (Phase 3); the hub
+        // only APPLIES the persisted values at boot. always-on-top is the only
+        // boot-apply left.
+        const savedAlwaysOnTop = localStorage.getItem('luna_always_on_top');
+        TauriService.applyAlwaysOnTop(savedAlwaysOnTop === null || savedAlwaysOnTop === 'true');
+
+        // Load WebSocket configuration.
+        //
+        // Phase 2 C2: resolution order:
+        //   1. MoonSession.resolveBootRoute() — reads client.toml via C3 Tauri
+        //      commands (get_panel_route → list_routes → load_route).  Returns
+        //      a RouteInfo on success, null when no client.toml is present.
+        //   2. Legacy path — load_connection → moon-connection.json (unchanged).
+        //   3. Last resort — bare luna_ws_url localStorage key (legacy cache,
+        //      read-only; writes have been removed).
+        //
+        // The token must NOT live in localStorage (XSS-reachable). Under Tauri
+        // it is read from the mode-600 ~/.luna/moon-connection.json; outside
+        // Tauri we degrade to localStorage so frontend dev keeps working.
+        let loadedUrl = null;
+        let loadedToken = null;
+        let resolvedRouteKey = null;  // for observability + namespaced cache
+
+        // ── Step 0: one-time migration from moon-connection.json → client.toml ─
+        // Runs before resolveBootRoute so client.toml exists when C2 reads it.
+        // Idempotent: Rust returns early when client.toml already exists.
+        // Non-blocking: a failure here logs and falls through to the legacy path.
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            await window.__TAURI__.core.invoke('migrate_legacy_connection');
+          }
+        } catch (e) {
+          Logger.warn('[boot] legacy migration skipped:', e);
+        }
+
+        // ── Step 1: try the route-keyed path (Phase 2 C2) ──────────────────
+        if (typeof MoonSession !== 'undefined') {
+          try {
+            const route = await MoonSession.resolveBootRoute();
+            if (route) {
+              loadedUrl = route.endpoints[0];
+              // Phase 2 takes ONLY the URL from the route. The token is NOT taken
+              // from route.tokenRef here — it continues to come from the secure
+              // moon-connection.json via load_connection (Step 2 below). tokenRef
+              // is intentionally ignored until Phase 3 resolves env:/file:/op://
+              // refs into real tokens. Do NOT pass tokenRef as wsToken — a scheme
+              // ref string would fail auth.
+              // KNOWN LIMITATION (Phase 2): if a migrated client.toml default route
+              // points at a DIFFERENT server than the legacy moon-connection.json
+              // token was minted for, the connection uses the new URL with the old
+              // token and will fail auth until Phase 3 wires per-route token resolution.
+              resolvedRouteKey = route.key;
+              Logger.info(`[boot] route-keyed resolution: key="${route.key}" endpoint="${loadedUrl}"`);
+              // Expose on window for agent-browser / smoke-test observability.
+              if (typeof window !== 'undefined') {
+                window.__moonBootRoute = { key: route.key, endpoint: loadedUrl, label: route.label };
+              }
+            }
+          } catch (e) {
+            Logger.warn('[boot] MoonSession.resolveBootRoute threw unexpectedly:', e);
+          }
+        }
+
+        // ── Step 2: legacy load_connection path ─────────────────────────────
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          try {
+            const conn = await window.__TAURI__.core.invoke('load_connection');
+            if (conn) {
+              // File keys are camelCase (wsUrl/wsToken), matching save_connection
+              // and the luna-config emit.
+              // URL: route-keyed path wins if it resolved; legacy fills the gap.
+              if (!loadedUrl && typeof conn.wsUrl === 'string' && conn.wsUrl) loadedUrl = conn.wsUrl;
+              if (typeof conn.wsToken === 'string') loadedToken = conn.wsToken;
+            }
+          } catch (e) {
+            Logger.error("Failed to invoke load_connection via Tauri:", e);
+          }
+
+          // ONE-TIME MIGRATION: if a stale plaintext token still sits in
+          // localStorage (older builds wrote it there), move it into the secure
+          // file and purge the localStorage copy. Only migrate when the file had
+          // nothing, so an explicit file value always wins.
+          const legacyToken = localStorage.getItem('luna_ws_token');
+          if (legacyToken !== null) {
+            if (loadedToken === null) {
+              // Use the legacy token for THIS session regardless of write outcome.
+              loadedToken = legacyToken;
+              // Use the stale bare luna_ws_url only as a migration helper; no
+              // longer written back (C2: removed all bare-key writes).
+              const migrateUrl = loadedUrl || localStorage.getItem('luna_ws_url') || 'ws://127.0.0.1:4753/ui';
+              const migrated = await this.persistConnection(migrateUrl, legacyToken);
+              if (loadedUrl === null) loadedUrl = migrateUrl;
+              if (migrated) {
+                // Only purge the plaintext copy once the secure file actually
+                // holds it — otherwise a failed write would lose the token
+                // permanently (it would retry on the next launch instead).
+                localStorage.removeItem('luna_ws_token');
+                Logger.info("Migrated legacy localStorage WS token into ~/.luna/moon-connection.json");
+              } else {
+                Logger.warn("Legacy WS token migration write failed; leaving localStorage copy for retry next launch");
+              }
+            } else {
+              // The secure file is already authoritative; the stale plaintext
+              // copy is safe to purge unconditionally.
+              localStorage.removeItem('luna_ws_token');
+            }
+          }
+        } else {
+          // Plain browser (frontend dev): degrade to localStorage.
+          const savedWsToken = localStorage.getItem('luna_ws_token');
+          if (savedWsToken !== null) loadedToken = savedWsToken;
+        }
+
+        // ── Step 3: URL resolution — route-keyed > secure file > legacy cache ─
+        // The bare luna_ws_url key is now read-only (no writes); treat it as a
+        // last-resort fallback for un-migrated sessions only.
+        const legacyUrlCache = localStorage.getItem('luna_ws_url');
+        State.wsUrl = loadedUrl || legacyUrlCache || 'ws://127.0.0.1:4753/ui';
+
+        // Token: from secure file (or localStorage fallback off-Tauri), else empty.
+        // (The URL/token INPUTS live in the settings.connection panel.)
+        State.wsToken = loadedToken !== null ? loadedToken : '';
+
+        Logger.info("Settings synchronized successfully");
+
+        // Establish the initial WebSocket connection!
+        WebSocketEngine.connect();
+      },
+
+      // ---- App self-update (GitHub Releases, via the Rust updater commands) ----
+      // Phase 6: the hub lost both update surfaces — the settings row lives in
+      // the settings.updates PANEL and the in-chat banner died with the chat
+      // panel — so the silent boot check is log-only here. The panel is the
+      // interactive update surface.
+      async checkForUpdate(silent = false) {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) {
+          if (!silent) Logger.info('Updates are only available in the desktop app.');
+          return null;
+        }
+        try {
+          const info = await core.invoke('check_for_update');
+          if (info && info.version) {
+            Logger.info(`Update available: v${info.version} — install from Settings → Updates.`);
+            return info;
+          }
+          if (!silent) Logger.info('Up to date.');
+          return null;
+        } catch (e) {
+          Logger.error('check_for_update failed:', e);
+          return null;
+        }
+      },
+    };
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── VOICE (the pipeline lives in the Rust core; see VOICE.md) ───────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * VoiceEngine — Phase 6 (S4) hub remainder. The voice UI (mic button,
+     * transcript → composer routing, the spoken-reply sentence pipeline)
+     * lives in the chat WINDOW now. The hub keeps exactly two voice
+     * responsibilities:
+     *
+     *   1. Boot-arm the pipeline: re-apply the persisted mode/voice/config so
+     *      hands-free works with NO widgets open — the hub is the only window
+     *      guaranteed to exist at launch (chat.html and the settings.voice
+     *      panel re-apply on their own boots too; the calls are idempotent).
+     *   2. The moon's data-voice-state watercolor visuals, fed by the
+     *      app-wide voice-state events.
+     *
+     * Every Tauri surface is guarded so jsdom and plain-browser dev keep
+     * working with voice simply unavailable.
+     */
+    const VoiceEngine = {
+      available: false,
+      _subscribed: false,
+
+      // Guarded invoke: resolves null off-Tauri; failures log but never throw
+      // into the UI. Reads __TAURI__ at CALL time.
+      invoke(cmd, args) {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return Promise.resolve(null);
+        return core.invoke(cmd, args).catch((e) => {
+          Logger.warn(`Voice command ${cmd} failed:`, e);
+          return null;
+        });
+      },
+
+      // Synchronous up to the availability probe so jsdom (no __TAURI__.core)
+      // lands in a deterministic "unavailable" state at boot.
+      init() {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) { this.available = false; return; }
+        return this._probe(core);
+      },
+
+      async _probe(core) {
+        try {
+          await core.invoke('voice_status');
+        } catch (_) {
+          // Older Rust core without the voice pipeline: degrade exactly once.
+          this.available = false;
+          Logger.info('Voice pipeline not available in this build (voice_status missing)');
+          return;
+        }
+        this.available = true;
+        this.subscribeEvents();
+        await this.applyPersisted();
+      },
+
+      subscribeEvents() {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev || this._subscribed) return;
+        this._subscribed = true;
+        // App-wide broadcast from the Rust core; the hub only paints the moon.
+        ev.listen('voice-state', ({ payload }) => this.onStateEvent(payload || {}));
+      },
+
+      // Re-apply persisted settings to the Rust core each session (VOICE.md
+      // keys). This is what makes hands-free survive an app relaunch with no
+      // chat window open.
+      async applyPersisted() {
+        const m = localStorage.getItem('luna_voice_mode');
+        const mode = (m === 'ptt' || m === 'auto') ? m : 'off';
+        const voiceId = localStorage.getItem('luna_voice_id') || '';
+        const hang = parseInt(localStorage.getItem('luna_voice_silence_hang_ms') || '', 10);
+        const silenceHangMs = Number.isFinite(hang)
+          ? Math.max(300, Math.min(1200, hang))
+          : 600;
+        await this.invoke('voice_set_mode', { mode });
+        if (voiceId) await this.invoke('voice_set_voice', { id: voiceId });
+        await this.invoke('voice_set_config', { silenceHangMs });
+      },
+
+      // Rust voice-state events → the moon's watercolor states. data-voice-state
+      // drives the CSS; --voice-level (RMS 0–1, ~10 Hz) scales the listening pool.
+      onStateEvent(p) {
+        const state = (p && typeof p.state === 'string') ? p.state : '';
+        const visual = (state && state !== 'off') ? state : '';
+        const w = DOM.moonWrapper;
+        if (!w) return;
+        w.dataset.voiceState = visual;
+        if (state === 'listening' && typeof p.level === 'number' && Number.isFinite(p.level)) {
+          w.style.setProperty('--voice-level', String(Math.max(0, Math.min(1, p.level))));
+        } else if (state !== 'listening') {
+          w.style.removeProperty('--voice-level');
+        }
+      }
+    };
+
+    /**
+     * Moon parallax + press/click discrimination. (The in-envelope chat
+     * choreography — toggleChat, PanelSize, blur-collapse — died in the
+     * Phase 6 hub cleanup; the chat is a widget window now.)
+     */
+    const UIController = {
+      handlePointerDown(e) {
+        State.pressStartTime = Date.now();
+        State.pressStartX = e.clientX;
+        State.pressStartY = e.clientY;
+        DOM.moonWrapper.style.transform = 'scale(0.92)';
+        TauriService.startDragging();
+      },
+
+      handlePointerMove(e) {
+        const rect = DOM.moon.getBoundingClientRect();
+        const moonCenterX = rect.left + rect.width / 2;
+        const moonCenterY = rect.top + rect.height / 2;
+
+        const deltaX = e.clientX - moonCenterX;
+        const deltaY = e.clientY - moonCenterY;
+
+        const maxShift = 6;
+        const dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const ratio = Math.min(1, dist / 120);
+
+        const shiftX = (deltaX / 120) * maxShift * ratio;
+        const shiftY = (deltaY / 120) * maxShift * ratio;
+
+        DOM.moonSvg.style.setProperty('--px', `${shiftX}px`);
+        DOM.moonSvg.style.setProperty('--py', `${shiftY}px`);
+
+        const tiltX = -(deltaY / 120) * 8 * ratio;
+        const tiltY = (deltaX / 120) * 8 * ratio;
+        const rot = (deltaX / 120) * 4 * ratio;
+
+        DOM.moonSvg.style.setProperty('--rot', `${rot}deg`);
+
+        const scale = (Date.now() - State.pressStartTime < 200 && e.buttons === 1) ? 0.92 : 1.04;
+        DOM.moonWrapper.style.transform = `rotateX(${tiltX}deg) rotateY(${tiltY}deg) scale(${scale})`;
+      },
+
+      handlePointerUp(e) {
+        DOM.moonWrapper.style.transform = 'none';
+        const duration = Date.now() - State.pressStartTime;
+        const distMove = Math.sqrt(Math.pow(e.clientX - State.pressStartX, 2) + Math.pow(e.clientY - State.pressStartY, 2));
+
+        if (duration < 280 && distMove < 5) {
+          // The moon is the minimized form of the whole workspace: a click
+          // EXPANDS it — the orb hides and every widget window (chat + panels +
+          // artifacts) reappears. On a fresh moon with nothing open yet,
+          // expand_from_moon opens the chat as the default widget.
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('expand_from_moon')
+              .catch((e) => Logger.warn('expand from moon failed:', e));
+          } else {
+            // Off-Tauri (frontend dev / jsdom): no window manager to pour the
+            // widgets back out — log instead.
+            Logger.info('moon click → expand_from_moon needs the Tauri runtime; no-op');
+          }
+        }
+      },
+
+      handlePointerLeave() {
+        DOM.moonSvg.style.setProperty('--px', '0px');
+        DOM.moonSvg.style.setProperty('--py', '0px');
+        DOM.moonSvg.style.setProperty('--rot', '0deg');
+        DOM.moonWrapper.style.transform = 'none';
+      }
+    };
+
+    // =========================================================================
+    // ── INITIALIZATION & BINDINGS ────────────────────────────────────────────
+    // =========================================================================
+
+    // Moon Events
+    DOM.moon.addEventListener('pointerdown', (e) => UIController.handlePointerDown(e));
+    DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
+    DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
+    DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
+
+    // ── Panel fan-out (Phase 3) ──────────────────────────────────────────
+    // Settings live in panel WINDOWS. Two return channels reach the hub:
+    // 1. hub-event — the Rust hub_event command (allowlisted names, targeted
+    //    at "main" with the same `for:` discipline as dock-group) for the
+    //    few actions only the hub window can perform.
+    // 2. cross-window storage events (live-verified on WKWebView, Phase 2)
+    //    for localStorage-backed preferences the hub consumes.
+    (function wirePanelFanout() {
+      // connection/profile changed: the panel already persisted the change
+      // (set_active_profile / save_connection); the hub re-reads the secure
+      // file and reconnects.
+      const reloadAndReconnect = async () => {
+        try {
+          const core = window.__TAURI__ && window.__TAURI__.core;
+          if (!core) return;
+          const creds = await core.invoke('load_connection');
+          State.wsUrl = creds && creds.wsUrl ? creds.wsUrl : '';
+          State.wsToken = creds && typeof creds.wsToken === 'string' ? creds.wsToken : '';
+          // C2: bare luna_ws_url writes removed; URL now resolved via route
+          // (MoonSession.resolveBootRoute) or load_connection at boot.
+          if (State.wsUrl) {
+            WebSocketEngine.connect();
+          } else {
+            WebSocketEngine.disconnect();
+            WebSocketEngine.updateStatus('disconnected', 'Disconnected');
+          }
+        } catch (e) {
+          Logger.warn('panel-driven reconnect failed:', e);
+        }
+      };
+      const HUB_ACTIONS = {
+        'fresh-thread': async () => {
+          // Reaching the hub means the chat WINDOW is closed (Rust routes
+          // to it first): open it — its bootstrap resumes the last thread;
+          // a second press once open starts the fresh one. (Punch list:
+          // open-with-fresh in one step needs a boot param.)
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            await window.__TAURI__.core.invoke('open_widget', { kind: 'chat' });
+          }
+        },
+        'profile-changed': reloadAndReconnect,
+        'connection-changed': reloadAndReconnect,
+        'open-wizard': () => SetupWizard.open(),
+      };
+
+      // ── C8: DARK — pool home + addressed delivery ─────────────────────────
+      // When luna_pool_engine is set:
+      //   - The hub owns a MoonHubManager.DeliveryBus (process-wide).
+      //   - profile-changed / connection-changed dispatch a per-routeKey
+      //     panel-connection-changed event to ONLY the panels bound to that
+      //     route via addressed delivery — NOT a hub-wide broadcast.
+      //   - Inbound frames carry __routeKey; dispatchFrame drops them unless
+      //     the origin routeKey matches the panel's bound route (cross-route
+      //     isolation).
+      //   - The flag-off path (default) is BYTE-UNCHANGED below.
+      const _USE_HUB_POOL = window.PoolEngineHelper && window.PoolEngineHelper.isDarkFlagSet();
+      if (_USE_HUB_POOL && window.MoonHubManager) {
+        // Build the process-wide bus and pool.  Both are exposed on
+        // window.__HubState for agent-browser inspection and for F12 respawn.
+        const _hub = window.MoonHubManager;
+        const _bus = _hub.createDeliveryBus();
+        const _pool = _hub.createConnectionPool(function (routeKey) {
+          // Stub factory: returns a minimal adapter-shaped object.
+          // In a full multi-adapter deployment this would call
+          // LunaWsAdapter.create(routeKey, endpoints, token).
+          // For now the hub's existing WebSocketEngine is the sole adapter;
+          // the pool tracks it by its routeKey so isolation can be enforced.
+          return { routeKey: routeKey, disconnect: function () {} };
+        });
+        window.__HubState = { bus: _bus, pool: _pool };
+
+        // Override profile/connection change actions to use addressed delivery.
+        HUB_ACTIONS['profile-changed'] = async function () {
+          try {
+            const core = window.__TAURI__ && window.__TAURI__.core;
+            if (!core) return;
+            const creds = await core.invoke('load_connection');
+            State.wsUrl = creds && creds.wsUrl ? creds.wsUrl : '';
+            State.wsToken = creds && typeof creds.wsToken === 'string' ? creds.wsToken : '';
+            // Determine the routeKey from MoonSession (or fall back to legacy URL as key).
+            let routeKey = null;
+            if (window.MoonSession && typeof window.MoonSession.listRoutes === 'function') {
+              try {
+                const rl = await window.MoonSession.listRoutes();
+                if (rl && rl.default) routeKey = rl.default;
+              } catch (_) {}
+            }
+            if (!routeKey && State.wsUrl) routeKey = State.wsUrl;
+            if (routeKey) {
+              // Addressed delivery: only panels bound to this routeKey receive the event.
+              _bus.dispatchConnectionChanged(routeKey, { status: 'reconnecting', descriptor: { wsUrl: State.wsUrl } });
+            }
+            if (State.wsUrl) {
+              WebSocketEngine.connect();
+            } else {
+              WebSocketEngine.disconnect();
+              WebSocketEngine.updateStatus('disconnected', 'Disconnected');
+            }
+          } catch (e) {
+            Logger.warn('panel-driven reconnect (pool) failed:', e);
+          }
+        };
+        HUB_ACTIONS['connection-changed'] = HUB_ACTIONS['profile-changed'];
+      }
+      // ── END C8 DARK ───────────────────────────────────────────────────────
+
+      try {
+        const TW = window.__TAURI__ && window.__TAURI__.window;
+        const me = TW && typeof TW.getCurrentWindow === 'function' ? TW.getCurrentWindow() : null;
+        if (me && typeof me.listen === 'function') {
+          me.listen('hub-event', (e) => {
+            const p = e && e.payload;
+            if (!p || p['for'] !== 'main') return; // targeted-event discipline
+            const fn = HUB_ACTIONS[p.name];
+            if (fn) {
+              Promise.resolve()
+                .then(fn)
+                .catch((err) => Logger.warn(`hub-event ${p.name} failed:`, err));
+            }
+          }).catch(() => {});
+          // Absorb pulse: Rust emits moon-absorb right after revealing the orb
+          // on a collapse, so the moon plays its "swallowed the workspace"
+          // animation. Re-armable: drop the class on animationend so the next
+          // collapse replays it.
+          me.listen('moon-absorb', () => {
+            const w = DOM.moonWrapper;
+            if (!w) return;
+            w.classList.remove('absorbing');
+            // Reflow so re-adding the class restarts the animation.
+            void w.offsetWidth;
+            w.classList.add('absorbing');
+          }).catch(() => {});
+        }
+      } catch (_) { /* off-Tauri */ }
+      // Clear the pulse class once it finishes (keeps the element clean and lets
+      // the listener above re-trigger it). Bound once, outside the Tauri guard.
+      if (DOM.moonWrapper) {
+        DOM.moonWrapper.addEventListener('animationend', (e) => {
+          if (e.animationName === 'moon-absorb') DOM.moonWrapper.classList.remove('absorbing');
+        });
+      }
+      window.addEventListener('storage', (e) => {
+        if (!e || !e.key) return;
+        if (e.key === 'luna_always_on_top') {
+          TauriService.applyAlwaysOnTop(e.newValue === 'true');
+        }
+        // (The luna_voice_speak_replies stop-speaking hook moved with the
+        // voice UI to the chat window — it owns speak_text and runs its own
+        // storage listener.)
+      });
+    })();
+
+    /**
+     * SetupWizard — multi-step first-run installer/onboarding flow.
+     *
+     * Three paths, one funnel:
+     *   local   → run the real install on THIS Mac through the Rust
+     *             local_shell_exec command (git clone → bun install → seed
+     *             ~/.luna → wake the server → poll /healthz via shell curl,
+     *             which is CSP-immune where a webview fetch() may not be),
+     *             then fall through to the connect step prefilled with
+     *             ws://127.0.0.1:4753/ui.
+     *   remote  → collect an SSH destination, render a tailored copy-paste
+     *             install command (scripts/luna-server-install does the heavy
+     *             lifting server-side), then fall through to connect.
+     *   connect → URL + token, live-verified by listening for the server's
+     *             `hello` frame on a THROWAWAY WebSocket (never touches the
+     *             main WebSocketEngine), then persisted via save_connection.
+     *
+     * Auto-open is gated on a REAL Tauri runtime (window.__TAURI__.core) so
+     * jsdom tests and plain-browser frontend dev never see it uninvited, and
+     * on the absence of any stored connection (load_connection / seeded
+     * token) so existing installs are grandfathered in silently.
+     */
+    const SetupWizard = {
+      STORAGE_DONE: 'luna.moon.setupComplete',
+      REPO_URL: 'https://github.com/fourcolors/luna.git',
+      // sh -c under a .app bundle inherits launchd's anaemic PATH — without
+      // this prelude `bun` (in ~/.bun/bin) and brew git are invisible.
+      PATH_PRELUDE: 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ',
+      // data-step → progress-bead index. local/remote/progress share a bead:
+      // they are the same "set it up" stage of the journey.
+      BEAD_FOR: { welcome: 0, path: 1, local: 2, remote: 2, progress: 2, connect: 3, done: 4 },
+      WIZARD_W: 660,
+      WIZARD_H: 600,
+
+      current: 'welcome',
+      chosenPath: null,
+      _openedMinimized: false,
+      _running: false,
+      _testGen: 0,
+      _remoteWsGuess: '',
+      _autoTest: false,
+      // What detectEnvironment() learned about this Mac. Drives the
+      // install-vs-update wording and the "Just connect to it" shortcut.
+      env: { serverRunning: false, repoExists: false },
+      _detectPromise: null,
+      // Did an install/update run actually happen this session? Gates whether
+      // the connect step's Back returns to the progress screen (populated) or
+      // the local form (the "Just connect" shortcut skips progress entirely).
+      _ranInstall: false,
+      // Set after a FAILED probe on Save & finish: the next click is an
+      // explicit "Save anyway". Reset whenever the address/key change.
+      _forceSave: false,
+
+      isComplete() { return localStorage.getItem(this.STORAGE_DONE) === '1'; },
+      markComplete() {
+        try { localStorage.setItem(this.STORAGE_DONE, '1'); } catch (_) { /* quota: harmless */ }
+      },
+
+      // First-run detection. Called once after SettingsEngine.load() settles
+      // so State.wsToken reflects both the secure file AND a luna-config seed.
+      async maybeAutoOpen() {
+        if (this.isComplete()) return;
+        if (!(window.__TAURI__ && window.__TAURI__.core)) return; // jsdom / frontend dev
+        if (State.wsToken) { this.markComplete(); return; }       // .env-seeded pairing exists
+        try {
+          const conn = await window.__TAURI__.core.invoke('load_connection');
+          if (conn && typeof conn.wsUrl === 'string' && conn.wsUrl) {
+            this.markComplete();                                  // pre-wizard install: grandfather in
+            return;
+          }
+        } catch (_) { /* no connection file yet — that IS first run */ }
+        this.open();
+      },
+
+      async open() {
+        if (DOM.wizardPanel.classList.contains('active')) return;
+        this._openedMinimized = true;  // the hub is permanently moon-sized (Phase 6)
+        DOM.wizardPanel.classList.add('active');
+        DOM.wizardPanel.setAttribute('aria-hidden', 'false');
+        // Fire-and-forget like SettingsEngine.open — the card fades in over it.
+        TauriService.setWindowSize(this.WIZARD_W, this.WIZARD_H);
+        this.goTo('welcome');
+        this._ranInstall = false;
+        // Quietly look around this Mac while the welcome step plays — by the
+        // time the user reaches the path step, the cards know whether Luna
+        // already lives here. Fire-and-forget; the promise is kept for tests.
+        this._detectPromise = this.detectEnvironment();
+        Logger.info('Setup wizard opened');
+      },
+
+      /**
+       * Sniff this Mac (Tauri only): is a Luna server answering on the
+       * default port, and/or is the default install folder already a Luna
+       * checkout? Both probes are cheap, read-only shell one-liners. Errors
+       * degrade to "nothing found" — the wizard then behaves exactly like a
+       * fresh install, which is always a safe default.
+       */
+      async detectEnvironment() {
+        this.env = { serverRunning: false, repoExists: false };
+        if (!(window.__TAURI__ && window.__TAURI__.core)) { this.applyDetection(); return this.env; }
+        try {
+          const [health, repo] = await Promise.all([
+            this.sh('curl -fsS -m 2 http://127.0.0.1:4753/healthz'),
+            this.sh('[ -d "$HOME/luna/.git" ]'),
+          ]);
+          this.env.serverRunning = !!(health && health.exitCode === 0);
+          this.env.repoExists = !!(repo && repo.exitCode === 0);
+        } catch (_) { /* treat as fresh */ }
+        this.applyDetection();
+        return this.env;
+      },
+
+      // Reflect what we found in the path cards + the local step's wording.
+      applyDetection() {
+        const { serverRunning, repoExists } = this.env;
+        if (DOM.wizardDetectNote) {
+          if (serverRunning) {
+            DOM.wizardDetectNote.textContent = '✓ Good news — Luna is already running on this Mac.';
+            DOM.wizardDetectNote.hidden = false;
+          } else if (repoExists) {
+            DOM.wizardDetectNote.textContent = '✓ Luna is installed on this Mac — she just isn’t awake.';
+            DOM.wizardDetectNote.hidden = false;
+          } else {
+            DOM.wizardDetectNote.hidden = true;
+          }
+        }
+        if (DOM.wizardPathLocalDesc) {
+          DOM.wizardPathLocalDesc.textContent = serverRunning
+            ? 'Luna already lives here — connect, or update her'
+            : repoExists
+              ? 'Luna is installed here — wake her up, or update her'
+              : 'Everything stays private, right on this computer';
+        }
+        this.applyLocalMode();
+      },
+
+      // Install vs update wording on the local step. "Update" is the SAME
+      // pipeline (pull --ff-only instead of clone, plus a settle-pause of the
+      // old server) — one flow the user already knows, two labels.
+      applyLocalMode() {
+        const update = this.env.serverRunning || this.env.repoExists;
+        if (DOM.wizardLocalTitle) {
+          DOM.wizardLocalTitle.textContent = update ? 'Update Luna on this Mac' : 'Set up Luna on this Mac';
+        }
+        if (DOM.wizardLocalSub) {
+          DOM.wizardLocalSub.textContent = update
+            ? 'I’ll fetch Luna’s newest code, refresh her pieces, and wake her back up. Your chats and memories stay put in ~/.luna.'
+            : 'I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.';
+        }
+        if (DOM.wizardLocalStart) {
+          DOM.wizardLocalStart.textContent = update ? 'Update & restart' : 'Install & start';
+        }
+        if (DOM.wizardLocalConnect) {
+          DOM.wizardLocalConnect.hidden = !this.env.serverRunning;
+        }
+      },
+
+      close({ complete = true } = {}) {
+        // Any explicit close marks setup complete: the wizard must never nag
+        // on every boot — it stays one click away in Settings → Connection.
+        if (complete) this.markComplete();
+        DOM.wizardPanel.classList.remove('active');
+        DOM.wizardPanel.setAttribute('aria-hidden', 'true');
+        if (this._openedMinimized) {
+          setTimeout(() => {
+            TauriService.setWindowSize(140, 185);
+          }, 220);
+        }
+        this._openedMinimized = false;
+      },
+
+      goTo(step) {
+        this.current = step;
+        DOM.wizardPanel.querySelectorAll('.wizard-step').forEach((el) => {
+          el.classList.toggle('active', el.dataset.step === step);
+        });
+        const beadIdx = this.BEAD_FOR[step] ?? 0;
+        DOM.wizardBeads.querySelectorAll('.wizard-bead').forEach((b) => {
+          const i = Number(b.dataset.bead);
+          b.classList.toggle('done', i < beadIdx);
+          b.classList.toggle('active', i === beadIdx);
+        });
+        if (step === 'connect') {
+          this.prefillConnect();
+          // Coming from a finished install/update (or the "Just connect to
+          // it" shortcut) the address is known-good — listen for the hello
+          // immediately so the happy path is zero extra clicks. For the local
+          // path, first read the server's UI_WS_TOKEN out of ~/.luna/.env so
+          // the pairing (and the probe) is zero-typing; without it the hello
+          // handshake is refused and the user has no way to know the secret.
+          const auto = this._autoTest;
+          this._autoTest = false;
+          this.loadLocalToken().then(() => {
+            if (auto && this.current === 'connect') this.runConnectTest();
+          });
+        }
+        if (step === 'remote') this.renderRemoteCmd();
+      },
+
+      choosePath(path) {
+        this.chosenPath = path;
+        if (path === 'connect') this.goTo('connect');
+        else if (path === 'local') this.goTo('local');
+        else this.goTo('remote');
+      },
+
+      // ── connect step ──────────────────────────────────────────────────
+      prefillConnect() {
+        if (!DOM.wizardConnectUrl.value.trim()) {
+          DOM.wizardConnectUrl.value =
+            this.chosenPath === 'local' ? 'ws://127.0.0.1:4753/ui'
+            : this.chosenPath === 'remote' && this._remoteWsGuess ? this._remoteWsGuess
+            : (State.wsUrl || 'ws://127.0.0.1:4753/ui');
+        }
+        this.setConnectStatus('', null);
+        this.resetFinishGuard();
+      },
+
+      // Local path only: read the server's UI_WS_TOKEN back out of
+      // ~/.luna/.env into the (empty) secret field. Resolves quietly on any
+      // failure — the user can still paste a token by hand. Never overwrites
+      // something the user already typed.
+      async loadLocalToken() {
+        if (this.chosenPath !== 'local') return;
+        if (DOM.wizardConnectToken.value.trim()) return;
+        const r = await this.sh('grep "^UI_WS_TOKEN=" "$HOME/.luna/.env"');
+        if (!r || r.exitCode !== 0) return;
+        const m = /^UI_WS_TOKEN=(.+)$/m.exec(r.stdout || '');
+        if (m && m[1].trim() && !DOM.wizardConnectToken.value.trim()) {
+          DOM.wizardConnectToken.value = m[1].trim();
+          this.resetFinishGuard();
+        }
+      },
+
+      // Forget a previous "Save anyway" arming whenever the step is re-entered
+      // or the address/key change — a NEW value pair deserves a fresh probe.
+      resetFinishGuard() {
+        this._forceSave = false;
+        if (DOM.wizardFinishBtn) DOM.wizardFinishBtn.textContent = 'Save & finish';
+      },
+
+      setConnectStatus(msg, kind) {
+        const el = DOM.wizardConnectStatus;
+        el.textContent = msg || '';
+        el.className = 'wizard-connect-status' + (kind ? ' ' + kind : '');
+      },
+
+      /**
+       * Probe a Luna server on a throwaway socket: open, wait for the first
+       * frame (the server ALWAYS sends `hello` first), classify, close.
+       * Resolves {ok, hello?, reason?} — never rejects, never touches
+       * WebSocketEngine or State.
+       */
+      testConnection(url, token, timeoutMs = 7000) {
+        return new Promise((resolve) => {
+          if (typeof WebSocket === 'undefined') {
+            resolve({ ok: false, reason: 'WebSocket unavailable in this environment.' });
+            return;
+          }
+          let sock;
+          let settled = false;
+          let timer = null;
+          const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            try { if (sock) sock.close(); } catch (_) { /* already closed */ }
+            resolve(result);
+          };
+          try {
+            const sep = url.includes('?') ? '&' : '?';
+            sock = new WebSocket(token ? `${url}${sep}token=${encodeURIComponent(token)}` : url);
+          } catch (e) {
+            resolve({ ok: false, reason: 'That does not look like a valid ws:// address.' });
+            return;
+          }
+          timer = setTimeout(() => finish({
+            ok: false,
+            reason: `No reply after ${Math.round(timeoutMs / 1000)}s — is the server running and the address reachable?`,
+          }), timeoutMs);
+          sock.onmessage = (ev) => {
+            try {
+              const frame = JSON.parse(ev.data);
+              // A Luna server ALWAYS sends `hello` first — anything else means
+              // we reached some other WebSocket service, not Luna. Treating it
+              // as success would happily "find Luna" on any random endpoint.
+              if (frame && frame.type === 'hello') finish({ ok: true, hello: frame });
+              else finish({ ok: false, reason: 'That answers, but it doesn’t sound like Luna — double-check the address.' });
+            } catch (_) {
+              finish({ ok: false, reason: 'Reached something, but it does not speak Luna.' });
+            }
+          };
+          // onerror carries no detail in browsers; the close that follows does.
+          sock.onclose = () => finish({
+            ok: false,
+            reason: 'Connection refused — check the address, and the token if the server requires one.',
+          });
+        });
+      },
+
+      async runConnectTest() {
+        const url = DOM.wizardConnectUrl.value.trim();
+        const token = DOM.wizardConnectToken.value.trim();
+        if (!url) { this.setConnectStatus('Enter a server address first.', 'fail'); return false; }
+        const gen = ++this._testGen;
+        this._lastHello = null;   // a new probe invalidates the old verdict
+        this.setConnectStatus('Listening for Luna’s hello…', 'run');
+        const res = await this.testConnection(url, token);
+        if (gen !== this._testGen) return false; // superseded by a newer test
+        if (res.ok) {
+          this._lastHello = res.hello || null;
+          const h = res.hello || {};
+          const bits = [];
+          if (h.buildSha) bits.push('build ' + h.buildSha);
+          if (h.capabilities && h.capabilities.setup) bits.push('server is in setup mode and will guide login');
+          this.setConnectStatus('Found Luna ✓' + (bits.length ? ' — ' + bits.join(', ') : ''), 'ok');
+          return true;
+        }
+        this.setConnectStatus(res.reason || 'Could not connect.', 'fail');
+        return false;
+      },
+
+      // Persist the pair the same way Settings does, hand the live engine the
+      // new creds, and celebrate. The step promises "I'll listen for her hello
+      // before saving anything" — so the first click VERIFIES; only after a
+      // failed probe does the button re-arm as an explicit "Save anyway"
+      // (the server might be legitimately offline right now).
+      async finish() {
+        const url = DOM.wizardConnectUrl.value.trim() || 'ws://127.0.0.1:4753/ui';
+        const token = DOM.wizardConnectToken.value.trim();
+        if (!this._forceSave) {
+          const ok = await this.runConnectTest();
+          if (!ok) {
+            this._forceSave = true;
+            if (DOM.wizardFinishBtn) DOM.wizardFinishBtn.textContent = 'Save anyway';
+            return;
+          }
+        }
+        this.resetFinishGuard();
+        State.wsUrl = url;
+        State.wsToken = token;
+        // C2: removed bare luna_ws_url write; URL is resolved at boot via
+        // MoonSession.resolveBootRoute() or load_connection, not localStorage.
+        await SettingsEngine.persistConnection(url, token);
+        // (Thread state is the chat WINDOW's concern — the hub is hello-only.)
+        WebSocketEngine.connect();
+        this.markComplete();
+        DOM.wizardDoneSummary.textContent = 'Your moon is pointed at ' + url + '. Click it any time to talk to Luna.';
+        // Setup mode = server alive but no Claude login yet. Say so HERE, in
+        // gold, instead of letting the first chat fail mysteriously. Only a
+        // verified hello can assert this; "Save anyway" leaves it hidden.
+        const inSetup = !!(this._lastHello && this._lastHello.capabilities && this._lastHello.capabilities.setup);
+        if (DOM.wizardDoneSetup) DOM.wizardDoneSetup.hidden = !inSetup;
+        if (DOM.wizardDoneTitle) {
+          DOM.wizardDoneTitle.textContent = inSetup ? 'Tethered — one last step' : 'Luna is tethered';
+        }
+        this.goTo('done');
+      },
+
+      // ── remote path ───────────────────────────────────────────────────
+      renderRemoteCmd() {
+        const raw = (DOM.wizardRemoteHost.value || '').trim();
+        // Only interpolate an ssh destination that LOOKS like one (user@host,
+        // hostname, or IPv4). Whitespace/quotes — easy to drag in with a
+        // copy-paste — would render a broken (or surprising) one-liner, so
+        // anything else falls back to the placeholder.
+        const safe = /^[A-Za-z0-9._@-]+$/.test(raw) ? raw : '';
+        const host = safe || 'user@your-server';
+        DOM.wizardRemoteCmd.textContent =
+          `ssh -t ${host} '` +
+          `git clone ${this.REPO_URL} ~/luna 2>/dev/null || git -C ~/luna pull --ff-only; ` +
+          `cd ~/luna && sudo bash scripts/luna-server-install && ` +
+          `grep ^UI_WS_TOKEN ~/.luna/.env'`;
+        const bare = safe.includes('@') ? safe.split('@').pop() : safe;
+        this._remoteWsGuess = bare ? `ws://${bare}:4753/ui` : '';
+      },
+
+      async copyRemoteCmd() {
+        const text = DOM.wizardRemoteCmd.textContent || '';
+        let copied = false;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+          }
+        } catch (_) { /* fall through to execCommand */ }
+        if (!copied) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            copied = document.execCommand('copy');
+            ta.remove();
+          } catch (_) { copied = false; }
+        }
+        DOM.wizardRemoteCopy.textContent = copied ? 'Copied ✓' : 'Copy failed';
+        setTimeout(() => { DOM.wizardRemoteCopy.textContent = 'Copy'; }, 1600);
+      },
+
+      // ── local path ────────────────────────────────────────────────────
+      // Run a command through the Rust executor. PATH prelude makes ~/.bun/bin
+      // et al visible under a .app bundle's launchd environment.
+      sh(command, timeoutMs) {
+        if (!(window.__TAURI__ && window.__TAURI__.core)) {
+          return Promise.resolve({
+            exitCode: null, stdout: '',
+            stderr: 'local shell unavailable (no Tauri runtime)',
+            durationMs: 0, timedOut: false,
+          });
+        }
+        return window.__TAURI__.core.invoke('local_shell_exec', {
+          command: this.PATH_PRELUDE + command,
+          cwd: null,
+          timeoutMs: timeoutMs ?? null,
+        });
+      },
+
+      // "~/luna" → `"$HOME/luna"` (shell-expanded), "/abs/path" → `"/abs/path"`.
+      // Rejects characters that would break out of the double quotes.
+      dirShellExpr(dir) {
+        if (!/^[A-Za-z0-9._\/~ -]+$/.test(dir)) return null;
+        if (dir === '~') return '"$HOME"';
+        if (dir.startsWith('~/')) return `"$HOME/${dir.slice(2)}"`;
+        if (dir.startsWith('/')) return `"${dir}"`;
+        return null; // relative paths are ambiguous under sh -c with no cwd
+      },
+
+      renderTasks(labels) {
+        DOM.wizardProgressList.innerHTML = '';
+        labels.forEach((label) => {
+          const row = document.createElement('div');
+          row.className = 'wizard-task';
+          const bead = document.createElement('span');
+          bead.className = 'wizard-task-bead';
+          const text = document.createElement('span');
+          text.className = 'wizard-task-label';
+          text.textContent = label;
+          const note = document.createElement('span');
+          note.className = 'wizard-task-note';
+          row.appendChild(bead);
+          row.appendChild(text);
+          row.appendChild(note);
+          DOM.wizardProgressList.appendChild(row);
+        });
+      },
+
+      setTask(idx, stateName, note) {
+        const row = DOM.wizardProgressList.children[idx];
+        if (!row) return;
+        row.classList.remove('running', 'ok', 'fail');
+        if (stateName) row.classList.add(stateName);
+        const noteEl = row.querySelector('.wizard-task-note');
+        if (noteEl) {
+          noteEl.textContent = note || '';
+          noteEl.title = note || '';
+        }
+      },
+
+      appendLog(text) {
+        const t = (text || '').trim();
+        if (!t) return;
+        DOM.wizardProgressLog.hidden = false;
+        DOM.wizardProgressLog.textContent += t + '\n';
+        DOM.wizardProgressLog.scrollTop = DOM.wizardProgressLog.scrollHeight;
+      },
+
+      async runLocalInstall() {
+        if (this._running) return;
+        const dirRaw = (DOM.wizardLocalDir.value || '').trim() || '~/luna';
+        const dirSh = this.dirShellExpr(dirRaw);
+        if (!dirSh) {
+          // Surface on the local step itself — we haven't left it yet.
+          DOM.wizardLocalDir.focus();
+          DOM.wizardLocalDir.style.boxShadow = 'inset 0 0 0 1px rgba(248, 113, 113, 0.6)';
+          setTimeout(() => { DOM.wizardLocalDir.style.boxShadow = ''; }, 1800);
+          return;
+        }
+        const update = this.env.serverRunning || this.env.repoExists;
+        this._running = true;
+        this._ranInstall = true;   // connect's Back may now return to progress
+        this.goTo('progress');
+        DOM.wizardProgressTitle.textContent = update
+          ? 'Freshening Luna up…'
+          : 'Painting Luna onto this Mac…';
+        DOM.wizardProgressSub.textContent = update
+          ? 'A quick refresh — your chats and memories aren’t touched.'
+          : 'This can take a few minutes the first time. Feel free to watch the beads.';
+        DOM.wizardProgressLog.hidden = true;
+        DOM.wizardProgressLog.textContent = '';
+        DOM.wizardProgressBack.hidden = true;
+        DOM.wizardProgressNext.hidden = true;
+
+        // Every command sets LUNA_DIR first so the user's chosen folder is
+        // expanded by the SHELL (the .env write needs the absolute form).
+        const D = `LUNA_DIR=${dirSh}; `;
+        const tasks = [
+          {
+            label: 'Checking this Mac has the basics',
+            hint: 'This Mac is missing its developer basics. Open Terminal, run `xcode-select --install`, then try again.',
+            run: () => this.sh('command -v git'),
+          },
+          {
+            label: 'Fetching Luna’s toolbox',
+            hint: 'Couldn’t fetch bun (Luna’s engine) from bun.sh — check your internet connection and retry.',
+            run: () => this.sh('command -v bun || (curl -fsSL https://bun.sh/install | bash)', 240000),
+          },
+          {
+            label: update ? 'Picking up Luna’s newest code' : 'Downloading Luna',
+            run: () => this.sh(
+              D + 'if [ -d "$LUNA_DIR/.git" ]; then git -C "$LUNA_DIR" pull --ff-only; else git clone ' + this.REPO_URL + ' "$LUNA_DIR"; fi',
+              420000,
+            ),
+          },
+          {
+            label: 'Putting the pieces together',
+            run: () => this.sh(D + 'cd "$LUNA_DIR" && bun install', 600000),
+          },
+          {
+            label: 'Making Luna a home (~/.luna)',
+            // UI_WS_TOKEN is a HARD boot requirement (resolveUiWsToken throws
+            // without it → the launchd server crash-loops and the heartbeat
+            // step times out), so a fresh install must mint one. An existing
+            // token is preserved — rotating it here would strand every other
+            // paired client. loadLocalToken() reads it back into the connect
+            // step so the pairing is zero-typing.
+            run: () => this.sh(
+              D + 'mkdir -p "$HOME/.luna/logs" && { [ -f "$HOME/.luna/.env" ] || touch "$HOME/.luna/.env"; } && chmod 600 "$HOME/.luna/.env" && { grep -q "^LUNA_REPO_ROOT=" "$HOME/.luna/.env" || printf "LUNA_REPO_ROOT=%s\\n" "$LUNA_DIR" >> "$HOME/.luna/.env"; } && { grep -q "^UI_WS_TOKEN=" "$HOME/.luna/.env" || printf "UI_WS_TOKEN=%s\\n" "$(openssl rand -hex 24)" >> "$HOME/.luna/.env"; }',
+            ),
+          },
+          // Update-with-running-server only: stop the old Luna and let her
+          // settle before the new one wakes. The 6s sleep is load-bearing —
+          // a fast stop→start races the database's WAL/SHM handle release
+          // (the same lesson the server deploys learned the hard way).
+          // ORDER matters: bootout FIRST (unregisters the LaunchAgent so
+          // KeepAlive can't respawn the old server mid-settle), then a pkill
+          // sweep for legacy unsupervised (nohup-era) servers, THEN the sleep.
+          ...(update && this.env.serverRunning ? [{
+            label: 'Tucking the old Luna in',
+            run: () => this.sh(
+              'launchctl bootout "gui/$(id -u)/com.user.luna-chat-server" 2>/dev/null; '
+              + 'pkill -f "ui-web.*server:chat" 2>/dev/null; sleep 6; true',
+              30000,
+            ),
+          }] : []),
+          {
+            label: update ? 'Waking Luna back up' : 'Waking Luna up',
+            run: async () => {
+              if (!update) {
+                // Fresh install: if a Luna is somehow already healthy on this
+                // port, adopt it instead of double-starting.
+                const probe = await this.sh('curl -fsS -m 2 http://127.0.0.1:4753/healthz');
+                if (probe && probe.exitCode === 0) {
+                  return { exitCode: 0, stdout: 'Luna was already awake here', stderr: '', durationMs: probe.durationMs, timedOut: false };
+                }
+              }
+              // Supervised start: render the SAME LaunchAgent the Mac installer
+              // uses (scripts/lib/launchd-plist.sh — one plist shape, shared
+              // label, so the in-app Restart button works) and bootstrap it.
+              // Two deliberate choices:
+              //   · the plist goes in ~/Library/LaunchAgents — the only place
+              //     launchd rescans at login, i.e. what makes Luna survive a
+              //     reboot (a plist elsewhere only lives until logout);
+              //   · kickstart (not plain start) after bootstrap — KeepAlive
+              //     {SuccessfulExit=false} never respawns a clean exit 0, so
+              //     kickstart is the one verb that always brings her up.
+              return this.sh(
+                D + 'LABEL="com.user.luna-chat-server"; DOMAIN="gui/$(id -u)"; '
+                + 'BUN_BIN="$(command -v bun)"; '
+                + '. "$LUNA_DIR/scripts/lib/launchd-plist.sh"; '
+                + 'mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.luna/logs"; '
+                + 'PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"; '
+                + 'render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$HOME/.luna" > "$PLIST"; '
+                + 'chmod 644 "$PLIST"; '
+                + 'launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null; '
+                + 'launchctl enable "$DOMAIN/$LABEL" 2>/dev/null; '
+                + 'launchctl bootstrap "$DOMAIN" "$PLIST" '
+                + '&& launchctl kickstart "$DOMAIN/$LABEL" '
+                + '&& echo "Luna is supervised now — she survives restarts (log: ~/.luna/logs/server.log)"',
+                60000,
+              );
+            },
+          },
+          {
+            label: 'Listening for a heartbeat',
+            run: async () => {
+              for (let attempt = 0; attempt < 30; attempt++) {
+                const r = await this.sh('curl -fsS -m 2 http://127.0.0.1:4753/healthz');
+                if (r && r.exitCode === 0) return r;
+                await new Promise((res) => setTimeout(res, 2000));
+              }
+              return {
+                exitCode: 1, stdout: '',
+                stderr: 'Luna never answered on http://127.0.0.1:4753/healthz after 60s — peek at ~/.luna/logs/server.log',
+                durationMs: 0, timedOut: true,
+              };
+            },
+          },
+        ];
+
+        this.renderTasks(tasks.map((t) => t.label));
+        for (let i = 0; i < tasks.length; i++) {
+          this.setTask(i, 'running', '');
+          let r;
+          try {
+            r = await tasks[i].run();
+          } catch (e) {
+            r = { exitCode: null, stdout: '', stderr: String(e), durationMs: 0, timedOut: false };
+          }
+          const okExit = r && r.exitCode === 0;
+          if (okExit) {
+            const secs = r.durationMs >= 1000 ? Math.round(r.durationMs / 1000) + 's' : '';
+            this.setTask(i, 'ok', (r.stdout || '').trim().split('\n').pop() || secs);
+          } else {
+            this.setTask(i, 'fail', r.timedOut ? 'timed out' : ('exit ' + r.exitCode));
+            this.appendLog((r.stderr || '').trim() || (r.stdout || '').trim() || 'No output.');
+            if (tasks[i].hint) this.appendLog(tasks[i].hint);
+            DOM.wizardProgressTitle.textContent = 'The wash didn’t take';
+            DOM.wizardProgressSub.textContent = 'Something went wrong at "' + tasks[i].label + '". Fix it up and try again.';
+            DOM.wizardProgressBack.hidden = false;
+            this._running = false;
+            return;
+          }
+        }
+
+        this._running = false;
+        DOM.wizardProgressTitle.textContent = update ? 'Luna is fresh and awake ☾' : 'Luna is awake ☾';
+        DOM.wizardProgressSub.textContent = update
+          ? 'All updated and answering. One last brushstroke: re-tether your moon.'
+          : 'She answered. One last brushstroke: tether your moon to her.';
+        DOM.wizardProgressNext.hidden = false;
+      },
+    };
+
+    // ── Setup-wizard wiring ──────────────────────────────────────────────
+    DOM.wizardBegin.addEventListener('click', () => SetupWizard.goTo('path'));
+    DOM.wizardSkip.addEventListener('click', () => SetupWizard.close({ complete: true }));
+    DOM.wizardCloseX.addEventListener('click', () => SetupWizard.close({ complete: true }));
+    DOM.wizardPathBack.addEventListener('click', () => SetupWizard.goTo('welcome'));
+    DOM.wizardPanel.querySelectorAll('.wizard-path-card').forEach((card) => {
+      card.addEventListener('click', () => SetupWizard.choosePath(card.dataset.path));
+    });
+    DOM.wizardLocalBack.addEventListener('click', () => SetupWizard.goTo('path'));
+    DOM.wizardLocalStart.addEventListener('click', () => SetupWizard.runLocalInstall());
+    DOM.wizardLocalConnect.addEventListener('click', () => {
+      // Detection found a live local Luna — skip straight to a verified connect.
+      SetupWizard._autoTest = true;
+      SetupWizard.goTo('connect');
+    });
+    DOM.wizardProgressBack.addEventListener('click', () => SetupWizard.goTo('local'));
+    DOM.wizardProgressNext.addEventListener('click', () => {
+      SetupWizard._autoTest = true;   // install just verified the server — listen for hello immediately
+      SetupWizard.goTo('connect');
+    });
+    DOM.wizardRemoteBack.addEventListener('click', () => SetupWizard.goTo('path'));
+    DOM.wizardRemoteHost.addEventListener('input', () => SetupWizard.renderRemoteCmd());
+    DOM.wizardRemoteCopy.addEventListener('click', () => SetupWizard.copyRemoteCmd());
+    DOM.wizardRemoteContinue.addEventListener('click', () => SetupWizard.goTo('connect'));
+    DOM.wizardConnectBack.addEventListener('click', () => {
+      // The local path only returns to the progress screen when a run actually
+      // happened — the "Just connect to it" shortcut skips progress entirely,
+      // and Back must not land on an empty one.
+      SetupWizard.goTo(SetupWizard.chosenPath === 'remote' ? 'remote'
+        : SetupWizard.chosenPath === 'local' ? (SetupWizard._ranInstall ? 'progress' : 'local')
+        : 'path');
+    });
+    DOM.wizardConnectUrl.addEventListener('input', () => SetupWizard.resetFinishGuard());
+    DOM.wizardConnectToken.addEventListener('input', () => SetupWizard.resetFinishGuard());
+    DOM.wizardTestBtn.addEventListener('click', () => SetupWizard.runConnectTest());
+    DOM.wizardFinishBtn.addEventListener('click', () => SetupWizard.finish());
+    DOM.wizardDoneBtn.addEventListener('click', () => {
+      SetupWizard.close({ complete: true });
+      // "Start chatting": the chat is a widget window — summon it. Off-Tauri
+      // there is no window manager; the click just closes the wizard.
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('open_widget', { kind: 'chat' })
+          .catch((e) => Logger.warn('open chat widget failed:', e));
+      }
+    });
+
+    // Voice boot: probe the Rust core for the voice pipeline (older cores
+    // degrade to "unavailable" silently), re-apply persisted voice settings,
+    // and subscribe to the voice-* events. Independent of settingsLoaded.
+    Promise.resolve(VoiceEngine.init())
+      .catch((e) => Logger.warn('Voice init failed (non-fatal):', e));
+
+    // Boot App Settings. load() is now async (it reads the token from the
+    // mode-600 secure file via load_connection). Capture the promise so the
+    // luna-config listener below can await it before evaluating its
+    // token-precedence guard — otherwise the still-pending load would leave
+    // State.wsToken empty and the .env seed would clobber a stored token.
+    const settingsLoaded = SettingsEngine.load();
+
+    // First-run: once settings have hydrated (secure file + possible .env
+    // seed), open the setup wizard if no connection has ever been configured.
+    // Resilient to a load() rejection — first run is exactly when state is
+    // most likely to be missing.
+    //
+    // Browser-dev convenience: off-Tauri, `?wizard=1` force-opens the wizard
+    // (and darkens the transparent-canvas body so the watercolor card reads
+    // against something) — a plain-browser page can never auto-open it
+    // otherwise, since first-run detection requires the Tauri runtime.
+    settingsLoaded
+      .catch(() => {})
+      .then(() => {
+        if (!window.__TAURI__ && typeof location !== 'undefined'
+            && new URLSearchParams(location.search).has('wizard')) {
+          document.body.style.background = '#10142a';
+          SetupWizard.open();
+          return;
+        }
+        return SetupWizard.maybeAutoOpen();
+      })
+      .catch((e) => Logger.error('Setup wizard auto-open failed:', e));
+
+    // Self-update discovery is owned by the Rust background loop (~8s after
+    // boot); the frontend no longer issues a redundant 4s checkForUpdate that
+    // raced the single-flight gate. The banner/pip render from update:// events.
+
+    // ── Restore polish: reopen the chat window after an update restart ─────────
+    // When apply_update relaunches the app it (Rust, Slice A) writes
+    // ~/.luna/pending-update.json {reopenChat} recording whether a chat window
+    // was open at restart, then saves layout.json (which restores the SYSTEM
+    // panels — but the chat window is NOT a panel- window, so it isn't covered by
+    // that restore). We read + consume the marker via take_pending_update (a
+    // one-shot Rust command that returns the marker and deletes the file), and if
+    // a chat window was open, re-open it through the same open_widget('chat') path
+    // the moon click uses — so the session lands exactly where it was. Best-effort
+    // and idempotent: if Slice A's command isn't present (older core) or no marker
+    // exists, the invoke rejects/returns null and we silently do nothing.
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      const core = window.__TAURI__.core;
+      core.invoke('take_pending_update')
+        .then((marker) => {
+          if (marker && marker.reopenChat) {
+            return core.invoke('open_widget', { kind: 'chat' });
+          }
+        })
+        .catch(() => { /* command absent / no marker → nothing to restore */ });
+    }
+
+    // Auto-wire the server token from ~/.luna/.env via a Tauri startup event.
+    // The Rust backend (main.rs) reads UI_WS_TOKEN from ~/.luna/.env at launch
+    // and emits "luna-config" here. We guard with window.__TAURI__ so the page
+    // still loads in a plain browser during frontend development.
+    //
+    // Token priority: if a token is already stored (a previous run, or one
+    // entered via the settings.connection panel), we don't overwrite it — the
+    // user's explicit choice takes precedence over the auto-seeded value.
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('luna-config', async ({ payload }) => {
+        // Wait for the (now async) settings load to finish populating
+        // State.wsToken before checking the precedence guard, so a token
+        // restored from the secure file is not clobbered by the .env seed.
+        await settingsLoaded
+        if (payload.wsToken && !State.wsToken) {
+          State.wsToken = payload.wsToken
+          State.wsUrl = payload.wsUrl || State.wsUrl
+          // Persist the seeded token to the mode-600 secure file (NOT
+          // localStorage) so re-launches don't need a re-emit. URL is a
+          // non-secret convenience cache.
+          await SettingsEngine.persistConnection(State.wsUrl, State.wsToken)
+          // C2: removed bare luna_ws_url write; URL authority is now the
+          // route (MoonSession.resolveBootRoute) or moon-connection.json.
+          Logger.info('luna-config: token seeded from ~/.luna/.env, connecting...')
+          // Reconnect unconditionally so the freshly-seeded token is applied to
+          // the live connection. connect() disconnects-first, cleanly tearing
+          // down any tokenless CONNECTING/OPEN socket from SettingsEngine.load();
+          // the fix-6 gen gate ensures that torn-down socket's async 'close'
+          // cannot fire a spurious reconnect.
+          WebSocketEngine.connect()
+        }
+      })
+    }
+
+    // ── Late-bound test hooks ──────────────────────────────────────────────
+    // SetupWizard / VoiceEngine / SettingsEngine are declared further down the
+    // script than the early __MoonInternals export. Re-attach here so jsdom
+    // tests can poke them as live bindings.
+    if (typeof window !== 'undefined') {
+      window.__MoonInternals = window.__MoonInternals || {};
+      Object.defineProperty(window.__MoonInternals, 'SetupWizard',    { configurable: true, get: () => SetupWizard });
+      Object.defineProperty(window.__MoonInternals, 'VoiceEngine',    { configurable: true, get: () => VoiceEngine });
+      Object.defineProperty(window.__MoonInternals, 'SettingsEngine', { configurable: true, get: () => SettingsEngine });
+    }
+  </script>
+  <!-- React 19 + Astryx 0.1.8 boot layer (scaffold phase) - mounts an invisible
+       boot probe alongside this page's unchanged vanilla content. See
+       ../src/boot.tsx. Deferred module load: always runs after every
+       classic-script above, including moon-appearance.js's pre-paint stamp. -->
+  <script type="module" src="/src/main-index.tsx"></script>
+</body>
+</html>

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna Panel</title>
+  <script src="/vendor/moon-protocol.js"></script>
+  <script src="/vendor/moon-ws.js"></script>
+  <script src="/vendor/moon-dock.js"></script>
+  <script src="/vendor/moon-resize.js"></script>
+  <!-- Google Fonts: Albert Sans (body) + Caveat (handwritten accent) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+  <!-- Watercolor palette tokens (must precede moon-theme.css so theme overrides win) -->
+  <link rel="stylesheet" href="/vendor/moon-palette.css">
+  <!-- Skin tokens (--dk-*): AFTER palette (references it), BEFORE theme (consumes it). -->
+  <link rel="stylesheet" href="/vendor/moon-skins.css">
+  <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
+       style so page-specific rules win ties. -->
+  <link rel="stylesheet" href="/vendor/moon-theme.css">
+  <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html> pre-paint -->
+  <script src="/vendor/moon-appearance.js"></script>
+  <!-- Honors the "Always on Top" setting for this panel (default: not floating). -->
+  <script src="/vendor/moon-window-float.js"></script>
+  <!-- Phase 2 C3 route module: MoonSession.resolveBootRoute / setPanelRoute /
+       listRoutes / setDefaultRoute. Degrades gracefully when __TAURI__ is absent
+       or client.toml does not exist (un-migrated user). -->
+  <script src="/vendor/moon-session.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-body);
+      font-size: 13px;
+      /* background/border/border-radius removed: html/body is transparent
+         (OS window transparency + moon-theme.css rule). The card shell
+         lives on .widget-shell::before (vendor/moon-theme.css). */
+      color: var(--text);
+    }
+
+    /* width/height managed by moon-theme.css (.widget-shell card shell).
+       Only flex layout properties live here. */
+    .widget-shell {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .content-area {
+      flex: 1;
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .notice {
+      padding: 12px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-style: italic;
+    }
+
+    /* ── Panel form chrome (settings panels) ─────────────────────────────── */
+    /* display:flex would beat the [hidden] attribute's UA display:none —
+       pin it (caught live: the install row showed while hidden). */
+    [hidden] { display: none !important; }
+    .panel-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .panel-btn {
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+      color: var(--text);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .panel-btn:hover { background: color-mix(in oklab, var(--accent) 22%, transparent); }
+    .panel-btn.primary { background: var(--accent); color: var(--paper); border-color: transparent; }
+    .panel-status { font-size: 0.78rem; color: var(--muted); }
+    .panel-status.ok { color: #4a7d3a; }
+    .panel-status.warn { color: #9a6b1f; }
+    html[data-theme='dark'] .panel-status.ok { color: #7ee2a8; }
+    html[data-theme='dark'] .panel-status.warn { color: #f8c982; }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="wc-wobble">
+      <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7"></feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+    </filter>
+  </defs>
+</svg>
+<div class="widget-shell">
+  <div class="title-bar" id="title-bar">
+    <div class="bar-start" aria-hidden="true"></div>
+    <span class="bar-title" id="bar-title">Loading…</span>
+    <!-- Right cluster balances the lights so the title stays centered; also
+         houses the collapse-to-moon glyph (on the right, clear of native
+         traffic lights which sit top-left). -->
+    <div class="bar-end">
+      <button class="collapse-moon-btn" id="collapse-moon-btn"
+              title="Collapse into the moon" aria-label="Collapse into the moon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"
+             stroke="none" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.5 6.5 0 1 1-7.54-7.54A9.05 9.05 0 0 0 12 3z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div class="content-area" id="content-area"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Window / params ────────────────────────────────────────────────────
+  var params = new URLSearchParams(location.search);
+  var type = params.get('type') || '';
+
+  var W = null;
+  var label = null;
+  try {
+    if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+      W = window.__TAURI__.window.getCurrentWindow();
+      label = W.label;
+    }
+  } catch (_) { /* not in Tauri (tests/browser) */ }
+
+  var contentArea = document.getElementById('content-area');
+  var barTitle = document.getElementById('bar-title');
+  // Collapse-into-moon is a Luna-specific workspace action, intentionally
+  // separate from the native yellow button's per-window minimize behavior.
+  var collapseMoonBtn = document.getElementById('collapse-moon-btn');
+  collapseMoonBtn && collapseMoonBtn.addEventListener('click', function () {
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {});
+      }
+    } catch (_) { /* best-effort */ }
+  });
+
+  function showNotice(text) {
+    contentArea.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'notice';
+    div.textContent = text;
+    contentArea.appendChild(div);
+    // Observability: record the last notice so agent-browser / tests can assert
+    // whether a connection error was surfaced.
+    if (window.__PanelInternals) window.__PanelInternals.lastNotice = text;
+  }
+
+  // ── Panel type modules ─────────────────────────────────────────────────
+  // Each type lives in panels/<kind-with-dashes>.js and registers into
+  // window.LunaPanelTypes (so harnesses can preload modules without a
+  // network). The loader injects the script only when the type is not
+  // already registered. Modules render with safe DOM methods only.
+  var ctx = {
+    label: label,
+    win: W,
+    hasTauri: !!(window.__TAURI__ && window.__TAURI__.core),
+    invoke: function (cmd, args) {
+      if (!window.__TAURI__ || !window.__TAURI__.core) {
+        return Promise.reject(new Error('not in Tauri'));
+      }
+      return args === undefined
+        ? window.__TAURI__.core.invoke(cmd)
+        : window.__TAURI__.core.invoke(cmd, args);
+    },
+    // For WS-backed panels (vault/skills/connectors): build a gen-gated
+    // client over the shared transport, connected with the stored creds.
+    // Returns the client (already connecting); callers register frames on
+    // the registry they passed in.
+    //
+    // Phase 2 C7 — per-panel route binding:
+    //   1. Try MoonSession.resolveBootRoute(panelId) — uses any panel-specific
+    //      route binding (set via set_panel_route) or falls back to the default
+    //      route from client.toml. Returns RouteInfo { endpoints[], token_ref }.
+    //   2. Use endpoints[0] as wsUrl. The token still comes from load_connection
+    //      (token_ref resolution is Phase 3 / C6); if route resolution succeeds
+    //      but load_connection fails, surface that error.
+    //   3. If MoonSession is unavailable (no __TAURI__) or returns null (no
+    //      client.toml / un-migrated), fall back to the legacy load_connection
+    //      path unchanged.
+    //   4. Child/settings panels opened from a parent panel inherit the DEFAULT
+    //      route — no explicit parent-route signal is plumbed through panel.html
+    //      today. Explicit parent→child route binding is a C8 follow-up.
+    //
+    // Error surfacing:
+    //   - Off-Tauri (no __TAURI__): silent fallback (expected in browser dev).
+    //   - Tauri present but route/connection failed: showNotice() with reason.
+    connectWs: function (registry, opts) {
+      var hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
+      var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
+
+      // Resolve the effective panel identifier (window label, populated from
+      // Tauri when running inside the app; null in browser / test environments).
+      var effectivePanelId = label || null;
+
+      if (typeof MoonSession !== 'undefined') {
+        // Phase 2 C7 — per-panel route resolution via MoonSession (C3).
+        // MoonSession.resolveBootRoute() returns null if:
+        //   - client.toml not found → un-migrated user, fall back to legacy
+        //   - any Tauri error → degrade gracefully
+        MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
+          if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
+            // Route resolved via client.toml — use the first endpoint as the
+            // WebSocket URL. Token still comes from load_connection (Phase 3
+            // will wire token_ref → resolved token from route directly).
+            var wsUrl = route.endpoints[0];
+            // Expose for observability (agent-browser smoke + future C8 hub).
+            if (window.__PanelInternals) {
+              window.__PanelInternals.resolvedRouteKey = route.key || null;
+            }
+            ctx.invoke('load_connection').then(function (creds) {
+              var wsToken = (creds && creds.wsToken) ? creds.wsToken : null;
+              try { client.connect(wsUrl, wsToken); } catch (e) {
+                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+              }
+            }).catch(function (e) {
+              // load_connection rejected — Tauri is present but command failed.
+              showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+            });
+          } else {
+            // No client.toml route configured — legacy load_connection path.
+            ctx.invoke('load_connection').then(function (creds) {
+              if (creds && creds.wsUrl) {
+                try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+              }
+            }).catch(function (e) {
+              if (hasTauri) {
+                // Tauri is present but load_connection rejected — surface it.
+                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+              }
+              // Off-Tauri: stay silent (expected in browser dev / jsdom).
+            });
+          }
+        }).catch(function (e) {
+          // resolveBootRoute itself rejected (shouldn't happen — MoonSession
+          // catches internally, but belt-and-suspenders). Fall back to legacy.
+          ctx.invoke('load_connection').then(function (creds) {
+            if (creds && creds.wsUrl) {
+              try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) {}
+            }
+          }).catch(function (connErr) {
+            if (hasTauri) {
+              showNotice('Panel connection failed: ' + (connErr && connErr.message ? connErr.message : String(connErr)));
+            }
+          });
+        });
+      } else {
+        // Legacy path (no MoonSession — off-Tauri / un-migrated / tests).
+        // SYNCHRONOUS invocation preserved byte-identically from master so that
+        // tests can assert ctx.invoke was called immediately after connectWs().
+        ctx.invoke('load_connection').then(function (creds) {
+          if (creds && creds.wsUrl) {
+            try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+          }
+        }).catch(function () { /* off-Tauri */ });
+      }
+
+      return client;
+    },
+  };
+
+  function bootModule(mod) {
+    if (mod) {
+      barTitle.textContent = mod.title;
+      document.title = 'Luna — ' + mod.title;
+      try {
+        mod.render(contentArea, ctx);
+      } catch (e) {
+        showNotice('Panel failed to render: ' + (e && e.message ? e.message : String(e)));
+      }
+    } else {
+      barTitle.textContent = 'Unknown panel';
+      showNotice('Unknown panel type: "' + type + '"');
+    }
+    // Expose observability fields for agent-browser smoke and tests.
+    // resolvedRouteKey: set by connectWs when a client.toml route is used.
+    // lastNotice: set by showNotice — truthy means an error was surfaced.
+    window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, lastNotice: null };
+  }
+
+  var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
+  if (registered) {
+    bootModule(registered);
+  } else if (/^[a-z0-9.]+$/.test(type)) {
+    var s = document.createElement('script');
+    s.src = 'panels/' + type.replace(/\./g, '-') + '.js';
+    s.onload = function () {
+      bootModule((window.LunaPanelTypes && window.LunaPanelTypes[type]) || null);
+    };
+    s.onerror = function () { bootModule(null); };
+    document.head.appendChild(s);
+  } else {
+    bootModule(null);
+  }
+
+  // Hand title-bar gestures directly to the native window drag.
+  if (window.LunaDock) LunaDock.wire({ win: W, label: label });
+})();
+</script>
+  <!-- React 19 + Astryx 0.1.8 boot layer (scaffold phase) - mounts an invisible
+       boot probe alongside this page's unchanged vanilla content. See
+       ../src/boot.tsx. Deferred module load: always runs after every
+       classic-script above, including moon-appearance.js's pre-paint stamp. -->
+  <script type="module" src="/src/main-panel.tsx"></script>
+</body>
+</html>

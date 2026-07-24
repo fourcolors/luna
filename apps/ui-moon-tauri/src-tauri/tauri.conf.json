@@ -4,10 +4,10 @@
   "version": "0.0.62",
   "identifier": "com.luna.moon",
   "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
+    "beforeDevCommand": "bun run build:frontend",
+    "beforeBuildCommand": "bun run build:frontend",
     "devUrl": null,
-    "frontendDist": "../frontend"
+    "frontendDist": "../frontend-react/dist"
   },
   "app": {
     "macOSPrivateApi": true,
