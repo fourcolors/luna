@@ -34,11 +34,10 @@
    override this rule. */
 :root {
   --card-inset: 22px;
-  /* The TOP inset is trimmed so the card header rises to meet the native
-     traffic lights, which AppKit pins to the window's top-left corner. The
-     full --card-inset still applies left/right/bottom for the halo;
-     only the top buffer (the dead gap above the card under the lights) shrinks. */
-  --card-inset-top: 4px;
+  /* Top inset: enough air under the rounded corner so traffic lights are not
+     crushed into the cutout, while still meeting the header (not a tall dead
+     band above the card). Left/right/bottom keep the full halo inset. */
+  --card-inset-top: 6px;
   --card-radius: 16px;
 }
 
@@ -183,7 +182,8 @@ html[data-grain='on'][data-theme='dark'] body::after {
   display: flex;
   align-items: center;
   gap: 7px;
-  /* Tight, symmetric Winamp-height header (design .dock-bar: 28px / 0 14px). */
+  /* 36px gives native traffic lights (~12pt) vertical breathing room under the
+     card's top radius — the old 28px Winamp height crushed the cluster. */
   padding: 0 14px;
   /* Soft wash from the active skin: studio --dk-bar-bg is the original tint
      gradient (unchanged); classic/aqua supply their own header fill. */
@@ -192,8 +192,9 @@ html[data-grain='on'][data-theme='dark'] body::after {
      (the wash carries the seam), classic supplies a crisp hairline. */
   border-bottom: var(--dk-bar-border, 1px solid color-mix(in oklab, var(--ink) 8%, transparent));
   user-select: none;
+  -webkit-user-select: none;
   flex-shrink: 0;
-  min-height: 28px;
+  min-height: 36px;
   /* Stack above the .resize-layer (z-index:55) so the resize-n strip and
      resize-ne/nw corners — which intrude a few px into the card top — never
      steal pointer events from the drag handle, collapse glyph, or any other
@@ -225,7 +226,9 @@ html[data-chrome='ink'] .title-bar {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
-  min-width: 52px; /* ≈ the 3-dot cluster width, so the title centers */
+  /* ≈ traffic-light cluster (3 × ~12pt + 2 × ~8pt gap) from content-left so
+     the title centers against a real reserved footprint, not an undersized 52. */
+  min-width: 68px;
 }
 .bar-end {
   justify-content: flex-end;

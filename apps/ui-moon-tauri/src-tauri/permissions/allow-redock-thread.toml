@@ -1,5 +1,6 @@
 # Redock a pinned chat floater back into its owner window (issue #380).
+# begin_native_pullout_drag: OS-owned free motion after strip detach (no IPC chase).
 [[permission]]
 identifier = "allow-redock-thread"
-description = "Allows redock_thread + begin_redock_drag - native drag arm, preview emit, redock close"
-commands.allow = ["redock_thread", "begin_redock_drag"]
+description = "Allows redock_thread + begin_redock_drag + begin_native_pullout_drag"
+commands.allow = ["redock_thread", "begin_redock_drag", "begin_native_pullout_drag"]

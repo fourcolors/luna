@@ -91,6 +91,10 @@
     var lastInStrip = true;
     var insertIndex = 0;
     var detachedOnce = false;
+    /** Wall-clock ms of last pointerMove (for E2E lag budgets). */
+    var lastMoveAt = 0;
+    var moveCount = 0;
+    var onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : null;
 
     function snapshot() {
       return {
@@ -101,7 +105,16 @@
         detachedOnce: detachedOnce,
         clientX: lastClientX,
         clientY: lastClientY,
+        lastMoveAt: lastMoveAt,
+        moveCount: moveCount,
       };
+    }
+
+    function emit(kind, extra) {
+      if (!onEvent) return;
+      try {
+        onEvent({ kind: kind, session: snapshot(), extra: extra || null });
+      } catch (_) { /* debug must never break drag */ }
     }
 
     /**
@@ -120,44 +133,61 @@
       }
       lastClientX = p.clientX;
       lastClientY = p.clientY;
+      lastMoveAt = Date.now();
+      moveCount += 1;
       if (typeof p.rowCount === 'number') rowCount = p.rowCount;
 
       var inStrip = pointInStripBand(p.stripRect, p.clientX, p.clientY, magnetY);
       lastInStrip = inStrip;
       var yRatio = yRatioInStrip(p.stripRect, p.clientY);
       insertIndex = insertIndexForRatio(rowCount, yRatio);
+      var out;
 
       if (state === STATE.NOT_STARTED) {
         var dist = hypot(p.clientX - startX, p.clientY - startY);
         if (dist <= elasticity) {
-          return { state: state, action: 'none', insertIndex: insertIndex, inStrip: inStrip };
+          out = { state: state, action: 'none', insertIndex: insertIndex, inStrip: inStrip };
+          emit('move', out);
+          return out;
         }
         // Past elasticity: attached if still in strip, else detach immediately.
         if (inStrip) {
           state = STATE.ATTACHED;
-          return { state: state, action: 'enter_attached', insertIndex: insertIndex, inStrip: true };
+          out = { state: state, action: 'enter_attached', insertIndex: insertIndex, inStrip: true };
+          emit('move', out);
+          return out;
         }
         state = STATE.DETACHED;
         detachedOnce = true;
-        return { state: state, action: 'detach', insertIndex: insertIndex, inStrip: false };
+        out = { state: state, action: 'detach', insertIndex: insertIndex, inStrip: false };
+        emit('move', out);
+        return out;
       }
 
       if (state === STATE.ATTACHED) {
         if (!inStrip) {
           state = STATE.DETACHED;
           detachedOnce = true;
-          return { state: state, action: 'detach', insertIndex: insertIndex, inStrip: false };
+          out = { state: state, action: 'detach', insertIndex: insertIndex, inStrip: false };
+          emit('move', out);
+          return out;
         }
-        return { state: state, action: 'stay_attached', insertIndex: insertIndex, inStrip: true };
+        out = { state: state, action: 'stay_attached', insertIndex: insertIndex, inStrip: true };
+        emit('move', out);
+        return out;
       }
 
       // DETACHED
       if (inStrip) {
         // Chrome can re-attach mid-drag; we report reenter so UI can preview gap.
         // State stays DETACHED until pointerUp decides (window already exists).
-        return { state: state, action: 'reenter_attached', insertIndex: insertIndex, inStrip: true };
+        out = { state: state, action: 'reenter_attached', insertIndex: insertIndex, inStrip: true };
+        emit('move', out);
+        return out;
       }
-      return { state: state, action: 'stay_detached', insertIndex: insertIndex, inStrip: false };
+      out = { state: state, action: 'stay_detached', insertIndex: insertIndex, inStrip: false };
+      emit('move', out);
+      return out;
     }
 
     /**
@@ -194,7 +224,7 @@
       }
 
       state = STATE.STOPPED;
-      return {
+      var up = {
         state: state,
         outcome: outcome,
         insertIndex: insertIndex,
@@ -202,11 +232,15 @@
         detachedOnce: detachedOnce,
         action: move.action,
       };
+      emit('up', up);
+      return up;
     }
 
     function cancel() {
       state = STATE.STOPPED;
-      return snapshot();
+      var snap = snapshot();
+      emit('cancel', snap);
+      return snap;
     }
 
     return {

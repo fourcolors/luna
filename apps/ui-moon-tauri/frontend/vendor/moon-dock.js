@@ -63,11 +63,30 @@
         } else if (redock.title != null) {
           title = redock.title;
         }
+        var stripWidth = null;
+        var stripTopInset = null;
+        var stripHeight = null;
+        if (typeof redock.stripMetrics === 'function') {
+          try {
+            var m = redock.stripMetrics() || {};
+            stripWidth = m.stripWidth;
+            stripTopInset = m.stripTopInset;
+            stripHeight = m.stripHeight;
+          } catch (_) { /* fall through */ }
+        }
+        if (stripWidth == null && typeof redock.stripWidth === 'function') {
+          try { stripWidth = redock.stripWidth(); } catch (_) { stripWidth = null; }
+        } else if (stripWidth == null && typeof redock.stripWidth === 'number') {
+          stripWidth = redock.stripWidth;
+        }
         Promise.resolve(
           g.__TAURI__.core.invoke('begin_redock_drag', {
             ownerLabel: redock.owner,
             threadId: redock.threadId,
             title: title,
+            stripWidth: stripWidth,
+            stripTopInset: stripTopInset,
+            stripHeight: stripHeight,
           })
         ).then(startNative, startNative);
         return;

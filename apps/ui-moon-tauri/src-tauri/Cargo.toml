@@ -34,6 +34,10 @@ toml_edit = "0.22"
 # (capture_window_screenshot shells out to the macOS `screencapture` CLI and
 # ships the resulting PNG bytes to the frontend as base64 over Tauri IPC).
 base64 = "0.22"
+# WebdriverIO E2E (macOS): embedded W3C WebDriver server.
+# Optional — enable with `--features wdio-e2e` (see e2e/README.md).
+# Not in default features so production release builds never link it.
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 
 [dev-dependencies]
 # Used in client_config unit tests for atomic-write round-trips.
@@ -139,6 +143,9 @@ voice = [
 # Enables the voice_spike e2e harness (which reuses the lib's voice
 # modules — the feature now just gates the example target).
 voice-spike = ["voice"]
+# Embedded WebDriver for WebdriverIO E2E (apps/ui-moon-tauri/e2e). Never on
+# by default — production release builds must omit this feature.
+wdio-e2e = ["dep:tauri-plugin-wdio-webdriver"]
 
 # Shared library target: the voice pipeline is one implementation consumed by
 # both the app bin and the voice_spike bin. Named *_lib to avoid any clash

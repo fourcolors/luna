@@ -268,6 +268,44 @@ Deliverables:
 | ThreadCache instant paint | Existing ThreadCache paths in `chat.html` |
 | Prewarm pool | New small module + Tauri show/hide; not a second product |
 | Tests | `test/moon-dock.test.ts`, `test/chat-window.test.ts`, Rust geometry unit tests |
+| UI automation (macOS) | `e2e/` WebdriverIO + embedded `tauri-plugin-wdio-webdriver` (debug only) |
+
+---
+
+## UI automation (validate interactions)
+
+Moon is hybrid: JS owns the session machine; AppKit owns free window motion.
+Automation is therefore layered:
+
+| Layer | Tool | Proves |
+| --- | --- | --- |
+| Unit | vitest / pure `LunaThreadDrag` | State machine, seed TTL, strip math |
+| E2E in-webview | WebdriverIO + Tauri **embedded** WebDriver (`--features wdio-e2e`) | App boot, expand, session sim, `open_widget` floater budget, `__moonDragDebug` |
+| E2E OS mouse (optional next) | Appium Mac2 / XCUITest | Real multi-window drag coordinates + focus |
+| Human | Dev build checklist below | Taste, traffic lights, jank feel |
+
+### Run E2E (macOS)
+
+```zsh
+cd apps/ui-moon-tauri
+bun install
+bun run test:e2e:ci
+```
+
+Details: `e2e/README.md`.
+
+### In-app observe hooks
+
+- `window.__moonDragDebug` — ring buffer of drag events + last floater open timings
+- `window.__moonE2E` — `simulateSessionDetach()`, `openFloater()`, …
+
+### Budgets (E2E defaults)
+
+| Metric | Default | Env |
+| --- | --- | --- |
+| Floater `open_widget` complete | 2500 ms | `MOON_E2E_FLOATER_MS` |
+
+Tighten once the path is stable on CI hardware.
 
 ---
 
@@ -294,6 +332,8 @@ Run on a real Mac build (Dev is fine):
 | 2026-07-23 | Reject CanvasKit/Skia as the fix for drag/redock quality |
 | 2026-07-23 | Keep AppKit ownership of free window motion (`window-drag-snap.md`) |
 | 2026-07-23 | Explicit Redock button remains until Phase E is proven |
+| 2026-07-23 | Adopt WDIO + embedded WebDriver for macOS E2E; OS mouse drag deferred to Mac2/human |
+| 2026-07-24 | Hard promote on strip detach: single open_widget then begin_native_pullout_drag (no IPC set_position chase); shared strip width + magnet for redock hit |
 
 ---
 
@@ -302,3 +342,4 @@ Run on a real Mac build (Dev is fine):
 - Update this file when the session state machine or anti-patterns change.
 - Keep `window-drag-snap.md` as the OS-window law; this file is the **thread tab-interaction** law.
 - Point issues/PRs at phase letters (A–F) so work stays grabbable.
+- Keep `e2e/` budgets and hooks in sync when drag contracts change.

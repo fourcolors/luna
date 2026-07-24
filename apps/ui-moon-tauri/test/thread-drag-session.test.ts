@@ -70,6 +70,7 @@ type LunaThreadDragApi = {
     rowCount?: number
     elasticityPx?: number
     magnetYPx?: number
+    onEvent?: (ev: { kind: string; session: unknown; extra: unknown }) => void
   }) => Session
 }
 
@@ -205,6 +206,24 @@ describe('LunaThreadDrag session (Phase A/B contract)', () => {
     const up = s.pointerUp({ clientX: 320, clientY: 220, stripRect: STRIP })
     expect(up.outcome).toBe('keep_floater')
     expect(up.detachedOnce).toBe(true)
+  })
+
+  it('onEvent fires for move and up (E2E debug hook)', () => {
+    const events: Array<{ kind: string; action?: string; outcome?: string }> = []
+    const s = API.createSession({
+      threadId: 't-debug',
+      startClientX: 50,
+      startClientY: 100,
+      onEvent: (ev) => {
+        const extra = (ev.extra || {}) as { action?: string; outcome?: string }
+        events.push({ kind: ev.kind, action: extra.action, outcome: extra.outcome })
+      },
+    })
+    s.pointerMove({ clientX: 70, clientY: 100, stripRect: STRIP })
+    s.pointerMove({ clientX: 300, clientY: 200, stripRect: STRIP })
+    s.pointerUp({ clientX: 320, clientY: 220, stripRect: STRIP })
+    expect(events.some((e) => e.kind === 'move' && e.action === 'detach')).toBe(true)
+    expect(events.some((e) => e.kind === 'up' && e.outcome === 'keep_floater')).toBe(true)
   })
 
   it('pointerUp after detach over strip yields redock', () => {

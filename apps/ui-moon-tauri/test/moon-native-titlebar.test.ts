@@ -24,7 +24,7 @@ describe('native macOS titlebar ownership', () => {
     // One source of truth for the inset — builders and the AppKit re-apply
     // share these consts so the two placements cannot drift apart.
     expect(main).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 36.0')
-    expect(main).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 12.0')
+    expect(main).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 14.0')
     expect(main).toContain('fn configure_native_window_chrome(')
     expect(main).toContain('button.setHidden(false)')
   })

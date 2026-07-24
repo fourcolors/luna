@@ -1523,13 +1523,16 @@ fn spawn_panel(
 
 /// Traffic-light inset shared by the window builders and the AppKit re-apply
 /// in `configure_native_window_chrome` — a single source of truth so the two
-/// placements cannot drift apart. x=36 matches the reserved .bar-start content
-/// edge, keeping the close light inside the opaque header instead of the
-/// rounded cutout; y=12 vertically centers the cluster in the CSS header.
+/// placements cannot drift apart.
+///
+/// x=36 = --card-inset (22) + title-bar padding (14) so the close light sits
+/// inside the opaque header, not in the transparent halo / rounded cutout.
+/// y=14 pairs with CSS .title-bar min-height 36 and --card-inset-top 6 so the
+/// cluster is vertically centered with air under the top edge (was crushed at y=12 / 28px bar).
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_INSET_X: f64 = 36.0;
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_INSET_Y: f64 = 12.0;
+const TRAFFIC_LIGHT_INSET_Y: f64 = 14.0;
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
 #[allow(clippy::too_many_arguments)]
@@ -2066,8 +2069,19 @@ fn configure_native_window_chrome(window: &tauri::WebviewWindow) -> Result<(), S
             container.setHidden(false);
             container.setAlphaValue(1.0);
             let close_rect = NSView::frame(&close);
-            let spacing = NSView::frame(&minimize).origin.x - close_rect.origin.x;
-            let title_bar_height = close_rect.size.height + TRAFFIC_LIGHT_INSET_Y;
+            // Keep AppKit's natural inter-button spacing (never invent one).
+            let spacing = {
+                let raw = NSView::frame(&minimize).origin.x - close_rect.origin.x;
+                if raw > 1.0 {
+                    raw
+                } else {
+                    20.0
+                }
+            };
+            // Title-bar container tall enough for the button + breathing room
+            // above/below (matches CSS .title-bar min-height ~36).
+            let btn_h = close_rect.size.height.max(12.0);
+            let title_bar_height = (btn_h + TRAFFIC_LIGHT_INSET_Y * 2.0).max(36.0);
             let mut container_rect = NSView::frame(&container);
             container_rect.size.height = title_bar_height;
             container_rect.origin.y = ns_win.frame().size.height - title_bar_height;
@@ -2077,11 +2091,15 @@ fn configure_native_window_chrome(window: &tauri::WebviewWindow) -> Result<(), S
             if let Some(zoom) = zoom {
                 buttons.push(zoom);
             }
+            // Vertically center the cluster in the title-bar container; x is the
+            // window-content inset (builder traffic_light_position contract).
+            let btn_y = ((title_bar_height - btn_h) / 2.0).max(0.0);
             for (index, button) in buttons.into_iter().enumerate() {
                 button.setHidden(false);
                 button.setAlphaValue(1.0);
                 let mut rect = NSView::frame(&button);
                 rect.origin.x = TRAFFIC_LIGHT_INSET_X + (index as f64) * spacing;
+                rect.origin.y = btn_y;
                 button.setFrameOrigin(rect.origin);
             }
         }
@@ -2499,30 +2517,86 @@ struct RedockMonitors {
     last_y: f64,
 }
 
-/// Cocoa-space hit test: floater center vs owner's left dock strip.
-/// Returns `(over, proximity, y_ratio)` with y_ratio 0 at owner top, 1 at bottom.
+/// Default strip band when JS does not report live sidebar width (pt).
+#[cfg(target_os = "macos")]
+const REDOCK_STRIP_DEFAULT: f64 = 240.0;
+/// Vertical magnet beyond owner top/bottom (Chrome-like strip feel), Cocoa pt.
+#[cfg(target_os = "macos")]
+const REDOCK_STRIP_MAGNET_Y: f64 = 15.0;
+
+/// Cocoa-space hit test for redock.
+///
+/// - `over` uses floater **center** in the left strip band (stable while dragging).
+/// - `y_ratio` uses the **mouse** Y mapped through the thread **list** band
+///   (`strip_top_inset` + `strip_height` from JS), so drop order matches where
+///   the cursor is - not the bottom of the pane and not the full window height.
+///
+/// Returns `(over, proximity, y_ratio)` with y_ratio 0 at list top, 1 at bottom.
 #[cfg(target_os = "macos")]
 unsafe fn redock_hit_cocoa(
     floater: &objc2_app_kit::NSWindow,
     owner: &objc2_app_kit::NSWindow,
+    strip_w: f64,
+    strip_top_inset: f64,
+    strip_height: f64,
 ) -> (bool, f64, f64) {
+    use objc2_app_kit::NSEvent;
+
     let ff = floater.frame();
     let of = owner.frame();
     let ccx = ff.origin.x + ff.size.width / 2.0;
     let ccy = ff.origin.y + ff.size.height / 2.0;
-    let strip = 300.0_f64.min(of.size.width);
-    let over = center_in_rect(ccx, ccy, of.origin.x, of.origin.y, strip, of.size.height);
+    let m = NSEvent::mouseLocation();
+    let strip = strip_w
+        .max(80.0)
+        .min(if of.size.width > 1.0 {
+            of.size.width
+        } else {
+            REDOCK_STRIP_DEFAULT
+        });
+    let magnet = REDOCK_STRIP_MAGNET_Y;
+    // Accept either floater center or cursor in the strip (cursor is what the
+    // user aims with when choosing a drop slot).
+    let over = center_in_rect(
+        ccx,
+        ccy,
+        of.origin.x,
+        of.origin.y - magnet,
+        strip,
+        of.size.height + 2.0 * magnet,
+    ) || center_in_rect(
+        m.x,
+        m.y,
+        of.origin.x,
+        of.origin.y - magnet,
+        strip,
+        of.size.height + 2.0 * magnet,
+    );
     let proximity = redock_proximity(ccx, of.origin.x, strip, of.size.width);
-    let y_ratio = if of.size.height > 1.0 {
-        ((of.origin.y + of.size.height - ccy) / of.size.height).clamp(0.0, 1.0)
+    // Map mouse into the list band (webview top → list top/height, Cocoa y up).
+    let owner_top = of.origin.y + of.size.height;
+    let top_inset = if strip_top_inset.is_finite() && strip_top_inset >= 0.0 {
+        strip_top_inset
     } else {
-        0.5
+        0.0
     };
+    let list_h = if strip_height.is_finite() && strip_height > 1.0 {
+        strip_height
+    } else {
+        of.size.height.max(1.0)
+    };
+    let strip_top = owner_top - top_inset;
+    let y_ratio = ((strip_top - m.y) / list_h).clamp(0.0, 1.0);
     (over, proximity, y_ratio)
 }
 
 /// Arm live redock tracking for the calling floater. Call immediately before
 /// `startDragging()`. Each arm is independent; mouse-up tears monitors down.
+///
+/// Strip metrics from the owner webview (logical points):
+/// - `strip_width` — sidebar width
+/// - `strip_top_inset` — distance from window content top to the thread list top
+/// - `strip_height` — thread list height (maps mouse Y → insert ratio)
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn begin_redock_drag(
@@ -2530,6 +2604,9 @@ fn begin_redock_drag(
     owner_label: String,
     thread_id: String,
     title: Option<String>,
+    strip_width: Option<f64>,
+    strip_top_inset: Option<f64>,
+    strip_height: Option<f64>,
 ) -> Result<(), String> {
     let thread_id = thread_id.trim().to_string();
     if thread_id.is_empty() {
@@ -2542,6 +2619,15 @@ fn begin_redock_drag(
     if !is_closable_widget_label(&caller_label) || owner_label == caller_label {
         return Ok(());
     }
+    let strip_w = strip_width
+        .filter(|w| w.is_finite() && *w > 40.0)
+        .unwrap_or(REDOCK_STRIP_DEFAULT);
+    let strip_top = strip_top_inset
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(0.0);
+    let strip_h = strip_height
+        .filter(|v| v.is_finite() && *v > 1.0)
+        .unwrap_or(0.0);
 
     with_appkit_main_thread(window.clone(), move |win| {
         use objc2::rc::Retained;
@@ -2583,13 +2669,15 @@ fn begin_redock_drag(
                 let (over, proximity, y_ratio) = unsafe {
                     let floater: &NSWindow = &*floater_ptr.cast();
                     let owner_w: &NSWindow = &*owner_ptr.cast();
-                    redock_hit_cocoa(floater, owner_w)
+                    redock_hit_cocoa(floater, owner_w, strip_w, strip_top, strip_h)
                 };
                 {
                     let mut s = state.borrow_mut();
+                    // Coarser thresholds: JS sticky-insert + FLIP own the feel;
+                    // avoid flooding the owner with sub-pixel yRatio churn.
                     let prox_delta = (proximity - s.last_prox).abs();
                     let y_delta = (y_ratio - s.last_y).abs();
-                    let changed = over != s.last_over || prox_delta > 0.04 || y_delta > 0.025;
+                    let changed = over != s.last_over || prox_delta > 0.06 || y_delta > 0.04;
                     if !changed && s.last_prox >= 0.0 {
                         return;
                     }
@@ -2650,7 +2738,7 @@ fn begin_redock_drag(
                 let (over, _prox, y_ratio) = unsafe {
                     let floater: &NSWindow = &*floater_ptr.cast();
                     let owner_w: &NSWindow = &*owner_ptr.cast();
-                    redock_hit_cocoa(floater, owner_w)
+                    redock_hit_cocoa(floater, owner_w, strip_w, strip_top, strip_h)
                 };
                 let _ = app.emit_to(
                     tauri::EventTarget::labeled(&owner_label),
@@ -2728,6 +2816,312 @@ fn begin_redock_drag(
     _owner_label: String,
     _thread_id: String,
     _title: Option<String>,
+    _strip_width: Option<f64>,
+    _strip_top_inset: Option<f64>,
+    _strip_height: Option<f64>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+// ── Native pull-out free motion (macOS) ───────────────────────────────────────
+//
+// Strip detach used to call open_widget/set_position every pointermove from JS
+// (dual ghost + lag). Hard promote: spawn once, then Rust owns motion with the
+// same NSEvent-monitor pattern as begin_native_resize — no JS IPC on the hot
+// path. Redock preview uses the same strip contract as begin_redock_drag.
+
+/// Follow the floater under the mouse until button-up, while emitting redock
+/// previews to the owner. Call from the owner after the first open_widget.
+///
+/// `grab_offset_x` / `grab_offset_y` are the cursor's distance from the
+/// **top-left** of the window in logical points (y grows downward, like CSS).
+/// We convert to Cocoa (bottom-left origin) every tick so the grab point stays
+/// under the finger even if Tauri's initial LogicalPosition placement differed
+/// from NSWindow.frame.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn begin_native_pullout_drag(
+    app: tauri::AppHandle,
+    floater_label: String,
+    owner_label: String,
+    thread_id: String,
+    title: Option<String>,
+    strip_width: Option<f64>,
+    strip_top_inset: Option<f64>,
+    strip_height: Option<f64>,
+    grab_offset_x: Option<f64>,
+    grab_offset_y: Option<f64>,
+) -> Result<(), String> {
+    let thread_id = thread_id.trim().to_string();
+    if thread_id.is_empty() {
+        return Ok(());
+    }
+    if !is_dock_label(&owner_label) || !is_closable_widget_label(&floater_label) {
+        return Ok(());
+    }
+    if owner_label == floater_label {
+        return Ok(());
+    }
+    let floater = match app.get_webview_window(&floater_label) {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+    let strip_w = strip_width
+        .filter(|w| w.is_finite() && *w > 40.0)
+        .unwrap_or(REDOCK_STRIP_DEFAULT);
+    let strip_top = strip_top_inset
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(0.0);
+    let strip_h = strip_height
+        .filter(|v| v.is_finite() && *v > 1.0)
+        .unwrap_or(0.0);
+    // Default matches JS originOffset(sx-36, sy-18): hold near the top-left chrome.
+    let grab_x = grab_offset_x
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(36.0);
+    let grab_y = grab_offset_y
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(18.0);
+    let title = title.unwrap_or_default();
+    let floater_label = floater_label.clone();
+    let owner_label = owner_label.clone();
+
+    with_appkit_main_thread(floater.clone(), move |win| {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
+        use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+        use std::cell::RefCell;
+        use std::ptr::NonNull;
+        use std::rc::Rc;
+
+        let floater_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        let app = win.app_handle().clone();
+        let owner = match app.get_webview_window(&owner_label) {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+        let owner_ptr = owner.ns_window().map_err(|e| e.to_string())?;
+
+        // Place the window so the grab point is under the cursor NOW (Cocoa),
+        // fixing any LogicalPosition vs NSWindow.frame mismatch from open_widget.
+        let place_under_cursor = {
+            let floater_ptr = floater_ptr;
+            move || unsafe {
+                let floater_w: &NSWindow = &*floater_ptr.cast();
+                let f = floater_w.frame();
+                let win_w = f.size.width;
+                let win_h = f.size.height;
+                let m = NSEvent::mouseLocation();
+                // top-left grab → Cocoa bottom-left origin:
+                // origin.x = mouse.x - grab_x
+                // origin.y = mouse.y - (height - grab_y)
+                let origin = CGPoint {
+                    x: m.x - grab_x,
+                    y: m.y - (win_h - grab_y),
+                };
+                let frame = CGRect {
+                    origin,
+                    size: CGSize {
+                        width: win_w,
+                        height: win_h,
+                    },
+                };
+                floater_w.setFrame_display(frame, true);
+            }
+        };
+        place_under_cursor();
+
+        let state = Rc::new(RefCell::new(RedockMonitors {
+            local: None,
+            global: None,
+            ended: false,
+            last_over: false,
+            last_prox: -1.0,
+            last_y: -1.0,
+        }));
+
+        let move_tick = {
+            let floater_ptr = floater_ptr;
+            let owner_ptr = owner_ptr;
+            let owner_label = owner_label.clone();
+            let thread_id = thread_id.clone();
+            let floater_label = floater_label.clone();
+            let title = title.clone();
+            let app = app.clone();
+            let win = win.clone();
+            let state = state.clone();
+            let place_under_cursor = place_under_cursor;
+            move || {
+                place_under_cursor();
+                let (over, proximity, y_ratio) = unsafe {
+                    let floater_w: &NSWindow = &*floater_ptr.cast();
+                    let owner_w: &NSWindow = &*owner_ptr.cast();
+                    redock_hit_cocoa(floater_w, owner_w, strip_w, strip_top, strip_h)
+                };
+                {
+                    let mut s = state.borrow_mut();
+                    // Match begin_redock_drag: coarser so sticky insert + FLIP own feel.
+                    let prox_delta = (proximity - s.last_prox).abs();
+                    let y_delta = (y_ratio - s.last_y).abs();
+                    let changed = over != s.last_over || prox_delta > 0.06 || y_delta > 0.04;
+                    if !changed && s.last_prox >= 0.0 {
+                        return;
+                    }
+                    s.last_over = over;
+                    s.last_prox = proximity;
+                    s.last_y = y_ratio;
+                }
+                let _ = app.emit_to(
+                    tauri::EventTarget::labeled(&owner_label),
+                    "redock-preview",
+                    serde_json::json!({
+                        "active": true,
+                        "over": over,
+                        "proximity": proximity,
+                        "yRatio": y_ratio,
+                        "threadId": thread_id,
+                        "title": title,
+                        "from": floater_label,
+                    }),
+                );
+                let _ = win.emit(
+                    "redock-self-preview",
+                    serde_json::json!({
+                        "active": true,
+                        "over": over,
+                        "proximity": proximity,
+                    }),
+                );
+            }
+        };
+
+        let end = {
+            let state = state.clone();
+            let app = app.clone();
+            let win = win.clone();
+            let owner_label = owner_label.clone();
+            let thread_id = thread_id.clone();
+            let floater_label = floater_label.clone();
+            move || {
+                let (local, global) = {
+                    let mut s = state.borrow_mut();
+                    if s.ended {
+                        return;
+                    }
+                    s.ended = true;
+                    (s.local.take(), s.global.take())
+                };
+                unsafe {
+                    if let Some(tok) = local.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                    if let Some(tok) = global.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                }
+                let (over, _prox, y_ratio) = unsafe {
+                    let floater_w: &NSWindow = &*floater_ptr.cast();
+                    let owner_w: &NSWindow = &*owner_ptr.cast();
+                    redock_hit_cocoa(floater_w, owner_w, strip_w, strip_top, strip_h)
+                };
+                let _ = app.emit_to(
+                    tauri::EventTarget::labeled(&owner_label),
+                    "redock-preview",
+                    serde_json::json!({
+                        "active": false,
+                        "threadId": thread_id,
+                        "from": floater_label,
+                    }),
+                );
+                let _ = win.emit(
+                    "redock-self-preview",
+                    serde_json::json!({ "active": false, "over": false, "proximity": 0.0 }),
+                );
+                // Owner session still owns pointerUp outcome; emit for floater
+                // path parity (title-bar redock listeners).
+                let _ = win.emit(
+                    "redock-drag-ended",
+                    serde_json::json!({
+                        "over": over,
+                        "yRatio": y_ratio,
+                        "threadId": thread_id,
+                        "ownerLabel": owner_label,
+                        "pullout": true,
+                    }),
+                );
+            }
+        };
+
+        let local_block = {
+            let end = end.clone();
+            let move_tick = move_tick.clone();
+            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                let ev = unsafe { event.as_ref() };
+                let up = ev.r#type() == NSEventType::LeftMouseUp
+                    || NSEvent::pressedMouseButtons() & 1 == 0;
+                if up {
+                    end();
+                } else {
+                    move_tick();
+                }
+                event.as_ptr()
+            })
+        };
+
+        // Global: when the cursor is outside every app window the local monitor
+        // may starve — still follow the pointer and still end on mouse-up.
+        let global_block = {
+            let end = end.clone();
+            let move_tick = move_tick.clone();
+            block2::RcBlock::new(move |event: NonNull<NSEvent>| {
+                let ev = unsafe { event.as_ref() };
+                let up = ev.r#type() == NSEventType::LeftMouseUp
+                    || NSEvent::pressedMouseButtons() & 1 == 0;
+                if up {
+                    end();
+                } else {
+                    move_tick();
+                }
+            })
+        };
+
+        unsafe {
+            let local: Option<Retained<AnyObject>> =
+                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+                    &local_block,
+                );
+            let global: Option<Retained<AnyObject>> =
+                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+                    &global_block,
+                );
+            let mut s = state.borrow_mut();
+            s.local = local;
+            s.global = global;
+        }
+
+        move_tick();
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn begin_native_pullout_drag(
+    _app: tauri::AppHandle,
+    _floater_label: String,
+    _owner_label: String,
+    _thread_id: String,
+    _title: Option<String>,
+    _strip_width: Option<f64>,
+    _strip_top_inset: Option<f64>,
+    _strip_height: Option<f64>,
+    _grab_offset_x: Option<f64>,
+    _grab_offset_y: Option<f64>,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -2978,7 +3372,9 @@ fn clear_webview_cache_if_updated() {
 }
 
 fn main() {
-    let builder = tauri::Builder::default()
+    // `mut` only needed when the optional wdio-e2e plugin is registered below.
+    #[cfg_attr(not(feature = "wdio-e2e"), allow(unused_mut))]
+    let mut builder = tauri::Builder::default()
         // Hub-owns-exit lifecycle (widget-system.md Phase 0): the moon hub is
         // the owning window — when it is destroyed, every other window
         // (widget-*/panel-*) closes with it, and Tauri's natural
@@ -3056,6 +3452,13 @@ fn main() {
         // apply_update installs without a second network round-trip.
         .manage(UpdateManager::default());
 
+    // E2E: embedded WebDriver HTTP server for WebdriverIO on macOS (no WKWebView
+    // system driver). Opt-in via Cargo feature `wdio-e2e` only — never default.
+    #[cfg(feature = "wdio-e2e")]
+    {
+        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    }
+
     // generate_handler! is a single macro invocation, so the voice commands
     // need a second cfg'd arm rather than inline cfg attributes on entries.
     // The connector OAuth commands (oauth_loopback_* / open_external_url)
@@ -3097,6 +3500,7 @@ fn main() {
         close_widget,
         redock_thread,
         begin_redock_drag,
+        begin_native_pullout_drag,
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,
@@ -3149,6 +3553,7 @@ fn main() {
         close_widget,
         redock_thread,
         begin_redock_drag,
+        begin_native_pullout_drag,
         collapse_to_moon,
         expand_from_moon,
         begin_native_resize,
