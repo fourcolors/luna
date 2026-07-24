@@ -244,31 +244,43 @@ export const openUiFeedbackStatusStore = (
 
   const setStatus: UiFeedbackStatusStore["setStatus"] = (args, nowMs = Date.now()) => {
     try {
-      const { id, status, resolvedRef, notes } = args
+      const { id, status } = args
+      const resolvedRef = args.resolvedRef
+      const notes = args.notes
       const expectedStatus = args.expectedStatus
       const appendNotes = args.appendNotes ?? false
-      const newNotes = notes ?? null
 
       if (expectedStatus !== undefined) {
-        const notesExpr = appendNotes
-          ? `CASE
-              WHEN notes IS NOT NULL AND notes != '' AND ? IS NOT NULL AND ? != ''
-                THEN notes || char(10) || ?
-              WHEN ? IS NOT NULL AND ? != ''
-                THEN ?
-              ELSE notes
-            END`
-          : `?`
-        const notesParams: unknown[] = appendNotes
-          ? [newNotes, newNotes, newNotes, newNotes, newNotes, newNotes]
-          : [newNotes]
+        const updates = ["status = ?", "updated_at = ?"]
+        const params: unknown[] = [status, nowMs]
+
+        if (resolvedRef !== undefined) {
+          updates.push("resolved_ref = ?")
+          params.push(resolvedRef)
+        }
+
+        if (notes !== undefined) {
+          if (appendNotes) {
+            updates.push(
+              `notes = CASE
+                WHEN notes IS NOT NULL AND notes != '' AND ? IS NOT NULL AND ? != ''
+                  THEN notes || char(10) || ?
+                WHEN ? IS NOT NULL AND ? != ''
+                  THEN ?
+                ELSE notes
+              END`,
+            )
+            params.push(notes, notes, notes, notes, notes, notes)
+          } else {
+            updates.push("notes = ?")
+            params.push(notes)
+          }
+        }
+
+        params.push(id, expectedStatus)
         const result = db
-          .query(
-            `UPDATE ui_feedback_status
-             SET status = ?, resolved_ref = ?, notes = ${notesExpr}, updated_at = ?
-             WHERE id = ? AND status = ?`,
-          )
-          .run(status, resolvedRef ?? null, ...notesParams, nowMs, id, expectedStatus)
+          .query(`UPDATE ui_feedback_status SET ${updates.join(", ")} WHERE id = ? AND status = ?`)
+          .run(...params)
         if (result.changes === 0) {
           return { ok: false, message: "status precondition failed" }
         }
@@ -282,26 +294,44 @@ export const openUiFeedbackStatusStore = (
         return { ok: false, message: "unknown feedback id" }
       }
 
-      const notesExpr = appendNotes
-        ? `CASE
-            WHEN ui_feedback_status.notes IS NOT NULL AND ui_feedback_status.notes != ''
-                 AND excluded.notes IS NOT NULL AND excluded.notes != ''
-              THEN ui_feedback_status.notes || char(10) || excluded.notes
-            WHEN excluded.notes IS NOT NULL AND excluded.notes != ''
-              THEN excluded.notes
-            ELSE ui_feedback_status.notes
-          END`
-        : `excluded.notes`
+      const insertCols = ["id", "status", "updated_at"]
+      const insertPlaceholders = ["?", "?", "?"]
+      const insertValues: unknown[] = [id, status, nowMs]
 
-      db.query(
-        `INSERT INTO ui_feedback_status (id, status, resolved_ref, notes, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           status = excluded.status,
-           resolved_ref = excluded.resolved_ref,
-           notes = ${notesExpr},
-           updated_at = excluded.updated_at`,
-      ).run(id, status, resolvedRef ?? null, newNotes, nowMs)
+      insertCols.push("resolved_ref")
+      insertPlaceholders.push("?")
+      insertValues.push(resolvedRef === undefined ? null : resolvedRef)
+
+      insertCols.push("notes")
+      insertPlaceholders.push("?")
+      insertValues.push(notes === undefined ? null : notes)
+
+      const updateClauses = ["status = excluded.status", "updated_at = excluded.updated_at"]
+      if (resolvedRef !== undefined) {
+        updateClauses.push("resolved_ref = excluded.resolved_ref")
+      }
+
+      if (notes !== undefined) {
+        if (appendNotes) {
+          updateClauses.push(
+            `notes = CASE
+              WHEN ui_feedback_status.notes IS NOT NULL AND ui_feedback_status.notes != ''
+                   AND excluded.notes IS NOT NULL AND excluded.notes != ''
+                THEN ui_feedback_status.notes || char(10) || excluded.notes
+              WHEN excluded.notes IS NOT NULL AND excluded.notes != ''
+                THEN excluded.notes
+              ELSE ui_feedback_status.notes
+            END`,
+          )
+        } else {
+          updateClauses.push("notes = excluded.notes")
+        }
+      }
+
+      const sql = `INSERT INTO ui_feedback_status (${insertCols.join(", ")})
+        VALUES (${insertPlaceholders.join(", ")})
+        ON CONFLICT(id) DO UPDATE SET ${updateClauses.join(", ")}`
+      db.query(sql).run(...insertValues)
       return { ok: true }
     } catch (e) {
       return { ok: false, message: String(e) }

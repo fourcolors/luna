@@ -334,7 +334,7 @@ describe("createJobFromFeedback", () => {
     expect(setStatus.mock.calls.length).toBe(0)
   })
 
-  it.each(["resolved", "dismissed", "job-failed"])(
+  it.each(["resolved", "dismissed", "job-failed", "wontfix"])(
     "[B2] short-circuits with no write when status is already terminal (%s)",
     async (status) => {
       const jobsStore = makeFakeJobsStore()

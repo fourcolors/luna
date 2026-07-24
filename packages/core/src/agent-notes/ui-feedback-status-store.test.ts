@@ -353,6 +353,72 @@ describe("openUiFeedbackStatusStore", () => {
     expect(store.getRow("fb-guard-fail")?.statusNotes).toBe("human moved")
   })
 
+  it("setStatus preserves existing resolvedRef and notes when they are omitted, and clears notes when explicitly null", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-preserve" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus(
+      { id: "fb-preserve", status: "queued", resolvedRef: "job-1", notes: "human note" },
+      1000,
+    )
+
+    const r1 = store.setStatus({ id: "fb-preserve", status: "triaged" }, 2000)
+    expect(r1.ok).toBe(true)
+    const row1 = store.getRow("fb-preserve")
+    expect(row1?.status).toBe("triaged")
+    expect(row1?.resolvedRef).toBe("job-1")
+    expect(row1?.statusNotes).toBe("human note")
+    expect(row1?.updatedAt).toBe(2000)
+
+    const r2 = store.setStatus({ id: "fb-preserve", status: "resolved", notes: null }, 3000)
+    expect(r2.ok).toBe(true)
+    const row2 = store.getRow("fb-preserve")
+    expect(row2?.status).toBe("resolved")
+    expect(row2?.resolvedRef).toBe("job-1")
+    expect(row2?.statusNotes).toBeNull()
+    expect(row2?.updatedAt).toBe(3000)
+  })
+
+  it("setStatus with expectedStatus preserves existing resolvedRef and notes when they are omitted, and clears notes when explicitly null", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-preserve" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus(
+      { id: "fb-guard-preserve", status: "queued", resolvedRef: "job-2", notes: "human note" },
+      1000,
+    )
+
+    const r1 = store.setStatus(
+      { id: "fb-guard-preserve", status: "resolved", expectedStatus: "queued" },
+      2000,
+    )
+    expect(r1.ok).toBe(true)
+    const row1 = store.getRow("fb-guard-preserve")
+    expect(row1?.status).toBe("resolved")
+    expect(row1?.resolvedRef).toBe("job-2")
+    expect(row1?.statusNotes).toBe("human note")
+    expect(row1?.updatedAt).toBe(2000)
+
+    const r2 = store.setStatus(
+      { id: "fb-guard-preserve", status: "triaged", notes: null, expectedStatus: "resolved" },
+      3000,
+    )
+    expect(r2.ok).toBe(true)
+    const row2 = store.getRow("fb-guard-preserve")
+    expect(row2?.status).toBe("triaged")
+    expect(row2?.resolvedRef).toBe("job-2")
+    expect(row2?.statusNotes).toBeNull()
+    expect(row2?.updatedAt).toBe(3000)
+  })
+
   it("FK CASCADE: deleting the parent agent_notes row removes the ui_feedback_status row", async (ctx) => {
     // A real on-disk sqlite file (not :memory:) with PRAGMA foreign_keys=ON,
     // exercised on ONE connection shared by both the parent table and the

@@ -19,7 +19,7 @@
  *      applies, re-checked here because this bridge has its own lookup.
  *   2. Short-circuit with no write at all when the row is already linked to
  *      this exact job or has already reached a terminal status (B2) —
- *      resolved/dismissed/job-failed feedback is never re-triggered.
+ *      resolved/dismissed/job-failed/wontfix feedback is never re-triggered.
  *   3. Compute the DETERMINISTIC job id (feedbackJobIdFor) and check whether
  *      it already exists. Creating a job twice for the same feedback id is
  *      idempotent (B4): a second call finds the row already recorded and
@@ -183,9 +183,9 @@ export interface CreateJobFromFeedbackResult {
 }
 
 /** Terminal ui_feedback_status statuses (B2) — a note already in one of
- *  these states was resolved by a human or by this bridge's own observer;
- *  re-running create-job must never rewrite it. */
-const TERMINAL_STATUSES = new Set(["resolved", "dismissed", "job-failed"])
+ *  these states was resolved by a human, marked as wontfix, or reached a
+ *  terminal job outcome; re-running create-job must never rewrite it. */
+const TERMINAL_STATUSES = new Set(["resolved", "dismissed", "job-failed", "wontfix"])
 
 /**
  * Flow: look up → fail closed on unknown/wrong-kind (B3) → short-circuit
