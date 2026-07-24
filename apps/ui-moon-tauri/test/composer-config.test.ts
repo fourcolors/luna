@@ -29,7 +29,7 @@ describe('ComposerConfig (chat.html)', () => {
       path.resolve(__dirname, '../frontend-react/chat.html'),
       'utf8',
     )
-    const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
     windowEventHandlers = {}

@@ -15,7 +15,7 @@ function loadVendorInto(target: any, file: string) {
 const html = fs.readFileSync(path.resolve(__dirname, '../frontend/panel.html'), 'utf8')
 
 function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => any }) {
-  const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/)
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/)
   document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
   const invoke = vi.fn(async (cmd: string, args?: any) => (opts.invoke ? opts.invoke(cmd, args) : null))

@@ -87,6 +87,38 @@ describe("frontend-react HTML shells (scaffold, compatibility-shell phase)", () 
   })
 })
 
+describe("astryx-moon-bridge theme coverage (every Astryx mount host must inherit .moon-astryx-root)", () => {
+  // astryx-moon-bridge.css's --color-* overrides are scoped to
+  // `.moon-astryx-root` (see that file's module doc). panel.html mounts
+  // every React panel type into #content-area (panel-boot.tsx dispatches to
+  // mount<Name>Panel(type, ctx), each of which does
+  // `createRoot(document.getElementById("content-area"))` directly — see
+  // e.g. src/panels/now/now-mount.tsx); widget.html and chat.html mount
+  // Astryx-rendered title-bar chrome into #bar-title-root/#bar-end-root/
+  // #collapse-moon-btn-root (widget-chrome-mount.tsx, chat-chrome-mount.tsx).
+  // None of those mount functions add the class themselves, so it must be
+  // stamped once on <body> — the shared ancestor of every mount host in each
+  // shell — or newly mounted Astryx components silently render with
+  // Astryx's hardcoded light-mode defaults instead of Moon's watercolor
+  // palette. Asserting it here means a future panel/chrome conversion can't
+  // reintroduce the gap by mounting into a host outside `.moon-astryx-root`.
+  const pagesWithAstryxMounts = ["panel", "widget", "chat"] as const
+
+  for (const page of pagesWithAstryxMounts) {
+    it(`${page}.html's <body> carries the moon-astryx-root theme bridge class`, () => {
+      const htmlPath = path.join(root, "frontend-react", `${page}.html`)
+      const html = readFileSync(htmlPath, "utf8")
+      const bodyMatch = html.match(/<body\b[^>]*>/)
+      expect(bodyMatch).not.toBeNull()
+      const bodyTag = bodyMatch?.[0] ?? ""
+      const classMatch = bodyTag.match(/class="([^"]*)"/)
+      expect(classMatch).not.toBeNull()
+      const classes = (classMatch?.[1] ?? "").split(/\s+/)
+      expect(classes).toContain("moon-astryx-root")
+    })
+  }
+})
+
 describe("frontend-react/public (vendor/panels passthrough)", () => {
   it("public/vendor and public/panels are symlinks back to frontend/{vendor,panels} — single source of truth, zero drift", () => {
     for (const dir of ["vendor", "panels"] as const) {

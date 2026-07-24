@@ -40,7 +40,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     // 1. Load chat.html content + body structure.
     htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
     // 2. Mock the Tauri window surface. NOTE: no `core` by default — boot
@@ -4461,7 +4461,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // readyState gate would wrongly take the offline branch here.
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4483,7 +4483,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: the PoolEngine path shares the one-create-at-a-time intent guard and adopts its ack', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4540,7 +4540,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // one test re-runs the page script under a pinned URL (same mechanism
       // as the beforeEach boot) instead of injecting State.pinnedThread.
       window.history.replaceState({}, '', '/?thread=t-pinned')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4606,7 +4606,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // silently skip the list request and the sidebar would render empty.
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4628,7 +4628,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag a fast-path resubscribe refreshes an already-open thread drawer (State.threadDrawerOpen true)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4653,7 +4653,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag a fast-path resubscribe leaves a CLOSED drawer alone (State.threadDrawerOpen false)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4678,7 +4678,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is closed (State.threadDrawerOpen false)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])
@@ -4703,7 +4703,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is open (State.threadDrawerOpen true)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
       document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
       const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
         .map((s) => s[1])

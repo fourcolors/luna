@@ -31,7 +31,7 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
   beforeEach(() => {
     // 1. Load chat.html body structure.
     htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
     // 2. Mock the Tauri window surface (no core by default — boot degrades like

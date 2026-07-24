@@ -50,7 +50,7 @@ describe('widget.html — kind-aware render', () => {
       path.resolve(__dirname, '../frontend-react/widget.html'),
       'utf8',
     )
-    const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/)
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
     const win = window as unknown as Record<string, unknown>

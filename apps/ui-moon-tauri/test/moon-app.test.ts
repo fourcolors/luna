@@ -22,7 +22,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     htmlContent = fs.readFileSync(htmlPath, 'utf8')
 
     // 2. Extract and load body HTML structure
-    const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     const bodyHtml = bodyMatch ? bodyMatch[1] : htmlContent
     document.body.innerHTML = bodyHtml
 

@@ -73,7 +73,7 @@ function bootPanel(opts: {
   onVendorsLoaded?: () => void
 }) {
   const type = opts.type || 'stub.ws'
-  const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/)
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/)
   document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
   // Install Tauri mock (or leave __TAURI__ absent for off-Tauri tests)

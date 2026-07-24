@@ -19,7 +19,7 @@ describe('Luna Moon — Update Pip (Slice C surface #3)', () => {
 
   beforeEach(() => {
     htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/index.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : htmlContent
 
     const mockGetCurrentWindow = vi.fn().mockReturnValue({

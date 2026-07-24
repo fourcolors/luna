@@ -78,7 +78,7 @@ function fireFrame(frame: object) {
 async function boot(opts: { mcpApps?: boolean; content?: string } = {}) {
   const mcpApps = opts.mcpApps ?? true
   const content = opts.content ?? APP_URI
-  const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/)
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/)
   document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
   const invoke = vi.fn(async (cmd: string) => {
