@@ -1,8 +1,7 @@
 // studio-brain.jsx — shared UI for "brains" (Luna / Hermes / OpenClaw)
 import React from "react";
+import { DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "./astryx-kit.tsx";
 import { BRAINS, BRAIN_ORDER } from "./studio-data.jsx";
-
-const BrReact = React;
 
 // inline glyphs — Luna spark, Hermes wing, OpenClaw bracket-claw
 export function BrainIcon({ icon }) {
@@ -46,49 +45,43 @@ export function BrainBadge({ brain, live, bare, showName = true }) {
 }
 
 // composer brain selector
+// Was hand-rolled: local open state + a document "pointerdown" listener to
+// detect outside clicks and close the menu. Astryx's DropdownMenu owns that
+// dismiss logic (light-dismiss + Escape + focus return) internally, so the
+// manual effect is gone - no more risk of the two systems fighting over
+// focus/keyboard nav. Single-choice semantics are now real ARIA
+// (role="menuitemradio" via DropdownMenuRadioGroup) instead of a bag of
+// plain buttons with a hand-applied "on" class.
 export function BrainPicker({ value, onChange, includeAuto = true }) {
-  const [open, setOpen] = BrReact.useState(false);
-  const ref = BrReact.useRef(null);
-  BrReact.useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("pointerdown", onDoc);
-    return () => document.removeEventListener("pointerdown", onDoc);
-  }, [open]);
   const cur = BRAINS[value] || BRAINS.luna;
   return (
-    <div className="brain-pick" ref={ref}>
-      <button
-        className="brain-pick-btn"
-        style={{ "--brain": "var(--brain-" + cur.key + ")" }}
-        onClick={() => setOpen((o) => !o)}
-        title="who should answer?"
-      >
-        <BrainIcon icon={cur.icon} />
-        <span>{cur.name}</span>
-        <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
-      </button>
-      {open && (
-        <div className="brain-pick-menu">
-          {BRAIN_ORDER.map((k) => {
-            const b = BRAINS[k];
-            return (
-              <button
-                key={k}
-                className={"brain-opt" + (k === value ? " on" : "")}
-                style={{ "--bo": "var(--brain-" + k + ")" }}
-                onClick={() => { onChange(k); setOpen(false); }}
-              >
-                <span className="bo-ic"><BrainIcon icon={b.icon} /></span>
-                <span style={{ flex: 1 }}>
-                  <span className="bo-name">{b.name}</span>
-                  <span className="bo-blurb">{b.blurb}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    <DropdownMenu
+      button={{
+        label: cur.name,
+        icon: <BrainIcon icon={cur.icon} />,
+        variant: "secondary",
+        size: "sm",
+        style: { color: "var(--brain-" + cur.key + ")" },
+        tooltip: "who should answer?",
+      }}
+      hasChevron
+      data-testid="brain-picker"
+    >
+      <DropdownMenuRadioGroup value={value} onChange={onChange} aria-label="who should answer?">
+        {BRAIN_ORDER.map((k) => {
+          const b = BRAINS[k];
+          return (
+            <DropdownMenuRadioItem
+              key={k}
+              value={k}
+              icon={<BrainIcon icon={b.icon} />}
+              label={b.name}
+              description={b.blurb}
+              style={k === value ? { color: "var(--brain-" + k + ")" } : undefined}
+            />
+          );
+        })}
+      </DropdownMenuRadioGroup>
+    </DropdownMenu>
   );
 }

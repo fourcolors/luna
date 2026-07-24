@@ -34,7 +34,50 @@
 // panel owns that interception itself: it subscribes via the `onServerFrame`
 // prop (ctx.onServerFrame from useLunaData) in a useEffect and keeps the
 // last ack in local state, unsubscribing on cleanup.
+//
+// Astryx conversion notes (single-file scope):
+// - Kind/1P-synced/shadowed pills -> Astryx Badge. Kept the original
+//   `skill-badge`/`vault-kind-*`/`vault-badge-*` classNames on each Badge so
+//   the existing theme-aware color overrides in devops-panels.css keep
+//   applying verbatim: Luna's CSS loads unlayered while Astryx's own rules
+//   live in `@layer astryx-base` (main.tsx), so the shared classNames still
+//   win the cascade over Badge's default variant chrome.
+// - Delete confirm / row delete / header "+ Add" / add-form Save+Cancel /
+//   sync-form Save / CSV import Confirm+Cancel+"Import another" -> Astryx
+//   Button, using its own variant system (primary/secondary/ghost/
+//   destructive) rather than the old `chip`/`chip small`/`danger` classes -
+//   matching the precedent set by the already-converted connectors-panel.jsx
+//   (those shared chip classes stay defined in devops-panels.css for the
+//   not-yet-converted skills-panel.jsx sibling).
+// - Kind select -> Astryx Selector (single-select, no clear).
+// - Env-var-override / op-token label / name / note text fields -> Astryx
+//   TextInput. Poll-interval -> Astryx NumberInput (its onChange only fires
+//   already-validated numbers, so the old manual parseInt/isNaN/clamp
+//   handler collapses to a plain `Math.max(60, v)`). Enable-sync toggle ->
+//   Astryx CheckboxInput. CSV file picker -> Astryx FileInput (compact
+//   `mode="input"`), which is *controlled* by a File object instead of an
+//   uncontrolled DOM ref, so the file-reset dance that used to go through
+//   `fileInputRef.current.value = ""` is now just `setPickedFile(null)`.
+// - The 1Password Sync section -> Astryx Collapsible (controlled `isOpen`),
+//   which gives real aria-expanded/aria-controls disclosure semantics for
+//   free — a clean parity target flagged in the porting recon, since the
+//   original toggle already carried `aria-expanded` by hand. The "on" badge
+//   and "synced Xm ago" meta move into the `trigger` node (Collapsible's
+//   trigger area is always visible, matching the original layout), and the
+//   existing `.vault-sync-form` bordered-card div is kept nested *inside*
+//   Collapsible's content slot so the card chrome (border/radius/padding/
+//   background) is unaffected by the swap.
+// - SECURITY (do not "fix" this): the credential-value password field stays
+//   a plain native `<input type="password">` read via `valueInputRef`, NOT
+//   an Astryx TextInput. TextInputProps has no uncontrolled/defaultValue
+//   mode — `value`/`onChange` are mandatory and the value is mirrored into
+//   an internal `useOptimistic` — so swapping it in would lift the raw
+//   secret into React state/devtools and silently break the one-shot-wipe
+//   contract documented at the top of this file. Same reasoning kept the
+//   CSV row `password` values (parseAppleCsv output) out of any Astryx
+//   input: they're rendered nowhere and never touch a controlled field.
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Badge, Button, CheckboxInput, Collapsible, FileInput, NumberInput, Selector, TextInput } from "./astryx-kit.tsx";
 
 /**
  * @typedef {import("@luna/ui-shared").VaultWireItem} VaultWireItem
@@ -394,7 +437,11 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
   const [importRows, setImportRows] = useState([]);
   const [importProgress, setImportProgress] = useState(null);
   const [importDone, setImportDone] = useState(false);
-  const fileInputRef = useRef(null);
+  // Astryx FileInput is a controlled component (File | File[] | null), so the
+  // picked file lives here instead of behind an uncontrolled `fileInputRef`.
+  // It never carries a secret (only CSV title/username/password rows parsed
+  // out of it do, and those stay in `importRows`, wiped the same as before).
+  const [pickedFile, setPickedFile] = useState(null);
 
   // Finding 7: explicit cleanup of the value input + any parsed CSV rows on
   // unmount.
@@ -442,7 +489,7 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
     setImportRows((prevRows) => {
       if (prevRows.length > 0) {
         setImportProgress(null);
-        if (fileInputRef.current) fileInputRef.current.value = "";
+        setPickedFile(null);
         return [];
       }
       return prevRows;
@@ -573,9 +620,13 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
 
   // ── CSV import ───────────────────────────────────────────────────────
 
-  function handleFileChange(e) {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
+  function handleFileChange(file) {
+    // FileInput's onChange fires with `null` on a cleared/removed selection.
+    if (!file) {
+      setPickedFile(null);
+      return;
+    }
+    setPickedFile(file);
     const reader = new FileReader();
     reader.onload = () => {
       const text = reader.result;
@@ -589,13 +640,13 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
 
   /**
    * clearImportRowsAndFile — wipes the in-memory CSV rows and resets the file
-   * input after send/abort. Does NOT touch importDone so the "Done" message
+   * picker after send/abort. Does NOT touch importDone so the "Done" message
    * stays visible until the user explicitly dismisses it.
    */
   function clearImportRowsAndFile() {
     setImportRows([]);
     setImportProgress(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    setPickedFile(null);
   }
 
   function clearImportState() {
@@ -691,17 +742,16 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
         <span className="skills-title">Vault</span>
         <span className="skills-count">{rows.length} stored</span>
         {!showAdd && (
-          <button
-            type="button"
-            className="chip small"
-            disabled={disabled === true}
-            onClick={() => {
+          <Button
+            label="+ Add"
+            variant="secondary"
+            size="sm"
+            isDisabled={disabled === true}
+            clickAction={() => {
               setStatusMsg(null);
               setShowAdd(true);
             }}
-          >
-            + Add
-          </button>
+          />
         )}
       </div>
 
@@ -726,19 +776,22 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
               <div className="skill-meta">
                 <span className="skill-name">
                   {item.name}
-                  <span className={`skill-badge vault-kind-${item.kind}`}>{kindLabel(item.kind)}</span>
+                  <Badge className={`skill-badge vault-kind-${item.kind}`} variant="neutral" label={kindLabel(item.kind)} />
                   {item.synced && (
-                    <span className="skill-badge vault-badge-synced" title="Confirmed in 1Password">
-                      1P
-                    </span>
+                    <Badge
+                      className="skill-badge vault-badge-synced"
+                      variant="neutral"
+                      label="1P"
+                      title="Confirmed in 1Password"
+                    />
                   )}
                   {item.shadowed && (
-                    <span
+                    <Badge
                       className="skill-badge vault-badge-shadowed"
+                      variant="neutral"
+                      label="shadowed"
                       title="Defined by the server's environment — edits here won't take effect"
-                    >
-                      shadowed
-                    </span>
+                    />
                   )}
                 </span>
                 <span className="skill-desc">
@@ -757,28 +810,25 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
                 // Finding 5: warn about server restart when deleting an op-token.
                 <span className="vault-confirm-prompt">
                   {item.kind === "op-token" ? "Delete? This will restart the server. " : "Delete? "}
-                  <button
-                    type="button"
-                    className="chip small danger"
-                    disabled={disabled === true}
-                    onClick={() => handleDelete(item)}
-                  >
-                    Yes
-                  </button>{" "}
-                  <button type="button" className="chip small" onClick={() => setConfirmDeleteId(null)}>
-                    No
-                  </button>
+                  <Button
+                    label="Yes"
+                    variant="destructive"
+                    size="sm"
+                    isDisabled={disabled === true}
+                    clickAction={() => handleDelete(item)}
+                  />{" "}
+                  <Button label="No" variant="ghost" size="sm" clickAction={() => setConfirmDeleteId(null)} />
                 </span>
               ) : (
-                <button
-                  type="button"
-                  className="chip small vault-delete-btn"
-                  disabled={disabled === true}
-                  onClick={() => setConfirmDeleteId(item.id)}
-                  title={`Delete ${item.name}`}
-                >
-                  Delete
-                </button>
+                <Button
+                  label="Delete"
+                  variant="destructive"
+                  size="sm"
+                  className="vault-delete-btn"
+                  isDisabled={disabled === true}
+                  clickAction={() => setConfirmDeleteId(item.id)}
+                  tooltip={`Delete ${item.name}`}
+                />
               )}
             </div>
           ))
@@ -786,35 +836,31 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
       </div>
 
       {/* ── 1Password sync section ────────────────────────────────── */}
-      <div className="vault-sync-header">
-        <button
-          type="button"
-          className="vault-sync-toggle-btn chip small"
-          onClick={() =>
-            setShowSync((v) => {
-              if (v) {
-                // Closing the section: wipe any parsed CSV rows + file
-                // reference so passwords do not survive a collapsed-section
-                // lifecycle.
-                clearImportRowsAndFile();
-                setImportDone(false);
-              }
-              return !v;
-            })
-          }
-          aria-expanded={showSync}
-        >
-          {showSync ? "▾ 1Password Sync" : "▸ 1Password Sync"}
-        </button>
-        {sync?.enabled && (
-          <span className="vault-badge-synced skill-badge" style={{ fontSize: "10px" }}>
-            on
+      <Collapsible
+        trigger={
+          <span className="vault-sync-header">
+            <span className="vault-sync-toggle-btn">1Password Sync</span>
+            {sync?.enabled && (
+              <span className="vault-badge-synced skill-badge" style={{ fontSize: "10px" }}>
+                on
+              </span>
+            )}
+            {sync?.lastSyncedAt && (
+              <span className="vault-sync-meta">synced {humanizeRelTime(sync.lastSyncedAt)}</span>
+            )}
           </span>
-        )}
-        {sync?.lastSyncedAt && <span className="vault-sync-meta">synced {humanizeRelTime(sync.lastSyncedAt)}</span>}
-      </div>
-
-      {showSync && (
+        }
+        isOpen={showSync}
+        onOpenChange={(next) => {
+          if (!next) {
+            // Closing the section: wipe any parsed CSV rows + file selection
+            // so passwords do not survive a collapsed-section lifecycle.
+            clearImportRowsAndFile();
+            setImportDone(false);
+          }
+          setShowSync(next);
+        }}
+      >
         <div className="vault-sync-form">
           {/* Show server-reported last error in red, via plain text content. */}
           {sync?.lastError && (
@@ -824,32 +870,27 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
           )}
 
           <div className="vault-field">
-            <label className="vault-label">
-              <input
-                type="checkbox"
-                className="vault-sync-checkbox"
-                checked={syncEnabled}
-                disabled={disabled === true}
-                onChange={(e) => setSyncEnabled(e.target.checked)}
-              />{" "}
-              Enable 1Password sync
-            </label>
+            <CheckboxInput
+              label="Enable 1Password sync"
+              size="sm"
+              value={syncEnabled}
+              isDisabled={disabled === true}
+              onChange={setSyncEnabled}
+            />
           </div>
 
           <div className="vault-field">
-            <label className="vault-label" htmlFor="vault-sync-label">
-              Account label
-            </label>
-            {/* datalist auto-completes from op-token items already in the vault. */}
-            <input
-              id="vault-sync-label"
-              type="text"
-              className="vault-input vault-mono"
+            {/* datalist auto-completes from op-token items already in the vault.
+                `list` isn't a named TextInput prop but passes straight through
+                to the underlying native <input> via its `...rest` spread. */}
+            <TextInput
+              label="Account label"
+              className="vault-mono"
               list="vault-op-labels"
               placeholder="e.g. MY_OP_TOKEN"
               value={syncOpLabel}
-              disabled={disabled === true}
-              onChange={(e) => setSyncOpLabel(e.target.value)}
+              isDisabled={disabled === true}
+              onChange={setSyncOpLabel}
             />
             <datalist id="vault-op-labels">
               {opLabels.map((label) => (
@@ -859,17 +900,12 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
           </div>
 
           <div className="vault-field">
-            <label className="vault-label" htmlFor="vault-sync-vault">
-              1Password vault name
-            </label>
-            <input
-              id="vault-sync-vault"
-              type="text"
-              className="vault-input"
+            <TextInput
+              label="1Password vault name"
               placeholder="Luna"
               value={syncOpVault}
-              disabled={disabled === true}
-              onChange={(e) => setSyncOpVault(e.target.value)}
+              isDisabled={disabled === true}
+              onChange={setSyncOpVault}
             />
             <p className="vault-warn-text">
               Create this vault in 1Password and grant your service account access — service accounts can't see
@@ -878,27 +914,22 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
           </div>
 
           <div className="vault-field">
-            <label className="vault-label" htmlFor="vault-sync-poll">
-              Poll interval (seconds, min 60)
-            </label>
-            <input
-              id="vault-sync-poll"
-              type="number"
-              className="vault-input"
-              min={60}
+            <NumberInput
+              label="Poll interval (seconds, min 60)"
               value={syncPollSeconds}
-              disabled={disabled === true}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                if (!isNaN(v)) setSyncPollSeconds(Math.max(60, v));
-              }}
+              min={60}
+              isDisabled={disabled === true}
+              onChange={(v) => setSyncPollSeconds(Math.max(60, v))}
             />
           </div>
 
           <div className="vault-actions">
-            <button type="button" className="chip" disabled={disabled === true || pending !== null} onClick={handleSyncSave}>
-              {pending?.op === "sync" ? "Saving…" : "Save sync settings"}
-            </button>
+            <Button
+              label={pending?.op === "sync" ? "Saving…" : "Save sync settings"}
+              variant="primary"
+              isDisabled={disabled === true || pending !== null}
+              clickAction={handleSyncSave}
+            />
           </div>
 
           {/* ── Apple Passwords CSV import ────────────────────────── */}
@@ -911,14 +942,15 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
                   <>
                     {importRows.length === 0 && !importProgress && (
                       <>
-                        <input
-                          type="file"
+                        <FileInput
+                          label="Choose Apple Passwords CSV export"
+                          isLabelHidden
+                          mode="input"
                           accept=".csv"
                           className="vault-import-file"
-                          disabled={disabled === true || pending !== null}
-                          ref={fileInputRef}
+                          isDisabled={disabled === true || pending !== null}
+                          value={pickedFile}
                           onChange={handleFileChange}
-                          aria-label="Choose Apple Passwords CSV export"
                         />
                         <p className="vault-warn-text">
                           Export from Apple Passwords: File → Export → CSV. Delete the file after import.
@@ -950,19 +982,15 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
                           )}
                         </ul>
                         <div className="vault-actions">
-                          <button
-                            type="button"
-                            className="chip"
-                            disabled={disabled === true || pending !== null}
-                            onClick={() => {
+                          <Button
+                            label="Confirm import"
+                            variant="primary"
+                            isDisabled={disabled === true || pending !== null}
+                            clickAction={() => {
                               void runImport();
                             }}
-                          >
-                            Confirm import
-                          </button>
-                          <button type="button" className="chip small" onClick={clearImportState}>
-                            Cancel
-                          </button>
+                          />
+                          <Button label="Cancel" variant="ghost" size="sm" clickAction={clearImportState} />
                         </div>
                       </div>
                     )}
@@ -985,46 +1013,44 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
                 {importDone && (
                   <div className="vault-import-done" role="status">
                     Done — you can delete the exported CSV file now.
-                    <button
-                      type="button"
-                      className="chip small"
+                    <Button
+                      label="Import another"
+                      variant="ghost"
+                      size="sm"
                       style={{ marginLeft: "8px" }}
-                      onClick={() => setImportDone(false)}
-                    >
-                      Import another
-                    </button>
+                      clickAction={() => setImportDone(false)}
+                    />
                   </div>
                 )}
               </>
             ) : (
               <div className="vault-import-disabled-note">
                 Enable 1Password sync above to import Apple Passwords.
-                <button type="button" className="chip small" disabled style={{ marginLeft: "8px", opacity: 0.5 }}>
-                  Choose file
-                </button>
+                <Button
+                  label="Choose file"
+                  variant="ghost"
+                  size="sm"
+                  isDisabled
+                  style={{ marginLeft: "8px", opacity: 0.5 }}
+                />
               </div>
             )}
           </div>
         </div>
-      )}
+      </Collapsible>
 
       {/* ── add form ─────────────────────────────────────────────── */}
       {showAdd && (
         <div className="vault-add-form">
           <div className="vault-field">
-            <label className="vault-label" htmlFor="vault-name">
-              Name
-            </label>
-            <input
-              id="vault-name"
-              type="text"
-              className="vault-input"
+            <TextInput
+              label="Name"
               placeholder="e.g. Notion API Key"
               value={name}
-              disabled={disabled === true}
+              isDisabled={disabled === true}
               maxLength={64}
-              onChange={(e) => {
-                setName(e.target.value);
+              onChange={(v) => {
+                setName(v);
                 // Reset override preview when name changes if the user
                 // hasn't explicitly touched it yet.
                 if (!showVarOverride) setVarNameOverride(null);
@@ -1033,19 +1059,16 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
           </div>
 
           <div className="vault-field">
-            <label className="vault-label" htmlFor="vault-kind">
-              Kind
-            </label>
-            <select
-              id="vault-kind"
-              className="vault-input"
+            <Selector
+              label="Kind"
+              options={[
+                { value: "env-secret", label: "API key / secret (default)" },
+                { value: "op-token", label: "1Password service-account token" },
+              ]}
               value={kind}
-              disabled={disabled === true}
-              onChange={(e) => setKind(e.target.value)}
-            >
-              <option value="env-secret">API key / secret (default)</option>
-              <option value="op-token">1Password service-account token</option>
-            </select>
+              isDisabled={disabled === true}
+              onChange={setKind}
+            />
           </div>
 
           {kind === "env-secret" && (
@@ -1054,24 +1077,24 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
               {!showVarOverride ? (
                 <div className="vault-varname-row">
                   <code className="vault-varname-preview">{autoVarName || "…"}</code>
-                  <button
-                    type="button"
-                    className="chip small"
-                    onClick={() => {
+                  <Button
+                    label="Override"
+                    variant="ghost"
+                    size="sm"
+                    clickAction={() => {
                       setVarNameOverride(autoVarName);
                       setShowVarOverride(true);
                     }}
-                  >
-                    Override
-                  </button>
+                  />
                 </div>
               ) : (
-                <input
-                  type="text"
-                  className="vault-input vault-mono"
+                <TextInput
+                  label="Env variable name"
+                  isLabelHidden
+                  className="vault-mono"
                   value={varNameOverride ?? autoVarName}
-                  disabled={disabled === true}
-                  onChange={(e) => setVarNameOverride(e.target.value)}
+                  isDisabled={disabled === true}
+                  onChange={setVarNameOverride}
                 />
               )}
             </div>
@@ -1079,25 +1102,25 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
 
           {kind === "op-token" && (
             <div className="vault-field">
-              <label className="vault-label" htmlFor="vault-label">
-                Label
-              </label>
               {/* Finding 1: op-token label uses its own dedicated state so the
                   typed value is preserved through validateForm and handleSubmit. */}
-              <input
-                id="vault-label"
-                type="text"
-                className="vault-input vault-mono"
+              <TextInput
+                label="Label"
+                className="vault-mono"
                 placeholder="e.g. MY_OP_TOKEN"
                 value={opTokenLabel}
-                disabled={disabled === true}
-                onChange={(e) => setOpTokenLabel(e.target.value)}
+                isDisabled={disabled === true}
+                onChange={setOpTokenLabel}
               />
               <p className="vault-warn-text">Saving a 1Password token will restart the server.</p>
             </div>
           )}
 
           <div className="vault-field">
+            {/* SECURITY: stays a plain uncontrolled native input — see the
+                Astryx-conversion notes at the top of this file for why
+                TextInput cannot be used here without breaking the one-shot
+                secret-wipe contract. */}
             <label className="vault-label" htmlFor="vault-value">
               Secret value
             </label>
@@ -1113,28 +1136,24 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
           </div>
 
           <div className="vault-field">
-            <label className="vault-label" htmlFor="vault-note">
-              Note (optional)
-            </label>
-            <input
-              id="vault-note"
-              type="text"
-              className="vault-input"
+            <TextInput
+              label="Note (optional)"
               placeholder="Short description"
               value={note}
-              disabled={disabled === true}
-              onChange={(e) => setNote(e.target.value)}
+              isDisabled={disabled === true}
+              onChange={setNote}
             />
           </div>
 
           <div className="vault-actions">
             {/* Finding 6: Save shows "Saving..." only for a put in-flight (not delete). */}
-            <button type="button" disabled={disabled === true || pending !== null} onClick={handleSubmit}>
-              {pending?.op === "put" ? "Saving…" : "Save credential"}
-            </button>
-            <button type="button" className="chip" onClick={closeAdd}>
-              Cancel
-            </button>
+            <Button
+              label={pending?.op === "put" ? "Saving…" : "Save credential"}
+              variant="primary"
+              isDisabled={disabled === true || pending !== null}
+              clickAction={handleSubmit}
+            />
+            <Button label="Cancel" variant="ghost" clickAction={closeAdd} />
           </div>
         </div>
       )}

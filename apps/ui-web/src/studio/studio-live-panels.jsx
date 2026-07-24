@@ -5,6 +5,7 @@
  * board supplies stable commands and presentation state through `ctx`; live
  * server state stays local to the panel that renders it.
  */
+import { EmptyState } from "./astryx-kit.tsx";
 import React, { useMemo } from "react";
 import { useLunaInbox } from "../data/useLunaInbox";
 import { useStudioThreads } from "../data/useStudioThreads";
@@ -98,7 +99,11 @@ function Widget({ ctx, panel }) {
   if (!panel.artifactId) return <GeneratedWidget spec={panel.spec} fresh={panel.fresh} />;
   const artifact = artifacts.get(panel.artifactId);
   if (!artifact) {
-    return <div className="gw-wrap widget-frame-host"><div className="gw-stat-note">this widget isn't pinned anymore.</div></div>;
+    return (
+      <div className="gw-wrap widget-frame-host">
+        <EmptyState title="This widget isn't pinned anymore." isCompact />
+      </div>
+    );
   }
   return <WidgetFrame artifact={artifact} mcp={ctx.mcp} fresh={panel.fresh} />;
 }

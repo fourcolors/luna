@@ -11,8 +11,26 @@
 // plain useState<Set<string>>. Everything else — data in, no frames out — is
 // a pure client-side view over ctx.state; it renders empty until connected
 // and needs no capability gate.
+//
+// Astryx conversion notes:
+// - Kind chips -> ToggleButtonGroup (type="multiple") + ToggleButton, which
+//   gives real aria-pressed group semantics for free (the old hand-rolled
+//   <button className="obs-chip"> row had none) while keeping the exact same
+//   multi-select toggle behavior. "clear" stays a plain Button (it isn't a
+//   toggle — it's a one-shot action that empties the selection).
+// - Drop-count notice -> Banner (status="warning"), the direct equivalent of
+//   the old hand-rolled `.obs-banner.drop` div.
+// - EventRow's click-to-expand is intentionally left as hand-rolled markup,
+//   not Astryx's Collapsible: Collapsible enforces a trigger+content split
+//   with its own chevron button, which would require re-plumbing the shared
+//   `.obs-row-event` CSS grid (devops-panels.css, also consumed by
+//   skills-panel.jsx) rather than a clean drop-in. Instead this port adds the
+//   missing accessibility semantics (role="button", aria-expanded, keyboard
+//   activation) directly, preserving the exact whole-row-clickable behavior.
+//   redactSecrets() -> JSON.stringify remains untouched either way.
 import React, { useCallback, useMemo, useState } from "react";
 import { filterEvents, formatVal } from "@luna/ui-shared/core";
+import { Button, ToggleButton, ToggleButtonGroup, Banner } from "./astryx-kit.tsx";
 
 // Defense-in-depth: ObsEvent's `[key: string]: unknown` index signature means
 // a future event kind could carry a credential-shaped field. Nothing in the
@@ -54,10 +72,21 @@ export function EventRow({ event }) {
     return preview || event.kind;
   }, [event]);
 
+  const toggle = useCallback(() => setOpen((o) => !o), []);
+
   return (
     <div
       className={`obs-row-event level-${event.level}`}
-      onClick={() => setOpen((o) => !o)}
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onClick={toggle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      }}
     >
       <span className="obs-ts">{event.ts.slice(11, 23)}</span>
       <span className={`obs-kind kind-${event.kind}`}>{event.kind}</span>
@@ -99,13 +128,14 @@ export function ObsPanel({
     [events, selectedKinds],
   );
 
-  const toggleKind = useCallback((k) => {
-    setSelectedKinds((prev) => {
-      const next = new Set(prev);
-      if (next.has(k)) next.delete(k);
-      else next.add(k);
-      return next;
-    });
+  // ToggleButtonGroup (type="multiple") is controlled via a string[], while
+  // the rest of this panel (and filterEvents) works off a Set<string> — kept
+  // as the source of truth since it's what the original component used and
+  // what toggleKind/allKinds.includes checks are cheapest against.
+  const selectedKindsList = useMemo(() => Array.from(selectedKinds), [selectedKinds]);
+
+  const onSelectedKindsChange = useCallback((next) => {
+    setSelectedKinds(new Set(next));
   }, []);
 
   const clearKinds = useCallback(() => setSelectedKinds(new Set()), []);
@@ -119,26 +149,29 @@ export function ObsPanel({
           {allKinds.length === 0 && (
             <span className="obs-muted">no kinds yet — connect to see events</span>
           )}
-          {allKinds.map((k) => (
-            <button
-              key={k}
-              className={`obs-chip${selectedKinds.has(k) ? " active" : ""}`}
-              onClick={() => toggleKind(k)}
+          {allKinds.length > 0 && (
+            <ToggleButtonGroup
+              type="multiple"
+              label="Filter by event kind"
+              size="sm"
+              value={selectedKindsList}
+              onChange={onSelectedKindsChange}
             >
-              {k}
-            </button>
-          ))}
+              {allKinds.map((k) => (
+                <ToggleButton key={k} value={k} label={k} />
+              ))}
+            </ToggleButtonGroup>
+          )}
           {selectedKinds.size > 0 && (
-            <button className="obs-chip clear" onClick={clearKinds}>
-              clear
-            </button>
+            <Button label="clear" variant="ghost" size="sm" clickAction={clearKinds} />
           )}
         </div>
         {lastDrop && (
-          <div className="obs-banner drop">
-            ⚠ dropped {droppedTotal} event(s) total · most recent burst: {lastDrop.n}{" "}
-            since {lastDrop.since}
-          </div>
+          <Banner
+            status="warning"
+            title={`Dropped ${droppedTotal} event(s) total`}
+            description={`most recent burst: ${lastDrop.n} since ${lastDrop.since}`}
+          />
         )}
       </div>
       <main className="obs-log">

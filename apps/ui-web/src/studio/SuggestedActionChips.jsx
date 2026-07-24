@@ -15,6 +15,7 @@
 // quiet "queued" state with no buttons and no spinner that implies progress
 // that isn't happening.
 import React from "react";
+import { Button, Badge } from "./astryx-kit.tsx";
 
 function newestOpenAction(actions) {
   let best = null;
@@ -37,12 +38,24 @@ export function SuggestedActionChips({ actions, onAccept, onDismiss }) {
         <span className="sa-chip-title" title={action.detail || action.title}>{action.title}</span>
         {action.status === "proposed" && (
           <span className="sa-chip-actions">
-            <button type="button" className="sa-chip-btn accept" onClick={() => onAccept(action.id)}>accept</button>
-            <button type="button" className="sa-chip-btn dismiss" onClick={() => onDismiss(action.id)}>dismiss</button>
+            <Button
+              label="accept"
+              variant="ghost"
+              size="sm"
+              className="sa-chip-btn accept"
+              onClick={() => onAccept(action.id)}
+            />
+            <Button
+              label="dismiss"
+              variant="ghost"
+              size="sm"
+              className="sa-chip-btn dismiss"
+              onClick={() => onDismiss(action.id)}
+            />
           </span>
         )}
-        {action.status === "accepted" && <span className="sa-chip-badge">queued ✦</span>}
-        {action.status === "in_progress" && <span className="sa-chip-badge">running…</span>}
+        {action.status === "accepted" && <Badge variant="neutral" className="sa-chip-badge" label="queued ✦" />}
+        {action.status === "in_progress" && <Badge variant="neutral" className="sa-chip-badge" label="running…" />}
       </div>
     </div>
   );

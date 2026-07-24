@@ -1,6 +1,7 @@
 // final-app.jsx — Luna Studio (final): Home space with inbox + threads,
 // City and Build spaces, keyboard jumping, and threads woven through chat.
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
+import { Button, IconButton } from "./astryx-kit.tsx";
 import { LUNA_PALETTES, PipApp, TimerApp, WeatherApp, MusicApp, HabitApp, StickyApp, SecureApp } from "./luna-mini-apps.jsx";
 import { TASK_DEFS, BRAINS } from "./studio-data.jsx";
 import { BrainBadge } from "./studio-brain.jsx";
@@ -214,8 +215,26 @@ const PanelWindow = React.memo(function PanelWindow({
         <span className="wash-dot"></span>
         <span className="panel-title">{title}</span>
         {brain && <BrainBadge brain={brain} live={live} showName={panel.w >= 320} />}
-        <button className="panel-min" title={panel.min ? "expand" : "minimize"} onClick={() => onToggleMin(panel.id)} onPointerDown={(event) => event.stopPropagation()}>{panel.min ? "+" : "–"}</button>
-        <button className="panel-close" title="close" onClick={() => onClose(panel.id)} onPointerDown={(event) => event.stopPropagation()}>✕</button>
+        <IconButton
+          className="panel-min"
+          label={panel.min ? "expand" : "minimize"}
+          tooltip={panel.min ? "expand" : "minimize"}
+          icon={panel.min ? "+" : "–"}
+          variant="ghost"
+          size="sm"
+          onClick={() => onToggleMin(panel.id)}
+          onPointerDown={(event) => event.stopPropagation()}
+        />
+        <IconButton
+          className="panel-close"
+          label="close"
+          tooltip="close"
+          icon="✕"
+          variant="ghost"
+          size="sm"
+          onClick={() => onClose(panel.id)}
+          onPointerDown={(event) => event.stopPropagation()}
+        />
       </div>
       <div className="panel-body">
         {Content ? <Content ctx={ctx} panel={panel} /> : def.render(ctx, panel)}
@@ -778,7 +797,7 @@ const StudioBoard = React.memo(function StudioBoard({ luna }) {
               {i < 9 && <span className="ws-num">{i + 1}</span>}
             </button>
           ))}
-          <button className="ws-add" title="new space" onClick={addWorkspace}>+</button>
+          <IconButton className="ws-add" label="new space" tooltip="new space" icon="+" variant="ghost" onClick={addWorkspace} />
         </div>
         <div className="ws-kbd-hint">press <b>1–{Math.min(workspaces.length, 9)}</b><br />to jump</div>
       </div>
@@ -790,43 +809,51 @@ const StudioBoard = React.memo(function StudioBoard({ luna }) {
           {closed.length > 0 && (
             <div className="shelf">
               {closed.slice(0, 3).map((p) => (
-                <button key={p.id} className="shelf-chip" onClick={() => restore(p.id)} title={"reopen " + (p.title || DEFS[p.type].title)}>
+                <Button key={p.id} className="shelf-chip" variant="ghost" label={"reopen " + (p.title || DEFS[p.type].title)} tooltip={"reopen " + (p.title || DEFS[p.type].title)} onClick={() => restore(p.id)}>
                   <span className="wash-dot" style={{ "--panel-tint": p.brain ? "var(--brain-" + p.brain + ")" : "var(--wash-2)" }}></span>
                   <span className="shelf-name">{p.title || DEFS[p.type].title}</span>
-                </button>
+                </Button>
               ))}
-              {closed.length > 3 && <button className="shelf-chip more" onClick={() => setShelfOpen((o) => !o)}>+{closed.length - 3}</button>}
+              {closed.length > 3 && <Button className="shelf-chip more" variant="ghost" label={"show " + (closed.length - 3) + " more closed panels"} onClick={() => setShelfOpen((o) => !o)}>+{closed.length - 3}</Button>}
               {shelfOpen && closed.length > 3 && (
                 <div className="shelf-pop">
                   {closed.slice(3).map((p) => (
-                    <button key={p.id} className="shelf-chip" onClick={() => { restore(p.id); setShelfOpen(false); }}>
+                    <Button key={p.id} className="shelf-chip" variant="ghost" label={"reopen " + (p.title || DEFS[p.type].title)} tooltip={"reopen " + (p.title || DEFS[p.type].title)} onClick={() => { restore(p.id); setShelfOpen(false); }}>
                       <span className="wash-dot" style={{ "--panel-tint": p.brain ? "var(--brain-" + p.brain + ")" : "var(--wash-2)" }}></span>
                       <span className="shelf-name">{p.title || DEFS[p.type].title}</span>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}
             </div>
           )}
           <div className="settings-launcher" style={{ position: "relative" }}>
-            <button title="settings & panels" onClick={() => setMenuOpen((o) => !o)}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-            </button>
+            <IconButton
+              label="settings & panels"
+              tooltip="settings & panels"
+              variant="ghost"
+              onClick={() => setMenuOpen((o) => !o)}
+              icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>}
+            />
             {menuOpen && (
               <div className="shelf-pop settings-menu">
                 {LAUNCHER_ITEMS.filter((it) => it.show(capabilities)).map((it) => (
-                  <button key={it.type} className="shelf-chip" onClick={() => summonPanel(it.type)}>
+                  <Button key={it.type} className="shelf-chip" variant="ghost" label={it.label} onClick={() => summonPanel(it.type)}>
                     <span className="wash-dot" style={{ "--panel-tint": "var(--wash-2)" }}></span>
                     <span className="shelf-name">{it.label}</span>
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}
           </div>
           <div className="arrange-group">
-            <button title="tidy into a grid" onClick={tidy}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="2"></rect><rect x="13" y="3" width="8" height="8" rx="2"></rect><rect x="3" y="13" width="8" height="8" rx="2"></rect><rect x="13" y="13" width="8" height="8" rx="2"></rect></svg>
-            </button>
+            <IconButton
+              label="tidy into a grid"
+              tooltip="tidy into a grid"
+              variant="ghost"
+              onClick={tidy}
+              icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="2"></rect><rect x="13" y="3" width="8" height="8" rx="2"></rect><rect x="3" y="13" width="8" height="8" rx="2"></rect><rect x="13" y="13" width="8" height="8" rx="2"></rect></svg>}
+            />
           </div>
           <StudioDate />
         </div>

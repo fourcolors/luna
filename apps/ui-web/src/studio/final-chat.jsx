@@ -6,6 +6,7 @@ import { THREAD_SECTIONS, THREAD_STATUS_LABEL } from "./final-threads.jsx";
 import { BRAINS } from "./studio-data.jsx";
 import { BrainPicker } from "./studio-brain.jsx";
 import { SuggestedActionChips } from "./SuggestedActionChips.jsx";
+import { Button, IconButton } from "./astryx-kit.tsx";
 const TcReact = React;
 
 export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThreadNote, onSpawn, onVoice, onFocus, brain, setBrain, suggestedActions, onAcceptAction, onDismissAction }) {
@@ -56,7 +57,14 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
       <div className="tc-rail">
         <div className="tc-rail-top">
           <span className="h">threads</span>
-          <button className="tc-new" title="new thread" onClick={() => { onNew(); setRailOpen(false); }}>+</button>
+          <IconButton
+            className="tc-new"
+            label="new thread"
+            tooltip="new thread"
+            icon="+"
+            variant="ghost"
+            onClick={() => { onNew(); setRailOpen(false); }}
+          />
         </div>
         <div className="tc-list">
           {THREAD_SECTIONS.map((sec) => {
@@ -82,9 +90,14 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
 
       {/* conversation layer — slides right to reveal the rail */}
       <div className={"tc-main" + (railOpen ? " open" : "")}>
-        <button className="tc-handle" title={railOpen ? "close threads" : "threads"} onClick={() => setRailOpen((o) => !o)}>
-          <svg width="9" height="12" viewBox="0 0 10 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2l5 5-5 5"></path></svg>
-        </button>
+        <IconButton
+          className="tc-handle"
+          label={railOpen ? "close threads" : "threads"}
+          tooltip={railOpen ? "close threads" : "threads"}
+          variant="ghost"
+          icon={<svg width="9" height="12" viewBox="0 0 10 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2l5 5-5 5"></path></svg>}
+          onClick={() => setRailOpen((o) => !o)}
+        />
 
         <div className="chat-stream" ref={streamRef}>
           {thread.msgs.map((m, i) => (
@@ -110,7 +123,7 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
         <SuggestedActionChips actions={suggestedActions} onAccept={onAcceptAction} onDismiss={onDismissAction} />
 
         <div className="chip-row">
-          {chips.map((c) => <button className="chip" key={c} onClick={() => send(c)}>{c}</button>)}
+          {chips.map((c) => <Button className="chip" key={c} label={c} variant="ghost" onClick={() => send(c)} />)}
         </div>
 
         <div className="composer-controls">
@@ -125,10 +138,15 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") send(); }}
           />
-          <button className="mic-btn" onClick={onVoice} title="voice mode">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg>
-          </button>
-          <button className="send-btn" onClick={() => send()} title="send">✦</button>
+          <IconButton
+            className="mic-btn"
+            label="voice mode"
+            tooltip="voice mode"
+            variant="ghost"
+            icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg>}
+            onClick={onVoice}
+          />
+          <Button className="send-btn" label="send" tooltip="send" onClick={() => send()}>✦</Button>
         </div>
 
         {railOpen && <div className="tc-scrim" onClick={() => setRailOpen(false)}></div>}

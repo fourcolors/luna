@@ -12,7 +12,7 @@
 // Idiom translation from Solid: createSignal -> useState, For -> .map,
 // Show -> && / early return, class -> className, onInput -> onChange.
 import React, { useMemo, useState } from "react";
-import { Button } from "@astryxdesign/core/Button";
+import { Button, TextInput, CheckboxInput, Slider, Banner } from "./astryx-kit.tsx";
 import { AccountSwitcher } from "./account-switcher.jsx";
 
 /** Hardcoded fallback model list — used until the server's `hello` frame
@@ -123,27 +123,32 @@ export function SettingsPanel({ ctx }) {
   return (
     <div className="stg-wrap">
       <div className="stg-row">
-        <label className="stg-field">
-          <span>URL</span>
-          <input
-            className="stg-input"
-            value={config.url}
-            onChange={(e) => updateConfig({ url: e.target.value })}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-          />
-        </label>
-        <label className="stg-field">
-          <span>Token</span>
-          <input
-            className="stg-input"
-            type="password"
-            value={config.token}
-            onChange={(e) => updateConfig({ token: e.target.value })}
-            placeholder="≥16 chars"
-          />
-        </label>
+        <TextInput
+          className="stg-field"
+          label="URL"
+          size="sm"
+          value={config.url}
+          onChange={(value) => updateConfig({ url: value })}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+        />
+        <TextInput
+          className="stg-field"
+          label="Token"
+          size="sm"
+          type="password"
+          value={config.token}
+          onChange={(value) => updateConfig({ token: value })}
+          placeholder="≥16 chars"
+        />
+        {/* Model dropdown stays a native <select>: Astryx's Selector is a
+            popover-based combobox (requires the Popover API / floating
+            positioning), not a drop-in for a native select, and this app's
+            test harness has no testing-library/jsdom popover shims to drive
+            it. Forcing it here would be exactly the kind of markup swap that
+            silently changes behavior — see the "keep custom markup where
+            Astryx has no equivalent" rule. */}
         <label className="stg-field">
           <span>Model</span>
           <select
@@ -165,16 +170,15 @@ export function SettingsPanel({ ctx }) {
           </select>
         </label>
         {isCustomModel && (
-          <label className="stg-field">
-            <span>Model ID</span>
-            <input
-              className="stg-input"
-              value={config.model}
-              onChange={(e) => updateConfig({ model: e.target.value })}
-              spellCheck={false}
-              placeholder="claude-…"
-            />
-          </label>
+          <TextInput
+            className="stg-field"
+            label="Model ID"
+            size="sm"
+            value={config.model}
+            onChange={(value) => updateConfig({ model: value })}
+            spellCheck={false}
+            placeholder="claude-…"
+          />
         )}
         <AccountSwitcher
           accounts={ctx.state.accounts}
@@ -182,36 +186,33 @@ export function SettingsPanel({ ctx }) {
           onSelect={selectAccount}
           disabled={!connected}
         />
-        <label className="stg-toggle" title="When on, plain Enter sends; Shift+Enter inserts a newline">
-          <input
-            type="checkbox"
-            checked={config.enterToSend}
-            onChange={(e) => updateConfig({ enterToSend: e.target.checked })}
-          />
-          <span>Enter to send</span>
-        </label>
+        <CheckboxInput
+          className="stg-toggle"
+          label="Enter to send"
+          size="sm"
+          value={config.enterToSend}
+          onChange={(checked) => updateConfig({ enterToSend: checked })}
+        />
         {connected || isConnecting ? (
-          <button type="button" className="ghost-btn" onClick={disconnect}>Disconnect</button>
+          <Button label="Disconnect" variant="secondary" size="sm" onClick={disconnect} />
         ) : (
-          <button
-            type="button"
-            className="ghost-btn"
+          <Button
+            label="Connect"
+            variant="secondary"
+            size="sm"
+            isDisabled={!config.token || config.token.length < 16}
             onClick={connect}
-            disabled={!config.token || config.token.length < 16}
-          >
-            Connect
-          </button>
+          />
         )}
-        <button
-          type="button"
-          className="ghost-btn"
-          disabled={restarting}
-          title="Restart the Luna chat server (launchd auto-respawns)"
+        <Button
+          label={restarting ? "⟳ Restarting…" : "↺ Restart Server"}
+          variant="secondary"
+          size="sm"
+          isDisabled={restarting}
+          tooltip="Restart the Luna chat server (launchd auto-respawns)"
           onClick={onRestart}
-        >
-          {restarting ? "⟳ Restarting…" : "↺ Restart Server"}
-        </button>
-        {restartError && <div className="stg-status error" role="alert">{restartError}</div>}
+        />
+        {restartError && <Banner status="error" title={restartError} />}
       </div>
 
       {/* Appearance — palette, theme, chrome, grain. Purely client-side via
@@ -274,14 +275,13 @@ export function SettingsPanel({ ctx }) {
             </button>
           ))}
         </div>
-        <label className="stg-toggle" title="Add a subtle paper texture to the canvas">
-          <input
-            type="checkbox"
-            checked={ctx.tweaks.grain}
-            onChange={(e) => ctx.setTweak("grain", e.target.checked)}
-          />
-          <span>Paper grain</span>
-        </label>
+        <CheckboxInput
+          className="stg-toggle"
+          label="Paper grain"
+          size="sm"
+          value={ctx.tweaks.grain}
+          onChange={(checked) => ctx.setTweak("grain", checked)}
+        />
       </div>
 
       {/* Presence — motion, ambient Luna, default brain. Folded in from the
@@ -303,14 +303,13 @@ export function SettingsPanel({ ctx }) {
             </button>
           ))}
         </div>
-        <label className="stg-toggle" title="Show the ambient Luna presence on the canvas">
-          <input
-            type="checkbox"
-            checked={ctx.tweaks.ambient}
-            onChange={(e) => ctx.setTweak("ambient", e.target.checked)}
-          />
-          <span>Ambient Luna</span>
-        </label>
+        <CheckboxInput
+          className="stg-toggle"
+          label="Ambient Luna"
+          size="sm"
+          value={ctx.tweaks.ambient}
+          onChange={(checked) => ctx.setTweak("ambient", checked)}
+        />
         <div className="chip-row" title="Which brain new chats talk to by default">
           {DEFAULT_BRAINS.map((b) => (
             <button
@@ -331,26 +330,26 @@ export function SettingsPanel({ ctx }) {
       {/* Canvas — panel magnet strength + snap guides (also ex-Tweaks). */}
       <div className="stg-row">
         <div className="section-label">Canvas</div>
-        <label className="stg-field" style={{ minWidth: 160 }}>
-          <span>Magnet strength · {ctx.tweaks.snap}px</span>
-          <input
-            type="range"
-            min={0}
-            max={40}
-            step={1}
-            value={ctx.tweaks.snap}
-            onChange={(e) => ctx.setTweak("snap", Number(e.target.value))}
-            style={{ accentColor: "var(--accent)" }}
-          />
-        </label>
-        <label className="stg-toggle" title="Show alignment guides while dragging panels">
-          <input
-            type="checkbox"
-            checked={ctx.tweaks.guides}
-            onChange={(e) => ctx.setTweak("guides", e.target.checked)}
-          />
-          <span>Snap guides</span>
-        </label>
+        <Slider
+          className="stg-field"
+          label="Magnet strength"
+          size="sm"
+          min={0}
+          max={40}
+          step={1}
+          value={ctx.tweaks.snap}
+          onChange={(value) => ctx.setTweak("snap", value)}
+          valueDisplay="text"
+          formatValue={(value) => `${value}px`}
+          style={{ minWidth: 160 }}
+        />
+        <CheckboxInput
+          className="stg-toggle"
+          label="Snap guides"
+          size="sm"
+          value={ctx.tweaks.guides}
+          onChange={(checked) => ctx.setTweak("guides", checked)}
+        />
       </div>
     </div>
   );

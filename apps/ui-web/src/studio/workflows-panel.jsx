@@ -24,7 +24,36 @@
 //   - Run error text is rendered as plain text via JSX child interpolation
 //     (auto-escaped, no dangerouslySetInnerHTML) — never raw HTML, never a
 //     secret value.
+//
+// Astryx conversion (single-file scope):
+//   - The header "refresh" chip is a clean 1:1 mapping onto Astryx's
+//     <Button>: it's a plain synchronous action trigger with no nested
+//     interactive children, so there's no button-in-button constraint. It
+//     keeps the shared `chip small` className (see devops-panels.css: that
+//     class is deliberately "byte-identical across porter outputs" and
+//     still used by the not-yet-converted ArtifactsPanel) — Luna's CSS is
+//     loaded unlayered while Astryx's own rules live in `@layer
+//     astryx-base` (see main.tsx), so the chip look wins the cascade over
+//     Astryx's default button chrome without a visual regression.
+//   - The tile rows intentionally stay hand-rolled div[role=button] markup.
+//     Astryx's nearest equivalent (ClickableCard) composes Card's own
+//     visual system (padding/radius/variant tokens) and a different DOM
+//     shape (a visually-hidden inner <button>/<a> for the accessible
+//     name) — forcing it here would fork `.artifact-row` styling away from
+//     the still-native ArtifactsPanel this file intentionally mirrors, for
+//     a row type that (unlike ArtifactsPanel's pinned rows) has no nested
+//     interactive child needing the shim in the first place. The existing
+//     activateOnKey Enter/Space handler already covers keyboard
+//     activation 1:1, so it's kept verbatim rather than forced onto an
+//     Astryx component with no equivalent-looking output.
+//   - Stays .jsx: studio-live-panels.jsx imports this module by its exact
+//     "./workflows-panel.jsx" specifier (extension included, Vite does not
+//     resolve across extensions) and is out of this conversion's
+//     single-file scope, so renaming to .tsx would require an out-of-scope
+//     edit for zero behavioural benefit. JSDoc types are added instead,
+//     matching the convention already used by artifacts-panel.jsx.
 import React, { useMemo, useState } from "react";
+import { Button } from "./astryx-kit.tsx";
 
 // ─── helpers (ported verbatim from WorkflowGallery.tsx) ────────────────────
 
@@ -67,6 +96,32 @@ function activateOnKey(fn) {
 
 // ─── component ─────────────────────────────────────────────────────────────
 
+/**
+ * @typedef {{
+ *   id: string,
+ *   label: string,
+ *   kind: string,
+ *   onDemand?: boolean,
+ *   schedule?: string|null,
+ *   enabled?: boolean,
+ *   lastStatus?: string|null,
+ *   nextRunAt?: number|null,
+ * }} Workflow
+ * @typedef {{
+ *   id: string,
+ *   status: string,
+ *   startedAt?: number|null,
+ *   finishedAt?: number|null,
+ *   attempt?: number,
+ *   error?: string|null,
+ * }} WorkflowRun
+ * @param {{
+ *   workflows: ReadonlyArray<Workflow>|null|undefined,
+ *   runs: ReadonlyMap<string, ReadonlyArray<WorkflowRun>>|null|undefined,
+ *   onSelectRuns: (id: string) => void,
+ *   onRefresh: () => void,
+ * }} props
+ */
 export function WorkflowGallery({ workflows, runs, onSelectRuns, onRefresh }) {
   const list = workflows || [];
   const [selectedId, setSelectedId] = useState(null);
@@ -88,15 +143,13 @@ export function WorkflowGallery({ workflows, runs, onSelectRuns, onRefresh }) {
       <div className="artifact-head">
         <span>Workflows</span>
         <span className="muted small">{list.length}</span>
-        <button
-          type="button"
+        <Button
+          label="↻ refresh"
           className="chip small"
           style={{ marginLeft: "auto" }}
           onClick={onRefresh}
-          title="Re-fetch workflow list"
-        >
-          ↻ refresh
-        </button>
+          tooltip="Re-fetch workflow list"
+        />
       </div>
 
       {/* Tile list */}

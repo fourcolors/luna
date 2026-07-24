@@ -1,6 +1,7 @@
 // studio-widget.jsx — GeneratedWidget: the real, interactive widget Luna
 // "paints" when you describe one. spec = { kind, props }.
 import React from "react";
+import { Button, TextInput } from "./astryx-kit.tsx";
 
 const GwReact = React;
 
@@ -45,8 +46,24 @@ function GwCounter({ label, unit = "today", goal = 8, value = 0 }) {
         <div className="gw-goaltext">{Math.round((n / goal) * 100)}% of today's goal</div>
       )}
       <div className="gw-counter-ctrl">
-        <button className="gw-step" onClick={() => setN((x) => Math.max(0, x - 1))}>–</button>
-        <button className="gw-step" onClick={() => setN((x) => x + 1)}>+</button>
+        <Button
+          className="gw-step"
+          label="Decrease"
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          icon={<span aria-hidden="true">–</span>}
+          onClick={() => setN((x) => Math.max(0, x - 1))}
+        />
+        <Button
+          className="gw-step"
+          label="Increase"
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          icon={<span aria-hidden="true">+</span>}
+          onClick={() => setN((x) => x + 1)}
+        />
       </div>
     </div>
   );
@@ -79,13 +96,15 @@ function GwChecklist({ label, items = [] }) {
         ))}
       </div>
       <div className="gw-additem">
-        <input
+        <TextInput
+          label="Add an item"
+          isLabelHidden
           placeholder="add an item…"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          onChange={(v) => setDraft(v)}
+          onEnter={add}
         />
-        <button onClick={add}>+</button>
+        <Button label="Add item" variant="ghost" isIconOnly icon={<span aria-hidden="true">+</span>} onClick={add} />
       </div>
     </>
   );
@@ -115,8 +134,12 @@ function GwGauge({ label = "Savings", value = 350, goal = 1000, unit = "$" }) {
       </div>
       <div className="gw-gauge-bar"><i style={{ width: pct + "%" }}></i></div>
       <div className="gw-gauge-ctrl">
-        <button className="ghost-btn" onClick={() => setV((x) => Math.max(0, x - step))}>– {unit}{step}</button>
-        <button className="ghost-btn" onClick={() => setV((x) => x + step)}>+ {unit}{step}</button>
+        <Button className="ghost-btn" label={`Decrease by ${unit}${step}`} variant="ghost" onClick={() => setV((x) => Math.max(0, x - step))}>
+          – {unit}{step}
+        </Button>
+        <Button className="ghost-btn" label={`Increase by ${unit}${step}`} variant="ghost" onClick={() => setV((x) => x + step)}>
+          + {unit}{step}
+        </Button>
       </div>
     </div>
   );
@@ -136,9 +159,16 @@ function GwMood({ label = "How are you?" }) {
       <div className="gw-mood-q">{label}</div>
       <div className="gw-faces">
         {GW_FACES.map((f, i) => (
-          <button key={i} className={"gw-face" + (sel === i ? " on" : "")} onClick={() => setSel(i)} title={f.w}>
-            {f.e}
-          </button>
+          <Button
+            key={i}
+            className={"gw-face" + (sel === i ? " on" : "")}
+            label={f.w}
+            tooltip={f.w}
+            variant="ghost"
+            isIconOnly
+            icon={<span aria-hidden="true">{f.e}</span>}
+            onClick={() => setSel(i)}
+          />
         ))}
       </div>
       <div className="gw-mood-note">{sel == null ? "tap how today feels" : "logged — feeling " + GW_FACES[sel].w + " ✦"}</div>
@@ -154,14 +184,16 @@ function GwHabit({ label = "New habit" }) {
       <div className="gw-mood-q" style={{ fontSize: 20 }}>{label}</div>
       <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
         {days.map((d, i) => (
-          <button
+          <Button
             key={i}
+            label={names[i] + (d ? " done" : " not done")}
+            variant="ghost"
             onClick={() => setDays((ds) => ds.map((x, j) => (j === i ? (x ? 0 : 1) : x)))}
-            style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-soft)", fontFamily: "inherit", fontSize: 11 }}
+            style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, color: "var(--ink-soft)", fontFamily: "inherit", fontSize: 11 }}
           >
             <span className={"habit-dot" + (d ? " on" : "")} style={{ width: 22, height: 22 }}></span>
             {names[i]}
-          </button>
+          </Button>
         ))}
       </div>
       <div className="gw-goaltext" style={{ textAlign: "center" }}>{days.filter(Boolean).length} of 7 this week</div>

@@ -1,6 +1,11 @@
 // connectors-panel.jsx - the Connectors settings section for Luna Studio
 // (React port of packages/ui-shared-solid/src/ConnectorsPanel.tsx, PRD Part A
-// section 17).
+// section 17). Astryx-ified: per-instance status pill -> Astryx Badge,
+// action buttons -> Astryx Button, form inputs -> Astryx TextInput, capability
+// toggles -> Astryx CheckboxInput. Layout wrappers (cnx-panel/cnx-def/
+// cnx-instance/cnx-form/etc.) stay hand-rolled - Astryx has no list/card
+// primitive that maps onto this per-definition/per-instance grouping without
+// fighting the existing devops-panels.css layout.
 //
 // Browser limitation (PRD section 09): a web page cannot bind a 127.0.0.1
 // loopback to capture the OAuth redirect, so the full client-brokered flow
@@ -26,10 +31,15 @@
 // Nothing here ever renders a secret value: API-key forms only take a
 // `secretRef` pointer (e.g. "env:SLACK_MCP_XOXB_TOKEN"), and the OAuth client
 // secret field is a plain password input that is sent up and never echoed
-// back or displayed. All server/user strings are rendered as text via JSX
-// child expressions (React escapes these) - there is no
+// back or displayed. Both secret-shaped fields stay uncontrolled-by-Astryx
+// beyond the same controlled-value contract the native inputs had (value +
+// onChange into local useState, cleared on submit) - Astryx's TextInput does
+// not introduce any caching/autofill layer of its own, it's a styled
+// passthrough onto a native <input>. All server/user strings are rendered as
+// text via JSX child expressions (React escapes these) - there is no
 // dangerouslySetInnerHTML anywhere in this file.
 import React, { useState } from "react";
+import { TextInput, Badge, Button, CheckboxInput } from "./astryx-kit.tsx";
 
 // ---------------------------------------------------------------------------
 // Frame shapes (see packages/ui-ws/src/protocol.ts; mirrored in
@@ -48,6 +58,14 @@ import React, { useState } from "react";
 //
 // ConnectorCatalogItem / ConnectorInstanceItem: @luna/ui-shared/core.
 // ---------------------------------------------------------------------------
+
+/** Instance status -> Astryx Badge variant. */
+const STATUS_BADGE_VARIANT = {
+  connected: "success",
+  "needs-reauth": "warning",
+  error: "error",
+  disconnected: "neutral",
+};
 
 /**
  * @param {object} props
@@ -129,15 +147,14 @@ export default function ConnectorsPanel({
               {defInstances.map((i) => (
                 <div key={i.id} className="cnx-instance">
                   <span className="cnx-instance-label">{i.label}</span>
-                  <span className={"cnx-badge cnx-badge-" + i.status}>{i.status}</span>
-                  <button
-                    type="button"
-                    className="ghost-btn cnx-danger"
-                    disabled={disabled === true}
-                    onClick={() => onDisconnect(i.id)}
-                  >
-                    Disconnect
-                  </button>
+                  <Badge variant={STATUS_BADGE_VARIANT[i.status] ?? "neutral"} label={i.status} />
+                  <Button
+                    label="Disconnect"
+                    variant="destructive"
+                    size="sm"
+                    isDisabled={disabled === true}
+                    clickAction={() => onDisconnect(i.id)}
+                  />
                 </div>
               ))}
 
@@ -146,14 +163,13 @@ export default function ConnectorsPanel({
                 {def.authKind === "api-key" ? (
                   // API-key connector: "Connect" (0 instances) or "Add
                   // account" (>=1 instances already connected).
-                  <button
-                    type="button"
-                    className="ghost-btn"
-                    disabled={disabled === true}
-                    onClick={() => setOpenId((cur) => (cur === def.id ? null : def.id))}
-                  >
-                    {openId === def.id ? "Cancel" : hasInstances ? "Add account" : "Connect"}
-                  </button>
+                  <Button
+                    label={openId === def.id ? "Cancel" : hasInstances ? "Add account" : "Connect"}
+                    variant="secondary"
+                    size="sm"
+                    isDisabled={disabled === true}
+                    clickAction={() => setOpenId((cur) => (cur === def.id ? null : def.id))}
+                  />
                 ) : (
                   // OAuth2: always show the Moon hint (unless a client-setup
                   // form is required and not yet configured - that form takes
@@ -163,17 +179,16 @@ export default function ConnectorsPanel({
                       {def.clientSetup?.configured === true && (
                         <>
                           <span className="cnx-client-ok">&#10003; OAuth client configured</span>
-                          <button
-                            type="button"
-                            className="chip small"
-                            disabled={disabled === true}
-                            title="Re-enter the OAuth client credentials"
-                            onClick={() =>
+                          <Button
+                            label={editClientId === def.id ? "close" : "edit"}
+                            variant="ghost"
+                            size="sm"
+                            isDisabled={disabled === true}
+                            tooltip="Re-enter the OAuth client credentials"
+                            clickAction={() =>
                               setEditClientId((cur) => (cur === def.id ? null : def.id))
                             }
-                          >
-                            {editClientId === def.id ? "close" : "edit"}
-                          </button>
+                          />
                         </>
                       )}
                       <span className="cnx-def-desc cnx-moon-hint">Connect from the Moon app</span>
@@ -237,32 +252,35 @@ function OAuthClientSetupForm({ def, disabled, onSubmit }) {
         This connector uses YOUR own Google OAuth client. Create one in the Google Cloud Console
         (Desktop app), then paste it here.
       </span>
-      <input
+      <TextInput
         type="text"
-        className="cnx-input"
+        label="Client ID"
+        isLabelHidden
         placeholder="Client ID (required)"
         value={clientId}
-        disabled={disabled}
-        onChange={(e) => setClientId(e.target.value)}
+        isDisabled={disabled}
+        onChange={setClientId}
       />
       {/* Google's token endpoint requires the secret even for Desktop-app
-          clients (review M2.6) - only omit it if your provider issues none. */}
-      <input
+          clients (review M2.6) - only omit it if your provider issues none.
+          Plain password input, sent up on submit and cleared - never echoed
+          back or held anywhere beyond this form's own local state. */}
+      <TextInput
         type="password"
-        className="cnx-input"
+        label="Client secret"
+        isLabelHidden
         placeholder="Client secret (Google issues one - paste it too)"
         value={clientSecret}
-        disabled={disabled}
-        onChange={(e) => setClientSecret(e.target.value)}
+        isDisabled={disabled}
+        onChange={setClientSecret}
       />
-      <button
-        type="button"
-        className="cnx-primary-btn"
-        disabled={disabled || clientId.trim().length === 0}
-        onClick={handleSubmit}
-      >
-        Save client
-      </button>
+      <Button
+        label="Save client"
+        variant="primary"
+        size="sm"
+        isDisabled={disabled || clientId.trim().length === 0}
+        clickAction={handleSubmit}
+      />
     </div>
   );
 }
@@ -288,37 +306,44 @@ function ApiKeyConnectForm({ def, onSubmit }) {
 
   return (
     <div className="cnx-form">
-      <input
+      <TextInput
         type="text"
-        className="cnx-input"
+        label="Account label"
+        isLabelHidden
         placeholder="Account label (e.g. personal, flowstay)"
         value={label}
-        onChange={(e) => setLabel(e.target.value)}
+        onChange={setLabel}
       />
       {def.capabilities.map((cap) => (
-        <label key={cap.id} className="toggle cnx-cap-toggle">
-          <input type="checkbox" checked={granted.includes(cap.id)} onChange={() => toggle(cap.id)} />
-          <span>{cap.label}</span>
-        </label>
+        <CheckboxInput
+          key={cap.id}
+          label={cap.label}
+          size="sm"
+          value={granted.includes(cap.id)}
+          onChange={() => toggle(cap.id)}
+        />
       ))}
-      <input
+      {/* Secret POINTER only - e.g. "env:SLACK_MCP_XOXB_TOKEN". The raw
+          secret is never entered here; it's stored first via the Secrets
+          flow and only its reference travels through this form/state. */}
+      <TextInput
         type="text"
-        className="cnx-input"
+        label="Secret ref"
+        isLabelHidden
         placeholder="Secret ref, e.g. env:SLACK_MCP_XOXB_TOKEN"
         value={ref}
-        onChange={(e) => setRef(e.target.value)}
+        onChange={setRef}
       />
-      <button
-        type="button"
-        className="cnx-primary-btn"
-        disabled={ref.trim().length === 0}
-        onClick={() => {
+      <Button
+        label="Connect"
+        variant="primary"
+        size="sm"
+        isDisabled={ref.trim().length === 0}
+        clickAction={() => {
           const trimmedLabel = label.trim();
           onSubmit(ref.trim(), granted, trimmedLabel.length > 0 ? trimmedLabel : undefined);
         }}
-      >
-        Connect
-      </button>
+      />
     </div>
   );
 }

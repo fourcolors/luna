@@ -45,9 +45,45 @@
 // Never renders a secret value: artifacts are user/agent content (code,
 // docs, generated UI), never vault/credential material.
 import React, { useEffect, useMemo, useState } from "react";
+import { Button } from "./astryx-kit.tsx";
 import { downloadArtifact, countLines, formatBytes } from "@luna/ui-shared/core";
 import { SANDBOX_ATTR, buildMcpSrcdoc } from "@luna/ui-shared/widget-sandbox";
 import { WidgetFrame } from "./WidgetFrame.jsx";
+
+// Astryx conversion (single-file scope, mirrors workflows-panel.jsx's notes):
+//   - Pin/unpin chips and the download/copy chips are clean 1:1 mappings onto
+//     Astryx's <Button>: each is a plain synchronous action trigger with no
+//     nested interactive children. `label` carries the same visible text the
+//     hand-rolled <button> used to render (Button's accessible-name prop is
+//     rendered as visible text by default, same as before); `icon` carries
+//     the leading emoji that was previously just inline text, so the
+//     rendered "⬇ download" / "📌 pin" output is unchanged. `tooltip` takes
+//     over from the old `title` attribute for the same native-hover text.
+//     `className="chip small artifact-chip"` is kept so Luna's unlayered CSS
+//     (see main.tsx: Astryx's own rules live in `@layer astryx-base`) keeps
+//     winning the cascade over Astryx's default button chrome - no visual
+//     regression, and workflows-panel.jsx / connectors-panel.jsx already
+//     lean on the exact same shim.
+//   - The artifact list rows stay hand-rolled div[role=button] markup for
+//     the same reason workflows-panel.jsx's tiles do: Astryx has no
+//     equivalent that produces this DOM shape (a div-not-button row hosting
+//     a NESTED interactive pin/unpin <button> - a real <button> cannot
+//     nest another <button>), and this file is itself the pattern
+//     workflows-panel.jsx explicitly mirrors back from. Forcing a
+//     ClickableCard-style component here would fork `.artifact-row` styling
+//     for the one file it needs to stay byte-compatible with.
+//   - The `<pre><code>` code-fallback block (used for kind=code and as the
+//     fallback for any unmatched kind) stays plain, unhighlighted markup.
+//     Astryx ships a CodeBlock component, but porting to it is explicitly
+//     out of scope: the source comment above states Shiki highlighting was
+//     deliberately skipped for v1, and CodeBlock's syntax-highlighting
+//     surface would be a highlighting side effect this pass must not add.
+//   - Stays .jsx for the same reason workflows-panel.jsx does: this module
+//     is imported elsewhere by its exact "./artifacts-panel.jsx" specifier
+//     (extension included; Vite does not resolve across extensions), and
+//     that import site is out of this conversion's single-file scope, so
+//     renaming to .tsx would require an out-of-scope edit for zero
+//     behavioural benefit. JSDoc types are kept as-is.
 
 /* ── kind inference for EPHEMERAL artifacts (no explicit kind) ──────────────
  * Mirrors @luna/core's deriveArtifactKind (packages/core/src/artifacts/types.ts)
@@ -426,17 +462,15 @@ export function ArtifactsPanel({ artifacts, pinned, artifactsCapable, focusSigna
                   {p.kind} · v{p.version} · {formatBytes(p.content.length)}
                 </div>
                 {artifactsCapable === true && (
-                  <button
-                    type="button"
+                  <Button
+                    label="unpin"
                     className="chip small artifact-chip"
+                    tooltip="Unpin artifact"
                     onClick={(e) => {
                       e.stopPropagation();
                       onUnpin && onUnpin(p.id);
                     }}
-                    title="Unpin artifact"
-                  >
-                    unpin
-                  </button>
+                  />
                 )}
               </div>
             ))}
@@ -477,17 +511,16 @@ export function ArtifactsPanel({ artifacts, pinned, artifactsCapable, focusSigna
                     (alreadyPinned ? (
                       <span className="chip small artifact-chip artifact-chip-static">📌 pinned</span>
                     ) : (
-                      <button
-                        type="button"
+                      <Button
+                        label="pin"
+                        icon={<span aria-hidden="true">📌</span>}
                         className="chip small artifact-chip"
+                        tooltip="Pin artifact"
                         onClick={(e) => {
                           e.stopPropagation();
                           onPin && onPin(a);
                         }}
-                        title="Pin artifact"
-                      >
-                        📌 pin
-                      </button>
+                      />
                     ))}
                 </div>
               );
@@ -504,26 +537,24 @@ export function ArtifactsPanel({ artifacts, pinned, artifactsCapable, focusSigna
               {selected.path || selected.title}
             </span>
             <span className="artifact-view-spacer" />
-            <button
-              type="button"
+            <Button
+              label="download"
+              icon={<span aria-hidden="true">⬇</span>}
               className="chip"
+              tooltip="Download as file"
               onClick={() => artifactForDownload && downloadArtifact(artifactForDownload)}
-              title="Download as file"
-            >
-              ⬇ download
-            </button>
-            <button
-              type="button"
+            />
+            <Button
+              label="copy"
+              icon={<span aria-hidden="true">⧉</span>}
               className="chip"
+              tooltip="Copy to clipboard"
               onClick={() => {
                 navigator.clipboard?.writeText(selected.content).catch(() => {
                   // ignore — clipboard unavailable or denied
                 });
               }}
-              title="Copy to clipboard"
-            >
-              ⧉ copy
-            </button>
+            />
           </div>
           <div className={"artifact-content" + (isRich ? " is-rich" : "")}>
             {selected.kind === "markdown" && <MiniMarkdown text={selected.content} />}

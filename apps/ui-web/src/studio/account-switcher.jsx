@@ -10,30 +10,37 @@
 // The leading "— Auto —" option (value="") reverts to broker rotation (a
 // null selectedId). Unhealthy accounts are shown but disabled so the user
 // can see they exist without being able to select a dead account.
+//
+// Astryx port: the native <select> becomes an Astryx Selector. Selector's
+// non-clearable variant only accepts a string `value` (no null), so the
+// null <-> "" mapping that used to live in the raw onChange handler now
+// lives in both directions: "" represents Auto going in (value={selectedId
+// ?? ""}) and coming out (onChange maps "" back to null before calling
+// onSelect), preserving the exact null-means-auto contract callers rely on.
 import React from "react";
+import { Selector } from "./astryx-kit.tsx";
 
 export function AccountSwitcher({ accounts, selectedId, onSelect, disabled }) {
   const anthropicAccounts = (accounts || []).filter((a) => a.kind === "anthropic");
   if (anthropicAccounts.length === 0) return null;
 
+  const options = [
+    { value: "", label: "— Auto —" },
+    ...anthropicAccounts.map((acct) => ({
+      value: acct.id,
+      label: acct.health !== "healthy" ? `${acct.label} (unavailable)` : acct.label,
+      disabled: acct.health !== "healthy",
+    })),
+  ];
+
   return (
-    <select
-      className="stg-field-input"
+    <Selector
+      label="Account"
+      isLabelHidden
+      options={options}
       value={selectedId ?? ""}
-      disabled={disabled}
-      onChange={(e) => {
-        const val = e.target.value;
-        onSelect(val === "" ? null : val);
-      }}
-      style={{ fontSize: "inherit" }}
-    >
-      <option value="">— Auto —</option>
-      {anthropicAccounts.map((acct) => (
-        <option key={acct.id} value={acct.id} disabled={acct.health !== "healthy"}>
-          {acct.label}
-          {acct.health !== "healthy" ? " (unavailable)" : ""}
-        </option>
-      ))}
-    </select>
+      isDisabled={disabled}
+      onChange={(val) => onSelect(val === "" ? null : val)}
+    />
   );
 }

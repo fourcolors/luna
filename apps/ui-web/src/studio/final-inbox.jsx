@@ -1,8 +1,23 @@
 // final-inbox.jsx — the natural inbox: priority-ordered list + one-at-a-time
 // Focus triage that opens each item in full, with thread links back to chat.
+// Astryx-ified: focus-actions row (primary/thread/snooze) -> Astryx Button,
+// mark-done/open-thread/capture/exit-focus icon controls -> Astryx
+// IconButton, delegate popover -> Astryx DropdownMenu (same DropdownMenu +
+// DropdownMenuItem shape studio-brain.jsx's BrainPicker already uses for
+// "who should answer?" - this was the same hand-rolled "open state + no
+// outside-click/Escape/focus-trap" popover pattern BrainPicker used to be,
+// so swapping it in here is a real bug fix (light-dismiss + Escape +
+// focus-trap now free), not just a paint job.
+// Rich focus-card blocks (quote/detail/fig/callout/list/attach/thread/
+// attendees) and the choice cards stay hand-rolled - Astryx has no primitive
+// for this per-block-type sanitized-HTML rendering, and the choice cards'
+// numbered-pick layout doesn't map onto SelectableCard without fighting
+// studio.css. Do not add a second HTML-injection path here: any block that
+// carries agent-authored HTML must keep going through safeHtml() below.
 import React from "react";
 import { BRAINS, BRAIN_ORDER } from "./studio-data.jsx";
 import { BrainBadge, BrainIcon } from "./studio-brain.jsx";
+import { Button, IconButton, DropdownMenu, DropdownMenuItem } from "./astryx-kit.tsx";
 const FbReact = React;
 
 const FB_ICONS = {
@@ -210,10 +225,13 @@ export function FinalInbox({ items: itemsProp, connected = true, projectionAvail
     <div className="inbox-wrap">
       <div className="inbox-bar">
         <div className="inbox-count"><b>{items.length}</b> in your inbox{needsYou > 0 && <React.Fragment> · <b>{needsYou}</b> need you</React.Fragment>}</div>
-        <button className="focus-start" onClick={startFocus} disabled={!items.length}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3.4"></circle></svg>
-          focus
-        </button>
+        <Button
+          className="focus-start"
+          label="focus"
+          icon={<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3.4"></circle></svg>}
+          onClick={startFocus}
+          isDisabled={!items.length}
+        />
       </div>
 
       <div className="inbox-list">
@@ -228,12 +246,24 @@ export function FinalInbox({ items: itemsProp, connected = true, projectionAvail
             </div>
             {it.prio === "act" && <span className="ib-prio" title="needs you"></span>}
             {it.thread && (
-              <button className="ib-thread" title="open thread" onClick={() => openThread(it.thread)}>{FB_THREAD_IC}</button>
+              <IconButton
+                className="ib-thread"
+                label="open thread"
+                tooltip="open thread"
+                variant="ghost"
+                icon={FB_THREAD_IC}
+                onClick={() => openThread(it.thread)}
+              />
             )}
             <span className="ib-time">{it.time}</span>
-            <button className="ib-check" title="mark done" onClick={() => clearRow(it.id, "done ✦", "luna")}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12l5 5L20 6"></path></svg>
-            </button>
+            <IconButton
+              className="ib-check"
+              label="mark done"
+              tooltip="mark done"
+              variant="ghost"
+              icon={<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12l5 5L20 6"></path></svg>}
+              onClick={() => clearRow(it.id, "done ✦", "luna")}
+            />
           </div>
         ))}
         {items.length === 0 && (
@@ -257,16 +287,28 @@ export function FinalInbox({ items: itemsProp, connected = true, projectionAvail
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") capture(); }}
         />
-        <button className="capture-add" onClick={capture} title="capture">+</button>
+        <IconButton
+          className="capture-add"
+          label="capture"
+          tooltip="capture"
+          variant="ghost"
+          icon="+"
+          onClick={capture}
+        />
       </div>
 
       {focus && (
         <div className="focus-mode">
           <div className="focus-top">
             <span className="focus-count">{done ? "all clear" : `${Math.min(cleared + 1, totalRef.current)} of ${totalRef.current}`}</span>
-            <button className="focus-exit" onClick={() => { setFocus(false); setDelOpen(false); }}>
+            <Button
+              className="focus-exit"
+              variant="ghost"
+              label="exit focus"
+              onClick={() => { setFocus(false); setDelOpen(false); }}
+            >
               exit focus ✕
-            </button>
+            </Button>
           </div>
           <div className="focus-track"><i style={{ width: (done ? 100 : pct) + "%" }}></i></div>
 
@@ -291,39 +333,59 @@ export function FinalInbox({ items: itemsProp, connected = true, projectionAvail
               </div>
               <div className="focus-actions">
                 {!cur.options &&
-                  <button className="fa-btn primary" onClick={() => handle(prim.act)}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">{prim.act === "reply" ? <path d="M5 12h14M13 6l6 6-6 6"></path> : <path d="M4 12l5 5L20 6"></path>}</svg>
-                    {prim.label}
-                  </button>
+                  <Button
+                    className="fa-btn primary"
+                    variant="primary"
+                    label={prim.label}
+                    icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">{prim.act === "reply" ? <path d="M5 12h14M13 6l6 6-6 6"></path> : <path d="M4 12l5 5L20 6"></path>}</svg>}
+                    onClick={() => handle(prim.act)}
+                  />
                 }
                 {cur.thread && (
-                  <button className="fa-btn" onClick={() => openThread(cur.thread)}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.9A8 8 0 1 1 21 12Z"></path></svg>
-                    thread
-                  </button>
+                  <Button
+                    className="fa-btn"
+                    variant="ghost"
+                    label="thread"
+                    icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.9A8 8 0 1 1 21 12Z"></path></svg>}
+                    onClick={() => openThread(cur.thread)}
+                  />
                 )}
-                <button className="fa-btn" onClick={() => handle("snooze")}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"></circle><path d="M12 9v4l2 2M9 2h6"></path></svg>
-                  snooze
-                </button>
-                <button className="fa-btn" onClick={() => setDelOpen((o) => !o)}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h12M11 6l6 6-6 6"></path><circle cx="20" cy="12" r="1.6"></circle></svg>
-                  delegate
-                </button>
-                {delOpen && (
-                  <div className="delegate-pop">
-                    <div className="delegate-head">hand it to…</div>
-                    {BRAIN_ORDER.map((k) => (
-                      <button key={k} className="brain-opt" style={{ "--bo": "var(--brain-" + k + ")" }} onClick={() => handle("delegate", k)}>
-                        <span className="bo-ic"><BrainIcon icon={BRAINS[k].icon} /></span>
-                        <span style={{ flex: 1 }}>
-                          <span className="bo-name">{BRAINS[k].name}</span>
-                          <span className="bo-blurb">{BRAINS[k].blurb}</span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <Button
+                  className="fa-btn"
+                  variant="ghost"
+                  label="snooze"
+                  icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"></circle><path d="M12 9v4l2 2M9 2h6"></path></svg>}
+                  onClick={() => handle("snooze")}
+                />
+                {/* Was hand-rolled: local open state + a manual toggle with no
+                    outside-click/Escape handling (only closed by re-toggling
+                    the button). Astryx's DropdownMenu owns light-dismiss +
+                    Escape + focus-trap internally, same fix already applied to
+                    BrainPicker's "who should answer?" menu in
+                    studio-brain.jsx — this is that same menu shape, just
+                    action items instead of a radio group. */}
+                <DropdownMenu
+                  button={{
+                    className: "fa-btn",
+                    variant: "ghost",
+                    label: "delegate",
+                    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h12M11 6l6 6-6 6"></path><circle cx="20" cy="12" r="1.6"></circle></svg>,
+                  }}
+                  isMenuOpen={delOpen}
+                  onOpenChange={setDelOpen}
+                  placement="above"
+                  data-testid="delegate-menu"
+                >
+                  {BRAIN_ORDER.map((k) => (
+                    <DropdownMenuItem
+                      key={k}
+                      icon={<BrainIcon icon={BRAINS[k].icon} />}
+                      label={BRAINS[k].name}
+                      description={BRAINS[k].blurb}
+                      onClick={() => handle("delegate", k)}
+                    />
+                  ))}
+                </DropdownMenu>
               </div>
               {next && !done && (
                 <div className="fx-peek"><span className="pd"></span>next: <b>{next.from ? next.from + " — " : ""}{next.title}</b></div>

@@ -1,5 +1,6 @@
 // studio-voice.jsx — ambient Luna presence + Her-style immersive voice scene
 import React from "react";
+import { IconButton } from "./astryx-kit.tsx";
 import { TASK_DEFS } from "./studio-data.jsx";
 
 function vxSpeak(text) {
@@ -103,7 +104,14 @@ function VoiceScene({ onClose, onSpawn }) {
   return (
     <div className="voice-overlay voice-scene">
       <div className="voice-title">luna</div>
-      <button className="voice-close" title="back to typing" onClick={onClose}>✕</button>
+      <IconButton
+        className="voice-close"
+        label="back to typing"
+        tooltip="back to typing"
+        icon="✕"
+        variant="ghost"
+        onClick={onClose}
+      />
       {!shownQ && phase === "idle" && (
         <div className="voice-greet">it's good to hear you ✦ I've been keeping the studio warm — what's on your mind?</div>
       )}

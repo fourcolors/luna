@@ -1,5 +1,6 @@
 // studio-map.jsx — painterly city explorer. Pins → cards → "add to today".
 import React from "react";
+import { Card, Button } from "./astryx-kit.tsx";
 import { PLACES_SEED, PLACE_KINDS } from "./studio-data.jsx";
 
 const MpReact = React;
@@ -53,22 +54,25 @@ function MapApp({ onToast }) {
       </div>
 
       {place ? (
-        <div className="map-card" style={{ "--pin-wash": kind.wash }}>
+        <Card className="map-card" variant="transparent" padding={0} style={{ "--pin-wash": kind.wash }}>
           <div className="map-card-thumb"></div>
           <div className="map-card-body">
             <div className="map-card-kind">{kind.label}</div>
             <div className="map-card-name">{place.name}</div>
             <div className="map-card-note">{place.note}</div>
-            <button className="map-card-add" onClick={() => addToToday(place)} disabled={added[place.id]}>
-              {added[place.id] ? "✓ in Today" : (
-                <>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M12 5v14M5 12h14"></path></svg>
-                  add to Today
-                </>
+            <Button
+              className="map-card-add"
+              variant="secondary"
+              size="sm"
+              label={added[place.id] ? "✓ in Today" : "add to Today"}
+              icon={added[place.id] ? undefined : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M12 5v14M5 12h14"></path></svg>
               )}
-            </button>
+              isDisabled={added[place.id]}
+              onClick={() => addToToday(place)}
+            />
           </div>
-        </div>
+        </Card>
       ) : (
         <div className="map-empty">tap a pin — Luna pinned a few things for tonight ✦</div>
       )}

@@ -1,5 +1,6 @@
 // skills-panel.jsx — the Skills settings section (PRD Part B §12), ported
-// from packages/ui-shared-solid/src/SkillsPanel.tsx to React idiom.
+// from packages/ui-shared-solid/src/SkillsPanel.tsx to React idiom, then
+// migrated onto @astryxdesign/core (feat/astryx-ui pilot).
 //
 // Toggle · filter · search over the server-authored skill catalog:
 //   - search: client-side full-text over name / description / tags
@@ -15,7 +16,30 @@
 // Gate rendering on `capabilities.skills` at the call site (see the
 // integration spec returned alongside this file) — this component assumes
 // the server supports the frames.
+//
+// Astryx notes:
+//   - Filter chips use standalone `ToggleButton` (not `ToggleButtonGroup`):
+//     the group's single-select mode deselects (-> null) on a second click
+//     of the already-active button, which would silently fall back to "all"
+//     and change behavior. Standalone ToggleButton lets onPressedChange just
+//     re-assert the clicked value, exactly like the original onClick.
+//   - The enable/disable control uses Astryx `Switch`. Its `value` prop is
+//     mirrored through `useOptimistic` internally, but that optimistic path
+//     is only armed by a `changeAction` prop — we intentionally pass a plain
+//     `onChange` instead, so `checked` stays a pure function of the `value`
+//     prop and the control can never visually drift from (or need to be
+//     manually snapped back to) confirmed server state. Verified by reading
+//     node_modules/@astryxdesign/core Switch.tsx: setOptimisticValue is only
+//     called inside the changeAction branch.
+//   - `ToggleButton` and `Badge` are fully self-styled (ToggleButton doesn't
+//     even forward `className`), so the legacy `.skills-chip` / `.skill-badge`
+//     CSS in devops-panels.css no longer applies to those elements — that
+//     CSS is shared with obs-panel.jsx and out of scope to edit here, so it
+//     stays in place (dead for this component, still live for its sibling).
+//     Layout classNames on plain wrapper elements (`.skills-panel`,
+//     `.skill-row`, `.skill-meta`, etc.) are kept as-is.
 import React, { useMemo, useState } from "react";
+import { Badge, Switch, TextInput, ToggleButton } from "./astryx-kit.tsx";
 
 const SOURCE_FILTERS = ["all", "builtin", "user"];
 
@@ -69,46 +93,43 @@ export function SkillsPanel(props) {
             {enabledCount}/{skills.length} enabled
           </span>
         </span>
-        <input
-          className="skills-search"
-          type="search"
+        <TextInput
+          label="Search skills"
+          isLabelHidden
+          size="sm"
           placeholder="Search skills…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(value) => setQuery(value)}
+          hasClear
+          width={220}
         />
       </div>
       <div className="skills-chips">
         {categories.map((c) => (
-          <button
+          <ToggleButton
             key={c}
-            type="button"
-            className={"skills-chip" + (activeCategory === c ? " on" : "")}
-            aria-pressed={activeCategory === c}
-            onClick={() => setCategory(c)}
-          >
-            {c}
-          </button>
+            label={c}
+            size="sm"
+            isPressed={activeCategory === c}
+            onPressedChange={() => setCategory(c)}
+          />
         ))}
         <span className="skills-chip-sep" />
         {SOURCE_FILTERS.map((s) => (
-          <button
+          <ToggleButton
             key={s}
-            type="button"
-            className={"skills-chip" + (source === s ? " on" : "")}
-            aria-pressed={source === s}
-            onClick={() => setSource(s)}
-          >
-            {s === "all" ? "any source" : s}
-          </button>
+            label={s === "all" ? "any source" : s}
+            size="sm"
+            isPressed={source === s}
+            onPressedChange={() => setSource(s)}
+          />
         ))}
-        <button
-          type="button"
-          className={"skills-chip" + (enabledOnly ? " on" : "")}
-          aria-pressed={enabledOnly}
-          onClick={() => setEnabledOnly((v) => !v)}
-        >
-          enabled only
-        </button>
+        <ToggleButton
+          label="enabled only"
+          size="sm"
+          isPressed={enabledOnly}
+          onPressedChange={(pressed) => setEnabledOnly(pressed)}
+        />
       </div>
       {props.lastError && (
         <div className="skills-error" role="alert">
@@ -124,29 +145,17 @@ export function SkillsPanel(props) {
               <div className="skill-meta">
                 <span className="skill-name">
                   {s.name} <code className="skill-id">{s.id}</code>
-                  <span className={`skill-badge src-${s.source}`}>{s.source}</span>
-                  <span className="skill-badge cat">{s.category}</span>
+                  <Badge variant={s.source === "user" ? "info" : "neutral"} label={s.source} />
+                  <Badge variant="neutral" label={s.category} />
                 </span>
                 <span className="skill-desc">{s.description}</span>
               </div>
-              <label className="toggle skill-toggle" title={s.enabled ? "Disable" : "Enable"}>
-                <input
-                  type="checkbox"
-                  checked={s.enabled}
-                  disabled={props.disabled === true}
-                  onChange={(e) => {
-                    // No optimistic UI: a native checkbox flips its own DOM
-                    // before onChange fires. Revert the DOM immediately and
-                    // let the server's confirmed skill-status/skill-catalog
-                    // drive the input via the `checked` prop above — on a
-                    // failed toggle only skillError changes, so nothing else
-                    // would re-sync it.
-                    e.target.checked = s.enabled;
-                    props.onToggle(s.id, !s.enabled);
-                  }}
-                />
-                <span>{s.enabled ? "on" : "off"}</span>
-              </label>
+              <Switch
+                label={s.enabled ? "on" : "off"}
+                value={s.enabled}
+                isDisabled={props.disabled === true}
+                onChange={(checked) => props.onToggle(s.id, checked)}
+              />
             </div>
           ))
         )}

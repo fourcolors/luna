@@ -1,7 +1,19 @@
 // final-threads.jsx — shared thread seed + the Threads overview panel.
 // A "thread" is a side-quest conversation: it keeps its own history, its own
 // brain, and a live status (needs you / running / quiet / done).
+//
+// Astryx port: the status tag and unread-count pill become Astryx Badge
+// (clean fit: small labelled pill, and Luna's own `.th-tag`/`.th-unread`
+// rules live in the unlayered `@luna/design-system` cascade, which always
+// outranks Astryx's `@layer astryx-base` styles — see main.tsx — so the
+// existing look is preserved unchanged). The thread row itself stays a
+// hand-rolled <button className="thv-row">: it's a multi-line composite
+// (tint dot + stacked name/note + side badge) with fixed hover/active
+// treatments baked into `.thv-row`, not a single-line label control, so
+// forcing it into Astryx's fixed-height Button would fight the layout
+// rather than fit it.
 import React from "react";
+import { Badge } from "./astryx-kit.tsx";
 import { BrainBadge } from "./studio-brain.jsx";
 
 export const THREADS_SEED = [
@@ -53,9 +65,9 @@ export const THREAD_SECTIONS = [
 export const THREAD_STATUS_LABEL = { needs: "needs you", running: "running", active: "now", done: "done ✦", quiet: "" };
 
 function ThreadStatusTag({ status }) {
-  if (status === "needs") return <span className="th-tag needs">needs you</span>;
-  if (status === "running") return <span className="th-tag running">running</span>;
-  if (status === "done") return <span className="th-tag done">done ✦</span>;
+  if (status === "needs") return <Badge className="th-tag needs" variant="warning" label="needs you" />;
+  if (status === "running") return <Badge className="th-tag running" variant="info" label="running" />;
+  if (status === "done") return <Badge className="th-tag done" variant="neutral" label="done ✦" />;
   return null;
 }
 
@@ -79,7 +91,7 @@ export function ThreadsApp({ threads, activeId, onOpen }) {
                     <span className="thv-note">{t.note}</span>
                   </span>
                   <span className="thv-side">
-                    {t.unread ? <span className="th-unread">{t.unread}</span> : <ThreadStatusTag status={t.status} />}
+                    {t.unread ? <Badge className="th-unread" variant="error" label={t.unread} /> : <ThreadStatusTag status={t.status} />}
                   </span>
                 </button>
               ))}

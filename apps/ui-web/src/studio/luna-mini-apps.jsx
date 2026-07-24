@@ -1,4 +1,46 @@
 // luna-mini-apps.jsx — panel content components (each panel is a "mini MCP app")
+//
+// Astryx conversion audit (this file evaluated, deliberately left as native
+// markup - see below): every interactive control here is styled by a
+// dedicated, bespoke class from the shared `@luna/design-system` CSS package
+// (packages/design-system/css/tokens.css - out of this port's single-file
+// scope, and not editable by this change per the port rules). That package
+// defines .ghost-btn (Timer/Agents/Workflows/Secure), .secure-input /
+// .secure-eye / .secure-send / .secure-shield / .secure-assure (SecureApp's
+// whole hand-illustrated "encrypted pass-through" look, incl. letter-spaced
+// password dots and a gradient hover-lift on submit), .sticky-area
+// (StickyApp), .play-btn (MusicApp), .habit-dot (HabitApp), and .swatch /
+// .chip (SettingsApp). Astryx's Button/TextInput/TextArea/IconButton render
+// their own StyleX-driven DOM (a Field wrapper + visible label for
+// TextInput/TextArea, a differently-classed root for Button) which would
+// either drop this styling outright or fight it via cascade order - a real
+// visual regression with no way to verify pixel-parity from this scope. Per
+// the port rules ("keep custom markup where Astryx has no equivalent - do
+// not force it"; "keep classNames Luna CSS targets unless you also migrate
+// those styles"), every element here stays exactly as it was: same
+// classNames, same DOM shape, same behavior. Contrast with
+// account-switcher.jsx / settings-panel.jsx's Astryx adoption, both of which
+// touched only controls with no competing bespoke CSS (a plain <select>,
+// a brand-new button).
+//
+// Dead-code note (confirmed via repo-wide grep, not fixed - out of scope for
+// a behavior-preserving port): AgentsApp, WorkflowsApp, SettingsApp, and
+// BlankApp are exported here but never imported anywhere else in the repo.
+// final-app.jsx's live DEFS table only pulls PipApp, TimerApp, WeatherApp,
+// MusicApp, HabitApp, StickyApp, SecureApp, and LUNA_PALETTES.
+//
+// SecureApp flag (not silently fixed, per port instructions): its
+// credential fields (`user`, `val`) live in ordinary useState, not an
+// uncontrolled ref the way vault-panel.jsx keeps its secret material off the
+// React render tree. That's a pre-existing gap in this file, worth a
+// deliberate follow-up decision, not a mid-port change.
+//
+// Kept as .jsx rather than promoted to .tsx: this is the only file under
+// src/studio besides src/main.tsx that would gain TypeScript's strict-mode
+// checking (checkJs is off, so .jsx files are unchecked today). Every
+// consumer of this file's exports (final-app.jsx, settings-panel.jsx) is
+// still untyped .jsx, so promoting only this file disproportionately adds
+// type friction for a single-file, no-behavior-change port.
 import React, { useState, useEffect, useRef } from "react";
 
 /* ---------- tomagotchi: pip ---------- */
