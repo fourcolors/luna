@@ -3971,7 +3971,11 @@ const buildServerLayer = (
           // Static, compile-time core apps (the Luna server as first provider).
           createCoreAppRegistry([
             buildWorkspacePulseApp(getPulse),
-            buildFeedbackQueueApp({ feedbackList: getFeedbackList, feedbackSetStatus: getFeedbackSetStatus }),
+            buildFeedbackQueueApp({
+              feedbackList: getFeedbackList,
+              feedbackSetStatus: getFeedbackSetStatus,
+              feedbackCreateJob,
+            }),
           ]),
           // Generated / user-authored apps: ui://luna/app/<id> resolves to a
           // pinned mcp-app artifact's HTML, tools/call gated by the curated set.

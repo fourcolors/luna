@@ -764,7 +764,7 @@ describe("validateFeedbackSetStatusArgs — the one choke point for feedback-set
 })
 
 describe("buildFeedbackQueueApp — the Phase 1 on-demand triage view", () => {
-  it("registers at ui://luna/feedback-queue with exactly feedback-list + feedback-set-status", async () => {
+  it("registers at ui://luna/feedback-queue with exactly feedback-list + feedback-set-status when no create-job dep is wired", async () => {
     const feedbackList = vi.fn(async () => feedbackListStub())
     const feedbackSetStatus = vi.fn(async () => feedbackSetStatusStub())
     const app = buildFeedbackQueueApp({ feedbackList, feedbackSetStatus })
@@ -775,6 +775,25 @@ describe("buildFeedbackQueueApp — the Phase 1 on-demand triage view", () => {
     await app.tools["feedback-set-status"]!({ id: "fb_1", status: "resolved" })
     expect(feedbackList).toHaveBeenCalledTimes(1)
     expect(feedbackSetStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it("exposes feedback-create-job (validated) when the dep is wired, so the panel can spin up a job", async () => {
+    const feedbackCreateJob = vi.fn(async () => ({ ok: true, jobId: "fbj-1" }))
+    const app = buildFeedbackQueueApp({
+      feedbackList: async () => feedbackListStub(),
+      feedbackSetStatus: async () => feedbackSetStatusStub(),
+      feedbackCreateJob,
+    })
+    expect(Object.keys(app.tools).sort()).toEqual([
+      "feedback-create-job",
+      "feedback-list",
+      "feedback-set-status",
+    ])
+    // Raw wire args are validated/clamped before the dep sees them.
+    const res = await app.tools["feedback-create-job"]!({ id: "  fb_1  " })
+    expect(res).toEqual({ ok: true, jobId: "fbj-1" })
+    expect(feedbackCreateJob).toHaveBeenCalledTimes(1)
+    expect(feedbackCreateJob).toHaveBeenCalledWith({ id: "fb_1" })
   })
 
   it("is servable through createCoreAppRegistry (readResource + callTool)", async () => {

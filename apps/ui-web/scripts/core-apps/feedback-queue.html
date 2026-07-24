@@ -165,10 +165,40 @@
     letter-spacing: 0.02em;
     text-transform: uppercase;
   }
-  .pill.open     { background: rgba(138,180,248,0.15); color: #8ab4f8; }
-  .pill.triaged  { background: rgba(250,204,21,0.15);  color: #facc15; }
-  .pill.resolved { background: rgba(52,211,153,0.15);  color: #34d399; }
-  .pill.wontfix  { background: rgba(148,163,184,0.15); color: #94a3b8; }
+  .pill.open       { background: rgba(138,180,248,0.15); color: #8ab4f8; }
+  .pill.triaged    { background: rgba(250,204,21,0.15);  color: #facc15; }
+  .pill.queued     { background: rgba(167,139,250,0.18); color: #a78bfa; }
+  .pill.resolved   { background: rgba(52,211,153,0.15);  color: #34d399; }
+  .pill.job-failed { background: rgba(248,113,113,0.16); color: #f87171; }
+  .pill.wontfix    { background: rgba(148,163,184,0.15); color: #94a3b8; }
+  /* Any status the panel doesn't have an explicit colour for still renders
+     as a neutral pill rather than an unstyled bare word. */
+  .pill { background: rgba(148,163,184,0.15); color: #94a3b8; }
+
+  /* The job link: "which durable job is working this report" (resolvedRef). */
+  .row-job {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--color-text-tertiary, #6b7a90);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .row-job::before { content: "\1F3AB"; font-family: initial; }
+
+  button.create-job {
+    background: rgba(167,139,250,0.15);
+    color: #a78bfa;
+    border: 1px solid rgba(167,139,250,0.35);
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 9px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  button.create-job:hover:not(:disabled) { background: rgba(167,139,250,0.28); }
+  button.create-job:disabled { opacity: 0.5; cursor: default; }
 
   select.status-select {
     background: var(--color-background-primary, #0a0e1c);
@@ -294,7 +324,19 @@
     });
   }
 
-  var STATUSES = ['open', 'triaged', 'resolved', 'wontfix'];
+  // Statuses a human sets directly from the dropdown. `queued`/`job-failed`
+  // are set by the backend (job enqueue / the completion observer) and are
+  // shown as pills but never offered as manual choices — see renderRow, which
+  // still surfaces the CURRENT status in the select even when it is one of
+  // those system values so the control never misrepresents the row.
+  var HUMAN_STATUSES = ['open', 'triaged', 'resolved', 'wontfix'];
+
+  // Mirror of TERMINAL_STATUSES in feedback-job-bridge.ts: a report in one of
+  // these is closed, so the bridge will not (re)queue a job for it and the
+  // panel hides the Create job action.
+  var TERMINAL_STATUSES = { resolved: 1, wontfix: 1, 'job-failed': 1, dismissed: 1 };
+
+  function isTerminal(status) { return !!TERMINAL_STATUSES[status]; }
 
   function fmtTs(ms) {
     var n = Number(ms);
@@ -324,6 +366,13 @@
       escapeHtml([dims, name].filter(Boolean).join(' · ')) + '</span>';
   }
 
+  // The linked durable job (resolvedRef) — "which job is working this report".
+  // Always emitted; syncControls() fills the text and toggles visibility so the
+  // create/status handlers have a stable node to update after a job is made.
+  function renderJobLink(row) {
+    return '<span class="row-job" style="display:none">' + escapeHtml(row.resolvedRef || '') + '</span>';
+  }
+
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -347,14 +396,21 @@
         '<span class="pill ' + escapeHtml(row.status) + '">' + escapeHtml(row.status) + '</span>' +
         metaBits.filter(Boolean).map(function (b) { return '<span>' + b + '</span>'; }).join('') +
         shotBadge +
+        renderJobLink(row) +
       '</div>' +
       '<div class="row-controls">' +
         '<select class="status-select"></select>' +
+        '<button class="create-job" type="button">Create job</button>' +
       '</div>' +
       '<div class="row-err"></div>';
 
     var select = el.querySelector('.status-select');
-    STATUSES.forEach(function (s) {
+    // Offer the human-settable statuses, plus the row's CURRENT status when it
+    // is a backend-set value (queued / job-failed) so the control always shows
+    // the true state instead of silently snapping to the first option.
+    var options = HUMAN_STATUSES.slice();
+    if (options.indexOf(row.status) === -1) options.unshift(row.status);
+    options.forEach(function (s) {
       var opt = document.createElement('option');
       opt.value = s;
       opt.textContent = s;
@@ -364,6 +420,22 @@
 
     var rowErr = el.querySelector('.row-err');
     var pill = el.querySelector('.pill');
+    var jobLink = el.querySelector('.row-job');
+    var createBtn = el.querySelector('.create-job');
+
+    // Reflect the current row state onto the pill, job link, and Create-job
+    // button in one place so the create/status handlers can just call it.
+    function syncControls() {
+      pill.className = 'pill ' + row.status;
+      pill.textContent = row.status;
+      if (jobLink) jobLink.style.display = row.resolvedRef ? '' : 'none';
+      if (jobLink && row.resolvedRef) jobLink.textContent = row.resolvedRef;
+      // A job already exists, or the report is closed -> nothing to create.
+      var canCreate = !row.resolvedRef && !isTerminal(row.status);
+      createBtn.style.display = canCreate ? '' : 'none';
+      createBtn.disabled = !canCreate;
+    }
+    syncControls();
 
     select.addEventListener('change', function () {
       var next = select.value;
@@ -371,9 +443,8 @@
       callTool('feedback-set-status', { id: row.id, status: next })
         .then(function (res) {
           if (res && res.ok) {
-            pill.className = 'pill ' + next;
-            pill.textContent = next;
             row.status = next;
+            syncControls();
           } else {
             rowErr.textContent = (res && res.message) || 'Could not update status.';
             rowErr.classList.add('show');
@@ -384,6 +455,39 @@
           rowErr.textContent = 'Could not update status (call failed).';
           rowErr.classList.add('show');
           select.value = row.status;
+        });
+    });
+
+    createBtn.addEventListener('click', function () {
+      rowErr.classList.remove('show');
+      createBtn.disabled = true;
+      createBtn.textContent = 'Creating…';
+      callTool('feedback-create-job', { id: row.id })
+        .then(function (res) {
+          if (res && res.ok) {
+            // The bridge links the note to a durable job and moves it to
+            // 'queued'; reflect both without a reload.
+            row.status = 'queued';
+            if (res.jobId) row.resolvedRef = res.jobId;
+            var opt = document.createElement('option');
+            opt.value = 'queued';
+            opt.textContent = 'queued';
+            select.insertBefore(opt, select.firstChild);
+            select.value = 'queued';
+            createBtn.textContent = 'Create job';
+            syncControls();
+          } else {
+            rowErr.textContent = (res && res.message) || 'Could not create job.';
+            rowErr.classList.add('show');
+            createBtn.textContent = 'Create job';
+            createBtn.disabled = false;
+          }
+        })
+        .catch(function () {
+          rowErr.textContent = 'Could not create job (call failed).';
+          rowErr.classList.add('show');
+          createBtn.textContent = 'Create job';
+          createBtn.disabled = false;
         });
     });
 

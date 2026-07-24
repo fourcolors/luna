@@ -742,11 +742,25 @@ export const buildFeedbackQueueApp = (deps: {
   readonly feedbackSetStatus: (
     args: ValidatedFeedbackSetStatusArgs,
   ) => Promise<{ readonly ok: boolean; readonly message?: string }>
+  /** feedback-create-job: spin up the durable one-shot job that works a
+   *  triaged report (@luna/core feedback-job-bridge). OPTIONAL so a caller
+   *  that hasn't wired the jobs store keeps the prior read-only tool set;
+   *  the "Create job" control in feedback-queue.html only appears when the
+   *  panel actually advertises this tool. */
+  readonly feedbackCreateJob?: (
+    args: ValidatedFeedbackCreateJobArgs,
+  ) => Promise<{ readonly ok: boolean; readonly jobId?: string; readonly message?: string }>
 }): CoreApp => ({
   uri: "ui://luna/feedback-queue",
   html: readAppHtml("feedback-queue.html"),
   tools: {
     "feedback-list": (args) => deps.feedbackList(validateFeedbackListArgs(args)),
     "feedback-set-status": (args) => deps.feedbackSetStatus(validateFeedbackSetStatusArgs(args)),
+    ...(deps.feedbackCreateJob
+      ? {
+          "feedback-create-job": (args: unknown) =>
+            deps.feedbackCreateJob!(validateFeedbackCreateJobArgs(args)),
+        }
+      : {}),
   },
 })
