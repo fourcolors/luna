@@ -1,5 +1,5 @@
 /**
- * model.ts — pure, framework-free logic for the Briefing ("While you were
+ * model.ts - pure, framework-free logic for the Briefing ("While you were
  * away" workflow digest) panel.
  *
  * Ported 1:1 (same branch order, same string outputs) from the vanilla
@@ -8,7 +8,7 @@
  * test/panel-briefing.test.ts made about grouping/sorting/formatting still
  * holds against these functions. Kept here as plain functions (no React, no
  * DOM) so the grouping/formatting logic stays unit-testable in isolation
- * from rendering — BriefingPanel.tsx is the only consumer.
+ * from rendering - BriefingPanel.tsx is the only consumer.
  */
 import type { WorkflowGalleryItem } from "@luna/ui-shared/core"
 
@@ -16,7 +16,7 @@ export type StatusDotClass = "waiting" | "failed" | "success" | "running" | "can
 
 /**
  * Null-guarded relative-time string: "just now" / "Xm ago" / "Xh ago" /
- * "Xd ago". Returns null for a falsy epoch (no lastRun/nextRunAt yet) —
+ * "Xd ago". Returns null for a falsy epoch (no lastRun/nextRunAt yet) -
  * ported verbatim from the vanilla module's `relativeTime()`.
  */
 export function relativeTime(epochMs: number | null | undefined, now: number = Date.now()): string | null {
@@ -81,11 +81,11 @@ export interface BriefingSections {
 
 /**
  * Groups workflows into the three digest sections and sorts each:
- *   - attention: waiting/failed, in server order (no re-sort — matches vanilla)
+ *   - attention: waiting/failed, in server order (no re-sort - matches vanilla)
  *   - recent: success/cancelled, most-recent lastRun first (null last)
  *   - scheduled: has a schedule string, soonest nextRunAt first (null last)
  * A workflow can land in BOTH attention/recent AND scheduled (independent
- * membership tests) — matches the vanilla module exactly. Never mutates
+ * membership tests) - matches the vanilla module exactly. Never mutates
  * the input array.
  */
 export function groupWorkflows(workflows: ReadonlyArray<WorkflowGalleryItem>): BriefingSections {

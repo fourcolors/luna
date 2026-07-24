@@ -5,7 +5,7 @@
 // Astryx port: the status tag and unread-count pill become Astryx Badge
 // (clean fit: small labelled pill, and Luna's own `.th-tag`/`.th-unread`
 // rules live in the unlayered `@luna/design-system` cascade, which always
-// outranks Astryx's `@layer astryx-base` styles — see main.tsx — so the
+// outranks Astryx's `@layer astryx-base` styles - see main.tsx - so the
 // existing look is preserved unchanged). The thread row itself stays a
 // hand-rolled <button className="thv-row">: it's a multi-line composite
 // (tint dot + stacked name/note + side badge) with fixed hover/active

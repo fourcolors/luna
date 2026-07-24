@@ -25,7 +25,7 @@
 //     re-assert the clicked value, exactly like the original onClick.
 //   - The enable/disable control uses Astryx `Switch`. Its `value` prop is
 //     mirrored through `useOptimistic` internally, but that optimistic path
-//     is only armed by a `changeAction` prop — we intentionally pass a plain
+//     is only armed by a `changeAction` prop - we intentionally pass a plain
 //     `onChange` instead, so `checked` stays a pure function of the `value`
 //     prop and the control can never visually drift from (or need to be
 //     manually snapped back to) confirmed server state. Verified by reading
@@ -33,7 +33,7 @@
 //     called inside the changeAction branch.
 //   - `ToggleButton` and `Badge` are fully self-styled (ToggleButton doesn't
 //     even forward `className`), so the legacy `.skills-chip` / `.skill-badge`
-//     CSS in devops-panels.css no longer applies to those elements — that
+//     CSS in devops-panels.css no longer applies to those elements - that
 //     CSS is shared with obs-panel.jsx and out of scope to edit here, so it
 //     stays in place (dead for this component, still live for its sibling).
 //     Layout classNames on plain wrapper elements (`.skills-panel`,

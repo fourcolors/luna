@@ -131,7 +131,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     if (labelTaken(state.instances, def.id, resolvedLabel)) {
       store.dispatch({
         type: "error-set",
-        message: `"${resolvedLabel}" is already connected — give this account a different label (e.g. personal, work).`,
+        message: `"${resolvedLabel}" is already connected - give this account a different label (e.g. personal, work).`,
       })
       return
     }
@@ -142,7 +142,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
         store.dispatch({ type: "oauth-begin-set", requestId, defId: def.id })
         clearBeginTimer()
         beginTimerRef.current = setTimeout(() => {
-          cancelOauth("Timed out starting the connection — please try again.")
+          cancelOauth("Timed out starting the connection - please try again.")
         }, 30000)
         clientRef.current?.send({
           type: "connector-oauth-begin",
@@ -193,7 +193,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     if (labelTaken(state.instances, def.id, resolvedLabel)) {
       store.dispatch({
         type: "error-set",
-        message: `"${resolvedLabel}" is already connected — give this account a different label (e.g. personal, work).`,
+        message: `"${resolvedLabel}" is already connected - give this account a different label (e.g. personal, work).`,
       })
       return
     }
@@ -415,8 +415,8 @@ function ConnectorCard({
               {inst.status === "connected"
                 ? "Connected · " + ((inst.grantedScopes && inst.grantedScopes.length) || "no") + " scope(s)"
                 : inst.status === "needs-reauth"
-                  ? "Needs your approval again — reconnect"
-                  : "Error — check the server log"}
+                  ? "Needs your approval again - reconnect"
+                  : "Error - check the server log"}
             </Text>
             {inst.status === "connected" && def.authKind === "oauth2" && (
               <Text type="supporting" color="secondary">
@@ -573,7 +573,7 @@ function ClientSetupSection({
             label="Client secret"
             size="sm"
             type="password"
-            placeholder="Google issues one — paste it too"
+            placeholder="Google issues one - paste it too"
             value={clientSecret}
             onChange={setClientSecret}
             data-testid={`connector-client-secret-${def.id}`}
@@ -642,7 +642,7 @@ function ConsentSheet({
       {caps.map((cap) => (
         <CheckboxInput
           key={cap.id}
-          label={cap.label + (cap.scopes && cap.scopes.length ? " — " + cap.scopes.join(" ") : "")}
+          label={cap.label + (cap.scopes && cap.scopes.length ? " - " + cap.scopes.join(" ") : "")}
           value={checkedFor(cap.id, cap.defaultGranted)}
           onChange={(checked) => toggleCap(cap.id, checked)}
           data-testid={`connector-cap-${def.id}-${cap.id}`}

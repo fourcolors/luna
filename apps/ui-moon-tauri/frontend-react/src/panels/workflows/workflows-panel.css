@@ -1,7 +1,7 @@
 /*
- * workflows-panel.css — ported verbatim from the inline <style> the vanilla
+ * workflows-panel.css - ported verbatim from the inline <style> the vanilla
  * frontend/panels/workflows.js module injected into document.head at render
- * time. Same selectors, same values — only the delivery mechanism changed
+ * time. Same selectors, same values - only the delivery mechanism changed
  * (a real, Vite-bundled, unlayered stylesheet instead of a runtime-appended
  * <style> tag), so this panel keeps reading Moon's page-level watercolor
  * tokens (--ink, --muted, --accent, …) exactly as before. Unlayered, so it

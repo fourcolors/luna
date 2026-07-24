@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // update-banner.test.ts — Slice C, surface #2: the in-chat composer update
-// banner (frontend-react/chat.html UpdateBanner engine — this is what
+// banner (frontend-react/chat.html UpdateBanner engine - this is what
 // actually ships, see chat-window.test.ts's module doc). Mirrors the
 // chat-window.test harness: load chat.html's body + the WebSocketEngine
 // inline script, stub the Tauri window surface, and drive UpdateBanner

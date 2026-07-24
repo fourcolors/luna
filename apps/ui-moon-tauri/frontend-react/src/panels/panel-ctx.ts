@@ -51,7 +51,7 @@ export interface PanelCtx {
 
 /**
  * Forwarded verbatim to `LunaWS.createClient` (see panel.html's connectWs and
- * vendor/moon-ws.js) — widened beyond `autoPong` for the Workflows gallery
+ * vendor/moon-ws.js) - widened beyond `autoPong` for the Workflows gallery
  * panel's connection-liveness indicator (onOpen/onClose flip its
  * "disconnected" hint; see src/panels/workflows/WorkflowsPanel.tsx).
  */

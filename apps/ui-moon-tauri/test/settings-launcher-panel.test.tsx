@@ -4,12 +4,12 @@
 // panel (frontend/panels/settings.js -> frontend-react/src/panels/
 // SettingsLauncherPanel.tsx + settings-launcher-mount.tsx). Ports every
 // behavioral assertion from test/panel-launcher.test.ts (which keeps testing
-// the still-vanilla frontend/panel.html + frontend/panels/settings.js — that
+// the still-vanilla frontend/panel.html + frontend/panels/settings.js - that
 // suite is untouched and stays green) onto the React implementation:
 //   - boots with the Settings title
 //   - renders the ten settings-launcher rows, in order
 //   - every row opens its panel via open_widget with the right kind
-//   - Skills and Connectors are ALWAYS visible (no capability gate — v1)
+//   - Skills and Connectors are ALWAYS visible (no capability gate - v1)
 //   - a click degrades to a no-op off-Tauri (invoke rejects) without throwing
 //   - both 'settings' and 'settings-launcher' panel.html `type` values mount
 //     the same UI (the old dual-LunaPanelTypes-registration behavior, now
@@ -17,7 +17,7 @@
 //   - the ambient-widgets section lists Now, Briefing and Workflows
 //
 // This intentionally does NOT re-assert the vanilla version's invented
-// role="menu"/"menuitem" ARIA tree — SideNav/SideNavSection/SideNavItem
+// role="menu"/"menuitem" ARIA tree - SideNav/SideNavSection/SideNavItem
 // (the real Astryx primitives for "a titled group of nav buttons") use
 // nav[role="navigation"] + section role="group" instead, which is the more
 // correct pattern for a static list of open-a-window actions. Rows are
@@ -28,7 +28,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import {
@@ -96,11 +96,11 @@ describe('SettingsLauncherPanel (React port of panels/settings.js)', () => {
       })
       expect(invoke).toHaveBeenCalledWith('open_widget', { kind })
     }
-    // One invoke per click — nothing double-fires.
+    // One invoke per click - nothing double-fires.
     expect(invoke.mock.calls.filter((c) => c[0] === 'open_widget')).toHaveLength(EXPECTED_KINDS.length)
   })
 
-  it('Skills and Connectors are ALWAYS visible (no hello-capability gate without a WS connection — v1)', () => {
+  it('Skills and Connectors are ALWAYS visible (no hello-capability gate without a WS connection - v1)', () => {
     const { ctx } = makeCtx()
     renderPanel(ctx)
     const skills = document.querySelector('[data-testid="settings.skills"]') as HTMLElement
@@ -150,7 +150,7 @@ describe('SettingsLauncherPanel (React port of panels/settings.js)', () => {
   })
 })
 
-describe('isSettingsLauncherPanelType (dual dispatch — replaces the vanilla dual LunaPanelTypes registration)', () => {
+describe('isSettingsLauncherPanelType (dual dispatch - replaces the vanilla dual LunaPanelTypes registration)', () => {
   it('routes both the widget KIND ("settings") and the file-name type ("settings-launcher")', () => {
     expect(isSettingsLauncherPanelType('settings')).toBe(true)
     expect(isSettingsLauncherPanelType('settings-launcher')).toBe(true)
@@ -165,7 +165,7 @@ describe('mountSettingsLauncherPanel (panel.html contract parity)', () => {
     delete (window as any).__PanelInternals
   })
 
-  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
+  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -178,7 +178,7 @@ describe('mountSettingsLauncherPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(SETTINGS_LAUNCHER_TITLE)
-    expect(document.title).toBe(`Luna — ${SETTINGS_LAUNCHER_TITLE}`)
+    expect(document.title).toBe(`Luna - ${SETTINGS_LAUNCHER_TITLE}`)
     expect(document.querySelectorAll('#content-area [data-testid]').length).toBeGreaterThan(0)
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings',

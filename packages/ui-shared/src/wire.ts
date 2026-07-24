@@ -585,11 +585,11 @@ export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
 }
 
-/* Job input requests — a running workflow/job pauses and asks the operator a
+/* Job input requests - a running workflow/job pauses and asks the operator a
  * question (e.g. "which draft should I finalize?"). Surfaced as an answer
  * card in the "Now" rail, newest-on-top, independent of the workflow-list
  * gallery re-rendering (a card must survive a workflow-list refresh while it
- * awaits an answer). Mirror ui-ws/protocol.ts — keep in sync. */
+ * awaits an answer). Mirror ui-ws/protocol.ts - keep in sync. */
 export interface JobInputRequestFrame {
   readonly type: "job-input-request"
   readonly requestId: string

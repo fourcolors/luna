@@ -1,11 +1,11 @@
 /**
- * model.ts — pure, framework-free logic for the Workflows gallery panel.
+ * model.ts - pure, framework-free logic for the Workflows gallery panel.
  *
  * Ported 1:1 (same constants, same branch order, same string outputs) from
  * the vanilla apps/ui-moon-tauri/frontend/panels/workflows.js module that
  * this React implementation replaces. Kept here as plain functions (no
  * React, no DOM) so the sort/status/bounds logic stays unit-testable in
- * isolation from rendering — WorkflowsPanel.tsx is the only consumer.
+ * isolation from rendering - WorkflowsPanel.tsx is the only consumer.
  *
  * Boundary validation lives here rather than in the shared reducer
  * (packages/ui-shared/src/reducer.ts): the reducer's `workflow-list` case
@@ -14,7 +14,7 @@
  * stays a thin, untrusted mirror of the wire. The 500-row cap / 200-char
  * label clamp / malformed-id filter are THIS panel's rendering policy
  * against an untrusted remote peer, so they run here, at render time, over
- * the raw store slice — never mutating the store itself.
+ * the raw store slice - never mutating the store itself.
  */
 import type { WorkflowGalleryItem } from "@luna/ui-shared/core"
 
@@ -62,7 +62,7 @@ export function statusClass(rawStatus: unknown): string {
   return "queued"
 }
 
-/** Humanized meta copy — "fired" reads as "ok", "errored" as "failed". */
+/** Humanized meta copy - "fired" reads as "ok", "errored" as "failed". */
 export function statusLabel(rawStatus: unknown): string | null {
   const cls = statusClass(rawStatus)
   if (cls === "success") return "ok"
@@ -73,7 +73,7 @@ export function statusLabel(rawStatus: unknown): string | null {
 
 /**
  * Sort rank: needs-attention first, then running, then everything else. A
- * paused job never runs again, so it never needs attention — its stale
+ * paused job never runs again, so it never needs attention - its stale
  * lastStatus must not outrank live jobs (its badge already says paused).
  */
 export function attentionRank(wf: Pick<WorkflowGalleryItem, "enabled" | "lastStatus">): number {

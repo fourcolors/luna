@@ -13,7 +13,7 @@ const theme = fs.readFileSync(
 )
 // widget.html and chat.html have converted title-bar chrome (React 19 +
 // Astryx, see frontend-react/src/widget/WidgetChrome.tsx and
-// frontend-react/src/chat/chat-chrome-mount.tsx) — their superseded
+// frontend-react/src/chat/chat-chrome-mount.tsx) - their superseded
 // frontend/ copies were deleted since nothing else imported them, so both
 // read from frontend-react/ here. panel.html is still an unconverted shell
 // and reads from frontend/ as before.

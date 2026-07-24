@@ -110,7 +110,7 @@ function WizardCardShell({
           <div className="wizard-hero-blot" aria-hidden="true" />
           <h2>Welcome to Luna</h2>
           <p className="wizard-sub">
-            Hi — I’m your moon. I just need to know where Luna, my other half, should live. Pick a spot on the
+            Hi - I’m your moon. I just need to know where Luna, my other half, should live. Pick a spot on the
             next screen and I’ll take care of the rest.
           </p>
           <div className="wizard-actions">
@@ -125,16 +125,16 @@ function WizardCardShell({
 
         <div className={`wizard-step${wizard.current === "path" ? " active" : ""}`} data-step="path">
           <h2>Where should Luna live?</h2>
-          <p className="wizard-sub">You can change your mind any time — this wizard lives in Settings.</p>
+          <p className="wizard-sub">You can change your mind any time - this wizard lives in Settings.</p>
           <div className="wizard-paths">
             <PathCard
               path="local"
               title="This Mac"
               desc={
                 wizard.env.serverRunning
-                  ? "Luna already lives here — connect, or update her"
+                  ? "Luna already lives here - connect, or update her"
                   : wizard.env.repoExists
-                    ? "Luna is installed here — wake her up, or update her"
+                    ? "Luna is installed here - wake her up, or update her"
                     : "Everything stays private, right on this computer"
               }
               icon={
@@ -301,7 +301,7 @@ function WizardCardShell({
           </div>
           <div className="wizard-field">
             <span className="field-hint">
-              When it finishes, the last line it prints is your secret key — keep it handy, you’ll paste it on the
+              When it finishes, the last line it prints is your secret key - keep it handy, you’ll paste it on the
               next step. (For safety, Luna talks only over your private network, like Tailscale.)
             </span>
           </div>
@@ -310,7 +310,7 @@ function WizardCardShell({
               Back
             </button>
             <button type="button" className="wizard-primary-btn" onClick={() => controller.goTo("connect")}>
-              I ran it — continue
+              I ran it - continue
             </button>
           </div>
         </div>
@@ -342,7 +342,7 @@ function WizardCardShell({
               type="password"
               id="wizard-connect-token"
               className="premium-text-input"
-              placeholder="Printed during install — leave empty if you don’t have one"
+              placeholder="Printed during install - leave empty if you don’t have one"
               autoComplete="off"
               value={wizard.connectToken}
               onChange={(e) => {
@@ -395,7 +395,7 @@ function WizardCardShell({
             </p>
           )}
           <p className="wizard-sub" style={{ fontSize: "0.74rem" }}>
-            Your moon keeps itself up to date on its own — and any time Luna herself needs a refresh, just re-run
+            Your moon keeps itself up to date on its own - and any time Luna herself needs a refresh, just re-run
             this wizard from Settings and pick “This Mac” again.
           </p>
           <div className="wizard-actions">

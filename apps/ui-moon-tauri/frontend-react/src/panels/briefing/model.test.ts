@@ -26,7 +26,7 @@ describe("relativeTime", () => {
 describe("scheduleLabel", () => {
   it("joins schedule + next-run relative time", () => {
     // relativeTime() clamps `now - epochMs` at 0 (ported verbatim from the
-    // vanilla module) — it has no future-vs-past distinction, so a future
+    // vanilla module) - it has no future-vs-past distinction, so a future
     // nextRunAt always reads as "next just now" rather than a countdown.
     expect(scheduleLabel({ schedule: "0 9 * * 1", nextRunAt: NOW + 2 * 86400_000 }, NOW)).toBe(
       "0 9 * * 1 · next just now",

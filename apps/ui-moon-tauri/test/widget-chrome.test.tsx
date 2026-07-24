@@ -8,10 +8,10 @@
 // Ports the two behavioral assertions the superseded suites made about this
 // chrome:
 //   - widget-window.test.ts: "keeps collapse-to-moon as a separate Luna
-//     action" (`id="collapse-moon-btn"` + `invoke('collapse_to_moon')`) —
+//     action" (`id="collapse-moon-btn"` + `invoke('collapse_to_moon')`) -
 //     covered here by rendering the real Button and clicking it.
 //   - widget-mcp.test.ts / widget-render.test.ts implicitly relied on
-//     `#bar-title`'s textContent tracking whatever render() computed — that
+//     `#bar-title`'s textContent tracking whatever render() computed - that
 //     contract is now `window.__widgetChrome.setTitle(text)` driving this
 //     component's store, covered here directly.
 //
@@ -22,7 +22,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import {
@@ -96,7 +96,7 @@ describe('CollapseMoonButton', () => {
     expect(btn!.getAttribute('aria-label')).toBe('Collapse into the moon')
   })
 
-  it('clicking it invokes collapse_to_moon — a separate Luna action from native window drag', () => {
+  it('clicking it invokes collapse_to_moon - a separate Luna action from native window drag', () => {
     const { ctx, invoke } = makeCtx()
     const el = mount(<CollapseMoonButton ctx={ctx} />)
     const btn = el.querySelector('button.collapse-moon-btn') as HTMLButtonElement

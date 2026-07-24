@@ -159,7 +159,7 @@ export interface UIState {
    *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
   readonly workflows: ReadonlyArray<WorkflowGalleryItem>
   readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
-  /** PRD Part C (W3) — pending job-input-request answer cards for the "Now"
+  /** PRD Part C (W3) - pending job-input-request answer cards for the "Now"
    *  rail, newest-first. A card survives workflow-list re-renders and only
    *  leaves this list via an explicit remove-input-request (dismiss, or the
    *  brief post-settle/expiry cleanup delay owned by the panel). */
@@ -287,7 +287,7 @@ export type ChatLocalAction =
   /** Client-side timeout elapsed for a still-pending job-input-request
    *  (no-op if it already settled/was removed). */
   | { readonly tag: "expire-input-request"; readonly requestId: string }
-  /** Drop a job-input-request card outright — an explicit dismiss, or the
+  /** Drop a job-input-request card outright - an explicit dismiss, or the
    *  panel's brief post-settle/expiry cleanup delay. */
   | { readonly tag: "remove-input-request"; readonly requestId: string }
 
@@ -562,7 +562,7 @@ export const reduce = (state: UIState, action: Action): UIState => {
     }
     case "job-input-status": {
       const cur = state.pendingInputRequests.find((r) => r.requestId === frame.requestId)
-      // Unknown requestId (already removed/never seen) or already settled —
+      // Unknown requestId (already removed/never seen) or already settled -
       // a late/duplicate status ack must not resurrect or re-settle a card.
       if (!cur || cur.status !== "pending") return state
       return {

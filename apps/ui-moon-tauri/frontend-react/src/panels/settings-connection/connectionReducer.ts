@@ -100,7 +100,7 @@ function readAvailableModels(): ModelEntry[] {
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return [] // malformed — ignore
+    return [] // malformed - ignore
   }
   if (!Array.isArray(parsed)) return []
   const out: ModelEntry[] = []

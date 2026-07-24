@@ -745,7 +745,7 @@ export class HubController {
         () =>
           finish({
             ok: false,
-            reason: `No reply after ${Math.round(timeoutMs / 1000)}s — is the server running and the address reachable?`,
+            reason: `No reply after ${Math.round(timeoutMs / 1000)}s - is the server running and the address reachable?`,
           }),
         timeoutMs,
       )
@@ -753,7 +753,7 @@ export class HubController {
         try {
           const frame = JSON.parse((ev as MessageEvent).data)
           if (frame && frame.type === "hello") finish({ ok: true, hello: frame })
-          else finish({ ok: false, reason: "That answers, but it doesn’t sound like Luna — double-check the address." })
+          else finish({ ok: false, reason: "That answers, but it doesn’t sound like Luna - double-check the address." })
         } catch {
           finish({ ok: false, reason: "Reached something, but it does not speak Luna." })
         }
@@ -761,7 +761,7 @@ export class HubController {
       sock.onclose = () =>
         finish({
           ok: false,
-          reason: "Connection refused — check the address, and the token if the server requires one.",
+          reason: "Connection refused - check the address, and the token if the server requires one.",
         })
     })
   }
@@ -782,7 +782,7 @@ export class HubController {
       const bits: string[] = []
       if (h.buildSha) bits.push("build " + h.buildSha)
       if (h.capabilities && h.capabilities.setup) bits.push("server is in setup mode and will guide login")
-      this.setConnectStatus("Found Luna ✓" + (bits.length ? " — " + bits.join(", ") : ""), "ok")
+      this.setConnectStatus("Found Luna ✓" + (bits.length ? " - " + bits.join(", ") : ""), "ok")
       return true
     }
     this.setConnectStatus(res.reason || "Could not connect.", "fail")
@@ -807,7 +807,7 @@ export class HubController {
     const inSetup = !!(this.lastHello && this.lastHello.capabilities && this.lastHello.capabilities.setup)
     this.dispatch({
       type: "wizard-done",
-      title: inSetup ? "Tethered — one last step" : "Luna is tethered",
+      title: inSetup ? "Tethered - one last step" : "Luna is tethered",
       summary: "Your moon is pointed at " + finalUrl + ". Click it any time to talk to Luna.",
       setupVisible: inSetup,
     })
@@ -889,7 +889,7 @@ export class HubController {
       },
       {
         label: "Fetching Luna’s toolbox",
-        hint: "Couldn’t fetch bun (Luna’s engine) from bun.sh — check your internet connection and retry.",
+        hint: "Couldn’t fetch bun (Luna’s engine) from bun.sh - check your internet connection and retry.",
         run: () => this.sh("command -v bun || (curl -fsSL https://bun.sh/install | bash)", 240000),
       },
       {
@@ -959,7 +959,7 @@ export class HubController {
               'launchctl enable "$DOMAIN/$LABEL" 2>/dev/null; ' +
               'launchctl bootstrap "$DOMAIN" "$PLIST" ' +
               '&& launchctl kickstart "$DOMAIN/$LABEL" ' +
-              '&& echo "Luna is supervised now — she survives restarts (log: ~/.luna/logs/server.log)"',
+              '&& echo "Luna is supervised now - she survives restarts (log: ~/.luna/logs/server.log)"',
             60000,
           )
         },
@@ -975,7 +975,7 @@ export class HubController {
           return {
             exitCode: 1,
             stdout: "",
-            stderr: "Luna never answered on http://127.0.0.1:4753/healthz after 60s — peek at ~/.luna/logs/server.log",
+            stderr: "Luna never answered on http://127.0.0.1:4753/healthz after 60s - peek at ~/.luna/logs/server.log",
             durationMs: 0,
             timedOut: true,
           }
@@ -987,7 +987,7 @@ export class HubController {
       type: "wizard-install-start",
       title: update ? "Freshening Luna up…" : "Painting Luna onto this Mac…",
       sub: update
-        ? "A quick refresh — your chats and memories aren’t touched."
+        ? "A quick refresh - your chats and memories aren’t touched."
         : "This can take a few minutes the first time. Feel free to watch the beads.",
       labels: tasks.map((t) => t.label),
     })

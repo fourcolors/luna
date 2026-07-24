@@ -60,7 +60,7 @@
 //   `fileInputRef.current.value = ""` is now just `setPickedFile(null)`.
 // - The 1Password Sync section -> Astryx Collapsible (controlled `isOpen`),
 //   which gives real aria-expanded/aria-controls disclosure semantics for
-//   free — a clean parity target flagged in the porting recon, since the
+//   free - a clean parity target flagged in the porting recon, since the
 //   original toggle already carried `aria-expanded` by hand. The "on" badge
 //   and "synced Xm ago" meta move into the `trigger` node (Collapsible's
 //   trigger area is always visible, matching the original layout), and the
@@ -70,8 +70,8 @@
 // - SECURITY (do not "fix" this): the credential-value password field stays
 //   a plain native `<input type="password">` read via `valueInputRef`, NOT
 //   an Astryx TextInput. TextInputProps has no uncontrolled/defaultValue
-//   mode — `value`/`onChange` are mandatory and the value is mirrored into
-//   an internal `useOptimistic` — so swapping it in would lift the raw
+//   mode - `value`/`onChange` are mandatory and the value is mirrored into
+//   an internal `useOptimistic` - so swapping it in would lift the raw
 //   secret into React state/devtools and silently break the one-shot-wipe
 //   contract documented at the top of this file. Same reasoning kept the
 //   CSV row `password` values (parseAppleCsv output) out of any Astryx
@@ -1117,7 +1117,7 @@ export function VaultPanel({ items, sync, storage, disabled, onPut, onDelete, on
           )}
 
           <div className="vault-field">
-            {/* SECURITY: stays a plain uncontrolled native input — see the
+            {/* SECURITY: stays a plain uncontrolled native input - see the
                 Astryx-conversion notes at the top of this file for why
                 TextInput cannot be used here without breaking the one-shot
                 secret-wipe contract. */}

@@ -33,7 +33,7 @@
        exists, letting the legacy load_connection path take over. -->
   <script src="/vendor/moon-session.js"></script>
 
-  <!-- Phase 2 C6b/C8: PoolEngine helpers (DARK — luna_pool_engine flag).
+  <!-- Phase 2 C6b/C8: PoolEngine helpers (DARK - luna_pool_engine flag).
        pool-engine.js: frame-tag isolation scaffold + gen-counter + isDarkFlagSet.
        moon-hub.js:    process-wide DeliveryBus + ConnectionPool + rebindAll
                        (C8 hub home).  Both are additive no-ops when the flag
@@ -49,11 +49,11 @@
        * --glass-bg, --glass-border, --glass-glow,
        * --primary (alias for --accent), --bg, --text, --muted, --border
        * are all defined in vendor/moon-palette.css and must not be
-       * duplicated here — the inline block comes later in cascade order
+       * duplicated here - the inline block comes later in cascade order
        * and would pin them to literal values, defeating the palette.
        *
        * SCOPE NOTE: the hub's painted UI (wizard card, crescent, glow)
-       * intentionally keeps its hardcoded dark-glass literals — the moon
+       * intentionally keeps its hardcoded dark-glass literals - the moon
        * is a night object and the wizard pairs hardcoded-dark surfaces
        * with hardcoded-light text, so it stays self-consistent in every
        * palette. Only the fonts (+ --moon-glow) flow from the palette
@@ -104,12 +104,12 @@
       50% { transform: scale(1.25); opacity: 1; }
     }
 
-    /* Update pip (Slice C) — the needs-input-pip's calmer sibling: a soft glowing
+    /* Update pip (Slice C) - the needs-input-pip's calmer sibling: a soft glowing
        accent dot that lights when a verified build is staged. Same size/breathe,
        but the watercolor --accent glow instead of the amber needs-input tone, so
        it reads as a gentle "ready" cue rather than an alert. Sits just below the
        needs-input pip so both can show at once without overlapping. Unlike the
-       needs-input pip it is pointer-events:auto + clickable — tapping it opens
+       needs-input pip it is pointer-events:auto + clickable - tapping it opens
        the Updates panel (the moon's own click still opens chat). */
     .update-pip {
       position: absolute;
@@ -153,7 +153,7 @@
       pointer-events: auto; /* Active pointer events prevent click-through */
     }
     
-    /* Always-on dark glow "pool" the moon sits in (subtle — the demo look, at a
+    /* Always-on dark glow "pool" the moon sits in (subtle - the demo look, at a
        calm intensity so it's premium on a dark desktop without dimming a light
        one). Sized to fade FULLY to transparent before the window edge, so there's
        no hard rectangle; the dark pool is what makes the blue moon-glow read.
@@ -171,7 +171,7 @@
       z-index: 0;
       /* `closest-side` is load-bearing: WITHOUT it `circle` defaults to
          farthest-corner, stretching the gradient ~40% past the element so its
-         alpha is still non-zero at the small 140×185 window edge — the window
+         alpha is still non-zero at the small 140×185 window edge - the window
          then clips that into a hard dark RECTANGLE ("boxy glass"). closest-side
          pins 100% to the element's edge so the fade completes inside the window,
          leaving a clean circular pool with no box. */
@@ -230,7 +230,7 @@
 
     /* ── Voice states on the moon (data-voice-state, set by VoiceEngine).
        Painterly like the bead: flat translucent washes, opacity + soft scale
-       only — no gloss, no specular anything. The moon is 30px in a 140px
+       only - no gloss, no specular anything. The moon is 30px in a 140px
        window, so every effect here is deliberately quiet. ── */
     /* listening: a soft watercolor pulse on the glow; --voice-level (RMS 0–1,
        ~10 Hz from Rust) scales the pool so the moon visibly "hears" you. The
@@ -243,7 +243,7 @@
       0%, 100% { opacity: 0.7; }
       50%      { opacity: 1; }
     }
-    /* transcribing: a brief inward shimmer — the pool draws breath while
+    /* transcribing: a brief inward shimmer - the pool draws breath while
        whisper works. Fast cycle; the state itself only lasts a moment. */
     .moon-wrapper[data-voice-state="transcribing"] .moon-glow {
       animation: voice-transcribing-shimmer 0.9s ease-in-out infinite;
@@ -253,7 +253,7 @@
       60%  { transform: scale(0.94); opacity: 0.95; }
       100% { transform: scale(1.02); opacity: 0.75; }
     }
-    /* speaking: a gentle outward ripple — a blurred watercolor ring that
+    /* speaking: a gentle outward ripple - a blurred watercolor ring that
        feathers to nothing inside its own box (closest-side, the aura lesson)
        so it never clips into a hard edge. */
     .moon-wrapper[data-voice-state="speaking"]::after {
@@ -297,7 +297,7 @@
       100% { opacity: 0.85; transform: scale(1); }
     }
 
-    /* Close-✕ chrome — survives the settings modal (Phase 6) because the
+    /* Close-✕ chrome - survives the settings modal (Phase 6) because the
        wizard's ✕ reuses it (class="settings-x wizard-x"). */
     .settings-x {
       background: none; border: none; color: #64748b; cursor: pointer;
@@ -328,13 +328,13 @@
     }
 
     /* ════════════════════════════════════════════════════════════════════
-       Setup Wizard — first-run guided install, in the moon's watercolor hand.
-       Fixed full-window overlay: a plain rgba dim (NO backdrop-filter — on
+       Setup Wizard - first-run guided install, in the moon's watercolor hand.
+       Fixed full-window overlay: a plain rgba dim (NO backdrop-filter - on
        this transparent macOS WKWebView window backdrop-filter intermittently
        composites the whole surface to fully transparent after a repaint) over
        a solid dark-glass card. All the "watercolor" is pure CSS: layered
        off-center radial-gradients + an ORGANIC border-radius that a keyframe
-       slowly morphs — the exact recipe the .moon-bead uses, so the wizard
+       slowly morphs - the exact recipe the .moon-bead uses, so the wizard
        reads as the same brush. ══════════════════════════════════════════ */
     .wizard-panel {
       position: fixed;
@@ -348,7 +348,7 @@
       opacity: 0;
       pointer-events: none;
       /* visibility (delayed until the fade-out ends) keeps the hidden
-         wizard out of the tab order — opacity alone leaves invisible
+         wizard out of the tab order - opacity alone leaves invisible
          buttons focusable for keyboard users. */
       visibility: hidden;
       transition: opacity 0.25s ease, visibility 0s linear 0.25s;
@@ -382,7 +382,7 @@
     /* Ambient watercolor wash: three big soft pigment pools drifting behind
        the content. Each blot is the moon-bead gradient at a larger scale and
        a lower opacity, with its own slow morph so the card never feels like
-       a static dialog. pointer-events:none — pure paint. */
+       a static dialog. pointer-events:none - pure paint. */
     .wizard-wash {
       position: absolute;
       inset: 0;
@@ -457,7 +457,7 @@
       z-index: 2;
     }
 
-    /* Step progress beads — tiny watercolor blots strung across the top.
+    /* Step progress beads - tiny watercolor blots strung across the top.
        pending = faint outline pool; active = lit + shimmering; done = filled. */
     .wizard-beads {
       position: relative;
@@ -798,7 +798,7 @@
     .wizard-log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
 
     /* Setup-mode note on the done step: server alive, Claude login still
-       missing. Gold — the moon's "needs your input" color. Code spans inherit
+       missing. Gold - the moon's "needs your input" color. Code spans inherit
        the dark chip look. */
     .wizard-setup-note {
       color: #fbbf24;
@@ -823,7 +823,7 @@
       margin-bottom: 10px;
     }
 
-    /* "Advanced options" disclosure on the local step — defaults just work,
+    /* "Advanced options" disclosure on the local step - defaults just work,
        the folder picker hides until summoned. */
     .wizard-advanced {
       margin: 2px 0 12px;

@@ -29,7 +29,7 @@ export function isSettingsAppsPanelType(type: string): boolean {
 export function mountSettingsAppsPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = SETTINGS_APPS_TITLE
-  document.title = `Luna — ${SETTINGS_APPS_TITLE}`
+  document.title = `Luna - ${SETTINGS_APPS_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

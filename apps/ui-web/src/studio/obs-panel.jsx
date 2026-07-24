@@ -17,7 +17,7 @@
 //   gives real aria-pressed group semantics for free (the old hand-rolled
 //   <button className="obs-chip"> row had none) while keeping the exact same
 //   multi-select toggle behavior. "clear" stays a plain Button (it isn't a
-//   toggle — it's a one-shot action that empties the selection).
+//   toggle - it's a one-shot action that empties the selection).
 // - Drop-count notice -> Banner (status="warning"), the direct equivalent of
 //   the old hand-rolled `.obs-banner.drop` div.
 // - EventRow's click-to-expand is intentionally left as hand-rolled markup,
@@ -129,7 +129,7 @@ export function ObsPanel({
   );
 
   // ToggleButtonGroup (type="multiple") is controlled via a string[], while
-  // the rest of this panel (and filterEvents) works off a Set<string> — kept
+  // the rest of this panel (and filterEvents) works off a Set<string> - kept
   // as the source of truth since it's what the original component used and
   // what toggleKind/allKinds.includes checks are cheapest against.
   const selectedKindsList = useMemo(() => Array.from(selectedKinds), [selectedKinds]);

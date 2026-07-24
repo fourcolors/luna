@@ -319,7 +319,7 @@ describe('mountSettingsAppearancePanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(SETTINGS_APPEARANCE_TITLE)
-    expect(document.title).toBe(`Luna — ${SETTINGS_APPEARANCE_TITLE}`)
+    expect(document.title).toBe(`Luna - ${SETTINGS_APPEARANCE_TITLE}`)
     expect(document.querySelectorAll('#content-area [data-testid]').length).toBeGreaterThan(0)
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings.appearance',

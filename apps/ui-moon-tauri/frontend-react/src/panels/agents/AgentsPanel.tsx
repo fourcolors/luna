@@ -191,7 +191,7 @@ export function AgentsPanel({ ctx }: AgentsPanelProps): React.JSX.Element {
     return (
       <div className="agents-list">
         <span className="agents-notice">
-          No subagents yet — this lights up when Luna delegates.
+          No subagents yet - this lights up when Luna delegates.
         </span>
       </div>
     )

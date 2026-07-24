@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// moon-threads-permutation-matrix.test.ts — PR 350 state combination verification suite.
+// moon-threads-permutation-matrix.test.ts - PR 350 state combination verification suite.
 // Tests all permutations of:
 // - State.threadDrawerOpen (true vs false)
 // - State.pinnedThread (set vs null)

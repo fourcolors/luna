@@ -23,7 +23,7 @@ export function isSettingsVaultPanelType(type: string): boolean {
 export function mountSettingsVaultPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = SETTINGS_VAULT_TITLE
-  document.title = `Luna — ${SETTINGS_VAULT_TITLE}`
+  document.title = `Luna - ${SETTINGS_VAULT_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

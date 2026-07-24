@@ -128,7 +128,7 @@
     <!-- React 19 + Astryx chrome (src/widget/widget-chrome-mount.tsx) owns
          both slots below. #bar-title-root keeps the ORIGINAL classed span
          (still the real .bar-title flex item; "Loading…" is the pre-mount
-         fallback, matching WIDGET_DEFAULT_TITLE) — React mounts a nested
+         fallback, matching WIDGET_DEFAULT_TITLE) - React mounts a nested
          <Text className="bar-title"> inside it, only ever replacing its text.
          #bar-end-root stays the real, boxed .bar-end child exactly like the
          superseded static markup, so the mounted collapse button lands in the
@@ -169,7 +169,7 @@
   var contentArea = document.getElementById('content-area');
 
   // Title-bar chrome (the .bar-title text + the collapse-into-moon glyph) is
-  // owned by React 19 + Astryx now — see src/widget/widget-chrome-mount.tsx
+  // owned by React 19 + Astryx now - see src/widget/widget-chrome-mount.tsx
   // and src/main-widget.tsx, which mount it into #bar-title-root/#bar-end-root
   // and assign window.__widgetChrome before this script's render() can ever
   // fire. This script never touches that DOM directly; render() below calls
@@ -417,7 +417,7 @@
   function render(artifact) {
     if (!artifact) return;
 
-    // Title bar: "filename.sh · v2" — React-owned (see the DOM-refs comment
+    // Title bar: "filename.sh · v2" - React-owned (see the DOM-refs comment
     // above); never write #bar-title-root's text directly from here.
     var titleText = (artifact.title || 'Artifact') + ' · v' + (artifact.version || 1);
     if (window.__widgetChrome) window.__widgetChrome.setTitle(titleText);
@@ -566,7 +566,7 @@
 </script>
   <!-- React 19 + Astryx 0.1.8: mounts the invisible boot probe (see
        ../src/boot.tsx) plus the title-bar chrome (the .bar-title text and
-       the collapse-into-moon glyph — see ../src/widget/WidgetChrome.tsx).
+       the collapse-into-moon glyph - see ../src/widget/WidgetChrome.tsx).
        #content-area above stays entirely vanilla, unchanged. Deferred module
        load: always runs after every classic-script above, including
        moon-appearance.js's pre-paint stamp, and always finishes before the

@@ -12,7 +12,7 @@
  *   - renders the panel's content into #content-area
  *
  * Mirrors settings-launcher-mount.tsx / workflows-mount.tsx's shape. Unlike
- * those, this type carries a per-window `?jobId=` URL param — read here
+ * those, this type carries a per-window `?jobId=` URL param - read here
  * (not inside FlowPanel itself) so the component stays a plain
  * `{ ctx, jobId }` prop consumer, easy to mount directly in tests without
  * touching `location`.
@@ -47,7 +47,7 @@ export function isFlowPanelType(type: string): boolean {
 export function mountFlowPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = FLOW_PANEL_TITLE
-  document.title = `Luna — ${FLOW_PANEL_TITLE}`
+  document.title = `Luna - ${FLOW_PANEL_TITLE}`
 
   const jobId = new URLSearchParams(location.search).get("jobId")
 

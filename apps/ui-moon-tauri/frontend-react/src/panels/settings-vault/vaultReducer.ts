@@ -204,7 +204,7 @@ export function newReqId(prefix: string): string {
 }
 
 const GENERIC_OK = "Saved."
-const GENERIC_FAIL = "That didn’t work — try again."
+const GENERIC_FAIL = "That didn’t work - try again."
 
 export function reduceVaultPanel(state: VaultPanelState, action: VaultPanelAction): VaultPanelState {
   switch (action.type) {
@@ -238,7 +238,7 @@ export function reduceVaultPanel(state: VaultPanelState, action: VaultPanelActio
           text: action.isOpToken ? "Verifying… the server will restart briefly." : "Saving…",
           kind: "info",
         },
-        valueInput: "", // one-shot — the value is never retained client-side
+        valueInput: "", // one-shot - the value is never retained client-side
       }
     case "delete-armed":
       return { ...state, confirmId: action.id }
@@ -361,11 +361,11 @@ export function reduceVaultPanel(state: VaultPanelState, action: VaultPanelActio
         const lostKind = next.reqKind
         next = { ...next, reqId: null, reqKind: null }
         if (lostKind && lostKind !== "put-op-token") {
-          next = { ...next, statusLine: { text: "Connection lost — check the list after reconnecting.", kind: "error" } }
+          next = { ...next, statusLine: { text: "Connection lost - check the list after reconnecting.", kind: "error" } }
         }
       }
       if (next.syncReqId) {
-        next = { ...next, syncReqId: null, syncStatus: { text: "Connection lost — check sync state after reconnecting.", kind: "error" } }
+        next = { ...next, syncReqId: null, syncStatus: { text: "Connection lost - check sync state after reconnecting.", kind: "error" } }
       }
       return next
     }

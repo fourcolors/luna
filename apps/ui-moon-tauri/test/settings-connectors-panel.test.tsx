@@ -4,14 +4,14 @@
 // panel (frontend/panels/settings-connectors.js -> frontend-react/src/panels/
 // settings-connectors/ConnectorsPanel.tsx + settings-connectors-mount.tsx).
 // This file REPLACES the deleted vanilla-harness suite (test/panel-connectors.test.ts,
-// which loaded frontend/panel.html + frontend/panels/settings-connectors.js —
-// both gone, nothing else imports them) — every behavioral assertion below is
+// which loaded frontend/panel.html + frontend/panels/settings-connectors.js -
+// both gone, nothing else imports them) - every behavioral assertion below is
 // ported 1:1 from that deleted suite, driving the REAL React component
 // instead.
 //
 // WS transport: ConnectorsPanel reads window.LunaWS.createFrameRegistry() (the
 // real vendor/moon-ws.js, loaded from disk exactly like panel-workflows.test.tsx)
-// and calls ctx.connectWs(registry, opts) — a fake connectWs (no MockWebSocket
+// and calls ctx.connectWs(registry, opts) - a fake connectWs (no MockWebSocket
 // needed, matching the WorkflowsPanel test's pattern) captures that registry so
 // tests can fire frames directly via registry.dispatch(...) and inspect every
 // outgoing frame the panel's client.send() call recorded.
@@ -22,7 +22,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { ConnectorsPanel, PANEL_TITLE } from "../frontend-react/src/panels/settings-connectors/ConnectorsPanel"
@@ -33,7 +33,7 @@ import {
 import { formatOauthConsentError } from "../frontend-react/src/panels/settings-connectors/connectorsReducer"
 import type { LunaFrameRegistry, PanelCtx } from "../frontend-react/src/panels/panel-ctx"
 
-// ── Real LunaWS.createFrameRegistry() — loaded from the actual vendor file so
+// ── Real LunaWS.createFrameRegistry() - loaded from the actual vendor file so
 // dispatch semantics stay faithful to what panel.html hands every panel. ──
 function loadLunaWs(): { createFrameRegistry: () => LunaFrameRegistry } {
   const src = fs.readFileSync(path.resolve(__dirname, "../frontend/vendor/moon-ws.js"), "utf8")
@@ -42,7 +42,7 @@ function loadLunaWs(): { createFrameRegistry: () => LunaFrameRegistry } {
   return sandbox.LunaWS
 }
 
-// ── Fake ctx.connectWs — the seam ConnectorsPanel actually depends on, one
+// ── Fake ctx.connectWs - the seam ConnectorsPanel actually depends on, one
 // level above the real WebSocket (mirrors panel-workflows.test.tsx's makeConn). ──
 interface FakeConn {
   ctx: PanelCtx
@@ -83,7 +83,7 @@ function makeConn(opts: { invoke?: (cmd: string, args?: any) => any; hasTauri?: 
     ctx,
     invoke,
     fireFrame: (frame) => {
-      if (!registry) throw new Error("connectWs was never called — panel did not wire up")
+      if (!registry) throw new Error("connectWs was never called - panel did not wire up")
       registry.dispatch(frame)
     },
     sentFrames: () => sent,
@@ -106,7 +106,7 @@ function mount(opts: { invoke?: (cmd: string, args?: any) => any; hasTauri?: boo
   return conn
 }
 
-/** Boot + hello{connectors:true} in one step — most tests start here. */
+/** Boot + hello{connectors:true} in one step - most tests start here. */
 function mountEnabled(opts: { invoke?: (cmd: string, args?: any) => any; hasTauri?: boolean } = {}): FakeConn {
   const conn = mount(opts)
   act(() => conn.fireFrame({ type: "hello", capabilities: { connectors: true } }))
@@ -182,7 +182,7 @@ const reconnectBtn = (instId: string) =>
   document.querySelector(`[data-testid="connector-reconnect-btn-${instId}"]`) as HTMLButtonElement
 
 describe("ConnectorsPanel (React port of panels/settings-connectors.js)", () => {
-  // 1. Initial render (synchronous — no WS needed yet)
+  // 1. Initial render (synchronous - no WS needed yet)
   it('renders with title "Connectors" and empty placeholder', () => {
     mount()
     expect(PANEL_TITLE).toBe("Connectors")
@@ -343,7 +343,7 @@ describe("ConnectorsPanel (React port of panels/settings-connectors.js)", () => 
     expect(errorEl().textContent).toBe("Token rejected.")
   })
 
-  // 10. Client setup form — unconfigured shows the form, configured shows badge
+  // 10. Client setup form - unconfigured shows the form, configured shows badge
   it("shows client setup form for unconfigured oauth client, badge for configured", () => {
     const conn = mountEnabled()
     act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF_UNCONFIGURED] }))
@@ -630,7 +630,7 @@ describe("mountSettingsConnectorsPanel (panel.html contract parity)", () => {
     })
 
     expect(document.getElementById("bar-title")!.textContent).toBe(PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${PANEL_TITLE}`)
     expect(document.querySelectorAll("#content-area [data-testid]").length).toBeGreaterThan(0)
     expect((window as any).__PanelInternals).toEqual({
       type: "settings.connectors",

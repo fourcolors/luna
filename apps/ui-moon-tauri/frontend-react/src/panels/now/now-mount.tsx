@@ -1,5 +1,5 @@
 /**
- * now-mount.tsx — boots NowPanel into panel.html's #content-area, replacing
+ * now-mount.tsx - boots NowPanel into panel.html's #content-area, replacing
  * the vanilla frontend/panels/now.js loader path for the 'now' panel type.
  *
  * Owns the same observable contract panel.html's own `bootModule()` owns for
@@ -23,7 +23,7 @@ export function isNowPanelType(type: string): boolean {
 export function mountNowPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = NOW_PANEL_TITLE
-  document.title = `Luna — ${NOW_PANEL_TITLE}`
+  document.title = `Luna - ${NOW_PANEL_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

@@ -26,7 +26,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { mountChatChrome } from '../frontend-react/src/chat/chat-chrome-mount'

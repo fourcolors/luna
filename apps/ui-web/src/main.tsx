@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client"
-// Astryx component library CSS — reset + compiled component styles. Loaded
+// Astryx component library CSS - reset + compiled component styles. Loaded
 // BEFORE @luna/design-system/css so Luna's own (unlayered) rules win the
 // cascade for anything both systems touch; Astryx's own styles live in
 // `@layer astryx-base`, which unlayered CSS always outranks regardless of

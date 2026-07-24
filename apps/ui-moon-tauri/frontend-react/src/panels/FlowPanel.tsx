@@ -1,5 +1,5 @@
 /**
- * FlowPanel.tsx — React 19 + Astryx port of panels/flow.js (per-job run
+ * FlowPanel.tsx - React 19 + Astryx port of panels/flow.js (per-job run
  * inspector, PRD Part C W3).
  *
  * Behavioral contract ported 1:1 from the vanilla module (see the deleted
@@ -7,7 +7,7 @@
  *   - No jobId (prop is null) → "No job selected." notice, no WS connect.
  *   - Connects via `ctx.connectWs` (the exact same invoke/connect plumbing
  *     every still-vanilla panels/*.js module uses, and every other
- *     converted panel — see src/panels/panel-ctx.ts / flow-mount.tsx) and
+ *     converted panel - see src/panels/panel-ctx.ts / flow-mount.tsx) and
  *     requests this job's run history once `hello` arrives.
  *   - hello without capabilities.workflows → replaces the panel with a
  *     "doesn't expose workflows" notice.
@@ -20,12 +20,12 @@
  *
  * State model: unlike the vanilla module's hand-rolled `runs`/`jobMeta`
  * variables + imperative re-render, this dispatches every inbound frame
- * into the shared reducer ui-web already relies on (@luna/ui-shared/core —
+ * into the shared reducer ui-web already relies on (@luna/ui-shared/core -
  * see UIState.workflows / workflowRuns, already modeled for exactly this
  * PRD slice) and reads it back out via useMoonSelector
- * (useSyncExternalStore underneath — src/state/store.ts). The WS registry
- * callbacks below only ever call `store.dispatch(frame)` or send a request —
- * never touch the DOM directly — React re-renders from the store
+ * (useSyncExternalStore underneath - src/state/store.ts). The WS registry
+ * callbacks below only ever call `store.dispatch(frame)` or send a request -
+ * never touch the DOM directly - React re-renders from the store
  * subscription. Bounds/formatting/status-classification stay in
  * flow-model.ts as plain functions (mirrors the sibling Workflows gallery
  * panel's model.ts split), applied over the raw store slice at render time.
@@ -49,7 +49,7 @@ export interface FlowPanelProps {
   jobId: string | null
 }
 
-/** Astryx Badge variant for a subtitle chip kind — a purely cosmetic mapping
+/** Astryx Badge variant for a subtitle chip kind - a purely cosmetic mapping
  *  layered on top of the class names the tests actually assert on. */
 function chipVariant(kind: "scheduled" | "paused" | "on-demand"): "info" | "error" | "neutral" {
   if (kind === "paused") return "error"
@@ -59,7 +59,7 @@ function chipVariant(kind: "scheduled" | "paused" | "on-demand"): "info" | "erro
 
 export function FlowPanel({ ctx, jobId }: FlowPanelProps) {
   // One store per mounted panel instance (each Moon panel window is its own
-  // document/JS realm — see boot.tsx's identical per-mount rationale).
+  // document/JS realm - see boot.tsx's identical per-mount rationale).
   const storeRef = useRef<ReturnType<typeof createMoonStore> | null>(null)
   if (storeRef.current === null) storeRef.current = createMoonStore()
   const store = storeRef.current
@@ -68,7 +68,7 @@ export function FlowPanel({ ctx, jobId }: FlowPanelProps) {
   const workflows = useMoonSelector(store, (s) => s.workflows)
   const jobMeta = useMemo(() => (jobId ? (workflows.find((w) => w.id === jobId) ?? null) : null), [workflows, jobId])
   // Bounded/sorted unconditionally (before the early notice returns below) so
-  // hook call order never varies between renders — React's Rules of Hooks.
+  // hook call order never varies between renders - React's Rules of Hooks.
   const sortedRuns = useMemo(() => boundRuns(rawRuns), [rawRuns])
 
   const [gateNotice, setGateNotice] = useState<string | null>(null)
@@ -92,7 +92,7 @@ export function FlowPanel({ ctx, jobId }: FlowPanelProps) {
     })
 
     registry.register("workflow-runs", (frame: any) => {
-      // Guard: only accept runs for our job — a stale/concurrent panel's
+      // Guard: only accept runs for our job - a stale/concurrent panel's
       // response for a different job must never reach this instance's slice.
       if (!frame || frame.jobId !== jobId) return
       store.dispatch(frame)

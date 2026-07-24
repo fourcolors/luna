@@ -66,20 +66,20 @@ export function localStepCopy(update: boolean): {
       }
     : {
         title: "Set up Luna on this Mac",
-        sub: "I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.",
+        sub: "I’ll download Luna, set her up, and wake her - all on this machine. Nothing leaves your Mac.",
         startLabel: "Install & start",
       }
 }
 
 export function pathCardLocalDesc(env: { serverRunning: boolean; repoExists: boolean }): string {
-  if (env.serverRunning) return "Luna already lives here — connect, or update her"
-  if (env.repoExists) return "Luna is installed here — wake her up, or update her"
+  if (env.serverRunning) return "Luna already lives here - connect, or update her"
+  if (env.repoExists) return "Luna is installed here - wake her up, or update her"
   return "Everything stays private, right on this computer"
 }
 
 export function detectNoteText(env: { serverRunning: boolean; repoExists: boolean }): string | null {
-  if (env.serverRunning) return "✓ Good news — Luna is already running on this Mac."
-  if (env.repoExists) return "✓ Luna is installed on this Mac — she just isn’t awake."
+  if (env.serverRunning) return "✓ Good news - Luna is already running on this Mac."
+  if (env.repoExists) return "✓ Luna is installed on this Mac - she just isn’t awake."
   return null
 }
 

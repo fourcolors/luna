@@ -1,7 +1,7 @@
 // Pure unit tests for the Models settings panel's state/logic
 // (frontend-react/src/panels/settings-models/logic.ts), ported 1:1 from
 // frontend/panels/settings-models.js's applyServerState/buildPayload/
-// providerForModel. No DOM/transport involved — see
+// providerForModel. No DOM/transport involved - see
 // settings-models-panel.test.tsx for the component-level behavioral suite,
 // including the reducer-level 'set-role-model' case this file also covers
 // (Astryx's Selector is a library-owned combobox widget; that suite drives
@@ -58,7 +58,7 @@ describe('reduceModelRouting', () => {
       providers: [{ kind: 'anthropic', enabled: true }],
       roleBindings: [],
     })
-    expect(next).toBe(dirty) // same reference — truly a no-op
+    expect(next).toBe(dirty) // same reference - truly a no-op
   })
 
   it('toggle-provider / set-credential-ref / set-monthly-cap all mark isDirty', () => {

@@ -26,7 +26,7 @@ export function isSettingsConnectorsPanelType(type: string): boolean {
 export function mountSettingsConnectorsPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = PANEL_TITLE
-  document.title = `Luna — ${PANEL_TITLE}`
+  document.title = `Luna - ${PANEL_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Behavioral tests for the React 19 + Astryx port of the Briefing panel
-// ("While you were away" workflow digest — frontend/panels/briefing.js ->
+// ("While you were away" workflow digest - frontend/panels/briefing.js ->
 // frontend-react/src/panels/briefing/BriefingPanel.tsx + briefing-mount.tsx).
 // Ports every behavioral assertion from the deleted vanilla-harness
 // test/panel-briefing.test.ts (grouping/sorting, relative-time formatting,
@@ -9,7 +9,7 @@
 // Refresh button's workflow-refresh send) onto the React implementation.
 //
 // Follows the settings-launcher-panel.test.tsx pattern (createRoot + act,
-// no testing-library — see that file's doc for why) rather than the older
+// no testing-library - see that file's doc for why) rather than the older
 // bootPanel-over-frontend/panel.html harness: BriefingPanel receives its
 // `ctx` as a prop (see src/panels/panel-ctx.ts), so a fake PanelCtx +
 // a tiny in-test LunaWS.createFrameRegistry() stand-in exercise the exact
@@ -20,7 +20,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { BriefingPanel, BRIEFING_PANEL_TITLE } from '../frontend-react/src/panels/briefing/BriefingPanel'
@@ -77,7 +77,7 @@ function makeCtx(invokeImpl?: (cmd: string, args?: any) => any) {
     connectWs,
     sent,
     fire: (frame: any) => act(() => {
-      if (!activeRegistry) throw new Error('connectWs was never called — no active registry to fire into')
+      if (!activeRegistry) throw new Error('connectWs was never called - no active registry to fire into')
       activeRegistry.fire(frame)
     }),
   }
@@ -299,7 +299,7 @@ describe('mountBriefingPanel (panel.html contract parity)', () => {
     delete (window as any).LunaWS
   })
 
-  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
+  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -313,7 +313,7 @@ describe('mountBriefingPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(BRIEFING_PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${BRIEFING_PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${BRIEFING_PANEL_TITLE}`)
     expect(document.querySelector('#content-area .panel-btn')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'briefing',

@@ -51,7 +51,7 @@ const PALETTE_SWATCHES = {
   tide: ["#a9b8dc", "#93c2c4", "#d9b3bd"],
 };
 
-// Appearance section defaults — kept local (see the palette/theme/chrome
+// Appearance section defaults - kept local (see the palette/theme/chrome
 // constants above) rather than importing final-app.jsx's TWEAK_DEFAULTS,
 // which also covers Presence/Canvas fields this button intentionally
 // leaves untouched.
@@ -147,7 +147,7 @@ export function SettingsPanel({ ctx }) {
             positioning), not a drop-in for a native select, and this app's
             test harness has no testing-library/jsdom popover shims to drive
             it. Forcing it here would be exactly the kind of markup swap that
-            silently changes behavior — see the "keep custom markup where
+            silently changes behavior - see the "keep custom markup where
             Astryx has no equivalent" rule. */}
         <label className="stg-field">
           <span>Model</span>
@@ -223,7 +223,7 @@ export function SettingsPanel({ ctx }) {
       <div className="stg-row">
         <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span>Appearance</span>
-          {/* First Astryx component wired into Studio — proves the
+          {/* First Astryx component wired into Studio - proves the
               watercolor token bridge (astryx-watercolor-theme.css) reaches
               a real component, not just Luna's own CSS. */}
           <Button

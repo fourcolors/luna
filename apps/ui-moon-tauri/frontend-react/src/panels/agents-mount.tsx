@@ -44,7 +44,7 @@ export function isAgentsPanelType(type: string): boolean {
 export function mountAgentsPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = AGENTS_PANEL_TITLE
-  document.title = `Luna — ${AGENTS_PANEL_TITLE}`
+  document.title = `Luna - ${AGENTS_PANEL_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

@@ -28,7 +28,7 @@ export function isSettingsModelsPanelType(type: string): boolean {
 export function mountSettingsModelsPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = SETTINGS_MODELS_TITLE
-  document.title = `Luna — ${SETTINGS_MODELS_TITLE}`
+  document.title = `Luna - ${SETTINGS_MODELS_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

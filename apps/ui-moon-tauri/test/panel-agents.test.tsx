@@ -23,7 +23,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { AgentsPanel } from '../frontend-react/src/panels/agents/AgentsPanel'
@@ -88,7 +88,7 @@ let root: Root | null = null
 /**
  * ctx.connectWs here is a deliberately thin stand-in for panel.html's real
  * connectWs (MoonSession route resolution + load_connection + LunaWS client
- * construction — see panel.html): it builds the exact same LunaWS client
+ * construction - see panel.html): it builds the exact same LunaWS client
  * over the exact same registry contract and connects it straight away,
  * synchronously, inside the effect that calls it. That keeps this suite
  * about AgentsPanel's OWN behavior (frame handling -> dispatch -> render),
@@ -251,7 +251,7 @@ describe('AgentsPanel (React port of panels/agents.js)', () => {
     expect(childRow!.textContent).toContain('done')
   })
 
-  it('subagent-tree for different threadId (t2): ignored — t1 render unchanged', () => {
+  it('subagent-tree for different threadId (t2): ignored - t1 render unchanged', () => {
     const el = bootPanel('t1')
     fireFrame(HELLO_WITH_SUBAGENTS)
 

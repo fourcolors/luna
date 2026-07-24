@@ -473,7 +473,7 @@ describe('mountActionsPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(ACTIONS_PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${ACTIONS_PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${ACTIONS_PANEL_TITLE}`)
     expect(document.querySelector('#content-area .actions-list')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'actions',

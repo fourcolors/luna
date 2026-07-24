@@ -1,5 +1,5 @@
 /**
- * SettingsAppsPanel.tsx — React 19 + Astryx port of frontend/panels/settings-apps.js
+ * SettingsAppsPanel.tsx - React 19 + Astryx port of frontend/panels/settings-apps.js
  * (the Apps settings panel, PRD Part C §13): install/list/configure MCP-app
  * and widget artifacts.
  *
@@ -7,12 +7,12 @@
  * frontend/panels/settings-apps.js and its covering test,
  * test/panel-apps.test.ts, ported to test/panel-apps-react.test.ts):
  *   - Connects via ctx.connectWs (the same invoke/connect plumbing every
- *     still-vanilla panels/*.js module uses — see src/panels/panel-ctx.ts)
+ *     still-vanilla panels/*.js module uses - see src/panels/panel-ctx.ts)
  *     and gates on the hello frame's `artifacts` capability.
  *   - hello without capabilities.artifacts → replaces the whole panel with a
  *     "doesn't support apps" notice.
  *   - artifact-list is filtered to kind === 'mcp-app' || kind === 'widget'
- *     (markdown/code/html pins are a different surface — the artifacts
+ *     (markdown/code/html pins are a different surface - the artifacts
  *     panel, not this one).
  *   - Open sends ctx.invoke('open_artifact_widget', { artifactId, title }),
  *     swallowing rejection (off-Tauri / no-op).
@@ -20,41 +20,41 @@
  *   - Save (create mode) generates a unique `kind:slug(title)` id (appending
  *     `-2`, `-3`, ... on collision) and sends artifact-pin.
  *   - Save (edit mode, entered via the Edit button) sends artifact-edit
- *     (content only) for the SAME id — never unpin+re-pin, which would
+ *     (content only) for the SAME id - never unpin+re-pin, which would
  *     destroy the version ledger and reset the widget's bridgeCaps. Title
  *     and kind are locked while editing for exactly that reason (rename =
  *     delete + re-create, or ask Luna to iterate).
  *
  * State model: unlike the vanilla module's hand-rolled `artifacts` variable +
  * imperative re-render, this dispatches every inbound frame into the SAME
- * shared reducer ui-web already relies on (@luna/ui-shared/core —
+ * shared reducer ui-web already relies on (@luna/ui-shared/core -
  * UIState.capabilities.artifacts / UIState.pinnedArtifacts, already modeled
  * for exactly this PRD slice) and reads it back out via useMoonSelector
- * (useSyncExternalStore underneath) — mirrors FlowPanel.tsx's identical
+ * (useSyncExternalStore underneath) - mirrors FlowPanel.tsx's identical
  * conversion. The WS registry callbacks below only ever call
- * `store.dispatch(frame)` or send a request — never touch the DOM directly;
+ * `store.dispatch(frame)` or send a request - never touch the DOM directly;
  * React re-renders from the store subscription, per the conversion's
  * state-ownership rule. The composer's own draft fields (title/content/kind/
- * editTarget) are local, ephemeral UI state with no server representation —
- * exactly like SettingsGeneralPanel's local settings — so plain useState is
+ * editTarget) are local, ephemeral UI state with no server representation -
+ * exactly like SettingsGeneralPanel's local settings - so plain useState is
  * the right tool there, not the store.
  *
  * "Has hello arrived yet?" isn't a boolean the shared reducer tracks
  * explicitly; it identifies "not connected yet" by comparing the selected
  * capabilities object against @luna/ui-shared's own `initialState.capabilities`
- * by reference — the reducer always swaps in a brand-new object from the wire
+ * by reference - the reducer always swaps in a brand-new object from the wire
  * on every hello, so this equality can only hold before the first one lands.
  * That keeps the distinction store-only (no parallel "have we connected"
  * useState) between the vanilla module's three renders: waiting-for-data,
  * gated-off, and live.
  *
  * Astryx mapping: TextInput (title) / TextArea (content) / Button (Open,
- * Edit, Delete, Save) / Badge (kind chip) are clean 1:1 mappings — each is a
+ * Edit, Delete, Save) / Badge (kind chip) are clean 1:1 mappings - each is a
  * controlled field or a plain synchronous action trigger with no nested
  * interactive children. The Kind picker stays a native <select>: Astryx's
  * Selector is a popover-based combobox (needs the Popover API / floating
  * positioning), not a drop-in for a native select, and this app's test
- * harness has no testing-library/jsdom popover shims to drive it — the exact
+ * harness has no testing-library/jsdom popover shims to drive it - the exact
  * call apps/ui-web's settings-panel.jsx makes for its Model dropdown, and
  * FlowPanel.tsx's sibling conversion for its status chips. The list rows and
  * composer container stay hand-rolled div markup, same call
@@ -121,7 +121,7 @@ function kindBadge(kind: ArtifactKind): string {
 
 export function SettingsAppsPanel({ ctx }: SettingsAppsPanelProps) {
   // One store per mounted panel instance (each Moon panel window is its own
-  // document/JS realm — see boot.tsx's / FlowPanel.tsx's identical per-mount
+  // document/JS realm - see boot.tsx's / FlowPanel.tsx's identical per-mount
   // rationale).
   const storeRef = useRef<ReturnType<typeof createMoonStore> | null>(null)
   if (storeRef.current === null) storeRef.current = createMoonStore()
@@ -177,7 +177,7 @@ export function SettingsAppsPanel({ ctx }: SettingsAppsPanelProps) {
   function handleEdit(a: PinnedArtifactItem): void {
     // Edit changes CONTENT only (store.update preserves title/kind/caps + the
     // version ledger). Lock title + kind so the UI doesn't imply they can
-    // change here — rename = delete + re-create, or ask Luna to iterate.
+    // change here - rename = delete + re-create, or ask Luna to iterate.
     setTitle(a.title)
     setContent(a.content)
     setKind(a.kind)
@@ -230,7 +230,7 @@ export function SettingsAppsPanel({ ctx }: SettingsAppsPanelProps) {
         {pinnedArtifacts.length === 0 ? (
           <span className="apps-empty">Your apps appear here once Luna connects.</span>
         ) : apps.length === 0 ? (
-          <span className="apps-empty">No apps yet — create one below.</span>
+          <span className="apps-empty">No apps yet - create one below.</span>
         ) : (
           apps.map((a) => (
             <div className="app-row" key={a.id} data-testid={`app-row-${a.id}`}>

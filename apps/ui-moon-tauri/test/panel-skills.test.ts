@@ -407,7 +407,7 @@ describe('mountSettingsSkillsPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(SETTINGS_SKILLS_TITLE)
-    expect(document.title).toBe(`Luna — ${SETTINGS_SKILLS_TITLE}`)
+    expect(document.title).toBe(`Luna - ${SETTINGS_SKILLS_TITLE}`)
     expect(document.querySelector('#content-area [data-testid="settings-skills-panel"]')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings.skills',

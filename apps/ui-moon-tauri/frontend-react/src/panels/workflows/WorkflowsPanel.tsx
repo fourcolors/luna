@@ -1,19 +1,19 @@
 /**
- * WorkflowsPanel.tsx — React 19 + Astryx port of panels/workflows.js (the
+ * WorkflowsPanel.tsx - React 19 + Astryx port of panels/workflows.js (the
  * Workflows gallery panel, PRD Part C W3): the full catalog view over the
  * server's workflow gallery, sorted needs-attention → running → most
  * recent. Clicking a row opens that job's run-history inspector (the
- * 'flow' panel — see FlowPanel.tsx — one window per jobId).
+ * 'flow' panel - see FlowPanel.tsx - one window per jobId).
  *
  * Behavioral contract ported 1:1 from the deleted frontend/panels/workflows.js
  * (see model.ts for the pure sort/status/bounds helpers, ported verbatim):
  *   - hello without capabilities.workflows → notice, gallery chrome hidden.
  *     A later hello WITH the capability re-enables it (toggle, never
- *     destroy) and — only on that disabled→enabled transition — re-pulls
+ *     destroy) and - only on that disabled→enabled transition - re-pulls
  *     the catalog, since any list dropped while gated is gone.
  *   - workflow-list is gated on the SAME capability at render time: a frame
  *     that arrives before the first hello, or while denied, is stored (the
- *     shared reducer is a thin untrusted mirror of the wire — see
+ *     shared reducer is a thin untrusted mirror of the wire - see
  *     packages/ui-shared/src/reducer.ts) but never rendered.
  *   - Untrusted rows are bounded before render: malformed/oversized ids
  *     dropped, capped at 500 rows with a "+N more" footer, labels clamped
@@ -24,13 +24,13 @@
  *   - Window focus re-renders (relative times) and re-pulls the catalog.
  *   - Click / Enter / Space on a row opens the 'flow' panel via open_widget.
  *
- * State model: same as FlowPanel.tsx — every inbound frame is dispatched
+ * State model: same as FlowPanel.tsx - every inbound frame is dispatched
  * into the shared @luna/ui-shared reducer (UIState.workflows /
  * capabilities.workflows, already modeled for this PRD slice) and read back
  * via useMoonSelector. Connection-liveness ("disconnected") has no reducer
  * slice (it is not server-authored data, just this socket's own open/close
  * state) so it stays local React state, set only from WS registry callbacks
- * and connectWs's onOpen/onClose — never from a DOM read/write. Mounted by
+ * and connectWs's onOpen/onClose - never from a DOM read/write. Mounted by
  * src/panels/workflows-mount.tsx.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
@@ -60,7 +60,7 @@ type Capability = "unknown" | "enabled" | "disabled"
 
 function openFlow(jobId: string): void {
   // One run-history window per job (the 'flow' panel is non-singleton).
-  // Off-Tauri (browser dev / jsdom) invoke rejects — swallow, matches every
+  // Off-Tauri (browser dev / jsdom) invoke rejects - swallow, matches every
   // other converted panel's convention (SettingsLauncherPanel, FlowPanel).
   window.__panelCtx?.invoke("open_widget", { kind: "flow", params: { jobId } }).catch(() => {})
 }
@@ -104,7 +104,7 @@ function WorkflowRow({ wf }: { wf: WorkflowGalleryItem }) {
 }
 
 export function WorkflowsPanel() {
-  // One store per mounted panel instance — each Moon panel window is its own
+  // One store per mounted panel instance - each Moon panel window is its own
   // document/JS realm (see FlowPanel.tsx / boot.tsx's identical rationale).
   const storeRef = useRef<ReturnType<typeof createMoonStore> | null>(null)
   if (storeRef.current === null) storeRef.current = createMoonStore()
@@ -114,7 +114,7 @@ export function WorkflowsPanel() {
   const rawWorkflows = useMoonSelector(store, (s) => s.workflows)
 
   // The shared reducer's `hello` case replaces `capabilities` wholesale with
-  // whatever the server sent — an explicit `{}` (no `workflows` key) is
+  // whatever the server sent - an explicit `{}` (no `workflows` key) is
   // indistinguishable, on the STATE alone, from no hello ever having
   // arrived (both leave capabilities.workflows `undefined`). The vanilla
   // module resolved this via `LunaProtocol.parseHelloCapabilities`, which
@@ -129,7 +129,7 @@ export function WorkflowsPanel() {
   const clientRef = useRef<ReturnType<NonNullable<PanelCtx["connectWs"]>> | null>(null)
   // Tracks whether the LAST hello denied the capability, so a grant only
   // re-pulls the catalog on an actual disabled→enabled transition (a list
-  // dropped while gated is gone) — never on the routine first hello, whose
+  // dropped while gated is gone) - never on the routine first hello, whose
   // connect-time workflow-list is already on its way.
   const wasDisabledRef = useRef(false)
 
@@ -160,7 +160,7 @@ export function WorkflowsPanel() {
     })
 
     registry.register("workflow-list", (frame: any) => {
-      // The hello gate is a real gate on data, not just on chrome — but that
+      // The hello gate is a real gate on data, not just on chrome - but that
       // gate is enforced at RENDER time (see `displayed` below), not here:
       // the reducer is a thin untrusted mirror of the wire regardless of
       // capability, same as every other slice (packages/ui-shared/src/reducer.ts).

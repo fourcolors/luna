@@ -43,7 +43,7 @@ export function isBriefingPanelType(type: string): boolean {
 export function mountBriefingPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = BRIEFING_PANEL_TITLE
-  document.title = `Luna — ${BRIEFING_PANEL_TITLE}`
+  document.title = `Luna - ${BRIEFING_PANEL_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

@@ -48,7 +48,7 @@ export function isActionsPanelType(type: string): boolean {
 export function mountActionsPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = ACTIONS_PANEL_TITLE
-  document.title = `Luna — ${ACTIONS_PANEL_TITLE}`
+  document.title = `Luna - ${ACTIONS_PANEL_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

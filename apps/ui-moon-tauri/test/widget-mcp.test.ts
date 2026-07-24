@@ -3,10 +3,10 @@
  * widget-mcp.test.ts — widget.html's kind='mcp-app' render path
  * (widget-system.md Phase 7).
  *
- * Drives the REAL inline script — now frontend-react/widget.html, the page
+ * Drives the REAL inline script - now frontend-react/widget.html, the page
  * that actually ships (see src-tauri/tauri.conf.json's `frontendDist`); the
  * superseded frontend/widget.html this suite used to read has been deleted
- * (nothing else imported it) — over the panel-test MockWebSocket harness: an
+ * (nothing else imported it) - over the panel-test MockWebSocket harness: an
  * mcp-app artifact (content = its ui:// uri) must fetch the app template
  * through the `mcp-resource-read` relay frame, mount it in the SAME sandbox
  * cage WITHOUT the luna.* shim, stamp every app `tools/call` with its OWN
@@ -14,7 +14,7 @@
  * lacks the mcpApps capability.
  *
  * The title-bar text used to be a `#bar-title` textContent write; it is now
- * React-owned (src/widget/WidgetChrome.tsx) — the inline script only calls
+ * React-owned (src/widget/WidgetChrome.tsx) - the inline script only calls
  * `window.__widgetChrome.setTitle(text)`, stubbed below, and that call is
  * what this suite asserts on instead of reading DOM text (the React
  * component's own rendering is covered separately by widget-chrome.test.tsx).
@@ -159,7 +159,7 @@ describe('widget.html — kind=mcp-app renders through LunaMcpHost', () => {
     expect(iframe.srcdoc).toContain(APP_HTML)
     expect(iframe.srcdoc).toContain("connect-src 'none'")
     expect(iframe.srcdoc).not.toContain('window.luna')
-    // Title bar updates like any artifact window — via the React handle, not
+    // Title bar updates like any artifact window - via the React handle, not
     // a direct DOM write (see widget-chrome.test.tsx for what it renders).
     expect((window as any).__widgetChrome.setTitle).toHaveBeenCalledWith('Workspace Pulse (MCP) · v1')
   })

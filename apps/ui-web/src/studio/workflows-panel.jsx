@@ -31,7 +31,7 @@
 //     interactive children, so there's no button-in-button constraint. It
 //     keeps the shared `chip small` className (see devops-panels.css: that
 //     class is deliberately "byte-identical across porter outputs" and
-//     still used by the not-yet-converted ArtifactsPanel) — Luna's CSS is
+//     still used by the not-yet-converted ArtifactsPanel) - Luna's CSS is
 //     loaded unlayered while Astryx's own rules live in `@layer
 //     astryx-base` (see main.tsx), so the chip look wins the cascade over
 //     Astryx's default button chrome without a visual regression.
@@ -39,7 +39,7 @@
 //     Astryx's nearest equivalent (ClickableCard) composes Card's own
 //     visual system (padding/radius/variant tokens) and a different DOM
 //     shape (a visually-hidden inner <button>/<a> for the accessible
-//     name) — forcing it here would fork `.artifact-row` styling away from
+//     name) - forcing it here would fork `.artifact-row` styling away from
 //     the still-native ArtifactsPanel this file intentionally mirrors, for
 //     a row type that (unlike ArtifactsPanel's pinned rows) has no nested
 //     interactive child needing the shim in the first place. The existing

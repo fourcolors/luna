@@ -4,10 +4,10 @@ import react from "@vitejs/plugin-react"
 
 // Luna Moon's React 19 + Astryx frontend build.
 //
-// root: frontend-react/ — the four HTML shells (index/chat/panel/widget) plus
+// root: frontend-react/ - the four HTML shells (index/chat/panel/widget) plus
 //   src/ (boot layer, state store, Astryx re-export kit) live here.
 // publicDir: frontend-react/public/ (Vite's default for this root) holds
-//   `vendor` and `panels` — both SYMLINKS back to the single source of truth
+//   `vendor` and `panels` - both SYMLINKS back to the single source of truth
 //   at ../frontend/{vendor,panels}, not copies, so there is nothing here to
 //   drift. Vite copies publicDir verbatim (unhashed, exact filenames) to the
 //   root of outDir, which is exactly what two runtime contracts require:

@@ -103,14 +103,14 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
         wsUrl: typeof c.wsUrl === "string" && c.wsUrl ? c.wsUrl : null,
         wsToken: typeof c.wsToken === "string" ? c.wsToken : null,
       })
-    }).catch(() => { /* off-Tauri — inputs stay empty */ })
+    }).catch(() => { /* off-Tauri - inputs stay empty */ })
 
     ctx.invoke("load_profiles").then((prof) => {
       const p = prof as { activeProfile?: unknown } | null
       if (p && typeof p.activeProfile === "string" && p.activeProfile) {
         store.dispatch({ type: "profile-loaded", activeProfile: p.activeProfile })
       }
-    }).catch(() => { /* off-Tauri — keep default */ })
+    }).catch(() => { /* off-Tauri - keep default */ })
 
     const ms = window.MoonSession
     if (ms && typeof ms.listRoutes === "function") {
@@ -220,7 +220,7 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
         <HStack justify="between" align="center" gap={3}>
           <VStack gap={0}>
             <Text type="label">Model</Text>
-            <Text type="supporting">Model for new conversations — existing threads keep theirs</Text>
+            <Text type="supporting">Model for new conversations - existing threads keep theirs</Text>
           </VStack>
           <select
             id="model-select"
@@ -305,7 +305,7 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           <VStack gap={0}>
             <Text type="label">Setup wizard</Text>
             <Text type="supporting">
-              Guided setup — install Luna on this Mac, on a server, or point at one already running
+              Guided setup - install Luna on this Mac, on a server, or point at one already running
             </Text>
           </VStack>
           <Button

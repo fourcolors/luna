@@ -362,7 +362,7 @@ export function FinalInbox({ items: itemsProp, connected = true, projectionAvail
                     the button). Astryx's DropdownMenu owns light-dismiss +
                     Escape + focus-trap internally, same fix already applied to
                     BrainPicker's "who should answer?" menu in
-                    studio-brain.jsx — this is that same menu shape, just
+                    studio-brain.jsx - this is that same menu shape, just
                     action items instead of a radio group. */}
                 <DropdownMenu
                   button={{

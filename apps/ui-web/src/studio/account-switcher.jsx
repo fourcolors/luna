@@ -25,7 +25,7 @@ export function AccountSwitcher({ accounts, selectedId, onSelect, disabled }) {
   if (anthropicAccounts.length === 0) return null;
 
   const options = [
-    { value: "", label: "— Auto —" },
+    { value: "", label: "- Auto -" },
     ...anthropicAccounts.map((acct) => ({
       value: acct.id,
       label: acct.health !== "healthy" ? `${acct.label} (unavailable)` : acct.label,

@@ -44,7 +44,7 @@ export function isWorkflowsPanelType(type: string): boolean {
 export function mountWorkflowsPanel(type: string, _ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = WORKFLOWS_PANEL_TITLE
-  document.title = `Luna — ${WORKFLOWS_PANEL_TITLE}`
+  document.title = `Luna - ${WORKFLOWS_PANEL_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

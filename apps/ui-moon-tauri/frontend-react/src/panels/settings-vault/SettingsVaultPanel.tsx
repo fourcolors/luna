@@ -179,7 +179,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
         local.dispatch({
           type: "status-set",
-          text: "That name can’t become a key — add some letters, or set one under “change”.",
+          text: "That name can’t become a key - add some letters, or set one under “change”.",
           kind: "error",
         })
         return
@@ -286,7 +286,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
         <div className="vault-head">
           <span className="vault-label">Vault</span>
           <span className="vault-desc">
-            Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear here again.
+            Keys and tokens Luna can use. Values are stored safely on the server - once saved, they never appear here again.
           </span>
           {vaultStorage && (
             <span id="vault-storage-line" data-testid="vault-storage-line" className="vault-storage-line">
@@ -297,7 +297,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
 
         <div id="vault-list" data-testid="vault-list" className="sp-vault-list">
           {vaultItems.length === 0 ? (
-            <span className="vault-desc">Nothing stored yet — add your first key below.</span>
+            <span className="vault-desc">Nothing stored yet - add your first key below.</span>
           ) : (
             vaultItems.map((item) => (
               <div key={item.id} className={"vault-row" + (item.shadowed ? " shadowed" : "")} data-testid={`vault-row-${item.id}`}>
@@ -310,7 +310,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
                     {item.shadowed && (
                       <span
                         className="vault-chip shadowed"
-                        title="Defined by the server's environment — edits here won't take effect"
+                        title="Defined by the server's environment - edits here won't take effect"
                       >
                         ⚠ shadowed
                       </span>
@@ -514,7 +514,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
           <span className="vault-label">1Password Service Account</span>
           <span className="vault-desc">
             Send an <code className="vault-ref">ops_…</code> service-account token to the server securely. It is verified and
-            stored on the server — never kept in chat history or on this device.
+            stored on the server - never kept in chat history or on this device.
           </span>
         </div>
         <TextInput

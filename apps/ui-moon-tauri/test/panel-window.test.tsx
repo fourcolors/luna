@@ -1,25 +1,25 @@
 // @vitest-environment jsdom
 //
-// Behavioral tests for panel.html — the SYSTEM widget host (Phase 2), React
+// Behavioral tests for panel.html - the SYSTEM widget host (Phase 2), React
 // 19 + Astryx edition. Ported from the vanilla test/panel-window.test.ts
 // (see git history), which drove frontend/panel.html directly. That file is
 // no longer what ships: src-tauri/tauri.conf.json's frontendDist now points
 // at frontend-react/dist (see vite.config.ts's doc comment), so this suite
-// boots the REAL shipped shell — frontend-react/panel.html — instead.
+// boots the REAL shipped shell - frontend-react/panel.html - instead.
 //
 // frontend-react/panel.html's inline vanilla script is otherwise byte-for-
 // byte identical to frontend/panel.html's (title-bar, content-area, the
-// ctx/connectWs waterfall — see panel-ctx.ts's module doc on why that stays
+// ctx/connectWs waterfall - see panel-ctx.ts's module doc on why that stays
 // vanilla); the only difference is the REACT_PANEL_TYPES hand-off this test
 // now also exercises: after the inline script runs, main-panel.tsx calls
 // mountReactPanel(type, window.__panelCtx) for every panel type (a no-op for
-// types it doesn't own — see panel-boot.tsx) — this harness reproduces that
+// types it doesn't own - see panel-boot.tsx) - this harness reproduces that
 // exact call so the test proves the real two-stage boot (vanilla shell ->
 // React hand-off), not just the vanilla half.
 //
 // settings.updates is the representative React-owned system-widget the
 // panel.html HOST tests ride on (same role the vanilla suite gave it before
-// frontend/panels/settings-updates.js was deleted as superseded — see
+// frontend/panels/settings-updates.js was deleted as superseded - see
 // UpdatesPanel.tsx). Its own staged-narrative behavior is covered
 // exhaustively in settings-updates-panel.test.tsx; here we only assert
 // host-level concerns (title wiring, the panel renders, commands fire,
@@ -46,7 +46,7 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
   document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
   // Records handlers registered through window.__TAURI__.event.listen, keyed
-  // by event name — UpdatesPanel subscribes to the update://* events over
+  // by event name - UpdatesPanel subscribes to the update://* events over
   // this GLOBAL bus (not ctx.win.listen; see UpdatesPanel.tsx's module doc).
   const listenHandlers: Record<string, Array<(ev: unknown) => void>> = {}
   const invoke = vi.fn(async (cmd: string, args?: any) => (opts.invoke ? opts.invoke(cmd, args) : null))
@@ -83,7 +83,7 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
 
   // Preload the panel module the way the harness must (jsdom never fetches
   // the loader's injected <script src>); the loader sees it registered and
-  // boots it directly. Only relevant for still-vanilla types — React-owned
+  // boots it directly. Only relevant for still-vanilla types - React-owned
   // types (e.g. settings.updates) have no frontend/panels/<type>.js file on
   // disk any more (deleted once superseded), so this is a no-op for them.
   const moduleFile = path.resolve(__dirname, '../frontend/panels', opts.type.replace(/\./g, '-') + '.js')
@@ -99,7 +99,7 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
 
   // React hand-off: reproduces exactly what main-panel.tsx's deferred module
   // script does after the inline script above runs. A no-op for panel types
-  // mountReactPanel doesn't own (see panel-boot.tsx) — safe to call always.
+  // mountReactPanel doesn't own (see panel-boot.tsx) - safe to call always.
   act(() => {
     mountReactPanel(opts.type, (window as any).__panelCtx as PanelCtx)
   })

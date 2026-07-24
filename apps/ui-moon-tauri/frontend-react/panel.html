@@ -63,7 +63,7 @@
     }
 
     /* ── Panel form chrome (settings panels) ─────────────────────────────── */
-    /* display:flex would beat the [hidden] attribute's UA display:none —
+    /* display:flex would beat the [hidden] attribute's UA display:none -
        pin it (caught live: the install row showed while hidden). */
     [hidden] { display: none !important; }
     .panel-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -179,8 +179,8 @@
     // Returns the client (already connecting); callers register frames on
     // the registry they passed in.
     //
-    // Phase 2 C7 — per-panel route binding:
-    //   1. Try MoonSession.resolveBootRoute(panelId) — uses any panel-specific
+    // Phase 2 C7 - per-panel route binding:
+    //   1. Try MoonSession.resolveBootRoute(panelId) - uses any panel-specific
     //      route binding (set via set_panel_route) or falls back to the default
     //      route from client.toml. Returns RouteInfo { endpoints[], token_ref }.
     //   2. Use endpoints[0] as wsUrl. The token still comes from load_connection
@@ -190,7 +190,7 @@
     //      client.toml / un-migrated), fall back to the legacy load_connection
     //      path unchanged.
     //   4. Child/settings panels opened from a parent panel inherit the DEFAULT
-    //      route — no explicit parent-route signal is plumbed through panel.html
+    //      route - no explicit parent-route signal is plumbed through panel.html
     //      today. Explicit parent→child route binding is a C8 follow-up.
     //
     // Error surfacing:
@@ -205,13 +205,13 @@
       var effectivePanelId = label || null;
 
       if (typeof MoonSession !== 'undefined') {
-        // Phase 2 C7 — per-panel route resolution via MoonSession (C3).
+        // Phase 2 C7 - per-panel route resolution via MoonSession (C3).
         // MoonSession.resolveBootRoute() returns null if:
         //   - client.toml not found → un-migrated user, fall back to legacy
         //   - any Tauri error → degrade gracefully
         MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
           if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
-            // Route resolved via client.toml — use the first endpoint as the
+            // Route resolved via client.toml - use the first endpoint as the
             // WebSocket URL. Token still comes from load_connection (Phase 3
             // will wire token_ref → resolved token from route directly).
             var wsUrl = route.endpoints[0];
@@ -225,25 +225,25 @@
                 showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
               }
             }).catch(function (e) {
-              // load_connection rejected — Tauri is present but command failed.
+              // load_connection rejected - Tauri is present but command failed.
               showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
             });
           } else {
-            // No client.toml route configured — legacy load_connection path.
+            // No client.toml route configured - legacy load_connection path.
             ctx.invoke('load_connection').then(function (creds) {
               if (creds && creds.wsUrl) {
                 try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
               }
             }).catch(function (e) {
               if (hasTauri) {
-                // Tauri is present but load_connection rejected — surface it.
+                // Tauri is present but load_connection rejected - surface it.
                 showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
               }
               // Off-Tauri: stay silent (expected in browser dev / jsdom).
             });
           }
         }).catch(function (e) {
-          // resolveBootRoute itself rejected (shouldn't happen — MoonSession
+          // resolveBootRoute itself rejected (shouldn't happen - MoonSession
           // catches internally, but belt-and-suspenders). Fall back to legacy.
           ctx.invoke('load_connection').then(function (creds) {
             if (creds && creds.wsUrl) {
@@ -256,7 +256,7 @@
           });
         });
       } else {
-        // Legacy path (no MoonSession — off-Tauri / un-migrated / tests).
+        // Legacy path (no MoonSession - off-Tauri / un-migrated / tests).
         // SYNCHRONOUS invocation preserved byte-identically from master so that
         // tests can assert ctx.invoke was called immediately after connectWs().
         ctx.invoke('load_connection').then(function (creds) {
@@ -278,7 +278,7 @@
   function bootModule(mod) {
     if (mod) {
       barTitle.textContent = mod.title;
-      document.title = 'Luna — ' + mod.title;
+      document.title = 'Luna - ' + mod.title;
       try {
         mod.render(contentArea, ctx);
       } catch (e) {
@@ -290,7 +290,7 @@
     }
     // Expose observability fields for agent-browser smoke and tests.
     // resolvedRouteKey: set by connectWs when a client.toml route is used.
-    // lastNotice: set by showNotice — truthy means an error was surfaced.
+    // lastNotice: set by showNotice - truthy means an error was surfaced.
     window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, lastNotice: null };
   }
 
@@ -298,13 +298,13 @@
   // below (main-panel.tsx -> src/panel-boot.tsx), which reuses window.__panelCtx
   // set above. Skip the legacy dynamic panels/<type>.js loader for these so
   // there's no vanilla-fetch-404/"Unknown panel type" flash before the module
-  // mounts — this is what makes it safe to delete a converted type's old
+  // mounts - this is what makes it safe to delete a converted type's old
   // frontend/panels/<type>.js source file once nothing else references it.
   var REACT_PANEL_TYPES = { flow: true, settings: true, 'settings-launcher': true, 'settings.general': true, agents: true, 'settings.skills': true, workflows: true, 'settings.apps': true, 'settings.voice': true, actions: true, 'settings.appearance': true, briefing: true, now: true, 'settings.models': true, 'settings.connection': true, 'settings.updates': true, 'settings.connectors': true, 'settings.vault': true };
 
   var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
   if (REACT_PANEL_TYPES[type]) {
-    // Nothing to do here — src/panel-boot.tsx owns content-area/bar-title
+    // Nothing to do here - src/panel-boot.tsx owns content-area/bar-title
     // for this type once the deferred module below runs.
   } else if (registered) {
     bootModule(registered);

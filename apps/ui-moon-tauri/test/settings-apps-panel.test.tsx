@@ -4,7 +4,7 @@
 // (frontend/panels/settings-apps.js -> frontend-react/src/panels/
 // SettingsAppsPanel.tsx + settings-apps-mount.tsx). Ports every behavioral
 // assertion from test/panel-apps.test.ts (retired alongside the vanilla
-// module — see that suite's own history) onto the React implementation:
+// module - see that suite's own history) onto the React implementation:
 //   - hello without artifacts capability -> unsupported notice, no list
 //   - artifact-list filters to mcp-app + widget, excludes markdown
 //   - Open sends invoke('open_artifact_widget', { artifactId, title })
@@ -16,7 +16,7 @@
 //
 // Harness: same MockWebSocket + real-vendor-globals approach panel-apps.test.ts
 // used (frontend/vendor/moon-ws.js / moon-protocol.js are real, unconverted
-// vendor globals — the panel module is React now, the wire protocol isn't),
+// vendor globals - the panel module is React now, the wire protocol isn't),
 // styled after settings-launcher-panel.test.tsx's direct-component
 // createRoot+act render (no panel.html glue needed to exercise the
 // component's own behavior).
@@ -27,7 +27,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { SettingsAppsPanel } from '../frontend-react/src/panels/SettingsAppsPanel'
@@ -90,7 +90,7 @@ function lastSent(): any {
 }
 
 /** Simulate typing into a real controlled <input>/<textarea> the way a user
- *  would — React 16+ tracks the native value setter, so a plain `.value =`
+ *  would - React 16+ tracks the native value setter, so a plain `.value =`
  *  assignment is invisible to it; going through the prototype setter before
  *  dispatching 'input' is the standard no-testing-library workaround. */
 function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
@@ -375,7 +375,7 @@ describe('mountSettingsAppsPanel (panel.html contract parity)', () => {
     delete (window as any).__PanelInternals
   })
 
-  it("sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html's bootModule() sets for vanilla panel types", () => {
+  it("sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html's bootModule() sets for vanilla panel types", () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -388,7 +388,7 @@ describe('mountSettingsAppsPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(SETTINGS_APPS_TITLE)
-    expect(document.title).toBe(`Luna — ${SETTINGS_APPS_TITLE}`)
+    expect(document.title).toBe(`Luna - ${SETTINGS_APPS_TITLE}`)
     expect(document.querySelector('#content-area [data-testid="settings-apps-panel"]')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings.apps',

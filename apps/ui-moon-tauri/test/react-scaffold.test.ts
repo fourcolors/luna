@@ -1,8 +1,8 @@
 /**
- * react-scaffold.test.ts — guards the React 19 + Astryx + Vite scaffold
+ * react-scaffold.test.ts - guards the React 19 + Astryx + Vite scaffold
  * (frontend-react/) added alongside the existing vanilla frontend/.
  *
- * Scope: this is a scaffold, not a panel conversion — chat.html, panel.html,
+ * Scope: this is a scaffold, not a panel conversion - chat.html, panel.html,
  * widget.html, and index.html keep running their existing vanilla content
  * unchanged. These tests pin the parts of the contract a future edit could
  * silently break:
@@ -14,7 +14,7 @@
  *     (root-absolute `="/vendor/`, never a relative `="vendor/` that Vite
  *     cannot resolve against publicDir);
  *   - the dynamic `panels/<type>.js` loader in panel.html stays a plain
- *     relative string (Vite must never touch it — that's what keeps
+ *     relative string (Vite must never touch it - that's what keeps
  *     unhashed panel modules loadable at runtime);
  *   - tauri.conf.json points at the Vite build output, not the old raw
  *     frontend/ directory.
@@ -39,7 +39,7 @@ describe("createMoonStore", () => {
     const unsubscribe = store.subscribe(() => { notifications += 1 })
 
     // "optimistic-user" is an explicit no-op in the reducer today (a
-    // placeholder for a future pending-bubble render) — it returns the same
+    // placeholder for a future pending-bubble render) - it returns the same
     // state reference, so dispatch's Object.is(next, state) short-circuits
     // and no listener should fire.
     store.dispatch({ tag: "optimistic-user", threadId: "t1", text: "hi" })
@@ -61,7 +61,7 @@ describe("frontend-react HTML shells (scaffold, compatibility-shell phase)", () 
     })
 
     it(`${page}.html references vendor/ assets via the publicDir root-absolute convention`, () => {
-      // Every vendor href/src must be root-absolute ("/vendor/...") — Vite's
+      // Every vendor href/src must be root-absolute ("/vendor/...") - Vite's
       // publicDir passthrough cannot resolve a relative "vendor/..." (it
       // isn't a real sibling file of the HTML source; it only exists via
       // frontend-react/public/vendor, a symlink to ../frontend/vendor).
@@ -92,13 +92,13 @@ describe("astryx-moon-bridge theme coverage (every Astryx mount host must inheri
   // `.moon-astryx-root` (see that file's module doc). panel.html mounts
   // every React panel type into #content-area (panel-boot.tsx dispatches to
   // mount<Name>Panel(type, ctx), each of which does
-  // `createRoot(document.getElementById("content-area"))` directly — see
+  // `createRoot(document.getElementById("content-area"))` directly - see
   // e.g. src/panels/now/now-mount.tsx); widget.html and chat.html mount
   // Astryx-rendered title-bar chrome into #bar-title-root/#bar-end-root/
   // #collapse-moon-btn-root (widget-chrome-mount.tsx, chat-chrome-mount.tsx).
   // None of those mount functions add the class themselves, so it must be
-  // stamped once on <body> — the shared ancestor of every mount host in each
-  // shell — or newly mounted Astryx components silently render with
+  // stamped once on <body> - the shared ancestor of every mount host in each
+  // shell - or newly mounted Astryx components silently render with
   // Astryx's hardcoded light-mode defaults instead of Moon's watercolor
   // palette. Asserting it here means a future panel/chrome conversion can't
   // reintroduce the gap by mounting into a host outside `.moon-astryx-root`.
@@ -120,7 +120,7 @@ describe("astryx-moon-bridge theme coverage (every Astryx mount host must inheri
 })
 
 describe("frontend-react/public (vendor/panels passthrough)", () => {
-  it("public/vendor and public/panels are symlinks back to frontend/{vendor,panels} — single source of truth, zero drift", () => {
+  it("public/vendor and public/panels are symlinks back to frontend/{vendor,panels} - single source of truth, zero drift", () => {
     for (const dir of ["vendor", "panels"] as const) {
       const linkPath = path.join(root, "frontend-react", "public", dir)
       expect(existsSync(linkPath)).toBe(true)

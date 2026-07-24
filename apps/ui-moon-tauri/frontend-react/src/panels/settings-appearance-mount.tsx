@@ -32,7 +32,7 @@ export function isSettingsAppearancePanelType(type: string): boolean {
 export function mountSettingsAppearancePanel(type: string, _ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = SETTINGS_APPEARANCE_TITLE
-  document.title = `Luna — ${SETTINGS_APPEARANCE_TITLE}`
+  document.title = `Luna - ${SETTINGS_APPEARANCE_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

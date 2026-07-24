@@ -68,10 +68,10 @@ export interface ModelOption {
 }
 
 export const ANTHROPIC_MODELS: readonly ModelOption[] = [
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8 — most capable" },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced default" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — prior gen" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 — fastest" },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8 - most capable" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5 - balanced default" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 - prior gen" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 - fastest" },
 ]
 
 // Roles that require JSON-capable providers (structuredOutput != "none").

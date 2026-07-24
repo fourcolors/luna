@@ -149,7 +149,7 @@ function progressTrack(container: HTMLElement): HTMLElement {
   return el as HTMLElement
 }
 
-describe("settings.updates panel — staged narrative", () => {
+describe("settings.updates panel - staged narrative", () => {
   // ── 1/2. Initial render ─────────────────────────────────────────────────
 
   it("starts idle: pill 'Up to date' and Check button present", () => {

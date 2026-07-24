@@ -8291,7 +8291,7 @@
     // reconnect mid-mint).
     //
     // History: the old code nulled the stash and fired send after a blind
-    // 100ms setTimeout — a drop inside that window silently lost the first
+    // 100ms setTimeout - a drop inside that window silently lost the first
     // message (M41). Flush is now connection-gated and snapshot-retried.
     //
     // Binding (Devin review on #351): the stash carries an optional
@@ -11708,7 +11708,7 @@
     State.winLabel = winLabel;
 
     // Collapse-into-moon: React-owned now (src/chat/chat-chrome-mount.tsx,
-    // mounted by main-chat.tsx into #collapse-moon-btn-root) — this inline
+    // mounted by main-chat.tsx into #collapse-moon-btn-root) - this inline
     // script no longer touches that DOM or wires its click handler.
 
     // New-thread button → mint a FRESH thread in THIS window (single-window

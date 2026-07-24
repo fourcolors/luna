@@ -19,7 +19,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { FlowPanel } from '../frontend-react/src/panels/FlowPanel'
@@ -85,7 +85,7 @@ let root: Root | null = null
 /**
  * ctx.connectWs here is a deliberately thin stand-in for panel.html's real
  * connectWs (MoonSession route resolution + load_connection + LunaWS client
- * construction — see panel.html): it builds the exact same LunaWS client
+ * construction - see panel.html): it builds the exact same LunaWS client
  * over the exact same registry contract and connects it straight away,
  * synchronously. That keeps this suite about FlowPanel's OWN behavior
  * (frame handling -> store dispatch -> render), not a second copy of
@@ -308,7 +308,7 @@ describe('mountFlowPanel (panel.html contract parity)', () => {
     window.history.replaceState({}, '', '/panel.html')
   })
 
-  it('title bar shows "Run history", sets document.title, renders into #content-area, and sets __PanelInternals — matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
+  it('title bar shows "Run history", sets document.title, renders into #content-area, and sets __PanelInternals - matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
     window.history.replaceState({}, '', '/panel.html?type=flow&jobId=' + encodeURIComponent(JOB_ID))
     document.body.innerHTML = `
       <div class="widget-shell">
@@ -322,7 +322,7 @@ describe('mountFlowPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(FLOW_PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${FLOW_PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${FLOW_PANEL_TITLE}`)
     expect(document.querySelector('#content-area .flow-job-id')!.textContent).toBe(JOB_ID)
     expect((window as any).__PanelInternals).toEqual({
       type: 'flow',

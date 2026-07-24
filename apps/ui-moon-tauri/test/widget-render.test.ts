@@ -6,11 +6,11 @@ import * as path from 'node:path'
 /**
  * widget-render.test.ts — kind-aware rendering in widget.html (Slice 2).
  *
- * Drives the REAL page script — now frontend-react/widget.html, the page
+ * Drives the REAL page script - now frontend-react/widget.html, the page
  * that actually ships (see src-tauri/tauri.conf.json's `frontendDist`); the
  * superseded frontend/widget.html this suite used to read has been deleted
  * (nothing else imported it). Only the title-bar chrome moved to React (see
- * widget-chrome.test.tsx) — every content-area render path this suite
+ * widget-chrome.test.tsx) - every content-area render path this suite
  * exercises is the same inline script, unchanged.
  *
  * An `artifact-update` frame for the window's own id flows through the frame

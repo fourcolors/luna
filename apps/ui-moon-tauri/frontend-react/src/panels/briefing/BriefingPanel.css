@@ -1,8 +1,8 @@
 /**
- * BriefingPanel.css — ported 1:1 from the inline <style> the vanilla
+ * BriefingPanel.css - ported 1:1 from the inline <style> the vanilla
  * frontend/panels/briefing.js module injected into document.head at render
  * time. Moved to a real stylesheet (Vite bundles this import) since React
- * components must never poke the DOM directly — see BriefingPanel.tsx.
+ * components must never poke the DOM directly - see BriefingPanel.tsx.
  * Class names, colors and spacing are unchanged so this is a visual no-op.
  */
 .bf-section {

@@ -1,4 +1,4 @@
-// astryx-kit.tsx — single re-export surface for every @astryxdesign/core
+// astryx-kit.tsx - single re-export surface for every @astryxdesign/core
 // primitive Studio uses. Import Astryx components from here, not from
 // "@astryxdesign/core/*" or the "@astryxdesign/core" barrel directly.
 //
@@ -18,7 +18,7 @@
 //   - a component rename/removal in an Astryx version bump surfaces as one
 //     diff here instead of a grep-and-replace across every panel.
 //
-// Keep this file to re-exports only — no JSX, no wrapper components. A
+// Keep this file to re-exports only - no JSX, no wrapper components. A
 // prop-level default belongs on the specific call site until at least two
 // files need the same override, at which point it earns a named wrapper
 // here (see the module doc for the "two call sites" bar).

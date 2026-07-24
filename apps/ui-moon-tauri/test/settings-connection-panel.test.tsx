@@ -5,7 +5,7 @@
 // settings-connection/SettingsConnectionPanel.tsx + settings-connection-mount.tsx).
 // Ports every behavioral assertion from test/panel-connection.test.ts (which
 // keeps testing the still-vanilla frontend/panel.html + frontend/panels/
-// settings-connection.js — that suite is untouched and stays green) onto the
+// settings-connection.js - that suite is untouched and stays green) onto the
 // React implementation:
 //   - renders with the Connection title and every control
 //   - load_connection populates the URL/token fields; load_profiles sets the
@@ -35,7 +35,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { PANEL_TITLE, SettingsConnectionPanel } from '../frontend-react/src/panels/settings-connection/SettingsConnectionPanel'
@@ -445,7 +445,7 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
 // Verifies that when MoonSession.listRoutes() is available, channel-select
 // is populated with N real routes from client.toml instead of the hardcoded
 // ['stable','dev'] fallback.
-describe('SettingsConnectionPanel — C8 channel select route enumeration', () => {
+describe('SettingsConnectionPanel - C8 channel select route enumeration', () => {
   it('populates channel-select from MoonSession.listRoutes() when available', async () => {
     ;(window as any).MoonSession = {
       listRoutes: vi.fn().mockResolvedValue({
@@ -528,7 +528,7 @@ describe('SettingsConnectionPanel — C8 channel select route enumeration', () =
   it('active profile NOT in listRoutes keys is still present + selected after enumeration', async () => {
     // C8 race: client.toml route keys can diverge from profile names.
     // load_profiles resolves with activeProfile='my-custom' but listRoutes
-    // only returns ['prod', 'local'] — the reducer must append 'my-custom'
+    // only returns ['prod', 'local'] - the reducer must append 'my-custom'
     // as a dynamic option rather than silently dropping the selection.
     ;(window as any).MoonSession = {
       listRoutes: vi.fn().mockResolvedValue({
@@ -568,7 +568,7 @@ describe('mountSettingsConnectionPanel (panel.html contract parity)', () => {
     delete (window as any).__PanelInternals
   })
 
-  it("sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html's bootModule() sets for vanilla panel types", async () => {
+  it("sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html's bootModule() sets for vanilla panel types", async () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -582,7 +582,7 @@ describe('mountSettingsConnectionPanel (panel.html contract parity)', () => {
     await flush()
 
     expect(document.getElementById('bar-title')!.textContent).toBe(PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${PANEL_TITLE}`)
     expect(document.querySelectorAll('#content-area [data-testid]').length).toBeGreaterThan(0)
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings.connection',

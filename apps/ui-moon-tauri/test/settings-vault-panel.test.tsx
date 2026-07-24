@@ -44,7 +44,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import {
@@ -307,7 +307,7 @@ describe('SettingsVaultPanel (React port of panels/settings-vault.js)', () => {
     typeInto(byTestId('vault-value-input'), 'sek')
     act(() => byTestId<HTMLButtonElement>('vault-add-btn').click())
     expect(byTestId('vault-status-line').textContent)
-      .toBe('That name can’t become a key — add some letters, or set one under “change”.')
+      .toBe('That name can’t become a key - add some letters, or set one under “change”.')
 
     typeInto(byTestId('vault-name-input'), 'Good Name')
     typeInto(byTestId('vault-value-input'), '')
@@ -468,8 +468,8 @@ describe('SettingsVaultPanel (React port of panels/settings-vault.js)', () => {
     act(() => fireClose())
     expect(byTestId<HTMLInputElement>('vault-value-input').value).toBe('')
     expect(byTestId<HTMLInputElement>('op-token-input').value).toBe('')
-    expect(byTestId('vault-status-line').textContent).toBe('Connection lost — check the list after reconnecting.')
-    expect(byTestId('vault-sync-status').textContent).toBe('Connection lost — check sync state after reconnecting.')
+    expect(byTestId('vault-status-line').textContent).toBe('Connection lost - check the list after reconnecting.')
+    expect(byTestId('vault-sync-status').textContent).toBe('Connection lost - check sync state after reconnecting.')
 
     const all = sent.map((f) => JSON.stringify(f)).join(' ')
     expect(all).not.toContain('draft-secret')
@@ -631,7 +631,7 @@ describe('mountSettingsVaultPanel (panel.html contract parity)', () => {
     delete (window as any).__PanelInternals
   })
 
-  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
+  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -644,7 +644,7 @@ describe('mountSettingsVaultPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(SETTINGS_VAULT_TITLE)
-    expect(document.title).toBe(`Luna — ${SETTINGS_VAULT_TITLE}`)
+    expect(document.title).toBe(`Luna - ${SETTINGS_VAULT_TITLE}`)
     expect(document.querySelector('#content-area [data-testid="settings-vault-panel"]')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings.vault',

@@ -23,7 +23,7 @@ export function isSettingsSkillsPanelType(type: string): boolean {
 export function mountSettingsSkillsPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = SETTINGS_SKILLS_TITLE
-  document.title = `Luna — ${SETTINGS_SKILLS_TITLE}`
+  document.title = `Luna - ${SETTINGS_SKILLS_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

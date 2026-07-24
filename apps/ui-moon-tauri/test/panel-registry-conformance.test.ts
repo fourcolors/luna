@@ -4,16 +4,16 @@
 // panel.html?type=X entry in widget-registry.json (not specific to any one
 // panel). Moved out of panel-workflows.test.ts (its original home, back when
 // the Workflows panel was the only converted one) once the 'workflows' type
-// stopped having a frontend/panels/workflows.js — see WorkflowsPanel.tsx.
+// stopped having a frontend/panels/workflows.js - see WorkflowsPanel.tsx.
 //
 // A typo in widget-registry.json's `page` (e.g. type=workflow) would ship
-// the unknown-panel fallback while every behavioral test stays green — pin
+// the unknown-panel fallback while every behavioral test stays green - pin
 // the contract: every panel.html?type=X entry either
 //   (a) has a panels/<X with . -> -.js module registering LunaPanelTypes[X]
 //       (the vanilla path), or
 //   (b) is a React-owned type per panel.html's REACT_PANEL_TYPES map, in
 //       which case panel-boot.tsx's mountReactPanel(X, ctx) must actually
-//       dispatch it — parsed straight out of the live panel.html source so
+//       dispatch it - parsed straight out of the live panel.html source so
 //       this guard self-updates as more panels convert, instead of a
 //       hardcoded exception list this file would silently rot against.
 import { describe, it, expect, afterEach } from "vitest"
@@ -51,7 +51,7 @@ describe("widget-registry panel conformance", () => {
   })
 
   describe("every React-owned panel.html type is actually dispatched by mountReactPanel", () => {
-    // Not every REACT_PANEL_TYPES key is a widget-registry page type — e.g.
+    // Not every REACT_PANEL_TYPES key is a widget-registry page type - e.g.
     // 'settings-launcher' is a dual-dispatch alias panel.html also accepts
     // (see settings-launcher-mount.tsx's isSettingsLauncherPanelType), never
     // itself a `panel.html?type=` value in widget-registry.json. So this
@@ -90,7 +90,7 @@ describe("widget-registry panel conformance", () => {
         expect(typeof sandbox.LunaPanelTypes[kind].render).toBe("function")
         return
       }
-      // No vanilla module on disk — must be React-owned per panel.html AND
+      // No vanilla module on disk - must be React-owned per panel.html AND
       // actually claimed by the dispatcher, or this kind is dead: neither
       // renderer would ever produce anything but "Unknown panel type".
       expect(reactOwned.has(kind)).toBe(true)

@@ -54,7 +54,7 @@ export function isSettingsLauncherPanelType(type: string): boolean {
 export function mountSettingsLauncherPanel(type: string, ctx: PanelCtx): void {
   const barTitle = document.getElementById("bar-title")
   if (barTitle) barTitle.textContent = SETTINGS_LAUNCHER_TITLE
-  document.title = `Luna — ${SETTINGS_LAUNCHER_TITLE}`
+  document.title = `Luna - ${SETTINGS_LAUNCHER_TITLE}`
 
   const contentArea = document.getElementById("content-area")
   if (contentArea) {

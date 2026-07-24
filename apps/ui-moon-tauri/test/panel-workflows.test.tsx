@@ -4,15 +4,15 @@
 // panel (frontend/panels/workflows.js -> frontend-react/src/panels/workflows/
 // WorkflowsPanel.tsx + workflows-mount.tsx). This file REPLACES the old
 // vanilla-harness test of the same name (the DOM-fixture-driven bootPanel
-// pattern that loaded frontend/panel.html + frontend/panels/workflows.js —
+// pattern that loaded frontend/panel.html + frontend/panels/workflows.js -
 // that source file is deleted, nothing else imports it, see the module docs
-// on WorkflowsPanel.tsx) — every behavioral assertion below is ported 1:1
+// on WorkflowsPanel.tsx) - every behavioral assertion below is ported 1:1
 // from the deleted suite, driving the REAL component instead of the vanilla
 // module through panel.html's inline bootstrap.
 //
-// Fixtures use the REAL jobs.last_status vocabulary the server sends —
+// Fixtures use the REAL jobs.last_status vocabulary the server sends -
 // "fired" | "errored" | "running" | "scheduled" (see jobs-store-types.ts;
-// toGalleryItem passes it through raw) — so the status mapping cannot rot
+// toGalleryItem passes it through raw) - so the status mapping cannot rot
 // against fictional statuses.
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
@@ -21,7 +21,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { WorkflowsPanel } from "../frontend-react/src/panels/workflows/WorkflowsPanel"
@@ -32,7 +32,7 @@ import {
 } from "../frontend-react/src/panels/workflows-mount"
 import type { LunaFrameRegistry, PanelCtx } from "../frontend-react/src/panels/panel-ctx"
 
-// ── Real LunaWS.createFrameRegistry() — loaded from the actual vendor file so
+// ── Real LunaWS.createFrameRegistry() - loaded from the actual vendor file so
 // dispatch semantics (unmatched frame types silently dropped, last
 // registration wins) stay faithful to what panel.html hands every panel. ──
 function loadLunaWs(): { createFrameRegistry: () => LunaFrameRegistry } {
@@ -42,9 +42,9 @@ function loadLunaWs(): { createFrameRegistry: () => LunaFrameRegistry } {
   return sandbox.LunaWS
 }
 
-// ── Fake ctx.connectWs — the seam WorkflowsPanel actually depends on
+// ── Fake ctx.connectWs - the seam WorkflowsPanel actually depends on
 // (window.__panelCtx.connectWs), mirroring panel.html's real ctx shape one
-// level above the WebSocket itself (no MockWebSocket needed — connectWs is
+// level above the WebSocket itself (no MockWebSocket needed - connectWs is
 // already synchronous and hands back a client). ──
 interface FakeConn {
   ctx: PanelCtx
@@ -87,7 +87,7 @@ function makeConn(invokeImpl?: (cmd: string, args?: any) => any): FakeConn {
     ctx,
     invoke,
     fireFrame: (frame) => {
-      if (!registry) throw new Error("connectWs was never called — panel did not wire up")
+      if (!registry) throw new Error("connectWs was never called - panel did not wire up")
       registry.dispatch(frame)
     },
     openSocket: () => opts?.onOpen?.(),
@@ -116,7 +116,7 @@ function mount(): FakeConn {
   return conn
 }
 
-/** Boot + hello{workflows:true} in one step — most tests start here. */
+/** Boot + hello{workflows:true} in one step - most tests start here. */
 function mountEnabled(): FakeConn {
   const conn = mount()
   act(() => conn.fireFrame({ type: "hello", capabilities: { workflows: true } }))
@@ -434,7 +434,7 @@ describe("mountWorkflowsPanel (panel.html contract parity)", () => {
     delete (window as any).__PanelInternals
   })
 
-  it("sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html's bootModule() sets for vanilla panel types", () => {
+  it("sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html's bootModule() sets for vanilla panel types", () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -448,7 +448,7 @@ describe("mountWorkflowsPanel (panel.html contract parity)", () => {
     })
 
     expect(document.getElementById("bar-title")!.textContent).toBe(WORKFLOWS_PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${WORKFLOWS_PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${WORKFLOWS_PANEL_TITLE}`)
     expect(document.getElementById("wfs-refresh-btn")).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: "workflows",

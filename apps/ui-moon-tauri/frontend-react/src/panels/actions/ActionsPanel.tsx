@@ -177,7 +177,7 @@ export function ActionsPanel({ ctx, threadId }: ActionsPanelProps) {
         <span className="actions-notice">Connecting…</span>
       ) : actionsForThread.length === 0 ? (
         <span className="actions-notice">
-          No suggested actions — Luna will propose here when it has recommendations.
+          No suggested actions - Luna will propose here when it has recommendations.
         </span>
       ) : (
         actionsForThread.map((action) => (

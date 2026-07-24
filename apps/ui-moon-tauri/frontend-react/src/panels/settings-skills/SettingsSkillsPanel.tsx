@@ -229,7 +229,7 @@ export function SettingsSkillsPanel({ ctx }: { ctx: PanelCtx }) {
           <span className="skills-empty">
             {skills.length
               ? "No skills match."
-              : "Not connected — skills appear when the server sends its catalog."}
+              : "Not connected - skills appear when the server sends its catalog."}
           </span>
         ) : (
           visible.map((s) => (

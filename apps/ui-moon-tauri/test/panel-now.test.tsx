@@ -21,9 +21,9 @@
 //
 // Harness note: unlike the vanilla suite's MockWebSocket-over-panel.html
 // dance, this drives the panel directly through its own `ctx` prop (the
-// exact same seam mountNowPanel/panel.html hand it in production — see
+// exact same seam mountNowPanel/panel.html hand it in production - see
 // ../frontend-react/src/panels/panel-ctx.ts) and a minimal in-file
-// LunaFrameRegistry (register/dispatch/has — mirrors vendor/moon-ws.js's
+// LunaFrameRegistry (register/dispatch/has - mirrors vendor/moon-ws.js's
 // contract byte-for-byte, see moon-ws.js's own createFrameRegistry). That
 // keeps this a true unit test of NowPanel's OWN wiring/state/render logic,
 // not a re-test of the shared WS transport (which has no bearing on this
@@ -33,7 +33,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Tells React this jsdom environment is a synchronous-act test environment
-// (React 19 warns without it — see https://react.dev/warnings/react-dom-test-utils).
+// (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
 import { NowPanel, NOW_PANEL_TITLE } from '../frontend-react/src/panels/now/NowPanel'
@@ -103,7 +103,7 @@ function makeCtx(invokeImpl?: (cmd: string, args?: any) => any): { ctx: PanelCtx
 
 function renderPanel(ctx: PanelCtx) {
   // NowPanel reads window.LunaWS.createFrameRegistry directly (see
-  // vendor/moon-ws.js — the classic script every panel.html page loads
+  // vendor/moon-ws.js - the classic script every panel.html page loads
   // ahead of the deferred React entry; see ../frontend-react/src/panels/
   // panel-ctx.ts's module doc).
   ;(window as any).LunaWS = { createFrameRegistry }
@@ -133,7 +133,7 @@ function lastSent(): any {
 }
 
 // React tracks <input> values through the native value setter to detect
-// real user input — assigning `.value` directly is invisible to it, so the
+// real user input - assigning `.value` directly is invisible to it, so the
 // subsequent onChange never fires (a well-known RTL/act gotcha). Go through
 // the native setter, exactly like a real keystroke would.
 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
@@ -245,7 +245,7 @@ describe('NowPanel (React port of panels/now.js)', () => {
     expect(rows).toHaveLength(4)
     expect(rows[0]!.querySelector('.now-status-dot')!.classList.contains('waiting')).toBe(true)
     expect(rows[1]!.querySelector('.now-status-dot')!.classList.contains('running')).toBe(true)
-    // Remaining rows are success/failed (order by recency — WF_SUCCESS lastRun=800 > WF_FAILED lastRun=700).
+    // Remaining rows are success/failed (order by recency - WF_SUCCESS lastRun=800 > WF_FAILED lastRun=700).
     expect(rows[2]!.querySelector('.now-wf-name')!.textContent).toBe('Archive Docs')
     expect(rows[3]!.querySelector('.now-wf-name')!.textContent).toBe('Export Data')
   })
@@ -399,7 +399,7 @@ describe('mountNowPanel (panel.html contract parity)', () => {
     delete (window as any).LunaWS
   })
 
-  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals — matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
+  it('sets the bar title, document title, renders into #content-area, and sets __PanelInternals - matching what panel.html\'s bootModule() sets for vanilla panel types', () => {
     document.body.innerHTML = `
       <div class="widget-shell">
         <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>
@@ -413,7 +413,7 @@ describe('mountNowPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(NOW_PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${NOW_PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${NOW_PANEL_TITLE}`)
     expect(document.querySelector('#content-area .now-panel')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'now',

@@ -1,11 +1,11 @@
 /**
- * NowPanel.tsx — React 19 + Astryx port of panels/now.js (the live "Now"
+ * NowPanel.tsx - React 19 + Astryx port of panels/now.js (the live "Now"
  * rail: running work + needs-input answer surface).
  *
  * Behavioral contract ported 1:1 from the vanilla module (see the deleted
  * frontend/panels/now.js and its covering test, test/panel-now.test.tsx):
  *   - Connects via ctx.connectWs (the exact same invoke/connect plumbing
- *     every still-vanilla panels/*.js module uses — see ../panel-ctx.ts)
+ *     every still-vanilla panels/*.js module uses - see ../panel-ctx.ts)
  *     and gates on parseHelloCapabilities(frame).workflows.
  *   - hello without capabilities.workflows → replaces the whole panel with
  *     a "doesn't expose workflows" notice.
@@ -24,12 +24,12 @@
  * State model: unlike the vanilla module's hand-rolled `workflows`/
  * `pendingCards` variables + imperative DOM mutation, this dispatches every
  * inbound frame into the SAME shared reducer ui-web already relies on
- * (@luna/ui-shared/core — see UIState.workflows / pendingInputRequests,
+ * (@luna/ui-shared/core - see UIState.workflows / pendingInputRequests,
  * modeled for exactly this PRD slice) and reads it back out via
- * useMoonSelector (useSyncExternalStore underneath) — mirrors FlowPanel.tsx's
+ * useMoonSelector (useSyncExternalStore underneath) - mirrors FlowPanel.tsx's
  * conversion. The WS registry callbacks below only ever call
  * `store.dispatch(frame)`; timers dispatch local (ChatLocalAction) state
- * transitions — never touch the DOM directly. React re-renders from the
+ * transitions - never touch the DOM directly. React re-renders from the
  * store subscription, per the conversion's state-ownership rule.
  */
 import { useEffect, useRef, useState } from "react"
@@ -55,7 +55,7 @@ declare global {
 }
 
 export interface NowPanelProps {
-  /** Defaults to window.__panelCtx (panel.html's hand-off — see ../panel-ctx.ts)
+  /** Defaults to window.__panelCtx (panel.html's hand-off - see ../panel-ctx.ts)
    *  so production mounts need not thread it explicitly; tests inject a mock. */
   ctx?: PanelCtx
 }
@@ -84,7 +84,7 @@ function statusLabel(norm: Status): string {
   return "cancelled"
 }
 
-/** Astryx Badge variant for a status dot/label — cosmetic only, the tests
+/** Astryx Badge variant for a status dot/label - cosmetic only, the tests
  *  assert on the (kept-verbatim) `now-status-dot`/`now-wf-status-label`
  *  class names, not this mapping. */
 function statusBadgeVariant(norm: Status): "success" | "error" | "info" | "warning" | "neutral" {
@@ -185,7 +185,7 @@ function AnswerCard({ req, onAnswer, onDismiss, onExpire, onRemove }: AnswerCard
     setHint(null)
     setSubmitting(true)
     onAnswer(req.requestId, val)
-    // Wipe the input value (clear after send — per spec).
+    // Wipe the input value (clear after send - per spec).
     setValue("")
   }
 
@@ -233,7 +233,7 @@ function AnswerCard({ req, onAnswer, onDismiss, onExpire, onRemove }: AnswerCard
 
 export function NowPanel({ ctx: ctxProp }: NowPanelProps) {
   // One store per mounted panel instance (each Moon panel window is its own
-  // document/JS realm — see boot.tsx's identical per-mount rationale).
+  // document/JS realm - see boot.tsx's identical per-mount rationale).
   const storeRef = useRef<ReturnType<typeof createMoonStore> | null>(null)
   if (storeRef.current === null) storeRef.current = createMoonStore()
   const store = storeRef.current
@@ -274,7 +274,7 @@ export function NowPanel({ ctx: ctxProp }: NowPanelProps) {
     registry.register("workflow-list", (frame: any) => {
       store.dispatch(frame)
       // Note: pending cards are NOT cleared on re-render (spec: card state
-      // must survive a workflow-list re-render) — the reducer only ever
+      // must survive a workflow-list re-render) - the reducer only ever
       // touches `workflows` for this frame type.
     })
 
@@ -302,7 +302,7 @@ export function NowPanel({ ctx: ctxProp }: NowPanelProps) {
 
   function handleDismiss(requestId: string) {
     clientRef.current?.send({ type: "job-input-result", requestId, cancelled: true })
-    // Removed immediately — no round trip needed for a dismiss.
+    // Removed immediately - no round trip needed for a dismiss.
     store.dispatch({ tag: "remove-input-request", requestId })
   }
 

@@ -81,7 +81,7 @@ export { TextArea } from "@astryxdesign/core/TextArea"
 
 // Actions panel (src/panels/actions/ActionsPanel.tsx): Card per suggested
 // action row, Badge for the status pill, Button for Accept/Dismiss (Card/
-// Badge/Button already exported above — this only adds the BadgeVariant
+// Badge/Button already exported above - this only adds the BadgeVariant
 // type the panel's status->variant mapping needs).
 export type { BadgeVariant } from "@astryxdesign/core/Badge"
 

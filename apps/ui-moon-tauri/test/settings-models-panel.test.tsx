@@ -99,7 +99,7 @@ function makeHarness(): Harness {
   return {
     ctx,
     registry: () => {
-      if (!capturedRegistry) throw new Error('connectWs was not called yet — render the panel first')
+      if (!capturedRegistry) throw new Error('connectWs was not called yet - render the panel first')
       return capturedRegistry
     },
     client,
@@ -141,7 +141,7 @@ function inputWithin(testid: string): HTMLInputElement {
 // React installs a tracked-value setter on controlled <input> DOM nodes in
 // development builds; plain `input.value = x` followed by a bare 'input'
 // event is invisible to it (React's tracker sees its own last-set value and
-// swallows the change) — mirrors testing-library's fireEvent.change, which
+// swallows the change) - mirrors testing-library's fireEvent.change, which
 // hits the native prototype setter instead so React's change detection
 // actually fires onChange.
 function typeInto(input: HTMLInputElement, value: string): void {
@@ -166,7 +166,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('SettingsModelsPanel — hello capability gate', () => {
+describe('SettingsModelsPanel - hello capability gate', () => {
   it('shows the unsupported notice and no controls before hello arrives', () => {
     const h = makeHarness()
     const el = renderPanel(h.ctx)
@@ -198,7 +198,7 @@ describe('SettingsModelsPanel — hello capability gate', () => {
   })
 })
 
-describe('SettingsModelsPanel — provider cards', () => {
+describe('SettingsModelsPanel - provider cards', () => {
   it('hides credential/cap fields until a provider is enabled, and shows them once toggled on', () => {
     const h = makeHarness()
     renderPanel(h.ctx)
@@ -262,7 +262,7 @@ describe('SettingsModelsPanel — provider cards', () => {
   })
 })
 
-describe('SettingsModelsPanel — server push vs. unsaved drafts', () => {
+describe('SettingsModelsPanel - server push vs. unsaved drafts', () => {
   it('a model-routing-list frame seeds the drafts when the panel is clean', () => {
     const h = makeHarness()
     const el = renderPanel(h.ctx)
@@ -280,7 +280,7 @@ describe('SettingsModelsPanel — server push vs. unsaved drafts', () => {
     enableModelRouting(h)
     pushList(h, [{ kind: 'anthropic', enabled: false }], [])
 
-    // User edits — enables anthropic and sets a credential ref (dirty).
+    // User edits - enables anthropic and sets a credential ref (dirty).
     act(() => {
       inputWithin('provider-anthropic-toggle').click()
     })
@@ -296,7 +296,7 @@ describe('SettingsModelsPanel — server push vs. unsaved drafts', () => {
   })
 })
 
-describe('SettingsModelsPanel — Save flow', () => {
+describe('SettingsModelsPanel - Save flow', () => {
   it('Save posts model-routing-save with a per-role preferenceList and shows "Saving…"', () => {
     const h = makeHarness()
     const el = renderPanel(h.ctx)
@@ -350,7 +350,7 @@ describe('SettingsModelsPanel — Save flow', () => {
     })
     expect(el.querySelector('[data-testid="save-status"]')?.textContent).toBe('Saved. Restarting…')
 
-    // Dirty is now clear — a fresh server push is accepted again.
+    // Dirty is now clear - a fresh server push is accepted again.
     pushList(h, [{ kind: 'anthropic', enabled: true, credentialRef: 'env:AFTER-SAVE' }], [])
     expect(inputWithin('provider-anthropic-toggle').checked).toBe(true)
     expect(inputWithin('provider-anthropic-credential').value).toBe('env:AFTER-SAVE')
@@ -388,7 +388,7 @@ describe('SettingsModelsPanel — Save flow', () => {
   })
 })
 
-describe('SettingsModelsPanel — WS lifecycle', () => {
+describe('SettingsModelsPanel - WS lifecycle', () => {
   it('closes the WS client on unmount', () => {
     const h = makeHarness()
     renderPanel(h.ctx)
@@ -425,7 +425,7 @@ describe('mountSettingsModelsPanel (panel.html contract parity)', () => {
     })
 
     expect(document.getElementById('bar-title')!.textContent).toBe(PANEL_TITLE)
-    expect(document.title).toBe(`Luna — ${PANEL_TITLE}`)
+    expect(document.title).toBe(`Luna - ${PANEL_TITLE}`)
     expect(document.querySelector('#content-area [data-testid]')).not.toBeNull()
     expect((window as any).__PanelInternals).toEqual({
       type: 'settings.models',
