@@ -12,6 +12,7 @@
 // Idiom translation from Solid: createSignal -> useState, For -> .map,
 // Show -> && / early return, class -> className, onInput -> onChange.
 import React, { useMemo, useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
 import { AccountSwitcher } from "./account-switcher.jsx";
 
 /** Hardcoded fallback model list — used until the server's `hello` frame
@@ -49,6 +50,12 @@ const PALETTE_SWATCHES = {
   meadow: ["#b5c9a3", "#ecd9a0", "#aac9cf"],
   tide: ["#a9b8dc", "#93c2c4", "#d9b3bd"],
 };
+
+// Appearance section defaults — kept local (see the palette/theme/chrome
+// constants above) rather than importing final-app.jsx's TWEAK_DEFAULTS,
+// which also covers Presence/Canvas fields this button intentionally
+// leaves untouched.
+const APPEARANCE_DEFAULTS = { palette: "tide", theme: "light", chrome: "wash", grain: false };
 
 export function SettingsPanel({ ctx }) {
   const { config, updateConfig, connected, status, selectAccount, connect, disconnect, restartServer } = ctx;
@@ -213,7 +220,24 @@ export function SettingsPanel({ ctx }) {
           connection exists. Font/size controls are out of scope (Studio has
           no --font-chat system). */}
       <div className="stg-row">
-        <div className="section-label">Appearance</div>
+        <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Appearance</span>
+          {/* First Astryx component wired into Studio — proves the
+              watercolor token bridge (astryx-watercolor-theme.css) reaches
+              a real component, not just Luna's own CSS. */}
+          <Button
+            label="Reset to default"
+            variant="secondary"
+            size="sm"
+            isDisabled={
+              ctx.tweaks.palette === APPEARANCE_DEFAULTS.palette &&
+              ctx.tweaks.theme === APPEARANCE_DEFAULTS.theme &&
+              ctx.tweaks.chrome === APPEARANCE_DEFAULTS.chrome &&
+              ctx.tweaks.grain === APPEARANCE_DEFAULTS.grain
+            }
+            clickAction={() => ctx.setTweak(APPEARANCE_DEFAULTS)}
+          />
+        </div>
         <div className="swatch-row">
           {Object.entries(PALETTE_SWATCHES).map(([name, colors]) => (
             <button
