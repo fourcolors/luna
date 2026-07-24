@@ -11,6 +11,8 @@
 // the account-broker barrel, which transitively loads `bun:sqlite`). It does NOT
 // reimplement cooldown / LRU / sticky-pin.
 
+import { Effect } from "effect"
+import type * as Scope from "effect/Scope"
 import {
   type ProviderEnv,
   profileForKind,
@@ -21,6 +23,11 @@ import {
   type AccountRecord,
   pickAccount,
 } from "./account-broker/rotation-policy.js"
+import type {
+  AccountBrokerApi,
+  AccountError,
+  AcquiredSession,
+} from "./account-broker/account-broker.js"
 
 /** One hop in a lane's overflow chain. */
 export interface ChainStep {
@@ -292,3 +299,123 @@ export function auditOverflowEnv(
   findings.push(...validateOverflowConfig(cfg, providerEnv))
   return findings
 }
+
+/**
+ * Default rotatable error predicate for executeWithOverflowChain.
+ * Identifies errors that warrant cooling down the failing account and rotating
+ * execution to the next step in the overflow chain (session limit, rate limit,
+ * transient server/model overload).
+ */
+export function defaultIsRotatableError(error: unknown): boolean {
+  if (error === null || error === undefined) return false
+  if (typeof error === "object" && "_tag" in error) {
+    const tag = (error as { _tag: string })._tag
+    if (tag === "SessionLimitError" || tag === "RateLimitError") {
+      return true
+    }
+    if (
+      tag === "AllAccountsExhaustedError" ||
+      tag === "ConfigError" ||
+      tag === "ValidationError" ||
+      tag === "IntegrityError" ||
+      tag === "PermissionError"
+    ) {
+      return false
+    }
+  }
+  const text = String(
+    (error as { message?: unknown })?.message ?? error,
+  ).toLowerCase()
+
+  return (
+    /\b(429|529)\b/.test(text) ||
+    text.includes("rate limit") ||
+    text.includes("rate_limit") ||
+    text.includes("session limit") ||
+    text.includes("session_limit") ||
+    text.includes("session quota") ||
+    text.includes("maximum sessions reached") ||
+    text.includes("quota_exhausted") ||
+    text.includes("quota exhausted") ||
+    text.includes("resource_exhausted") ||
+    text.includes("overloaded") ||
+    text.includes("too many requests")
+  )
+}
+
+export interface OverflowExecutionOptions<A, E, R> {
+  readonly broker: AccountBrokerApi
+  readonly lane: string
+  readonly budgetUsd?: number
+  readonly boundAccountId?: string
+  /** Maximum rotation attempts across chain steps (defaults to 5) */
+  readonly maxAttempts?: number
+  /** Custom rotatable error predicate */
+  readonly isRotatableError?: (error: E | AccountError) => boolean
+  /** Core operation executed with the acquired session */
+  readonly execute: (acq: AcquiredSession) => Effect.Effect<A, E, R>
+}
+
+/**
+ * Idiomatic Effect v3 executor that wraps an operation in an overflow chain rotation loop.
+ * On rotatable errors (session limit, rate limit, model failure), it reports the cooldown
+ * to the broker and transparently retries execution with the next chain target.
+ */
+export function executeWithOverflowChain<A, E, R>(
+  opts: OverflowExecutionOptions<A, E, R>,
+): Effect.Effect<A, E | AccountError, R | Scope.Scope> {
+  const isRotatable = opts.isRotatableError ?? defaultIsRotatableError
+  const maxAttempts = opts.maxAttempts ?? 5
+
+  const attempt = (
+    attemptCount: number,
+  ): Effect.Effect<A, E | AccountError, R | Scope.Scope> =>
+    Effect.gen(function* () {
+      const acq = yield* opts.broker.acquireSession({
+        model: opts.lane,
+        ...(opts.budgetUsd !== undefined ? { budgetUsd: opts.budgetUsd } : {}),
+        ...(opts.boundAccountId !== undefined
+          ? { boundAccountId: opts.boundAccountId }
+          : {}),
+      })
+
+      return yield* opts.execute(acq).pipe(
+        Effect.tapError((err) => {
+          if (isRotatable(err) && acq.failoverPossible !== false) {
+            const text = String(
+              (err as { message?: unknown })?.message ?? err,
+            ).toLowerCase()
+            const isSessionLimit =
+              (typeof err === "object" &&
+                err !== null &&
+                "_tag" in err &&
+                (err as { _tag: string })._tag === "SessionLimitError") ||
+              text.includes("session limit") ||
+              text.includes("session_limit") ||
+              text.includes("session quota") ||
+              text.includes("maximum sessions reached")
+            return opts.broker.report({
+              accountId: acq.credential.accountId,
+              kind: isSessionLimit ? "session_limit" : "rate_limit",
+            }).pipe(Effect.catchAll(() => Effect.void))
+          }
+          return Effect.void
+        }),
+        Effect.catchAll((err) => {
+          if (
+            isRotatable(err) &&
+            acq.failoverPossible !== false &&
+            attemptCount < maxAttempts
+          ) {
+            return Effect.logWarning(
+              `[OverflowChain] Rotating lane "${opts.lane}" after step ${acq.stepIndex} failure: ${String(err)}`,
+            ).pipe(Effect.zipRight(attempt(attemptCount + 1)))
+          }
+          return Effect.fail(err)
+        }),
+      )
+    })
+
+  return attempt(1)
+}
+

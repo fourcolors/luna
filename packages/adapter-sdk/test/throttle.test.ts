@@ -35,7 +35,7 @@ describe("classifyThrottle — retry-after parse + clamp", () => {
   it("parses a seconds-valued retry-after", () => {
     expect(
       classifyThrottle(new Error("429 rate limit; retry-after: 30")),
-    ).toEqual({ throttled: true, retryAfterMs: 30_000 })
+    ).toEqual({ throttled: true, kind: "rate_limit", retryAfterMs: 30_000 })
   })
 
   it("clamps a milliseconds-valued retry-after (would otherwise cool ~17h)", () => {
@@ -53,6 +53,7 @@ describe("classifyThrottle — retry-after parse + clamp", () => {
   it("omits retryAfterMs when the text has none", () => {
     expect(classifyThrottle(new Error("429 rate limit"))).toEqual({
       throttled: true,
+      kind: "rate_limit",
     })
   })
 })
