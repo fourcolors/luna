@@ -232,6 +232,127 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row.screenshotPath).toBeNull()
   })
 
+  it("setStatus with expectedStatus updates only when the current status matches", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-ok" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-ok", status: "queued", notes: "first" }, 1000)
+
+    const result = store.setStatus(
+      {
+        id: "fb-guard-ok",
+        status: "resolved",
+        resolvedRef: "done",
+        notes: "auto",
+        expectedStatus: "queued",
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(true)
+    const row = store.getRow("fb-guard-ok")
+    expect(row?.status).toBe("resolved")
+    expect(row?.resolvedRef).toBe("done")
+  })
+
+  it("setStatus with expectedStatus returns ok:false and does not overwrite a status set after the snapshot", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-race" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-race", status: "queued", notes: "human" }, 1000)
+    store.setStatus({ id: "fb-guard-race", status: "triaged", notes: "human already looked" }, 1500)
+
+    const result = store.setStatus(
+      {
+        id: "fb-guard-race",
+        status: "resolved",
+        resolvedRef: "done",
+        notes: "auto",
+        expectedStatus: "queued",
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(false)
+    const row = store.getRow("fb-guard-race")
+    expect(row?.status).toBe("triaged")
+    expect(row?.statusNotes).toBe("human already looked")
+  })
+
+  it("setStatus with appendNotes appends to an existing note without wiping it", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-append" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-append", status: "queued", notes: "human note" }, 1000)
+    store.setStatus(
+      { id: "fb-append", status: "resolved", notes: "auto: done", appendNotes: true },
+      2000,
+    )
+
+    expect(store.getRow("fb-append")?.statusNotes).toBe("human note\nauto: done")
+  })
+
+  it("setStatus with expectedStatus and appendNotes preserves an existing note through the fold-back", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-append" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-append", status: "queued", notes: "human" }, 1000)
+    const result = store.setStatus(
+      {
+        id: "fb-guard-append",
+        status: "resolved",
+        notes: "auto: completed",
+        expectedStatus: "queued",
+        appendNotes: true,
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(true)
+    expect(store.getRow("fb-guard-append")?.statusNotes).toBe("human\nauto: completed")
+  })
+
+  it("setStatus with expectedStatus and appendNotes leaves notes untouched when the guard fails", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-fail" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-fail", status: "queued", notes: "human" }, 1000)
+    store.setStatus({ id: "fb-guard-fail", status: "triaged", notes: "human moved" }, 1500)
+    const result = store.setStatus(
+      {
+        id: "fb-guard-fail",
+        status: "resolved",
+        notes: "auto",
+        expectedStatus: "queued",
+        appendNotes: true,
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(false)
+    expect(store.getRow("fb-guard-fail")?.statusNotes).toBe("human moved")
+  })
+
   it("FK CASCADE: deleting the parent agent_notes row removes the ui_feedback_status row", async (ctx) => {
     // A real on-disk sqlite file (not :memory:) with PRAGMA foreign_keys=ON,
     // exercised on ONE connection shared by both the parent table and the

@@ -3135,6 +3135,14 @@ export const writeFeedbackScreenshot = (
   }
 }
 
+/** Maps a client-supplied threadId to the session_id stored on a ui_feedback
+ *  note. Empty string and missing values both fall back to the sentinel
+ *  session so the note is never recorded with an empty session_id (which
+ *  downstream deliver_to logic treats as "no real thread"). Exported for
+ *  unit tests. */
+export const resolveUiFeedbackSessionId = (threadId: string | undefined): string =>
+  threadId || UI_FEEDBACK_SENTINEL_SESSION
+
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
 ): Layer.Layer<ServerHandle> =>
@@ -4360,7 +4368,7 @@ const buildServerLayer = (
           return agentNotes
             .record({
               id,
-              sessionId: input.threadId ?? UI_FEEDBACK_SENTINEL_SESSION,
+              sessionId: resolveUiFeedbackSessionId(input.threadId),
               kind: "ui_feedback",
               summary: input.note.slice(0, 200),
               payload: {

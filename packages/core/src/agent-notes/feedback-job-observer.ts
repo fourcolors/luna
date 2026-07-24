@@ -16,11 +16,11 @@
  * is only a thin wiring shim so chat-server can fork this alongside
  * AcceptHandlerLayer's own observer.
  *
- * Only reading rows still `queued` is what makes this safe to run
- * unconditionally: a working agent (or a human) that has already moved a
- * note to `triaged` / `resolved` / `dismissed` / anything else takes that
- * row out of this poller's candidate set on the very next tick, so the
- * observer can never clobber a status someone else already set.
+ * Only rows still `queued` are polled, and each terminal fold-back is a
+ * guarded update that only succeeds while the row is still `queued`. A
+ * working agent (or a human) that moves a note out of `queued` before the
+ * write is no longer overwritten, and any existing triage note is preserved
+ * by appending the outcome marker rather than replacing it.
  */
 import { Duration, Effect, Layer, Schedule } from "effect"
 import type { FeedbackSetStatusDep } from "./feedback-job-bridge.js"
@@ -114,6 +114,8 @@ export const pollFeedbackJobsOnce = async (
             status: "resolved",
             resolvedRef: row.resolvedRef,
             notes: "auto: feedback job completed",
+            expectedStatus: "queued",
+            appendNotes: true,
           },
           deps.nowMs(),
         )
@@ -124,6 +126,8 @@ export const pollFeedbackJobsOnce = async (
             status: "job-failed",
             resolvedRef: row.resolvedRef,
             notes: `auto: feedback job failed: ${latest.error ?? "unknown error"}`,
+            expectedStatus: "queued",
+            appendNotes: true,
           },
           deps.nowMs(),
         )

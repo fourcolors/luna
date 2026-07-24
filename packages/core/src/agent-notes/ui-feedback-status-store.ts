@@ -98,6 +98,13 @@ export interface UiFeedbackStatusStore {
       readonly status: string
       readonly resolvedRef?: string | null
       readonly notes?: string | null
+      /** Optional guard: the write only succeeds when the row's current
+       *  status matches this value. Used by the feedback-job observer for
+       *  atomic "still queued" fold-back updates. */
+      readonly expectedStatus?: string
+      /** When true, the supplied `notes` are appended to any existing note
+       *  rather than replacing it. */
+      readonly appendNotes?: boolean
     },
     /** Optional (timestamp hardening) — defaults to Date.now() computed
      *  INSIDE setStatus at call time when omitted. Tests keep injecting an
@@ -237,21 +244,64 @@ export const openUiFeedbackStatusStore = (
 
   const setStatus: UiFeedbackStatusStore["setStatus"] = (args, nowMs = Date.now()) => {
     try {
+      const { id, status, resolvedRef, notes } = args
+      const expectedStatus = args.expectedStatus
+      const appendNotes = args.appendNotes ?? false
+      const newNotes = notes ?? null
+
+      if (expectedStatus !== undefined) {
+        const notesExpr = appendNotes
+          ? `CASE
+              WHEN notes IS NOT NULL AND notes != '' AND ? IS NOT NULL AND ? != ''
+                THEN notes || char(10) || ?
+              WHEN ? IS NOT NULL AND ? != ''
+                THEN ?
+              ELSE notes
+            END`
+          : `?`
+        const notesParams: unknown[] = appendNotes
+          ? [newNotes, newNotes, newNotes, newNotes, newNotes, newNotes]
+          : [newNotes]
+        const result = db
+          .query(
+            `UPDATE ui_feedback_status
+             SET status = ?, resolved_ref = ?, notes = ${notesExpr}, updated_at = ?
+             WHERE id = ? AND status = ?`,
+          )
+          .run(status, resolvedRef ?? null, ...notesParams, nowMs, id, expectedStatus)
+        if (result.changes === 0) {
+          return { ok: false, message: "status precondition failed" }
+        }
+        return { ok: true }
+      }
+
       const exists = db
         .query(`SELECT 1 AS x FROM agent_notes WHERE id = ? AND kind = 'ui_feedback' LIMIT 1`)
-        .get(args.id) as { x: number } | undefined | null
+        .get(id) as { x: number } | undefined | null
       if (exists == null) {
         return { ok: false, message: "unknown feedback id" }
       }
+
+      const notesExpr = appendNotes
+        ? `CASE
+            WHEN ui_feedback_status.notes IS NOT NULL AND ui_feedback_status.notes != ''
+                 AND excluded.notes IS NOT NULL AND excluded.notes != ''
+              THEN ui_feedback_status.notes || char(10) || excluded.notes
+            WHEN excluded.notes IS NOT NULL AND excluded.notes != ''
+              THEN excluded.notes
+            ELSE ui_feedback_status.notes
+          END`
+        : `excluded.notes`
+
       db.query(
         `INSERT INTO ui_feedback_status (id, status, resolved_ref, notes, updated_at)
          VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            status = excluded.status,
            resolved_ref = excluded.resolved_ref,
-           notes = excluded.notes,
+           notes = ${notesExpr},
            updated_at = excluded.updated_at`,
-      ).run(args.id, args.status, args.resolvedRef ?? null, args.notes ?? null, nowMs)
+      ).run(id, status, resolvedRef ?? null, newNotes, nowMs)
       return { ok: true }
     } catch (e) {
       return { ok: false, message: String(e) }

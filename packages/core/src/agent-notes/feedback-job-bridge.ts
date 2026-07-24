@@ -164,6 +164,8 @@ export type FeedbackSetStatusDep = (
     readonly status: string
     readonly resolvedRef?: string | null
     readonly notes?: string | null
+    readonly expectedStatus?: string
+    readonly appendNotes?: boolean
   },
   nowMs: number,
 ) => Promise<{ readonly ok: boolean; readonly message?: string }>

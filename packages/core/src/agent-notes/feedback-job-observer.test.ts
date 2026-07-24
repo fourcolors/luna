@@ -37,6 +37,8 @@ describe("pollFeedbackJobsOnce", () => {
       status: "resolved",
       resolvedRef: "fbj-fb-1",
       notes: "auto: feedback job completed",
+      expectedStatus: "queued",
+      appendNotes: true,
     })
     expect(setStatus.mock.calls[0]![1]).toBe(5000)
   })
@@ -59,6 +61,8 @@ describe("pollFeedbackJobsOnce", () => {
       status: "job-failed",
       resolvedRef: "fbj-fb-2",
       notes: "auto: feedback job failed: TypeError: boom",
+      expectedStatus: "queued",
+      appendNotes: true,
     })
   })
 
@@ -170,6 +174,47 @@ describe("pollFeedbackJobsOnce", () => {
     })
 
     await expect(pollFeedbackJobsOnce(deps)).resolves.toBeUndefined()
+    expect(setStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not clobber a row that left 'queued' and appends outcome notes to surviving rows", async () => {
+    type Row = { status: string; resolvedRef: string | null; notes: string | null }
+    const rows = new Map<string, Row>([
+      ["fb-race", { status: "queued", resolvedRef: "fbj-fb-race", notes: "human note" }],
+      ["fb-keep", { status: "queued", resolvedRef: "fbj-fb-keep", notes: "keep me" }],
+    ])
+    const setStatus = vi.fn(async (args: { id: string; status: string; resolvedRef?: string | null; notes?: string | null; expectedStatus?: string; appendNotes?: boolean }) => {
+      const row = rows.get(args.id)
+      if (row === undefined) return { ok: false }
+      if (args.expectedStatus !== undefined && row.status !== args.expectedStatus) {
+        return { ok: false, message: "status precondition failed" }
+      }
+      row.status = args.status
+      if (args.resolvedRef !== undefined) row.resolvedRef = args.resolvedRef ?? null
+      if (args.notes !== undefined) {
+        row.notes = args.appendNotes && row.notes ? `${row.notes}\n${args.notes}` : (args.notes ?? null)
+      }
+      return { ok: true }
+    })
+    const listQueued = vi.fn(async () =>
+      Array.from(rows.entries())
+        .filter(([, r]) => r.status === "queued")
+        .map(([id, r]) => ({ id, resolvedRef: r.resolvedRef })),
+    )
+    const listRuns = vi.fn(async (jobId: string) => {
+      if (jobId === "fbj-fb-race") {
+        // Simulate a human/operator flipping the status after listQueued snapshotted it.
+        rows.set("fb-race", { status: "triaged", resolvedRef: "fbj-fb-race", notes: "human already looked" })
+      }
+      return [{ status: "success", finishedAt: 9999, error: null }]
+    })
+
+    await pollFeedbackJobsOnce(makeDeps({ listQueued, listRuns, setStatus }))
+
+    expect(rows.get("fb-race")?.status).toBe("triaged")
+    expect(rows.get("fb-race")?.notes).toBe("human already looked")
+    expect(rows.get("fb-keep")?.status).toBe("resolved")
+    expect(rows.get("fb-keep")?.notes).toBe("keep me\nauto: feedback job completed")
     expect(setStatus).toHaveBeenCalledTimes(2)
   })
 
