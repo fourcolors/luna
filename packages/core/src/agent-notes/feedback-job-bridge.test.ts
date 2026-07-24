@@ -10,8 +10,10 @@ import {
   buildFeedbackJobSpec,
   createFeedbackCreateJobDep,
   createJobFromFeedback,
+  feedbackAutoJobEnabled,
   feedbackJobIdFor,
   PROMPT_MAX,
+  runFeedbackCreateJobNoThrow,
   type FeedbackJobLookupRow,
   type JobRecordSpec,
 } from "./feedback-job-bridge.js"
@@ -446,5 +448,83 @@ describe("createFeedbackCreateJobDep", () => {
 
     expect(result).toEqual({ ok: false, message: "feedback triage store unavailable" })
     expect(jobsStore.record.mock.calls.length).toBe(0)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Auto-enqueue gate + failure isolation (chat-server submit-time path)       */
+/* -------------------------------------------------------------------------- */
+
+describe("feedbackAutoJobEnabled", () => {
+  it("is ON when the env var is absent", () => {
+    expect(feedbackAutoJobEnabled({})).toBe(true)
+  })
+
+  it("is ON when the env var is empty", () => {
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: "" })).toBe(true)
+  })
+
+  it("is ON for any non-'0' value", () => {
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: "1" })).toBe(true)
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: "true" })).toBe(true)
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: "no" })).toBe(true)
+  })
+
+  it("is OFF for '0' after trimming", () => {
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: "0" })).toBe(false)
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: " 0 " })).toBe(false)
+    expect(feedbackAutoJobEnabled({ LUNA_FEEDBACK_AUTO_JOB: "0\n" })).toBe(false)
+  })
+})
+
+describe("runFeedbackCreateJobNoThrow", () => {
+  it("resolves without logging when createJob succeeds", async () => {
+    const createJob = vi.fn().mockResolvedValue({ ok: true, jobId: "fbj-fb-1" })
+    const log = vi.fn()
+
+    await runFeedbackCreateJobNoThrow(createJob, "fb-1", log)
+
+    expect(createJob).toHaveBeenCalledWith({ id: "fb-1" })
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it("logs and resolves (does not throw) when createJob returns ok:false", async () => {
+    const createJob = vi.fn().mockResolvedValue({ ok: false, message: "store down" })
+    const log = vi.fn()
+
+    await runFeedbackCreateJobNoThrow(createJob, "fb-2", log)
+
+    expect(createJob).toHaveBeenCalledWith({ id: "fb-2" })
+    expect(log).toHaveBeenCalledWith("auto-job create failed for fb-2: store down")
+  })
+
+  it("logs and resolves (does not throw) when createJob rejects", async () => {
+    const createJob = vi.fn().mockRejectedValue(new Error("boom"))
+    const log = vi.fn()
+
+    await runFeedbackCreateJobNoThrow(createJob, "fb-3", log)
+
+    expect(createJob).toHaveBeenCalledWith({ id: "fb-3" })
+    expect(log).toHaveBeenCalledWith("auto-job create threw for fb-3: Error: boom")
+  })
+
+  it("composes with the gate so OFF skips enqueue and ON runs it", async () => {
+    const createJob = vi.fn().mockResolvedValue({ ok: true })
+    const log = vi.fn()
+
+    const submit = async (
+      env: { readonly [key: string]: string | undefined },
+      id: string,
+    ) => {
+      if (!feedbackAutoJobEnabled(env)) return
+      await runFeedbackCreateJobNoThrow(createJob, id, log)
+    }
+
+    await submit({ LUNA_FEEDBACK_AUTO_JOB: "0" }, "fb-off")
+    expect(createJob).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+
+    await submit({}, "fb-on")
+    expect(createJob).toHaveBeenCalledWith({ id: "fb-on" })
   })
 })

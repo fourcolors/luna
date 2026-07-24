@@ -297,7 +297,7 @@ export interface CreateFeedbackCreateJobDepConfig {
  */
 export const createFeedbackCreateJobDep = (
   config: CreateFeedbackCreateJobDepConfig,
-): ((args: { readonly id: string }) => Promise<CreateJobFromFeedbackResult>) => {
+): FeedbackCreateJobDep => {
   return async (args) => {
     if (config.store === null) {
       return { ok: false, message: "feedback triage store unavailable" }
@@ -312,5 +312,50 @@ export const createFeedbackCreateJobDep = (
       },
       config.nowMs(),
     )
+  }
+}
+
+/** Alias for the function returned by `createFeedbackCreateJobDep` — the only
+ *  surface the submit-time auto-enqueue helper needs to run. */
+export type FeedbackCreateJobDep = (
+  args: { readonly id: string },
+) => Promise<CreateJobFromFeedbackResult>
+
+/** Default-ON env gate for the submit-time feedback auto-job enqueue.
+ *  Mirrors the `LUNA_WAKE_ENABLED` idiom used elsewhere: only a trimmed value
+ *  of `"0"` disables the gate; unset, empty, or any other value leaves it ON.
+ *
+ *  @param env - environment dictionary (`process.env` in Node/Bun, or a test
+ *               fixture). Defaults to `process.env` so runtime callers don't
+ *               need to pass anything.
+ *  @returns `true` when the auto-enqueue path should run.
+ */
+export const feedbackAutoJobEnabled = (
+  env: { readonly [key: string]: string | undefined } = process.env,
+): boolean => env["LUNA_FEEDBACK_AUTO_JOB"]?.trim() !== "0"
+
+/** Run a feedback-create-job dep and swallow any failure into `log`.
+ *  This is the submit-time auto-enqueue path: the feedback note is already
+ *  durably recorded, so the caller must always proceed to ack `ok:true`.
+ *  Rejections and `{ ok:false }` results are both turned into a single
+ *  `log(message)` call and the returned promise always resolves.
+ *
+ *  @param createJob - the `createFeedbackCreateJobDep` function to run.
+ *  @param id - the feedback note id.
+ *  @param log - sink for the error line; called synchronously with the body
+ *               of the message (the caller adds any prefix/newline).
+ */
+export const runFeedbackCreateJobNoThrow = async (
+  createJob: FeedbackCreateJobDep,
+  id: string,
+  log: (message: string) => void,
+): Promise<void> => {
+  try {
+    const result = await createJob({ id })
+    if (!result.ok) {
+      log(`auto-job create failed for ${id}: ${result.message ?? "unknown error"}`)
+    }
+  } catch (cause) {
+    log(`auto-job create threw for ${id}: ${String(cause)}`)
   }
 }

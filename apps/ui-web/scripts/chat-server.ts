@@ -257,7 +257,9 @@ import {
   openUiFeedbackStatusStore,
   UI_FEEDBACK_SENTINEL_SESSION,
   createFeedbackCreateJobDep,
+  feedbackAutoJobEnabled,
   FeedbackJobObserverLayer,
+  runFeedbackCreateJobNoThrow,
   type FeedbackListRow,
   type FeedbackJobsDep,
   type FeedbackSetStatusDep,
@@ -4395,33 +4397,16 @@ const buildServerLayer = (
               // just means the report waits for a manual
               // feedback-create-job retry instead of nothing at all.
               Effect.tap(() => {
-                if (process.env["LUNA_FEEDBACK_AUTO_JOB"]?.trim() === "0") {
+                if (!feedbackAutoJobEnabled()) {
                   return Effect.void
                 }
-                return Effect.tryPromise({
-                  try: () => feedbackCreateJob({ id }),
-                  catch: (cause) => cause,
-                }).pipe(
-                  Effect.tap((result) =>
-                    result.ok
-                      ? Effect.void
-                      : Effect.sync(() =>
-                          writeSync(
-                            1,
-                            `[luna/ui-feedback] auto-job create failed for ${id}: ${result.message ?? "unknown error"}\n`,
-                          ),
-                        ),
+                return Effect.promise(() =>
+                  runFeedbackCreateJobNoThrow(
+                    feedbackCreateJob,
+                    id,
+                    (message) => writeSync(1, `[luna/ui-feedback] ${message}\n`),
                   ),
-                  Effect.catchAll((cause) =>
-                    Effect.sync(() =>
-                      writeSync(
-                        1,
-                        `[luna/ui-feedback] auto-job create threw for ${id}: ${String(cause)}\n`,
-                      ),
-                    ),
-                  ),
-                  Effect.asVoid,
-                )
+                ).pipe(Effect.catchAllCause(() => Effect.void))
               }),
               Effect.as({ ok: true as const }),
               Effect.catchAll(() =>
