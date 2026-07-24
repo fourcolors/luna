@@ -375,14 +375,14 @@ export const validateMemoryDeleteArgs = (args: unknown): ValidatedMemoryDeleteAr
   return { id: rawId.slice(0, MEMORY_DELETE_ID_MAX_LEN) }
 }
 
-/* ── feedback-list / feedback-set-status: feedback-queue curated tools ─────
- * Backs the Phase 1 on-demand `ui://luna/feedback-queue` core app (Part G)
- * AND — since these are now real curated tools, not app-private — any
- * future store-backed app that wants to read/triage the queue too (Phase 2's
- * live queue app reuses the same tool names). Reads (`feedback-list`) are
- * shared with every store-backed app; the one mutation (`feedback-set-
- * status`) is gated by chat-server's isToolAllowed to the reviewed
- * `mcp-app:feedback-queue` artifact id, mirroring memory-delete's gate. */
+/* ── feedback-list / feedback-set-status / feedback-create-job: feedback-queue
+ * curated tools ────────────────────────────────────────────────────────────
+ * Backs the on-demand `ui://luna/feedback-queue` core app and any
+ * store-backed app that reads/triages/queues work on `ui_feedback` notes.
+ * Reads (`feedback-list`) are shared with every store-backed app; mutations
+ * (`feedback-set-status`, `feedback-create-job`) are gated by chat-server's
+ * isToolAllowed to the reviewed `mcp-app:feedback-queue` artifact id,
+ * mirroring memory-delete's gate. */
 
 const FEEDBACK_LIST_DEFAULT_LIMIT = 25
 const FEEDBACK_LIST_MAX_LIMIT = 100
@@ -630,24 +630,28 @@ export const createStoreBackedAppRegistry = (deps: {
  * The curated tool allowlist exposed to store-backed apps: workspace `pulse`
  * counters, a metadata-only `list-artifacts`, the memory-browser's
  * `memory-list` (exact-filter, paginated) / `memory-search` (hybrid top-K)
- * read pair, and `memory-delete` — the ONE mutation in this registry, gated
- * by chat-server to the reviewed `mcp-app:memory-browser` artifact
- * (no edit/flag/tag-patch; that needs a tag-patch primitive that doesn't
- * exist yet, deliberately out of scope for v1). Note the exact read surface:
- * `list-artifacts` is a GLOBAL enumeration of artifact metadata (id/title/
- * kind/version/updatedAt — never content, never origin); `memory-list`/
- * `memory-search`/`memory-delete` are scoped by the injected deps
- * (chat-server binds them to the OPERATOR_MEMORY_SCOPE, the same scope
+ * read pair and `memory-delete` mutation, plus the feedback-queue's
+ * `feedback-list` read and `feedback-set-status` / `feedback-create-job`
+ * mutations. Each mutation is gated by `isCuratedToolAllowed` to its reviewed
+ * artifact id (`mcp-app:memory-browser` or `mcp-app:feedback-queue`).
+ * (No edit/flag/tag-patch for memory; that needs a tag-patch primitive that
+ * doesn't exist yet, deliberately out of scope for v1). Note the exact read
+ * surface: `list-artifacts` is a GLOBAL enumeration of artifact metadata
+ * (id/title/kind/version/updatedAt — never content, never origin);
+ * `memory-list`/`memory-search`/`memory-delete` are scoped by the injected
+ * deps (chat-server binds them to the OPERATOR_MEMORY_SCOPE, the same scope
  * memory_save/memory_search/memory_delete already use), which the caller
  * should keep in mind before any multi-tenant deployment. Safe in
  * single-tenant Luna (the operator owns every artifact and every memory, and
  * the sandboxed app has a strict no-network CSP).
  * Args are validated here (validateMemoryListArgs/validateMemorySearchArgs/
- * validateMemoryDeleteArgs) before reaching the injected deps — the deps
- * never see unchecked wire input. `memory-delete` additionally relies on its
- * injected dep re-checking scope AFTER fetching the record (defense in
- * depth — see makeMemoryTools' memory_delete in @luna/memory-tools for the
- * pattern this mirrors), since arg validation alone can't enforce that.
+ * validateMemoryDeleteArgs/validateFeedbackListArgs/
+ * validateFeedbackSetStatusArgs/validateFeedbackCreateJobArgs) before reaching
+ * the injected deps — the deps never see unchecked wire input. `memory-delete`
+ * additionally relies on its injected dep re-checking scope AFTER fetching the
+ * record (defense in depth — see makeMemoryTools' memory_delete in
+ * @luna/memory-tools for the pattern this mirrors), since arg validation alone
+ * can't enforce that.
  */
 export const buildCuratedAppTools = (deps: {
   readonly getPulse: () => Promise<PulseCounters>
@@ -663,14 +667,14 @@ export const buildCuratedAppTools = (deps: {
   /** feedback-queue: list `ui_feedback` notes + their triage status. Read —
    *  shared with every store-backed app, same as pulse/list-artifacts/memory-list. */
   readonly feedbackList: (args: ValidatedFeedbackListArgs) => Promise<FeedbackListPage>
-  /** feedback-queue: the ONE mutation. Gated by chat-server's isToolAllowed
+  /** feedback-queue: set a note's triage status. Gated by chat-server's isToolAllowed
    *  to the reviewed `mcp-app:feedback-queue` artifact id (mirrors memory-delete). */
   readonly feedbackSetStatus: (
     args: ValidatedFeedbackSetStatusArgs,
   ) => Promise<{ readonly ok: boolean; readonly message?: string }>
   /** feedback-queue: the second mutation — spins up a durable one-shot job
-   *  (@luna/core's feedback-job-bridge createFeedbackCreateJobDep) to work a
-   *  triaged report. Gated by chat-server's isToolAllowed exactly like
+   *  (@luna/core's feedback-job-bridge createFeedbackCreateJobDep) for a
+   *  `ui_feedback` report. Gated by chat-server's isToolAllowed exactly like
    *  feedback-set-status (same reviewed `mcp-app:feedback-queue` artifact).
    *  OPTIONAL: omitted entirely (no `feedback-create-job` tool exposed) when
    *  the caller doesn't wire it, so existing callers built before this

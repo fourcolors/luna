@@ -79,7 +79,10 @@ export interface FeedbackListRow {
   readonly screenshotWidth: number | null
   readonly screenshotHeight: number | null
   readonly status: string
+  /** The linked job id (`fbj-<noteId>`), PR reference, or other resolution
+   *  pointer stored on the `ui_feedback_status` row. Null when unset. */
   readonly resolvedRef: string | null
+  /** Human or auto-generated triage notes (e.g. observer outcome markers). */
   readonly statusNotes: string | null
   readonly createdAt: number
   readonly updatedAt: number
@@ -96,7 +99,11 @@ export interface UiFeedbackStatusStore {
     args: {
       readonly id: string
       readonly status: string
+      /** The job id / PR link / resolution reference. Omitted or `undefined`
+       *  preserves any existing value; only an explicit `null` clears it. */
       readonly resolvedRef?: string | null
+      /** Human or auto-generated triage note. Omitted or `undefined` preserves
+       *  any existing value; only an explicit `null` clears it. */
       readonly notes?: string | null
       /** Optional guard: the write only succeeds when the row's current
        *  status matches this value. Used by the feedback-job observer for

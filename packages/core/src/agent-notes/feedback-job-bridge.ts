@@ -1,6 +1,6 @@
 /**
- * feedback-job-bridge.ts — turns a triaged `ui_feedback` agent_notes row into
- * a durable, one-shot background job.
+ * feedback-job-bridge.ts — turns a `ui_feedback` agent_notes row into a
+ * durable, one-shot background job.
  *
  * Mirrors ../suggested-actions/accept-handler.ts's action → job bridge
  * (buildPromptJobSpec, the deterministic id, "one-shot ⇒ empty spec so the
@@ -88,7 +88,7 @@ const truncate = (s: string, max: number): string => (s.length > max ? s.slice(0
 const stripControlChars = (s: string): string => s.replace(/[\x00-\x1f\x7f]/g, "")
 
 /**
- * Pure builder: a triaged feedback row → a one-shot `kind:'prompt'` job spec.
+ * Pure builder: a `ui_feedback` row → a one-shot `kind:'prompt'` job spec.
  * Exported for tests (mirrors buildPromptJobSpec's test seam in
  * accept-handler.ts). `spec` is empty → the ticker fires it exactly once.
  *

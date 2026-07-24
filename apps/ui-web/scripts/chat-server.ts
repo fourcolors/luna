@@ -4015,19 +4015,20 @@ const buildServerLayer = (
               memoryList: getMemoryListPage,
               memorySearch: getMemorySearchPage,
               memoryDelete: getMemoryDelete,
-              // feedback-list / feedback-set-status: same curated tool names
-              // the static ui://luna/feedback-queue app above uses, now also
-              // available to store-backed apps (Phase 2's live queue app).
+              // feedback-list / feedback-set-status: curated tools that back
+              // the static ui://luna/feedback-queue app and are also available
+              // to store-backed apps (Phase 2's live queue app).
               feedbackList: getFeedbackList,
               feedbackSetStatus: getFeedbackSetStatus,
-              // feedback-create-job: re-run/queue a durable job for a triaged
-              // report — same deps object the submit-time auto-enqueue above
-              // uses, reused here rather than a second createFeedbackCreateJobDep.
+              // feedback-create-job: optional manual re-run/queue of a durable
+              // job for a `ui_feedback` report — same deps object the submit-
+              // time auto-enqueue above uses, reused here rather than a second
+              // createFeedbackCreateJobDep.
               feedbackCreateJob,
             }),
             // Reads are useful to generated memory/feedback views, but each
-            // registry's one mutation is a privileged capability of its OWN
-            // reviewed artifact, not something every generated app inherits.
+            // mutation is a privileged capability of its OWN reviewed artifact,
+            // not something every generated app inherits.
             // isCuratedToolAllowed (core-apps.ts) is the extracted, tested
             // truth table — the live gate, not a hand-rolled duplicate of it.
             isToolAllowed: isCuratedToolAllowed,
