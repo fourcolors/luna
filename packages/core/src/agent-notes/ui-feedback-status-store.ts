@@ -25,6 +25,14 @@
  */
 
 import { applyMigration, ensureSchemaVersions, type BunDb } from "../db/schema-versions.js"
+// Type-only import — erased at compile time, so this does not create a
+// runtime require() cycle even though feedback-job-bridge.ts imports
+// FeedbackListRow (below) from this same file. FeedbackJobLookupRow is
+// exactly this store's own JoinedRow shape plus `kind`/`sessionId`; defining
+// it once on the bridge side (which is the seam that actually needs it) and
+// importing it back here for getRow's return type avoids a second,
+// independently-drifting copy of the same shape.
+import type { FeedbackJobLookupRow } from "./feedback-job-bridge.js"
 
 // Named UI_FEEDBACK_STATUS_COMPONENT (not the bare `COMPONENT` other stores
 // in this codebase use, e.g. provider-settings/store.ts) because @luna/core's
@@ -35,6 +43,14 @@ import { applyMigration, ensureSchemaVersions, type BunDb } from "../db/schema-v
 // under this constant; only the export name differs from the store.ts
 // template it otherwise mirrors exactly.
 export const UI_FEEDBACK_STATUS_COMPONENT = "ui_feedback_status"
+
+/** The synthetic session id feedback-sink stamps on notes with no real
+ *  originating chat thread (chat-server.ts feedbackSink) when the WS frame
+ *  carries no `threadId`. Single source of truth: feedback-job-bridge.ts (the
+ *  deliver_to guard) and chat-server.ts's feedbackSink both import THIS
+ *  constant rather than each hand-typing the literal, so the two can never
+ *  skew out of sync. */
+export const UI_FEEDBACK_SENTINEL_SESSION = "ui-feedback"
 
 const SCHEMA_V1 = `
   CREATE TABLE IF NOT EXISTS ui_feedback_status (
@@ -83,8 +99,19 @@ export interface UiFeedbackStatusStore {
       readonly resolvedRef?: string | null
       readonly notes?: string | null
     },
-    nowMs: number,
+    /** Optional (timestamp hardening) — defaults to Date.now() computed
+     *  INSIDE setStatus at call time when omitted. Tests keep injecting an
+     *  explicit value for determinism; production call sites no longer have
+     *  to thread their own Date.now() through. */
+    nowMs?: number,
   ) => { readonly ok: boolean; readonly message?: string }
+
+  /** Single-row lookup keyed by id, joining agent_notes for `kind` +
+   *  `session_id` on top of the same projection `list()` uses — the seam
+   *  feedback-job-bridge.ts's FeedbackJobLookupStore needs (kind to fail
+   *  closed on a non-ui_feedback note, sessionId for the deliver_to guard).
+   *  Returns null for an unknown id rather than throwing. */
+  readonly getRow: (id: string) => FeedbackJobLookupRow | null
 }
 
 type JoinedRow = {
@@ -97,6 +124,10 @@ type JoinedRow = {
   notes: string | null
   updated_at: number | null
 }
+
+/** JoinedRow plus the two agent_notes columns `list()`'s query never selects
+ *  (kind, session_id) — only getRow's single-row query needs them. */
+type JoinedRowWithNoteFields = JoinedRow & { kind: string; session_id: string }
 
 const asOptionalString = (v: unknown): string | null =>
   typeof v === "string" ? v : null
@@ -204,7 +235,7 @@ export const openUiFeedbackStatusStore = (
     return { rows: page.map(projectFeedbackRow), hasMore }
   }
 
-  const setStatus: UiFeedbackStatusStore["setStatus"] = (args, nowMs) => {
+  const setStatus: UiFeedbackStatusStore["setStatus"] = (args, nowMs = Date.now()) => {
     try {
       const exists = db
         .query(`SELECT 1 AS x FROM agent_notes WHERE id = ? AND kind = 'ui_feedback' LIMIT 1`)
@@ -227,5 +258,25 @@ export const openUiFeedbackStatusStore = (
     }
   }
 
-  return { list, setStatus }
+  const getRow: UiFeedbackStatusStore["getRow"] = (id) => {
+    const row = db
+      .query(
+        `SELECT n.id AS id, n.kind AS kind, n.session_id AS session_id, n.summary AS summary,
+                n.payload_json AS payload_json, n.ts AS ts,
+                s.status AS status, s.resolved_ref AS resolved_ref, s.notes AS notes, s.updated_at AS updated_at
+         FROM agent_notes n
+         LEFT JOIN ui_feedback_status s ON s.id = n.id
+         WHERE n.id = ?
+         LIMIT 1`,
+      )
+      .get(id) as JoinedRowWithNoteFields | undefined | null
+    if (row == null) return null
+    return {
+      ...projectFeedbackRow(row),
+      kind: row.kind,
+      sessionId: row.session_id,
+    }
+  }
+
+  return { list, setStatus, getRow }
 }

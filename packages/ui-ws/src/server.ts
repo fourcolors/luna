@@ -2659,6 +2659,11 @@ export const startUIWebSocketServer = (
                     const TARGET_MAX = 16_384
                     const SELECTOR_MAX = 1024
                     const REQUEST_ID_MAX = 256
+                    // threadId is optional context, not part of the
+                    // malformed-frame guard below: an over-long value is
+                    // dropped (the note still records under the sentinel
+                    // session) rather than rejecting the whole submission.
+                    const THREAD_ID_MAX = 256
                     // ~512KB binary PNG ceiling × ~4/3 base64 expansion ≈
                     // 683KB, rounded up. Independent of the socket's 32MB
                     // maxPayload ceiling — this bounds disk usage per note.
@@ -2726,7 +2731,8 @@ export const startUIWebSocketServer = (
                         note: noteVal,
                         target: targetVal,
                         ...(typeof f.page === "string" ? { page: f.page } : {}),
-                        ...(typeof f.threadId === "string"
+                        ...(typeof f.threadId === "string" &&
+                        f.threadId.length <= THREAD_ID_MAX
                           ? { threadId: f.threadId }
                           : {}),
                         ...(typeof f.appVersion === "string"

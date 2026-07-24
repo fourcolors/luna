@@ -19,7 +19,7 @@
 import { Duration, Effect, Layer, Schedule } from "effect"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "../jobs/jobs-store.js"
-import type { JobKind } from "../jobs/jobs-store-types.js"
+import type { JobRecordInputSpec } from "../jobs/jobs-store-types.js"
 import { AcceptHandler, SuggestedActions } from "./suggested-actions.js"
 import type { AcceptHandlerApi } from "./suggested-actions.js"
 import { SuggestedActionsError } from "./types.js"
@@ -32,15 +32,11 @@ import type {
 /** Default completion-poll cadence (no push-notify on the durable jobs path). */
 const DEFAULT_POLL_INTERVAL = Duration.seconds(10)
 
-/** A jobs-store `record()` input minus the caller-supplied id. */
-export interface JobRecordSpec {
-  readonly kind: JobKind
-  readonly spec: string
-  readonly payload: { readonly label: string; readonly source?: string } & Record<
-    string,
-    unknown
-  >
-}
+/** A jobs-store `record()` input minus the caller-supplied id. Aliases the
+ *  shared JobRecordInputSpec (jobs-store-types.ts) — feedback-job-bridge.ts's
+ *  own JobRecordSpec aliases the same type, so the shape lives in exactly
+ *  one place. */
+export type JobRecordSpec = JobRecordInputSpec
 
 /** Short per-type framing prepended to the agent-authored prompt. */
 const PROMPT_PREFACE: Record<string, string> = {

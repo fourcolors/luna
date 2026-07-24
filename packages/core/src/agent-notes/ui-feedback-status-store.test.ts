@@ -82,9 +82,12 @@ const samplePayload = (over: Record<string, unknown> = {}) => ({
 })
 
 describe("openUiFeedbackStatusStore", () => {
-  it("migration is idempotent — opening twice on the same db does not error", async () => {
+  it("migration is idempotent — opening twice on the same db does not error", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return // skip in non-bun environments
+    if (db === null) {
+      ctx.skip() // visibly skipped (not silently green) in non-bun environments
+      return
+    }
     const store1 = openUiFeedbackStatusStore(db, Date.now())
     const store2 = openUiFeedbackStatusStore(db, Date.now())
     expect(store1).toBeTruthy()
@@ -95,9 +98,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row?.version).toBe(1)
   })
 
-  it("list() defaults to status:'open' when a note has no status row", async () => {
+  it("list() defaults to status:'open' when a note has no status row", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     insertNote(db, { id: "fb-1", payload: samplePayload() })
     const store = openUiFeedbackStatusStore(db, Date.now())
     const { rows, hasMore } = store.list({ limit: 25, offset: 0 })
@@ -107,9 +113,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(hasMore).toBe(false)
   })
 
-  it("list() respects an explicit status filter and pagination (limit/offset/hasMore)", async () => {
+  it("list() respects an explicit status filter and pagination (limit/offset/hasMore)", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     const store = openUiFeedbackStatusStore(db, Date.now())
     for (let i = 0; i < 5; i++) {
       insertNote(db, { id: `fb-p-${i}`, payload: samplePayload(), ts: 1000 + i })
@@ -132,9 +141,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(resolved.rows.every((r) => r.status === "resolved")).toBe(true)
   })
 
-  it("setStatus() upserts on first call and updates on a second call with different values", async () => {
+  it("setStatus() upserts on first call and updates on a second call with different values", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     insertNote(db, { id: "fb-up", payload: samplePayload() })
     const store = openUiFeedbackStatusStore(db, Date.now())
 
@@ -157,9 +169,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(after2.updatedAt).toBe(2000)
   })
 
-  it("setStatus() on an unknown id returns {ok:false} and does not insert a row", async () => {
+  it("setStatus() on an unknown id returns {ok:false} and does not insert a row", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     const store = openUiFeedbackStatusStore(db, Date.now())
     const result = store.setStatus({ id: "does-not-exist", status: "resolved" }, Date.now())
     expect(result.ok).toBe(false)
@@ -170,9 +185,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row).toBeNull()
   })
 
-  it("projects an OLD-SHAPE payload (no `screenshot` key at all) to null screenshot fields without throwing", async () => {
+  it("projects an OLD-SHAPE payload (no `screenshot` key at all) to null screenshot fields without throwing", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     // Exact pre-this-PR payload shape: note/target/page/appVersion/appearance/
     // clientTs — NO `screenshot` key.
     insertNote(db, {
@@ -197,9 +215,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row.screenshotHeight).toBeNull()
   })
 
-  it("projects cleanly even when payload_json is malformed (defensive parse, never throws)", async () => {
+  it("projects cleanly even when payload_json is malformed (defensive parse, never throws)", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     db.query(
       `INSERT INTO agent_notes (id, session_id, parent_id, kind, summary, payload_json, ts)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -211,7 +232,7 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row.screenshotPath).toBeNull()
   })
 
-  it("FK CASCADE: deleting the parent agent_notes row removes the ui_feedback_status row", async () => {
+  it("FK CASCADE: deleting the parent agent_notes row removes the ui_feedback_status row", async (ctx) => {
     // A real on-disk sqlite file (not :memory:) with PRAGMA foreign_keys=ON,
     // exercised on ONE connection shared by both the parent table and the
     // store — proves the CASCADE actually fires, not just that the schema
@@ -219,9 +240,17 @@ describe("openUiFeedbackStatusStore", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-fb-cascade-"))
     const dbPath = path.join(dir, "test.db")
     try {
-      const mod = await import("bun:sqlite" as string)
-      const Database = (mod as { Database?: new (p: string) => BunDb }).Database
-      if (!Database) return // skip in non-bun environments
+      let Database: (new (p: string) => BunDb) | undefined
+      try {
+        const mod = await import("bun:sqlite" as string)
+        Database = (mod as { Database?: new (p: string) => BunDb }).Database
+      } catch {
+        // In environments without bun:sqlite (vitest via node) — skip DB tests.
+      }
+      if (!Database) {
+        ctx.skip() // visibly skipped (not silently green) in non-bun environments
+        return
+      }
       const db = new Database(dbPath)
       db.run(AGENT_NOTES_SCHEMA)
       insertNote(db, { id: "fb-cascade", payload: samplePayload() })

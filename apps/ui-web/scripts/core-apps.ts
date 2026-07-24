@@ -422,6 +422,24 @@ export const validateFeedbackListArgs = (args: unknown): ValidatedFeedbackListAr
   }
 }
 
+export interface ValidatedFeedbackCreateJobArgs {
+  readonly id: string
+}
+
+/** Validate/clamp raw `feedback-create-job` args off the wire. A missing/
+ *  non-string id normalizes to "" — mirrors validateFeedbackSetStatusArgs'
+ *  id handling exactly (same FEEDBACK_ID_MAX_LEN cap): the injected
+ *  feedbackCreateJob dep never sees raw wire input, and an empty id simply
+ *  fails closed ({ok:false, message:"unknown feedback id"}) rather than
+ *  throwing here. Never throws. */
+export const validateFeedbackCreateJobArgs = (
+  args: unknown,
+): ValidatedFeedbackCreateJobArgs => {
+  const a = isPlainObject(args) ? args : {}
+  const rawId = typeof a["id"] === "string" ? a["id"].trim() : ""
+  return { id: rawId.slice(0, FEEDBACK_ID_MAX_LEN) }
+}
+
 /** Validate/clamp raw `feedback-set-status` args off the wire. A missing/
  *  non-string id normalizes to "" — the injected dep's store re-checks the
  *  id exists as a ui_feedback note before writing (defense in depth), so an
@@ -650,6 +668,16 @@ export const buildCuratedAppTools = (deps: {
   readonly feedbackSetStatus: (
     args: ValidatedFeedbackSetStatusArgs,
   ) => Promise<{ readonly ok: boolean; readonly message?: string }>
+  /** feedback-queue: the second mutation — spins up a durable one-shot job
+   *  (@luna/core's feedback-job-bridge createFeedbackCreateJobDep) to work a
+   *  triaged report. Gated by chat-server's isToolAllowed exactly like
+   *  feedback-set-status (same reviewed `mcp-app:feedback-queue` artifact).
+   *  OPTIONAL: omitted entirely (no `feedback-create-job` tool exposed) when
+   *  the caller doesn't wire it, so existing callers built before this
+   *  capability shipped keep their exact prior tool surface unchanged. */
+  readonly feedbackCreateJob?: (
+    args: ValidatedFeedbackCreateJobArgs,
+  ) => Promise<{ readonly ok: boolean; readonly jobId?: string; readonly message?: string }>
 }): Readonly<Record<string, (args: unknown) => Promise<unknown> | unknown>> => ({
   pulse: () => deps.getPulse(),
   "list-artifacts": () => deps.listArtifacts(),
@@ -658,7 +686,44 @@ export const buildCuratedAppTools = (deps: {
   "memory-delete": (args) => deps.memoryDelete(validateMemoryDeleteArgs(args)),
   "feedback-list": (args) => deps.feedbackList(validateFeedbackListArgs(args)),
   "feedback-set-status": (args) => deps.feedbackSetStatus(validateFeedbackSetStatusArgs(args)),
+  ...(deps.feedbackCreateJob
+    ? {
+        "feedback-create-job": (args: unknown) =>
+          deps.feedbackCreateJob!(validateFeedbackCreateJobArgs(args)),
+      }
+    : {}),
 })
+
+/**
+ * Every curated MUTATION's owning app identity, keyed by tool name. Adding a
+ * new mutation to the curated registry REQUIRES a row here — a tool name
+ * absent from this record is treated as a (dynamic) read and falls through
+ * isCuratedToolAllowed's `true` default below. Read tools (pulse,
+ * list-artifacts, memory-list, memory-search, feedback-list, …) must never
+ * appear here.
+ */
+const MUTATION_OWNER: Readonly<Record<string, string>> = {
+  "memory-delete": "mcp-app:memory-browser",
+  "feedback-set-status": "mcp-app:feedback-queue",
+  "feedback-create-job": "mcp-app:feedback-queue",
+}
+
+/**
+ * The extracted per-app mutation gate: which curated tools a store-backed
+ * app's identity (its own artifact id) is allowed to call. Every mutation in
+ * the curated registry is scoped to exactly ONE reviewed artifact id (see
+ * MUTATION_OWNER above) — no generated/user-authored app inherits a
+ * destructive capability just because it can call the shared curated tool
+ * set. A tool name MUTATION_OWNER doesn't recognize (every read tool) falls
+ * through to `true` — unknown-to-this-gate is allowed, not denied, since the
+ * read surface is dynamic and this gate exists only to narrow mutations.
+ * Extracted out of chat-server.ts's inline `isToolAllowed` closure so it's
+ * unit-testable without booting the server.
+ */
+export const isCuratedToolAllowed = (artifactId: string, tool: string): boolean => {
+  const owner = MUTATION_OWNER[tool]
+  return owner === undefined || owner === artifactId
+}
 
 /**
  * The Phase 1 on-demand feedback triage view — a STATIC core app (like
