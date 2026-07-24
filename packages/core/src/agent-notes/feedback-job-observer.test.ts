@@ -79,6 +79,27 @@ describe("pollFeedbackJobsOnce", () => {
     expect(setStatus.mock.calls[0]![0]).toMatchObject({ status: "job-failed" })
   })
 
+  it("caps a very long run error so the appended note stays bounded", async () => {
+    const longError = "x".repeat(10_000)
+    const setStatus = vi.fn(async () => ({ ok: true }))
+    const deps = makeDeps({
+      listQueued: vi.fn(async () => [{ id: "fb-long", resolvedRef: "fbj-fb-long" }]),
+      listRuns: vi.fn(async () => [
+        { status: "failed", finishedAt: 9999, error: longError },
+      ]),
+      setStatus,
+    })
+
+    await pollFeedbackJobsOnce(deps)
+
+    expect(setStatus).toHaveBeenCalledTimes(1)
+    const notes = String(setStatus.mock.calls[0]![0].notes)
+    const prefix = "auto: feedback job failed: "
+    expect(notes.startsWith(prefix)).toBe(true)
+    expect(notes.length).toBeLessThanOrEqual(prefix.length + 500 + "...".length)
+    expect(notes.endsWith("...")).toBe(true)
+  })
+
   it("leaves a row alone when the latest run has not finished yet", async () => {
     const setStatus = vi.fn()
     const deps = makeDeps({

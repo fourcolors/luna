@@ -249,10 +249,6 @@ export const createJobFromFeedback = async (
         id: args.id,
         status: "queued",
         resolvedRef: jobId,
-        // Pass the note's existing triage notes through unchanged — this is
-        // a status-link write, not a triage action, and must never wipe
-        // notes an agent/operator already left on the row.
-        notes: row.statusNotes,
       },
       serverNowMs,
     )

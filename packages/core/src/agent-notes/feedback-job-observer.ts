@@ -32,6 +32,14 @@ const DEFAULT_POLL_INTERVAL = Duration.seconds(10)
  *  unbounded sweep of the whole table. */
 const DEFAULT_QUEUE_LIMIT = 100
 
+/** Hard cap on the error snippet folded into the notes field. The curated
+ *  `feedback-set-status` wire clamps human notes to 4000 characters; the
+ *  observer's auto-generated failure marker must stay well under that. */
+const MAX_ERROR_SNIPPET_LEN = 500
+
+const truncateWithEllipsis = (s: string, max: number): string =>
+  s.length > max ? `${s.slice(0, max)}...` : s
+
 /** The `fbj-` prefix feedbackJobIdFor stamps (feedback-job-bridge.ts) — only
  *  a resolvedRef with this prefix can possibly be a feedback-triggered job.
  *  Anything else (a manually-set resolvedRef, e.g. a pasted PR link) is not
@@ -120,12 +128,16 @@ export const pollFeedbackJobsOnce = async (
           deps.nowMs(),
         )
       } else if (latest.status === "failed" || latest.status === "cancelled") {
+        const errorSnippet = truncateWithEllipsis(
+          latest.error ?? "unknown error",
+          MAX_ERROR_SNIPPET_LEN,
+        )
         await deps.setStatus(
           {
             id: row.id,
             status: "job-failed",
             resolvedRef: row.resolvedRef,
-            notes: `auto: feedback job failed: ${latest.error ?? "unknown error"}`,
+            notes: `auto: feedback job failed: ${errorSnippet}`,
             expectedStatus: "queued",
             appendNotes: true,
           },

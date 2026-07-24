@@ -263,6 +263,29 @@ describe("createJobFromFeedback", () => {
     expect(result).toEqual({ ok: true, jobId: feedbackJobIdFor("fb-6") })
   })
 
+  it("omits notes from the setStatus call so a human note updated after the snapshot survives", async () => {
+    const jobsStore = makeFakeJobsStore()
+    const storeNotes = new Map<string, string | null>([["fb-notes", "human note"]])
+    const setStatus = vi.fn(async (args: { id: string; notes?: string | null }) => {
+      const current = storeNotes.get(args.id) ?? null
+      storeNotes.set(args.id, args.notes === undefined ? current : args.notes)
+      return { ok: true }
+    })
+    const getFeedbackRow = vi.fn(async () =>
+      fakeRow({ id: "fb-notes", statusNotes: "stale snapshot" }),
+    )
+
+    await createJobFromFeedback(
+      { id: "fb-notes" },
+      { getFeedbackRow, jobs: jobsStore, setStatus },
+      2000,
+    )
+
+    expect(setStatus).toHaveBeenCalledTimes(1)
+    expect(setStatus.mock.calls[0]![0].notes).toBeUndefined()
+    expect(storeNotes.get("fb-notes")).toBe("human note")
+  })
+
   /* ------------------------------------------------------------------------ */
   /* B7 — timestamps come from the injected clock, never clientTs             */
   /* ------------------------------------------------------------------------ */
