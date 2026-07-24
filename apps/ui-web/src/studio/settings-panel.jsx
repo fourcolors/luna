@@ -22,6 +22,7 @@ const MODEL_OPTIONS = [
   { value: "claude-sonnet-5", label: "Sonnet 5 — balanced (default)" },
   { value: "claude-fable-5", label: "Fable 5 — 1M context, xhigh reasoning" },
   { value: "claude-mythos-5", label: "Mythos 5 — 1M context, first-party only" },
+  { value: "claude-opus-5", label: "Opus 5 — 1M context, xhigh reasoning" },
   { value: "claude-opus-4-8", label: "Opus 4.8 — most capable" },
   { value: "claude-opus-4-7", label: "Opus 4.7 — prior gen" },
   { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — prior gen" },

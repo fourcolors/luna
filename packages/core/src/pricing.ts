@@ -25,6 +25,9 @@ export interface ModelRate {
  */
 export const RATE_TABLE: Record<string, ModelRate> = {
   // Anthropic Claude
+  // claude-opus-5: pricing not yet published (2026-07). Matches the
+  // "claude-opus" prefix below (5/25) as a best-effort proxy — override via
+  // LUNA_MODEL_RATES when official pricing is announced.
   "claude-opus": { pricePerMInput: 5, pricePerMOutput: 25 },
   "claude-sonnet": { pricePerMInput: 3, pricePerMOutput: 15 },
   "claude-haiku": { pricePerMInput: 1, pricePerMOutput: 5 },

@@ -12,12 +12,13 @@ import {
   ultracodeFlagSettings,
 } from "./effort.js"
 
-// SDK @anthropic-ai/claude-agent-sdk@0.3.202: xhigh_effort capability
-// fable-5, opus-4-7, opus-4-8, sonnet-5 all have xhigh_effort
+// SDK @anthropic-ai/claude-agent-sdk@0.3.202/0.3.219: xhigh_effort capability
+// fable-5, opus-4-7, opus-4-8, opus-5, sonnet-5 all have xhigh_effort
 const XHIGH_CAPABLE = [
   "claude-opus-4-8",
   "claude-opus-4-7",
   "claude-fable-5",
+  "claude-opus-5",
   "claude-sonnet-5",
 ]
 // These models have no xhigh: haiku (no effort), sonnet-4-6 (max only),
@@ -131,8 +132,12 @@ describe("defaultEffortForModel — per-model default effort", () => {
     expect(defaultEffortForModel("claude-fable-5")).toBe("high")
   })
 
+  it("defaults Opus 5 to 'high' (SDK 0.3.219: default_effort: high)", () => {
+    expect(defaultEffortForModel("claude-opus-5")).toBe("high")
+  })
+
   it("returns a value that is always a member of the model's effort matrix", () => {
-    for (const id of ["claude-sonnet-5", "claude-fable-5"]) {
+    for (const id of ["claude-sonnet-5", "claude-fable-5", "claude-opus-5"]) {
       const dflt = defaultEffortForModel(id)
       expect(dflt).toBeDefined()
       expect(effortsForModel(id)).toContain(dflt!)

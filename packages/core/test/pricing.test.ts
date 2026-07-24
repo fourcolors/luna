@@ -31,6 +31,16 @@ describe("rateFor — model resolution precedence", () => {
     })
   })
 
+  it("resolves opus-5 via the claude-opus prefix (5/25 proxy until official pricing)", () => {
+    // claude-opus-5 has no dedicated RATE_TABLE entry; it matches the "claude-opus"
+    // prefix (5/25) as the best-effort proxy. Override via LUNA_MODEL_RATES when
+    // official pricing is published (SDK 0.3.219 notes pricing: "tier_5_25").
+    expect(rateFor("claude-opus-5", "anthropic")).toEqual({
+      pricePerMInput: 5,
+      pricePerMOutput: 25,
+    })
+  })
+
   it("resolves fable and mythos by their new RATE_TABLE prefixes (UNKNOWN=0/0 until overridden)", () => {
     // Pricing for these models is not yet published (2026-07); marked as 0/0
     // in the table. Override via LUNA_MODEL_RATES env var when known.
