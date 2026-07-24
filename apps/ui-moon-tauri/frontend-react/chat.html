@@ -8285,6 +8285,75 @@
       } catch (_) { /* sidebar refresh is best-effort */ }
     });
 
+    // Attempt to deliver a message the composer stashed in
+    // `State.pendingUserMessage` for a thread that didn't exist yet at
+    // submit time (new-thread mint) or wasn't confirmed live yet (a
+    // reconnect mid-mint).
+    //
+    // History: the old code nulled the stash and fired send after a blind
+    // 100ms setTimeout — a drop inside that window silently lost the first
+    // message (M41). Flush is now connection-gated and snapshot-retried.
+    //
+    // Binding (Devin review on #351): the stash carries an optional
+    // `threadId` stamped when `thread-created` arrives. Flush only sends when
+    // that target matches the caller's threadId so a reconnect that re-points
+    // activeThreadId at an older thread cannot misdeliver the first message.
+    // Unbound stashes (mint not yet acked) refuse snapshot flush entirely.
+    //
+    // Clear-after-send (Copilot review): the stash is only cleared once the
+    // frame has been handed to an OPEN socket; if send fails, restore it.
+    function flushPendingUserMessage(threadId) {
+      if (!State.pendingUserMessage) return;
+      if (!threadId) return;
+      const pending = State.pendingUserMessage;
+      // Bound target: only deliver to that exact thread.
+      if (pending.threadId && pending.threadId !== threadId) {
+        Logger.warn(
+          `flushPendingUserMessage: stash bound to "${pending.threadId}", not "${threadId}"; keeping queued`,
+        );
+        return;
+      }
+      // Unbound stash must not ride a random snapshot (reconnect last-thread).
+      if (!pending.threadId) {
+        Logger.warn(
+          `flushPendingUserMessage: stash has no target thread yet; keeping queued until thread-created binds it`,
+        );
+        return;
+      }
+      // Still require the bound thread to be the viewed one (user didn't leave).
+      if (threadId !== State.activeThreadId) return;
+      if (!WebSocketEngine.isConnected()
+          || !(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+        Logger.warn(
+          `flushPendingUserMessage: not connected yet for "${threadId}"; keeping queued for retry`,
+        );
+        return;
+      }
+      const frame = {
+        type: 'user-message',
+        threadId: pending.threadId,
+        text: pending.text,
+        client: MoonClient.CLIENT_INFO,
+        ...(pending.attachments ? { attachments: pending.attachments } : {}),
+      };
+      try {
+        State.ws.send(JSON.stringify(frame));
+      } catch (e) {
+        Logger.error('flushPendingUserMessage: send failed; restoring stash', e);
+        return;
+      }
+      // Only clear after a successful handoff to the live socket.
+      State.pendingUserMessage = null;
+    }
+
+    /** Stamp the mint target onto a queued first message (if any). */
+    function bindPendingUserMessage(threadId) {
+      if (!threadId || !State.pendingUserMessage) return;
+      if (!State.pendingUserMessage.threadId) {
+        State.pendingUserMessage.threadId = threadId;
+      }
+    }
+
     MoonFrames.register('thread-created', (frame) => {
       // Record the summary's model/effort as the thread's truth (the server
       // clamps/normalizes at creation, so this is authoritative).
@@ -8307,20 +8376,14 @@
         // Surface the brand-new thread in the drawer if it's open.
         try { if (State.threadDrawerOpen) ThreadDrawerEngine.requestList(); } catch (_) { /* best-effort */ }
 
-        if (State.pendingUserMessage) {
-          const pending = State.pendingUserMessage;
-          State.pendingUserMessage = null;
-          // Wait slightly for subscription to settle, then send message
-          setTimeout(() => {
-            WebSocketEngine.send({
-              type: 'user-message',
-              threadId: createdThreadId,
-              text: pending.text,
-              client: MoonClient.CLIENT_INFO,
-              ...(pending.attachments ? { attachments: pending.attachments } : {})
-            });
-          }, 100);
-        }
+        // Bind the stash to THIS mint so a later snapshot for another thread
+        // cannot steal it, then attempt an immediate flush.
+        bindPendingUserMessage(createdThreadId);
+        flushPendingUserMessage(createdThreadId);
+      } else if (frame && frame.thread && frame.thread.id) {
+        // User already moved on, but still bind so a later intentional open of
+        // this thread can flush (and never into a stranger).
+        bindPendingUserMessage(frame.thread.id);
       }
     });
 
@@ -8350,6 +8413,12 @@
       // threads. A late snapshot must never replace the transcript for the
       // newly selected/created thread (or the fresh surface while no id exists).
       if (frame && frame.threadId && frame.threadId !== State.activeThreadId) return;
+      // A first-message send may have been deferred (thread-created arrived
+      // while this connection wasn't open yet, or a reconnect happened
+      // before the flush above fired). This is the next proof this
+      // connection can deliver to `frame.threadId` -- retry any stashed
+      // message now instead of relying on a timer.
+      flushPendingUserMessage(frame.threadId);
       // Whole-history replay from the server. Build state from scratch
       // and flush a single render — ChatRenderer reconciles the entire
       // chat-messages container against ChatState in one pass.
