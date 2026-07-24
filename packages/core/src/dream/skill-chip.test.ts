@@ -50,12 +50,15 @@ describe("skill-chip", () => {
     expect(input!.actionType).toBe("create_skill")
     expect(input!.threadId).toBe("thread-1")
     expect(input!.title).toBe("Deploy runbook skill")
-    expect(input!.payload).toMatchObject({
-      prompt: expect.stringContaining("Write SKILL.md covering jax-box deploys"),
-    })
-    expect((input!.payload as { prompt: string }).prompt).toContain(
-      "Create a new Luna skill",
-    )
+    // Read the prompt once into a plain string before asserting on it: bun's
+    // toMatchObject mutates matched leaves in place when given an
+    // expect.stringContaining matcher, so chaining a matcher-based
+    // toMatchObject and a later property read off the same object corrupts
+    // the second read. Two direct .toContain checks pin the same contract
+    // without tripping that mutation.
+    const prompt = (input!.payload as { prompt: string }).prompt
+    expect(prompt).toContain("Write SKILL.md covering jax-box deploys")
+    expect(prompt).toContain("Create a new Luna skill")
   })
 
   it("maps update → task targeting the existing skill path", () => {
