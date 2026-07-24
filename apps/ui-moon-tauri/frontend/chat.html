@@ -8285,33 +8285,70 @@
     // Attempt to deliver a message the composer stashed in
     // `State.pendingUserMessage` for a thread that didn't exist yet at
     // submit time (new-thread mint) or wasn't confirmed live yet (a
-    // reconnect mid-mint). Only ever cleared once the frame is actually
-    // handed to a live socket — the previous version nulled the stash
-    // and fired the real send after a blind 100ms `setTimeout`, so a
-    // WebSocket drop inside that window silently lost the message with
-    // no way to recover it (issue: "first message in new thread silently
-    // vanishes on drop"). Now: send immediately when connected (no
-    // arbitrary delay -- the server has already registered the thread's
-    // inbox by the time `thread-created` reaches the client, so there is
-    // nothing to wait out), otherwise leave the stash in place so the
-    // next `thread-snapshot` for this thread (post subscribe / post
-    // reconnect) can retry it.
+    // reconnect mid-mint).
+    //
+    // History: the old code nulled the stash and fired send after a blind
+    // 100ms setTimeout — a drop inside that window silently lost the first
+    // message (M41). Flush is now connection-gated and snapshot-retried.
+    //
+    // Binding (Devin review on #351): the stash carries an optional
+    // `threadId` stamped when `thread-created` arrives. Flush only sends when
+    // that target matches the caller's threadId so a reconnect that re-points
+    // activeThreadId at an older thread cannot misdeliver the first message.
+    // Unbound stashes (mint not yet acked) refuse snapshot flush entirely.
+    //
+    // Clear-after-send (Copilot review): the stash is only cleared once the
+    // frame has been handed to an OPEN socket; if send fails, restore it.
     function flushPendingUserMessage(threadId) {
       if (!State.pendingUserMessage) return;
-      if (!threadId || threadId !== State.activeThreadId) return;
-      if (!WebSocketEngine.isConnected()) {
-        Logger.warn(`flushPendingUserMessage: not connected yet for "${threadId}"; keeping queued for retry`);
+      if (!threadId) return;
+      const pending = State.pendingUserMessage;
+      // Bound target: only deliver to that exact thread.
+      if (pending.threadId && pending.threadId !== threadId) {
+        Logger.warn(
+          `flushPendingUserMessage: stash bound to "${pending.threadId}", not "${threadId}"; keeping queued`,
+        );
         return;
       }
-      const pending = State.pendingUserMessage;
-      State.pendingUserMessage = null;
-      WebSocketEngine.send({
+      // Unbound stash must not ride a random snapshot (reconnect last-thread).
+      if (!pending.threadId) {
+        Logger.warn(
+          `flushPendingUserMessage: stash has no target thread yet; keeping queued until thread-created binds it`,
+        );
+        return;
+      }
+      // Still require the bound thread to be the viewed one (user didn't leave).
+      if (threadId !== State.activeThreadId) return;
+      if (!WebSocketEngine.isConnected()
+          || !(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+        Logger.warn(
+          `flushPendingUserMessage: not connected yet for "${threadId}"; keeping queued for retry`,
+        );
+        return;
+      }
+      const frame = {
         type: 'user-message',
-        threadId,
+        threadId: pending.threadId,
         text: pending.text,
         client: MoonClient.CLIENT_INFO,
-        ...(pending.attachments ? { attachments: pending.attachments } : {})
-      });
+        ...(pending.attachments ? { attachments: pending.attachments } : {}),
+      };
+      try {
+        State.ws.send(JSON.stringify(frame));
+      } catch (e) {
+        Logger.error('flushPendingUserMessage: send failed; restoring stash', e);
+        return;
+      }
+      // Only clear after a successful handoff to the live socket.
+      State.pendingUserMessage = null;
+    }
+
+    /** Stamp the mint target onto a queued first message (if any). */
+    function bindPendingUserMessage(threadId) {
+      if (!threadId || !State.pendingUserMessage) return;
+      if (!State.pendingUserMessage.threadId) {
+        State.pendingUserMessage.threadId = threadId;
+      }
     }
 
     MoonFrames.register('thread-created', (frame) => {
@@ -8336,7 +8373,14 @@
         // Surface the brand-new thread in the drawer if it's open.
         try { if (State.threadDrawerOpen) ThreadDrawerEngine.requestList(); } catch (_) { /* best-effort */ }
 
+        // Bind the stash to THIS mint so a later snapshot for another thread
+        // cannot steal it, then attempt an immediate flush.
+        bindPendingUserMessage(createdThreadId);
         flushPendingUserMessage(createdThreadId);
+      } else if (frame && frame.thread && frame.thread.id) {
+        // User already moved on, but still bind so a later intentional open of
+        // this thread can flush (and never into a stranger).
+        bindPendingUserMessage(frame.thread.id);
       }
     });
 
