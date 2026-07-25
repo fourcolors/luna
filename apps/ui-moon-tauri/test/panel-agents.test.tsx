@@ -291,4 +291,43 @@ describe('AgentsPanel (React port of panels/agents.js)', () => {
     expect(badges[1]!.classList.contains('done')).toBe(true)
     expect(badges[2]!.classList.contains('error')).toBe(true)
   })
+  it('#62: hello without subagents still sends subagent-tree-request (clears stale agents on restart)', () => {
+    // Regression guard: after a server restart with zero agents, hello arrives
+    // with hasSubagents=false. Previously the hasSubagents guard prevented the
+    // subagent-tree-request from being sent, leaving stale RUNNING nodes visible.
+    // Now the request is always sent so the server can reply with agents:[] and
+    // clear the panel.
+    bootPanel('t1')
+    fireFrame(HELLO_WITHOUT_SUBAGENTS)
+
+    const sent = allSent()
+    const treeRequests = sent.filter((f) => f.type === 'subagent-tree-request')
+    expect(treeRequests).toHaveLength(1)
+    expect(treeRequests[0]).toEqual({ type: 'subagent-tree-request', threadId: 't1' })
+  })
+
+  it('#62: after restart with zero agents, stale nodes are cleared by empty tree response', () => {
+    // Simulate a panel that had agents from a prior session, then reconnects
+    // after a server restart with zero agents. The empty subagent-tree frame
+    // should clear all stale entries.
+    const el = bootPanel('t1')
+
+    // First connection: agents were running
+    fireFrame(HELLO_WITH_SUBAGENTS)
+    fireFrame({ type: 'subagent-tree', threadId: 't1', agents: [NODE_TOP] })
+    expect(el.querySelectorAll('.agent-row').length).toBe(1)
+
+    // Server restarts: hello without subagents (hasSubagents=false), but the
+    // unconditional subagent-tree-request is still sent; server replies with []
+    fireFrame(HELLO_WITHOUT_SUBAGENTS)
+    fireFrame({ type: 'subagent-tree', threadId: 't1', agents: [] })
+
+    // Panel should show empty state notice, not stale running nodes
+    const rows = el.querySelectorAll('.agent-row')
+    expect(rows.length).toBe(0)
+    const notice = el.querySelector('.agents-notice')
+    expect(notice).toBeTruthy()
+    expect(notice!.textContent).toContain('No subagents yet')
+  })
+
 })
