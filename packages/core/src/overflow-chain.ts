@@ -23,6 +23,7 @@ import {
   type AccountRecord,
   pickAccount,
 } from "./account-broker/rotation-policy.js"
+import { classifyThrottleKindOf } from "./throttle-kind.js"
 import type {
   AccountBrokerApi,
   AccountError,
@@ -323,24 +324,13 @@ export function defaultIsRotatableError(error: unknown): boolean {
       return false
     }
   }
-  const text = String(
-    (error as { message?: unknown })?.message ?? error,
-  ).toLowerCase()
-
-  return (
-    /\b(429|529)\b/.test(text) ||
-    text.includes("rate limit") ||
-    text.includes("rate_limit") ||
-    text.includes("session limit") ||
-    text.includes("session_limit") ||
-    text.includes("session quota") ||
-    text.includes("maximum sessions reached") ||
-    text.includes("quota_exhausted") ||
-    text.includes("quota exhausted") ||
-    text.includes("resource_exhausted") ||
-    text.includes("overloaded") ||
-    text.includes("too many requests")
-  )
+  // Delegates to the SHARED phrase table (throttle-kind.ts) that
+  // adapter-sdk's classifyThrottle also uses, so the "cool this account down"
+  // decision and the "rotate the lane" decision can never disagree about the
+  // same error text. This predicate previously kept its own copy of the list
+  // and had already drifted - it was missing `insufficient_quota` and
+  // `model busy`.
+  return classifyThrottleKindOf(error) !== undefined
 }
 
 export interface OverflowExecutionOptions<A, E, R> {
@@ -382,21 +372,22 @@ export function executeWithOverflowChain<A, E, R>(
       return yield* opts.execute(acq).pipe(
         Effect.tapError((err) => {
           if (isRotatable(err) && acq.failoverPossible !== false) {
-            const text = String(
-              (err as { message?: unknown })?.message ?? err,
-            ).toLowerCase()
-            const isSessionLimit =
-              (typeof err === "object" &&
-                err !== null &&
-                "_tag" in err &&
-                (err as { _tag: string })._tag === "SessionLimitError") ||
-              text.includes("session limit") ||
-              text.includes("session_limit") ||
-              text.includes("session quota") ||
-              text.includes("maximum sessions reached")
+            // Report the SPECIFIC kind so the broker's cooldown reason matches
+            // what actually happened. A tagged SessionLimitError wins outright;
+            // otherwise the shared phrase table decides, and an error that only
+            // a caller-supplied `isRotatableError` recognized (so the table
+            // returns nothing) falls back to a plain rate_limit cooldown.
+            const tag =
+              typeof err === "object" && err !== null && "_tag" in err
+                ? (err as { _tag: string })._tag
+                : undefined
+            const kind =
+              tag === "SessionLimitError"
+                ? "session_limit"
+                : (classifyThrottleKindOf(err) ?? "rate_limit")
             return opts.broker.report({
               accountId: acq.credential.accountId,
-              kind: isSessionLimit ? "session_limit" : "rate_limit",
+              kind,
             }).pipe(Effect.catchAll(() => Effect.void))
           }
           return Effect.void

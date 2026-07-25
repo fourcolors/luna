@@ -11,14 +11,15 @@
  * otherwise yield a wildly wrong cooldown (16.7 h / the day-of-month in
  * seconds). The clamp bounds the damage of any misparse; chain failover only
  * needs "cool this account for a while", not a precise horizon. */
+import { classifyThrottleKind, type ThrottleKind } from "@luna/core"
+
 const RETRY_AFTER_MIN_MS = 1_000
 const RETRY_AFTER_MAX_MS = 10 * 60 * 1000 // 10 min
 
-export type ThrottleKind =
-  | "rate_limit"
-  | "session_limit"
-  | "quota_exhausted"
-  | "model_busy"
+// The phrase table itself lives in @luna/core (throttle-kind.ts) so this
+// classifier and core's overflow-chain rotation predicate read from ONE list.
+// Re-exported so existing `@luna/adapter-sdk` importers keep working.
+export type { ThrottleKind }
 
 export interface ThrottleClassification {
   readonly throttled: boolean
@@ -42,38 +43,7 @@ export function classifyThrottle(cause: unknown): ThrottleClassification {
     (cause as { message?: unknown })?.message ?? cause,
   ).toLowerCase()
 
-  let kind: ThrottleKind | undefined
-
-  if (
-    text.includes("session limit") ||
-    text.includes("session_limit") ||
-    text.includes("session quota") ||
-    text.includes("maximum sessions reached")
-  ) {
-    kind = "session_limit"
-  } else if (
-    text.includes("quota_exhausted") ||
-    text.includes("quota exhausted") ||
-    text.includes("insufficient_quota") ||
-    text.includes("resource_exhausted")
-  ) {
-    kind = "quota_exhausted"
-  } else if (
-    /\b529\b/.test(text) ||
-    text.includes("overloaded") ||
-    text.includes("model busy") ||
-    text.includes("server overloaded")
-  ) {
-    kind = "model_busy"
-  } else if (
-    /\b429\b/.test(text) ||
-    text.includes("rate limit") ||
-    text.includes("rate_limit") ||
-    text.includes("too many requests")
-  ) {
-    kind = "rate_limit"
-  }
-
+  const kind = classifyThrottleKind(text)
   if (!kind) return { throttled: false }
 
   // Best-effort retry-after parse: "retry-after: 30" / "retry after 30s".
