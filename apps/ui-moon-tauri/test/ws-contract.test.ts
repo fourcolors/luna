@@ -104,7 +104,6 @@ describe('Moon WS-contract harness (frontend/chat.html WebSocketEngine)', () => 
   // ───────────────────────────────────────────────────────────────────────
   describe('Scenario: connection never opens / drops mid-stream', () => {
     it('schedules reconnect with exponential backoff and caps at 16s', () => {
-      const m = internals()
       const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
       const expectedDelays = [1000, 2000, 4000, 8000, 16000, 16000]
 
