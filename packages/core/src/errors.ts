@@ -21,6 +21,12 @@ export class RateLimitError extends Data.TaggedError("RateLimitError")<{
   readonly cause: unknown
 }> {}
 
+export class SessionLimitError extends Data.TaggedError("SessionLimitError")<{
+  readonly module: string
+  readonly retryAfterMs?: number
+  readonly cause: unknown
+}> {}
+
 export class PermissionError extends Data.TaggedError("PermissionError")<{
   readonly module: string
   readonly subject: string

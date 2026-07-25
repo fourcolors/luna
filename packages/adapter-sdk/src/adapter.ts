@@ -736,7 +736,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             Effect.runPromise(
               broker.report({
                 accountId: id,
-                kind: "rate_limit",
+                kind: cls.kind ?? "rate_limit",
                 ...(cls.retryAfterMs !== undefined
                   ? { retryAfterMs: cls.retryAfterMs }
                   : {}),

@@ -11,43 +11,49 @@
  * otherwise yield a wildly wrong cooldown (16.7 h / the day-of-month in
  * seconds). The clamp bounds the damage of any misparse; chain failover only
  * needs "cool this account for a while", not a precise horizon. */
+import { classifyThrottleKind, type ThrottleKind } from "@luna/core"
+
 const RETRY_AFTER_MIN_MS = 1_000
 const RETRY_AFTER_MAX_MS = 10 * 60 * 1000 // 10 min
 
+// The phrase table itself lives in @luna/core (throttle-kind.ts) so this
+// classifier and core's overflow-chain rotation predicate read from ONE list.
+// Re-exported so existing `@luna/adapter-sdk` importers keep working.
+export type { ThrottleKind }
+
 export interface ThrottleClassification {
   readonly throttled: boolean
+  readonly kind?: ThrottleKind
   /** Parsed + clamped retry-after in ms, when the error text carried one. */
   readonly retryAfterMs?: number
 }
 
 /**
  * Classify a terminal stream error as a throttle (HTTP 429/529, rate-limit /
- * overload phrasing). Word-boundary status codes + explicit phrases so
- * "11429 tokens" / "disk quota exceeded" don't false-positive into a cooldown.
+ * session-limit / overload / quota phrasing). Word-boundary status codes +
+ * explicit phrases so "11429 tokens" / "disk quota exceeded" don't false-positive
+ * into a cooldown.
  * Anthropic throttles surface as 429 (rate_limit_error) / 529
- * (overloaded_error); an Anthropic-format gateway (LiteLLM) normalizes
- * upstream provider limits to 429s, and "resource_exhausted" covers a raw
- * Gemini RESOURCE_EXHAUSTED leaking through unconverted.
+ * (overloaded_error); session limit errors surface on OAuth subscription accounts
+ * or gateway session limits; "resource_exhausted" / "quota_exhausted" covers raw
+ * Gemini or OpenAI API quota errors.
  */
 export function classifyThrottle(cause: unknown): ThrottleClassification {
   const text = String(
     (cause as { message?: unknown })?.message ?? cause,
   ).toLowerCase()
-  const throttled =
-    /\b(429|529)\b/.test(text) ||
-    text.includes("rate limit") ||
-    text.includes("rate_limit") ||
-    text.includes("too many requests") ||
-    text.includes("resource_exhausted") ||
-    text.includes("overloaded")
-  if (!throttled) return { throttled: false }
+
+  const kind = classifyThrottleKind(text)
+  if (!kind) return { throttled: false }
+
   // Best-effort retry-after parse: "retry-after: 30" / "retry after 30s".
   // Assumes SECONDS (the HTTP convention), clamped to bound a misparse.
   const m = text.match(/retry[-_ ]?after[^0-9]*([0-9]+)/)
-  if (!m || !m[1]) return { throttled: true }
+  if (!m || !m[1]) return { throttled: true, kind }
   const retryAfterMs = Math.min(
     Math.max(Number(m[1]) * 1000, RETRY_AFTER_MIN_MS),
     RETRY_AFTER_MAX_MS,
   )
-  return { throttled: true, retryAfterMs }
+  return { throttled: true, kind, retryAfterMs }
 }
+

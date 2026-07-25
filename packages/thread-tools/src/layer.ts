@@ -5,7 +5,7 @@ import type {
   McpSdkServerConfigWithInstance,
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk"
-import { ForkProposalStore } from "./store.js"
+import { ForkProposalStore, type ForkProposalStoreApi } from "./store.js"
 import { makeForkThreadTools } from "./tools.js"
 import { FORK_CHILD_TAG } from "./types.js"
 
@@ -19,7 +19,7 @@ export interface ThreadToolsSessionConfig {
 
 export interface ThreadToolsConfig extends ThreadToolsSessionConfig {
   readonly createSessionBinding: () => ThreadToolsSessionConfig
-  readonly store: ForkProposalStore
+  readonly store: ForkProposalStoreApi
 }
 
 export class ThreadToolsService extends Effect.Tag("luna/ThreadToolsService")<
@@ -48,7 +48,7 @@ const buildServer = (
 }
 
 const createConfig = (
-  store: ForkProposalStore,
+  store: ForkProposalStoreApi,
 ): ThreadToolsSessionConfig => {
   const sessionCell: {
     value: string | null

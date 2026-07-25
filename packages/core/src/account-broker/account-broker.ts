@@ -71,7 +71,7 @@ export type UsageReport =
   | { readonly accountId: string; readonly kind: "error" }
   | {
       readonly accountId: string
-      readonly kind: "rate_limit"
+      readonly kind: "rate_limit" | "session_limit" | "quota_exhausted" | "model_busy"
       readonly retryAfterMs?: number
     }
   | {
@@ -330,7 +330,12 @@ const fromAccounts = (
 
       const report: AccountBrokerApi["report"] = (usage) =>
         Effect.gen(function* () {
-          if (usage.kind === "rate_limit") {
+          if (
+            usage.kind === "rate_limit" ||
+            usage.kind === "session_limit" ||
+            usage.kind === "quota_exhausted" ||
+            usage.kind === "model_busy"
+          ) {
             const now = yield* clock.nowMs()
             const cooldownUntil =
               now + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)

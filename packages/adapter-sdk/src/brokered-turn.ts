@@ -177,7 +177,7 @@ export function runBrokeredReasonerTurn<E>(args: {
         if (cls.throttled) {
           yield* args.broker.report({
             accountId: acq.credential.accountId,
-            kind: "rate_limit",
+            kind: cls.kind ?? "rate_limit",
             ...(cls.retryAfterMs !== undefined
               ? { retryAfterMs: cls.retryAfterMs }
               : {}),
