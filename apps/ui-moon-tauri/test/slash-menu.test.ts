@@ -227,6 +227,10 @@ describe('SlashMenu (chat.html)', () => {
   }
 
   it('"/new feature idea" is NOT a command — does not wipe the thread, sends as a message', () => {
+    // A connected socket: WebSocketEngine.isConnected() gates handleSubmit's
+    // send path on State.ws.readyState — without it this takes the offline
+    // branch and never calls appendMessage('user', ...) at all.
+    internals().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
     const newConv = vi.spyOn(internals().ChatEngine, 'newConversation').mockImplementation(() => {})
     const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
     vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation(() => {})
@@ -255,6 +259,10 @@ describe('SlashMenu (chat.html)', () => {
   })
 
   it('"/help me write code" is NOT /help — sends as a message', () => {
+    // A connected socket: WebSocketEngine.isConnected() gates handleSubmit's
+    // send path on State.ws.readyState — without it this takes the offline
+    // branch and never calls appendMessage('user', ...) at all.
+    internals().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
     const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
     vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation(() => {})
     if (internals().VoiceEngine?.onUserSend) vi.spyOn(internals().VoiceEngine, 'onUserSend').mockImplementation(() => {})

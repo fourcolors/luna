@@ -255,7 +255,14 @@ import {
   AUTO_ARCHIVE_IDLE_MS,
   MCPRegistry,
   openUiFeedbackStatusStore,
+  UI_FEEDBACK_SENTINEL_SESSION,
+  createFeedbackCreateJobDep,
+  feedbackAutoJobEnabled,
+  FeedbackJobObserverLayer,
+  runFeedbackCreateJobNoThrow,
   type FeedbackListRow,
+  type FeedbackJobsDep,
+  type FeedbackSetStatusDep,
   MemoryReranker,
   BulletinWriter,
   shapeActivitySnapshot,
@@ -426,6 +433,7 @@ import {
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
   deleteMemoryRecordWithScopeCheck,
+  isCuratedToolAllowed,
   pulseFromSnapshot,
   toCuratedMemoryRow,
   type FeedbackListPage,
@@ -3129,6 +3137,14 @@ export const writeFeedbackScreenshot = (
   }
 }
 
+/** Maps a client-supplied threadId to the session_id stored on a ui_feedback
+ *  note. Empty string and missing values both fall back to the sentinel
+ *  session so the note is never recorded with an empty session_id (which
+ *  downstream deliver_to logic treats as "no real thread"). Exported for
+ *  unit tests. */
+export const resolveUiFeedbackSessionId = (threadId: string | undefined): string =>
+  threadId || UI_FEEDBACK_SENTINEL_SESSION
+
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
 ): Layer.Layer<ServerHandle> =>
@@ -3842,6 +3858,54 @@ const buildServerLayer = (
         return uiFeedbackStatusStore.setStatus(args, Date.now())
       }
 
+      // ── Feedback → durable job bridge (@luna/core feedback-job-bridge) ────
+      // Reused by both the submit-time auto-enqueue below (feedbackSink) AND
+      // the `feedback-create-job` curated tool (buildCuratedAppTools) — one
+      // deps object, one createFeedbackCreateJobDep call. jobsStore is the
+      // already-in-scope Effect-based JobsStoreService (~3153); adapted to
+      // FeedbackJobsDep's plain-Promise shape with Effect.runPromise, the
+      // same seam every other Promise-based dep in this file uses to reach
+      // an Effect service (getMemoryDelete, getFeedbackList, …).
+      const feedbackJobsDep: FeedbackJobsDep = {
+        record: (input) => Effect.runPromise(jobsStore.record(input)),
+        getById: (id) => Effect.runPromise(jobsStore.getById(id)),
+      }
+      const feedbackSetStatusDep: FeedbackSetStatusDep = async (args, nowMs) => {
+        if (uiFeedbackStatusStore === null) {
+          return { ok: false, message: "feedback triage store unavailable" }
+        }
+        return uiFeedbackStatusStore.setStatus(args, nowMs)
+      }
+      const feedbackCreateJob = createFeedbackCreateJobDep({
+        store:
+          uiFeedbackStatusStore !== null
+            ? { getRow: (id) => uiFeedbackStatusStore.getRow(id) }
+            : null,
+        jobs: feedbackJobsDep,
+        setStatus: feedbackSetStatusDep,
+        nowMs: () => Date.now(),
+      })
+
+      // Completion observer: folds a feedback job's terminal run status back
+      // onto the note (queued -> resolved | job-failed). Best-effort, forked
+      // for the life of this Layer.scoped's Scope — mirrors AcceptHandler's
+      // own completion observer (acceptHandlerL above). No-op (nothing to
+      // observe) when the status store failed to open at boot.
+      if (uiFeedbackStatusStore !== null) {
+        const ufs = uiFeedbackStatusStore
+        yield* Layer.build(
+          FeedbackJobObserverLayer({
+            listQueued: async (limit) => {
+              const { rows } = ufs.list({ limit, offset: 0, status: "queued" })
+              return rows.map((r) => ({ id: r.id, resolvedRef: r.resolvedRef }))
+            },
+            listRuns: (jobId, limit) => Effect.runPromise(jobsStore.listRuns(jobId, limit)),
+            setStatus: feedbackSetStatusDep,
+            nowMs: () => Date.now(),
+          }),
+        )
+      }
+
       // ── G4 external MCP-app stdio relay (#161) ─────────────────────────────
       // Env-gated, default-off: LUNA_EXTERNAL_MCP_SERVERS unset/empty ⇒ no
       // subprocesses, inert third provider, production behavior unchanged.
@@ -3907,7 +3971,11 @@ const buildServerLayer = (
           // Static, compile-time core apps (the Luna server as first provider).
           createCoreAppRegistry([
             buildWorkspacePulseApp(getPulse),
-            buildFeedbackQueueApp({ feedbackList: getFeedbackList, feedbackSetStatus: getFeedbackSetStatus }),
+            buildFeedbackQueueApp({
+              feedbackList: getFeedbackList,
+              feedbackSetStatus: getFeedbackSetStatus,
+              feedbackCreateJob,
+            }),
           ]),
           // Generated / user-authored apps: ui://luna/app/<id> resolves to a
           // pinned mcp-app artifact's HTML, tools/call gated by the curated set.
@@ -3951,18 +4019,23 @@ const buildServerLayer = (
               memoryList: getMemoryListPage,
               memorySearch: getMemorySearchPage,
               memoryDelete: getMemoryDelete,
-              // feedback-list / feedback-set-status: same curated tool names
-              // the static ui://luna/feedback-queue app above uses, now also
-              // available to store-backed apps (Phase 2's live queue app).
+              // feedback-list / feedback-set-status: curated tools that back
+              // the static ui://luna/feedback-queue app and are also available
+              // to store-backed apps (Phase 2's live queue app).
               feedbackList: getFeedbackList,
               feedbackSetStatus: getFeedbackSetStatus,
+              // feedback-create-job: optional manual re-run/queue of a durable
+              // job for a `ui_feedback` report — same deps object the submit-
+              // time auto-enqueue above uses, reused here rather than a second
+              // createFeedbackCreateJobDep.
+              feedbackCreateJob,
             }),
             // Reads are useful to generated memory/feedback views, but each
-            // registry's one mutation is a privileged capability of its OWN
-            // reviewed artifact, not something every generated app inherits.
-            isToolAllowed: (artifactId, tool) =>
-              (tool !== "memory-delete" || artifactId === "mcp-app:memory-browser") &&
-              (tool !== "feedback-set-status" || artifactId === "mcp-app:feedback-queue"),
+            // mutation is a privileged capability of its OWN reviewed artifact,
+            // not something every generated app inherits.
+            // isCuratedToolAllowed (core-apps.ts) is the extracted, tested
+            // truth table — the live gate, not a hand-rolled duplicate of it.
+            isToolAllowed: isCuratedToolAllowed,
           }),
           // G4 third-party relay: ui:// from external stdio MCP servers
           // (same-server tool rule enforced inside createExternalMcpAppRegistry).
@@ -4302,7 +4375,7 @@ const buildServerLayer = (
           return agentNotes
             .record({
               id,
-              sessionId: input.threadId ?? "ui-feedback",
+              sessionId: resolveUiFeedbackSessionId(input.threadId),
               kind: "ui_feedback",
               summary: input.note.slice(0, 200),
               payload: {
@@ -4321,6 +4394,25 @@ const buildServerLayer = (
               },
             })
             .pipe(
+              // Auto-enqueue a durable one-shot job for this note at
+              // SUBMIT time, default ON (LUNA_WAKE_ENABLED idiom: only
+              // "0" turns it off). Best-effort: any failure here is
+              // logged loudly but the note is already durably recorded,
+              // so the ack must still be ok:true — a failed auto-job
+              // just means the report waits for a manual
+              // feedback-create-job retry instead of nothing at all.
+              Effect.tap(() => {
+                if (!feedbackAutoJobEnabled()) {
+                  return Effect.void
+                }
+                return Effect.promise(() =>
+                  runFeedbackCreateJobNoThrow(
+                    feedbackCreateJob,
+                    id,
+                    (message) => writeSync(1, `[luna/ui-feedback] ${message}\n`),
+                  ),
+                ).pipe(Effect.catchAllCause(() => Effect.void))
+              }),
               Effect.as({ ok: true as const }),
               Effect.catchAll(() =>
                 Effect.succeed({

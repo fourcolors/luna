@@ -1,5 +1,5 @@
 /**
- * Unit tests for readPngDimensions + writeFeedbackScreenshot (chat-server.ts)
+ * Unit tests for readPngDimensions + writeFeedbackScreenshot + resolveUiFeedbackSessionId (chat-server.ts)
  * — the disk-write step of the point-at-the-UI feedback screenshot sink
  * (Moon feedback-screenshot + triage-queue, Phase 1).
  *
@@ -24,7 +24,8 @@ import { describe, expect, it, afterEach } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { readPngDimensions, writeFeedbackScreenshot } from "../chat-server.js"
+import { UI_FEEDBACK_SENTINEL_SESSION } from "@luna/core"
+import { readPngDimensions, resolveUiFeedbackSessionId, writeFeedbackScreenshot } from "../chat-server.js"
 
 // A real, minimal 1x1 transparent PNG (67 bytes) — small enough to inline.
 const ONE_BY_ONE_PNG_BASE64 =
@@ -111,5 +112,16 @@ describe("writeFeedbackScreenshot", () => {
     fs.writeFileSync(blockedDir, "not a directory")
     expect(() => writeFeedbackScreenshot(ONE_BY_ONE_PNG_BASE64, "note-4", blockedDir)).not.toThrow()
     expect(writeFeedbackScreenshot(ONE_BY_ONE_PNG_BASE64, "note-4", blockedDir)).toBeNull()
+  })
+})
+
+describe("resolveUiFeedbackSessionId", () => {
+  it("falls back to the sentinel session when threadId is undefined or empty", () => {
+    expect(resolveUiFeedbackSessionId(undefined)).toBe(UI_FEEDBACK_SENTINEL_SESSION)
+    expect(resolveUiFeedbackSessionId("")).toBe(UI_FEEDBACK_SENTINEL_SESSION)
+  })
+
+  it("preserves a non-empty threadId", () => {
+    expect(resolveUiFeedbackSessionId("thr-abc")).toBe("thr-abc")
   })
 })

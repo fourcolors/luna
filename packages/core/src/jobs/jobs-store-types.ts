@@ -43,6 +43,20 @@ export type JobKind =
   | "dream"
   | "wake"
 
+/** A jobs-store `record()` input minus the caller-supplied `id`. Shared shape
+ *  for callers that build a one-shot job spec and hand it to `record()` under
+ *  a deterministic id — suggested-actions/accept-handler.ts's JobRecordSpec
+ *  and agent-notes/feedback-job-bridge.ts's JobRecordSpec both alias this
+ *  rather than hand-mirroring the same three fields independently. */
+export type JobRecordInputSpec = {
+  readonly kind: JobKind
+  readonly spec: string
+  readonly payload: { readonly label: string; readonly source?: string } & Record<
+    string,
+    unknown
+  >
+}
+
 export interface PersistedJob {
   readonly id: string
   readonly kind: JobKind

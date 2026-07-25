@@ -26,8 +26,10 @@ import {
   createCoreAppRegistry,
   createStoreBackedAppRegistry,
   deleteMemoryRecordWithScopeCheck,
+  isCuratedToolAllowed,
   pulseFromSnapshot,
   toCuratedMemoryRow,
+  validateFeedbackCreateJobArgs,
   validateFeedbackListArgs,
   validateFeedbackSetStatusArgs,
   validateMemoryDeleteArgs,
@@ -652,6 +654,86 @@ describe("validateFeedbackListArgs — the one choke point for feedback-list wir
   })
 })
 
+describe("buildCuratedAppTools — feedback-create-job (B13)", () => {
+  it("[B13] exposes feedback-create-job alongside the existing feedback-* tools and calls the injected dep exactly once with validated args", async () => {
+    const feedbackCreateJob = vi.fn(async () => ({ ok: true, jobId: "fbj-fb_1" }))
+    const tools = buildCuratedAppTools({
+      getPulse: async () => ({ toolsCalled: 0, errors: 0, estimatedUsd: 0, activeSessions: 0 }),
+      listArtifacts: async () => [],
+      memoryList: async () => memoryListStub(),
+      memorySearch: async () => memorySearchStub(),
+      memoryDelete: async () => memoryDeleteStub(),
+      feedbackList: async () => feedbackListStub(),
+      feedbackSetStatus: async () => feedbackSetStatusStub(),
+      feedbackCreateJob,
+    })
+    expect(Object.keys(tools).sort()).toEqual([
+      "feedback-create-job",
+      "feedback-list",
+      "feedback-set-status",
+      "list-artifacts",
+      "memory-delete",
+      "memory-list",
+      "memory-search",
+      "pulse",
+    ])
+    await tools["feedback-create-job"]!({ id: "  fb_1  " })
+    expect(feedbackCreateJob).toHaveBeenCalledTimes(1)
+    expect(feedbackCreateJob).toHaveBeenCalledWith({ id: "fb_1" })
+  })
+})
+
+describe("validateFeedbackCreateJobArgs — the one choke point for feedback-create-job wire input", () => {
+  it("[B13] trims a well-formed id", () => {
+    expect(validateFeedbackCreateJobArgs({ id: "  fb_1  " })).toEqual({ id: "fb_1" })
+  })
+
+  it("[B13] never throws, normalizing missing/non-string id to ''", () => {
+    for (const bad of [undefined, null, "nope", 5, [], {}]) {
+      expect(() => validateFeedbackCreateJobArgs(bad)).not.toThrow()
+    }
+    expect(validateFeedbackCreateJobArgs(undefined)).toEqual({ id: "" })
+    expect(validateFeedbackCreateJobArgs({ id: 5 })).toEqual({ id: "" })
+  })
+
+  it("[B13] clamps a pathological id to FEEDBACK_ID_MAX_LEN=200 (mirrors validateFeedbackSetStatusArgs, core-apps.ts:391)", () => {
+    expect(validateFeedbackCreateJobArgs({ id: "x".repeat(1000) }).id).toHaveLength(200)
+  })
+})
+
+describe("isCuratedToolAllowed — the extracted per-app mutation gate (B12)", () => {
+  // Truth table over the three mutation tools x {own app, other app}. No
+  // widening of the existing two gates: memory-delete stays scoped to
+  // mcp-app:memory-browser and feedback-set-status stays scoped to
+  // mcp-app:feedback-queue, exactly as chat-server.ts:3961-3963 today.
+  const mutationCases: ReadonlyArray<{
+    readonly tool: string
+    readonly ownApp: string
+    readonly otherApp: string
+  }> = [
+    { tool: "memory-delete", ownApp: "mcp-app:memory-browser", otherApp: "mcp-app:feedback-queue" },
+    { tool: "feedback-set-status", ownApp: "mcp-app:feedback-queue", otherApp: "mcp-app:memory-browser" },
+    { tool: "feedback-create-job", ownApp: "mcp-app:feedback-queue", otherApp: "mcp-app:memory-browser" },
+  ]
+
+  it.each(mutationCases)(
+    "[B12] $tool is allowed ONLY for its own reviewed artifact id",
+    ({ tool, ownApp, otherApp }) => {
+      expect(isCuratedToolAllowed(ownApp, tool)).toBe(true)
+      expect(isCuratedToolAllowed(otherApp, tool)).toBe(false)
+      expect(isCuratedToolAllowed("mcp-app:some-unrelated-app", tool)).toBe(false)
+    },
+  )
+
+  it("[B12] read tools stay allowed everywhere (no gate)", () => {
+    for (const tool of ["pulse", "list-artifacts", "memory-list", "memory-search", "feedback-list"]) {
+      expect(isCuratedToolAllowed("mcp-app:memory-browser", tool)).toBe(true)
+      expect(isCuratedToolAllowed("mcp-app:feedback-queue", tool)).toBe(true)
+      expect(isCuratedToolAllowed("mcp-app:some-unrelated-app", tool)).toBe(true)
+    }
+  })
+})
+
 describe("validateFeedbackSetStatusArgs — the one choke point for feedback-set-status wire input", () => {
   it("trims id/status and length-caps resolvedRef/notes", () => {
     expect(
@@ -682,7 +764,7 @@ describe("validateFeedbackSetStatusArgs — the one choke point for feedback-set
 })
 
 describe("buildFeedbackQueueApp — the Phase 1 on-demand triage view", () => {
-  it("registers at ui://luna/feedback-queue with exactly feedback-list + feedback-set-status", async () => {
+  it("registers at ui://luna/feedback-queue with exactly feedback-list + feedback-set-status when no create-job dep is wired", async () => {
     const feedbackList = vi.fn(async () => feedbackListStub())
     const feedbackSetStatus = vi.fn(async () => feedbackSetStatusStub())
     const app = buildFeedbackQueueApp({ feedbackList, feedbackSetStatus })
@@ -693,6 +775,25 @@ describe("buildFeedbackQueueApp — the Phase 1 on-demand triage view", () => {
     await app.tools["feedback-set-status"]!({ id: "fb_1", status: "resolved" })
     expect(feedbackList).toHaveBeenCalledTimes(1)
     expect(feedbackSetStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it("exposes feedback-create-job (validated) when the dep is wired, so the panel can spin up a job", async () => {
+    const feedbackCreateJob = vi.fn(async () => ({ ok: true, jobId: "fbj-1" }))
+    const app = buildFeedbackQueueApp({
+      feedbackList: async () => feedbackListStub(),
+      feedbackSetStatus: async () => feedbackSetStatusStub(),
+      feedbackCreateJob,
+    })
+    expect(Object.keys(app.tools).sort()).toEqual([
+      "feedback-create-job",
+      "feedback-list",
+      "feedback-set-status",
+    ])
+    // Raw wire args are validated/clamped before the dep sees them.
+    const res = await app.tools["feedback-create-job"]!({ id: "  fb_1  " })
+    expect(res).toEqual({ ok: true, jobId: "fbj-1" })
+    expect(feedbackCreateJob).toHaveBeenCalledTimes(1)
+    expect(feedbackCreateJob).toHaveBeenCalledWith({ id: "fb_1" })
   })
 
   it("is servable through createCoreAppRegistry (readResource + callTool)", async () => {

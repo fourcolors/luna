@@ -230,6 +230,35 @@ describe("feedback-only ui-ws server (live)", () => {
     client.close()
   })
 
+  it("an over-long threadId (> 256 chars) is dropped — the note still submits ok:true, with no threadId field", async () => {
+    activeRig = await startFeedbackRig()
+    const client = await openClient(activeRig.url)
+    await client.waitFor((f) => f.type === "hello")
+
+    client.send(validSubmit({ requestId: "fb-tid-1", threadId: "t".repeat(257) }))
+    const ack = await client.waitFor(
+      (f) => f.type === "feedback-ack" && f.requestId === "fb-tid-1",
+    )
+    expect(ack).toMatchObject({ ok: true })
+    expect(activeRig.recorded).toHaveLength(1)
+    expect("threadId" in activeRig.recorded[0]!).toBe(false)
+    client.close()
+  })
+
+  it("a threadId at exactly the 256-char cap still passes through", async () => {
+    activeRig = await startFeedbackRig()
+    const client = await openClient(activeRig.url)
+    await client.waitFor((f) => f.type === "hello")
+
+    client.send(validSubmit({ requestId: "fb-tid-2", threadId: "t".repeat(256) }))
+    const ack = await client.waitFor(
+      (f) => f.type === "feedback-ack" && f.requestId === "fb-tid-2",
+    )
+    expect(ack).toMatchObject({ ok: true })
+    expect(activeRig.recorded[0]!.threadId).toBe("t".repeat(256))
+    client.close()
+  })
+
   it("a sink defect acks ok:false (catchAllCause) and keeps the connection alive", async () => {
     activeRig = await startFeedbackRig("defect")
     const client = await openClient(activeRig.url)

@@ -82,9 +82,12 @@ const samplePayload = (over: Record<string, unknown> = {}) => ({
 })
 
 describe("openUiFeedbackStatusStore", () => {
-  it("migration is idempotent — opening twice on the same db does not error", async () => {
+  it("migration is idempotent — opening twice on the same db does not error", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return // skip in non-bun environments
+    if (db === null) {
+      ctx.skip() // visibly skipped (not silently green) in non-bun environments
+      return
+    }
     const store1 = openUiFeedbackStatusStore(db, Date.now())
     const store2 = openUiFeedbackStatusStore(db, Date.now())
     expect(store1).toBeTruthy()
@@ -95,9 +98,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row?.version).toBe(1)
   })
 
-  it("list() defaults to status:'open' when a note has no status row", async () => {
+  it("list() defaults to status:'open' when a note has no status row", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     insertNote(db, { id: "fb-1", payload: samplePayload() })
     const store = openUiFeedbackStatusStore(db, Date.now())
     const { rows, hasMore } = store.list({ limit: 25, offset: 0 })
@@ -107,9 +113,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(hasMore).toBe(false)
   })
 
-  it("list() respects an explicit status filter and pagination (limit/offset/hasMore)", async () => {
+  it("list() respects an explicit status filter and pagination (limit/offset/hasMore)", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     const store = openUiFeedbackStatusStore(db, Date.now())
     for (let i = 0; i < 5; i++) {
       insertNote(db, { id: `fb-p-${i}`, payload: samplePayload(), ts: 1000 + i })
@@ -132,9 +141,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(resolved.rows.every((r) => r.status === "resolved")).toBe(true)
   })
 
-  it("setStatus() upserts on first call and updates on a second call with different values", async () => {
+  it("setStatus() upserts on first call and updates on a second call with different values", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     insertNote(db, { id: "fb-up", payload: samplePayload() })
     const store = openUiFeedbackStatusStore(db, Date.now())
 
@@ -157,9 +169,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(after2.updatedAt).toBe(2000)
   })
 
-  it("setStatus() on an unknown id returns {ok:false} and does not insert a row", async () => {
+  it("setStatus() on an unknown id returns {ok:false} and does not insert a row", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     const store = openUiFeedbackStatusStore(db, Date.now())
     const result = store.setStatus({ id: "does-not-exist", status: "resolved" }, Date.now())
     expect(result.ok).toBe(false)
@@ -170,9 +185,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row).toBeNull()
   })
 
-  it("projects an OLD-SHAPE payload (no `screenshot` key at all) to null screenshot fields without throwing", async () => {
+  it("projects an OLD-SHAPE payload (no `screenshot` key at all) to null screenshot fields without throwing", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     // Exact pre-this-PR payload shape: note/target/page/appVersion/appearance/
     // clientTs — NO `screenshot` key.
     insertNote(db, {
@@ -197,9 +215,12 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row.screenshotHeight).toBeNull()
   })
 
-  it("projects cleanly even when payload_json is malformed (defensive parse, never throws)", async () => {
+  it("projects cleanly even when payload_json is malformed (defensive parse, never throws)", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
-    if (db === null) return
+    if (db === null) {
+      ctx.skip()
+      return
+    }
     db.query(
       `INSERT INTO agent_notes (id, session_id, parent_id, kind, summary, payload_json, ts)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -211,7 +232,257 @@ describe("openUiFeedbackStatusStore", () => {
     expect(row.screenshotPath).toBeNull()
   })
 
-  it("FK CASCADE: deleting the parent agent_notes row removes the ui_feedback_status row", async () => {
+  it("setStatus with expectedStatus updates only when the current status matches", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-ok" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-ok", status: "queued", notes: "first" }, 1000)
+
+    const result = store.setStatus(
+      {
+        id: "fb-guard-ok",
+        status: "resolved",
+        resolvedRef: "done",
+        notes: "auto",
+        expectedStatus: "queued",
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(true)
+    const row = store.getRow("fb-guard-ok")
+    expect(row?.status).toBe("resolved")
+    expect(row?.resolvedRef).toBe("done")
+  })
+
+  it("setStatus with expectedStatus returns ok:false and does not overwrite a status set after the snapshot", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-race" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-race", status: "queued", notes: "human" }, 1000)
+    store.setStatus({ id: "fb-guard-race", status: "triaged", notes: "human already looked" }, 1500)
+
+    const result = store.setStatus(
+      {
+        id: "fb-guard-race",
+        status: "resolved",
+        resolvedRef: "done",
+        notes: "auto",
+        expectedStatus: "queued",
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(false)
+    const row = store.getRow("fb-guard-race")
+    expect(row?.status).toBe("triaged")
+    expect(row?.statusNotes).toBe("human already looked")
+  })
+
+  it("setStatus with appendNotes appends to an existing note without wiping it", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-append" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-append", status: "queued", notes: "human note" }, 1000)
+    store.setStatus(
+      { id: "fb-append", status: "resolved", notes: "auto: done", appendNotes: true },
+      2000,
+    )
+
+    expect(store.getRow("fb-append")?.statusNotes).toBe("human note\nauto: done")
+  })
+
+  it("setStatus with expectedStatus and appendNotes preserves an existing note through the fold-back", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-append" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-append", status: "queued", notes: "human" }, 1000)
+    const result = store.setStatus(
+      {
+        id: "fb-guard-append",
+        status: "resolved",
+        notes: "auto: completed",
+        expectedStatus: "queued",
+        appendNotes: true,
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(true)
+    expect(store.getRow("fb-guard-append")?.statusNotes).toBe("human\nauto: completed")
+  })
+
+  it("setStatus with expectedStatus and appendNotes leaves notes untouched when the guard fails", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-fail" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-fail", status: "queued", notes: "human" }, 1000)
+    store.setStatus({ id: "fb-guard-fail", status: "triaged", notes: "human moved" }, 1500)
+    const result = store.setStatus(
+      {
+        id: "fb-guard-fail",
+        status: "resolved",
+        notes: "auto",
+        expectedStatus: "queued",
+        appendNotes: true,
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(false)
+    expect(store.getRow("fb-guard-fail")?.statusNotes).toBe("human moved")
+  })
+
+  it("setStatus with appendNotes and an explicit null clears the note (null outranks append)", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-append-null" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-append-null", status: "queued", notes: "human note" }, 1000)
+    // Exercises the INSERT..ON CONFLICT path. `null` means clear; there is no
+    // meaningful way to append nothing, so appendNotes must not resurrect the
+    // old note via its CASE ELSE branch.
+    store.setStatus(
+      { id: "fb-append-null", status: "resolved", notes: null, appendNotes: true },
+      2000,
+    )
+
+    expect(store.getRow("fb-append-null")?.statusNotes).toBeNull()
+  })
+
+  it("setStatus with expectedStatus, appendNotes and an explicit null clears the note", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-append-null" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-append-null", status: "queued", notes: "human" }, 1000)
+    // Same contract on the guarded UPDATE path.
+    const result = store.setStatus(
+      {
+        id: "fb-guard-append-null",
+        status: "resolved",
+        notes: null,
+        expectedStatus: "queued",
+        appendNotes: true,
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(true)
+    expect(store.getRow("fb-guard-append-null")?.statusNotes).toBeNull()
+  })
+
+  it("setStatus with appendNotes still appends when notes is a real string (null fix is scoped)", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-append-still" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-append-still", status: "queued", notes: "human" }, 1000)
+    store.setStatus(
+      { id: "fb-append-still", status: "resolved", notes: "auto: done", appendNotes: true },
+      2000,
+    )
+    // Guards against the null normalization accidentally disabling append mode
+    // for the production observer call sites, which always pass a string.
+    expect(store.getRow("fb-append-still")?.statusNotes).toBe("human\nauto: done")
+  })
+
+  it("setStatus preserves existing resolvedRef and notes when they are omitted, and clears notes when explicitly null", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-preserve" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus(
+      { id: "fb-preserve", status: "queued", resolvedRef: "job-1", notes: "human note" },
+      1000,
+    )
+
+    const r1 = store.setStatus({ id: "fb-preserve", status: "triaged" }, 2000)
+    expect(r1.ok).toBe(true)
+    const row1 = store.getRow("fb-preserve")
+    expect(row1?.status).toBe("triaged")
+    expect(row1?.resolvedRef).toBe("job-1")
+    expect(row1?.statusNotes).toBe("human note")
+    expect(row1?.updatedAt).toBe(2000)
+
+    const r2 = store.setStatus({ id: "fb-preserve", status: "resolved", notes: null }, 3000)
+    expect(r2.ok).toBe(true)
+    const row2 = store.getRow("fb-preserve")
+    expect(row2?.status).toBe("resolved")
+    expect(row2?.resolvedRef).toBe("job-1")
+    expect(row2?.statusNotes).toBeNull()
+    expect(row2?.updatedAt).toBe(3000)
+  })
+
+  it("setStatus with expectedStatus preserves existing resolvedRef and notes when they are omitted, and clears notes when explicitly null", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-preserve" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus(
+      { id: "fb-guard-preserve", status: "queued", resolvedRef: "job-2", notes: "human note" },
+      1000,
+    )
+
+    const r1 = store.setStatus(
+      { id: "fb-guard-preserve", status: "resolved", expectedStatus: "queued" },
+      2000,
+    )
+    expect(r1.ok).toBe(true)
+    const row1 = store.getRow("fb-guard-preserve")
+    expect(row1?.status).toBe("resolved")
+    expect(row1?.resolvedRef).toBe("job-2")
+    expect(row1?.statusNotes).toBe("human note")
+    expect(row1?.updatedAt).toBe(2000)
+
+    const r2 = store.setStatus(
+      { id: "fb-guard-preserve", status: "triaged", notes: null, expectedStatus: "resolved" },
+      3000,
+    )
+    expect(r2.ok).toBe(true)
+    const row2 = store.getRow("fb-guard-preserve")
+    expect(row2?.status).toBe("triaged")
+    expect(row2?.resolvedRef).toBe("job-2")
+    expect(row2?.statusNotes).toBeNull()
+    expect(row2?.updatedAt).toBe(3000)
+  })
+
+  it("FK CASCADE: deleting the parent agent_notes row removes the ui_feedback_status row", async (ctx) => {
     // A real on-disk sqlite file (not :memory:) with PRAGMA foreign_keys=ON,
     // exercised on ONE connection shared by both the parent table and the
     // store — proves the CASCADE actually fires, not just that the schema
@@ -219,9 +490,17 @@ describe("openUiFeedbackStatusStore", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-fb-cascade-"))
     const dbPath = path.join(dir, "test.db")
     try {
-      const mod = await import("bun:sqlite" as string)
-      const Database = (mod as { Database?: new (p: string) => BunDb }).Database
-      if (!Database) return // skip in non-bun environments
+      let Database: (new (p: string) => BunDb) | undefined
+      try {
+        const mod = await import("bun:sqlite" as string)
+        Database = (mod as { Database?: new (p: string) => BunDb }).Database
+      } catch {
+        // In environments without bun:sqlite (vitest via node) — skip DB tests.
+      }
+      if (!Database) {
+        ctx.skip() // visibly skipped (not silently green) in non-bun environments
+        return
+      }
       const db = new Database(dbPath)
       db.run(AGENT_NOTES_SCHEMA)
       insertNote(db, { id: "fb-cascade", payload: samplePayload() })
