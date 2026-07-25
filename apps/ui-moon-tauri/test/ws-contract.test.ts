@@ -2,7 +2,7 @@
 //
 // ws-contract.test.ts — the Moon WS-contract regression harness (task #45 of
 // the Moon stability-audit batch, exp_0d6a1fd3ed1b). This is the CI gate the
-// self-improve loop flagged as blocking: it exercises frontend/chat.html's
+// self-improve loop flagged as blocking: it exercises frontend-react/chat.html's
 // bespoke WebSocketEngine reconnect state machine (scheduleReconnect,
 // syncThread's fast-path resubscribe, connGen gating) end-to-end through a
 // scriptable FakeWebSocket, instead of unit-testing individual methods in
@@ -29,15 +29,27 @@ function loadVendorInto(target: any, file: string) {
   new Function('globalThis', src)(target)
 }
 
-describe('Moon WS-contract harness (frontend/chat.html WebSocketEngine)', () => {
+describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', () => {
   let htmlContent: string
 
   beforeEach(() => {
     window.history.replaceState({}, '', '/')
 
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
+    // frontend-react/chat.html is what actually ships (src-tauri/tauri.conf.json's
+    // `frontendDist`); the superseded frontend/chat.html copy was deleted by the
+    // React + Astryx conversion. Same source chat-window.test.ts reads.
+    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
+    // `<body[^>]*>`, NOT `<body>`: the shipped tag carries a class
+    // (`<body class="moon-astryx-root">`), and - more dangerously - the first
+    // LITERAL `<body>` in this file now sits inside a JS comment far down the
+    // inline script. A `<body>` regex silently matches THAT and yields a
+    // truncated, mid-script DOM instead of failing, so keep this in lockstep
+    // with chat-window.test.ts.
+    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    // Fail loudly rather than running every scenario against an empty DOM if
+    // the shell is ever restructured again.
+    expect(document.body.innerHTML.length).toBeGreaterThan(0)
 
     // No __TAURI__.core — same degraded boot chat-window.test.ts uses, which
     // keeps loadConnectionAndConnect() synchronous (no real await executes),

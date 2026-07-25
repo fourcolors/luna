@@ -14,7 +14,7 @@
 #      (numbering matches the inline "HARD GATE 6" step comment below; gates
 #      3-5, the Moon/Studio/Server version-lockstep checks, predate this list
 #      and are documented only inline near their own steps.)
-#      drives frontend/chat.html's WebSocketEngine (reconnect backoff,
+#      drives frontend-react/chat.html's WebSocketEngine (reconnect backoff,
 #      connGen supersession, thread-switch resubscribe) through a scriptable
 #      FakeWebSocket double under realistic async timing. Task #45 of the
 #      Moon stability-audit batch — the prior stub never fired real events,
@@ -174,9 +174,11 @@ jobs:
       # gone (excluded from vitest → run under Bun below), but a macOS-only
       # baseline (keychain-helper / deploy-scripts / ui-models) stays red on the
       # Linux runner, so vitest is not a hard gate yet. (Known-red within
-      # apps/ui-moon-tauri specifically: chat-window.test.ts's single-fire-guard
-      # + voice-boot scenarios and slash-menu.test.ts — 8 pre-existing failures,
-      # unrelated to WS reconnect/connGen and unchanged by the HARD GATE above.)
+      # apps/ui-moon-tauri specifically: chat-window.test.ts's single-fire-guard,
+      # voice-boot and thread-drawer scenarios, slash-menu.test.ts x2, and
+      # moon-dock.test.ts's begin_redock_drag case - 10 pre-existing failures as
+      # of master 0d3bff1e, unrelated to WS reconnect/connGen and unchanged by
+      # the HARD GATE above.)
       - name: Test — vitest (non-blocking)
         continue-on-error: true
         run: bun run test
