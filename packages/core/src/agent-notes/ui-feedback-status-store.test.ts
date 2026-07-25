@@ -353,6 +353,69 @@ describe("openUiFeedbackStatusStore", () => {
     expect(store.getRow("fb-guard-fail")?.statusNotes).toBe("human moved")
   })
 
+  it("setStatus with appendNotes and an explicit null clears the note (null outranks append)", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-append-null" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-append-null", status: "queued", notes: "human note" }, 1000)
+    // Exercises the INSERT..ON CONFLICT path. `null` means clear; there is no
+    // meaningful way to append nothing, so appendNotes must not resurrect the
+    // old note via its CASE ELSE branch.
+    store.setStatus(
+      { id: "fb-append-null", status: "resolved", notes: null, appendNotes: true },
+      2000,
+    )
+
+    expect(store.getRow("fb-append-null")?.statusNotes).toBeNull()
+  })
+
+  it("setStatus with expectedStatus, appendNotes and an explicit null clears the note", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-guard-append-null" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-guard-append-null", status: "queued", notes: "human" }, 1000)
+    // Same contract on the guarded UPDATE path.
+    const result = store.setStatus(
+      {
+        id: "fb-guard-append-null",
+        status: "resolved",
+        notes: null,
+        expectedStatus: "queued",
+        appendNotes: true,
+      },
+      2000,
+    )
+
+    expect(result.ok).toBe(true)
+    expect(store.getRow("fb-guard-append-null")?.statusNotes).toBeNull()
+  })
+
+  it("setStatus with appendNotes still appends when notes is a real string (null fix is scoped)", async (ctx) => {
+    const db = await openMemoryDbWithAgentNotes()
+    if (db === null) {
+      ctx.skip()
+      return
+    }
+    insertNote(db, { id: "fb-append-still" })
+    const store = openUiFeedbackStatusStore(db, Date.now())
+    store.setStatus({ id: "fb-append-still", status: "queued", notes: "human" }, 1000)
+    store.setStatus(
+      { id: "fb-append-still", status: "resolved", notes: "auto: done", appendNotes: true },
+      2000,
+    )
+    // Guards against the null normalization accidentally disabling append mode
+    // for the production observer call sites, which always pass a string.
+    expect(store.getRow("fb-append-still")?.statusNotes).toBe("human\nauto: done")
+  })
+
   it("setStatus preserves existing resolvedRef and notes when they are omitted, and clears notes when explicitly null", async (ctx) => {
     const db = await openMemoryDbWithAgentNotes()
     if (db === null) {

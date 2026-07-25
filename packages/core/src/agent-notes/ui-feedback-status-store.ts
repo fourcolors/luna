@@ -255,7 +255,14 @@ export const openUiFeedbackStatusStore = (
       const resolvedRef = args.resolvedRef
       const notes = args.notes
       const expectedStatus = args.expectedStatus
-      const appendNotes = args.appendNotes ?? false
+      // An explicit `null` is the documented "clear" command and outranks the
+      // append modifier - there is no meaningful way to append nothing. Without
+      // this normalization, appendNotes:true + notes:null falls through both
+      // CASE builders to their ELSE branch and silently PRESERVES the old note,
+      // which is the opposite of what an explicit null asks for. Normalizing
+      // once here fixes the expectedStatus UPDATE path and the
+      // INSERT..ON CONFLICT path together, since both read this local.
+      const appendNotes = (args.appendNotes ?? false) && notes !== null
 
       if (expectedStatus !== undefined) {
         const updates = ["status = ?", "updated_at = ?"]
