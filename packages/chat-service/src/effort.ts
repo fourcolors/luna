@@ -30,22 +30,28 @@ export const isEffort = (v: unknown): v is EffortLevel =>
  * Effort-validity matrix — returns the subset of effort levels valid for the
  * given model id. An empty array means the model takes no effort parameter.
  *
- * Pattern rules (lowest-specificity first):
- *   - Haiku → no effort (too fast; effort param is a no-op).
- *   - Fable / Opus 4.7 / Opus 4.8 → all five levels (maximum reasoning
- *     models; the SDK documents xhigh for Opus 4.7+ and max for Opus 4.6+).
- *   - Sonnet 4.6 / Sonnet 5 → low/medium/high/max (no xhigh).
+ * Pattern rules (lowest-specificity first — SDK capability evidence in
+ * @anthropic-ai/claude-agent-sdk@0.3.202/0.3.219 sdk.mjs model catalog):
+ *   - Haiku / Mythos / Opus 4.0–4.5 → no effort (no effort capability in SDK).
+ *   - Fable / Opus 4.7 / Opus 4.8 / Opus 5 / Sonnet 5 → all five levels
+ *     including xhigh (SDK: xhigh_effort capability present for these models).
+ *   - Sonnet 4.6 / Opus 4.6 → low/medium/high/max (SDK: effort+max_effort but
+ *     NOT xhigh_effort).
  *   - Everything else → no effort (safest default for unknown models).
  *
  * The `/sonnet-5/` branch does NOT match `claude-sonnet-4-5` — that id contains
  * the substring `sonnet-4-5`, not `sonnet-5` — so the prior-gen model is
- * untouched.
+ * untouched. Mythos 5 has empty capabilities[] in the SDK catalog and is
+ * first-party only (no bedrock/vertex), so no effort param. Opus 5 confirmed
+ * xhigh_effort capable in SDK 0.3.219 (the version PR #388 bumps to).
  */
 export const effortsForModel = (id: string): ReadonlyArray<EffortLevel> => {
   const m = id.toLowerCase()
-  if (/haiku/.test(m)) return []
-  if (/fable|opus-4-(7|8)|opus-4\.?[78]/.test(m)) return EFFORT_LEVELS
-  if (/sonnet-4-6|sonnet-4\.?6|sonnet-5/.test(m)) return ["low", "medium", "high", "max"]
+  if (/haiku|mythos/.test(m)) return []
+  // xhigh-capable: fable, opus-4-7/4-8, opus-5, sonnet-5 (all have xhigh_effort in SDK)
+  if (/fable|opus-4-(7|8)|opus-4\.?[78]|opus-5|sonnet-5/.test(m)) return EFFORT_LEVELS
+  // max-capable only: sonnet-4-6, opus-4-6 (effort+max_effort but no xhigh)
+  if (/sonnet-4-6|sonnet-4\.?6|opus-4-6|opus-4\.?6/.test(m)) return ["low", "medium", "high", "max"]
   return []
 }
 
@@ -67,7 +73,8 @@ export const effortsForModel = (id: string): ReadonlyArray<EffortLevel> => {
  */
 export const defaultEffortForModel = (id: string): EffortLevel | undefined => {
   const m = id.toLowerCase()
-  if (/sonnet-5/.test(m)) return "high"
+  // SDK: claude-fable-5, claude-opus-5, and claude-sonnet-5 all have default_effort: "high"
+  if (/fable|opus-5|sonnet-5/.test(m)) return "high"
   return undefined
 }
 

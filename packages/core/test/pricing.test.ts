@@ -31,6 +31,36 @@ describe("rateFor — model resolution precedence", () => {
     })
   })
 
+  it("resolves opus-5 via the claude-opus prefix (5/25 proxy until official pricing)", () => {
+    // claude-opus-5 has no dedicated RATE_TABLE entry; it matches the "claude-opus"
+    // prefix (5/25) as the best-effort proxy. Override via LUNA_MODEL_RATES when
+    // official pricing is published (SDK 0.3.219 notes pricing: "tier_5_25").
+    expect(rateFor("claude-opus-5", "anthropic")).toEqual({
+      pricePerMInput: 5,
+      pricePerMOutput: 25,
+    })
+  })
+
+  it("resolves fable and mythos by their new RATE_TABLE prefixes (UNKNOWN=0/0 until overridden)", () => {
+    // Pricing for these models is not yet published (2026-07); marked as 0/0
+    // in the table. Override via LUNA_MODEL_RATES env var when known.
+    expect(rateFor("claude-fable-5", "anthropic")).toEqual({
+      pricePerMInput: 0,
+      pricePerMOutput: 0,
+    })
+    expect(rateFor("claude-mythos-5", "anthropic")).toEqual({
+      pricePerMInput: 0,
+      pricePerMOutput: 0,
+    })
+  })
+
+  it("prices the 'fable' tier alias at the fable table entry", () => {
+    expect(rateFor("fable", "anthropic")).toEqual({
+      pricePerMInput: 0,
+      pricePerMOutput: 0,
+    })
+  })
+
   it("resolves known Gemini + GPT/Codex models", () => {
     expect(rateFor("gemini-2.5-flash", "google")).toEqual({
       pricePerMInput: 0.3,
@@ -114,6 +144,12 @@ describe("rateFor — model resolution precedence", () => {
     expect(rateFor("default", "anthropic")).toEqual({
       pricePerMInput: 3,
       pricePerMOutput: 15,
+    })
+    // "fable" alias maps to the claude-fable prefix (0/0 — UNKNOWN price until
+    // official pricing is published; operator overrides via LUNA_MODEL_RATES).
+    expect(rateFor("fable", "anthropic")).toEqual({
+      pricePerMInput: 0,
+      pricePerMOutput: 0,
     })
   })
 })

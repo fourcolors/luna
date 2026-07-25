@@ -25,9 +25,20 @@ export interface ModelRate {
  */
 export const RATE_TABLE: Record<string, ModelRate> = {
   // Anthropic Claude
+  // claude-opus-5: pricing not yet published (2026-07). Matches the
+  // "claude-opus" prefix below (5/25) as a best-effort proxy — override via
+  // LUNA_MODEL_RATES when official pricing is announced.
   "claude-opus": { pricePerMInput: 5, pricePerMOutput: 25 },
   "claude-sonnet": { pricePerMInput: 3, pricePerMOutput: 15 },
   "claude-haiku": { pricePerMInput: 1, pricePerMOutput: 5 },
+  // claude-fable-5: 1M-context reasoning model; official pricing not yet published
+  // (as of 2026-07). Marked UNKNOWN — override via LUNA_MODEL_RATES env var.
+  // UNKNOWN_PRICE_MARKER: claude-fable-5 input=?, output=?
+  "claude-fable": { pricePerMInput: 0, pricePerMOutput: 0 },
+  // claude-mythos-5: first-party-only model (no bedrock/vertex); pricing not yet
+  // published (as of 2026-07). Marked UNKNOWN — override via LUNA_MODEL_RATES.
+  // UNKNOWN_PRICE_MARKER: claude-mythos-5 input=?, output=?
+  "claude-mythos": { pricePerMInput: 0, pricePerMOutput: 0 },
   // Google Gemini
   "gemini-2.5-flash": { pricePerMInput: 0.3, pricePerMOutput: 2.5 },
   "gemini-3.5-flash": { pricePerMInput: 1.5, pricePerMOutput: 9 },
@@ -81,6 +92,7 @@ const ALIAS_RATE_PREFIX: Record<string, string> = {
   opus: "claude-opus",
   sonnet: "claude-sonnet",
   haiku: "claude-haiku",
+  fable: "claude-fable",
 }
 
 export function rateFor(

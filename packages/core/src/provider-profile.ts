@@ -72,7 +72,7 @@ const DEFAULT_OLLAMA_LOCAL_URL = "http://127.0.0.1:11434"
 /** Bare model aliases that mean "the default Claude model" — the broker is
  * called with `"default"` when the caller omits a model, and the SDK accepts
  * these short names. All route to `anthropic` so existing behavior is preserved. */
-const ANTHROPIC_ALIASES = new Set(["default", "opus", "sonnet", "haiku"])
+const ANTHROPIC_ALIASES = new Set(["default", "opus", "sonnet", "haiku", "fable"])
 
 function parseModelKindMap(raw: string | undefined): Record<string, string> {
   if (!raw) return {}

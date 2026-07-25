@@ -12,11 +12,21 @@ import {
   ultracodeFlagSettings,
 } from "./effort.js"
 
-const XHIGH_CAPABLE = ["claude-opus-4-8", "claude-opus-4-7", "claude-fable-5"]
+// SDK @anthropic-ai/claude-agent-sdk@0.3.202/0.3.219: xhigh_effort capability
+// fable-5, opus-4-7, opus-4-8, opus-5, sonnet-5 all have xhigh_effort
+const XHIGH_CAPABLE = [
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-fable-5",
+  "claude-opus-5",
+  "claude-sonnet-5",
+]
+// These models have no xhigh: haiku (no effort), sonnet-4-6 (max only),
+// mythos-5 (no effort), unknown models
 const NOT_CAPABLE = [
   "claude-sonnet-4-6",
-  "claude-sonnet-5",
   "claude-haiku-4-5",
+  "claude-mythos-5",
   "some-unknown-model",
 ]
 
@@ -62,11 +72,14 @@ describe("ultracodeFlagSettings — the ultracode Settings demux", () => {
 })
 
 describe("Sonnet 5 effort matrix", () => {
-  it("exposes low/medium/high/max (like Sonnet 4.6, no xhigh)", () => {
+  // SDK @anthropic-ai/claude-agent-sdk@0.3.202: claude-sonnet-5 has
+  // xhigh_effort capability (unlike sonnet-4-6 which only has max_effort).
+  it("exposes all five effort levels including xhigh (SDK: xhigh_effort cap)", () => {
     expect(effortsForModel("claude-sonnet-5")).toEqual([
       "low",
       "medium",
       "high",
+      "xhigh",
       "max",
     ])
   })
@@ -77,20 +90,58 @@ describe("Sonnet 5 effort matrix", () => {
     expect(effortsForModel("claude-sonnet-4-5")).toEqual([])
   })
 
-  it("clamps an unsupported xhigh down to max (never ultracode)", () => {
-    expect(clampEffort("claude-sonnet-5", "xhigh").effort).toBe("max")
+  it("passes xhigh through for sonnet-5 (now supported)", () => {
+    expect(clampEffort("claude-sonnet-5", "xhigh").effort).toBe("xhigh")
+  })
+})
+
+describe("Sonnet 4.6 effort matrix", () => {
+  // SDK: claude-sonnet-4-6 has effort+max_effort but NOT xhigh_effort.
+  it("exposes low/medium/high/max (no xhigh)", () => {
+    expect(effortsForModel("claude-sonnet-4-6")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "max",
+    ])
+  })
+
+  it("clamps an unsupported xhigh down to max for sonnet-4-6", () => {
+    expect(clampEffort("claude-sonnet-4-6", "xhigh").effort).toBe("max")
+  })
+})
+
+describe("Mythos 5 effort matrix", () => {
+  // SDK: claude-mythos-5 has empty capabilities[] — no effort param supported.
+  it("returns no effort levels for mythos-5", () => {
+    expect(effortsForModel("claude-mythos-5")).toEqual([])
+  })
+
+  it("drops effort when passed to mythos-5 (clamp → dropped)", () => {
+    expect(clampEffort("claude-mythos-5", "high").dropped).toBe(true)
   })
 })
 
 describe("defaultEffortForModel — per-model default effort", () => {
+  // SDK: claude-sonnet-5 default_effort "high"; claude-fable-5 default_effort "high"
   it("defaults Sonnet 5 to 'high'", () => {
     expect(defaultEffortForModel("claude-sonnet-5")).toBe("high")
   })
 
+  it("defaults Fable 5 to 'high' (SDK: default_effort: high)", () => {
+    expect(defaultEffortForModel("claude-fable-5")).toBe("high")
+  })
+
+  it("defaults Opus 5 to 'high' (SDK 0.3.219: default_effort: high)", () => {
+    expect(defaultEffortForModel("claude-opus-5")).toBe("high")
+  })
+
   it("returns a value that is always a member of the model's effort matrix", () => {
-    const dflt = defaultEffortForModel("claude-sonnet-5")
-    expect(dflt).toBeDefined()
-    expect(effortsForModel("claude-sonnet-5")).toContain(dflt!)
+    for (const id of ["claude-sonnet-5", "claude-fable-5", "claude-opus-5"]) {
+      const dflt = defaultEffortForModel(id)
+      expect(dflt).toBeDefined()
+      expect(effortsForModel(id)).toContain(dflt!)
+    }
   })
 
   it("has no opinion (undefined) for other models", () => {
@@ -99,6 +150,7 @@ describe("defaultEffortForModel — per-model default effort", () => {
       "claude-sonnet-4-6",
       "claude-sonnet-4-5",
       "claude-haiku-4-5",
+      "claude-mythos-5",
       "some-unknown-model",
     ]) {
       expect(defaultEffortForModel(id)).toBeUndefined()
@@ -107,5 +159,6 @@ describe("defaultEffortForModel — per-model default effort", () => {
 
   it("never returns the ultracode token", () => {
     expect(isUltracode(defaultEffortForModel("claude-sonnet-5"))).toBe(false)
+    expect(isUltracode(defaultEffortForModel("claude-fable-5"))).toBe(false)
   })
 })
