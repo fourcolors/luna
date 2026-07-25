@@ -2035,7 +2035,12 @@ exit 0
       expect(r.stdout).toContain("<key>PATH</key>")
     })
 
-    it("emits a plist that passes plutil -lint (valid property list)", () => {
+    // The ONLY macOS-only case in this file: `plutil` ships with macOS and has
+    // no Linux equivalent, so it cannot run on the Linux CI runner. Every other
+    // test here shells out to bash/chmod/sed/awk, which are portable. Guarding
+    // just this one is what lets the vitest step be a HARD GATE - see ci.yml.
+    // It still runs (and must pass) on any macOS dev machine.
+    it.skipIf(process.platform !== "darwin")("emits a plist that passes plutil -lint (valid property list)", () => {
       const r = render()
       const tmp = makeTempDir()
       const plistPath = join(tmp, "luna.plist")
