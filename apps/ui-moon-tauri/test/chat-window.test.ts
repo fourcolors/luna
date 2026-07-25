@@ -5182,15 +5182,24 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(htmlContent).toMatch(/outcome === 'reorder'/)
       expect(htmlContent).toMatch(/LunaThreadDrag\.createSession/)
       expect(htmlContent).toMatch(/focus: false/)
-      // Detach path places floater; enter_attached only updates strip chrome.
+      // Detach path spawns the floater; enter_attached only updates strip chrome.
+      // a8c1ac22 ("hard-promote Chrome-tab drag, native free motion") replaced
+      // the old placeFloater(..., focus:false) call with hardPromoteFloater(),
+      // which spawns ONCE and hands motion to the OS. The no-focus-steal
+      // guarantee moved with it: hardPromoteFloater calls
+      // openInNewWindow(id, x, y, { focus: false }).
       expect(htmlContent).toMatch(
-        /move\.action === 'detach'[\s\S]{0,400}placeFloater\([^)]+focus:\s*false/,
+        /move\.action === 'detach'[\s\S]{0,400}hardPromoteFloater\(/,
+      )
+      expect(htmlContent).toMatch(
+        /const hardPromoteFloater[\s\S]{0,600}openInNewWindow\([^)]*\{\s*focus:\s*false\s*\}/,
       )
       expect(htmlContent).toMatch(
         /move\.action === 'enter_attached'[\s\S]{0,160}showAttachedChrome/,
       )
+      // enter_attached must never spawn a floater by any of its names.
       expect(htmlContent).not.toMatch(
-        /move\.action === 'enter_attached'[\s\S]{0,160}placeFloater/,
+        /move\.action === 'enter_attached'[\s\S]{0,160}(placeFloater|hardPromoteFloater)/,
       )
     })
 

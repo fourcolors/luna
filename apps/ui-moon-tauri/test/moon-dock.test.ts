@@ -62,10 +62,15 @@ describe('Moon independent native windows', () => {
     document.getElementById('title-bar')!.dispatchEvent(
       new MouseEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
     )
+    // Strip metrics are always forwarded (added by the Chrome-tab drag work);
+    // they are null when the caller supplies no strip geometry, as here.
     expect(invoke).toHaveBeenCalledWith('begin_redock_drag', {
       ownerLabel: 'panel-chat',
       threadId: 'thr-1',
       title: 'Hello',
+      stripHeight: null,
+      stripTopInset: null,
+      stripWidth: null,
     })
     // Must not start native drag until monitors are armed.
     expect(win.startDragging).not.toHaveBeenCalled()
