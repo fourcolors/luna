@@ -16,7 +16,8 @@
 //       dispatch it - parsed straight out of the live panel.html source so
 //       this guard self-updates as more panels convert, instead of a
 //       hardcoded exception list this file would silently rot against.
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, beforeAll } from "vitest"
+import { act } from "react"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { mountReactPanel } from "../frontend-react/src/panel-boot"
@@ -28,6 +29,30 @@ const registry = JSON.parse(
 const panelKinds: string[] = registry.widgets
   .map((w: any) => /^panel\.html\?type=([a-z0-9.]+)$/.exec(w.page)?.[1])
   .filter(Boolean)
+
+// mountReactPanel createRoot().render()s a real React 19 tree, and React 19's
+// concurrent scheduler defers that work to a setImmediate
+// (scheduler's performWorkUntilDeadline). Wiping innerHTML in afterEach does
+// NOT cancel it, and mountReactPanel returns a boolean, not a root, so there is
+// nothing to unmount. Left alone, that queued work fires AFTER vitest tears the
+// jsdom environment down and throws "ReferenceError: window is not defined" -
+// one per mounted panel type. Vitest counts those as unhandled errors and exits
+// non-zero even with every test passing, which is a flaky CI failure that
+// depends purely on teardown timing (it does not reproduce when this file runs
+// alone). Driving each mount through act() flushes the render synchronously, so
+// nothing is left queued when the environment goes away.
+beforeAll(() => {
+  ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+})
+
+/** Mount inside act() so React's deferred work cannot outlive the test env. */
+function mountFlushed(kind: string, ctx: PanelCtx): boolean {
+  let dispatched = false
+  act(() => {
+    dispatched = mountReactPanel(kind, ctx)
+  })
+  return dispatched
+}
 
 /** Extract panel.html's `var REACT_PANEL_TYPES = { ... };` object's keys. */
 function reactOwnedPanelKinds(): Set<string> {
@@ -69,7 +94,7 @@ describe("widget-registry panel conformance", () => {
         </div>
       `
       const ctx = { invoke: async () => null, hasTauri: false, win: null } as unknown as PanelCtx
-      expect(mountReactPanel(kind, ctx)).toBe(true)
+      expect(mountFlushed(kind, ctx)).toBe(true)
     })
   })
 
@@ -101,8 +126,7 @@ describe("widget-registry panel conformance", () => {
         </div>
       `
       const ctx = { invoke: async () => null, hasTauri: false, win: null } as unknown as PanelCtx
-      const dispatched = mountReactPanel(kind, ctx)
-      expect(dispatched).toBe(true)
+      expect(mountFlushed(kind, ctx)).toBe(true)
     })
   })
 })
