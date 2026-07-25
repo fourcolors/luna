@@ -100,6 +100,9 @@ describe("readKeychainToken — unit", () => {
       readKeychainToken(
         { service: "luna.op.test", account: "test" },
         {
+          // Pin the platform: these exercise the macOS path, and without this they
+          // silently inherit process.platform - green on a Mac, red on Linux CI.
+          _platform: "darwin",
           _execFile: fakeExecFileImmediate(null, "sk-token\n", ""),
         },
       ),
@@ -136,6 +139,9 @@ describe("readKeychainToken — unit", () => {
       readKeychainToken(
         { service: "luna.op.missing", account: "missing" },
         {
+          // Pin the platform: these exercise the macOS path, and without this they
+          // silently inherit process.platform - green on a Mac, red on Linux CI.
+          _platform: "darwin",
           _execFile: fakeExecFileImmediate(
             err,
             "",
@@ -160,6 +166,9 @@ describe("readKeychainToken — unit", () => {
       readKeychainToken(
         { service: "luna.op.slow", account: "slow" },
         {
+          // Pin the platform: these exercise the macOS path, and without this they
+          // silently inherit process.platform - green on a Mac, red on Linux CI.
+          _platform: "darwin",
           _execFile: fakeExecFileHang,
           _timeoutMs: 25,
         },
@@ -182,6 +191,9 @@ describe("readKeychainToken — unit", () => {
         readKeychainToken(
           { service: "luna.op.test", account: "test" },
           {
+            // Pin the platform: these exercise the macOS path, and without this they
+            // silently inherit process.platform - green on a Mac, red on Linux CI.
+            _platform: "darwin",
             _execFile: fakeExecFileImmediate(
               null,
               "ops_supersecret_DO_NOT_LEAK\n",

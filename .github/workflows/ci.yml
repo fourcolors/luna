@@ -1,55 +1,72 @@
 # Luna CI
 #
-# HARD GATES (these MUST stay green — a red here blocks the merge):
-#   1. bun install --frozen-lockfile  — fails the build if bun.lock is out of
+# HARD GATES (these MUST stay green - a red here blocks the merge):
+#   1. bun install --frozen-lockfile  - fails the build if bun.lock is out of
 #      sync with package.json. This is the exact failure that reached master
-#      this session (lockfile drift); the frozen install would have caught it.
-#   2. secret-scan                    — greps tracked files for high-entropy
+#      (lockfile drift); the frozen install would have caught it. NOTE: a PR
+#      that predates a dependency bump trips this on the MERGE ref even when
+#      both branches are individually consistent. Rebase, do not regenerate.
+#   2. secret-scan                    - greps tracked files for high-entropy
 #      secrets (bare 64-hex WS tokens, real `sk-ant-` keys, access/refresh
-#      token literals). Tuned to catch this session's leaked WS token
-#      (`master \`2349697a…\`` in a .md) WITHOUT tripping on the legitimate
-#      `sk-ant-oat-totally-bogus` test fixtures / redaction docs in the repo.
-#
-#   6. Moon WS-contract harness       — apps/ui-moon-tauri/test/ws-contract.test.ts
-#      (numbering matches the inline "HARD GATE 6" step comment below; gates
-#      3-5, the Moon/Studio/Server version-lockstep checks, predate this list
-#      and are documented only inline near their own steps.)
+#      token literals). Tuned to catch a leaked 64-hex WS token in a .md
+#      WITHOUT tripping on the legitimate `sk-ant-oat-totally-bogus` test
+#      fixtures / redaction docs in the repo.
+#   3. Moon version sync              - see the inline comment on its step.
+#   4. Studio version sync            - see the inline comment on its step.
+#   5. Server version sync            - see the inline comment on its step.
+#   6. Moon WS-contract harness       - apps/ui-moon-tauri/test/ws-contract.test.ts
 #      drives frontend-react/chat.html's WebSocketEngine (reconnect backoff,
 #      connGen supersession, thread-switch resubscribe) through a scriptable
-#      FakeWebSocket double under realistic async timing. Task #45 of the
-#      Moon stability-audit batch — the prior stub never fired real events,
-#      so reconnect/thread-switch races were never exercised. This ONE file
-#      is blocking (separately from the whole-package vitest run below, which
-#      stays non-blocking on unrelated pre-existing failures) so regressions
-#      in this exact seam are caught automatically instead of relying on a
-#      human to notice stale-thread-content bleed in the running app.
+#      FakeWebSocket double under realistic async timing. Task #45 of the Moon
+#      stability-audit batch - the prior stub never fired real events, so
+#      reconnect/thread-switch races were never exercised. Kept as its OWN gate
+#      (it predates gate 7) so this seam stays individually named.
+#   7. test - vitest                  - the vitest suite, minus the host-env
+#      suites carved into their own non-blocking step (HOST_ENV_TESTS in
+#      vitest.config.ts). Promoted at master 1df40f68, the first time the suite
+#      reached 0 failures. 403 of 406 test files are gated; the 3 carved out
+#      are the ops-script suites that read the host machine.
 #
-# TEST RUNNERS — Luna's suite runs under TWO runners, and CI runs BOTH
+# TEST RUNNERS - Luna's suite runs under TWO runners, and CI runs BOTH
 # (see TESTING.md). This split is the fix for the bun:sqlite FALSE failures:
-#   - `bun run test`     (vitest) — most suites. The bun:sqlite-backed suites
+#   - `bun run test`     (vitest) - most suites. The bun:sqlite-backed suites
 #     are excluded here (vitest.config.ts BUN_RUNTIME_TESTS) because vitest's
 #     Node/vite pipeline cannot load `bun:sqlite`.
-#   - `bun run test:bun` (bun)    — the bun:sqlite-backed suites (DuckDbService /
+#   - `bun run test:bun` (bun)    - the bun:sqlite-backed suites (DuckDbService /
 #     analytics / telemetry / wake + memory / vault). vitest cannot load
 #     bun:sqlite, so without this step their coverage is silently dropped.
+#   - `bun run test:hostenv`      - the host-environment suites, opted back in
+#     via LUNA_TEST_HOST_ENV=1.
 #
-# KNOWN-RED (surfaced, but NOT allowed to fail the build yet — continue-on-error):
-#   - typecheck — DOCUMENTED pre-existing `tsc` baseline.
-#   - test — the bun:sqlite FALSE failures are gone (excluded from vitest, run
-#     under Bun), but a SEPARATE macOS-only baseline remains RED on the Linux CI
-#     runner: keychain-helper (macOS Keychain) and deploy-scripts
-#     (plutil/launchd). Those genuinely can't run on linux. Both runners run for
-#     visibility; gating them is deferred until those suites are guarded for
-#     non-Darwin (tracked follow-up — see TESTING.md).
-#     NOTE: apps/ui-web ui-models used to be listed here as macOS-only. It never
-#     was - it is a pure logic test that had gone stale against the model catalog
-#     (#387 added Mythos 5 / Opus 5 and made Sonnet 5 xhigh-capable). Because
-#     this step is non-blocking, the staleness sat red on master unnoticed. It is
-#     fixed; do not re-add it to the "can't run on linux" list.
+# SURFACED, NOT BLOCKING (continue-on-error):
+#   - typecheck - was a documented pre-existing `tsc` baseline (4 errors in
+#     packages/thread-tools/src/layer.ts). Fixed in #385, so this is GREEN now;
+#     left non-blocking only because nothing has re-verified it across a few
+#     merges yet. Promote it once it has held.
+#   - test:bun - currently green (1797 pass). Next promotion candidate.
+#   - test:hostenv - genuinely host-dependent (incus / tailscale / launchd /
+#     systemd profile state). Giving each a hermetic fixture root is the
+#     follow-up that would let them join gate 7.
+#
+# HISTORY, so the "macOS-only" excuse does not come back: the vitest step was
+# non-blocking for a long time on the theory that keychain-helper /
+# deploy-scripts / ui-models "genuinely can't run on linux". Of the 14 failures
+# standing when the gate was finally flipped, ZERO were macOS-only:
+#   - ui-models had gone stale against the #387 model catalog. Pure logic.
+#   - the Moon drag assertions had gone stale against the hard-promote rework.
+#   - the send-path tests were genuinely broken (never seeded a socket).
+#   - keychain-helper's units were not macOS-only either: the helper exposes a
+#     `_platform` injection seam and four tests simply forgot to use it, so they
+#     inherited process.platform. They now pin it and run everywhere.
+#   - three ui-web suites were failing at COLLECTION on any machine without
+#     UI_WS_TOKEN set, which has nothing to do with the OS.
+# A gate nobody has to satisfy collects rot. Do not re-add continue-on-error to
+# gate 7; carve a genuinely environment-dependent file into HOST_ENV_TESTS
+# instead, and say why.
 #
 # Rationale: lockfile drift and leaked secrets are correctness/safety issues
-# that reached master with no automated guard, so they hard-gate. typecheck and
-# the test runners are surfaced and ratcheted to green over time.
+# that reached master with no automated guard, so they hard-gate. The rest is
+# surfaced and ratcheted to green over time.
 
 name: CI
 
@@ -168,25 +185,55 @@ jobs:
         run: bun run typecheck
 
       # HARD GATE 6: Moon WS-contract harness (task #45, Moon stability-audit
-      # batch). Runs BEFORE the whole-package (non-blocking) vitest pass below
-      # so a reconnect/connGen/thread-switch regression here fails the build
-      # even while the broader suite is still non-blocking on unrelated
-      # pre-existing failures (see header + KNOWN-RED below).
+      # batch). Now a SUBSET of gate 7 below, kept as its own named step so this
+      # specific seam stays individually visible in the checks list and fails
+      # fast (2s) rather than after the full suite. It predates gate 7, which is
+      # why it exists separately at all.
       - name: Test — Moon WS-contract harness (HARD GATE)
         run: bun run test -- apps/ui-moon-tauri/test/ws-contract.test.ts
 
-      # Surfaced, NON-BLOCKING (see header). The bun:sqlite FALSE failures are
-      # gone (excluded from vitest → run under Bun below), but a macOS-only
-      # baseline (keychain-helper / deploy-scripts / ui-models) stays red on the
-      # Linux runner, so vitest is not a hard gate yet. (Known-red within
-      # apps/ui-moon-tauri specifically: chat-window.test.ts's single-fire-guard,
-      # voice-boot and thread-drawer scenarios, slash-menu.test.ts x2, and
-      # moon-dock.test.ts's begin_redock_drag case - 10 pre-existing failures as
-      # of master 0d3bff1e, unrelated to WS reconnect/connGen and unchanged by
-      # the HARD GATE above.)
-      - name: Test — vitest (non-blocking)
-        continue-on-error: true
+      # HARD GATE 7: the whole vitest suite. Promoted from non-blocking once the
+      # suite reached 0 failures for the first time (master 1df40f68). It had
+      # been continue-on-error to tolerate a "macOS-only" baseline, and that
+      # tolerance is exactly what let real rot accumulate unseen: of the 14
+      # failures standing when this was flipped, ZERO were macOS-only. They were
+      # stale assertions (ui-models vs the #387 catalog, Moon drag assertions vs
+      # the hard-promote rework) plus genuinely broken send-path tests.
+      #
+      # The one true Darwin dependency in the whole suite is a single
+      # `plutil -lint` case in test/deploy-scripts.test.ts, now guarded with
+      # it.skipIf(process.platform !== "darwin") so it still runs on macOS and
+      # skips here. keychain-helper and vault-migrate-keychain were also listed
+      # as macOS-only and never were - both are pure/mocked with no subprocess
+      # spawns at all.
+      #
+      # If this gate goes red, FIX THE TEST OR THE CODE. Do not re-add
+      # continue-on-error; that is what produced the backlog this replaced.
+      #
+      # UI_WS_TOKEN: chat-server.ts calls resolveUiWsToken() at MODULE IMPORT
+      # time (chat-server.ts:467), so merely importing it for a pure helper
+      # throws when the var is unset - which silently broke three ui-web suites
+      # at collection on any machine without it in the environment. This is a
+      # throwaway CI value, not a secret: the suites never open a socket, they
+      # import the module for functions like buildAvailableModels. The real fix
+      # is to make that resolution lazy so importing the module has no side
+      # effect; tracked as a follow-up.
+      - name: Test — vitest (HARD GATE)
+        env:
+          UI_WS_TOKEN: ci-dummy-ui-ws-token-not-a-secret
         run: bun run test
+
+      # Surfaced, NON-BLOCKING: the host-environment suites (see the
+      # HOST_ENV_TESTS note in vitest.config.ts). They shell out to the ops
+      # scripts, which read the host. Note this runner IS a real Luna
+      # deployment host, so guardian/update-server see genuine profile state
+      # and fail with "already adopted stable" - they are reading the machine,
+      # not a fixture. Kept visible so the coverage is not forgotten, and
+      # deliberately NOT folded back into the gate above; carrying them there
+      # is what kept the whole suite non-blocking.
+      - name: Test — host-env suites (non-blocking)
+        continue-on-error: true
+        run: bun run test:hostenv
 
       # Surfaced, NON-BLOCKING. The bun:sqlite-backed suites' ONLY coverage —
       # vitest cannot load bun:sqlite. (Whole-package run, so a few macOS-only
