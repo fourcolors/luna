@@ -147,8 +147,12 @@ export function AgentsPanel({ ctx }: AgentsPanelProps): React.JSX.Element {
       const caps = LunaProtocol.parseHelloCapabilities(frame)
       const hasSubagents = !!caps.subagents || !!(frame && frame.capabilities && frame.capabilities.subagents)
       store.dispatch({ type: "hello-checked", hasSubagents })
-      // Request current tree immediately so a mid-turn open paints at once.
-      if (hasSubagents) client?.send({ type: "subagent-tree-request", threadId })
+      // Send subagent-tree-request unconditionally: after a server restart
+      // with zero active agents, hello arrives with hasSubagents=false, so
+      // the old guard prevented the request and left stale RUNNING nodes in
+      // the panel. The server answers with the current tree (agents:[] when
+      // empty), which the reducer applies to clear stale entries. (#62)
+      client?.send({ type: "subagent-tree-request", threadId })
     })
 
     registry.register("subagent-tree", (frame: any) => {
@@ -175,7 +179,12 @@ export function AgentsPanel({ ctx }: AgentsPanelProps): React.JSX.Element {
     return <EmptyState className="notice" isCompact title="No conversation selected." />
   }
 
-  if (state.capability === "unsupported") {
+  // Only show the "unsupported" notice when we have no tree yet (agents===null).
+  // After a server restart, hello may arrive with hasSubagents=false while the
+  // tree-request (now sent unconditionally, #62) has not yet been answered.
+  // If we already have a tree (agents !== null), keep rendering it instead of
+  // flipping to the unsupported notice on reconnect. (#62)
+  if (state.capability === "unsupported" && state.agents === null) {
     return <EmptyState className="notice" isCompact title="This server doesn't report subagents." />
   }
 
