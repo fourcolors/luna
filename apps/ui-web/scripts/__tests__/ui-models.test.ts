@@ -160,16 +160,25 @@ describe("clampEffort", () => {
 })
 
 describe("buildAvailableModels", () => {
+  // The shipped catalog, asserted exactly. This is a DELIBERATE guard: an
+  // unintended change to what the UI offers should fail here. When the catalog
+  // legitimately changes (as in #387, which added Mythos 5 / Opus 5 and made
+  // Sonnet 5 xhigh-capable), update this list in the same commit.
+  const ALL_LEVELS_PLUS_ULTRACODE = ["low", "medium", "high", "xhigh", "max", "ultracode"]
+  const THROUGH_MAX = ["low", "medium", "high", "max"]
+
   it("returns the built-in base list when LUNA_UI_MODELS is absent", () => {
     const result = buildAvailableModels({})
-    // Base list has 5 entries; order is: Sonnet 5 (default), Fable, Opus,
-    // Sonnet 4.6, Haiku. Sonnet 5 carries defaultEffort "high".
+    // Order is: Sonnet 5 (default), Fable 5, Mythos 5, Opus 5, Opus 4.8,
+    // Sonnet 4.6, Haiku 4.5. Mythos 5 and Haiku 4.5 take no effort param.
     expect(result).toEqual([
-      { id: "claude-sonnet-5",   label: "Claude Sonnet 5 — balanced default", efforts: ["low", "medium", "high", "max"], defaultEffort: "high" },
-      { id: "claude-fable-5",    label: "Fable 5 (1M context)",               efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
-      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",     efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
-      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — prior gen",      efforts: ["low", "medium", "high", "max"] },
-      { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest",         efforts: [] },
+      { id: "claude-sonnet-5",   label: "Claude Sonnet 5 — balanced default",      efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
+      { id: "claude-fable-5",    label: "Fable 5 (1M context, xhigh reasoning)",   efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
+      { id: "claude-mythos-5",   label: "Mythos 5 (1M context, first-party only)", efforts: [] },
+      { id: "claude-opus-5",     label: "Opus 5 (1M context, xhigh reasoning)",    efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
+      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",          efforts: ALL_LEVELS_PLUS_ULTRACODE },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — prior gen",           efforts: THROUGH_MAX },
+      { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest",              efforts: [] },
     ])
   })
 
@@ -179,7 +188,7 @@ describe("buildAvailableModels", () => {
     })
     // Extra is first (recommended default), base models follow.
     expect(result[0]).toEqual({ id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", efforts: [] })
-    expect(result[1]).toEqual({ id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced default", efforts: ["low", "medium", "high", "max"], defaultEffort: "high" })
+    expect(result[1]).toEqual({ id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced default", efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" })
   })
 
   it("dedupes by id — extra overrides base model of same id (keeps extra's position and label)", () => {
@@ -227,13 +236,37 @@ describe("buildAvailableModels", () => {
     expect(entry?.efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"])
   })
 
-  it("advertises defaultEffort 'high' for Sonnet 5 and omits it for other models", () => {
+  it("advertises defaultEffort 'high' for the xhigh-reasoning Claude 5 models", () => {
     const result = buildAvailableModels({})
-    const sonnet5 = result.find((m) => m.id === "claude-sonnet-5")
-    expect(sonnet5?.defaultEffort).toBe("high")
-    // Every other base model has no default-effort opinion → key omitted.
-    for (const m of result.filter((x) => x.id !== "claude-sonnet-5")) {
-      expect(m.defaultEffort).toBeUndefined()
+    // Per the SDK catalog, Fable 5 / Opus 5 / Sonnet 5 all carry
+    // default_effort "high"; every other base model has no opinion.
+    const withDefault = result.filter((m) => m.defaultEffort !== undefined)
+    expect(withDefault.map((m) => m.id).sort()).toEqual([
+      "claude-fable-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+    ])
+    for (const m of withDefault) expect(m.defaultEffort).toBe("high")
+  })
+
+  // Contract test rather than a catalog snapshot: this holds for ANY future
+  // model, so adding one to BASE_MODELS cannot rot it - but shipping a default
+  // the model does not actually support still fails here. Guards the invariant
+  // documented on defaultEffortForModel ("a defined return value is ALWAYS a
+  // member of effortsForModel(id)"), which otherwise only bites at runtime when
+  // clampEffort silently rewrites the advertised default.
+  it("every advertised defaultEffort is one of that model's own efforts", () => {
+    for (const m of buildAvailableModels({})) {
+      if (m.defaultEffort === undefined) continue
+      expect(m.efforts).toContain(m.defaultEffort)
+    }
+  })
+
+  // A model with no effort matrix must not advertise a default either, or the
+  // client would render a default for a dropdown that has no options.
+  it("a model with no efforts never advertises a defaultEffort", () => {
+    for (const m of buildAvailableModels({})) {
+      if (m.efforts.length === 0) expect(m.defaultEffort).toBeUndefined()
     }
   })
 })

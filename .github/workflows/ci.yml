@@ -37,10 +37,15 @@
 #   - typecheck — DOCUMENTED pre-existing `tsc` baseline.
 #   - test — the bun:sqlite FALSE failures are gone (excluded from vitest, run
 #     under Bun), but a SEPARATE macOS-only baseline remains RED on the Linux CI
-#     runner: keychain-helper (macOS Keychain), deploy-scripts (plutil/launchd),
-#     and apps/ui-web ui-models. Those genuinely can't run on linux. Both
-#     runners run for visibility; gating them is deferred until those suites are
-#     guarded for non-Darwin (tracked follow-up — see TESTING.md).
+#     runner: keychain-helper (macOS Keychain) and deploy-scripts
+#     (plutil/launchd). Those genuinely can't run on linux. Both runners run for
+#     visibility; gating them is deferred until those suites are guarded for
+#     non-Darwin (tracked follow-up — see TESTING.md).
+#     NOTE: apps/ui-web ui-models used to be listed here as macOS-only. It never
+#     was - it is a pure logic test that had gone stale against the model catalog
+#     (#387 added Mythos 5 / Opus 5 and made Sonnet 5 xhigh-capable). Because
+#     this step is non-blocking, the staleness sat red on master unnoticed. It is
+#     fixed; do not re-add it to the "can't run on linux" list.
 #
 # Rationale: lockfile drift and leaked secrets are correctness/safety issues
 # that reached master with no automated guard, so they hard-gate. typecheck and
