@@ -161,7 +161,7 @@ export function BriefingPanel({ ctx }: BriefingPanelProps) {
   return (
     <div className="briefing-panel">
       <div className="bf-refresh-row">
-        <Button className="panel-btn" variant="secondary" size="sm" label="Refresh" onClick={handleRefresh} />
+        <Button id="bf-refresh-btn" variant="secondary" size="sm" label="Refresh" onClick={handleRefresh} />
       </div>
       <div id="bf-body">
         <Section

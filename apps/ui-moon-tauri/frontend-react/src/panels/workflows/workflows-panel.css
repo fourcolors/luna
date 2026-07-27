@@ -4,16 +4,25 @@
  * time. Same selectors, same values - only the delivery mechanism changed
  * (a real, Vite-bundled, unlayered stylesheet instead of a runtime-appended
  * <style> tag), so this panel keeps reading Moon's page-level watercolor
- * tokens (--ink, --muted, --accent, …) exactly as before. Unlayered, so it
- * sits at the same cascade tier as vendor/moon-theme.css and beats Astryx's
- * own `@layer astryx-base` rules without needing !important anywhere here.
+ * tokens (--ink, --muted, --accent, …) exactly as before.
+ *
+ * NOTE: the Refresh button used to carry the vanilla `.panel-btn` skin
+ * (unlayered, so it fully overrode Astryx's own Button styling - border,
+ * radius, background, font-size all clashed with what Astryx left
+ * unset/different, producing a hybrid "frankenstyle" button). That's gone -
+ * the Button now renders as a plain Astryx `variant="secondary"` button via
+ * astryx-moon-bridge.css's token mapping, consistent with every other
+ * Astryx-owned control in the React-ported panels. `.wfs-refresh-btn` below
+ * is layout-only (flex positioning), not a re-skin - it must never gain a
+ * border/background/radius/font declaration, or the collision comes right
+ * back.
  */
 
 .wfs-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .wfs-header[hidden] { display: none !important; }
 .wfs-count { font-size: 0.66rem; color: var(--muted); }
 .wfs-count.stale { color: #f8c982; }
-.wfs-header .panel-btn { margin-left: auto; }
+.wfs-header .wfs-refresh-btn { margin-left: auto; }
 .wfs-list { display: flex; flex-direction: column; gap: 5px; width: 100%; }
 .wfs-list[hidden] { display: none !important; }
 

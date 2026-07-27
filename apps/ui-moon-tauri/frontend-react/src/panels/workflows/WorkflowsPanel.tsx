@@ -214,7 +214,9 @@ export function WorkflowsPanel() {
         </span>
         <Button
           id="wfs-refresh-btn"
-          className="panel-btn"
+          className="wfs-refresh-btn"
+          variant="secondary"
+          size="sm"
           label="Refresh"
           onClick={() => requestRefresh()}
         />
