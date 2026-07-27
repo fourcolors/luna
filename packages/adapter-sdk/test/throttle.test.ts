@@ -5,7 +5,7 @@
  * (ms-valued or HTTP-date retry-after strings).
  */
 import { describe, expect, it } from "vitest"
-import { classifyThrottle } from "../src/throttle.js"
+import { classifyThrottle, toRotatableError } from "../src/throttle.js"
 
 describe("classifyThrottle — phrase coverage", () => {
   it.each([
@@ -55,5 +55,50 @@ describe("classifyThrottle — retry-after parse + clamp", () => {
       throttled: true,
       kind: "rate_limit",
     })
+  })
+})
+
+describe("toRotatableError — lift throttle to tagged error", () => {
+  it("session_limit → SessionLimitError", () => {
+    const err = toRotatableError(
+      new Error("session limit reached"),
+      "test",
+    )
+    expect(err).not.toBeNull()
+    expect(err!._tag).toBe("SessionLimitError")
+    expect(err!.module).toBe("test")
+  })
+
+  it("rate_limit → RateLimitError with retryAfterMs", () => {
+    const err = toRotatableError(
+      new Error("429 rate limit; retry-after: 30"),
+      "adapter",
+    )
+    expect(err).not.toBeNull()
+    expect(err!._tag).toBe("RateLimitError")
+    expect((err as { retryAfterMs?: number }).retryAfterMs).toBe(30_000)
+  })
+
+  it("quota_exhausted → RateLimitError", () => {
+    const err = toRotatableError(
+      new Error("quota_exhausted"),
+      "adapter",
+    )
+    expect(err!._tag).toBe("RateLimitError")
+  })
+
+  it("model_busy → RateLimitError", () => {
+    const err = toRotatableError(new Error("529 overloaded"), "adapter")
+    expect(err!._tag).toBe("RateLimitError")
+  })
+
+  it("non-throttle → null", () => {
+    expect(toRotatableError(new Error("network timeout"), "adapter")).toBeNull()
+  })
+
+  it("preserves original cause", () => {
+    const cause = new Error("maximum sessions reached")
+    const err = toRotatableError(cause, "adapter")
+    expect(err!.cause).toBe(cause)
   })
 })

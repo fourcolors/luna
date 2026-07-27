@@ -593,3 +593,168 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
     }
   })
 })
+
+describe("SDKAdapter early-failure auto-rotation (Slice 3)", () => {
+  it("session limit on A → silent retry on B within same turn", async () => {
+    let callCount = 0
+    const tokensSeen: string[] = []
+    const fakeLayer = SDKClient.fake((params) => {
+      const env = (params.options as Options | undefined)?.env as
+        | Record<string, string | undefined>
+        | undefined
+      const tok = env?.CLAUDE_CODE_OAUTH_TOKEN
+      if (typeof tok === "string") tokensSeen.push(tok)
+      callCount++
+      if (callCount === 1) {
+        // First call: throw a session limit error (early failure)
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          throw new Error("session limit reached for this account")
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          applyFlagSettings: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      }
+      return makeResultWithUsage({ input_tokens: 10, output_tokens: 5 })
+    })
+
+    const spy: BrokerSpy = { reports: [] }
+    const twoSeeds: ReadonlyArray<AccountSeed> = [
+      { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
+      { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
+    ]
+    const brokerL = AccountBrokerLayer.fromAccounts(twoSeeds).pipe(
+      Layer.provide(
+        Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default),
+      ),
+    )
+    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
+    const layer = Layer.provideMerge(
+      SDKAdapter.WithBroker,
+      Layer.mergeAll(fakeLayer, baseLayer, spiedBrokerL),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        yield* Effect.scoped(runOneQuery(adapter, store))
+      }).pipe(Effect.provide(layer)),
+    )
+
+    // Two SDK calls: first failed (a1), second succeeded (a2)
+    expect(callCount).toBe(2)
+    expect(tokensSeen.length).toBe(2)
+    // Different tokens means different accounts
+    expect(tokensSeen[0]).not.toBe(tokensSeen[1])
+  })
+
+  it("pinned boundAccountId → no rotation, surfaces error", async () => {
+    let callCount = 0
+    const fakeLayer = SDKClient.fake(() => {
+      callCount++
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        throw new Error("session limit reached for this account")
+      }
+      const it = gen()
+      return Object.assign(it, {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+        applyFlagSettings: async () => {},
+        setMaxThinkingTokens: async () => {},
+        supplyToolPermissionResponse: async () => {},
+        mcpServerStatus: async () => ({}),
+      } as Partial<Query>) as Query
+    })
+
+    const spy: BrokerSpy = { reports: [] }
+    const twoSeeds: ReadonlyArray<AccountSeed> = [
+      { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
+      { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
+    ]
+    const brokerL = AccountBrokerLayer.fromAccounts(twoSeeds).pipe(
+      Layer.provide(
+        Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default),
+      ),
+    )
+    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
+    const layer = Layer.provideMerge(
+      SDKAdapter.WithBroker,
+      Layer.mergeAll(fakeLayer, baseLayer, spiedBrokerL),
+    )
+
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        // Pin to a1 — should NOT rotate
+        yield* Effect.scoped(runOneQuery(adapter, store, "a1"))
+      }).pipe(Effect.provide(layer)),
+    )
+
+    // Pinned: only 1 call, error surfaces
+    expect(callCount).toBe(1)
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it("partial assistant content emitted → no rotation, fails clean", async () => {
+    let callCount = 0
+    const fakeLayer = SDKClient.fake(() => {
+      callCount++
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        // Emit assistant content BEFORE the error
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Hello" }] },
+          uuid: "u-1",
+        } as unknown as SDKMessage
+        throw new Error("session limit reached mid-stream")
+      }
+      const it = gen()
+      return Object.assign(it, {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+        applyFlagSettings: async () => {},
+        setMaxThinkingTokens: async () => {},
+        supplyToolPermissionResponse: async () => {},
+        mcpServerStatus: async () => ({}),
+      } as Partial<Query>) as Query
+    })
+
+    const spy: BrokerSpy = { reports: [] }
+    const twoSeeds: ReadonlyArray<AccountSeed> = [
+      { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
+      { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
+    ]
+    const brokerL = AccountBrokerLayer.fromAccounts(twoSeeds).pipe(
+      Layer.provide(
+        Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default),
+      ),
+    )
+    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
+    const layer = Layer.provideMerge(
+      SDKAdapter.WithBroker,
+      Layer.mergeAll(fakeLayer, baseLayer, spiedBrokerL),
+    )
+
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        yield* Effect.scoped(runOneQuery(adapter, store))
+      }).pipe(Effect.provide(layer)),
+    )
+
+    // Only 1 call — partial content means no retry
+    expect(callCount).toBe(1)
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+})

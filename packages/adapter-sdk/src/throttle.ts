@@ -11,7 +11,12 @@
  * otherwise yield a wildly wrong cooldown (16.7 h / the day-of-month in
  * seconds). The clamp bounds the damage of any misparse; chain failover only
  * needs "cool this account for a while", not a precise horizon. */
-import { classifyThrottleKind, type ThrottleKind } from "@luna/core"
+import {
+  classifyThrottleKind,
+  type ThrottleKind,
+  SessionLimitError,
+  RateLimitError,
+} from "@luna/core"
 
 const RETRY_AFTER_MIN_MS = 1_000
 const RETRY_AFTER_MAX_MS = 10 * 60 * 1000 // 10 min
@@ -55,5 +60,34 @@ export function classifyThrottle(cause: unknown): ThrottleClassification {
     RETRY_AFTER_MAX_MS,
   )
   return { throttled: true, kind, retryAfterMs }
+}
+
+/**
+ * Lift a classified throttle into an Effect-typed tagged error.
+ * `session_limit` → `SessionLimitError`; all other kinds → `RateLimitError`.
+ * Returns `null` when the cause is not a throttle (caller keeps `SDKError`).
+ */
+export function toRotatableError(
+  cause: unknown,
+  module: string,
+): SessionLimitError | RateLimitError | null {
+  const cls = classifyThrottle(cause)
+  if (!cls.throttled || !cls.kind) return null
+  if (cls.kind === "session_limit") {
+    return new SessionLimitError({
+      module,
+      ...(cls.retryAfterMs !== undefined
+        ? { retryAfterMs: cls.retryAfterMs }
+        : {}),
+      cause,
+    })
+  }
+  return new RateLimitError({
+    module,
+    ...(cls.retryAfterMs !== undefined
+      ? { retryAfterMs: cls.retryAfterMs }
+      : {}),
+    cause,
+  })
 }
 

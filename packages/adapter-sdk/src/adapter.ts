@@ -21,6 +21,7 @@
 import {
   Duration,
   Effect,
+  Exit,
   Layer,
   Option,
   Queue,
@@ -46,7 +47,7 @@ import {
   buildBrokerBaseEnv,
   buildBrokerEnvOverlay,
 } from "./broker-env-overlay.js"
-import { classifyThrottle } from "./throttle.js"
+import { classifyThrottle, toRotatableError } from "./throttle.js"
 import type {
   SDKMessage,
   SDKUserMessage,
@@ -1005,8 +1006,93 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           }),
         )
 
+      /**
+       * Early-failure rotation wrapper. When the broker is active and the
+       * request is Auto (no boundAccountId), intercept the returned Stream:
+       * if it errors before any assistant content was emitted AND the error
+       * is a classified throttle, the failed account was already cooled by
+       * reportRateLimitIfThrottled, so re-running query will acquire a
+       * different account. Up to MAX_EARLY_ROTATION_ATTEMPTS total tries.
+       */
+      const MAX_EARLY_ROTATION_ATTEMPTS = 3
+
+      const queryWithRotation: SDKAdapterService["query"] = (req) => {
+        const isAutoUnbound =
+          broker !== null && req.boundAccountId === undefined
+        if (!isAutoUnbound) return query(req)
+
+        const attempt = (
+          remaining: number,
+          currentReq: typeof req,
+        ): Effect.Effect<
+          Stream.Stream<SDKMessage, SDKError>,
+          SDKError,
+          Scope.Scope
+        > =>
+          Effect.gen(function* () {
+            const scope = yield* Scope.make()
+            const innerStream = yield* Scope.extend(
+              query(currentReq),
+              scope,
+            )
+
+            let emittedAssistantContent = false
+            const tracked: Stream.Stream<SDKMessage, SDKError> =
+              innerStream.pipe(
+                Stream.tap((msg) =>
+                  Effect.sync(() => {
+                    const kind = sdkMessageKind(msg)
+                    if (kind === "assistant" || kind === "result") {
+                      emittedAssistantContent = true
+                    }
+                  }),
+                ),
+              )
+
+            if (remaining <= 1) {
+              yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+              return tracked
+            }
+
+            const rotatable: Stream.Stream<SDKMessage, SDKError> =
+              tracked.pipe(
+                Stream.catchAll((err) =>
+                  Stream.unwrap(
+                    Effect.gen(function* () {
+                      yield* Scope.close(scope, Exit.void)
+                      if (emittedAssistantContent) {
+                        return Stream.fail(err)
+                      }
+                      const rotErr = toRotatableError(err.cause, "adapter")
+                      if (rotErr === null) {
+                        return Stream.fail(err)
+                      }
+                      yield* Effect.logWarning(
+                        `[SDKAdapter] Auto-rotating after early ${rotErr._tag} ` +
+                          `(${remaining - 1} attempts left): ${String(err.cause)}`,
+                      )
+                      let retryReq = currentReq
+                      if (currentReq.resumeFromSessionId) {
+                        const { resumeFromSessionId: _, ...rest } = currentReq
+                        retryReq = rest
+                      }
+                      return Stream.unwrapScoped(
+                        attempt(remaining - 1, retryReq),
+                      )
+                    }),
+                  ),
+                ),
+              )
+
+            yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+            return rotatable
+          })
+
+        return attempt(MAX_EARLY_ROTATION_ATTEMPTS, req)
+      }
+
       return {
-        query,
+        query: queryWithRotation,
         registerHook,
         setPermissionCallback,
         getQueryHandle,

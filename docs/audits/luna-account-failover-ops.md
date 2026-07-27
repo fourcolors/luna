@@ -173,12 +173,48 @@ deployments silently skipped cooling on three of the four.
 The two brokers are now behaviorally aligned.
 
 Note that this changes *which account the next turn picks*.
-It does not retry the failed turn - a throttle still surfaces to the user,
-who resends.
+On the ordinary chat path, an early rotatable throttle can also retry the
+SAME turn automatically instead of surfacing to the user - see §6.
 
 ---
 
-## 6. Reference
+## 6. Auto-rotation behavior (same-kind accounts)
+
+Chat threads on the ordinary (non-recall) path rotate to a fresh account
+mid-turn, without dropping the user's message, when ALL of the following
+hold:
+
+- The thread is in **Auto mode** (no `boundAccountId` pin).
+- The broker reports **`failoverPossible`**, freshly re-checked at the moment
+  of the throttle (not the stale reading from whenever the query was
+  originally acquired) - a single-account pool, or a pool where every other
+  candidate is already cooled, never rotates.
+- The failure is a **classified, rotatable throttle** (session limit, rate
+  limit, quota, overload) and occurs **before any assistant content was
+  streamed for the in-flight turn**.
+- The turn's per-turn rotation budget has not been exhausted (3 total
+  attempts, i.e. up to 2 rotations, per turn; a turn that completes cleanly
+  restores the full budget for whatever comes next).
+
+Rotation is owned by chat-service, not the adapter: the in-flight turn's
+payload is re-offered onto the new attempt's own account, so retrying never
+depends on replaying an already-consumed prompt stream.
+
+**Session history caveat.** A rotated attempt moves to a different account's
+subprocess, so the prior SDK session id cannot be resumed there - the live
+model context for that thread is reset, though the persisted transcript is
+unaffected. If real conversation history existed before the rotation, the
+user sees a one-time notice explaining that short-term memory was reset;
+if the rotation happens before any turn on a brand-new thread has completed,
+no notice is shown (there was nothing to lose).
+
+If the rotation's own re-acquire finds the pool newly exhausted, or the
+budget runs out, the failure falls through to the normal error path: it
+surfaces to the user, who resends.
+
+---
+
+## 7. Reference
 
 | Command | Purpose |
 |---|---|
