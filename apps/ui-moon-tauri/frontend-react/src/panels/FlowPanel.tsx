@@ -135,7 +135,6 @@ export function FlowPanel({ ctx, jobId }: FlowPanelProps) {
         </span>
         <Button
           id="flow-refresh-btn"
-          className="panel-btn"
           variant="secondary"
           size="sm"
           label="Refresh"

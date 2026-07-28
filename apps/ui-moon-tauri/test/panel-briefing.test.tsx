@@ -152,7 +152,7 @@ describe('BriefingPanel (React port of panels/briefing.js)', () => {
   it('Refresh button is present on initial render, before any WS frame', () => {
     const { ctx } = makeCtx()
     const el = renderPanel(ctx)
-    const refresh = Array.from(el.querySelectorAll('.panel-btn')).find((b) => b.textContent === 'Refresh')
+    const refresh = el.querySelector('#bf-refresh-btn')
     expect(refresh).toBeTruthy()
     expect(el.querySelector('.notice')).toBeNull()
   })
@@ -179,7 +179,7 @@ describe('BriefingPanel (React port of panels/briefing.js)', () => {
     const el = renderPanel(ctx)
     fire({ type: 'hello', capabilities: { workflows: true } })
     expect(el.querySelector('.notice')).toBeNull()
-    const refresh = Array.from(el.querySelectorAll('.panel-btn')).find((b) => b.textContent === 'Refresh')
+    const refresh = el.querySelector('#bf-refresh-btn')
     expect(refresh).toBeTruthy()
   })
 
@@ -272,9 +272,7 @@ describe('BriefingPanel (React port of panels/briefing.js)', () => {
     const el = renderPanel(ctx)
     fire({ type: 'hello', capabilities: { workflows: true } })
 
-    const refreshBtn = Array.from(el.querySelectorAll('.panel-btn')).find(
-      (b) => b.textContent === 'Refresh',
-    ) as HTMLElement
+    const refreshBtn = el.querySelector('#bf-refresh-btn') as HTMLElement
     expect(refreshBtn).toBeTruthy()
     act(() => {
       refreshBtn.click()
@@ -314,7 +312,7 @@ describe('mountBriefingPanel (panel.html contract parity)', () => {
 
     expect(document.getElementById('bar-title')!.textContent).toBe(BRIEFING_PANEL_TITLE)
     expect(document.title).toBe(`Luna - ${BRIEFING_PANEL_TITLE}`)
-    expect(document.querySelector('#content-area .panel-btn')).toBeTruthy()
+    expect(document.querySelector('#content-area #bf-refresh-btn')).toBeTruthy()
     expect((window as any).__PanelInternals).toEqual({
       type: 'briefing',
       hasModule: true,

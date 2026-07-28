@@ -26,7 +26,7 @@
   flex: 1;
   font-size: 0.76rem;
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -59,13 +59,13 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+  border: 1px solid var(--ink-faint);
   border-radius: 8px;
   padding: 7px 10px;
   transition: border-color 0.18s ease;
 }
-.flow-run-row:hover { border-color: rgba(138, 180, 248, 0.20); }
+.flow-run-row:hover { border-color: color-mix(in oklab, var(--accent) 22%, transparent); }
 
 .flow-run-top {
   display: flex;
@@ -105,12 +105,12 @@
   align-items: baseline;
   gap: 6px;
   font-size: 0.62rem;
-  color: #64748b;
+  color: var(--muted);
   flex: 1;
 }
 .flow-run-time { flex-shrink: 0; }
 .flow-run-dur { flex-shrink: 0; }
-.flow-run-attempt { flex-shrink: 0; font-size: 0.58rem; color: #475569; }
+.flow-run-attempt { flex-shrink: 0; font-size: 0.58rem; color: color-mix(in oklab, var(--muted) 70%, transparent); }
 
 .flow-run-err {
   font-size: 0.62rem;
