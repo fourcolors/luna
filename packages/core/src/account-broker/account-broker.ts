@@ -171,6 +171,13 @@ export class AccountBroker extends Effect.Tag(
 
 const DEFAULT_COOLDOWN_MS = 60_000
 
+/** Session-limit cooldowns are typically hours/days (subscription quota
+ *  windows), not transient 429 bursts. A short default causes thrash-retry
+ *  against an account that won't recover for hours. 3 hours is a reasonable
+ *  default that avoids re-picking the account while letting it naturally
+ *  re-enter rotation once the window passes. */
+const SESSION_LIMIT_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3 hours
+
 /**
  * Build an AccountBroker layer from a static seed. Depends on
  * `SecretProvider` and `Clock`.
@@ -337,8 +344,12 @@ const fromAccounts = (
             usage.kind === "model_busy"
           ) {
             const now = yield* clock.nowMs()
+            const defaultMs =
+              usage.kind === "session_limit"
+                ? SESSION_LIMIT_COOLDOWN_MS
+                : DEFAULT_COOLDOWN_MS
             const cooldownUntil =
-              now + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)
+              now + (usage.retryAfterMs ?? defaultMs)
             yield* Ref.update(ref, (accounts) =>
               accounts.map((a) =>
                 a.id === usage.accountId

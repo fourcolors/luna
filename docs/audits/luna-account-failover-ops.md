@@ -144,7 +144,41 @@ luna accounts --profile stable   # primary should show healthy
 
 ---
 
-## 5. Reference
+## 5. Throttle cooldowns without an overflow chain
+
+Cooling an account on a throttle is gated on failover being viable - cooling
+the only usable account manufactures an outage strictly worse than surfacing
+the error.
+Viability is computed at pick time and now covers same-kind pools, not just
+configured chains.
+
+**A same-kind sibling now counts as a failover target.**
+Two `anthropic` accounts with no `LUNA_OVERFLOW_CHAINS` set will cool the
+throttled account and route the *next* acquire to the sibling.
+Previously this required an explicit chain; the no-chain path never cooled.
+Cooling still does not happen when the account is the sole usable one, when
+its siblings are already cooled, or when the thread is pinned to a specific
+account via `boundAccountId`.
+
+**Session limits cool for 3 hours; other throttles for 60 seconds.**
+A session limit reflects a subscription quota window measured in hours, not a
+transient burst, so the old 60-second default caused thrash-retry against an
+account that could not recover yet.
+A provider-supplied `retry-after` always wins over both defaults.
+
+**The SQL-backed broker now cools on all four throttle kinds.**
+It previously acted only on `rate_limit` while the in-memory broker already
+handled `session_limit`, `quota_exhausted`, and `model_busy`, so persisted
+deployments silently skipped cooling on three of the four.
+The two brokers are now behaviorally aligned.
+
+Note that this changes *which account the next turn picks*.
+It does not retry the failed turn - a throttle still surfaces to the user,
+who resends.
+
+---
+
+## 6. Reference
 
 | Command | Purpose |
 |---|---|

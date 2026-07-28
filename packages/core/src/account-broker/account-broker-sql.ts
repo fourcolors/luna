@@ -85,6 +85,7 @@ const SCHEMA_V1 = `
 `
 
 const DEFAULT_COOLDOWN_MS = 60_000
+const SESSION_LIMIT_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3 hours
 
 // ── bun:sqlite minimal shape (mirrors cost-store-sqlite.ts) ────────────────
 interface BunDb {
@@ -478,10 +479,19 @@ const fromSql = (
 
       const report: AccountBrokerApi["report"] = (usage) =>
         Effect.gen(function* () {
-          if (usage.kind === "rate_limit") {
+          if (
+            usage.kind === "rate_limit" ||
+            usage.kind === "session_limit" ||
+            usage.kind === "quota_exhausted" ||
+            usage.kind === "model_busy"
+          ) {
             const t = yield* clock.nowMs()
+            const defaultMs =
+              usage.kind === "session_limit"
+                ? SESSION_LIMIT_COOLDOWN_MS
+                : DEFAULT_COOLDOWN_MS
             const cooldownUntil =
-              t + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)
+              t + (usage.retryAfterMs ?? defaultMs)
             // Single atomic Ref.modify that RETURNS the updated record, so the
             // writeBack below persists exactly the state this report produced
             // (a get-after-update could interleave with a concurrent report).
