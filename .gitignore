@@ -23,20 +23,49 @@ pnpm-lock.yaml
 .claude/software-engineering/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+.claude/ping-pong/
+.claude/skills/
+.claude/worktrees/
 # Match nested .claude dirs anywhere in the tree (e.g. apps/*/frontend/.claude/).
 **/.claude/agent-memory/
 **/.claude/software-engineering/
 **/.claude/scheduled_tasks.lock
 **/.claude/settings.local.json
+**/.claude/worktrees/
+**/.claude/checkpoints/
+**/.claude/mailbox/
+**/.claude/routines/.state/
+**/.claude/scheduled_tasks.json
+**/.claude/agent-registry.json
+**/.claude/agent-memory-local
+**/.claude/first-run
+**/.claude/assistant-daemon-state.json
+
+# Ephemeral multi-agent session workspaces (committed agent defs live in agents/)
+.agents/
+
+# Editor / agent local hook and skill installs
+.codex/
+.cursor/
+.github/hooks/
+.github/skills/
+
+# Generated local UML / graph builder output
+.uml-builder/
+
+# Personal / legal drafts - never commit
+*.docx
+/CTO-Transition-Advisory-Agreement*.docx
+
+# Spike seed HTML left by local experiments
+_seed-*.html
+__spike-seed-*.html
 
 # Local-only scratch for things like issue bodies waiting to be filed
 /.local/
 
 # Worktree-local bun package cache (sandboxed installs use BUN_INSTALL_CACHE_DIR)
 /.bun-cache/
-
-# ping-pong cycle cache (ephemeral)
-.claude/ping-pong/
 
 # rerank-eval LLM response cache (ephemeral, keyed by model+shape+query+candidates)
 packages/memory/bench/.rerank-cache.json
