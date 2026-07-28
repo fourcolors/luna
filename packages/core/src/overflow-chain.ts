@@ -207,10 +207,12 @@ export interface LanePickTarget {
  * they stay behaviorally identical (§7.5). Runs inside each broker's atomic
  * `Ref.modify` pick.
  *
- *   - No chain (null/empty) ⇒ single-step fallback byte-identical to the
- *     pre-chain path: `pickAccount(fallbackKind)`, model = the lane string,
- *     budget = caller ?? account seed, failoverPossible = false (nothing to
- *     fail over to — preserves the no-chain B9 no-cool contract).
+ *   - No chain (null/empty) ⇒ single-step fallback: `pickAccount(fallbackKind)`,
+ *     model = the lane string, budget = caller ?? account seed.
+ *     `failoverPossible` is true when another uncooled same-kind account
+ *     exists (excluding the winner) AND no sticky pin (`boundId`) — enabling
+ *     throttle-driven rotation across a multi-account pool without requiring
+ *     `LUNA_OVERFLOW_CHAINS`. Sole account or pinned: false.
  *   - Chain ⇒ walk it via {@link pickChainTarget}; budget precedence is
  *     step ?? caller ?? account seed. `failoverPossible` is true when the
  *     chain yields another viable account with the winner excluded.
@@ -232,12 +234,23 @@ export function pickLaneTarget(
   if (chain === null || chain.length === 0) {
     const account = pickAccount(accounts, args.fallbackKind, nowMs, args.boundId)
     if (account === null) return null
+    // Same-kind sibling failover: when no chain is configured and no sticky
+    // pin is active, check whether another uncooled account of the same kind
+    // would survive if this one cooled. Enables throttle-driven rotation
+    // across a multi-account pool without requiring LUNA_OVERFLOW_CHAINS.
+    const failoverPossible =
+      args.boundId === undefined &&
+      pickAccount(
+        accounts.filter((a) => a.id !== account.id),
+        args.fallbackKind,
+        nowMs,
+      ) !== null
     return {
       account,
       model: args.lane,
       stepIndex: 0,
       budgetUsd: args.callerBudgetUsd ?? account.budgetUsd,
-      failoverPossible: false,
+      failoverPossible,
     }
   }
   const hit = pickChainTarget(chain, accounts, nowMs, args.boundId, providerEnv)

@@ -189,7 +189,7 @@ describe("pickChainTarget — chain walking (reuses pickAccount)", () => {
 
 describe("pickLaneTarget — shared lane selection (both brokers)", () => {
   const lane = "chat"
-  it("no chain: single-step fallback, failoverPossible false, caller budget wins over seed", () => {
+  it("no chain: single-step fallback, caller budget wins over seed", () => {
     const accounts = [
       acct({ id: "a1", kind: "anthropic", budgetUsd: 9 }),
       acct({ id: "a2", kind: "anthropic" }),
@@ -203,6 +203,45 @@ describe("pickLaneTarget — shared lane selection (both brokers)", () => {
     expect(hit?.model).toBe(lane)
     expect(hit?.stepIndex).toBe(0)
     expect(hit?.budgetUsd).toBe(2)
+    // Two same-kind accounts → failoverPossible true (sibling survives)
+    expect(hit?.failoverPossible).toBe(true)
+  })
+
+  it("no chain, sole account ⇒ failoverPossible false", () => {
+    const accounts = [acct({ id: "a1", kind: "anthropic" })]
+    const hit = pickLaneTarget(
+      { lane, chain: null, fallbackKind: "anthropic", providerEnv: PROVIDER_ENV },
+      accounts,
+      1_000,
+    )
+    expect(hit?.failoverPossible).toBe(false)
+  })
+
+  it("no chain, boundId pin ⇒ failoverPossible false even with sibling", () => {
+    const accounts = [
+      acct({ id: "a1", kind: "anthropic" }),
+      acct({ id: "a2", kind: "anthropic" }),
+    ]
+    const hit = pickLaneTarget(
+      { lane, chain: null, fallbackKind: "anthropic", boundId: "a1", providerEnv: PROVIDER_ENV },
+      accounts,
+      1_000,
+    )
+    expect(hit?.account.id).toBe("a1")
+    expect(hit?.failoverPossible).toBe(false)
+  })
+
+  it("no chain, sibling cooled ⇒ failoverPossible false", () => {
+    const accounts = [
+      acct({ id: "a1", kind: "anthropic" }),
+      acct({ id: "a2", kind: "anthropic", cooldownUntilMs: 99_999 }),
+    ]
+    const hit = pickLaneTarget(
+      { lane, chain: null, fallbackKind: "anthropic", providerEnv: PROVIDER_ENV },
+      accounts,
+      1_000, // nowMs < a2's cooldown
+    )
+    expect(hit?.account.id).toBe("a1")
     expect(hit?.failoverPossible).toBe(false)
   })
 

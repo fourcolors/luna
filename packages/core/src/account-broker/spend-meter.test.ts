@@ -539,8 +539,8 @@ describe("acquireSession failoverPossible (throttle-gate viability)", () => {
             return { noChain, twoStep, soleStep }
           }).pipe(Effect.provide(makeLayer(seeds, clock))),
         )
-        // No chain ⇒ nothing to fail over to (the no-chain path never cools).
-        expect(out.noChain.failoverPossible).toBe(false)
+        // No chain, but two same-kind accounts → sibling survives → failover viable.
+        expect(out.noChain.failoverPossible).toBe(true)
         // Two-step chain, second step viable ⇒ cooling a1 has somewhere to go.
         expect(out.twoStep.failoverPossible).toBe(true)
         // One pinned step ⇒ cooling its sole account would self-inflict an
