@@ -139,13 +139,36 @@ type DbRow = {
   updated_at: number
 }
 
+/**
+ * Best-effort JSON decode for a column whose empty value is unambiguous.
+ * `toRow` runs inside a `.map` over the whole server list — including
+ * `listEnabledTrusted`, the boot-time enumeration — so a throw on one corrupt
+ * row would silently disable EVERY MCP server. Degrade that row instead.
+ */
+const parseJsonColumn = <T>(raw: string, fallback: T, ctx: string): T => {
+  try {
+    return JSON.parse(raw) as T
+  } catch (cause) {
+    console.warn(`[mcp-servers] ${ctx}: unparseable JSON column: ${String(cause)}`)
+    return fallback
+  }
+}
+
 const toRow = (r: DbRow): McpServerRow => ({
   slug: r.slug,
   url: r.url,
-  headers: JSON.parse(r.headers_json) as Record<string, string>,
+  headers: parseJsonColumn<Record<string, string>>(
+    r.headers_json,
+    {},
+    `server "${r.slug}" headers_json`,
+  ),
   enabled: r.enabled !== 0,
   trustAcceptedAt: r.trust_accepted_at,
-  allowedTools: JSON.parse(r.allowed_tools_json) as string[],
+  allowedTools: parseJsonColumn<string[]>(
+    r.allowed_tools_json,
+    [],
+    `server "${r.slug}" allowed_tools_json`,
+  ),
   allowAll: r.allow_all !== 0,
   createdAt: r.created_at,
   updatedAt: r.updated_at,

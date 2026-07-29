@@ -177,6 +177,24 @@ const effortFromOptionsJson = (optionsJson: string): string | undefined => {
   }
 }
 
+/**
+ * Best-effort tag decode. `rowToSummary` runs inside a `.map` over the whole
+ * thread list, so a throw here would blank EVERY thread over one bad row.
+ * Degrade to no tags instead — matching `parseMeta` / `effortFromOptionsJson`
+ * above, which are already defensive.
+ */
+const parseTags = (s: string, id: string): ReadonlyArray<string> => {
+  try {
+    const parsed = JSON.parse(s) as unknown
+    return Array.isArray(parsed) ? (parsed as ReadonlyArray<string>) : []
+  } catch (cause) {
+    console.warn(
+      `[session-store] session "${id}": unparseable tags; defaulting to []: ${String(cause)}`,
+    )
+    return []
+  }
+}
+
 const rowToSummary = (r: SessionDbRow): SessionSummary => {
   const meta = parseMeta(r.meta_json)
   const effort = effortFromOptionsJson(r.options_json)
@@ -184,7 +202,7 @@ const rowToSummary = (r: SessionDbRow): SessionSummary => {
     id: r.id,
     parentId: r.parent_id,
     title: r.title,
-    tags: JSON.parse(r.tags) as ReadonlyArray<string>,
+    tags: parseTags(r.tags, r.id),
     createdAt: r.created_at,
     endedAt: r.ended_at,
     model: r.model,
