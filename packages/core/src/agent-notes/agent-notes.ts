@@ -12,8 +12,21 @@ import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
-import type { AgentNote, AgentNotesApi, NoteKind } from "./types.js"
+import type {
+  AgentNote,
+  AgentNotesApi,
+  NoteKind,
+  UnparsedPayload,
+} from "./types.js"
 import { NoteError } from "./types.js"
+
+/**
+ * Upper bound on the `raw` text carried by an {@link UnparsedPayload}.
+ * Nothing constrains the size of `payload_json`, and the envelope is passed
+ * straight through to tool output, so cap it rather than echoing an unbounded
+ * blob. Observed malformed rows are ~2 KB, well under this.
+ */
+const UNPARSED_RAW_MAX = 4096
 
 // ── Schema DDL ───────────────────────────────────────────────────────────────
 
@@ -267,13 +280,49 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
           ts: number
         }
 
+        /**
+         * Decode `payload_json`, degrading a malformed value instead of
+         * throwing. `rowToNote` runs inside `.map` for every list read, so a
+         * bare `JSON.parse` here made ONE poisoned row fail the ENTIRE query —
+         * every healthy note in the page was lost with it, which took
+         * `obs_notes_recent()` offline completely.
+         *
+         * Unlike jobs-store's `rowToJob` (which skips the row, because an
+         * undispatchable job is worse than a missing one), notes are an audit
+         * trail: the summary/kind/ts stay valuable, so the row is KEPT and only
+         * `payload` degrades. See `UnparsedPayload` for why an envelope beats
+         * `null` or the raw string. Read-side only — never written back.
+         */
+        const parsePayload = (raw: string | null, id: string): unknown => {
+          if (raw == null) return null
+          try {
+            return JSON.parse(raw)
+          } catch (cause) {
+            // Never silent: log the id so the poisoned row stays locatable
+            // (idiom mirrors jobs-store.ts).
+            console.warn(
+              `[agent-notes] note "${id}": unparseable payload_json: ${String(cause)} — surfacing as __unparsed envelope`,
+            )
+            const envelope: UnparsedPayload =
+              raw.length > UNPARSED_RAW_MAX
+                ? {
+                    __unparsed: true,
+                    raw: raw.slice(0, UNPARSED_RAW_MAX),
+                    error: String(cause),
+                    truncated: true,
+                  }
+                : { __unparsed: true, raw, error: String(cause) }
+            return envelope
+          }
+        }
+
         const rowToNote = (row: RawRow): AgentNote => ({
           id: row.id,
           sessionId: row.session_id,
           parentId: row.parent_id,
           kind: row.kind,
           summary: row.summary,
-          payload: row.payload_json != null ? JSON.parse(row.payload_json) : null,
+          payload: parsePayload(row.payload_json, row.id),
           ts: row.ts,
         })
 
@@ -281,10 +330,34 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
           Effect.gen(function* () {
             const ts = yield* clock.nowMs()
             const id = input.id ?? crypto.randomUUID()
-            const payloadJson =
-              input.payload !== undefined
-                ? JSON.stringify(input.payload)
-                : null
+            // `JSON.stringify` can THROW (circular reference, BigInt) or return
+            // `undefined` (function/symbol payload). Both used to escape the
+            // declared `NoteError` failure channel — the throw as an unhandled
+            // defect, the `undefined` as a bad statement binding — because this
+            // ran before BEGIN IMMEDIATE and outside the try/catch below.
+            let payloadJson: string | null = null
+            if (input.payload !== undefined) {
+              try {
+                const encoded = JSON.stringify(input.payload)
+                if (encoded === undefined) {
+                  return yield* Effect.fail(
+                    new NoteError({
+                      op: "record",
+                      message: `payload is not JSON-serializable (${typeof input.payload})`,
+                    }),
+                  )
+                }
+                payloadJson = encoded
+              } catch (cause) {
+                return yield* Effect.fail(
+                  new NoteError({
+                    op: "record",
+                    message: `failed to serialize payload: ${String(cause)}`,
+                    cause,
+                  }),
+                )
+              }
+            }
             db.run("BEGIN IMMEDIATE")
             try {
               insertStmt.run(

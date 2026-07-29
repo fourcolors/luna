@@ -157,13 +157,30 @@ export class ConnectorInstanceStore extends Effect.Tag(
           created_at: number
           last_healthy_at: number | null
         }
+        /**
+         * `toInstance` runs inside a `.map` over the whole connector list, and
+         * that call site is `Effect.sync` — so a throw here escaped as an
+         * unhandled DEFECT that killed the fiber rather than a recoverable
+         * failure. Degrade one corrupt row to "no scopes" instead.
+         */
+        const parseGrantedScopes = (raw: string, id: string): string[] => {
+          try {
+            const parsed = JSON.parse(raw) as unknown
+            return Array.isArray(parsed) ? (parsed as string[]) : []
+          } catch (cause) {
+            console.warn(
+              `[connectors] instance "${id}": unparseable granted_scopes; defaulting to []: ${String(cause)}`,
+            )
+            return []
+          }
+        }
         const toInstance = (r: Row): ConnectorInstance => ({
           id: r.id,
           definitionId: r.definition_id,
           label: r.label,
           status: r.status as ConnectorStatus,
           secretRef: r.secret_ref,
-          grantedScopes: JSON.parse(r.granted_scopes) as string[],
+          grantedScopes: parseGrantedScopes(r.granted_scopes, r.id),
           accountKind: r.account_kind,
           createdAt: r.created_at,
           lastHealthyAt: r.last_healthy_at,

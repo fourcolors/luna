@@ -14,11 +14,16 @@
  *   - deleteForSession: removes notes, returns count, returns 0 for unknown
  *   - context reconstruction: goal_declared + 3 progress → getChain = 4 in order
  */
-import { describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
+import type { BunDb } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { AgentNotesService } from "./agent-notes.js"
+import { isUnparsedPayload } from "./types.js"
 
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const dSqlite = isBun ? describe : describe.skip
@@ -637,5 +642,254 @@ dSqlite("AgentNotesService (SQLite layer) — record id", () => {
     expect(typeof note.id).toBe("string")
     expect(note.id.length).toBeGreaterThan(0)
     expect(note.id).not.toBe("sqlite-custom-id")
+  })
+})
+
+// ── Unparseable payload_json: one bad row must not poison every read ─────────
+//
+// Regression for the outage where a single row whose payload_json held raw
+// markdown (written out-of-band, bypassing record()'s JSON.stringify) made
+// EVERY read path fail with NoteError — blacking out obs_notes_recent()
+// entirely even though 4000+ healthy notes were sitting right there.
+//
+// These must run on the SQLite layer: AgentNotesService.Memory stores the live
+// object and never JSON round-trips, so it structurally cannot exercise this
+// path — which is exactly why the bug class survived.
+
+/** A REAL on-disk db: the corrupt row is written by a SECOND connection, so it
+ *  cannot go through the service's own JSON.stringify path. ":memory:" would
+ *  give the two connections separate databases. */
+const corruptDbPath = join(
+  tmpdir(),
+  `agent-notes-corrupt-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+)
+
+afterAll(() => {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      rmSync(corruptDbPath + suffix)
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+})
+
+const CorruptDbLayer = AgentNotesService.makeLayer(corruptDbPath).pipe(
+  Layer.provide(Clock.Default),
+  Layer.provide(bootstrapStubL),
+)
+
+const runCorruptDb = <A, E>(
+  eff: Effect.Effect<A, E, AgentNotesService>,
+): Promise<A> => Effect.runPromise(eff.pipe(Effect.provide(CorruptDbLayer)))
+
+/** Shaped after the real rows found in luna.db: a markdown heading, which
+ *  `JSON.parse` rejects with "Unrecognized token '#'". */
+const CORRUPT_PAYLOAD_TEXT =
+  "# Luna Maintainer Sweep — 2026-07-29\n\n## Reviewed\n- repo healthy"
+
+/** Longer than the envelope's raw cap, so it must come back truncated. */
+const HUGE_CORRUPT_PAYLOAD_TEXT = `# ${"sweep ".repeat(2000)}`
+
+/** Write a row through a raw second connection, bypassing record(). DYNAMIC
+ *  import (not a static one) so vitest can still LOAD this file — mirrors
+ *  ui-feedback-status-store.test.ts. */
+const insertRawRow = async (args: {
+  id: string
+  sessionId: string
+  kind: string
+  summary: string
+  payloadJson: string | null
+  ts: number
+}): Promise<void> => {
+  const mod = await import("bun:sqlite" as string)
+  const Database = (mod as { Database?: new (p: string) => BunDb }).Database
+  if (!Database) throw new Error("bun:sqlite has no `Database` export")
+  const raw = new Database(corruptDbPath)
+  try {
+    raw
+      .query(
+        `INSERT INTO agent_notes
+           (id, session_id, parent_id, kind, summary, payload_json, ts)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        args.id,
+        args.sessionId,
+        null,
+        args.kind,
+        args.summary,
+        args.payloadJson,
+        args.ts,
+      )
+  } finally {
+    raw.close()
+  }
+}
+
+dSqlite("AgentNotesService (SQLite layer) — unparseable payload_json", () => {
+  beforeAll(async () => {
+    // A healthy note first: building the layer is what runs the migration, so
+    // this must precede any raw INSERT (which would otherwise hit "no such
+    // table"). It doubles as the "valid payload still round-trips" fixture.
+    const healthy = await runCorruptDb(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        yield* svc.record({
+          id: "note-null-payload",
+          sessionId: "sess-corrupt",
+          kind: "reflection",
+          summary: "no payload at all",
+        })
+        return yield* svc.record({
+          id: "note-healthy",
+          sessionId: "sess-corrupt",
+          kind: "reflection",
+          summary: "healthy note",
+          payload: { ok: true, nested: { n: 1 } },
+        })
+      }),
+    )
+
+    // Corrupt siblings land directly on disk, same table, newer ts.
+    await insertRawRow({
+      id: "note-corrupt",
+      sessionId: "sess-corrupt",
+      kind: "reflection",
+      summary: "maintainer sweep",
+      payloadJson: CORRUPT_PAYLOAD_TEXT,
+      ts: healthy.ts + 1,
+    })
+    await insertRawRow({
+      id: "note-corrupt-huge",
+      sessionId: "sess-huge",
+      kind: "maintainer_sweep",
+      summary: "oversized sweep",
+      payloadJson: HUGE_CORRUPT_PAYLOAD_TEXT,
+      ts: healthy.ts + 2,
+    })
+  })
+
+  it("returns the row from every read path instead of failing with NoteError", async () => {
+    const { across, recent, byKind, chain, byId } = await runCorruptDb(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        return {
+          across: yield* svc.getRecentAcrossSessions(),
+          recent: yield* svc.getRecent("sess-corrupt"),
+          byKind: yield* svc.getByKind("reflection"),
+          chain: yield* svc.getChain("sess-corrupt"),
+          byId: yield* svc.getById("note-corrupt"),
+        }
+      }),
+    )
+
+    // Every list read succeeds AND still contains the healthy notes.
+    for (const rows of [across, recent, byKind, chain]) {
+      const ids = rows.map((n) => n.id)
+      expect(ids).toContain("note-corrupt")
+      expect(ids).toContain("note-healthy")
+    }
+
+    // The corrupt row keeps every column that did parse; only `payload`
+    // degrades — and it degrades to a self-describing, LOSSLESS envelope.
+    expect(byId).not.toBeNull()
+    expect(byId!.sessionId).toBe("sess-corrupt")
+    expect(byId!.kind).toBe("reflection")
+    expect(byId!.summary).toBe("maintainer sweep")
+    expect(isUnparsedPayload(byId!.payload)).toBe(true)
+    const envelope = byId!.payload as {
+      __unparsed: true
+      raw: string
+      error: string
+      truncated?: true
+    }
+    expect(envelope.__unparsed).toBe(true)
+    expect(envelope.raw).toBe(CORRUPT_PAYLOAD_TEXT) // no data loss
+    expect(envelope.error).toMatch(/JSON|Unexpected|Unrecognized/i)
+    expect(envelope.truncated).toBeUndefined()
+  })
+
+  it("leaves a VALID payload untouched and a NULL payload null (no regression)", async () => {
+    const { healthy, nullPayload } = await runCorruptDb(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        return {
+          healthy: yield* svc.getById("note-healthy"),
+          nullPayload: yield* svc.getById("note-null-payload"),
+        }
+      }),
+    )
+
+    // A valid payload round-trips byte-for-byte — the fallback never fires.
+    expect(healthy!.payload).toEqual({ ok: true, nested: { n: 1 } })
+    expect(isUnparsedPayload(healthy!.payload)).toBe(false)
+
+    // A genuinely NULL payload_json stays null, so it remains distinguishable
+    // from a corrupt one (this is why `null` is the wrong fallback shape).
+    expect(nullPayload!.payload).toBeNull()
+  })
+
+  it("caps the preserved raw text and flags it as truncated", async () => {
+    const note = await runCorruptDb(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        return yield* svc.getById("note-corrupt-huge")
+      }),
+    )
+
+    expect(isUnparsedPayload(note!.payload)).toBe(true)
+    const envelope = note!.payload as {
+      raw: string
+      truncated?: true
+    }
+    expect(envelope.truncated).toBe(true)
+    expect(envelope.raw.length).toBe(4096)
+    expect(HUGE_CORRUPT_PAYLOAD_TEXT.startsWith(envelope.raw)).toBe(true)
+  })
+
+  it("does not let one corrupt row hide healthy notes from other sessions", async () => {
+    const results = await runCorruptDb(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        yield* svc.record({
+          sessionId: "sess-other",
+          kind: "progress",
+          summary: "unrelated healthy note",
+        })
+        return yield* svc.getRecentAcrossSessions()
+      }),
+    )
+
+    const summaries = results.map((n) => n.summary)
+    expect(summaries).toContain("unrelated healthy note")
+    expect(summaries).toContain("maintainer sweep")
+    expect(summaries).toContain("healthy note")
+  })
+
+  it("fails a non-serializable payload as a typed NoteError, not a defect", async () => {
+    // JSON.stringify used to run outside record()'s try/catch, so a circular
+    // payload escaped the declared NoteError channel as an unhandled defect.
+    const result = await runCorruptDb(
+      Effect.gen(function* () {
+        const svc = yield* AgentNotesService
+        const circular: Record<string, unknown> = { a: 1 }
+        circular["self"] = circular
+        return yield* Effect.either(
+          svc.record({
+            sessionId: "sess-circular",
+            kind: "progress",
+            summary: "circular payload",
+            payload: circular,
+          }),
+        )
+      }),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left._tag).toBe("NoteError")
+      expect(result.left.op).toBe("record")
+    }
   })
 })

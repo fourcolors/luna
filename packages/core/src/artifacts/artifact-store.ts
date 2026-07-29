@@ -380,6 +380,26 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           version: number | null
         }
 
+        /**
+         * `rowToArtifact` runs inside a `.map` over the whole gallery, so a
+         * throw on one corrupt `bridge_caps` would blank every artifact.
+         * Degrade to the field's existing `null` (no caps) branch instead.
+         */
+        const parseBridgeCaps = (
+          raw: string | null,
+          id: string,
+        ): ReadonlyArray<string> | null => {
+          if (raw == null) return null
+          try {
+            return JSON.parse(raw) as ReadonlyArray<string>
+          } catch (cause) {
+            console.warn(
+              `[artifact-store] artifact "${id}": unparseable bridge_caps; defaulting to null: ${String(cause)}`,
+            )
+            return null
+          }
+        }
+
         const rowToArtifact = (r: ArtifactRow): PinnedArtifact => ({
           id: r.id,
           kind: r.kind as PinnedArtifact["kind"],
@@ -387,10 +407,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           lang: r.lang,
           content: r.content,
           origin: r.origin,
-          bridgeCaps:
-            r.bridge_caps == null
-              ? null
-              : (JSON.parse(r.bridge_caps) as ReadonlyArray<string>),
+          bridgeCaps: parseBridgeCaps(r.bridge_caps, r.id),
           version: r.version ?? 1,
           pinnedAt: r.pinned_at,
           updatedAt: r.updated_at,
