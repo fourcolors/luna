@@ -163,6 +163,27 @@ export interface AccountBrokerApi {
    * exposed for tests/sim. Production callers should not rely on this.
    */
   readonly _inspect: () => Effect.Effect<ReadonlyArray<AccountRecord>>
+
+  /**
+   * Read-only re-derivation of lane failover viability, using the SAME
+   * `pickLaneTarget` selection `acquireSession` runs (overflow-chain.ts) -
+   * never a private re-implementation. A caller that needs to know "would an
+   * acquire for this lane/bind succeed RIGHT NOW" (e.g. the adapter
+   * recomputing `failoverPossible` at throttle time, when pool state may
+   * have moved on since this query's original acquire) must go through this
+   * method rather than reconstructing the predicate from `list()` - a prior
+   * `list().some(...)` re-check drifted from `pickLaneTarget`/
+   * `pickChainTarget` on both a cross-kind `LUNA_OVERFLOW_CHAINS` step
+   * (kind-filtered `list` is blind to a chain step on a different provider)
+   * and a pinned single-step chain with an off-chain sibling (kind-filtered
+   * `list` sees the sibling as viable when the chain would never route to
+   * it). Never mutates the pool: no acquire, no inFlight bump, no
+   * lastUsedMs write.
+   */
+  readonly peekFailoverPossible: (opts: {
+    readonly model: string
+    readonly boundAccountId?: string
+  }) => Effect.Effect<boolean>
 }
 
 export class AccountBroker extends Effect.Tag(
@@ -335,6 +356,37 @@ const fromAccounts = (
           return { account, model: toolName, stepIndex: 0, failoverPossible: false }
         }).pipe(Effect.map((acq) => acq.credential))
 
+      /**
+       * Read-only re-check (see the interface doc comment). Reuses the
+       * SAME `pickLaneTarget` selection `acquireSession` runs above - same
+       * lane->chain resolution, same fallback-kind derivation - so this can
+       * never disagree with what a real re-acquire for this lane/bind would
+       * do. Only reads `ref`; never `Ref.modify`s it, so it can never bump
+       * inFlight or touch lastUsedMs.
+       */
+      const peekFailoverPossible: AccountBrokerApi["peekFailoverPossible"] = (
+        opts,
+      ) =>
+        Effect.gen(function* () {
+          const now = yield* clock.nowMs()
+          const accounts = yield* Ref.get(ref)
+          const lane = opts.model
+          const chain = resolveChain(lane, overflowCfg)
+          const fallbackKind = resolveKind(lane, providerEnv)
+          const target = pickLaneTarget(
+            {
+              lane,
+              chain,
+              fallbackKind,
+              boundId: opts.boundAccountId,
+              providerEnv,
+            },
+            accounts,
+            now,
+          )
+          return target !== null
+        })
+
       const report: AccountBrokerApi["report"] = (usage) =>
         Effect.gen(function* () {
           if (
@@ -436,6 +488,7 @@ const fromAccounts = (
         report,
         _inspect,
         list,
+        peekFailoverPossible,
       } satisfies AccountBrokerApi
     }),
   )

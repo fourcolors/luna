@@ -63,6 +63,26 @@ const makeFakeIterable = (throwOnIterate: boolean): Query => {
   } as Partial<Query>) as Query
 }
 
+// Fake Query that throws immediately with a message `classifyThrottle`
+// recognizes (BLOCKER #3 tests below need a THROTTLE-classified failure so
+// `reportRateLimitIfThrottled` actually runs the re-check, not just any
+// terminal error).
+const makeThrottleIterable = (message: string): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    throw new Error(message)
+  }
+  const iterator = gen()
+  return Object.assign(iterator, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    applyFlagSettings: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
 /** Fake Query that yields ONE result message carrying turn-level token usage. */
 const makeResultWithUsage = (usage: {
   input_tokens: number
@@ -592,169 +612,167 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
       else process.env["LUNA_OVERFLOW_CHAINS"] = prevChains
     }
   })
-})
 
-describe("SDKAdapter early-failure auto-rotation (Slice 3)", () => {
-  it("session limit on A → silent retry on B within same turn", async () => {
-    let callCount = 0
-    const tokensSeen: string[] = []
-    const fakeLayer = SDKClient.fake((params) => {
-      const env = (params.options as Options | undefined)?.env as
-        | Record<string, string | undefined>
-        | undefined
-      const tok = env?.CLAUDE_CODE_OAUTH_TOKEN
-      if (typeof tok === "string") tokensSeen.push(tok)
-      callCount++
-      if (callCount === 1) {
-        // First call: throw a session limit error (early failure)
-        async function* gen(): AsyncGenerator<SDKMessage, void> {
-          throw new Error("session limit reached for this account")
-        }
-        const it = gen()
-        return Object.assign(it, {
-          interrupt: async () => {},
-          setPermissionMode: async () => {},
-          setModel: async () => {},
-          applyFlagSettings: async () => {},
-          setMaxThinkingTokens: async () => {},
-          supplyToolPermissionResponse: async () => {},
-          mcpServerStatus: async () => ({}),
-        } as Partial<Query>) as Query
-      }
-      return makeResultWithUsage({ input_tokens: 10, output_tokens: 5 })
-    })
+  // ── BLOCKER #3 regression: the re-fired `onAccountAcquired` at throttle
+  // time must use the broker's canonical `pickLaneTarget`/`pickChainTarget`
+  // selection (via `peekFailoverPossible`), never a private kind-filtered
+  // `broker.list(kind).some(...)` re-derivation - that re-derivation cannot
+  // see a chain step on a DIFFERENT provider kind. ─────────────────────────
+  it("BLOCKER #3a: cross-kind overflow chain - re-fired failoverPossible is true (a different-kind step is still viable)", async () => {
+    process.env["ROT_TOK_CROSS_A"] = "tok-cross-a"
+    process.env["ROT_TOK_CROSS_O"] = "tok-cross-o"
+    const chains = {
+      chains: {
+        "cross-lane": [
+          { kind: "anthropic", accountId: "cross-a", model: "claude-sonnet-4-5" },
+          { kind: "openai", accountId: "cross-o", model: "gpt-5" },
+        ],
+      },
+    }
+    const prevChains = process.env["LUNA_OVERFLOW_CHAINS"]
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(chains)
+    try {
+      const crossSeeds: ReadonlyArray<AccountSeed> = [
+        { id: "cross-a", kind: "anthropic", secretRef: "env:ROT_TOK_CROSS_A" },
+        { id: "cross-o", kind: "openai", secretRef: "env:ROT_TOK_CROSS_O" },
+      ]
+      const sdkLayer = SDKClient.fake(() =>
+        makeThrottleIterable("session limit reached, please retry"),
+      )
+      const brokerL = AccountBrokerLayer.fromAccounts(crossSeeds).pipe(
+        Layer.provide(Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default)),
+      )
+      const layer = Layer.provideMerge(
+        SDKAdapter.WithBroker,
+        Layer.mergeAll(sdkLayer, baseLayer, brokerL),
+      )
 
-    const spy: BrokerSpy = { reports: [] }
-    const twoSeeds: ReadonlyArray<AccountSeed> = [
-      { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
-      { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
-    ]
-    const brokerL = AccountBrokerLayer.fromAccounts(twoSeeds).pipe(
-      Layer.provide(
-        Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default),
-      ),
-    )
-    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
-    const layer = Layer.provideMerge(
-      SDKAdapter.WithBroker,
-      Layer.mergeAll(fakeLayer, baseLayer, spiedBrokerL),
-    )
+      const acquiredCalls: Array<{
+        accountId: string
+        failoverPossible: boolean
+      }> = []
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* SDKAdapter
+          const store = yield* SessionStore
+          const localSid = `${sid}-cross-${sidCounter++}`
+          yield* store.create({
+            id: localSid,
+            options: { model: "cross-lane" },
+            createdAt: 0,
+          })
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const out = yield* adapter.query({
+                sessionId: localSid,
+                prompt: emptyPrompt,
+                sessionOptions: {
+                  model: "cross-lane",
+                  idleTimeoutMs: 5_000,
+                  sdkOptions: { model: "cross-lane" },
+                },
+                onAccountAcquired: (info) => acquiredCalls.push(info),
+              })
+              yield* Stream.runDrain(out).pipe(Effect.either)
+            }),
+          )
+        }).pipe(Effect.provide(layer)),
+      )
 
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const adapter = yield* SDKAdapter
-        const store = yield* SessionStore
-        yield* Effect.scoped(runOneQuery(adapter, store))
-      }).pipe(Effect.provide(layer)),
-    )
-
-    // Two SDK calls: first failed (a1), second succeeded (a2)
-    expect(callCount).toBe(2)
-    expect(tokensSeen.length).toBe(2)
-    // Different tokens means different accounts
-    expect(tokensSeen[0]).not.toBe(tokensSeen[1])
+      // First call: acquire-time snapshot for the winning step (cross-a).
+      expect(acquiredCalls[0]?.accountId).toBe("cross-a")
+      // Second (RE-FIRED) call: freshly recomputed AT THROTTLE TIME, after
+      // cross-a was just cooled by the report above. The chain's step-1
+      // target (cross-o, a DIFFERENT provider kind) is still viable - a
+      // kind-filtered `list("anthropic")` re-check is blind to it and would
+      // wrongly report `false` here, silently dropping the user's turn for
+      // every cross-kind LUNA_OVERFLOW_CHAINS deployment.
+      expect(acquiredCalls).toHaveLength(2)
+      expect(acquiredCalls[1]?.accountId).toBe("cross-a")
+      expect(acquiredCalls[1]?.failoverPossible).toBe(true)
+    } finally {
+      if (prevChains === undefined) delete process.env["LUNA_OVERFLOW_CHAINS"]
+      else process.env["LUNA_OVERFLOW_CHAINS"] = prevChains
+    }
   })
 
-  it("pinned boundAccountId → no rotation, surfaces error", async () => {
-    let callCount = 0
-    const fakeLayer = SDKClient.fake(() => {
-      callCount++
-      async function* gen(): AsyncGenerator<SDKMessage, void> {
-        throw new Error("session limit reached for this account")
-      }
-      const it = gen()
-      return Object.assign(it, {
-        interrupt: async () => {},
-        setPermissionMode: async () => {},
-        setModel: async () => {},
-        applyFlagSettings: async () => {},
-        setMaxThinkingTokens: async () => {},
-        supplyToolPermissionResponse: async () => {},
-        mcpServerStatus: async () => ({}),
-      } as Partial<Query>) as Query
-    })
+  it("BLOCKER #3b: pinned single-step chain + off-chain same-kind sibling - cool-on-throttle gate correctly stays closed (no re-fire, no rotation invitation)", async () => {
+    process.env["ROT_TOK_PIN_A"] = "tok-pin-a"
+    process.env["ROT_TOK_PIN_SIB"] = "tok-pin-sib"
+    const chains = {
+      chains: {
+        "pinned-lane": [{ accountId: "pin-a", model: "claude-sonnet-4-5" }],
+      },
+    }
+    const prevChains = process.env["LUNA_OVERFLOW_CHAINS"]
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(chains)
+    try {
+      const pinnedSeeds: ReadonlyArray<AccountSeed> = [
+        { id: "pin-a", kind: "anthropic", secretRef: "env:ROT_TOK_PIN_A" },
+        // Off-chain sibling: SAME kind as pin-a, but never named by the
+        // chain (no step pins to it, no step's resolved kind alone would
+        // route here since the ONLY step is pinned to "pin-a" specifically).
+        { id: "pin-sib", kind: "anthropic", secretRef: "env:ROT_TOK_PIN_SIB" },
+      ]
+      const sdkLayer = SDKClient.fake(() =>
+        makeThrottleIterable("session limit reached, please retry"),
+      )
+      const brokerL = AccountBrokerLayer.fromAccounts(pinnedSeeds).pipe(
+        Layer.provide(Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default)),
+      )
+      const layer = Layer.provideMerge(
+        SDKAdapter.WithBroker,
+        Layer.mergeAll(sdkLayer, baseLayer, brokerL),
+      )
 
-    const spy: BrokerSpy = { reports: [] }
-    const twoSeeds: ReadonlyArray<AccountSeed> = [
-      { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
-      { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
-    ]
-    const brokerL = AccountBrokerLayer.fromAccounts(twoSeeds).pipe(
-      Layer.provide(
-        Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default),
-      ),
-    )
-    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
-    const layer = Layer.provideMerge(
-      SDKAdapter.WithBroker,
-      Layer.mergeAll(fakeLayer, baseLayer, spiedBrokerL),
-    )
+      const acquiredCalls: Array<{
+        accountId: string
+        failoverPossible: boolean
+      }> = []
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* SDKAdapter
+          const store = yield* SessionStore
+          const localSid = `${sid}-pinned-${sidCounter++}`
+          yield* store.create({
+            id: localSid,
+            options: { model: "pinned-lane" },
+            createdAt: 0,
+          })
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const out = yield* adapter.query({
+                sessionId: localSid,
+                prompt: emptyPrompt,
+                sessionOptions: {
+                  model: "pinned-lane",
+                  idleTimeoutMs: 5_000,
+                  sdkOptions: { model: "pinned-lane" },
+                },
+                onAccountAcquired: (info) => acquiredCalls.push(info),
+              })
+              yield* Stream.runDrain(out).pipe(Effect.either)
+            }),
+          )
+        }).pipe(Effect.provide(layer)),
+      )
 
-    const exit = await Effect.runPromiseExit(
-      Effect.gen(function* () {
-        const adapter = yield* SDKAdapter
-        const store = yield* SessionStore
-        // Pin to a1 — should NOT rotate
-        yield* Effect.scoped(runOneQuery(adapter, store, "a1"))
-      }).pipe(Effect.provide(layer)),
-    )
-
-    // Pinned: only 1 call, error surfaces
-    expect(callCount).toBe(1)
-    expect(Exit.isFailure(exit)).toBe(true)
-  })
-
-  it("partial assistant content emitted → no rotation, fails clean", async () => {
-    let callCount = 0
-    const fakeLayer = SDKClient.fake(() => {
-      callCount++
-      async function* gen(): AsyncGenerator<SDKMessage, void> {
-        // Emit assistant content BEFORE the error
-        yield {
-          type: "assistant",
-          message: { content: [{ type: "text", text: "Hello" }] },
-          uuid: "u-1",
-        } as unknown as SDKMessage
-        throw new Error("session limit reached mid-stream")
-      }
-      const it = gen()
-      return Object.assign(it, {
-        interrupt: async () => {},
-        setPermissionMode: async () => {},
-        setModel: async () => {},
-        applyFlagSettings: async () => {},
-        setMaxThinkingTokens: async () => {},
-        supplyToolPermissionResponse: async () => {},
-        mcpServerStatus: async () => ({}),
-      } as Partial<Query>) as Query
-    })
-
-    const spy: BrokerSpy = { reports: [] }
-    const twoSeeds: ReadonlyArray<AccountSeed> = [
-      { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
-      { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
-    ]
-    const brokerL = AccountBrokerLayer.fromAccounts(twoSeeds).pipe(
-      Layer.provide(
-        Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default),
-      ),
-    )
-    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
-    const layer = Layer.provideMerge(
-      SDKAdapter.WithBroker,
-      Layer.mergeAll(fakeLayer, baseLayer, spiedBrokerL),
-    )
-
-    const exit = await Effect.runPromiseExit(
-      Effect.gen(function* () {
-        const adapter = yield* SDKAdapter
-        const store = yield* SessionStore
-        yield* Effect.scoped(runOneQuery(adapter, store))
-      }).pipe(Effect.provide(layer)),
-    )
-
-    // Only 1 call — partial content means no retry
-    expect(callCount).toBe(1)
-    expect(Exit.isFailure(exit)).toBe(true)
+      expect(acquiredCalls[0]?.accountId).toBe("pin-a")
+      // Acquire-time: the chain's ONLY step is pinned to "pin-a" - excluding
+      // pin-a leaves nowhere for that pin to route to, so failoverPossible
+      // is correctly false even before any throttle. Because that gates
+      // BLOCKER #1's cool-on-throttle check (`if (!throttleFailoverPossible)
+      // return` in `reportRateLimitIfThrottled`), the account is never
+      // cooled and `onAccountAcquired` is never re-fired for this turn - a
+      // SINGLE call, still reporting `false`. (The canonical-vs-naive
+      // divergence this scenario exists to catch is proven directly against
+      // `peekFailoverPossible` in account-broker.test.ts, where it's
+      // reachable without needing a real throttle to also clear this gate.)
+      expect(acquiredCalls[0]?.failoverPossible).toBe(false)
+      expect(acquiredCalls).toHaveLength(1)
+    } finally {
+      if (prevChains === undefined) delete process.env["LUNA_OVERFLOW_CHAINS"]
+      else process.env["LUNA_OVERFLOW_CHAINS"] = prevChains
+    }
   })
 })

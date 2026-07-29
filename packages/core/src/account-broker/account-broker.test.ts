@@ -226,6 +226,159 @@ describe("AccountBroker.report", () => {
   })
 })
 
+describe("AccountBroker.peekFailoverPossible", () => {
+  it("no chain: false when pinned to a cooled account (nowhere for the pin to route), true for an unbound acquire with uncooled siblings", async () => {
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        yield* broker.report({ accountId: "a1", kind: "session_limit" })
+        // Pinned to the now-cooled a1 - the pin allows only that account,
+        // and it is unavailable, so no acquire could succeed right now.
+        const pinnedToCooled = yield* broker.peekFailoverPossible({
+          model: "claude-sonnet-4-5",
+          boundAccountId: "a1",
+        })
+        // Unbound: a2/a3 are still uncooled, so a real acquire would land.
+        const unbound = yield* broker.peekFailoverPossible({
+          model: "claude-sonnet-4-5",
+        })
+        return { pinnedToCooled, unbound }
+      }).pipe(Effect.provide(buildLayer())),
+    )
+    expect(out.pinnedToCooled).toBe(false)
+    expect(out.unbound).toBe(true)
+  })
+
+  it("read-only: never mutates inFlight or lastUsedMs, never perturbs a subsequent real acquire", async () => {
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        const before = yield* broker._inspect()
+        yield* broker.peekFailoverPossible({ model: "claude-sonnet-4-5" })
+        yield* broker.peekFailoverPossible({ model: "claude-sonnet-4-5" })
+        const after = yield* broker._inspect()
+        return { before, after }
+      }).pipe(Effect.provide(buildLayer())),
+    )
+    expect(out.after).toEqual(out.before)
+  })
+})
+
+/**
+ * BLOCKER #3 regression: `peekFailoverPossible` must reuse the CANONICAL
+ * `pickLaneTarget`/`pickChainTarget` selection (overflow-chain.ts) - the
+ * same one `acquireSession` runs - never a private re-derivation off
+ * `list(kindFilter).some(...)`. A prior private re-derivation drifted from
+ * the canonical predicate in BOTH directions:
+ *   - cross-kind chain: kind-filtered `list` is blind to a chain step on a
+ *     DIFFERENT provider, so it under-reports (false when canonical is
+ *     true) - the user's turn would be silently dropped instead of rotated.
+ *   - pinned single-step chain + an off-chain same-kind sibling:
+ *     kind-filtered `list` sees the sibling as "another healthy account" of
+ *     the same kind and over-reports (true when canonical is false) - chat-
+ *     service would rotate toward a target the chain would never actually
+ *     route to (reintroducing Defect #2).
+ * Both tests below reproduce the exact divergence by computing the OLD
+ * formula inline (`list(kind).some(...)`) alongside the fixed method, on
+ * the SAME broker state, and asserting they disagree exactly as described.
+ */
+describe("AccountBroker.peekFailoverPossible - canonical selection (BLOCKER #3)", () => {
+  it("cross-kind overflow chain: canonical is true; the old kind-filtered list() formula would have said false", async () => {
+    const chainSeeds: ReadonlyArray<AccountSeed> = [
+      { id: "cross-a", kind: "anthropic", secretRef: "anth:cross-a" },
+      { id: "cross-o", kind: "openai", secretRef: "anth:cross-o" },
+    ]
+    const prevChains = process.env["LUNA_OVERFLOW_CHAINS"]
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify({
+      chains: {
+        "cross-lane": [
+          { kind: "anthropic", accountId: "cross-a", model: "claude-sonnet-4-5" },
+          { kind: "openai", accountId: "cross-o", model: "gpt-5" },
+        ],
+      },
+    })
+    try {
+      const layer = AccountBrokerLayer.fromAccounts(chainSeeds).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            fileSecrets({ "anth:cross-a": "tok-a", "anth:cross-o": "tok-o" }),
+            Clock.Test(1000),
+          ),
+        ),
+      )
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const broker = yield* AccountBroker
+          // Cool the winning (anthropic) step, as a throttle report would.
+          yield* broker.report({ accountId: "cross-a", kind: "session_limit" })
+          const canonical = yield* broker.peekFailoverPossible({
+            model: "cross-lane",
+          })
+          // Reproduce the OLD, now-deleted formula for direct comparison:
+          // kind-filtered `list(acquiredAccountKind).some(...)`.
+          const summaries = yield* broker.list("anthropic")
+          const naiveOldFormula = summaries.some(
+            (s) => s.id !== "cross-a" && s.health === "healthy",
+          )
+          return { canonical, naiveOldFormula }
+        }).pipe(Effect.provide(layer)),
+      )
+      expect(result.canonical).toBe(true)
+      expect(result.naiveOldFormula).toBe(false)
+    } finally {
+      if (prevChains === undefined) delete process.env["LUNA_OVERFLOW_CHAINS"]
+      else process.env["LUNA_OVERFLOW_CHAINS"] = prevChains
+    }
+  })
+
+  it("pinned single-step chain + off-chain same-kind sibling: canonical is false; the old kind-filtered list() formula would have said true", async () => {
+    const pinnedSeeds: ReadonlyArray<AccountSeed> = [
+      { id: "pin-a", kind: "anthropic", secretRef: "anth:pin-a" },
+      { id: "pin-sib", kind: "anthropic", secretRef: "anth:pin-sib" },
+    ]
+    const prevChains = process.env["LUNA_OVERFLOW_CHAINS"]
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify({
+      chains: {
+        "pinned-lane": [{ accountId: "pin-a", model: "claude-sonnet-4-5" }],
+      },
+    })
+    try {
+      const layer = AccountBrokerLayer.fromAccounts(pinnedSeeds).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            fileSecrets({ "anth:pin-a": "tok-a", "anth:pin-sib": "tok-sib" }),
+            Clock.Test(1000),
+          ),
+        ),
+      )
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const broker = yield* AccountBroker
+          yield* broker.report({ accountId: "pin-a", kind: "session_limit" })
+          const canonical = yield* broker.peekFailoverPossible({
+            model: "pinned-lane",
+          })
+          const summaries = yield* broker.list("anthropic")
+          const naiveOldFormula = summaries.some(
+            (s) => s.id !== "pin-a" && s.health === "healthy",
+          )
+          return { canonical, naiveOldFormula }
+        }).pipe(Effect.provide(layer)),
+      )
+      // The chain's ONLY step is pinned to pin-a; excluding it leaves the
+      // chain with nowhere to route - canonically false.
+      expect(result.canonical).toBe(false)
+      // The old formula sees pin-sib as a healthy same-kind account and
+      // wrongly says true - exactly the divergence that reintroduced
+      // Defect #2 (rotating toward a target the chain would never route to).
+      expect(result.naiveOldFormula).toBe(true)
+    } finally {
+      if (prevChains === undefined) delete process.env["LUNA_OVERFLOW_CHAINS"]
+      else process.env["LUNA_OVERFLOW_CHAINS"] = prevChains
+    }
+  })
+})
+
 // Ensure the secretProviderFirstOf composer also wires through the broker.
 describe("composition smoke", () => {
   it("broker resolves via firstOf([env, file])", async () => {

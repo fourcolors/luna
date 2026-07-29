@@ -45,6 +45,7 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   PubSub,
@@ -103,6 +104,7 @@ import {
 import {
   resolveKind,
   readProviderEnv,
+  defaultIsRotatableError,
 } from "@luna/core"
 
 /* -------------------------------------------------------------------------- */
@@ -345,6 +347,19 @@ export const truncateOutput = (
  *  frame. The informative part (the underlying cause) leads, so this keeps the
  *  bubble bounded without losing the reason. */
 const MAX_STREAM_FAILURE_CHARS = 400
+
+/**
+ * Ceiling on the ordinary path's per-turn account-rotation BURST (chat-service
+ * owns the turn boundary; see the module doc + `account-rotation.sim.test.ts`).
+ * A cooled account must not be retried in a tight loop - 3 total attempts
+ * (2 rotations) bounds the retry burst for a SINGLE turn before falling
+ * through to the existing terminal `handleAdapterFailure` path. The budget is
+ * tracked per-turn (a `rotationAttempts` Ref reset to 0 on every `result`),
+ * NOT per-thread: a turn that completes cleanly proves the account just used
+ * is healthy, so the next turn deserves the full burst again, however many
+ * rotations happened earlier in the thread's life.
+ */
+const MAX_ORDINARY_ROTATION_ATTEMPTS = 3
 
 /**
  * Render an adapter-stream failure `Cause` into a SHORT, user-facing reason —
@@ -1021,6 +1036,45 @@ export class ChatService extends Effect.Service<ChatService>()(
             readonly userText: string
           }>()
           const assistantText = yield* Ref.make("")
+          // Account-rotation support (ordinary path only - the recall path's
+          // per-turn `Stream.make(turn.payload)` prompt is already replayable
+          // and needs no re-offer).
+          //
+          // A LIST, not a single slot: each attempt's "forwarder" fiber
+          // (built fresh per attempt in `runOrdinaryQuery` below) appends
+          // every turn it pulls off the thread's own `inbox` that has not
+          // yet been closed by a `result` message, in pull order. A
+          // single-slot Ref would silently DROP an earlier unresolved turn
+          // if a forwarder ever pulls more than one item ahead of what the
+          // SDK has actually finished processing - the exact failure mode
+          // rotation exists to prevent. `result` (handleSdkMessage below)
+          // shifts off the OLDEST entry: results close turns in the same
+          // order they were submitted (the same FIFO assumption
+          // `pendingTurns` already relies on), so the head of this list is
+          // always the turn the next `result` closes - which holds across a
+          // rotation ONLY because `runOrdinaryQuery` seeds this Ref with
+          // `seedTurns` (the carried-over unresolved turns) in the SAME step
+          // it seeds the new attempt's own queue, rather than leaving it
+          // empty while that attempt is already executing those turns.
+          const inFlightPrompts = yield* Ref.make<ReadonlyArray<TurnPrompt>>([])
+          // Per-turn rotation budget. Reset to 0 in the SAME `result` branch
+          // that shifts `inFlightPrompts` - a turn that completes proves the
+          // account is healthy again, so the NEXT turn deserves the full
+          // burst budget, not whatever was left over from a rotation many
+          // turns ago. Without this reset, `MAX_ORDINARY_ROTATION_ATTEMPTS`
+          // would be a THREAD-lifetime ceiling instead of a per-turn one -
+          // a thread that rotated twice, ever, would silently stop rotating
+          // for the rest of its life even after many healthy turns in
+          // between (see the module doc).
+          const rotationAttempts = yield* Ref.make(0)
+          // Whether ANY turn on this thread has ever reached a `result` -
+          // set true in the same branch as the two Refs above, NEVER reset.
+          // Used only to gate the USER-VISIBLE "history was dropped" notice
+          // (see `runOrdinaryQuery` below): a session id can be minted by the
+          // SDK's own init/system frame before a session-limit error on the
+          // very FIRST turn of a brand-new thread, and in that case there is
+          // no real history to lose - the notice would be a false alarm.
+          const hasCompletedATurn = yield* Ref.make(false)
 
           // Per-thread sub-scope. `Scope.fork` makes a child that we can
           // close independently of the service scope. The service scope
@@ -1031,10 +1085,6 @@ export class ChatService extends Effect.Service<ChatService>()(
             // ParallelFinalizers — siblings finalize concurrently.
             { _tag: "Parallel" },
           )
-
-          const promptStream: Stream.Stream<SDKUserMessage> = Stream.fromQueue(
-            inbox,
-          ).pipe(Stream.map((turn) => turn.payload))
 
           // Persist creation-time metadata in ThreadRegistry (when available)
           // so a chat-server restart can resume this thread. The SDK session id
@@ -1194,9 +1244,15 @@ export class ChatService extends Effect.Service<ChatService>()(
             })
           }
 
-          const consumeReplies = (
+          // Runs the replies stream to its Exit WITHOUT swallowing a failure
+          // Cause - the account-rotation decision (below) must inspect the
+          // Cause BEFORE it is handed to `handleAdapterFailure`, which is
+          // terminal (drains `pendingTurns`, ends the turn for good). A
+          // clean stream end (scope closed, queue never fails) is a Success
+          // exit; an adapter-stream failure is captured, not thrown.
+          const runReplies = (
             replies: Stream.Stream<SDKMessage, unknown>,
-          ): Effect.Effect<void, never> =>
+          ): Effect.Effect<Exit.Exit<void, unknown>, never> =>
             replies.pipe(
               Stream.runForEach((msg) =>
                 handleSdkMessage({
@@ -1208,6 +1264,9 @@ export class ChatService extends Effect.Service<ChatService>()(
                   lastActivity,
                   pendingTurns,
                   assistantText,
+                  inFlightPrompts,
+                  rotationAttempts,
+                  hasCompletedATurn,
                   ...(Option.getOrUndefined(binding)?.observeTurn !== undefined
                     ? {
                         observeTurn:
@@ -1217,7 +1276,18 @@ export class ChatService extends Effect.Service<ChatService>()(
                   threadScope,
                 }),
               ),
-              Effect.catchAllCause(handleAdapterFailure),
+              Effect.exit,
+            )
+
+          const consumeReplies = (
+            replies: Stream.Stream<SDKMessage, unknown>,
+          ): Effect.Effect<void, never> =>
+            runReplies(replies).pipe(
+              Effect.flatMap((exit) =>
+                Exit.isFailure(exit)
+                  ? handleAdapterFailure(exit.cause)
+                  : Effect.void,
+              ),
             )
 
           const queryBase = {
@@ -1236,18 +1306,298 @@ export class ChatService extends Effect.Service<ChatService>()(
 
           const recallMemory = Option.getOrUndefined(binding)?.recallMemory
           if (recallMemory === undefined) {
-            // Ordinary threads retain the existing long-lived SDK query.
-            const replies: Stream.Stream<SDKMessage, unknown> = yield* adapter
-              .query({
-                ...queryBase,
-                prompt: promptStream,
-                sessionOptions,
-                ...(activeSdkSessionId !== null
-                  ? { resumeFromSessionId: activeSdkSessionId }
-                  : {}),
+            // Ordinary threads retain a long-lived SDK query for the
+            // thread's whole life - but "long-lived" no longer means
+            // un-restartable. On an EARLY, rotatable throttle (no assistant
+            // content yet streamed for the in-flight turn, on an
+            // unbound/Auto request the broker says has a viable failover
+            // target, with THIS TURN's rotation budget remaining) the query
+            // restarts on a fresh account instead of silently dropping the
+            // user's turn - see the module doc and
+            // `account-rotation.sim.test.ts`. Any other failure (including a
+            // rotatable one with no budget left) falls through to the
+            // existing terminal `handleAdapterFailure` path, unchanged.
+            //
+            // Each ATTEMPT gets its OWN private prompt source - never the
+            // thread's shared `inbox` directly, and never a Stream built
+            // once and handed to more than one `adapter.query()` call. A
+            // dead attempt's internal SDK-input bridge
+            // (`Stream.toAsyncIterableEffect`, adapter.ts) is an unsupervised
+            // fiber we cannot reliably interrupt from here - if it were ever
+            // subscribed to `inbox` directly, it would sit parked on
+            // `Queue.take(inbox)` and could silently steal a turn re-offered
+            // (or freshly sent) after we've already moved on to a new
+            // attempt (Defect #1, verbatim). Instead: a fresh `attemptQueue`
+            // per attempt, fed by a `forwarderFiber` WE fork and interrupt
+            // ourselves - a fiber we own and can deterministically stop,
+            // unlike the adapter-internal bridge. The forwarder's
+            // take-then-record-then-forward step runs `uninterruptible` so
+            // a turn is never lost mid-handoff: either it was never taken
+            // off `inbox` (nothing lost), or it is FULLY recorded into
+            // `inFlightPrompts` AND forwarded to `attemptQueue` before any
+            // pending interrupt is honored.
+            const runOrdinaryQuery = (
+              attemptNum: number,
+              seedTurns: ReadonlyArray<TurnPrompt>,
+            ): Effect.Effect<void, never> =>
+              Effect.gen(function* () {
+                const attemptQueue = yield* Queue.unbounded<TurnPrompt>()
+                // `inFlightPrompts` must mirror exactly what THIS attempt's
+                // queue holds, in the same FIFO order - the `result` handler's
+                // head-shift (`xs.slice(1)`, below in `handleSdkMessage`)
+                // assumes the head of this list is always the turn the next
+                // `result` closes. Seeding both in the same step (rather than
+                // leaving `inFlightPrompts` at whatever a PRIOR attempt left
+                // it, or clearing it to `[]` unconditionally) is what keeps
+                // that invariant true across a rotation: attempt 1 starts
+                // with `seedTurns === []`, and a rotated attempt carries the
+                // prior attempt's unresolved turns onto BOTH the queue and
+                // this Ref together.
+                yield* Ref.set(inFlightPrompts, seedTurns)
+                if (seedTurns.length > 0) {
+                  yield* Queue.offerAll(attemptQueue, seedTurns)
+                }
+                const forwarderFiber = yield* Effect.fork(
+                  Effect.forever(
+                    Queue.take(inbox).pipe(
+                      Effect.flatMap((turn) =>
+                        Effect.uninterruptible(
+                          Ref.update(inFlightPrompts, (xs) => [
+                            ...xs,
+                            turn,
+                          ]).pipe(Effect.zipRight(Queue.offer(attemptQueue, turn))),
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+                const attemptPromptStream: Stream.Stream<SDKUserMessage> =
+                  Stream.fromQueue(attemptQueue).pipe(
+                    Stream.map((turn) => turn.payload),
+                  )
+
+                // Populated synchronously by the adapter, inside its
+                // acquire step, before `query()`'s Effect resolves - set
+                // before `runReplies` ever runs. Also RE-FIRED by the
+                // adapter with a freshly recomputed `failoverPossible`
+                // immediately before a throttle-classified failure
+                // surfaces (see `onAccountAcquired`'s doc comment in
+                // adapter.ts) - this closure just overwrites `acquired` on
+                // every call, so it always holds the LATEST reading, never
+                // the stale one from whenever this query was first
+                // acquired (which, on a long-lived thread, can be many
+                // turns and hours before the failure being decided here).
+                let acquired: {
+                  accountId: string
+                  failoverPossible: boolean
+                } | null = null
+                const onAccountAcquired = (info: {
+                  accountId: string
+                  failoverPossible: boolean
+                }): void => {
+                  acquired = info
+                }
+
+                // Attempt 1 resumes the thread's existing SDK session as
+                // before. A ROTATED attempt (attemptNum > 1) moves to a
+                // DIFFERENT account - a session id minted under the OLD
+                // account's subprocess cannot be resumed on the new one, so
+                // it must be dropped rather than silently carried over
+                // (never silently re-point `activeSdkSessionId`). Only
+                // surfaced when there was actually a session to drop.
+                let resumeFromSessionId: string | undefined =
+                  activeSdkSessionId ?? undefined
+                if (attemptNum > 1 && activeSdkSessionId !== null) {
+                  const droppedSessionId = activeSdkSessionId
+                  activeSdkSessionId = null
+                  resumeFromSessionId = undefined
+                  // Was there REAL history behind that session id? Either
+                  // this thread was resumed from a prior server run, or a
+                  // turn on THIS thread has actually reached a `result`.
+                  // Without this check, the SDK's own init/system frame can
+                  // mint a session id moments before turn 1's OWN throttle
+                  // on a brand-new thread - `activeSdkSessionId !== null`
+                  // would then be true with nothing whatsoever lost, and
+                  // the user-visible notice below would be a false alarm on
+                  // the single most common rotation case. The obs event
+                  // (traceability) and the null-out above always happen
+                  // regardless; only the USER-VISIBLE frame is gated.
+                  const hadRealHistory =
+                    opts.resumeFromSessionId !== undefined ||
+                    (yield* Ref.get(hasCompletedATurn))
+                  yield* obs.emit({
+                    kind: "Error",
+                    ts: new Date().toISOString(),
+                    level: "warn",
+                    errorTag: "ChatRotationHistoryDropped",
+                    message:
+                      `account rotation on thread ${id}: SDK session ` +
+                      `${droppedSessionId} cannot be resumed on the newly ` +
+                      `rotated-to account; conversation history before ` +
+                      `this point was dropped from the live SDK context ` +
+                      `(the transcript store is unaffected).` +
+                      (hadRealHistory
+                        ? ""
+                        : " No turn had completed yet on this thread, so " +
+                          "no real history was actually lost."),
+                    context: { threadId: id },
+                  })
+                  if (hadRealHistory) {
+                    yield* PubSub.publish(pubsub, {
+                      type: "assistant-error",
+                      threadId: id,
+                      turnId: null,
+                      error: {
+                        kind: "sdk",
+                        message:
+                          "Switched to another account to keep this " +
+                          "conversation going. The model's short-term memory " +
+                          "of earlier turns in this session was reset (the " +
+                          "saved transcript itself is unaffected).",
+                      },
+                    })
+                  }
+                }
+
+                // A fresh CHILD scope per attempt (BLOCKER #2), not
+                // `Scope.extend(threadScope)` directly: the old code
+                // attached every attempt's `abortController.abort()`
+                // finalizer and the broker's `inFlight` release finalizer
+                // straight onto the THREAD scope, so a failed attempt's
+                // resources were never released until the whole thread
+                // died - each rotation orphaned a live SDK subprocess and
+                // permanently inflated the just-throttled account's
+                // `inFlight` count. `Scope.close` below runs those
+                // finalizers as soon as WE decide this attempt is done
+                // (rotate or terminal), not when the thread eventually ends.
+                const attemptScope = yield* Scope.fork(threadScope, {
+                  _tag: "Parallel",
+                })
+                const queryEffect = adapter
+                  .query({
+                    ...queryBase,
+                    prompt: attemptPromptStream,
+                    sessionOptions,
+                    onAccountAcquired,
+                    ...(resumeFromSessionId !== undefined
+                      ? { resumeFromSessionId }
+                      : {}),
+                  })
+                  .pipe(Scope.extend(attemptScope))
+
+                let replies: Stream.Stream<SDKMessage, unknown>
+                if (attemptNum === 1) {
+                  // Byte-identical to the pre-rotation behavior: the
+                  // thread's very FIRST acquire failing (e.g. broker
+                  // misconfiguration) is a genuine defect, not a routine
+                  // exhaustion.
+                  replies = yield* queryEffect.pipe(Effect.orDie)
+                } else {
+                  // BLOCKER #4: a ROTATION re-acquire hitting
+                  // `AllAccountsExhaustedError` is an EXPECTED outcome (we
+                  // just cooled the account that was throttled; the pool
+                  // can legitimately have nothing left, or a sibling lane
+                  // sharing the pool can have cooled the only other
+                  // candidate in the meantime) - not a bug. `Effect.orDie`
+                  // here would convert it into an unhandled DEFECT that
+                  // escapes this Effect.gen's fiber (forked via
+                  // `Effect.forkIn(threadScope)`), permanently killing the
+                  // thread's consumer with no error frame ever reaching the
+                  // user and `pendingTurns` never draining - every later
+                  // `send()` on this thread would silently go nowhere.
+                  // Route it through the SAME terminal path an ordinary
+                  // rotatable-but-out-of-budget failure already takes.
+                  const acquireExit = yield* Effect.exit(queryEffect)
+                  if (Exit.isFailure(acquireExit)) {
+                    yield* Fiber.interrupt(forwarderFiber)
+                    yield* Scope.close(attemptScope, acquireExit)
+                    yield* handleAdapterFailure(acquireExit.cause)
+                    return
+                  }
+                  replies = acquireExit.value
+                }
+
+                const exit = yield* runReplies(replies)
+                // Interrupt the forwarder BEFORE reading `inFlightPrompts`
+                // below - otherwise it could still be concurrently pulling
+                // a brand-new turn off `inbox` while we're computing the
+                // rotation decision, making the snapshot racy. Interrupting
+                // first (and awaiting it, which `Fiber.interrupt` does)
+                // guarantees no further writes can land once we read it.
+                yield* Fiber.interrupt(forwarderFiber)
+                yield* Scope.close(attemptScope, exit)
+                if (Exit.isSuccess(exit)) return
+
+                const cause = exit.cause
+                const failure = Cause.failureOption(cause)
+                const inFlight = yield* Ref.get(inFlightPrompts)
+                const currentAssistantText = yield* Ref.get(assistantText)
+                const rotationAttemptsUsed = yield* Ref.get(rotationAttempts)
+                // Snapshot into a `const`, re-widened via `as`: `acquired` is
+                // a `let` mutated ONLY through the `onAccountAcquired`
+                // callback the adapter invokes opaquely, so TS's flow
+                // analysis (seeing no direct call to it in this scope) keeps
+                // narrowing `acquired`'s type to its initial literal `null` -
+                // the `as` restores the real declared type so the `!== null`
+                // check below actually narrows instead of collapsing to
+                // `never`.
+                const acquiredSnapshot = acquired as {
+                  accountId: string
+                  failoverPossible: boolean
+                } | null
+                // ALL SIX must hold: (a) unbound/Auto request, (b) broker
+                // says failover is viable - a FRESH reading re-checked at
+                // failure time, not the stale value from this query's
+                // original acquire (see the `onAccountAcquired` doc comment
+                // in adapter.ts), (c) the cause is rotatable per core's
+                // shared predicate, (d) at least one turn is in flight,
+                // (e) no assistant content streamed yet for the OLDEST one,
+                // (f) THIS TURN's rotation budget remains - reset to 0 on
+                // every `result`, so a turn that completed cleanly restores
+                // the full budget for whatever comes next (see the module
+                // doc's per-turn-not-per-thread note).
+                const rotatable =
+                  opts.boundAccountId === undefined &&
+                  acquiredSnapshot !== null &&
+                  acquiredSnapshot.failoverPossible === true &&
+                  Option.isSome(failure) &&
+                  defaultIsRotatableError(failure.value) &&
+                  inFlight.length > 0 &&
+                  currentAssistantText === "" &&
+                  rotationAttemptsUsed < MAX_ORDINARY_ROTATION_ATTEMPTS - 1
+
+                // The redundant `acquiredSnapshot` null re-check (already
+                // implied by `rotatable`) is what lets TS narrow it to
+                // non-null below without a cast.
+                if (!rotatable || acquiredSnapshot === null) {
+                  yield* handleAdapterFailure(cause)
+                  return
+                }
+
+                yield* Ref.update(rotationAttempts, (n) => n + 1)
+                yield* inc("luna.chat.account_rotation.attempts")
+                yield* Effect.logWarning(
+                  `[chat] thread ${id}: early rotatable throttle on ` +
+                    `attempt ${attemptNum} (account ` +
+                    `${acquiredSnapshot.accountId}); carrying ` +
+                    `${inFlight.length} in-flight turn(s) onto a fresh ` +
+                    `account's own attempt queue and rotating.`,
+                )
+                // Carry the unresolved turn(s) DIRECTLY onto the next
+                // attempt's own queue, in ORIGINAL order - never back onto
+                // the shared `inbox` (that reintroduces exactly the steal
+                // risk this design avoids). Do NOT clear `inFlightPrompts`
+                // here: the next attempt is about to start EXECUTING these
+                // exact turns, so the tracking Ref must keep reflecting them
+                // as in-flight, not go empty out from under a query that
+                // hasn't finished them yet (that gap is what let a SECOND
+                // consecutive throttle on the same turn read `inFlight = []`
+                // and refuse to rotate again). `runOrdinaryQuery` seeds
+                // `inFlightPrompts` fresh from `seedTurns` in its own first
+                // step, in the same order these are being handed off here.
+                yield* runOrdinaryQuery(attemptNum + 1, inFlight)
               })
-              .pipe(Scope.extend(threadScope), Effect.orDie)
-            yield* consumeReplies(replies).pipe(Effect.forkIn(threadScope))
+            yield* runOrdinaryQuery(1, []).pipe(Effect.forkIn(threadScope))
           } else {
             // Recall context cannot live in a long-lived prompt stream: every
             // injected user block would remain in the SDK conversation. Run a
@@ -1348,6 +1698,13 @@ export class ChatService extends Effect.Service<ChatService>()(
           readonly userText: string
         }>
         readonly assistantText: Ref.Ref<string>
+        /** Oldest entry shifted off here on `result` - see the
+         *  `inFlightPrompts` decl above. */
+        readonly inFlightPrompts: Ref.Ref<ReadonlyArray<TurnPrompt>>
+        /** Reset to 0 here on `result` - see the `rotationAttempts` decl above. */
+        readonly rotationAttempts: Ref.Ref<number>
+        /** Set true here on `result` - see the `hasCompletedATurn` decl above. */
+        readonly hasCompletedATurn: Ref.Ref<boolean>
         readonly observeTurn?: ThreadToolsBinding["observeTurn"]
         readonly threadScope: Scope.CloseableScope
       }): Effect.Effect<void, never> =>
@@ -1549,6 +1906,24 @@ export class ChatService extends Effect.Service<ChatService>()(
             // leftover text under a stale turnId. Resetting here closes that gap.
             yield* Ref.set(args.inFlightTurnId, null)
             yield* Ref.set(args.inFlightText, "")
+            // The turn this `result` closes is no longer "in flight" for
+            // rotation purposes - shift it off the head of the unresolved
+            // list (FIFO: results close turns in submission order, the same
+            // assumption `pendingTurns` below already relies on) so a
+            // failure on the NEXT turn does not re-offer this one.
+            yield* Ref.update(args.inFlightPrompts, (xs) => xs.slice(1))
+            // Restore the FULL per-turn rotation budget for whatever turn
+            // comes next - a completed turn proves the account just used is
+            // healthy, so a rotation-worthy failure many turns later must not
+            // be blocked by attempts spent rotating out of trouble earlier in
+            // the thread's life (see the module doc + `rotationAttempts` decl).
+            yield* Ref.set(args.rotationAttempts, 0)
+            // Marks that real conversation history now exists on this thread
+            // - gates the USER-VISIBLE history-dropped notice in
+            // `runOrdinaryQuery` so a session id minted (by the SDK's own
+            // init/system frame) moments before turn 1's own throttle never
+            // reports history loss that never happened.
+            yield* Ref.set(args.hasCompletedATurn, true)
             // `result` is the ONLY signal that fires exactly once at the true
             // end of an agentic turn (after every intermediate tool step). An
             // agentic turn is N SDK assistant messages, each its own wire turnId
