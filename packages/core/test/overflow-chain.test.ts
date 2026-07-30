@@ -18,9 +18,17 @@ import {
   pickChainTarget,
   pickLaneTarget,
   auditOverflowEnv,
+  defaultIsRotatableError,
 } from "../src/overflow-chain.js"
 import { readProviderEnv } from "../src/provider-profile.js"
 import type { AccountRecord } from "../src/account-broker/rotation-policy.js"
+import {
+  SessionLimitError,
+  ValidationError,
+  PermissionError,
+  ConfigError,
+  AllAccountsExhaustedError,
+} from "../src/errors.js"
 
 // Deterministic provider env (no real process.env): all defaults.
 const PROVIDER_ENV = readProviderEnv({})
@@ -326,5 +334,36 @@ describe("auditOverflowEnv — boot-time config findings", () => {
         PROVIDER_ENV,
       ),
     ).toEqual([])
+  })
+})
+
+describe("defaultIsRotatableError - rotatable vs non-rotatable classification", () => {
+  // Relocated from session-limit-edge-cases.test.ts (Task 2) and from
+  // session-limit-rotation.test.ts:42 ("classifies error with message
+  // 'maximum sessions reached' as rotatable error") when
+  // executeWithOverflowChain was removed as dead code - both source tests
+  // drive defaultIsRotatableError directly and never touched the executor.
+  // See docs/audits/luna-account-failover-ops.md §6 for why this predicate
+  // is still the live, shared classifier.
+  it("defaultIsRotatableError classifies rotatable vs non-rotatable errors correctly", () => {
+    // Rotatable errors
+    expect(defaultIsRotatableError(new SessionLimitError({ module: "test", cause: "limit" }))).toBe(true)
+    expect(defaultIsRotatableError({ _tag: "RateLimitError" })).toBe(true)
+    expect(defaultIsRotatableError(new Error("429 Too Many Requests"))).toBe(true)
+    expect(defaultIsRotatableError(new Error("529 Overloaded"))).toBe(true)
+    expect(defaultIsRotatableError(new Error("session limit reached"))).toBe(true)
+    expect(defaultIsRotatableError(new Error("quota_exhausted"))).toBe(true)
+    expect(defaultIsRotatableError(new Error("maximum sessions reached"))).toBe(true)
+    expect(defaultIsRotatableError({ message: "Maximum sessions reached for account" })).toBe(true)
+    expect(defaultIsRotatableError("maximum sessions reached")).toBe(true)
+
+    // Non-rotatable errors
+    expect(defaultIsRotatableError(new ValidationError({ module: "m", field: "f", message: "invalid" }))).toBe(false)
+    expect(defaultIsRotatableError(new PermissionError({ module: "m", message: "unauthorized" }))).toBe(false)
+    expect(defaultIsRotatableError(new ConfigError({ module: "m", message: "bad config" }))).toBe(false)
+    expect(defaultIsRotatableError(new AllAccountsExhaustedError({ kind: "k" }))).toBe(false)
+    expect(defaultIsRotatableError(new Error("Syntax error in template"))).toBe(false)
+    expect(defaultIsRotatableError(null)).toBe(false)
+    expect(defaultIsRotatableError(undefined)).toBe(false)
   })
 })

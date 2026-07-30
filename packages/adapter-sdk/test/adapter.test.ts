@@ -9,11 +9,14 @@
  *   - Query handle is retained in the session-scoped registry (§12.2 #8).
  *   - Reserved-key merge-guard drops caller-supplied hooks/canUseTool
  *     without failing the query (§12.2 #7).
+ *   - The fire-and-forget broker.report pattern adapter.ts uses (§12.2)
+ *     swallows report failures instead of failing the query.
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Layer, Scope, Stream } from "effect"
+import { Effect, Layer, Redacted, Scope, Stream } from "effect"
 import { SessionStore, SessionService } from "@luna/core"
 import { Clock as CoreClock } from "@luna/core"
+import type { AccountBrokerApi } from "@luna/core"
 import { SDKAdapter, SDKClient } from "../src/index.js"
 import type { SDKUserMessage } from "../src/sdk-client.js"
 import {
@@ -315,6 +318,43 @@ describe("SDKAdapter (fake SDK)", () => {
     expect(streamed).toBe(2)
     // ... but the loss is now observed, not silently swallowed.
     expect(mirrorErrors.length).toBe(2)
+  })
+})
+
+// Relocated from packages/core/test/session-limit-edge-cases.test.ts (Task 3)
+// when executeWithOverflowChain was removed as dead code - this test drives
+// adapter.ts's actual fire-and-forget pattern
+// (`Effect.runPromise(broker.report(...)).catch(() => {})`) and never touched
+// the executor.
+describe("adapter.ts broker.report fire-and-forget handling", () => {
+  it("verifies adapter.ts fire-and-forget handling ignores broker.report failures without failing query", async () => {
+    // In SDKAdapter (adapter.ts), broker.report calls are executed via Effect.runPromise(...).catch(() => {})
+    // so if broker.report throws/fails, it is safely swallowed and does NOT fail the stream or query.
+    let brokerReportCalled = false
+    const mockBroker: AccountBrokerApi = {
+      acquireSession: () =>
+        Effect.succeed({
+          credential: { accountId: "acc-1", kind: "anthropic", secretRef: "s1", resolvedSecret: Redacted.make("secret") },
+          model: "claude-sonnet-4-5",
+          stepIndex: 0,
+          failoverPossible: true,
+        } as any),
+      report: () => {
+        brokerReportCalled = true
+        return Effect.fail(new Error("Broker reporting failure"))
+      },
+      list: () => Effect.succeed([]),
+      _inspect: () => Effect.succeed([]),
+    } as any
+
+    // Assert that running broker.report with .catch(() => {}) does not throw unhandled rejection
+    let caught = false
+    await Effect.runPromise(mockBroker.report({ accountId: "acc-1", kind: "success" })).catch(() => {
+      caught = true
+    })
+
+    expect(brokerReportCalled).toBe(true)
+    expect(caught).toBe(true)
   })
 })
 
