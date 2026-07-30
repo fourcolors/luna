@@ -2204,6 +2204,9 @@ exit 0
             LUNA_RESTART_SETTLE_SECS: "0",
             LUNA_READINESS_TIMEOUT: "2",
             LUNA_READINESS_INTERVAL: "1",
+            // The engine's in-primitive session guard must never read the LIVE
+            // host's socket table from a test; pin the count to idle.
+            LUNA_TEST_WS_COUNT: "0",
             ...extraEnv,
           },
         },
@@ -2315,6 +2318,8 @@ esac
             LUNA_RESTART_SETTLE_SECS: "0",
             LUNA_READINESS_TIMEOUT: "4",
             LUNA_READINESS_INTERVAL: "1",
+            // Keep the in-primitive session guard off the live host's sockets.
+            LUNA_TEST_WS_COUNT: "0",
           },
         },
       )
@@ -2602,6 +2607,80 @@ esac
       expect(countOf("bootout")).toBeGreaterThanOrEqual(2)
       expect(countOf("bootstrap")).toBeGreaterThanOrEqual(2)
     })
+
+    it("--supervisor launchd skips the session guard: a live session count does not defer the restart", () => {
+      // launchd = the operator's own macOS laptop: no unattended caller exists
+      // there and ss(8) is unavailable, so the guard must return 0 before it
+      // consults anything. Pin a LIVE session count (which defers with exit 3
+      // under systemd) and prove the launchd restart still proceeds to exit 0.
+      const temp = makeTempDir()
+      const { repo, bin } = makeUpdateEnv(temp)
+
+      const gitLog = join(temp, "git.log")
+      writeFake(join(bin, "git"), `
+printf '%s\\n' "$*" >> "${gitLog}"
+case "$*" in
+  *"rev-parse HEAD"*) printf 'aabbcc555555\\n' ;;
+  *"hash-object"*) printf 'deadbeef\\n' ;;
+  *) true ;;
+esac
+exit 0
+`)
+      writeFake(join(bin, "bun"), `exit 0`)
+      writeFake(join(bin, "curl"), `
+case "$*" in
+  */healthz*) printf '200'; exit 0 ;;
+  */readyz*)  printf '\\n404'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+      const lctlLog = join(temp, "launchctl.log")
+      writeFake(join(bin, "launchctl"), `
+printf '%s\\n' "$*" >> "${lctlLog}"
+case "$1" in
+  list) printf '{\n\t"PID" = 999999;\n};\n'; exit 0 ;;
+  bootout) exit 3 ;;
+  print) printf 'state = running\nruns = 0\n'; exit 0 ;;
+  bootstrap) exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+      const plistDir = join(temp, "home", "Library", "LaunchAgents")
+      const plistPath = join(plistDir, "com.user.luna-chat-server.plist")
+      mkdirSync(plistDir, { recursive: true })
+      writeFileSync(plistPath, `<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>`)
+
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"),
+          "--supervisor", "launchd",
+          "--repo-dir", repo,
+          "--luna-home", join(temp, "lunahome"),
+          "--launchd-plist", plistPath,
+          "--ref", "aabbcc555555",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: join(temp, "home"),
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            LUNA_RESTART_SETTLE_SECS: "0",
+            LUNA_READINESS_TIMEOUT: "4",
+            LUNA_READINESS_INTERVAL: "1",
+            LUNA_TEST_WS_COUNT: "2",
+          },
+        },
+      )
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).not.toContain("DEFERRED by session guard")
+      const lctlLines = existsSync(lctlLog) ? readFileSync(lctlLog, "utf8") : ""
+      expect(lctlLines).toContain("bootout")
+      expect(lctlLines).toContain("bootstrap")
+    })
   })
 
   describe("luna_active_ws_count (shared connect-aware deferral helper)", () => {
@@ -2642,6 +2721,317 @@ esac
       const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "x7y" })
       expect(result.status).not.toBe(0)
       expect(result.stdout.trim()).toBe("")
+    })
+
+    // ── phase 2 hardening: an installed-but-failing ss must be UNKNOWN, not 0.
+    // The count now authorizes restarts inside the deploy primitive, so the
+    // fail-open `... | wc -l` pipeline (a failing ss piped into wc reads as
+    // count 0) would have been a session-drop hole.
+    const runWsCountWithSs = (ssBody: string) => {
+      const temp = makeTempDir()
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      writeFileSync(join(bin, "ss"), `#!/usr/bin/env bash\n${ssBody}\n`)
+      spawnSync("chmod", ["+x", join(bin, "ss")])
+      return spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_active_ws_count 4753`],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            LUNA_TEST_WS_COUNT: undefined, // exercise the REAL probe arm
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+          },
+        },
+      )
+    }
+
+    it("a present-but-FAILING ss reports UNKNOWN (non-zero exit, empty stdout), never 0", () => {
+      const result = runWsCountWithSs(`exit 1`)
+      expect(result.status).not.toBe(0)
+      expect(result.stdout.trim()).toBe("")
+    })
+
+    it("an ss printing two connection rows counts 2", () => {
+      const result = runWsCountWithSs(
+        `printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:50001\\nESTAB 0 0 127.0.0.1:4753 127.0.0.1:50002\\n'`,
+      )
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe("2")
+    })
+
+    it("an ss printing nothing with rc 0 counts 0 (genuinely idle)", () => {
+      const result = runWsCountWithSs(`exit 0`)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe("0")
+    })
+  })
+
+  // ── phase 2: luna-autodeploy --force gating (human-only, reason-gated) ─────
+  describe("luna-autodeploy --force gating", () => {
+    const LUNA_AUTODEPLOY = join(repoRoot, "scripts/luna-autodeploy")
+
+    // Registry + fake repo + fake git so a dry-run do_deploy proceeds to the
+    // engine-argv echo without touching any real infrastructure.
+    const makeAutodeployEnv = () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      mkdirSync(join(repo, ".git"), { recursive: true })
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bash
+case "$*" in
+  *"fetch origin"*) exit 0 ;;
+  *"rev-parse HEAD") printf 'aaaaaaaaa\\n' ;;
+  *"rev-parse origin/"*) printf 'bbbbbbbbb\\n' ;;
+  *) "${realGit}" "$@" ;;
+esac
+`,
+      )
+      spawnSync("chmod", ["+x", join(bin, "git")])
+      const registry = join(temp, "servers.toml")
+      writeFileSync(
+        registry,
+        [
+          `kind = "registry"`,
+          `[[server]]`,
+          `name = "stable"`,
+          `update.params.hostRepoDir = "${repo}"`,
+          `update.params.ref = "origin/master"`,
+          `ports.proxy = 4753`,
+          `deploy.timer = true`,
+        ].join("\n") + "\n",
+      )
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_FORCE_REASON: undefined,
+      }
+      return { temp, repo, bin, env }
+    }
+
+    const runAutodeploy = (
+      args: ReadonlyArray<string>,
+      env: Record<string, string | undefined>,
+    ) => spawnSync("bash", [LUNA_AUTODEPLOY, ...args], { cwd: repoRoot, encoding: "utf8", env })
+
+    it("bare --force with no reason is rejected (exit 2) and points at --repair", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--force"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("requires an operator reason")
+      expect(r.stderr).toContain("--repair")
+    })
+
+    it("--force 'why' --dry-run forwards a logged --operator-override to the engine", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--force", "why", "--dry-run"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("FORCE by operator: why")
+      expect(r.stdout).toContain("--operator-override")
+      expect(r.stdout).toContain("why")
+    })
+
+    it("LUNA_FORCE_REASON satisfies the reason gate (--force --dry-run does not swallow the flag)", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--force", "--dry-run"], { ...env, LUNA_FORCE_REASON: "x" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("FORCE by operator: x")
+      expect(r.stdout).toContain("--operator-override")
+    })
+
+    it("--repair --force is rejected (exit 2): automation cannot hold the override", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--repair", "--force"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("cannot be combined")
+    })
+
+    it("bare --allow-active with no reason is rejected (exit 2): the second override lever meets the same audit bar as --force", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--allow-active"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("requires an operator reason")
+      expect(r.stderr).toContain("--repair")
+    })
+
+    it("--allow-active 'why' --dry-run forwards a logged --operator-override carrying the reason", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--allow-active", "why", "--dry-run"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("ALLOW-ACTIVE by operator: why")
+      expect(r.stdout).toContain("--operator-override")
+      expect(r.stdout).toContain("--allow-active: why")
+    })
+
+    it("LUNA_FORCE_REASON satisfies the --allow-active reason gate too", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--allow-active", "--dry-run"], { ...env, LUNA_FORCE_REASON: "x" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("ALLOW-ACTIVE by operator: x")
+      expect(r.stdout).toContain("--operator-override")
+    })
+
+    it("--repair --allow-active is rejected (exit 2): automation cannot hold the override", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--repair", "--allow-active"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("cannot be combined")
+    })
+  })
+
+  // ── phase 2: luna-autodeploy --repair ladder + engine-defer mapping ────────
+  describe("luna-autodeploy --repair ladder", () => {
+    // Mirror the guardian harness pattern: copy scripts/ to a temp dir, replace
+    // luna-update-server with a recording stub whose per-call exit codes are
+    // env-driven, and pin via LUNA_TEST_PIN_DIR so the pinned copy IS the stub.
+    const makeRepairEnv = () => {
+      const temp = makeTempDir()
+      const scripts = join(temp, "scripts")
+      spawnSync("cp", ["-a", join(repoRoot, "scripts"), scripts])
+      const repo = join(temp, "repo")
+      mkdirSync(join(repo, ".git"), { recursive: true })
+      const engineCalls = join(temp, "engine-calls")
+      writeFileSync(
+        join(scripts, "luna-update-server"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$ENGINE_CALLS"
+n="$(grep -c '' "$ENGINE_CALLS")"
+var="ENGINE_RC_\${n}"
+exit "\${!var:-0}"
+`,
+      )
+      spawnSync("chmod", ["+x", join(scripts, "luna-update-server")])
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bash
+case "$*" in
+  *"fetch origin"*) exit 0 ;;
+  *"rev-parse HEAD") printf 'aaaaaaaaa\\n' ;;
+  *"rev-parse origin/"*) printf 'bbbbbbbbb\\n' ;;
+  *) "${realGit}" "$@" ;;
+esac
+`,
+      )
+      spawnSync("chmod", ["+x", join(bin, "git")])
+      const registry = join(temp, "servers.toml")
+      writeFileSync(
+        registry,
+        [
+          `kind = "registry"`,
+          `[[server]]`,
+          `name = "stable"`,
+          `update.params.hostRepoDir = "${repo}"`,
+          `update.params.ref = "origin/master"`,
+          `ports.proxy = 4753`,
+          `deploy.timer = true`,
+        ].join("\n") + "\n",
+      )
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_TEST_PIN_DIR: join(temp, "pins"),
+        ENGINE_CALLS: engineCalls,
+      }
+      return { temp, scripts, engineCalls, env }
+    }
+
+    const engineCallLines = (engineCalls: string) =>
+      (existsSync(engineCalls) ? readFileSync(engineCalls, "utf8") : "").split("\n").filter(Boolean)
+
+    const runRepair = (
+      h: ReturnType<typeof makeRepairEnv>,
+      extraEnv: Record<string, string | undefined> = {},
+      args: ReadonlyArray<string> = ["stable", "--repair"],
+    ) =>
+      spawnSync("bash", [join(h.scripts, "luna-autodeploy"), ...args], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...h.env, ...extraEnv },
+      })
+
+    it("rung 1 success: exactly one engine call with --restart-only, exit 0", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "0" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("REPAIRED by unit restart")
+      const calls = engineCallLines(h.engineCalls)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toContain("--restart-only")
+    })
+
+    it("rung 1 defer (rc 3): exit 3, NO rung 2 escalation", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "3" })
+      expect(r.status, r.stdout + r.stderr).toBe(3)
+      expect(r.stdout).toContain("DEFERRED by session guard")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("rung 1 lock contention (rc 4): exit 4, NO rung 2, reported as contention — not a session-guard defer", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "4" })
+      expect(r.status, r.stdout + r.stderr).toBe(4)
+      expect(r.stdout).toContain("concurrent update holds the profile lock")
+      expect(r.stdout).not.toContain("DEFERRED by session guard")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("both rungs pin --ref to the checkout's CURRENT HEAD, never origin/<branch> (repair is not upgrade)", () => {
+      // The fake git answers `rev-parse HEAD` with 'aaaaaaaaa'; the registry
+      // stanza declares --ref origin/master. An unattended repair must rebuild
+      // the deployed ref, not fetch-and-advance to whatever origin gained since
+      // the last gentle tick (which would also ignore deploy.autoUpdate=false).
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "1", ENGINE_RC_2: "0" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      const calls = engineCallLines(h.engineCalls)
+      expect(calls).toHaveLength(2)
+      for (const call of calls) {
+        expect(call).toContain("--ref aaaaaaaaa")
+        expect(call).not.toContain("origin/master")
+      }
+    })
+
+    it("rung 1 failure escalates to rung 2 (full redeploy, WITHOUT --restart-only), exit 0", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "1", ENGINE_RC_2: "0" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("REPAIRED by full redeploy")
+      const calls = engineCallLines(h.engineCalls)
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toContain("--restart-only")
+      expect(calls[1]).not.toContain("--restart-only")
+    })
+
+    it("rung 2 rollback (rc 1) passes through as exit 1", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "1", ENGINE_RC_2: "1" })
+      expect(r.status, r.stdout + r.stderr).toBe(1)
+      expect(r.stderr).toContain("ROLLED BACK")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(2)
+    })
+
+    it("normal do_deploy maps an engine session-guard defer (rc 3) to a quiet exit 0", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "3" }, ["stable"])
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("DEFERRED by engine session guard")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
     })
   })
 })

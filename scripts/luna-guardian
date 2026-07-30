@@ -63,13 +63,14 @@ diagnose() {
 #   0 HEALTHY, 1 NEGATIVE (the server answered and the answer was wrong),
 #   3 INCONCLUSIVE (no usable answer).
 #
-# A NEGATIVE at check_profile can escalate to `luna-autodeploy --force`, which
-# rebuilds and restarts the server *bypassing* the active-session guard — it
-# drops the operator mid-conversation. A single INCONCLUSIVE must therefore
-# never reach that path (only an unbroken run of them, see check_profile), and
-# is re-probed once here because a wedged incus exec or a 4s curl timeout is the
-# single most common transient. A NEGATIVE returns immediately: a genuine build
-# mismatch must not pay for the transient budget.
+# A NEGATIVE at check_profile can escalate to `luna-autodeploy --repair`, which
+# tries a plain guarded unit restart before a full rebuild and defers+pages
+# when the engine's in-primitive session guard reports live/unknown sessions —
+# it never drops the operator mid-conversation. A single INCONCLUSIVE must
+# still never reach that path (only an unbroken run of them, see
+# check_profile), and is re-probed once here because a wedged incus exec or a
+# 4s curl timeout is the single most common transient. A NEGATIVE returns
+# immediately: a genuine build mismatch must not pay for the transient budget.
 #
 # All other callers treat any non-zero as "not proven", exactly as before.
 runtime_health() {
@@ -474,11 +475,31 @@ check_profile() {
     if (( pager_rc > rc )); then rc="$pager_rc"; fi
     return "$rc"
   fi
-  if "$update" "$profile" --force && wait_runtime_healthy && unit_hardened; then
+  # Armed escalation goes through the unattended repair ladder (--repair):
+  # rung 1 plain guarded unit restart, rung 2 full rebuild of the current ref.
+  # The engine's in-primitive session guard fails closed; rc=3 means
+  # live/unknown sessions, so we PAGE (return 2 rides
+  # OnFailure=luna-guardian-alert) instead of dropping the operator. rc=4 means
+  # a CONCURRENT UPDATE holds the profile lock — no sessions were evaluated —
+  # and must page with that reason, never masquerade as a session-guard defer.
+  # Cooldown bounding is unchanged: last_repair_at was armed BEFORE
+  # escalate=true, so the whole ladder — both rungs, any rollback, and every
+  # deferred-page case — consumes one arming per cooldown window.
+  local repair_rc=0
+  "$update" "$profile" --repair || repair_rc=$?
+  if (( repair_rc == 0 )) && wait_runtime_healthy && unit_hardened; then
     health_journal_write "$profile" 0 0 "$HJ_LAST_REPAIR" 0 ||
       luna_warn "health journal write failed after a successful repair"
     refresh_guardian_if_needed "$profile"
     return
+  fi
+  if (( repair_rc == 3 )); then
+    luna_warn "repair DEFERRED by session guard — live or unknown sessions; paging instead of dropping the operator; incident=$(diagnose "$profile")"
+    return 2
+  fi
+  if (( repair_rc == 4 )); then
+    luna_warn "repair DEFERRED — a concurrent update holds the profile lock (update-lock contention; no session-guard defer occurred); paging for visibility; incident=$(diagnose "$profile")"
+    return 2
   fi
   luna_warn "repair failed; incident=$(diagnose "$profile")"; return 2
 }

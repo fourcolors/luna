@@ -200,6 +200,11 @@ const forceCalls = (h: Harness) =>
     .split("\n")
     .filter((line) => line.includes("--force"))
 
+const repairCalls = (h: Harness) =>
+  (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "")
+    .split("\n")
+    .filter((line) => line.includes("--repair"))
+
 const allCalls = (h: Harness) =>
   (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "").split("\n").filter(Boolean)
 
@@ -843,7 +848,8 @@ describe("luna-guardian", () => {
     expect(Date.now() - started).toBeLessThan(30_000)
     expect(third.status, third.stdout + third.stderr).toBe(2)
     expect(third.stderr).toContain("deep health failed 3 consecutive checks")
-    expect(forceCalls(h)).toHaveLength(1)
+    expect(repairCalls(h)).toHaveLength(1)
+    expect(forceCalls(h)).toEqual([])
     expect(incidentCount(h)).toBeGreaterThanOrEqual(1)
 
     // Armed before the destructive action: the streak is cleared and the
@@ -856,7 +862,8 @@ describe("luna-guardian", () => {
     const h = makeHarness("luna-guardian-cooldown-")
     installHarness(h)
     for (let i = 0; i < 3; i++) runCheck(h, "false")
-    expect(forceCalls(h)).toHaveLength(1)
+    expect(repairCalls(h)).toHaveLength(1)
+    expect(forceCalls(h)).toEqual([])
 
     // Re-accumulating three strikes must NOT restart production again: without
     // the cooldown this is a forced rebuild every tick, forever.
@@ -867,12 +874,13 @@ describe("luna-guardian", () => {
     last = runCheck(h, "false")
     expect(last.status, last.stdout + last.stderr).toBe(0)
     expect(last.stderr).toContain("suppressed for")
-    expect(forceCalls(h)).toHaveLength(1)
+    expect(repairCalls(h)).toHaveLength(1)
 
     // With the cooldown disabled the same state escalates again.
     const again = runCheck(h, "false", { LUNA_GUARDIAN_REPAIR_COOLDOWN_SEC: "0" })
     expect(again.status, again.stdout + again.stderr).toBe(2)
-    expect(forceCalls(h)).toHaveLength(2)
+    expect(repairCalls(h)).toHaveLength(2)
+    expect(forceCalls(h)).toEqual([])
   })
 
   it("never repairs on inconclusive readings", () => {
@@ -1058,14 +1066,15 @@ describe("luna-guardian", () => {
     const escalated = runCheck(h, "inconclusive", env)
     expect(escalated.status, escalated.stdout + escalated.stderr).toBe(2)
     expect(escalated.stderr).toContain("INCONCLUSIVE for 3 consecutive checks")
-    expect(forceCalls(h)).toHaveLength(1)
+    expect(repairCalls(h)).toHaveLength(1)
+    expect(forceCalls(h)).toEqual([])
     expect(incidentCount(h)).toBeGreaterThanOrEqual(1)
 
     // Armed before acting, so the cooldown bounds this to one restart.
     expect(journalValue(h, "consecutive_unknown")).toBe("0")
     const after = runCheck(h, "inconclusive", env)
     expect(after.status, after.stdout + after.stderr).toBe(0)
-    expect(forceCalls(h)).toHaveLength(1)
+    expect(repairCalls(h)).toHaveLength(1)
   })
 
   it("keeps running the gentle updater on non-healthy ticks", () => {
@@ -1081,5 +1090,148 @@ describe("luna-guardian", () => {
     expect(runCheck(h, "inconclusive").status).toBe(0)
     expect(allCalls(h)).toEqual(["stable --from-timer", "stable --from-timer"])
     expect(forceCalls(h)).toEqual([])
+  })
+
+  // ── phase 2: escalation goes through the guarded --repair ladder ──────────
+
+  it("escalation constructs --repair with exact argv", () => {
+    const h = makeHarness("luna-guardian-repair-argv-")
+    installHarness(h)
+    runCheck(h, "false")
+    runCheck(h, "false")
+    // Isolate the escalation tick's calls: the K-th strike must record exactly
+    // one autodeploy invocation, and it must be `stable --repair` — no --force.
+    rmSync(h.calls, { force: true })
+    const third = runCheck(h, "false")
+    expect(third.status, third.stdout + third.stderr).toBe(2)
+    expect(allCalls(h)).toEqual(["stable --repair"])
+    expect(forceCalls(h)).toEqual([])
+  })
+
+  it("deferred repair pages once and keeps the cooldown armed", () => {
+    const h = makeHarness("luna-guardian-repair-defer-")
+    installHarness(h)
+    // Autodeploy stub: --repair defers with rc=3 (engine session guard);
+    // everything else (the gentle --from-timer tick) succeeds.
+    writeStub(
+      join(h.temp, "scripts", "luna-autodeploy"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$LUNA_TEST_AUTODEPLOY_CALLS"
+for a in "$@"; do [[ "$a" == "--repair" ]] && exit 3; done
+exit 0
+`,
+    )
+    runCheck(h, "false")
+    runCheck(h, "false")
+    expect(incidentCount(h)).toBe(0)
+
+    const deferred = runCheck(h, "false")
+    expect(deferred.status, deferred.stdout + deferred.stderr).toBe(2)
+    expect(deferred.stderr).toMatch(/DEFERRED by session guard.*paging/)
+    expect(repairCalls(h)).toHaveLength(1)
+    expect(forceCalls(h)).toEqual([])
+    expect(incidentCount(h)).toBeGreaterThanOrEqual(1)
+    // The cooldown stays armed: a deferred repair pages at most once per window.
+    expect(Number(journalValue(h, "last_repair_at"))).toBeGreaterThan(0)
+
+    const withinCooldown = runCheck(h, "false")
+    expect(withinCooldown.status, withinCooldown.stdout + withinCooldown.stderr).toBe(0)
+    expect(repairCalls(h)).toHaveLength(1)
+  })
+
+  it("lock-contended repair (rc 4) pages with the contention reason, not a phantom session-guard defer", () => {
+    // A repair rung colliding with a live manual deploy is update-lock
+    // contention: the engine never evaluated sessions, so the incident trail
+    // must not send the responder hunting for live sessions that never existed.
+    const h = makeHarness("luna-guardian-repair-lock-")
+    installHarness(h)
+    writeStub(
+      join(h.temp, "scripts", "luna-autodeploy"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$LUNA_TEST_AUTODEPLOY_CALLS"
+for a in "$@"; do [[ "$a" == "--repair" ]] && exit 4; done
+exit 0
+`,
+    )
+    runCheck(h, "false")
+    runCheck(h, "false")
+
+    const contended = runCheck(h, "false")
+    expect(contended.status, contended.stdout + contended.stderr).toBe(2)
+    expect(contended.stderr).toContain("concurrent update holds the profile lock")
+    expect(contended.stderr).not.toMatch(/DEFERRED by session guard/)
+    expect(repairCalls(h)).toHaveLength(1)
+    expect(forceCalls(h)).toEqual([])
+    expect(incidentCount(h)).toBeGreaterThanOrEqual(1)
+    // Contention consumes the arming like any other ladder outcome; the
+    // cooldown still bounds the ladder to one attempt per window.
+    expect(Number(journalValue(h, "last_repair_at"))).toBeGreaterThan(0)
+    const withinCooldown = runCheck(h, "false")
+    expect(withinCooldown.status, withinCooldown.stdout + withinCooldown.stderr).toBe(0)
+    expect(repairCalls(h)).toHaveLength(1)
+  })
+
+  it("failed repair pages", () => {
+    const h = makeHarness("luna-guardian-repair-fail-")
+    installHarness(h)
+    writeStub(
+      join(h.temp, "scripts", "luna-autodeploy"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$LUNA_TEST_AUTODEPLOY_CALLS"
+for a in "$@"; do [[ "$a" == "--repair" ]] && exit 1; done
+exit 0
+`,
+    )
+    runCheck(h, "false")
+    runCheck(h, "false")
+    const failed = runCheck(h, "false")
+    expect(failed.status, failed.stdout + failed.stderr).toBe(2)
+    expect(failed.stderr).toContain("repair failed")
+    expect(repairCalls(h)).toHaveLength(1)
+    expect(forceCalls(h)).toEqual([])
+  })
+
+  it("gentle tick unchanged", () => {
+    const h = makeHarness("luna-guardian-gentle-")
+    installHarness(h)
+    const tick = runCheck(h, "false")
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(allCalls(h)).toEqual(["stable --from-timer"])
+  })
+
+  it("exit criterion: no automated path constructs --force / --allow-active / --operator-override", () => {
+    // Static half: the guardian source must contain ZERO occurrences of the
+    // three override tokens — automation must be structurally unable to
+    // construct them.
+    const source = readFileSync(guardian, "utf8")
+    expect(source).not.toContain("--force")
+    expect(source).not.toContain("--allow-active")
+    expect(source).not.toContain("--operator-override")
+
+    // Rendered half: the guardian units from a harness install, plus the
+    // legacy luna-autodeploy timer service, must be equally clean.
+    const h = makeHarness("luna-guardian-exit-criterion-")
+    installHarness(h)
+    const units = h.env.LUNA_TEST_SYSTEMD_DIR as string
+    const rendered = ["luna-guardian-stable.service", "luna-guardian-stable.timer", "luna-guardian-alert-stable.service"]
+      .filter((name) => existsSync(join(units, name)))
+      .map((name) => readFileSync(join(units, name), "utf8"))
+    expect(rendered.length).toBeGreaterThanOrEqual(2)
+
+    // Render the legacy autodeploy timer service with the REAL script (the
+    // harness scripts copy stubs luna-autodeploy) into the same unit dir.
+    const timerInstall = spawnSync(
+      "bash",
+      [join(root, "scripts/luna-autodeploy"), "install-timer", "stable"],
+      { cwd: root, encoding: "utf8", env: h.env },
+    )
+    expect(timerInstall.status, timerInstall.stdout + timerInstall.stderr).toBe(0)
+    rendered.push(readFileSync(join(units, "luna-autodeploy-stable.service"), "utf8"))
+
+    for (const unit of rendered) {
+      expect(unit).not.toContain("--force")
+      expect(unit).not.toContain("--allow-active")
+      expect(unit).not.toContain("--operator-override")
+    }
   })
 })

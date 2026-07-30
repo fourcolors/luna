@@ -249,9 +249,13 @@ luna_resolve_bind_addr() {
 #                        deferral guard.
 #
 # Returns non-zero when the count cannot be established. This is load-bearing:
-# an unavailable `ss`, a stopped Incus instance, or a failed exec is UNKNOWN,
-# never "zero sessions". Unattended callers must fail closed and defer; an
-# operator can still use their explicit force/allow-active lever.
+# an unavailable `ss`, an installed-but-FAILING `ss`, a stopped Incus instance,
+# or a failed exec is UNKNOWN, never "zero sessions". Unattended callers must
+# fail closed and defer; an operator can still use their explicit force lever.
+# The count is now also consumed by the deploy engine's in-primitive session
+# guard (scripts/luna-update-server restart_session_guard), where a false
+# "zero sessions" would authorize a restart — so a present-but-failing ss
+# pipeline must report UNKNOWN, never 0.
 #
 # Test seam: if LUNA_TEST_WS_COUNT is set, a decimal value is returned verbatim;
 # the literal `unknown` simulates an unavailable probe. Empty/garbage values are
@@ -270,10 +274,14 @@ luna_active_ws_count() {
 
   if [[ -n "$incus" ]]; then
     command -v incus >/dev/null 2>&1 || return 1
-    n="$(incus exec "$incus" -- sh -c "command -v ss >/dev/null 2>&1 && ss -tnH state established '( sport = :$port )' 2>/dev/null | wc -l" 2>/dev/null)" || return 1
+    local out
+    out="$(incus exec "$incus" -- sh -c "command -v ss >/dev/null 2>&1 || exit 9; ss -tnH state established '( sport = :$port )' 2>/dev/null" 2>/dev/null)" || return 1
+    if [[ -n "$out" ]]; then n="$(printf '%s\n' "$out" | wc -l)"; else n=0; fi
   else
     command -v ss >/dev/null 2>&1 || return 1
-    n="$(ss -tnH state established "( sport = :$port )" 2>/dev/null | wc -l)" || return 1
+    local out
+    out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || return 1
+    if [[ -n "$out" ]]; then n="$(printf '%s\n' "$out" | wc -l)"; else n=0; fi
   fi
   n="$(printf '%s' "$n" | tr -d '[:space:]')"
   [[ "$n" =~ ^[0-9]+$ ]] || return 1
@@ -320,7 +328,8 @@ luna_runtime_unit_state_class() {
 #                     body). This means "we do not know" and on its own must
 #                     never justify a repair.
 # The distinction exists because scripts/luna-guardian escalates a NEGATIVE to
-# `luna-autodeploy --force`, which drops the operator mid-conversation.
+# `luna-autodeploy --repair`, which honours the engine's in-primitive session
+# guard fail-closed and pages instead of dropping the operator.
 #
 # Test seam: LUNA_TEST_RUNTIME_MATCHES_CHECKOUT accepts "true" (0),
 # "inconclusive"/"unknown" (3), and anything else including "false" (1).

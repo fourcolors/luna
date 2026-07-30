@@ -415,6 +415,10 @@ if [[ "$DRY_RUN" == false ]]; then
     systemctl enable "$SERVICE_NAME"
   fi
   if [[ "$START_SERVICE" == true ]]; then
+    # Manual-only restart path: the guardian invokes this script exclusively
+    # with --units-only --no-enable --no-start, so this line is never reached
+    # by automation. Unattended restarts go through luna-update-server's
+    # guarded restart primitive.
     systemctl restart "$SERVICE_NAME"
   fi
 else

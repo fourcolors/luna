@@ -88,6 +88,11 @@ const makeStubBin = (
     readonly omitBuildShaAtTarget?: boolean
     readonly omitBuildShaAtPrev?: boolean
     readonly mismatchBuildShaAtPrev?: boolean
+    // Phase 2 session-guard matrix: when set, `systemctl is-active` answers
+    // THIS string (may be empty) until the first `start` lands, then 'active'
+    // — modelling a dead/activating unit that comes up after the restart.
+    // Undefined keeps the legacy always-'active' behaviour.
+    readonly isActive?: string
   },
 ) => {
   const bin = join(root, "bin")
@@ -95,16 +100,23 @@ const makeStubBin = (
   const systemctlLog = join(root, "systemctl.log")
   const curlLog = join(root, "curl.log")
   const bunLog = join(root, "bun.log")
+  const startedMarker = join(root, "started.marker")
 
-  // systemctl: is-active always "active"; NRestarts always "0"; restart/daemon-
-  // reload just log. (Crash-loop detection is exercised indirectly; here the
-  // verdict is driven purely by curl so the tests stay deterministic.)
+  // systemctl: is-active "active" (or opts.isActive until a start happened);
+  // NRestarts always "0"; stop/start/daemon-reload just log. (Crash-loop
+  // detection is exercised indirectly; here the verdict is driven purely by
+  // curl so the tests stay deterministic.)
+  const isActiveLine =
+    opts.isActive === undefined
+      ? `printf 'active\\n'`
+      : `if [[ -f "${startedMarker}" ]]; then printf 'active\\n'; else printf '%s\\n' '${opts.isActive}'; fi`
   writeFileSync(
     join(bin, "systemctl"),
     `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${systemctlLog}"
 case "$1" in
-  is-active) printf 'active\\n'; exit 0 ;;
+  is-active) ${isActiveLine}; exit 0 ;;
+  start) : > "${startedMarker}"; exit 0 ;;
   show) printf '0\\n'; exit 0 ;;
   *) exit 0 ;;
 esac
@@ -210,7 +222,10 @@ const runUpdate = (
     // Default the post-stop settle to 0 so the hermetic suite never sleeps the
     // 6s production default between stop and start; individual tests override it
     // (see the stop->settle->start regression test, which sets a real 1s).
-    env: { ...process.env, LUNA_RESTART_SETTLE_SECS: "0", ...env },
+    // Default LUNA_TEST_WS_COUNT to 0 so the engine's in-primitive session
+    // guard never reads the LIVE host's :4753 socket table (production stable);
+    // individual tests override it to exercise the guard.
+    env: { ...process.env, LUNA_RESTART_SETTLE_SECS: "0", LUNA_TEST_WS_COUNT: "0", ...env },
     encoding: "utf8",
   })
 
@@ -1294,5 +1309,574 @@ exec "${realGit}" "$@"
     // Two restart cycles attempted (update + rollback); one `stop ` per cycle.
     const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
     expect(cycles).toBe(2)
+  })
+
+  // ── phase 2: in-primitive session guard ────────────────────────────────────
+
+  const readLog = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "")
+
+  const seedJournal = (
+    updateState: string,
+    fields: { phase: string; prev: string; target: string },
+  ) => {
+    mkdirSync(updateState, { recursive: true })
+    writeFileSync(
+      join(updateState, "transaction-stable"),
+      `phase=${fields.phase}\nprev=${fields.prev}\ntarget=${fields.target}\nprev_lock_hash=\nupdated_at=${Math.floor(Date.now() / 1000)}\n`,
+    )
+  }
+
+  const guardArgs = (temp: string, work: string, serviceDir: string, extra: string[] = []) => [
+    "--repo-dir", work,
+    "--ref", "origin/master",
+    "--luna-home", join(temp, "state"),
+    "--service-dir", serviceDir,
+    "--readiness-timeout", "2",
+    "--readiness-interval", "0.3",
+    ...extra,
+  ]
+
+  it("session guard: live sessions defer a fresh update, nothing mutated (exit 3)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "2",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(3)
+    expect(r.stderr).toContain("DEFERRED by session guard")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    // Guard fires BEFORE the first journal write: nothing to recover.
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  it("session guard: unknown count while the unit answers 'active' defers (blip fail-closed)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "unknown",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(3)
+    expect(r.stderr).toContain("may be serving")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  it("session guard: dead-server exception — unknown count + unit 'failed' proceeds (exit 0)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+      isActive: "failed",
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "unknown",
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("no server process; restart permitted")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    const sys = readLog(systemctlLog)
+    expect(sys).toContain("stop luna-chat-server.service")
+    expect(sys).toContain("start luna-chat-server.service")
+  })
+
+  it("session guard: unknown count + unit 'activating' defers (pre-READY sockets)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+      isActive: "activating",
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "unknown",
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(3)
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+  })
+
+  it("session guard: unknown count + empty is-active output defers (transport inconclusive)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+      isActive: "",
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "unknown",
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(3)
+    expect(r.stderr).toContain("transport never reached systemd")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+  })
+
+  it("--operator-override proceeds past live sessions and logs the reason", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+
+    const r = runUpdate(
+      guardArgs(temp, work, serviceDir, ["--operator-override", "drill reason"]),
+      {
+        PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_TEST_BUN_PATH: join(bin, "bun"),
+        LUNA_TEST_WS_COUNT: "2",
+      },
+    )
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("SESSION GUARD OVERRIDDEN by operator: drill reason")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    const sys = readLog(systemctlLog)
+    expect(sys).toContain("stop luna-chat-server.service")
+    expect(sys).toContain("start luna-chat-server.service")
+  })
+
+  it("--operator-override with a missing value dies before any mutation", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--operator-override"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain("missing --operator-override reason")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(prevSha).not.toBe(targetSha)
+    expect(readLog(systemctlLog)).toBe("")
+  })
+
+  it("--restart-only: guarded plain restart — no checkout mutation, no install/build, no journal", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog, bunLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stdout).toContain("restart-only")
+    expect(r.stdout).toContain("healthy")
+    // Checkout untouched — no fetch/reset effect on HEAD.
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    // No bun install/build in this mode.
+    expect(readLog(bunLog)).toBe("")
+    const sys = readLog(systemctlLog)
+    expect(sys).toContain("daemon-reload")
+    expect(sys).toContain("stop luna-chat-server.service")
+    expect(sys).toContain("start luna-chat-server.service")
+    // No transaction journal was created.
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  it("--restart-only: readiness failure exits 1 with NO rollback", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: false,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("no rollback")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    // Exactly ONE stop -> start cycle: no rollback restart followed.
+    const cycles = (readLog(systemctlLog).match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
+  })
+
+  it("--restart-only: live sessions defer (exit 3, nothing stopped)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "2",
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(3)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(prevSha).not.toBe(targetSha)
+  })
+
+  it("--restart-only with a pending forward journal runs normal recovery instead", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+    seedJournal(updateState, { phase: "restarting", prev: prevSha, target: targetSha })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("running normal recovery instead")
+    expect(r.stderr).toContain("RECOVERING interrupted update")
+    // Recovery completed the transaction: forward to target, journal cleared.
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  it("rollback is exempt from the session guard (live sessions cannot strand a broken build)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+    seedJournal(updateState, { phase: "rolling-back", prev: prevSha, target: targetSha })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "2",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    // Recovery completed the rollback despite 2 "live" sessions: the guard
+    // never blocks do_rollback (the forward restart already interrupted service).
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(r.stderr).toContain("without the session guard")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    const sys = readLog(systemctlLog)
+    expect(sys).toContain("stop luna-chat-server.service")
+    expect(sys).toContain("start luna-chat-server.service")
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  it("mid-transaction defer preserves the journal and a later idle run resumes it", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+    seedJournal(updateState, { phase: "restarting", prev: prevSha, target: targetSha })
+
+    const deferred = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "2",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+    expect(deferred.status, deferred.stdout + deferred.stderr).toBe(3)
+    expect(deferred.stderr).toContain("transaction journal retained")
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(true)
+
+    const resumed = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "0",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+    expect(resumed.status, resumed.stdout + resumed.stderr).toBe(0)
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  it("session guard: dead-server exception — unknown count + unit 'inactive' proceeds (exit 0)", () => {
+    // Pins the OTHER arm of the inactive|failed dead-server predicate: a future
+    // edit that splits the case and mishandles 'inactive' (e.g. routes it to
+    // the fail-closed default) would deadlock repair of a cleanly-stopped unit.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+      isActive: "inactive",
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "unknown",
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("no server process; restart permitted")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    const sys = readLog(systemctlLog)
+    expect(sys).toContain("stop luna-chat-server.service")
+    expect(sys).toContain("start luna-chat-server.service")
+  })
+
+  it("session guard: an answered count n>0 defers even when the unit reports 'failed' (ws-count first)", () => {
+    // Pins the documented ordering: an answered kernel socket count is
+    // authoritative in both directions. A refactor that consulted systemd
+    // FIRST would read 'failed' as the dead-server exception and drop the
+    // orphaned/lingering session holders the ordering exists to protect.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+      isActive: "failed",
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "2",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(3)
+    expect(r.stderr).toContain("active session(s)")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  // Compute the lock-owner fingerprint EXACTLY the way the engine's
+  // process_fingerprint does (procfs starttime on Linux, ps lstart elsewhere),
+  // so the seeded lock owner is judged ALIVE — not stale — by lock_owner_alive.
+  const engineFingerprint = (pid: number) => {
+    const r = spawnSync(
+      "bash",
+      ["-c",
+        `if [[ -r /proc/${pid}/stat ]]; then sed 's/^.*) //' /proc/${pid}/stat | awk '{print $20}'; else ps -p ${pid} -o lstart= | tr -d '\\n'; fi`],
+      { encoding: "utf8" },
+    )
+    return r.stdout.trim()
+  }
+
+  it("--restart-only: update-lock contention exits 4, distinct from the session-guard defer (3)", () => {
+    // A guardian repair rung colliding with a live manual deploy is LOCK
+    // contention, not a session-guard defer: exit 3 here made do_repair and the
+    // guardian page "live or unknown sessions" while the session count was
+    // never evaluated, sending the responder after phantom sessions.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    const lockDir = join(updateState, "lock-stable")
+    writeUnit(serviceDir)
+    mkdirSync(lockDir, { recursive: true })
+    writeFileSync(
+      join(lockDir, "owner"),
+      `pid=${process.pid}\nfingerprint=${engineFingerprint(process.pid)}\n`,
+    )
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(4)
+    expect(r.stderr).toContain("another update")
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("apply-phase failure with live sessions: rollback restart stays GUARDED (exit 3), idle tick completes it", () => {
+    // The rollback guard exemption is scoped: an apply-phase failure (bun
+    // install error) rolls back while the OLD server is still running and
+    // serving, and sessions opened during the multi-minute install must not be
+    // dropped to "recover" to the very build already serving them. The
+    // exemption applies only after a forward restart actually interrupted
+    // service (or when recovering a mid-rollback journal — the resume below).
+    const temp = makeTempDir()
+    const origin = join(temp, "origin.git")
+    const seed = join(temp, "seed")
+    const work = join(temp, "repo")
+    mkdirSync(origin, { recursive: true })
+    git(origin, "init", "--quiet", "--bare")
+    mkdirSync(seed, { recursive: true })
+    git(seed, "init", "--quiet")
+    git(seed, "config", "user.email", "t@example.test")
+    git(seed, "config", "user.name", "Test")
+    git(seed, "checkout", "-q", "-B", "master")
+    writeFileSync(join(seed, "bun.lock"), "lock-v1\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "--quiet", "-m", "prev")
+    const prevSha = git(seed, "rev-parse", "HEAD")
+    writeFileSync(join(seed, "bun.lock"), "lock-v2\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "--quiet", "-m", "target")
+    const targetSha = git(seed, "rev-parse", "HEAD")
+    git(seed, "remote", "add", "origin", origin)
+    git(seed, "push", "--quiet", "origin", "master")
+    git(temp, "clone", "--quiet", origin, work)
+    git(work, "checkout", "--quiet", prevSha)
+
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const bin = join(temp, "bin")
+    mkdirSync(bin, { recursive: true })
+    const systemctlLog = join(temp, "systemctl.log")
+    const ssCount = join(temp, "ss-count")
+    writeFileSync(
+      join(bin, "systemctl"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${systemctlLog}"
+case "$1" in is-active) echo active;; show) echo 0;; esac
+exit 0
+`,
+    )
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/usr/bin/env bash
+head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
+code='503'; [[ "$head" == "${prevSha}" ]] && code='200'
+if [[ "$*" == *"/readyz"* ]]; then
+  printf '{"status":"ok","mode":"normal","credentialOk":true,"buildSha":"%s"}\\n%s' "$head" "$code"; exit 0
+fi
+printf '%s' "$code"
+exit 0
+`,
+    )
+    // bun keyed off the LIVE checkout HEAD: fails at TARGET (forward install
+    // errors before any restart), succeeds at PREV (rollback install works).
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/usr/bin/env bash
+head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
+[[ "$head" == "${targetSha}" ]] && exit 1
+exit 0
+`,
+    )
+    // ss keyed off a call counter: the PRE-mutation guard sees an idle socket
+    // table (0 sessions), then a session appears during the failing install,
+    // so the ROLLBACK guard sees 2 established rows and must defer.
+    writeFileSync(
+      join(bin, "ss"),
+      `#!/usr/bin/env bash
+n=0; [[ -f "${ssCount}" ]] && n="$(cat "${ssCount}")"
+n=$((n+1)); printf '%s' "$n" > "${ssCount}"
+if [[ "$n" -ge 2 ]]; then
+  printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:50001\\nESTAB 0 0 127.0.0.1:4753 127.0.0.1:50002\\n'
+fi
+exit 0
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "systemctl"), join(bin, "curl"), join(bin, "bun"), join(bin, "ss")])
+
+    const guardedRollback = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      // Unset the pinned seam so the guard consults the ss stub above.
+      LUNA_TEST_WS_COUNT: undefined,
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(guardedRollback.status, guardedRollback.stdout + guardedRollback.stderr).toBe(3)
+    expect(guardedRollback.stderr).toContain("session guard stays ACTIVE")
+    expect(guardedRollback.stderr).toContain("rollback restart DEFERRED by session guard")
+    // The old server was never stopped, and the checkout is already back at PREV.
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    const journal = join(updateState, "transaction-stable")
+    expect(existsSync(journal)).toBe(true)
+    expect(readFileSync(journal, "utf8")).toContain("phase=rolling-back")
+
+    // An idle tick recovers the mid-rollback journal (exempt: the interruption
+    // decision already happened) and completes the rollback restart, exit 1.
+    const resumed = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_TEST_WS_COUNT: "0",
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+    expect(resumed.status, resumed.stdout + resumed.stderr).toBe(1)
+    expect(resumed.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(existsSync(journal)).toBe(false)
+    const sys = readLog(systemctlLog)
+    expect(sys).toContain("stop luna-chat-server.service")
+    expect(sys).toContain("start luna-chat-server.service")
   })
 })

@@ -10,9 +10,15 @@
 #
 #   * NO-OP (quiet exit 0) when the channel is already at origin/<branch>, so a
 #     frequent timer only ever restarts the server when the branch actually moved.
-#   * CONNECT-AWARE: by default it DEFERS (exit 0, retry next tick) when the
-#     channel has active WebSocket sessions, so it never drops the operator
-#     mid-conversation. Override with --allow-active (or --force).
+#   * CONNECT-AWARE: it DEFERS (exit 0, retry next tick) when the channel has
+#     active WebSocket sessions, so it never drops the operator
+#     mid-conversation. The guard lives INSIDE luna-update-server (the restart
+#     primitive); the check here is only a cheap fast-path defer. BOTH human
+#     override levers (--force and --allow-active) are HUMAN-ONLY: each
+#     requires an operator reason (--force "why" / --allow-active "why" or
+#     LUNA_FORCE_REASON=...) and forwards a logged --operator-override to the
+#     engine. Automation (guardian, timers) must use --repair, which honours
+#     the engine's session guard fail-closed.
 #   * The systemd unit log (journalctl -u luna-autodeploy-<profile>) is the audit
 #     trail: each run prints what it did and the from->to SHAs.
 #
@@ -25,7 +31,7 @@
 # work regardless of that knob.
 #
 # Usage:
-#   luna-autodeploy <profile> [--force] [--allow-active] [--dry-run] [--from-timer]
+#   luna-autodeploy <profile> [--force "reason"] [--allow-active "reason"] [--repair] [--dry-run] [--from-timer]
 #   luna-autodeploy <profile> --validate
 #   luna-autodeploy install-timer <profile>  [--interval <systemd-time>]
 #     (interval default: registry deploy.timerInterval, else 3min)
@@ -49,7 +55,10 @@
 #
 # Exit: 0 = up-to-date / deferred / deployed-clean / validate-ok;
 #       1 = update failed but luna-update-server rolled back;
-#       2 = bad usage or CRITICAL (rollback failed) or validate-failed.
+#       2 = bad usage or CRITICAL (rollback failed) or validate-failed;
+#       3 = repair deferred by session guard (--repair mode only);
+#       4 = repair deferred by update-lock contention — a concurrent update
+#           holds the profile lock; NOT a session-guard defer (--repair only).
 set -euo pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -239,6 +248,7 @@ profile_config() {
 
 # ── deploy one channel ───────────────────────────────────────────────────────
 FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL="" VALIDATE=false FROM_TIMER=false
+REPAIR=false FORCE_REASON="" ALLOW_ACTIVE_REASON=""
 
 # Existing hosts predate the guardian and still enter through the legacy timer.
 # The first legacy tick may deploy the commit that introduces this function
@@ -326,8 +336,15 @@ do_deploy() {
   fi
 
   echo "[autodeploy:$profile] deploying ${local_sha:0:9} -> ${remote_sha:0:9} (origin/$P_BRANCH)"
+  # Human override levers forward to the engine as an explicit, logged
+  # --operator-override reason. The engine's in-primitive session guard is the
+  # invariant; these flags are the only (human-typed) way past it.
+  local extra=()
+  if [[ "$FORCE" == true ]]; then extra=(--operator-override "operator --force: $FORCE_REASON")
+  elif [[ "$ALLOW_ACTIVE" == true ]]; then extra=(--operator-override "operator --allow-active: $ALLOW_ACTIVE_REASON")
+  fi
   if [[ "$DRY_RUN" == true ]]; then
-    echo "[autodeploy:$profile] DRY-RUN: $UPDATE_SERVER ${P_UPDATE_ARGS[*]}"
+    echo "[autodeploy:$profile] DRY-RUN: $UPDATE_SERVER ${P_UPDATE_ARGS[*]} ${extra[*]:-}"
     return 0
   fi
 
@@ -336,14 +353,73 @@ do_deploy() {
   pinned_engine="$(luna_pin_engine "$P_REPO")"
 
   local rc=0
-  "$pinned_engine" "${P_UPDATE_ARGS[@]}" || rc=$?
+  "$pinned_engine" "${P_UPDATE_ARGS[@]}" ${extra[@]+"${extra[@]}"} || rc=$?
   case "$rc" in
     0)
       echo "[autodeploy:$profile] OK — now at ${remote_sha:0:9}"
       if ! maybe_migrate_guardian "$profile" "$pending_transaction"; then rc=2; fi
       ;;
     1) echo "[autodeploy:$profile] ROLLED BACK — update failed, recovered to ${local_sha:0:9}" >&2 ;;
+    3) echo "[autodeploy:$profile] DEFERRED by engine session guard — will retry next tick"; rc=0 ;;
     *) echo "[autodeploy:$profile] CRITICAL rc=$rc — rollback may have failed; manual attention needed" >&2 ;;
+  esac
+  return "$rc"
+}
+
+# ── --repair: the guardian's unattended repair ladder ────────────────────────
+# Rung 1: plain guarded unit restart (checkout untouched). Rung 2: full
+# rebuild of the CURRENT ref — the checkout's HEAD at repair time, pinned
+# explicitly below. Repair is not upgrade: P_UPDATE_ARGS carries
+# --ref origin/<branch> and the engine fetches before resolving, so passing it
+# through unchanged would advance production to whatever origin gained since
+# the last gentle tick — ignoring deploy.autoUpdate=false and shipping commits
+# no connect-aware flow ever gated. Pinning HEAD makes rung 2
+# rebuild-even-if-current (FORCE semantic 1 without the session-guard
+# override, resolving the old conflation) of the build that is already
+# deployed. Both rungs run through the engine, whose in-primitive session
+# guard fails closed; a defer (rc=3) is returned to the guardian, which pages
+# instead of proceeding, and rung-1 update-lock contention (rc=4) is reported
+# as contention, never as a session-guard defer. The existing rollback path
+# (engine exit 1) is preserved on rung 2. do_repair does not run
+# maybe_migrate_guardian.
+do_repair() {
+  local profile="$1"; profile_config "$profile"
+  [[ -x "$UPDATE_SERVER" ]] || { echo "luna-autodeploy: $UPDATE_SERVER not found/executable" >&2; exit 2; }
+  [[ -d "$P_REPO/.git" ]] || { echo "luna-autodeploy: $P_REPO is not a git repo" >&2; exit 2; }
+  # Pin the repair target to the checkout's CURRENT HEAD: strip the registry's
+  # --ref pair (which names the moving origin/<branch>) and substitute HEAD.
+  local cur_sha
+  cur_sha="$(git -C "$P_REPO" rev-parse HEAD)" ||
+    { echo "luna-autodeploy: cannot resolve HEAD in $P_REPO" >&2; exit 2; }
+  local repair_args=() _skip_ref_value=false _arg
+  for _arg in "${P_UPDATE_ARGS[@]}"; do
+    if [[ "$_skip_ref_value" == true ]]; then _skip_ref_value=false; continue; fi
+    if [[ "$_arg" == "--ref" ]]; then _skip_ref_value=true; continue; fi
+    repair_args+=("$_arg")
+  done
+  repair_args+=(--ref "$cur_sha")
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "[repair:$profile] DRY-RUN rung1: $UPDATE_SERVER ${repair_args[*]} --restart-only"
+    echo "[repair:$profile] DRY-RUN rung2: $UPDATE_SERVER ${repair_args[*]}"
+    return 0
+  fi
+  local pinned_engine rc=0
+  pinned_engine="$(luna_pin_engine "$P_REPO")"
+  echo "[repair:$profile] rung 1: plain unit restart (checkout untouched)"
+  "$pinned_engine" "${repair_args[@]}" --restart-only || rc=$?
+  case "$rc" in
+    0) echo "[repair:$profile] REPAIRED by unit restart"; return 0 ;;
+    3) echo "[repair:$profile] DEFERRED by session guard — live/unknown sessions; not escalating"; return 3 ;;
+    4) echo "[repair:$profile] DEFERRED — a concurrent update holds the profile lock (no sessions were evaluated); not escalating"; return 4 ;;
+  esac
+  echo "[repair:$profile] rung 1 failed (rc=$rc); rung 2: full rebuild of current ref ${cur_sha:0:9}"
+  rc=0
+  "$pinned_engine" "${repair_args[@]}" || rc=$?
+  case "$rc" in
+    0) echo "[repair:$profile] REPAIRED by full redeploy of ${cur_sha:0:9}" ;;
+    1) echo "[repair:$profile] ROLLED BACK — full redeploy failed, recovered to previous" >&2 ;;
+    3) echo "[repair:$profile] DEFERRED by session guard during full redeploy" ;;
+    *) echo "[repair:$profile] CRITICAL rc=$rc — manual attention needed" >&2 ;;
   esac
   return "$rc"
 }
@@ -521,18 +597,51 @@ case "$CMD" in
     ;;
   *)
     # A profile name (or unknown command) — must be a non-empty string.
-    [[ -n "$CMD" && "$CMD" != "-h" && "$CMD" != "--help" ]] || { sed -n '2,53p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0; }
+    [[ -n "$CMD" && "$CMD" != "-h" && "$CMD" != "--help" ]] || { sed -n '2,58p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0; }
     PROFILE="$CMD"; shift
     while [[ $# -gt 0 ]]; do case "$1" in
-      --force) FORCE=true; shift ;;
-      --allow-active) ALLOW_ACTIVE=true; shift ;;
+      --force) FORCE=true; shift
+        if [[ $# -gt 0 && "$1" != --* ]]; then FORCE_REASON="$1"; shift; fi ;;
+      --repair) REPAIR=true; shift ;;
+      --allow-active) ALLOW_ACTIVE=true; shift
+        if [[ $# -gt 0 && "$1" != --* ]]; then ALLOW_ACTIVE_REASON="$1"; shift; fi ;;
       --dry-run) DRY_RUN=true; shift ;;
       --validate) VALIDATE=true; shift ;;
       --from-timer) FROM_TIMER=true; shift ;;
       *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac; done
+    # --repair is the UNATTENDED entry: it must never be combined with a human
+    # override lever (automation holding the hammer is what phase 2 removes).
+    if [[ "$REPAIR" == true && ( "$FORCE" == true || "$ALLOW_ACTIVE" == true ) ]]; then
+      echo "luna-autodeploy: --repair cannot be combined with --force/--allow-active" >&2; exit 2
+    fi
+    # --force is HUMAN-ONLY and requires an operator reason (inline or via
+    # LUNA_FORCE_REASON), logged into the invoking unit's journal trail.
+    if [[ "$FORCE" == true ]]; then
+      FORCE_REASON="${FORCE_REASON:-${LUNA_FORCE_REASON:-}}"
+      if [[ -z "$FORCE_REASON" ]]; then
+        echo "luna-autodeploy: --force requires an operator reason: --force \"why\" or LUNA_FORCE_REASON=... (automation must use --repair)" >&2
+        exit 2
+      fi
+      echo "[autodeploy:$PROFILE] FORCE by operator: $FORCE_REASON"
+    fi
+    # --allow-active is the SECOND human override lever past the engine's
+    # session guard; it must meet the same audit bar as --force — an explicit
+    # operator reason, logged into the invoking unit's journal trail. Without
+    # this gate it would remain a reason-free synonym any future wrapper could
+    # construct unattended.
+    if [[ "$ALLOW_ACTIVE" == true ]]; then
+      ALLOW_ACTIVE_REASON="${ALLOW_ACTIVE_REASON:-${LUNA_FORCE_REASON:-}}"
+      if [[ -z "$ALLOW_ACTIVE_REASON" ]]; then
+        echo "luna-autodeploy: --allow-active requires an operator reason: --allow-active \"why\" or LUNA_FORCE_REASON=... (automation must use --repair)" >&2
+        exit 2
+      fi
+      echo "[autodeploy:$PROFILE] ALLOW-ACTIVE by operator: $ALLOW_ACTIVE_REASON"
+    fi
     if [[ "$VALIDATE" == true ]]; then
       do_validate "$PROFILE"
+    elif [[ "$REPAIR" == true ]]; then
+      do_repair "$PROFILE"
     else
       do_deploy "$PROFILE"
     fi

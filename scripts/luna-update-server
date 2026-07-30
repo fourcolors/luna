@@ -61,6 +61,23 @@ REF=""
 INCUS_CONTAINER=""
 DRY_RUN=false
 ROLLBACK=true
+# In-primitive session guard (phase 2): the guard lives HERE, in the restart
+# primitive, so no caller-side flag can skip it. GUARD_SESSIONS is only ever
+# flipped false internally (do_rollback, and only when a forward restart
+# already interrupted service — see FORWARD_RESTART_RAN). OPERATOR_OVERRIDE_REASON
+# is the sole, human-only override lever; it must carry a logged reason.
+# RESTART_ONLY selects the cheap repair rung: guarded stop-settle-start +
+# readiness, no checkout mutation, no rollback.
+# FORWARD_RESTART_RAN scopes the rollback guard exemption: an apply-phase
+# failure (bun install / SPA build error) rolls back while the OLD server is
+# still running and serving, so that rollback restart must stay guarded — the
+# exemption is earned only once a forward restart has actually interrupted
+# service (or a mid-rollback journal is being recovered, where the interruption
+# already began in a prior run).
+GUARD_SESSIONS=true
+OPERATOR_OVERRIDE_REASON=""
+RESTART_ONLY=false
+FORWARD_RESTART_RAN=false
 # Readiness probe knobs (overridable so the hermetic tests run in ~seconds and
 # never hang). curl is bounded per-attempt by --max-time; the overall poll is
 # bounded by READINESS_TIMEOUT. Probe target port defaults to the chat server's
@@ -117,6 +134,15 @@ Options:
                             WAL/SHM handles before the new one opens them (avoids
                             SQLITE_CANTOPEN on boot). Default: 6.
   --no-rollback             Do not auto-roll-back on readiness failure (advanced).
+  --operator-override <reason>
+                            HUMAN-ONLY override of the in-primitive session
+                            guard. Requires a non-empty reason, which is logged
+                            (journalctl of the invoking unit) as the audit
+                            trail. Automation must never construct this flag.
+  --restart-only            Repair rung 1: plain guarded stop -> settle -> start
+                            + readiness probe. No checkout mutation, no bun
+                            install/build, no rollback. A pending update
+                            transaction runs normal recovery instead.
   --dry-run                 Print the plan and change NOTHING.
   --supervisor   <systemd|launchd>   supervisor backend (default: systemd; env: LUNA_SUPERVISOR)
   --user                             use systemd --user scope (systemd only)
@@ -129,6 +155,14 @@ Exit codes:
   1  preflight error, OR readiness failed but rollback succeeded.
   2  CRITICAL: readiness failed AND rollback also failed (server may be down;
      manual intervention required).
+  3  deferred by the session guard (live or unknown sessions); fresh run:
+     nothing mutated; mid-transaction: journal retained and resumed when idle;
+     apply-phase rollback: checkout already restored to PREV, old server still
+     serving, journal retained (phase=rolling-back) and resumed when idle.
+  4  --restart-only only: deferred because another update already holds the
+     profile lock (repair-rung contention). Distinct from 3 on purpose: no
+     session-guard defer happened, and reporting it as one would send the
+     on-call responder hunting for phantom live sessions.
 EOF
 }
 
@@ -151,6 +185,8 @@ while [[ $# -gt 0 ]]; do
     --readiness-port) READINESS_PORT="${2:?missing --readiness-port value}"; shift 2 ;;
     --restart-settle) RESTART_SETTLE_SECS="${2:?missing --restart-settle value}"; shift 2 ;;
     --no-rollback) ROLLBACK=false; shift ;;
+    --operator-override) OPERATOR_OVERRIDE_REASON="${2:?missing --operator-override reason}"; shift 2 ;;
+    --restart-only) RESTART_ONLY=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --supervisor)  SUPERVISOR="${2:?missing --supervisor value}"; shift 2 ;;
     --user)        SYSTEMD_USER=true; shift ;;
@@ -160,6 +196,11 @@ while [[ $# -gt 0 ]]; do
     *) luna_die "unknown option: $1" ;;
   esac
 done
+
+# The ${2:?} above already rejects a MISSING value; this rejects a
+# whitespace-only "reason" — an override without a reason is not an override.
+[[ -z "$OPERATOR_OVERRIDE_REASON" || -n "${OPERATOR_OVERRIDE_REASON// }" ]] ||
+  luna_die "--operator-override requires a non-empty reason"
 
 luna_validate_profile "$PROFILE"
 
@@ -766,11 +807,77 @@ _systemctl_user_flag() {
   [[ "$SYSTEMD_USER" == true ]] && printf '%s' '--user' || true
 }
 
+# --- in-primitive session guard (phase 2) -------------------------------------
+# THE invariant: the operator is never dropped mid-conversation by an unattended
+# restart. It lives inside the restart primitive — not as a caller-side check a
+# flag can skip — so automation is structurally unable to bypass it.
+#
+# Returns 0 = restart permitted, 3 = defer (live or unknown sessions).
+#
+# Decision procedure (ws-count FIRST — an answered kernel count is authoritative
+# in both directions):
+#   1. count answered, n > 0  -> DEFER even if systemd reports non-active
+#                                (protects against orphaned/lingering holders).
+#   2. count answered, n == 0 -> PERMIT without consulting systemd at all
+#                                (the common dead-but-reachable repair case; the
+#                                kernel socket table proves nothing can drop).
+#   3. count UNKNOWN          -> ask systemd whether a serving process can even
+#      exist. Only the exact answers 'inactive'/'failed' prove no supervised
+#      process exists (sessions structurally cannot exist) — the dead-server
+#      exception repair needs. 'activating' must DEFER: a Type=notify server
+#      may accept sockets pre-READY. Empty output means transport never reached
+#      systemd — DEFER (a restart through the same transport could not succeed
+#      anyway). A crash-looping unit in a reachable container still clears via
+#      step 2 (ss answers 0).
+restart_session_guard() {
+  [[ "$DRY_RUN" == true ]] && return 0
+  [[ "$GUARD_SESSIONS" == true ]] || return 0
+  # launchd = the operator's own macOS laptop; no unattended caller exists there
+  # and ss(8) is unavailable (the guard would permanently defer).
+  [[ "$SUPERVISOR" == "systemd" ]] || return 0
+  if [[ -n "$OPERATOR_OVERRIDE_REASON" ]]; then
+    luna_warn "SESSION GUARD OVERRIDDEN by operator: $OPERATOR_OVERRIDE_REASON"
+    return 0
+  fi
+  local n state
+  # NOTE: counts READINESS_PORT, which is the ws session port (container-internal
+  # 4753 for both profiles; a single port serves ws+health). If a profile ever
+  # splits them, this must learn the ws port explicitly.
+  if n="$(luna_active_ws_count "$READINESS_PORT" "$INCUS_CONTAINER")"; then
+    if (( n > 0 )); then
+      luna_warn "session guard: $n active session(s) on :$READINESS_PORT — deferring restart"
+      return 3
+    fi
+    return 0   # kernel socket table answered 0: no established session can be dropped
+  fi
+  # Count UNKNOWN (probe transport failed). Ask systemd whether a serving process
+  # can even exist. Do NOT use sup_is_active here: it maps failure to the string
+  # 'unknown', which would be indistinguishable from a real non-active answer.
+  state="$(run_target_capture systemctl $(_systemctl_user_flag) is-active "$SERVICE_NAME" 2>/dev/null || true)"
+  case "$state" in
+    inactive|failed)
+      # Non-empty output proves transport reached systemd (a missing unit still
+      # prints 'inactive' rc=4). The unit answered: no supervised process exists,
+      # so sessions structurally cannot exist. The dead-server exception.
+      luna_warn "session guard: ws count unknown but unit answered '$state' — no server process; restart permitted"
+      return 0 ;;
+    "")
+      luna_warn "session guard: transport never reached systemd — deferring (fail closed); a restart through the same transport could not succeed anyway"
+      return 3 ;;
+    *)
+      luna_warn "session guard: ws count unknown while unit answers '$state' — may be serving; deferring (fail closed)"
+      return 3 ;;
+  esac
+}
+
 # Restart the unit as a CLEAN stop -> settle -> start instead of a fast
 # supervisor-restart. sup_stop handles the async launchd death-poll internally,
 # so settle_after_stop always runs on confirmed-dead (or timed-out-with-warning).
 # sup_reload is a no-op for launchd.
 restart_service() {
+  # First line, belt-and-suspenders: any caller of the primitive is guarded.
+  # rc==3 is unambiguous — sup_reload/sup_stop/sup_start return 1, settle 0.
+  restart_session_guard || return 3
   # Stop -> settle -> start instead of a fast supervisor-restart. sup_stop handles
   # the async launchd death-poll internally, so settle_after_stop always runs on
   # confirmed-dead (or timed-out-with-warning). sup_reload is a no-op for launchd.
@@ -804,6 +911,7 @@ if [[ "$DRY_RUN" == true ]]; then
   else
     printf '4. re-pin LUNA_CLAUDE_CODE_EXECUTABLE in %s\n' "$ENV_FILE"
   fi
+  printf '4b. session guard: refuse stop if live sessions on :%s (dead-server exception: unit inactive/failed permits)\n' "$READINESS_PORT"
   if [[ "$SUPERVISOR" == "launchd" ]]; then
     printf '5. launchctl bootout gui/%s/%s + settle %ss + bootstrap gui/%s %s\n' \
       "$UID" "$LAUNCHD_LABEL" "$RESTART_SETTLE_SECS" "$UID" "$LAUNCHD_PLIST"
@@ -876,6 +984,23 @@ seed_dream_wake_jobs() {
 # Returns nothing: it always exits. Exit 1 = recovered to PREV; exit 2 = CRITICAL
 # (rollback itself failed, by command error OR by failing its own health probe).
 do_rollback() {
+  # The guard exemption is SCOPED, not unconditional. Two cases:
+  #   - FORWARD_RESTART_RAN=true: the forward restart already interrupted
+  #     service, so the guard has nothing left to protect and blocking rollback
+  #     would strand a broken build. Exempt (rollback restart cannot return 3).
+  #   - FORWARD_RESTART_RAN=false: an APPLY-phase failure (bun install / SPA
+  #     build error) — the OLD server never stopped and is still serving, and
+  #     sessions may have been established since the pre-mutation guard check.
+  #     The guard stays ACTIVE: a defer restores nothing further (apply_ref
+  #     below has already reset the checkout to PREV, matching the still-running
+  #     build), keeps the journal at phase=rolling-back, and exits 3 so the next
+  #     idle tick finishes the rollback restart.
+  if [[ "$FORWARD_RESTART_RAN" == true ]]; then
+    GUARD_SESSIONS=false
+    luna_warn "rollback restart proceeds without the session guard: the forward restart already interrupted service, and blocking rollback would strand a broken build"
+  else
+    luna_warn "rollback after an apply-phase failure: the old server was never stopped, so the session guard stays ACTIVE for the rollback restart"
+  fi
   luna_warn "ROLLING BACK to $PREV"
   write_transaction "rolling-back" || true
   TRANSACTION_TRACK_APPLY=false
@@ -884,7 +1009,17 @@ do_rollback() {
   local ok=true
   apply_ref "$PREV" "$(lockfile_hash)" --no-fetch || ok=false
   if [[ "$ok" == true ]]; then
-    restart_service || ok=false
+    local rollback_restart_rc=0
+    restart_service || rollback_restart_rc=$?
+    if (( rollback_restart_rc == 3 )); then
+      # Only reachable when the guard stayed active (apply-phase failure, old
+      # server still serving). The checkout is already back at PREV — the state
+      # the running server was built from — so nothing is stranded; the journal
+      # (phase=rolling-back) resumes the restart on the next idle tick.
+      luna_warn "rollback restart DEFERRED by session guard (old server still serving; checkout already restored to $PREV); transaction journal retained (phase=rolling-back) — resumes when sessions end"
+      exit 3
+    fi
+    (( rollback_restart_rc == 0 )) || ok=false
   fi
   if [[ "$ok" == true ]]; then
     local rollback_baseline
@@ -925,7 +1060,38 @@ fail_forward() {
 # --- live update --------------------------------------------------------------
 if ! acquire_update_lock; then
   # Contention is a safe defer, not an update failure. The timer retries.
+  # --restart-only (a repair rung) reports contention as exit 4 — DISTINCT from
+  # the session-guard defer (3), because no sessions were ever evaluated here.
+  # Conflating them made do_repair and the guardian page "DEFERRED by session
+  # guard — live or unknown sessions" while the real cause was a concurrent
+  # update holding the profile lock, sending the responder to a false diagnosis.
+  [[ "$RESTART_ONLY" == true ]] && exit 4
   exit 0
+fi
+
+# --- restart-only mode (repair ladder rung 1) ---------------------------------
+# A plain guarded stop -> settle -> start + readiness probe. No journal writes,
+# no git mutation, no bun install/build, no rollback. ALLOW_MISSING_BUILD_SHA
+# stays false: a build that cannot identify itself fails rung 1 and correctly
+# escalates to rung 2 (full redeploy). A pending update transaction takes
+# precedence — run normal recovery instead of the light path.
+if [[ "$RESTART_ONLY" == true ]]; then
+  if [[ -f "$UPDATE_JOURNAL" ]]; then
+    luna_warn "restart-only requested but an update transaction is pending; running normal recovery instead"
+  else
+    RRC=0
+    restart_service || RRC=$?
+    if (( RRC == 3 )); then exit 3; fi
+    if (( RRC != 0 )); then luna_warn "restart-only: restart errored (checkout untouched; no rollback)"; exit 1; fi
+    RESTART_BASELINE="$(readiness_restart_baseline)"
+    EXPECTED_BUILD_SHA="$(git_target_capture rev-parse HEAD)"
+    if readiness_ok "$RESTART_BASELINE"; then
+      luna_info "restart-only: $SERVICE_NAME healthy at ${EXPECTED_BUILD_SHA:0:12}"
+      exit 0
+    fi
+    luna_warn "restart-only: readiness failed after plain restart (checkout untouched; no rollback)"
+    exit 1
+  fi
 fi
 
 NEW_HEAD=""
@@ -939,7 +1105,24 @@ if [[ -f "$UPDATE_JOURNAL" ]]; then
   PREV_LOCK_HASH="$TX_PREV_LOCK_HASH"
   luna_warn "RECOVERING interrupted update phase=$TX_PHASE prev=${PREV:0:9} target=${REF:0:9}"
   if [[ "$TX_PHASE" == "rolling-back" || "$TX_PHASE" == "rollback-failed" ]]; then
+    # A mid-rollback journal means a prior run already began the rollback; the
+    # service interruption (if any) already happened in that run and blocking
+    # recovery here would strand a broken build. Treat recovery like the
+    # post-forward-restart case: the rollback restart is exempt from the guard.
+    FORWARD_RESTART_RAN=true
     do_rollback
+  fi
+  # Forward-resume phases only (do_rollback above never returns): the recovery
+  # re-applies and restarts, so the same pre-mutation session-guard check
+  # applies. A deferred resume keeps the journal intact and retries next tick.
+  # A phase=restarting resume self-permits via the guard itself (server already
+  # stopped -> unit answers inactive/failed, or old server still running with
+  # 0 sessions -> count 0).
+  if [[ -n "$TX_PHASE" ]]; then
+    if ! restart_session_guard; then
+      luna_warn "DEFERRED by session guard; transaction journal retained (phase=$TX_PHASE) — resumes when sessions end"
+      exit 3
+    fi
   fi
 else
   PREV="$(git_target_capture rev-parse HEAD)"
@@ -958,6 +1141,13 @@ else
     REF="$(git_target_capture rev-parse "${REQUESTED_REF}^{commit}")"
   fi
   [[ "$REF" =~ ^[0-9a-fA-F]{7,64}$ ]] || luna_die "could not resolve target ref $REQUESTED_REF"
+  # Pre-mutation session-guard check: defer BEFORE the first journal write so a
+  # deferred fresh run leaves nothing behind (the fetch/ref resolution above only
+  # touched remote refs, not the checkout; the lock is released by the EXIT trap).
+  if ! restart_session_guard; then
+    luna_warn "DEFERRED by session guard; nothing mutated (retry next tick)"
+    exit 3
+  fi
   write_transaction "prepared"
 fi
 
@@ -974,7 +1164,19 @@ luna_info "Checked out: $NEW_HEAD"
 write_transaction "applied"
 
 write_transaction "restarting"
-if ! restart_service; then
+# rc==3 (session-guard defer) must NOT route into fail_forward: fail_forward's
+# rollback would perform the very restart the guard just refused. Exit 3 keeps
+# the journal at phase=restarting; the next tick resumes when sessions end.
+RESTART_RC=0
+restart_service || RESTART_RC=$?
+if (( RESTART_RC == 3 )); then
+  luna_warn "DEFERRED by session guard mid-transaction; journal retained (phase=restarting) — resumes next tick"
+  exit 3
+fi
+# Past the guard: the stop (at least) was attempted, so service is interrupted.
+# From here any rollback is exempt from the session guard (see do_rollback).
+FORWARD_RESTART_RAN=true
+if (( RESTART_RC != 0 )); then
   fail_forward "service restart errored"
 fi
 # Capture NRestarts right AFTER issuing the restart; require it not to climb
