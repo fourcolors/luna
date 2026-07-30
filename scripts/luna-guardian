@@ -429,7 +429,10 @@ install_guardian() {
   pin="$PIN_BASE/engine@$sha"; current="$PIN_BASE/current-$profile"
   mkdir -p "$PIN_BASE" "$STATE_DIR"; chmod 700 "$STATE_DIR"
   publish_engine "$root" "$sha" "$pin"
-  linktmp="$current.tmp.$$"; ln -s "$pin" "$linktmp"; mv -f "$linktmp" "$current"
+  # -T is load-bearing: without it, `mv` onto an existing symlink-to-directory
+  # dereferences the destination and drops the new link *inside* the old engine
+  # instead of replacing it, so the pin never advances.
+  linktmp="$current.tmp.$$"; ln -s "$pin" "$linktmp"; mv -fT "$linktmp" "$current"
   render_control_plane "$profile" "$interval" "$current"
   prune_engines
   printf 'luna-guardian: installed %s (engine %s, interval %s)\n' \

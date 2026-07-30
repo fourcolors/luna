@@ -179,6 +179,47 @@ describe("luna-guardian", () => {
     expect(alert).not.toContain(`${state}/pager.env`)
   })
 
+  it("replaces the pin symlink on re-install instead of nesting it in the old engine", () => {
+    const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reinstall-"))
+    dirs.push(temp)
+    const bin = join(temp, "bin")
+    const units = join(temp, "systemd")
+    const pins = join(temp, "pins")
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(units, { recursive: true })
+    writeSystemctlStub(bin)
+
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      LUNA_SERVERS_CONFIG: fixture,
+      LUNA_TEST_STAT_MODE: "600",
+      LUNA_HOME: join(temp, "luna-home"),
+      LUNA_GUARDIAN_PIN_BASE: pins,
+      LUNA_GUARDIAN_STATE_DIR: join(temp, "state"),
+      LUNA_UPDATE_STATE_DIR: join(temp, "update"),
+      LUNA_TEST_SYSTEMD_DIR: units,
+      LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
+      LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+    }
+
+    for (const attempt of ["first", "second"]) {
+      const run = spawnSync("bash", [guardian, "install", "stable"], { cwd: root, encoding: "utf8", env })
+      expect(run.status, `${attempt}: ${run.stdout}${run.stderr}`).toBe(0)
+    }
+
+    // The pin must still be a symlink resolving to an engine@ directory —
+    // installed_engine_sha() reads it to decide whether the release is healthy.
+    const engines = readdirSync(pins).filter((name) => name.startsWith("engine@"))
+    expect(engines).toHaveLength(1)
+    const resolved = spawnSync("readlink", ["-f", join(pins, "current-stable")], { encoding: "utf8" })
+    expect(resolved.stdout.trim()).toBe(join(pins, engines[0]))
+
+    // A dereferenced `mv` would have dropped the temp link inside the engine.
+    const leaked = readdirSync(join(pins, engines[0])).filter((name) => name.startsWith("current-"))
+    expect(leaked).toEqual([])
+  })
+
   it("refuses installation when the registry disables the timer", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-disabled-"))
     dirs.push(temp)
