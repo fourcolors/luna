@@ -451,6 +451,34 @@ const fromSql = (
           return { account, model: toolName, stepIndex: 0, failoverPossible: false }
         }).pipe(Effect.map((acq) => acq.credential))
 
+      // Read-only re-check (see the interface doc comment in
+      // account-broker.ts). Reuses the SAME `pickLaneTarget` selection
+      // `acquireSession` runs above, so it can never disagree with what a
+      // real re-acquire for this lane/bind would do. Only reads `ref`;
+      // never `Ref.modify`s it.
+      const peekFailoverPossible: AccountBrokerApi["peekFailoverPossible"] = (
+        opts,
+      ) =>
+        Effect.gen(function* () {
+          const now = yield* clock.nowMs()
+          const accounts = yield* Ref.get(ref)
+          const lane = opts.model
+          const chain = resolveChain(lane, overflowCfg)
+          const fallbackKind = resolveKind(lane, providerEnv)
+          const target = pickLaneTarget(
+            {
+              lane,
+              chain,
+              fallbackKind,
+              boundId: opts.boundAccountId,
+              providerEnv,
+            },
+            accounts,
+            now,
+          )
+          return target !== null
+        })
+
       // Write-back helper: persist a single account's mutable fields (§5.1
       // `usage_json` + `cooldown_ms`) so a budget-exhausted account SURVIVES a
       // restart still cooled down until the cycle reset. `cooldown_ms` is stored
@@ -592,6 +620,7 @@ const fromSql = (
         report,
         _inspect,
         list,
+        peekFailoverPossible,
       } satisfies AccountBrokerApi
     }),
   )
