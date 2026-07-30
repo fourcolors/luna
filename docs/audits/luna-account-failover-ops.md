@@ -173,12 +173,57 @@ deployments silently skipped cooling on three of the four.
 The two brokers are now behaviorally aligned.
 
 Note that this changes *which account the next turn picks*.
-It does not retry the failed turn - a throttle still surfaces to the user,
-who resends.
+The cooling described in this section does not itself retry the failed turn.
+Retrying is a separate layer, added later in `55f018b6` (PR #398) and described
+in §6: an early throttle on an Auto unbound turn is now retried silently on
+another account, so it no longer surfaces to the user for a manual resend.
 
 ---
 
-## 6. Reference
+## 6. Rotation mechanism of record
+
+Account rotation is a composition across three layers, each owning one piece.
+There is no single "rotation loop" function - the loop is the composition.
+All three layers are live on master as of `55f018b6`.
+
+1. **Acquire-time chain traversal lives in the broker.**
+   `pickLaneTarget` / `pickChainTarget` (`packages/core/src/overflow-chain.ts`)
+   walk a lane's configured chain (or a same-kind sibling pool when no chain is
+   configured), honoring cooldown, LRU, and sticky-pin. Both brokers
+   (in-memory and SQL) call the same pure function so they stay behaviorally
+   identical.
+2. **Cooling on throttle lives in the adapter.**
+   `reportRateLimitIfThrottled` in `packages/adapter-sdk/src/adapter.ts` cools
+   the account that just failed, gated on `failoverPossible` - never cool the
+   only usable account (see §5 above).
+3. **Retry after failure lives in chat-service.**
+   `packages/chat-service/src/chat-service.ts` runs a per-turn rotation loop
+   (merged as `55f018b6`, PR #398) that re-acquires a session and retries the
+   turn against a *different* account, because step 2 already cooled the one
+   that failed. Cause classification reuses `defaultIsRotatableError`
+   (`packages/core/src/overflow-chain.ts`) rather than adding a fourth
+   throttle classifier, so "cool this account" and "rotate the lane" can
+   never disagree about the same error text. That predicate is imported at
+   `chat-service.ts:107` and invoked at `:1564`, so it is a live export, not
+   dead code.
+
+`executeWithOverflowChain` (formerly in `overflow-chain.ts`) was removed as a
+redundant fourth path. It had zero production callers - PR #394 built
+`queryWithRotation` inside the SDK adapter apparently unaware this executor
+already existed, and shipped defects with it. The three-layer composition
+above is that same loop, decomposed across the layers that each own their
+piece, and it is the one to extend.
+
+**Do not reintroduce a rotation loop in the adapter.** On the ordinary path
+`adapter.query()` is a thread-lifetime session, not a turn - it is called once
+per thread and fed turns over `Stream.fromQueue(inbox)`. A retry loop inside
+the adapter has no turn boundary to retry against: it would re-subscribe to an
+already-drained queue (the turn handed to the dead subprocess is silently
+lost), and it would not consult `failoverPossible` before re-acquiring. The
+turn boundary - and therefore the only place a retry can safely live - is
+chat-service.
+
+## 7. Reference
 
 | Command | Purpose |
 |---|---|

@@ -434,6 +434,39 @@ d("AccountBrokerLayer.fromSql — hydration", () => {
     }
   })
 
+  it("(5c) report(kind: session_limit) holds a 3-hour cooldown, not the 60s rate_limit default", async () => {
+    const dbPath = tmpDb()
+    try {
+      const FIXED = 1_000_000
+      await seedAccountsTable(dbPath, [
+        { id: "a1", kind: "anthropic", secret_ref: "anth:a1" },
+      ])
+      const log = await Effect.runPromise(Ref.make<ReadonlyArray<string>>([]))
+      const layer = buildLayer(
+        dbPath,
+        stubSecretsLayer({ "anth:a1": "x" }, log),
+        FIXED,
+      )
+      const accounts = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            yield* broker.report({ accountId: "a1", kind: "session_limit" })
+            return yield* broker._inspect()
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+      const a1 = accounts.find((a) => a.id === "a1")
+      // No retryAfterMs supplied → the broker must fall back to its own
+      // session-limit default (3h), not the generic 60s rate_limit default.
+      // This mirrors the in-memory broker's SESSION_LIMIT_COOLDOWN_MS from
+      // d5371739, keeping the two brokers verifiably aligned.
+      expect(a1?.cooldownUntilMs).toBe(FIXED + 3 * 60 * 60 * 1000)
+    } finally {
+      cleanupTmp(dbPath)
+    }
+  })
+
   it("(6) malformed row (empty kind) → ConfigError with offending id; Layer fails", async () => {
     const dbPath = tmpDb()
     try {

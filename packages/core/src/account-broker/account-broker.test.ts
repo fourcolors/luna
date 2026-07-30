@@ -191,6 +191,44 @@ describe("AccountBroker.report", () => {
     expect(out.generic.accountId).not.toBe("a1")
   })
 
+  it("session_limit puts account in a 3-hour cooldown (not the 60s rate_limit default); subsequent acquire skips it", async () => {
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        // Pin a1, report a session-limit hit on it (no retryAfterMs - the
+        // broker must supply its own SESSION_LIMIT_COOLDOWN_MS default, not
+        // the generic 60s rate_limit default).
+        yield* Effect.scoped(
+          broker.acquireSession({ model: "m", boundAccountId: "a1" }),
+        )
+        yield* broker.report({ accountId: "a1", kind: "session_limit" })
+        // Now request a1 specifically - should fail (in cooldown).
+        const exit = yield* Effect.exit(
+          Effect.scoped(
+            broker.acquireSession({ model: "m", boundAccountId: "a1" }),
+          ),
+        )
+        // And generic acquire should hit a2 or a3.
+        const generic = yield* Effect.scoped(
+          broker.acquireSession({ model: "m" }),
+        )
+        const summaries = yield* broker.list()
+        const records = yield* broker._inspect()
+        return { exit, generic, summaries, records }
+      }).pipe(Effect.provide(buildLayer(1000))),
+    )
+    expect(Exit.isFailure(out.exit)).toBe(true)
+    expect(out.generic.accountId).not.toBe("a1")
+    expect(out.summaries.find((a) => a.id === "a1")?.health).toBe(
+      "rate_limited",
+    )
+    // Pin the DURATION, not just "some cooldown exists": at fixed clock
+    // now=1000ms, the generic rate_limit default (60s) would land at 61_000,
+    // but session_limit must hold for 3h - this is what d5371739 changed.
+    const a1 = out.records.find((a) => a.id === "a1")
+    expect(a1?.cooldownUntilMs).toBe(1000 + 3 * 60 * 60 * 1000)
+  })
+
   it("all exhausted → AllAccountsExhaustedError with kind populated", async () => {
     const out = await Effect.runPromiseExit(
       Effect.gen(function* () {
