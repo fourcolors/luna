@@ -280,41 +280,93 @@ luna_active_ws_count() {
   printf '%s' "$n"
 }
 
+# Classify `systemctl is-active` output. Empty means the command never reached
+# systemd (incus exec died, or systemctl is missing) — verified on this host
+# that a *missing unit* still prints "inactive" with rc=4, so non-empty output
+# is a sound proof of transport, and only empty output is INCONCLUSIVE.
+#
+# Every other state, transitional ones included, is an answer that was read
+# successfully and says "not serving". Transitional states are precisely the
+# shape a crash loop takes: the runtime unit is Type=notify/Restart=always with
+# TimeoutStartSec+RestartSec ≈ 65s (scripts/luna-server-install), so a build
+# that cannot send READY=1 reports `activating` for almost the whole cycle and
+# `failed` only briefly. Classifying those as INCONCLUSIVE would mean a wedged
+# server is essentially never counted as a strike. The bounded tolerance a
+# legitimate restart needs comes from the caller's K-of-N debounce, not from
+# pretending the state is unknowable.
+luna_runtime_unit_state_class() {
+  case "${1:-}" in
+    active) return 0 ;;
+    "") return 3 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Prove that the declared runtime is serving the exact checkout HEAD in normal
 # mode. This is the shared trust gate for deploy verification and control-plane
 # migration: neither may adopt executable code merely because it exists in a
 # mutable checkout.
 #
 # Signature: luna_runtime_matches_checkout <repo> <port> [incus] [service]
-# Returns non-zero on any unknown/mismatch. LUNA_TEST_RUNTIME_MATCHES_CHECKOUT
-# is a boolean test seam.
+#
+# Exit codes are TRI-STATE. Callers that only test zero/non-zero keep their old
+# behaviour, because every non-zero code still means "not proven":
+#   0  HEALTHY      — the server answered and the answer proves this HEAD.
+#   1  NEGATIVE     — the server answered and the answer was WRONG (wrong or
+#                     unidentifiable build, mode != normal, or the supervisor
+#                     unit reported any state other than active).
+#   3  INCONCLUSIVE — we got no usable answer (curl timeout, connection refused,
+#                     incus exec failure, unreadable repo, empty or unparseable
+#                     body). This means "we do not know" and on its own must
+#                     never justify a repair.
+# The distinction exists because scripts/luna-guardian escalates a NEGATIVE to
+# `luna-autodeploy --force`, which drops the operator mid-conversation.
+#
+# Test seam: LUNA_TEST_RUNTIME_MATCHES_CHECKOUT accepts "true" (0),
+# "inconclusive"/"unknown" (3), and anything else including "false" (1).
 luna_runtime_matches_checkout() {
   local repo="$1" port="$2" incus="${3:-}" service="${4:-luna-chat-server.service}"
-  local expected active ready mode build
+  local expected active ready mode build rc=0
 
   if [[ "${LUNA_TEST_RUNTIME_MATCHES_CHECKOUT+set}" == "set" ]]; then
-    [[ "$LUNA_TEST_RUNTIME_MATCHES_CHECKOUT" == "true" ]]
-    return
+    case "$LUNA_TEST_RUNTIME_MATCHES_CHECKOUT" in
+      true) return 0 ;;
+      inconclusive|unknown) return 3 ;;
+      *) return 1 ;;
+    esac
   fi
 
-  expected="$(git -C "$repo" rev-parse HEAD 2>/dev/null)" || return 1
+  expected="$(git -C "$repo" rev-parse HEAD 2>/dev/null)" || return 3
+  [[ -n "$expected" ]] || return 3
   if [[ -n "$incus" ]]; then
-    command -v incus >/dev/null 2>&1 || return 1
+    command -v incus >/dev/null 2>&1 || return 3
     active="$(incus exec "$incus" -- systemctl is-active "$service" 2>/dev/null || true)"
-    [[ "$active" == "active" ]] || return 1
+    luna_runtime_unit_state_class "$active" || rc=$?
+    (( rc == 0 )) || return "$rc"
     incus exec "$incus" -- curl -fsS --max-time 4 \
-      "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || return 1
+      "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || return 3
     ready="$(incus exec "$incus" -- curl -fsS --max-time 4 \
-      "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 1
+      "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 3
   else
     active="$(systemctl is-active "$service" 2>/dev/null || true)"
-    [[ "$active" == "active" ]] || return 1
-    curl -fsS --max-time 4 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || return 1
-    ready="$(curl -fsS --max-time 4 "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 1
+    luna_runtime_unit_state_class "$active" || rc=$?
+    (( rc == 0 )) || return "$rc"
+    curl -fsS --max-time 4 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 || return 3
+    ready="$(curl -fsS --max-time 4 "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 3
   fi
+  [[ -n "$ready" ]] || return 3
   mode="$(printf '%s' "$ready" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')"
-  build="$(printf '%s' "$ready" | sed -n 's/.*"buildSha":"\([0-9a-fA-F]*\)".*/\1/p')"
-  [[ "$mode" == "normal" && -n "$build" ]] || return 1
+  build="$(printf '%s' "$ready" | sed -n 's/.*"buildSha":"\([^"]*\)".*/\1/p')"
+  # An unparseable body is not an answer; a parseable body that says the wrong
+  # thing is. Note the buildSha capture is deliberately NOT restricted to hex:
+  # chat-server resolves BUILD_SHA to the literal "unknown" when git metadata is
+  # unavailable in the container, and a server that cannot identify its own
+  # build is a wrong answer (NEGATIVE, repairable by a redeploy) rather than an
+  # absent one — matching only hex here would silently classify it INCONCLUSIVE
+  # forever and paralyse the guardian.
+  [[ -n "$mode" && -n "$build" ]] || return 3
+  [[ "$mode" == "normal" ]] || return 1
+  [[ "$build" =~ ^[0-9a-fA-F]+$ ]] || return 1
   [[ "$expected" == "$build"* || "$build" == "$expected"* ]]
 }
 

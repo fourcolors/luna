@@ -254,6 +254,10 @@ maybe_migrate_guardian() {
     echo "[autodeploy:$profile] guardian migration deferred — update transaction recovery is pending"
     return 0
   }
+  # Any non-zero, including INCONCLUSIVE (3), defers adoption and returns 0.
+  # Deliberately not debounced: deferring costs one legacy tick and mutates
+  # nothing, and a K-tick requirement here would stack with the two further
+  # runtime proofs in adopt/install.
   if ! luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"; then
     echo "[autodeploy:$profile] guardian migration deferred — runtime does not prove checkout HEAD"
     return 0

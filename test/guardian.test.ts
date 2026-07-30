@@ -90,6 +90,238 @@ const writeGuardianRegistry = (file: string) => {
   )
 }
 
+const writeStub = (path: string, body: string) => {
+  writeFileSync(path, body)
+  spawnSync("chmod", ["+x", path])
+}
+
+const headSha = () =>
+  spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+
+// A hermetic guardian: the engine is a *copy* of scripts/ whose luna-autodeploy
+// is a recording stub, and the registry declares no incus container so
+// diagnose() can never reach the live luna-stable container. This is the only
+// way to exercise check_profile's destructive `--force` branch without invoking
+// the real updater against the production deploy.
+type Harness = {
+  temp: string
+  guardian: string
+  state: string
+  calls: string
+  env: NodeJS.ProcessEnv
+}
+
+const makeHarness = (label: string): Harness => {
+  const temp = mkdtempSync(join(tmpdir(), label))
+  dirs.push(temp)
+  const bin = join(temp, "bin")
+  const units = join(temp, "systemd")
+  const scripts = join(temp, "scripts")
+  const state = join(temp, "state")
+  const calls = join(temp, "autodeploy-calls")
+  const registry = join(temp, "servers.toml")
+  mkdirSync(bin, { recursive: true })
+  mkdirSync(units, { recursive: true })
+  writeSystemctlStub(bin)
+  writeStub(join(bin, "journalctl"), "#!/usr/bin/env bash\nexit 0\n")
+  writeStub(join(bin, "curl"), "#!/usr/bin/env bash\nexit 7\n")
+  // Inert unless LUNA_TEST_MV_FAIL_GLOB is set: lets a test make exactly the
+  // health-journal rename fail, the way ENOSPC or an errors=remount-ro /var
+  // does, without disturbing any other atomic rename in the tick.
+  writeStub(join(bin, "mv"), `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_MV_FAIL_GLOB:-}" ]]; then
+  for a in "$@"; do
+    case "$a" in
+      \${LUNA_TEST_MV_FAIL_GLOB}) printf 'mv: simulated failure: %s\\n' "$a" >&2; exit 1 ;;
+    esac
+  done
+fi
+exec /bin/mv "$@"
+`)
+  spawnSync("cp", ["-a", join(root, "scripts"), scripts])
+  writeStub(
+    join(scripts, "luna-autodeploy"),
+    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$LUNA_TEST_AUTODEPLOY_CALLS"\nexit 0\n`,
+  )
+  writeFileSync(
+    registry,
+    [
+      `kind = "registry"`,
+      `[[server]]`,
+      `name = "stable"`,
+      `update.params.hostRepoDir = "${root}"`,
+      `update.params.ref = "origin/master"`,
+      `ports.proxy = 4753`,
+      `deploy.timer = true`,
+    ].join("\n") + "\n",
+  )
+  return {
+    temp,
+    guardian: join(scripts, "luna-guardian"),
+    state,
+    calls,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      LUNA_SERVERS_CONFIG: registry,
+      LUNA_TEST_STAT_MODE: "600",
+      LUNA_HOME: join(temp, "luna-home"),
+      LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
+      LUNA_GUARDIAN_STATE_DIR: state,
+      LUNA_UPDATE_STATE_DIR: join(temp, "update"),
+      LUNA_TEST_SYSTEMD_DIR: units,
+      LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
+      LUNA_TEST_GUARDIAN_UNIT_HARDENED: "true",
+      LUNA_TEST_AUTODEPLOY_CALLS: calls,
+      LUNA_GUARDIAN_HEALTH_RETRY_DELAY: "0",
+    },
+  }
+}
+
+const installHarness = (h: Harness) => {
+  const install = spawnSync("bash", [h.guardian, "install", "stable"], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+  })
+  expect(install.status, install.stdout + install.stderr).toBe(0)
+  rmSync(h.calls, { force: true })
+}
+
+const runCheck = (h: Harness, seam: string, extra: Record<string, string> = {}) =>
+  spawnSync("bash", [h.guardian, "check", "stable"], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: seam, ...extra },
+  })
+
+const forceCalls = (h: Harness) =>
+  (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "")
+    .split("\n")
+    .filter((line) => line.includes("--force"))
+
+const allCalls = (h: Harness) =>
+  (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "").split("\n").filter(Boolean)
+
+const journalPath = (h: Harness) => join(h.state, "health-stable")
+
+const seedJournal = (h: Harness, fields: Record<string, string | number>) => {
+  mkdirSync(h.state, { recursive: true })
+  const record: Record<string, string | number> = {
+    profile: "stable",
+    updated_at: Math.floor(Date.now() / 1000),
+    repo_sha: headSha(),
+    consecutive_negative: 0,
+    negative_at: 0,
+    consecutive_unknown: 0,
+    last_repair_at: 0,
+    ...fields,
+  }
+  writeFileSync(
+    journalPath(h),
+    Object.entries(record).map(([key, value]) => `${key}=${value}`).join("\n") + "\n",
+  )
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const journalValue = (h: Harness, key: string) => {
+  const match = readFileSync(journalPath(h), "utf8").match(new RegExp(`^${key}=(.*)$`, "m"))
+  return match ? match[1] : ""
+}
+
+const incidentCount = (h: Harness) => {
+  const dir = join(h.state, "incidents", "stable")
+  return existsSync(dir) ? readdirSync(dir).length : 0
+}
+
+// Classify a single probe outcome through the real library function, with
+// systemctl/curl/incus replaced by stubs driven from the environment.
+//
+// `bin` shadows the host tools and provides an `incus` that re-executes the
+// remote argv locally, so the incus arm — the one that actually runs on the
+// live box, where P_INCUS=luna-stable — is exercised, not just the direct arm.
+// `isolated` is a PATH with no `incus` at all (the host really has
+// /usr/bin/incus, so it cannot simply be omitted from a normal PATH).
+type ProbeFixture = { bin: string; isolated: string; repo: string; head: string }
+
+const makeProbeFixture = (): ProbeFixture => {
+  const temp = mkdtempSync(join(tmpdir(), "luna-classify-"))
+  dirs.push(temp)
+  const bin = join(temp, "bin")
+  const isolated = join(temp, "isolated")
+  const repo = join(temp, "repo")
+  mkdirSync(bin, { recursive: true })
+  mkdirSync(isolated, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  spawnSync("git", ["-C", repo, "init", "-q"], { encoding: "utf8" })
+  spawnSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t",
+    "commit", "-q", "--allow-empty", "-m", "x"], { encoding: "utf8" })
+  const systemctl = `#!/usr/bin/env bash\nprintf '%s\\n' "\${STUB_IS_ACTIVE-}"\nexit "\${STUB_IS_ACTIVE_RC:-0}"\n`
+  const curl = `#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in\n  *healthz) exit "\${STUB_HEALTHZ_RC:-0}" ;;\n  *readyz) printf '%s' "\${STUB_READY-}"; exit "\${STUB_READYZ_RC:-0}" ;;\nesac; done\nexit 0\n`
+  for (const dir of [bin, isolated]) {
+    writeStub(join(dir, "systemctl"), systemctl)
+    writeStub(join(dir, "curl"), curl)
+    for (const tool of ["bash", "git", "sed", "env"]) {
+      const real = spawnSync("bash", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim()
+      spawnSync("ln", ["-sf", real, join(dir, tool)])
+    }
+  }
+  // `incus exec <container> -- argv...` runs argv against the stubs above; a
+  // non-zero STUB_INCUS_RC simulates a stopped container or a wedged agent,
+  // which produces empty output rather than a systemd answer.
+  writeStub(join(bin, "incus"),
+    `#!/usr/bin/env bash\nif [[ "\${STUB_INCUS_RC:-0}" != 0 ]]; then exit "\${STUB_INCUS_RC}"; fi\n` +
+    `[[ "\${1:-}" == exec ]] || exit 1\nshift 2\nif [[ "\${1:-}" == -- ]]; then shift; fi\nexec "$@"\n`)
+  const head = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+  return { bin, isolated, repo, head }
+}
+
+type Probe = {
+  repo?: string
+  incus?: string
+  isolate?: boolean
+  isActive?: string
+  isActiveRc?: string
+  incusRc?: string
+  healthzRc?: string
+  readyzRc?: string
+  ready?: string
+}
+
+const classify = (f: ProbeFixture, probe: Probe) => {
+  const dir = probe.isolate ? f.isolated : f.bin
+  const result = spawnSync("bash", ["-c",
+    `source "${join(root, "scripts/lib/luna-deploy.sh")}"; rc=0; ` +
+    `luna_runtime_matches_checkout "$1" 4753 "$2" svc || rc=$?; printf '%s' "$rc"`, "_",
+    probe.repo ?? f.repo,
+    probe.incus ?? "",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      // An isolated run must not inherit the host PATH, or it would find the
+      // real /usr/bin/incus and defeat the "incus is missing" case.
+      PATH: probe.isolate ? dir : `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      STUB_IS_ACTIVE: probe.isActive ?? "active",
+      STUB_IS_ACTIVE_RC: probe.isActiveRc ?? "0",
+      STUB_INCUS_RC: probe.incusRc ?? "0",
+      STUB_HEALTHZ_RC: probe.healthzRc ?? "0",
+      STUB_READYZ_RC: probe.readyzRc ?? "0",
+      STUB_READY: probe.ready ?? "",
+    },
+  })
+  return Number(result.stdout)
+}
+
+const seamCode = (value: string) => {
+  const result = spawnSync("bash", ["-c",
+    `source "${join(root, "scripts/lib/luna-deploy.sh")}"; rc=0; ` +
+    `luna_runtime_matches_checkout /nonexistent 1 "" svc || rc=$?; printf '%s' "$rc"`,
+  ], { encoding: "utf8", env: { ...process.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: value } })
+  return Number(result.stdout)
+}
+
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
@@ -504,5 +736,350 @@ describe("luna-guardian", () => {
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain("ACCEPTED stable")
     expect(result.stdout).toContain("2 consecutive healthy cycles")
+  })
+
+  it("keeps every deploy script syntactically valid", () => {
+    const files = [
+      join(root, "scripts/luna-guardian"),
+      join(root, "scripts/luna-autodeploy"),
+      join(root, "scripts/lib/luna-deploy.sh"),
+      join(root, "scripts/lib/luna-registry.sh"),
+    ]
+    const result = spawnSync("bash", ["-n", ...files], { encoding: "utf8" })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+  })
+
+  // ── phase 1: classify + debounce the deep-health probe ────────────────────
+
+  it("classifies probe outcomes as healthy, negative, or inconclusive", () => {
+    const f = makeProbeFixture()
+
+    // INCONCLUSIVE — we never got a usable answer. None of these may repair.
+    expect(classify(f, { repo: "/nonexistent-repo-path" })).toBe(3)
+    expect(classify(f, { isActive: "", isActiveRc: "4" })).toBe(3)
+    expect(classify(f, { healthzRc: "28" })).toBe(3)
+    expect(classify(f, { readyzRc: "28" })).toBe(3)
+    expect(classify(f, { ready: "" })).toBe(3)
+    expect(classify(f, { ready: "<html>gateway timeout</html>" })).toBe(3)
+
+    // NEGATIVE — the server answered and the answer was wrong.
+    expect(classify(f, { isActive: "failed" })).toBe(1)
+    expect(classify(f, { isActive: "inactive" })).toBe(1)
+    expect(classify(f, { ready: `{"mode":"degraded","buildSha":"${f.head}"}` })).toBe(1)
+    expect(classify(f, { ready: `{"mode":"normal","buildSha":"deadbeef"}` })).toBe(1)
+
+    // A transitional unit state is a state that was READ, not a transport
+    // failure. Type=notify + Restart=always spends almost the whole
+    // wedged-at-start cycle in activating/auto-restart, so calling these
+    // "unknown" would mean a crash loop is never counted as a strike; the
+    // caller's K-of-N debounce is what tolerates a legitimate restart.
+    expect(classify(f, { isActive: "activating" })).toBe(1)
+    expect(classify(f, { isActive: "reloading" })).toBe(1)
+    expect(classify(f, { isActive: "deactivating" })).toBe(1)
+
+    // A server that cannot identify its own build answers with the documented
+    // "unknown" fallback. That is a wrong answer a redeploy fixes, not an
+    // absent one — classifying it INCONCLUSIVE paralyses the guardian forever.
+    expect(classify(f, { ready: `{"status":"ok","mode":"normal","buildSha":"unknown"}` })).toBe(1)
+
+    // HEALTHY.
+    expect(classify(f, { ready: `{"mode":"normal","buildSha":"${f.head}"}` })).toBe(0)
+  })
+
+  it("classifies the incus arm, the one that runs in production", () => {
+    const f = makeProbeFixture()
+    const via = (probe: Probe) => classify(f, { incus: "luna-test", ...probe })
+
+    // INCONCLUSIVE — no usable answer came back through `incus exec`.
+    expect(via({ isolate: true })).toBe(3) // incus binary missing
+    expect(via({ incusRc: "1" })).toBe(3) // container stopped / exec failed
+    expect(via({ isActive: "", isActiveRc: "4" })).toBe(3)
+    expect(via({ healthzRc: "28" })).toBe(3) // curl --max-time 4 timeout
+    expect(via({ readyzRc: "28" })).toBe(3)
+    expect(via({ ready: "" })).toBe(3)
+
+    // NEGATIVE — the container answered and the answer was wrong.
+    expect(via({ isActive: "failed" })).toBe(1)
+    expect(via({ isActive: "activating" })).toBe(1)
+    expect(via({ ready: `{"mode":"normal","buildSha":"unknown"}` })).toBe(1)
+    expect(via({ ready: `{"mode":"normal","buildSha":"deadbeef"}` })).toBe(1)
+    expect(via({ ready: `{"mode":"degraded","buildSha":"${f.head}"}` })).toBe(1)
+
+    // HEALTHY.
+    expect(via({ ready: `{"mode":"normal","buildSha":"${f.head}"}` })).toBe(0)
+  })
+
+  it("maps the test seam onto the same tri-state exit codes", () => {
+    expect(seamCode("true")).toBe(0)
+    expect(seamCode("false")).toBe(1)
+    expect(seamCode("garbage")).toBe(1)
+    expect(seamCode("inconclusive")).toBe(3)
+    expect(seamCode("unknown")).toBe(3)
+  })
+
+  it("debounces negative readings across separate guardian processes before forcing a repair", () => {
+    const h = makeHarness("luna-guardian-debounce-")
+    installHarness(h)
+
+    const first = runCheck(h, "false")
+    expect(first.status, first.stdout + first.stderr).toBe(0)
+    expect(first.stderr).toContain("NEGATIVE (1/3 consecutive)")
+    expect(journalValue(h, "consecutive_negative")).toBe("1")
+    expect(incidentCount(h)).toBe(0)
+    expect(forceCalls(h)).toEqual([])
+
+    // A second, separate oneshot process must see the first process's strike.
+    const second = runCheck(h, "false")
+    expect(second.status, second.stdout + second.stderr).toBe(0)
+    expect(second.stderr).toContain("NEGATIVE (2/3 consecutive)")
+    expect(journalValue(h, "consecutive_negative")).toBe("2")
+    expect(incidentCount(h)).toBe(0)
+    expect(forceCalls(h)).toEqual([])
+
+    // Third strike escalates exactly once. wait_runtime_healthy is short-circuited
+    // by the seam, so this must not hang — the elapsed assertion proves it.
+    const started = Date.now()
+    const third = runCheck(h, "false")
+    expect(Date.now() - started).toBeLessThan(30_000)
+    expect(third.status, third.stdout + third.stderr).toBe(2)
+    expect(third.stderr).toContain("deep health failed 3 consecutive checks")
+    expect(forceCalls(h)).toHaveLength(1)
+    expect(incidentCount(h)).toBeGreaterThanOrEqual(1)
+
+    // Armed before the destructive action: the streak is cleared and the
+    // cooldown timestamp is recorded even though the repair did not succeed.
+    expect(journalValue(h, "consecutive_negative")).toBe("0")
+    expect(Number(journalValue(h, "last_repair_at"))).toBeGreaterThan(0)
+  })
+
+  it("suppresses a repeat forced repair inside the cooldown window", () => {
+    const h = makeHarness("luna-guardian-cooldown-")
+    installHarness(h)
+    for (let i = 0; i < 3; i++) runCheck(h, "false")
+    expect(forceCalls(h)).toHaveLength(1)
+
+    // Re-accumulating three strikes must NOT restart production again: without
+    // the cooldown this is a forced rebuild every tick, forever.
+    let last = runCheck(h, "false")
+    expect(last.status, last.stdout + last.stderr).toBe(0)
+    last = runCheck(h, "false")
+    expect(last.status, last.stdout + last.stderr).toBe(0)
+    last = runCheck(h, "false")
+    expect(last.status, last.stdout + last.stderr).toBe(0)
+    expect(last.stderr).toContain("suppressed for")
+    expect(forceCalls(h)).toHaveLength(1)
+
+    // With the cooldown disabled the same state escalates again.
+    const again = runCheck(h, "false", { LUNA_GUARDIAN_REPAIR_COOLDOWN_SEC: "0" })
+    expect(again.status, again.stdout + again.stderr).toBe(2)
+    expect(forceCalls(h)).toHaveLength(2)
+  })
+
+  it("never repairs on inconclusive readings", () => {
+    const h = makeHarness("luna-guardian-unknown-")
+    installHarness(h)
+    for (let i = 1; i <= 5; i++) {
+      const run = runCheck(h, "inconclusive")
+      expect(run.status, run.stdout + run.stderr).toBe(0)
+      expect(run.stderr).toContain(`INCONCLUSIVE (${i} consecutive)`)
+      expect(run.stderr).toContain("no repair")
+    }
+    expect(forceCalls(h)).toEqual([])
+    expect(incidentCount(h)).toBe(0)
+    expect(journalValue(h, "consecutive_unknown")).toBe("5")
+    expect(journalValue(h, "consecutive_negative")).toBe("0")
+  })
+
+  it("pages once per window when the runtime state stays unknown", () => {
+    const h = makeHarness("luna-guardian-unknown-page-")
+    installHarness(h)
+    const env = { LUNA_GUARDIAN_HEALTH_UNKNOWN_LIMIT: "2" }
+
+    expect(runCheck(h, "inconclusive", env).status).toBe(0)
+    expect(incidentCount(h)).toBe(0)
+
+    const paged = runCheck(h, "inconclusive", env)
+    expect(paged.status, paged.stdout + paged.stderr).toBe(2)
+    expect(paged.stderr).toContain("runtime state unknown for 2 consecutive checks")
+    expect(incidentCount(h)).toBe(1)
+
+    // Modulo, not >=: a wedged probe must not page on every subsequent tick.
+    const quiet = runCheck(h, "inconclusive", env)
+    expect(quiet.status, quiet.stdout + quiet.stderr).toBe(0)
+    expect(incidentCount(h)).toBe(1)
+    expect(forceCalls(h)).toEqual([])
+  })
+
+  it("treats the health journal as evidence, not authority", () => {
+    // (a) a healthy tick clears both counters.
+    const healthy = makeHarness("luna-guardian-journal-healthy-")
+    installHarness(healthy)
+    runCheck(healthy, "false")
+    runCheck(healthy, "false")
+    expect(journalValue(healthy, "consecutive_negative")).toBe("2")
+    const ok = runCheck(healthy, "true")
+    expect(ok.status, ok.stdout + ok.stderr).toBe(0)
+    expect(journalValue(healthy, "consecutive_negative")).toBe("0")
+    expect(journalValue(healthy, "consecutive_unknown")).toBe("0")
+
+    // (b) a record older than the freshness window is not evidence.
+    const stale = makeHarness("luna-guardian-journal-stale-")
+    installHarness(stale)
+    mkdirSync(stale.state, { recursive: true })
+    writeFileSync(journalPath(stale), [
+      `profile=stable`,
+      `updated_at=${Math.floor(Date.now() / 1000) - 100_000}`,
+      `repo_sha=${headSha()}`,
+      `consecutive_negative=2`,
+      `consecutive_unknown=0`,
+      `last_repair_at=0`,
+    ].join("\n") + "\n")
+    const aged = runCheck(stale, "false")
+    expect(aged.status, aged.stdout + aged.stderr).toBe(0)
+    expect(aged.stderr).toContain("NEGATIVE (1/3 consecutive)")
+    expect(forceCalls(stale)).toEqual([])
+
+    // (c) a different HEAD invalidates the strikes but NOT the repair cooldown.
+    const rebuilt = makeHarness("luna-guardian-journal-sha-")
+    installHarness(rebuilt)
+    mkdirSync(rebuilt.state, { recursive: true })
+    const repairedAt = Math.floor(Date.now() / 1000) - 10
+    writeFileSync(journalPath(rebuilt), [
+      `profile=stable`,
+      `updated_at=${Math.floor(Date.now() / 1000)}`,
+      `repo_sha=${"a".repeat(40)}`,
+      `consecutive_negative=2`,
+      `consecutive_unknown=0`,
+      `last_repair_at=${repairedAt}`,
+    ].join("\n") + "\n")
+    const moved = runCheck(rebuilt, "false")
+    expect(moved.status, moved.stdout + moved.stderr).toBe(0)
+    expect(moved.stderr).toContain("NEGATIVE (1/3 consecutive)")
+    expect(journalValue(rebuilt, "last_repair_at")).toBe(String(repairedAt))
+    expect(forceCalls(rebuilt)).toEqual([])
+
+    // (d) a missing journal reads as all-zero and cannot repair.
+    const gone = makeHarness("luna-guardian-journal-missing-")
+    installHarness(gone)
+    runCheck(gone, "false")
+    rmSync(journalPath(gone), { force: true })
+    const fresh = runCheck(gone, "false")
+    expect(fresh.status, fresh.stdout + fresh.stderr).toBe(0)
+    expect(fresh.stderr).toContain("NEGATIVE (1/3 consecutive)")
+    expect(forceCalls(gone)).toEqual([])
+  })
+
+  it("ages the negative streak out even while inconclusive ticks keep writing", async () => {
+    // Every tick rewrites updated_at and an inconclusive tick carries the
+    // negative streak forward, so freshness measured from the last write would
+    // never expire on a 1min timer: "K consecutive" would silently mean
+    // "K ever", and two old blips plus one new one would restart production.
+    const h = makeHarness("luna-guardian-aging-")
+    installHarness(h)
+    const env = { LUNA_GUARDIAN_HEALTH_WINDOW_SEC: "4" }
+
+    runCheck(h, "false", env)
+    runCheck(h, "false", env)
+    expect(journalValue(h, "consecutive_negative")).toBe("2")
+
+    for (let i = 0; i < 4; i++) {
+      await sleep(1200)
+      const tick = runCheck(h, "inconclusive", env)
+      expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    }
+
+    const late = runCheck(h, "false", env)
+    expect(late.status, late.stdout + late.stderr).toBe(0)
+    expect(late.stderr).toContain("NEGATIVE (1/3 consecutive)")
+    expect(forceCalls(h)).toEqual([])
+  }, 60_000)
+
+  it("refuses a forced repair when the repair timestamp is in the future", () => {
+    const h = makeHarness("luna-guardian-skew-")
+    installHarness(h)
+    const now = Math.floor(Date.now() / 1000)
+
+    // Control: the same journal with the repair in the recent past suppresses
+    // via the normal cooldown message.
+    seedJournal(h, { consecutive_negative: 2, negative_at: now, last_repair_at: now - 60 })
+    const past = runCheck(h, "false")
+    expect(past.status, past.stdout + past.stderr).toBe(0)
+    expect(past.stderr).toContain("suppressed for")
+    expect(forceCalls(h)).toEqual([])
+
+    // A backwards clock step (NTP correcting a bad RTC, restored snapshot) must
+    // not be read as permission to restart production.
+    seedJournal(h, { consecutive_negative: 2, negative_at: now, last_repair_at: now + 600 })
+    const future = runCheck(h, "false")
+    expect(future.status, future.stdout + future.stderr).toBe(0)
+    expect(future.stderr).toContain("clock skew")
+    expect(future.stderr).toContain("refusing forced repair")
+    expect(forceCalls(h)).toEqual([])
+  })
+
+  it("refuses a forced repair when the cooldown cannot be armed", () => {
+    // An unwritable $STATE_DIR must not degrade into "escalate every tick":
+    // without a durable last_repair_at there is nothing bounding the restart
+    // rate, which is the per-minute rebuild loop this change exists to prevent.
+    const h = makeHarness("luna-guardian-unwritable-")
+    installHarness(h)
+    const env = { LUNA_TEST_MV_FAIL_GLOB: "*health-stable*" }
+    seedJournal(h, {
+      consecutive_negative: 2,
+      negative_at: Math.floor(Date.now() / 1000),
+      last_repair_at: 0,
+    })
+
+    for (let i = 0; i < 4; i++) {
+      const tick = runCheck(h, "false", env)
+      expect(tick.status, tick.stdout + tick.stderr).toBe(2)
+      expect(tick.stderr).toContain("refusing forced repair")
+      expect(forceCalls(h)).toEqual([])
+    }
+    // The stale seed is still there — proof the writes really did fail.
+    expect(journalValue(h, "consecutive_negative")).toBe("2")
+  })
+
+  it("escalates a runtime that has been inconclusive for an unbroken run", () => {
+    // One inconclusive reading is ignorance; hundreds in a row is evidence.
+    // A wedged event loop keeps the unit active and every probe timing out, and
+    // before this path existed nothing ever restarted it.
+    const h = makeHarness("luna-guardian-unknown-escalate-")
+    installHarness(h)
+    const env = { LUNA_GUARDIAN_HEALTH_UNKNOWN_REPAIR_LIMIT: "3" }
+
+    for (let i = 1; i <= 2; i++) {
+      const tick = runCheck(h, "inconclusive", env)
+      expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+      expect(tick.stderr).toContain("no repair")
+      expect(forceCalls(h)).toEqual([])
+    }
+
+    const escalated = runCheck(h, "inconclusive", env)
+    expect(escalated.status, escalated.stdout + escalated.stderr).toBe(2)
+    expect(escalated.stderr).toContain("INCONCLUSIVE for 3 consecutive checks")
+    expect(forceCalls(h)).toHaveLength(1)
+    expect(incidentCount(h)).toBeGreaterThanOrEqual(1)
+
+    // Armed before acting, so the cooldown bounds this to one restart.
+    expect(journalValue(h, "consecutive_unknown")).toBe("0")
+    const after = runCheck(h, "inconclusive", env)
+    expect(after.status, after.stdout + after.stderr).toBe(0)
+    expect(forceCalls(h)).toHaveLength(1)
+  })
+
+  it("keeps running the gentle updater on non-healthy ticks", () => {
+    // --from-timer has its own fail-closed active-session guard and never drops
+    // the operator. It is also the only path that pulls a fix commit and
+    // advances the guardian engine pin, so a flaky probe must not suppress it.
+    const h = makeHarness("luna-guardian-from-timer-")
+    installHarness(h)
+
+    expect(runCheck(h, "false").status).toBe(0)
+    expect(allCalls(h)).toEqual(["stable --from-timer"])
+
+    expect(runCheck(h, "inconclusive").status).toBe(0)
+    expect(allCalls(h)).toEqual(["stable --from-timer", "stable --from-timer"])
+    expect(forceCalls(h)).toEqual([])
   })
 })

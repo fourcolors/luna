@@ -12,6 +12,12 @@ PIN_BASE="${LUNA_GUARDIAN_PIN_BASE:-/usr/local/lib/luna-guardian}"
 STATE_DIR="${LUNA_GUARDIAN_STATE_DIR:-/var/lib/luna-guardian}"
 SYSTEMD_DIR="${LUNA_TEST_SYSTEMD_DIR:-/etc/systemd/system}"
 
+# Deep-health debounce journal, loaded by health_journal_read.
+HJ_NEGATIVE=0
+HJ_NEGATIVE_AT=0
+HJ_UNKNOWN=0
+HJ_LAST_REPAIR=0
+
 load_profile() {
   luna_load_server "$1"
   [[ -n "$P_SERVICE_NAME" ]] || luna_die "profile '$1' has no service name"
@@ -53,26 +59,53 @@ diagnose() {
   chmod 600 "$tmp"; mv "$tmp" "$out"; printf '%s\n' "$out"
 }
 
-# A failure here escalates to `luna-autodeploy --force`, which rebuilds and
-# restarts the server *bypassing* the active-session guard — it drops the
-# operator mid-conversation. The probes behind it are two 4s-timeout curls, so a
-# single slow response must not be enough to trigger that. Re-probe before
-# declaring the runtime unhealthy; a genuinely down server fails all attempts.
+# Classified deep-health probe. Exit codes are luna_runtime_matches_checkout's:
+#   0 HEALTHY, 1 NEGATIVE (the server answered and the answer was wrong),
+#   3 INCONCLUSIVE (no usable answer).
+#
+# A NEGATIVE at check_profile can escalate to `luna-autodeploy --force`, which
+# rebuilds and restarts the server *bypassing* the active-session guard — it
+# drops the operator mid-conversation. A single INCONCLUSIVE must therefore
+# never reach that path (only an unbroken run of them, see check_profile), and
+# is re-probed once here because a wedged incus exec or a 4s curl timeout is the
+# single most common transient. A NEGATIVE returns immediately: a genuine build
+# mismatch must not pay for the transient budget.
+#
+# All other callers treat any non-zero as "not proven", exactly as before.
 runtime_health() {
-  local attempt
-  # The boolean test seam is deterministic, so retrying it only wastes time.
-  if [[ "${LUNA_TEST_RUNTIME_MATCHES_CHECKOUT+set}" == "set" ]]; then
-    luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"
-    return
+  local rc=0
+  luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME" || rc=$?
+  # The test seam is deterministic, so re-probing it only wastes time.
+  if (( rc == 3 )) && [[ "${LUNA_TEST_RUNTIME_MATCHES_CHECKOUT+set}" != "set" ]]; then
+    sleep "${LUNA_GUARDIAN_HEALTH_RETRY_DELAY:-5}"
+    rc=0
+    luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME" || rc=$?
+    if (( rc == 0 )); then luna_warn "runtime health recovered on re-probe"; fi
   fi
-  for attempt in 1 2 3; do
-    if luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"; then
-      (( attempt > 1 )) && luna_warn "runtime health recovered on probe $attempt"
-      return 0
-    fi
-    (( attempt < 3 )) && sleep "${LUNA_GUARDIAN_HEALTH_RETRY_DELAY:-5}"
+  return "$rc"
+}
+
+# Post-repair verification. A forced restart guarantees the server is booting,
+# so the first probes are expected to be INCONCLUSIVE; poll to a deadline rather
+# than reading boot latency as a failed repair (which pages and writes a second
+# incident file). Returns the last probe's code.
+wait_runtime_healthy() {
+  local deadline rc=0 started now
+  deadline="${LUNA_GUARDIAN_REPAIR_VERIFY_SEC:-60}"
+  if [[ ! "$deadline" =~ ^[0-9]+$ ]]; then deadline=60; fi
+  if [[ "${LUNA_TEST_RUNTIME_MATCHES_CHECKOUT+set}" == "set" ]]; then
+    runtime_health || rc=$?
+    return "$rc"
+  fi
+  started="$(date +%s)"
+  while :; do
+    rc=0
+    runtime_health || rc=$?
+    if (( rc == 0 )); then return 0; fi
+    now="$(date +%s)"
+    if (( now < started || now - started >= deadline )); then return "$rc"; fi
+    sleep "${LUNA_GUARDIAN_HEALTH_RETRY_DELAY:-5}"
   done
-  return 1
 }
 
 unit_hardened() {
@@ -141,6 +174,92 @@ write_guardian_status() {
   ( umask 077; printf 'profile=%s\ncompleted_at=%s\nrepo_sha=%s\nengine_sha=%s\noutcome=%s\nconsecutive_healthy=%s\n' \
       "$profile" "$now" "$repo_sha" "$engine_sha" "$outcome" "$count" > "$tmp" )
   mv "$tmp" "$file"
+}
+
+# ── deep-health debounce journal ─────────────────────────────────────────────
+# Each `luna-guardian check` is a separate systemd oneshot process, so the
+# strike counters that debounce the destructive repair path cannot live in
+# memory. $STATE_DIR is the existing durable 0700 location (the pinned unit
+# exports LUNA_GUARDIAN_STATE_DIR) and status_value() already parses key=value.
+#
+# This file is a cache of EVIDENCE, never a source of authority: any missing,
+# unreadable, malformed, stale or SHA-mismatched record reads as all-zero, which
+# can only make the guardian more conservative, never less. The one exception is
+# last_repair_at, which is honoured unconditionally so that a deploy performed by
+# the repair itself cannot disarm the anti-flap cooldown.
+health_journal_path() { printf '%s/health-%s' "$STATE_DIR" "$1"; }
+
+# health_journal_read <profile> — populates HJ_NEGATIVE, HJ_NEGATIVE_AT,
+# HJ_UNKNOWN, HJ_LAST_REPAIR. Always succeeds. Must be called before
+# health_journal_write.
+health_journal_read() {
+  local profile="$1" file window now repo_sha updated stored_sha raw negative_at=0
+  file="$(health_journal_path "$profile")"
+  HJ_NEGATIVE=0; HJ_NEGATIVE_AT=0; HJ_UNKNOWN=0; HJ_LAST_REPAIR=0
+  window="${LUNA_GUARDIAN_HEALTH_WINDOW_SEC:-900}"
+  if [[ ! "$window" =~ ^[0-9]+$ ]]; then window=900; fi
+  now="$(date +%s)"
+
+  raw="$(status_value "$file" last_repair_at 2>/dev/null || true)"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then HJ_LAST_REPAIR="$raw"; fi
+
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null || true)"
+  updated="$(status_value "$file" updated_at 2>/dev/null || true)"
+  stored_sha="$(status_value "$file" repo_sha 2>/dev/null || true)"
+  # A new HEAD changes the question being asked, so prior readings are not
+  # evidence. A stale or clock-skewed record ages the strikes out.
+  [[ -n "$repo_sha" && "$stored_sha" == "$repo_sha" ]] || return 0
+  [[ "$updated" =~ ^[0-9]+$ ]] || return 0
+  if (( now < updated || now - updated > window )); then return 0; fi
+
+  raw="$(status_value "$file" consecutive_unknown 2>/dev/null || true)"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then HJ_UNKNOWN="$raw"; fi
+
+  # The negative streak ages against negative_at — the time of the last NEGATIVE
+  # reading — and NOT against updated_at. Every tick rewrites updated_at, and an
+  # INCONCLUSIVE tick carries the streak forward, so measuring freshness from
+  # the last write would turn "K consecutive within the window" into "K ever":
+  # two blips today plus one blip hours later would force a restart. A journal
+  # with no negative_at (written by an older engine) reads as no evidence.
+  raw="$(status_value "$file" negative_at 2>/dev/null || true)"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then negative_at="$raw"; fi
+  (( negative_at > 0 && now >= negative_at && now - negative_at <= window )) || return 0
+  raw="$(status_value "$file" consecutive_negative 2>/dev/null || true)"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then HJ_NEGATIVE="$raw"; HJ_NEGATIVE_AT="$negative_at"; fi
+  return 0
+}
+
+# health_journal_write <profile> <negatives> <unknowns> [last_repair_at] [negative_at]
+# Omitting a trailing argument carries the current value forward. The HJ_*
+# globals are updated to what was written, so a later carry-forward write in the
+# same process cannot resurrect a superseded value.
+#
+# Returns non-zero when the record could not be durably written (ENOSPC, a
+# read-only $STATE_DIR). Callers MUST check: a silently no-op journal makes the
+# debounce read all-zero on every tick, which either paralyses escalation or —
+# far worse — leaves the anti-flap cooldown unarmed, turning the destructive
+# branch into a forced rebuild every single tick. It cannot be `set -e`'s job:
+# run_check invokes check_profile from an `if` condition, which suspends -e for
+# the whole dynamic extent.
+health_journal_write() {
+  local profile="$1" negatives="$2" unknowns="$3" last="${4:-$HJ_LAST_REPAIR}" negative_at="${5:-$HJ_NEGATIVE_AT}"
+  local file tmp now repo_sha
+  file="$(health_journal_path "$profile")"; tmp="$file.tmp.$$"
+  mkdir -p "$STATE_DIR" || return 1
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
+  now="$(date +%s)"
+  repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null || true)"
+  if ! ( umask 077; printf 'profile=%s\nupdated_at=%s\nrepo_sha=%s\nconsecutive_negative=%s\nnegative_at=%s\nconsecutive_unknown=%s\nlast_repair_at=%s\n' \
+      "$profile" "$now" "$repo_sha" "$negatives" "$negative_at" "$unknowns" "$last" > "$tmp" ); then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv "$tmp" "$file"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  HJ_NEGATIVE="$negatives"; HJ_UNKNOWN="$unknowns"
+  HJ_LAST_REPAIR="$last"; HJ_NEGATIVE_AT="$negative_at"
 }
 
 # Guardian installation and the deploy transaction both read executable files
@@ -254,32 +373,110 @@ reconcile_unit_if_idle() {
 }
 
 check_profile() {
-  local profile="$1" runtime_ok=true unit_ok=true update="$SCRIPT_DIR/luna-autodeploy"
+  local profile="$1" update="$SCRIPT_DIR/luna-autodeploy"
   load_profile "$profile"
   [[ -x "$update" ]] || luna_die "pinned updater missing: $update"
   if ! guardian_control_plane_adopted "$profile"; then
     luna_warn "control-plane drift detected; reconciling pinned guardian units"
     render_control_plane "$profile" "1min" "$PIN_BASE/current-$profile"
   fi
-  if ! runtime_health; then
-    runtime_ok=false; luna_warn "deep health failed; incident=$(diagnose "$profile")"
-  fi
-  if ! unit_hardened; then
-    unit_ok=false
-    if ! reconcile_unit_if_idle "$profile"; then
-      # A healthy server with live/unknown sessions stays untouched. Still let
-      # the normal updater check run; its own fail-closed session guard defers.
-      if [[ "$runtime_ok" == true ]]; then
-        update_then_refresh "$profile" "$update" --from-timer
-        return
+  local health_rc=0 strikes unknown_limit unknown_repair cooldown
+  local negatives=0 unknowns=0 now elapsed rc=0 pager_rc=0 reason=""
+  local write_negatives=0 write_unknowns=0 write_negative_at=0
+  strikes="${LUNA_GUARDIAN_HEALTH_STRIKES:-3}"
+  unknown_limit="${LUNA_GUARDIAN_HEALTH_UNKNOWN_LIMIT:-15}"
+  unknown_repair="${LUNA_GUARDIAN_HEALTH_UNKNOWN_REPAIR_LIMIT:-30}"
+  cooldown="${LUNA_GUARDIAN_REPAIR_COOLDOWN_SEC:-1800}"
+  if [[ ! "$strikes" =~ ^[1-9][0-9]*$ ]]; then strikes=3; fi
+  if [[ ! "$unknown_limit" =~ ^[1-9][0-9]*$ ]]; then unknown_limit=15; fi
+  if [[ ! "$unknown_repair" =~ ^[1-9][0-9]*$ ]]; then unknown_repair=30; fi
+  if [[ ! "$cooldown" =~ ^[0-9]+$ ]]; then cooldown=1800; fi
+  health_journal_read "$profile"
+  runtime_health || health_rc=$?
+  now="$(date +%s)"
+  if (( health_rc == 0 )); then
+    : # counters stay at zero
+  elif (( health_rc != 1 )); then
+    # INCONCLUSIVE: we have no answer, so a single reading never repairs. The
+    # negative streak is carried forward untouched; it ages out against
+    # negative_at rather than against this write.
+    unknowns=$(( HJ_UNKNOWN + 1 ))
+    write_negatives="$HJ_NEGATIVE"; write_unknowns="$unknowns"; write_negative_at="$HJ_NEGATIVE_AT"
+    if (( unknowns >= unknown_repair )); then
+      # Sustained ignorance is not ignorance about a blip. A runtime that has
+      # not produced one usable answer in $unknown_repair consecutive ticks
+      # (a wedged event loop that holds the port open, a stopped container) is
+      # evidence of a real outage, and a forced restart is the only thing that
+      # recovers it. Still gated by the same cooldown as a NEGATIVE escalation.
+      reason="deep health INCONCLUSIVE for $unknowns consecutive checks"
+    else
+      luna_warn "deep health INCONCLUSIVE ($unknowns consecutive); runtime state unknown — no repair"
+      if (( unknowns % unknown_limit == 0 )); then
+        # Page a human well before the repair threshold. Modulo, not >=, so a
+        # wedged probe does not page on every subsequent tick.
+        luna_warn "runtime state unknown for $unknowns consecutive checks; incident=$(diagnose "$profile")"
+        pager_rc=2
       fi
     fi
+  else
+    negatives=$(( HJ_NEGATIVE + 1 ))
+    write_negatives="$negatives"; write_unknowns=0; write_negative_at="$now"
+    if (( negatives >= strikes )); then
+      reason="deep health failed $negatives consecutive checks"
+    else
+      luna_warn "deep health NEGATIVE ($negatives/$strikes consecutive); deferring repair to the next tick"
+    fi
   fi
-  if [[ "$runtime_ok" == true && "$unit_ok" == true ]]; then
-    update_then_refresh "$profile" "$update" --from-timer
-    return
+
+  local escalate=false
+  if [[ -n "$reason" ]]; then
+    elapsed=$(( now - HJ_LAST_REPAIR ))
+    if (( HJ_LAST_REPAIR > 0 && now < HJ_LAST_REPAIR )); then
+      # The clock moved backwards. An unreadable clock is a reason to refuse the
+      # destructive action, not a licence to skip the protection — the same
+      # fail-safe choice health_journal_read makes for a future updated_at.
+      luna_warn "$reason but last_repair_at is in the future (clock skew); refusing forced repair"
+    elif (( HJ_LAST_REPAIR > 0 && elapsed < cooldown )); then
+      # Anti-flap: a forced rebuild+restart that did not fix the runtime must
+      # not be retried every tick. Repeating it is the restart loop this whole
+      # change exists to prevent.
+      luna_warn "$reason but a forced repair ran ${elapsed}s ago; suppressed for $(( cooldown - elapsed ))s"
+    elif health_journal_write "$profile" 0 0 "$now" 0; then
+      # Arm the cooldown and clear the streak BEFORE the destructive action, so
+      # a crash or a failed repair cannot re-escalate on the next tick.
+      escalate=true
+      luna_warn "$reason; incident=$(diagnose "$profile")"
+    else
+      # Without a durable journal the restart rate cannot be bounded at all, so
+      # forcing here would rebuild production on every tick. Refuse and page.
+      luna_warn "cannot arm the repair cooldown in $(health_journal_path "$profile"); refusing forced repair"
+      pager_rc=2
+    fi
   fi
-  if "$update" "$profile" --force && runtime_health && unit_hardened; then
+  if [[ "$escalate" != true ]]; then
+    health_journal_write "$profile" "$write_negatives" "$write_unknowns" \
+      "$HJ_LAST_REPAIR" "$write_negative_at" ||
+      luna_warn "health journal write failed; deep-health debounce is not persisting"
+  fi
+
+  if ! unit_hardened; then
+    # A server with live/unknown sessions stays untouched; the normal updater
+    # below still runs, and its own fail-closed session guard defers.
+    if reconcile_unit_if_idle "$profile"; then escalate=true; fi
+  fi
+  if [[ "$escalate" != true ]]; then
+    # Everything short of an armed escalation still runs the gentle updater.
+    # --from-timer has its own fail-closed active-session guard and never drops
+    # the operator, and it is the only path that pulls fixes and advances the
+    # guardian engine pin, so suppressing it on non-healthy ticks would freeze
+    # both for as long as the probe stays flaky.
+    update_then_refresh "$profile" "$update" --from-timer || rc=$?
+    if (( pager_rc > rc )); then rc="$pager_rc"; fi
+    return "$rc"
+  fi
+  if "$update" "$profile" --force && wait_runtime_healthy && unit_hardened; then
+    health_journal_write "$profile" 0 0 "$HJ_LAST_REPAIR" 0 ||
+      luna_warn "health journal write failed after a successful repair"
     refresh_guardian_if_needed "$profile"
     return
   fi
