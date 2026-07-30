@@ -170,6 +170,31 @@ export interface QueryRequest {
     msg: SDKMessage,
     cause: unknown,
   ) => Effect.Effect<void>
+  /**
+   * Invoked at least once per query, immediately after broker account
+   * acquisition, surfacing which account was picked and whether the broker
+   * sees a viable failover target for it (the same `failoverPossible` the
+   * BLOCKER #1 cooldown gate below uses - see `throttleFailoverPossible`).
+   * Chat-service's per-turn rotation loop needs this BEFORE any message
+   * streams: a `boundAccountId` pin or a single-account pool must never
+   * spawn a rotation retry that just re-acquires the same exhausted
+   * account. Never fired when no broker is bound (`SDKAdapter.Default`).
+   *
+   * RE-FIRED with a FRESHLY recomputed `failoverPossible` immediately before
+   * a throttle-classified terminal failure is surfaced (see
+   * `reportRateLimitIfThrottled` below). This matters because the ordinary
+   * chat path keeps ONE query alive for a thread's whole life - the acquire
+   * that fired the FIRST call can be arbitrarily old by the time a failure
+   * happens, and the pool's cooldown state moves on in the meantime. A
+   * caller using this callback to decide whether to rotate must always read
+   * the LATEST invocation's value, never cache the first one.
+   *
+   * Best-effort: errors must not poison the query.
+   */
+  readonly onAccountAcquired?: (info: {
+    readonly accountId: string
+    readonly failoverPossible: boolean
+  }) => void
 }
 
 interface HookRegistration {
@@ -364,6 +389,15 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           // if this one cools. Set from the acquire below; defaults false so
           // the no-chain path never cools.
           let throttleFailoverPossible = false
+          // Lane string used by `reportRateLimitIfThrottled`'s read-only
+          // re-check (below) to recompute failoverPossible AT FAILURE TIME
+          // instead of trusting the acquire-time snapshot above, via the
+          // broker's `peekFailoverPossible` (the CANONICAL `pickLaneTarget`
+          // selection, never a private re-derivation - see that method's
+          // doc comment). Only set when a broker is bound AND the request
+          // is unbound/Auto - a `boundAccountId` pin never rotates, so no
+          // re-check is needed.
+          let recheckLane: string | null = null
           if (broker !== null) {
             // Model string is used for broker policy routing; SDK uses
             // Options.model separately. Default when caller omitted it.
@@ -390,6 +424,9 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                 ),
               )
             acquiredAccountId = acq.credential.accountId
+            if (req.boundAccountId === undefined) {
+              recheckLane = brokerModel
+            }
             // B7: the broker resolved the winning chain step's model — point the
             // SDK at it. `mergeOptions` lets overrides win. `acquiredModel` is
             // ALWAYS the winning model (used by the B4 result-frame pricing).
@@ -402,6 +439,16 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             // manufacturing the exact outage the gate was added to prevent, and
             // starving the wake/dream lanes sharing that account.
             throttleFailoverPossible = acq.failoverPossible === true
+            if (req.onAccountAcquired !== undefined) {
+              try {
+                req.onAccountAcquired({
+                  accountId: acq.credential.accountId,
+                  failoverPossible: throttleFailoverPossible,
+                })
+              } catch {
+                // Best-effort - callback failures must not break the stream.
+              }
+            }
             // Only WRITE overrides.model when the caller actually supplied a
             // model OR the chain changed it away from the lane default. This
             // keeps the no-chain + caller-omits-model path BYTE-IDENTICAL: today
@@ -720,9 +767,39 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
            * `classifyThrottle` — 429/529, rate-limit/overload phrasing, clamped
            * retry-after), additionally report a rate_limit so the broker cools
            * the account down and the overflow chain advances on the next
-           * acquire. Fire-and-forget.
+           * acquire.
+           *
+           * AWAITED by the caller (unlike reportSuccess/reportError/reportUsage
+           * above, which stay fire-and-forget) - a rotation-driven retry
+           * re-acquires immediately after the caller's `await` returns, so the
+           * cooldown write here MUST be committed first. Fire-and-forget would
+           * let the re-acquire race the in-flight `broker.report` Promise and
+           * possibly re-pick the very account that just got throttled.
+           *
+           * After the cooldown commits, ALSO does a READ-ONLY
+           * `broker.peekFailoverPossible` call (never mutates the pool - no
+           * acquire, no inFlight bump, no lastUsedMs touch) purely to find
+           * out whether a DIFFERENT viable account exists RIGHT NOW, and
+           * re-fires `onAccountAcquired` with that fresh reading - see the
+           * doc comment on `onAccountAcquired`. `peekFailoverPossible` reuses
+           * the SAME `pickLaneTarget`/`pickChainTarget` selection
+           * `acquireSession` runs (never a private re-derivation off
+           * `list()` - a prior kind-filtered `list().some(...)` re-check
+           * drifted from the canonical predicate on both a cross-kind
+           * `LUNA_OVERFLOW_CHAINS` step and a pinned+off-chain-sibling case).
+           * Deliberately NOT a speculative `acquireSession`: an acquire+
+           * release still WRITES `lastUsedMs` on whichever account it picks
+           * (the release only undoes the `inFlight` bump), so a throwaway
+           * viability check would silently perturb the broker's real
+           * round-robin ordering for the account it happens to touch -
+           * bumping it to the back of the LRU queue for no traffic reason.
+           * `peekFailoverPossible` only reads the pool Ref, so this check
+           * can never change which account the REAL rotation acquire below
+           * actually picks.
            */
-          const reportRateLimitIfThrottled = (cause: unknown) => {
+          const reportRateLimitIfThrottled = async (
+            cause: unknown,
+          ): Promise<void> => {
             if (broker === null || acquiredAccountId === null) return
             // BLOCKER #1: only cool when failover is VIABLE (another un-cooled
             // chain target exists — broker-computed at pick time). Otherwise
@@ -733,7 +810,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             const cls = classifyThrottle(cause)
             if (!cls.throttled) return
             const id = acquiredAccountId
-            Effect.runPromise(
+            await Effect.runPromise(
               broker.report({
                 accountId: id,
                 kind: cls.kind ?? "rate_limit",
@@ -742,6 +819,20 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                   : {}),
               }),
             ).catch(() => {})
+            if (req.onAccountAcquired === undefined || recheckLane === null) {
+              return
+            }
+            const freshFailoverPossible = await Effect.runPromise(
+              broker.peekFailoverPossible({ model: recheckLane }),
+            ).catch(() => false)
+            try {
+              req.onAccountAcquired({
+                accountId: id,
+                failoverPossible: freshFailoverPossible,
+              })
+            } catch {
+              // Best-effort - callback failures must not break the stream.
+            }
           }
 
           /**
@@ -810,7 +901,14 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               // additionally report it as a rate_limit so the broker cools the
               // account down (the chain advances on the next acquire). Best-
               // effort: a classification miss just skips the extra report.
-              reportRateLimitIfThrottled(cause)
+              //
+              // AWAITED (unlike reportError above): the cooldown write and the
+              // fresh failoverPossible re-check it enables (see the doc
+              // comment on `reportRateLimitIfThrottled`) must both land BEFORE
+              // the error frame below reaches the caller - otherwise a
+              // rotation-driven retry can race the cooldown write and re-pick
+              // the account that just got throttled.
+              await reportRateLimitIfThrottled(cause)
               await Effect.runPromise(
                 Queue.offer(queue, {
                   _tag: "error",
