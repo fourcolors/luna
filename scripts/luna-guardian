@@ -53,8 +53,26 @@ diagnose() {
   chmod 600 "$tmp"; mv "$tmp" "$out"; printf '%s\n' "$out"
 }
 
+# A failure here escalates to `luna-autodeploy --force`, which rebuilds and
+# restarts the server *bypassing* the active-session guard — it drops the
+# operator mid-conversation. The probes behind it are two 4s-timeout curls, so a
+# single slow response must not be enough to trigger that. Re-probe before
+# declaring the runtime unhealthy; a genuinely down server fails all attempts.
 runtime_health() {
-  luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"
+  local attempt
+  # The boolean test seam is deterministic, so retrying it only wastes time.
+  if [[ "${LUNA_TEST_RUNTIME_MATCHES_CHECKOUT+set}" == "set" ]]; then
+    luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"
+    return
+  fi
+  for attempt in 1 2 3; do
+    if luna_runtime_matches_checkout "$P_REPO" "$P_PORT" "$P_INCUS" "$P_SERVICE_NAME"; then
+      (( attempt > 1 )) && luna_warn "runtime health recovered on probe $attempt"
+      return 0
+    fi
+    (( attempt < 3 )) && sleep "${LUNA_GUARDIAN_HEALTH_RETRY_DELAY:-5}"
+  done
+  return 1
 }
 
 unit_hardened() {
