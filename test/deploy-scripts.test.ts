@@ -41,6 +41,20 @@ const runScript = (
   })
 }
 
+// Hermetic bun seam (the HOST_ENV_TESTS follow-up in vitest.config.ts): an
+// executable stub for LUNA_TEST_BUN_PATH, so rendered plans/units derive from
+// the fixture instead of naming a path only some hosts have (/root/.bun on
+// Linux roots, /opt/homebrew on Macs). The dry-run installers skip the -x
+// check today, but the stub is real so that can change without breaking tests.
+const makeBunStub = (temp: string) => {
+  const bin = join(temp, "stub-bin")
+  mkdirSync(bin, { recursive: true })
+  const bun = join(bin, "bun")
+  writeFileSync(bun, "#!/usr/bin/env bash\nexit 0\n")
+  expect(spawnSync("chmod", ["+x", bun]).status).toBe(0)
+  return { bin, bun }
+}
+
 const writePermissiveSystemctl = (bin: string) => {
   writeFileSync(join(bin, "systemctl"), [
     '#!/usr/bin/env bash',
@@ -952,6 +966,7 @@ deploy.autoUpdate    = true
   it("server install dry-run renders the systemd service and preserves token secrecy", () => {
     const temp = makeTempDir()
     const token = "server-token-1234567890-secret"
+    const { bin, bun } = makeBunStub(temp)
 
     const result = runScript("scripts/luna-server-install", [
       "--dry-run",
@@ -969,14 +984,14 @@ deploy.autoUpdate    = true
       "--no-enable",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: bun,
       },
     })
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
     expect(result.stdout).toContain("EnvironmentFile=-" + join(temp, "state", ".env"))
-    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
+    expect(result.stdout).toContain("ExecStart=" + bun + " run scripts/chat-server.ts")
     // Liveness ladder L1: hang detection. Type=notify holds the unit in
     // `activating` until the app's READY=1; WatchdogSec restarts a
     // wedged-but-alive process; NotifyAccess=all because beats arrive from a
@@ -999,7 +1014,7 @@ deploy.autoUpdate    = true
     // #28: HOME and PATH are load-bearing — systemd 259 sets neither for a root
     // system service, so omitting them silently lands the server in setup-mode.
     expect(result.stdout).toContain("Environment=HOME=")
-    expect(result.stdout).toContain("Environment=PATH=/root/.bun/bin:")
+    expect(result.stdout).toContain("Environment=PATH=" + bin + ":")
     expect(result.stdout).toContain("Environment=CLAUDE_CONFIG_DIR=" + join(temp, "state", "claude"))
     expect(result.stdout).toContain("StandardOutput=append:" + join(temp, "state", "logs", "luna-chat-server.log"))
     expect(result.stdout).toContain("StandardError=append:" + join(temp, "state", "logs", "luna-chat-server-error.log"))
@@ -1042,7 +1057,7 @@ deploy.autoUpdate    = true
       "--no-enable",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1089,7 +1104,7 @@ deploy.autoUpdate    = true
       "--no-enable",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1121,7 +1136,7 @@ deploy.autoUpdate    = true
       ],
       {
         env: {
-          LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+          LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
           // A tailnet IS present: a fresh bare-host install serves tailnet peers
           // out of the box without any flag — the primary remote deployment.
           LUNA_TAILSCALE_IP: "100.64.0.7",
@@ -1160,7 +1175,7 @@ deploy.autoUpdate    = true
       "--i-understand-public",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1197,7 +1212,7 @@ deploy.autoUpdate    = true
       "0.0.0.0",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1226,7 +1241,7 @@ deploy.autoUpdate    = true
       "--no-start",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
         LUNA_UI_WS_HOST: "127.0.0.1",
       },
     })
@@ -1256,7 +1271,7 @@ deploy.autoUpdate    = true
       "--no-start",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1293,7 +1308,7 @@ deploy.autoUpdate    = true
       "10000",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1549,7 +1564,7 @@ exit 0
       join(temp, "bin"),
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1583,7 +1598,7 @@ exit 0
       "lan.example.test",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1615,7 +1630,7 @@ exit 0
       "--enable-ssh-recovery",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
@@ -1648,7 +1663,7 @@ exit 0
       "ws://127.0.0.1:4753/ui",
     ], {
       env: {
-        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
 
