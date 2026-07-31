@@ -45,6 +45,18 @@
 #                      auto-update is ON by default, opt-out is explicit)
 #   P_TIMER_INTERVAL — systemd time span from deploy.timerInterval ("" = unset;
 #                      install-timer falls back to its own default)
+#   P_LAYOUT         — "inplace" (default) or "releases" from deploy.layout.
+#                      A TOPOLOGY RAIL like deploy.timer: NO env override, and
+#                      any value other than absent/"inplace"/"releases" is a
+#                      hard exit 2 (a typo must fail loudly, never silently
+#                      leave automation running reset --hard against a tree
+#                      the units no longer serve).
+#   P_DEPLOY_ROOT    — releases-layout deploy root (holds mirror.git/, releases/,
+#                      current, previous). deploy.root when set (must be
+#                      absolute), else the PARENT of update.params.hostRepoDir
+#                      (the verified /root/luna/<profile>/repo convention).
+#   P_RELEASES_KEEP  — retention count for releases/ pruning. deploy.releasesKeep
+#                      when set (validated integer >= 2), default 3.
 #
 # ## Security: fail-closed
 #
@@ -320,6 +332,41 @@ luna_load_server() {
   local _timer_interval
   _timer_interval="$(_get "deploy.timerInterval")" || _timer_interval=""
 
+  # deploy layout: absent/"inplace" → inplace; "releases" → releases; anything
+  # else is a hard exit 2 (the loader's fail-closed posture — a typo must not
+  # silently degrade to inplace while the operator believes releases is live).
+  local _layout
+  _layout="$(_get "deploy.layout")" || _layout=""
+  if [[ -z "$_layout" || "$_layout" == "inplace" ]]; then
+    _layout="inplace"
+  elif [[ "$_layout" != "releases" ]]; then
+    printf 'luna-registry: profile "%s" — deploy.layout "%s" is invalid (expected "inplace" or "releases").\n' \
+      "$profile" "$_layout" >&2
+    exit 2
+  fi
+
+  # deploy root (releases layout): deploy.root when set, else the parent of
+  # update.params.hostRepoDir (/root/luna/<profile>/repo → /root/luna/<profile>).
+  local _deploy_root _deploy_root_explicit=false
+  _deploy_root="$(_get "deploy.root")" || _deploy_root=""
+  if [[ -n "$_deploy_root" ]]; then
+    _deploy_root_explicit=true
+  fi
+
+  # releases retention: deploy.releasesKeep, optional integer >= 2, default 3.
+  local _releases_keep _releases_keep_explicit=false
+  _releases_keep="$(_get "deploy.releasesKeep")" || _releases_keep=""
+  if [[ -n "$_releases_keep" ]]; then
+    _releases_keep_explicit=true
+    if [[ ! "$_releases_keep" =~ ^[0-9]+$ ]] || (( _releases_keep < 2 )); then
+      printf 'luna-registry: profile "%s" — deploy.releasesKeep "%s" is invalid (integer >= 2 required).\n' \
+        "$profile" "$_releases_keep" >&2
+      exit 2
+    fi
+  else
+    _releases_keep=3
+  fi
+
   # ── validate required fields ─────────────────────────────────────────────
   if [[ -z "$_repo_dir" ]]; then
     printf 'luna-registry: profile "%s" missing required field update.params.hostRepoDir\n' "$profile" >&2
@@ -356,6 +403,16 @@ luna_load_server() {
     printf 'luna-registry: profile "%s" — hostRepoDir "%s" is not an absolute path.\n' \
       "$profile" "$_repo_dir" >&2
     exit 2
+  fi
+  # deploy.root, when set, must also be absolute; when unset it defaults to the
+  # parent of hostRepoDir (which the check above already proved absolute).
+  if [[ "$_deploy_root_explicit" == true && "$_deploy_root" != /* ]]; then
+    printf 'luna-registry: profile "%s" — deploy.root "%s" is not an absolute path.\n' \
+      "$profile" "$_deploy_root" >&2
+    exit 2
+  fi
+  if [[ -z "$_deploy_root" ]]; then
+    _deploy_root="${_repo_dir%/*}"
   fi
   # Timer interval is interpolated into a systemd unit file — restrict it to a
   # plain systemd time span (digits + unit words + spaces, e.g. "15min",
@@ -401,6 +458,25 @@ luna_load_server() {
   # shellcheck disable=SC2034  # P_TIMER_INTERVAL is an output variable consumed by the caller
   P_TIMER_INTERVAL="$_timer_interval"
 
+  # Deploy layout (no env override — a topology rail, same rationale as
+  # deploy.timer: what tree the units serve is never a per-shell convenience).
+  # shellcheck disable=SC2034  # P_LAYOUT is an output variable consumed by the caller
+  P_LAYOUT="$_layout"
+  # shellcheck disable=SC2034  # P_DEPLOY_ROOT is an output variable consumed by the caller
+  P_DEPLOY_ROOT="$_deploy_root"
+  # shellcheck disable=SC2034  # P_RELEASES_KEEP is an output variable consumed by the caller
+  P_RELEASES_KEEP="$_releases_keep"
+
+  # Under the releases layout the operator-facing repo path IS the current
+  # release: every consumer (rev-parse, unit ExecStart, guardian probes) reads
+  # through the atomically-flipped symlink. This deliberately overrides the
+  # LUNA_<PROFILE>_REPO_DIR env override — layout is a rail, and pointing
+  # consumers at a non-current tree would reintroduce the split-brain this
+  # layout exists to remove.
+  if [[ "$P_LAYOUT" == "releases" ]]; then
+    P_REPO="$P_DEPLOY_ROOT/current"
+  fi
+
   # ── assemble P_UPDATE_ARGS (byte-identical to profile_config()) ───────────
   # Rule (from luna-autodeploy today):
   #   dev:    --profile dev --incus luna-dev --ref origin/<branch>
@@ -414,6 +490,17 @@ luna_load_server() {
     P_UPDATE_ARGS+=(--repo-dir "$P_REPO")
   fi
   P_UPDATE_ARGS+=(--ref "origin/$P_BRANCH")
+  # Releases layout: the engine needs the layout and the deploy root. Inplace
+  # profiles get BYTE-IDENTICAL args to today (nothing appended). The retention
+  # knob rides along only when the registry set it explicitly — the engine's
+  # own default (3) matches P_RELEASES_KEEP's default, so an absent key keeps
+  # the argv minimal.
+  if [[ "$P_LAYOUT" == "releases" ]]; then
+    P_UPDATE_ARGS+=(--layout releases --deploy-root "$P_DEPLOY_ROOT")
+    if [[ "$_releases_keep_explicit" == true ]]; then
+      P_UPDATE_ARGS+=(--releases-keep "$P_RELEASES_KEEP")
+    fi
+  fi
 
   # ── service name (for F7 --validate) ─────────────────────────────────────
   # Mirrors luna_service_name() in luna-deploy.sh exactly.

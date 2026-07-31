@@ -44,6 +44,11 @@ OLLAMA_EMBED_DIMENSION="${LUNA_OLLAMA_EMBED_DIMENSION:-}"
 OLLAMA_PROBE_TIMEOUT_MS="${LUNA_OLLAMA_PROBE_TIMEOUT_MS:-}"
 OLLAMA_PROBE_ATTEMPTS="${LUNA_OLLAMA_PROBE_ATTEMPTS:-}"
 OLLAMA_PROBE_BACKOFF_MS="${LUNA_OLLAMA_PROBE_BACKOFF_MS:-}"
+# Deploy layout the rendered units serve (phase 4). "inplace" is today's
+# behaviour, byte-for-byte. "releases" requires --repo-dir to end in /current
+# so every rendered path (WorkingDirectory, pager ExecStart) dereferences the
+# atomically flipped release symlink.
+LAYOUT="inplace"
 
 usage() {
   cat <<'EOF'
@@ -90,6 +95,14 @@ Options:
   --units-only              Re-render supervisor + pager units only; never
                             mutate env/deps/state and never restart. Used by the
                             independent guardian to reconcile unit drift safely.
+  --layout <inplace|releases>
+                            Deploy layout the rendered units serve. releases:
+                            --repo-dir must END IN /current (the atomically
+                            flipped release symlink) and the .git preflight is
+                            skipped — needed only for the migration-window
+                            render while current is not yet visible in this
+                            mount namespace. Without the flag: today's
+                            behaviour, unchanged.
   -h, --help                Show this help.
 
 This script never prints token values. Existing tokens in .env are preserved
@@ -121,12 +134,20 @@ while [[ $# -gt 0 ]]; do
     --no-enable) ENABLE_SERVICE=false; shift ;;
     --no-start) START_SERVICE=false; shift ;;
     --units-only) UNITS_ONLY=true; START_SERVICE=false; SKIP_DEPS=true; shift ;;
+    --layout) LAYOUT="${2:?missing --layout value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) luna_die "unknown option: $1" ;;
   esac
 done
 
 luna_validate_profile "$PROFILE"
+
+[[ "$LAYOUT" == "inplace" || "$LAYOUT" == "releases" ]] ||
+  luna_die "invalid --layout: '$LAYOUT' (expected 'inplace' or 'releases')"
+if [[ "$LAYOUT" == "releases" ]]; then
+  [[ "$REPO_DIR" == */current ]] ||
+    luna_die "--layout releases requires --repo-dir to end in /current (got '$REPO_DIR'); the units must serve THROUGH the flipped release symlink"
+fi
 
 # Resolve the Claude token from --claude-token-file (preferred) over the
 # CLAUDE_CODE_OAUTH_TOKEN env var. Strip CR/LF only. Held in memory, never echoed.
@@ -296,7 +317,11 @@ printf 'Repo: %s\n' "$REPO_DIR"
 printf 'State: %s\n' "$LUNA_HOME"
 printf 'Service: %s\n' "$SERVICE_FILE"
 
-if [[ "$DRY_RUN" == false ]]; then
+# The .git guard is skipped under --layout releases: it is needed only for the
+# migration-window render, while current is not yet visible in this mount
+# namespace (the units dangle until the cutover restart). Post-cutover the
+# guard would pass through current anyway (a release carries a real .git).
+if [[ "$DRY_RUN" == false && "$LAYOUT" != "releases" ]]; then
   [[ -d "$REPO_DIR/.git" ]] || luna_die "$REPO_DIR is not a git clone"
 fi
 
@@ -415,6 +440,10 @@ if [[ "$DRY_RUN" == false ]]; then
     systemctl enable "$SERVICE_NAME"
   fi
   if [[ "$START_SERVICE" == true ]]; then
+    # Manual-only restart path: the guardian invokes this script exclusively
+    # with --units-only --no-enable --no-start, so this line is never reached
+    # by automation. Unattended restarts go through luna-update-server's
+    # guarded restart primitive.
     systemctl restart "$SERVICE_NAME"
   fi
 else

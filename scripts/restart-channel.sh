@@ -2,6 +2,11 @@
 #
 # restart-channel.sh — restart a Luna chat-server channel safely.
 #
+# HUMAN-ONLY manual convenience wrapper. It bypasses the deploy pipeline's
+# guarded restart primitive (scripts/luna-update-server) and its stable branch
+# still encodes the pre-container host topology. Automation must never call
+# this; unattended restarts go through luna-update-server.
+#
 # Refuses to restart if there are active WebSocket connections on the
 # channel's port (which would kill the operator's running chat session
 # without warning, the failure mode from issue #24). Pass --yes to

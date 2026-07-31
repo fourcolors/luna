@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
+import { makeRestrictedBin } from "./helpers/guardian-harness"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const tempDirs: string[] = []
@@ -572,6 +573,11 @@ exit 1
   it("container creation fails before mutation when Incus is unavailable", () => {
     const temp = makeTempDir()
 
+    // PATH contains EXACTLY the tools the script needs up to the incus
+    // preflight — and no incus. The old PATH=/usr/bin:/bin found the real
+    // /usr/bin/incus on jax-box, so the preflight PASSED and the script ran a
+    // REAL network clone of fourcolors/luna before failing later.
+    const restricted = makeRestrictedBin(temp, ["bash", "dirname", "sed", "tr"])
     const result = runScript("scripts/luna-container-create", [
       "--name",
       "luna-test",
@@ -581,12 +587,14 @@ exit 1
       join(temp, "state"),
     ], {
       env: {
-        PATH: "/usr/bin:/bin",
+        PATH: restricted,
       },
     })
 
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain("Incus CLI not found")
+    // Fails BEFORE mutation: no clone, no repo dir — the property in the name.
+    expect(existsSync(join(temp, "repo"))).toBe(false)
   })
 
   it("container creation fails early when the in-container install never rendered its systemd unit", () => {
@@ -2171,6 +2179,14 @@ exit 0
       const bin = join(temp, "bin")
       mkdirSync(join(repo, ".git"), { recursive: true })
       mkdirSync(bin, { recursive: true })
+      // Phase-3 artifact-postcondition fixtures: the engine now verifies the
+      // ui-web build artifact (and node_modules after a lockfile-changed
+      // install) after every apply; the fake-git live runs here would
+      // otherwise roll back on the dist probe.
+      mkdirSync(join(repo, "node_modules"), { recursive: true })
+      writeFileSync(join(repo, "node_modules", ".keep"), "keep\n")
+      mkdirSync(join(repo, "apps", "ui-web", "dist"), { recursive: true })
+      writeFileSync(join(repo, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
       return { repo, bin }
     }
 
@@ -2204,6 +2220,9 @@ exit 0
             LUNA_RESTART_SETTLE_SECS: "0",
             LUNA_READINESS_TIMEOUT: "2",
             LUNA_READINESS_INTERVAL: "1",
+            // The engine's in-primitive session guard must never read the LIVE
+            // host's socket table from a test; pin the count to idle.
+            LUNA_TEST_WS_COUNT: "0",
             ...extraEnv,
           },
         },
@@ -2315,6 +2334,8 @@ esac
             LUNA_RESTART_SETTLE_SECS: "0",
             LUNA_READINESS_TIMEOUT: "4",
             LUNA_READINESS_INTERVAL: "1",
+            // Keep the in-primitive session guard off the live host's sockets.
+            LUNA_TEST_WS_COUNT: "0",
           },
         },
       )
@@ -2332,8 +2353,14 @@ esac
 
     it("--supervisor launchd: dry-run prints bootout/bootstrap, not systemctl", () => {
       const temp = makeTempDir()
-      const { repo } = makeUpdateEnv(temp)
-      // We don't need the plist to exist for dry-run — preflight is skipped.
+      const { repo, bin } = makeUpdateEnv(temp)
+      // Inject a stub launchctl so the "launchctl required" preflight passes on
+      // a Linux host (the comment always promised this; the stub was missing,
+      // so the test died on `--supervisor launchd requires launchctl`). The
+      // stub logs argv: dry-run may only SEE the binary via `command -v`,
+      // never execute it.
+      const launchctlLog = join(temp, "launchctl.log")
+      writeFake(join(bin, "launchctl"), `printf '%s\\n' "$*" >> "${launchctlLog}"\nexit 0`)
       const result = spawnSync(
         "bash",
         [join(repoRoot, "scripts/luna-update-server"),
@@ -2346,10 +2373,8 @@ esac
           encoding: "utf8",
           env: {
             ...process.env,
-            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
             LUNA_RESTART_SETTLE_SECS: "0",
-            // Inject launchctl so the "launchctl required" preflight passes
-            // (we only need it in PATH for the binary-presence check)
           },
         },
       )
@@ -2359,6 +2384,15 @@ esac
       expect(result.stdout).toContain("bootout")
       expect(result.stdout).toContain("bootstrap")
       expect(result.stdout).not.toContain("daemon-reload")
+      // Dry-run never EXECUTES a mutating launchctl primitive. (It does run
+      // ONE read-only `launchctl list` — sup_stop's pid capture sits before
+      // its DRY_RUN branch — so "log absent" would be asserting a property
+      // the engine does not have; the property that matters is that bootout/
+      // bootstrap are only PRINTED, never run.)
+      const launchctlCalls = (existsSync(launchctlLog) ? readFileSync(launchctlLog, "utf8") : "")
+        .split("\n")
+        .filter(Boolean)
+      expect(launchctlCalls.filter((line) => !line.startsWith("list"))).toEqual([])
     })
 
     it("--supervisor launchd: parses a real \"PID\" = <n>; line, runs the death-poll, then bootout->bootstrap in order, tolerating bootout rc=3", () => {
@@ -2501,11 +2535,21 @@ esac
       const { repo, bin } = makeUpdateEnv(temp)
 
       // Fake git: forward ref and PREV differ so the rollback `reset --hard PREV`
-      // is meaningful. rev-parse HEAD is read TWICE (PREV before apply, NEW_HEAD
-      // after); both return the same canned sha — fine, the rollback target is PREV.
+      // is meaningful. Phase 3 asserts HEAD == target after every reset, so the
+      // fake must MODEL the reset moving HEAD (a frozen HEAD would read as a
+      // lying reset and correctly fail the postcondition): `reset --hard <sha>`
+      // records the sha, and `rev-parse HEAD` answers the last recorded one.
+      const headState = join(temp, "git-head.state")
       writeFake(join(bin, "git"), `
+if [[ "$*" == *"reset --hard"* ]]; then
+  for a in "$@"; do :; done   # last arg = target sha
+  printf '%s' "$a" > "${headState}"
+  exit 0
+fi
 case "$*" in
-  *"rev-parse HEAD"*) printf 'aabbcc333333\\n' ;;
+  *"rev-parse HEAD"*)
+    if [[ -s "${headState}" ]]; then cat "${headState}"; printf '\\n'; else printf 'aabbcc333333\\n'; fi
+    ;;
   *"hash-object"*) printf 'deadbeef\\n' ;;
   *) true ;;
 esac
@@ -2602,6 +2646,80 @@ esac
       expect(countOf("bootout")).toBeGreaterThanOrEqual(2)
       expect(countOf("bootstrap")).toBeGreaterThanOrEqual(2)
     })
+
+    it("--supervisor launchd skips the session guard: a live session count does not defer the restart", () => {
+      // launchd = the operator's own macOS laptop: no unattended caller exists
+      // there and ss(8) is unavailable, so the guard must return 0 before it
+      // consults anything. Pin a LIVE session count (which defers with exit 3
+      // under systemd) and prove the launchd restart still proceeds to exit 0.
+      const temp = makeTempDir()
+      const { repo, bin } = makeUpdateEnv(temp)
+
+      const gitLog = join(temp, "git.log")
+      writeFake(join(bin, "git"), `
+printf '%s\\n' "$*" >> "${gitLog}"
+case "$*" in
+  *"rev-parse HEAD"*) printf 'aabbcc555555\\n' ;;
+  *"hash-object"*) printf 'deadbeef\\n' ;;
+  *) true ;;
+esac
+exit 0
+`)
+      writeFake(join(bin, "bun"), `exit 0`)
+      writeFake(join(bin, "curl"), `
+case "$*" in
+  */healthz*) printf '200'; exit 0 ;;
+  */readyz*)  printf '\\n404'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+      const lctlLog = join(temp, "launchctl.log")
+      writeFake(join(bin, "launchctl"), `
+printf '%s\\n' "$*" >> "${lctlLog}"
+case "$1" in
+  list) printf '{\n\t"PID" = 999999;\n};\n'; exit 0 ;;
+  bootout) exit 3 ;;
+  print) printf 'state = running\nruns = 0\n'; exit 0 ;;
+  bootstrap) exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+      const plistDir = join(temp, "home", "Library", "LaunchAgents")
+      const plistPath = join(plistDir, "com.user.luna-chat-server.plist")
+      mkdirSync(plistDir, { recursive: true })
+      writeFileSync(plistPath, `<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>`)
+
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"),
+          "--supervisor", "launchd",
+          "--repo-dir", repo,
+          "--luna-home", join(temp, "lunahome"),
+          "--launchd-plist", plistPath,
+          "--ref", "aabbcc555555",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: join(temp, "home"),
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            LUNA_RESTART_SETTLE_SECS: "0",
+            LUNA_READINESS_TIMEOUT: "4",
+            LUNA_READINESS_INTERVAL: "1",
+            LUNA_TEST_WS_COUNT: "2",
+          },
+        },
+      )
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).not.toContain("DEFERRED by session guard")
+      const lctlLines = existsSync(lctlLog) ? readFileSync(lctlLog, "utf8") : ""
+      expect(lctlLines).toContain("bootout")
+      expect(lctlLines).toContain("bootstrap")
+    })
   })
 
   describe("luna_active_ws_count (shared connect-aware deferral helper)", () => {
@@ -2642,6 +2760,785 @@ esac
       const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "x7y" })
       expect(result.status).not.toBe(0)
       expect(result.stdout.trim()).toBe("")
+    })
+
+    // ── phase 2 hardening: an installed-but-failing ss must be UNKNOWN, not 0.
+    // The count now authorizes restarts inside the deploy primitive, so the
+    // fail-open `... | wc -l` pipeline (a failing ss piped into wc reads as
+    // count 0) would have been a session-drop hole.
+    const runWsCountWithSs = (ssBody: string) => {
+      const temp = makeTempDir()
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      writeFileSync(join(bin, "ss"), `#!/usr/bin/env bash\n${ssBody}\n`)
+      spawnSync("chmod", ["+x", join(bin, "ss")])
+      return spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_active_ws_count 4753`],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            LUNA_TEST_WS_COUNT: undefined, // exercise the REAL probe arm
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+          },
+        },
+      )
+    }
+
+    it("a present-but-FAILING ss reports UNKNOWN (non-zero exit, empty stdout), never 0", () => {
+      const result = runWsCountWithSs(`exit 1`)
+      expect(result.status).not.toBe(0)
+      expect(result.stdout.trim()).toBe("")
+    })
+
+    it("an ss printing two connection rows counts 2", () => {
+      const result = runWsCountWithSs(
+        `printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:50001\\nESTAB 0 0 127.0.0.1:4753 127.0.0.1:50002\\n'`,
+      )
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe("2")
+    })
+
+    it("an ss printing nothing with rc 0 counts 0 (genuinely idle)", () => {
+      const result = runWsCountWithSs(`exit 0`)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe("0")
+    })
+  })
+
+  // ── phase 2: luna-autodeploy --force gating (human-only, reason-gated) ─────
+  describe("luna-autodeploy --force gating", () => {
+    const LUNA_AUTODEPLOY = join(repoRoot, "scripts/luna-autodeploy")
+
+    // Registry + fake repo + fake git so a dry-run do_deploy proceeds to the
+    // engine-argv echo without touching any real infrastructure.
+    const makeAutodeployEnv = () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      mkdirSync(join(repo, ".git"), { recursive: true })
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bash
+case "$*" in
+  *"fetch origin"*) exit 0 ;;
+  *"rev-parse HEAD") printf 'aaaaaaaaa\\n' ;;
+  *"rev-parse origin/"*) printf 'bbbbbbbbb\\n' ;;
+  *) "${realGit}" "$@" ;;
+esac
+`,
+      )
+      spawnSync("chmod", ["+x", join(bin, "git")])
+      const registry = join(temp, "servers.toml")
+      writeFileSync(
+        registry,
+        [
+          `kind = "registry"`,
+          `[[server]]`,
+          `name = "stable"`,
+          `update.params.hostRepoDir = "${repo}"`,
+          `update.params.ref = "origin/master"`,
+          `ports.proxy = 4753`,
+          `deploy.timer = true`,
+        ].join("\n") + "\n",
+      )
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_FORCE_REASON: undefined,
+      }
+      return { temp, repo, bin, env }
+    }
+
+    const runAutodeploy = (
+      args: ReadonlyArray<string>,
+      env: Record<string, string | undefined>,
+    ) => spawnSync("bash", [LUNA_AUTODEPLOY, ...args], { cwd: repoRoot, encoding: "utf8", env })
+
+    it("bare --force with no reason is rejected (exit 2) and points at --repair", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--force"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("requires an operator reason")
+      expect(r.stderr).toContain("--repair")
+    })
+
+    it("--force 'why' --dry-run forwards a logged --operator-override to the engine", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--force", "why", "--dry-run"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("FORCE by operator: why")
+      expect(r.stdout).toContain("--operator-override")
+      expect(r.stdout).toContain("why")
+    })
+
+    it("LUNA_FORCE_REASON satisfies the reason gate (--force --dry-run does not swallow the flag)", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--force", "--dry-run"], { ...env, LUNA_FORCE_REASON: "x" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("FORCE by operator: x")
+      expect(r.stdout).toContain("--operator-override")
+    })
+
+    it("--repair --force is rejected (exit 2): automation cannot hold the override", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--repair", "--force"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("cannot be combined")
+    })
+
+    it("bare --allow-active with no reason is rejected (exit 2): the second override lever meets the same audit bar as --force", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--allow-active"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("requires an operator reason")
+      expect(r.stderr).toContain("--repair")
+    })
+
+    it("--allow-active 'why' --dry-run forwards a logged --operator-override carrying the reason", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--allow-active", "why", "--dry-run"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("ALLOW-ACTIVE by operator: why")
+      expect(r.stdout).toContain("--operator-override")
+      expect(r.stdout).toContain("--allow-active: why")
+    })
+
+    it("LUNA_FORCE_REASON satisfies the --allow-active reason gate too", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--allow-active", "--dry-run"], { ...env, LUNA_FORCE_REASON: "x" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("ALLOW-ACTIVE by operator: x")
+      expect(r.stdout).toContain("--operator-override")
+    })
+
+    it("--repair --allow-active is rejected (exit 2): automation cannot hold the override", () => {
+      const { env } = makeAutodeployEnv()
+      const r = runAutodeploy(["stable", "--repair", "--allow-active"], env)
+      expect(r.status, r.stdout + r.stderr).toBe(2)
+      expect(r.stderr).toContain("cannot be combined")
+    })
+  })
+
+  // ── phase 2: luna-autodeploy --repair ladder + engine-defer mapping ────────
+  describe("luna-autodeploy --repair ladder", () => {
+    // Mirror the guardian harness pattern: copy scripts/ to a temp dir, replace
+    // luna-update-server with a recording stub whose per-call exit codes are
+    // env-driven, and pin via LUNA_TEST_PIN_DIR so the pinned copy IS the stub.
+    const makeRepairEnv = () => {
+      const temp = makeTempDir()
+      const scripts = join(temp, "scripts")
+      spawnSync("cp", ["-a", join(repoRoot, "scripts"), scripts])
+      const repo = join(temp, "repo")
+      mkdirSync(join(repo, ".git"), { recursive: true })
+      const engineCalls = join(temp, "engine-calls")
+      writeFileSync(
+        join(scripts, "luna-update-server"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$ENGINE_CALLS"
+n="$(grep -c '' "$ENGINE_CALLS")"
+var="ENGINE_RC_\${n}"
+exit "\${!var:-0}"
+`,
+      )
+      spawnSync("chmod", ["+x", join(scripts, "luna-update-server")])
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bash
+case "$*" in
+  *"fetch origin"*) exit 0 ;;
+  *"rev-parse HEAD") printf 'aaaaaaaaa\\n' ;;
+  *"rev-parse origin/"*) printf 'bbbbbbbbb\\n' ;;
+  *) "${realGit}" "$@" ;;
+esac
+`,
+      )
+      spawnSync("chmod", ["+x", join(bin, "git")])
+      const registry = join(temp, "servers.toml")
+      writeFileSync(
+        registry,
+        [
+          `kind = "registry"`,
+          `[[server]]`,
+          `name = "stable"`,
+          `update.params.hostRepoDir = "${repo}"`,
+          `update.params.ref = "origin/master"`,
+          `ports.proxy = 4753`,
+          `deploy.timer = true`,
+        ].join("\n") + "\n",
+      )
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_TEST_PIN_DIR: join(temp, "pins"),
+        ENGINE_CALLS: engineCalls,
+      }
+      return { temp, scripts, engineCalls, env }
+    }
+
+    const engineCallLines = (engineCalls: string) =>
+      (existsSync(engineCalls) ? readFileSync(engineCalls, "utf8") : "").split("\n").filter(Boolean)
+
+    const runRepair = (
+      h: ReturnType<typeof makeRepairEnv>,
+      extraEnv: Record<string, string | undefined> = {},
+      args: ReadonlyArray<string> = ["stable", "--repair"],
+    ) =>
+      spawnSync("bash", [join(h.scripts, "luna-autodeploy"), ...args], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...h.env, ...extraEnv },
+      })
+
+    it("rung 1 success: exactly one engine call with --restart-only, exit 0", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "0" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("REPAIRED by unit restart")
+      const calls = engineCallLines(h.engineCalls)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toContain("--restart-only")
+    })
+
+    it("rung 1 defer (rc 3): exit 3, NO rung 2 escalation", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "3" })
+      expect(r.status, r.stdout + r.stderr).toBe(3)
+      expect(r.stdout).toContain("DEFERRED by session guard")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("rung 1 lock contention (rc 4): exit 4, NO rung 2, reported as contention — not a session-guard defer", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "4" })
+      expect(r.status, r.stdout + r.stderr).toBe(4)
+      expect(r.stdout).toContain("concurrent update holds the profile lock")
+      expect(r.stdout).not.toContain("DEFERRED by session guard")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("both rungs pin --ref to the checkout's CURRENT HEAD, never origin/<branch> (repair is not upgrade)", () => {
+      // The fake git answers `rev-parse HEAD` with 'aaaaaaaaa'; the registry
+      // stanza declares --ref origin/master. An unattended repair must rebuild
+      // the deployed ref, not fetch-and-advance to whatever origin gained since
+      // the last gentle tick (which would also ignore deploy.autoUpdate=false).
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "1", ENGINE_RC_2: "0" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      const calls = engineCallLines(h.engineCalls)
+      expect(calls).toHaveLength(2)
+      for (const call of calls) {
+        expect(call).toContain("--ref aaaaaaaaa")
+        expect(call).not.toContain("origin/master")
+      }
+    })
+
+    it("rung 1 failure escalates to rung 2 (full redeploy, WITHOUT --restart-only), exit 0", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "1", ENGINE_RC_2: "0" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("REPAIRED by full redeploy")
+      const calls = engineCallLines(h.engineCalls)
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toContain("--restart-only")
+      expect(calls[1]).not.toContain("--restart-only")
+    })
+
+    it("rung 2 rollback (rc 1) passes through as exit 1", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "1", ENGINE_RC_2: "1" })
+      expect(r.status, r.stdout + r.stderr).toBe(1)
+      expect(r.stderr).toContain("ROLLED BACK")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(2)
+    })
+
+    it("normal do_deploy maps an engine session-guard defer (rc 3) to a quiet exit 0", () => {
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "3" }, ["stable"])
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("DEFERRED by engine session guard")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("engine exit 0 without moving HEAD prints the deferral truth, never 'OK — now at' (exit 0)", () => {
+      // The engine legitimately exits 0 on lock-contention deferral (nothing
+      // mutated) and after journal recovery to an older target. The fake git
+      // keeps HEAD at aaaaaaaaa while origin is bbbbbbbbb and the engine stub
+      // exits 0 without touching anything — the old code printed a lying
+      // "OK — now at bbbbbbbb" for exactly this state.
+      const h = makeRepairEnv()
+      const r = runRepair(h, { ENGINE_RC_1: "0" }, ["stable"])
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("engine exit 0 without reaching bbbbbbbb")
+      expect(r.stdout).not.toContain("OK — now at")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    // ── luna_pin_engine fallback arms: every degraded path warns its own
+    // message and falls back to the in-tree engine instead of misdiagnosing ──
+    const writeExecStub = (path: string, body: string) => {
+      writeFileSync(path, body)
+      spawnSync("chmod", ["+x", path])
+    }
+
+    it("pin_engine: an unexecutable pinned copy warns 'is not executable' and falls back in-tree", () => {
+      const h = makeRepairEnv()
+      const bin = join(h.temp, "bin")
+      // cp strips the exec bit on pin-dir targets (a noexec-ish landing zone),
+      // and chmod +x on the same glob is a no-op — so the effect check, not the
+      // chmod command, must catch it.
+      writeExecStub(join(bin, "cp"), `#!/usr/bin/env bash
+/bin/cp "$@"; rc=$?
+if [[ -n "\${LUNA_TEST_PIN_BREAK:-}" ]]; then
+  for a in "$@"; do case "$a" in */deploy-engine@*) [[ -f "$a" ]] && /bin/chmod a-x "$a" ;; esac; done
+fi
+exit $rc
+`)
+      writeExecStub(join(bin, "chmod"), `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_PIN_BREAK:-}" ]]; then
+  for a in "$@"; do case "$a" in */deploy-engine@*) exit 0 ;; esac; done
+fi
+exec /bin/chmod "$@"
+`)
+      const r = runRepair(h, { ENGINE_RC_1: "0", LUNA_TEST_PIN_BREAK: "1" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stderr).toContain("is not executable")
+      expect(r.stderr).toContain("running in-tree engine")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("pin_engine: a failed .complete marker write warns 'could not mark pin dir' and falls back in-tree", () => {
+      const h = makeRepairEnv()
+      const bin = join(h.temp, "bin")
+      writeExecStub(join(bin, "touch"), `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_TOUCH_FAIL_GLOB:-}" ]]; then
+  for a in "$@"; do case "$a" in \${LUNA_TEST_TOUCH_FAIL_GLOB}) exit 1 ;; esac; done
+fi
+exec /bin/touch "$@"
+`)
+      const r = runRepair(h, { ENGINE_RC_1: "0", LUNA_TEST_TOUCH_FAIL_GLOB: "*/deploy-engine@*" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stderr).toContain("could not mark pin dir")
+      expect(r.stderr).toContain("running in-tree engine")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+
+    it("pin_engine: a pin that vanishes before use warns 'vanished before use' and falls back in-tree", () => {
+      const h = makeRepairEnv()
+      const bin = join(h.temp, "bin")
+      // A lying mv (exit 0 without publishing) leaves the final effect check
+      // staring at an absent pin — the engine-pin-disaster shape, one level up.
+      writeExecStub(join(bin, "mv"), `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_MV_LIE_GLOB:-}" ]]; then
+  for a in "$@"; do case "$a" in \${LUNA_TEST_MV_LIE_GLOB}) exit 0 ;; esac; done
+fi
+exec /bin/mv "$@"
+`)
+      const r = runRepair(h, { ENGINE_RC_1: "0", LUNA_TEST_MV_LIE_GLOB: "*/deploy-engine@*" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stderr).toContain("vanished before use")
+      expect(r.stderr).toContain("running in-tree engine")
+      expect(engineCallLines(h.engineCalls)).toHaveLength(1)
+    })
+  })
+
+  // ── phase 3: migration marker + converged autodeploy ticks ─────────────────
+  describe("luna-autodeploy convergence (phase 3)", () => {
+    const LUNA_AUTODEPLOY_REAL = join(repoRoot, "scripts/luna-autodeploy")
+
+    // Hermetic up-to-date environment: fake git answers the SAME sha for HEAD
+    // and origin/<branch> (converged checkout), a stub guardian records adopt
+    // invocations, and every state dir (guardian marker, update journal) is a
+    // temp dir so nothing reads or mutates the real host.
+    const makeConvergedAutodeployEnv = () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      mkdirSync(join(repo, ".git"), { recursive: true })
+      mkdirSync(join(repo, "scripts"), { recursive: true })
+      const adoptCalls = join(temp, "adopt-calls")
+      // A successful adopt installs the guardian control plane; model that by
+      // creating the timer unit file — the actual-state conjunct the migration
+      // marker is validated against (the marker is a cache, not authority).
+      writeFileSync(
+        join(repo, "scripts", "luna-guardian"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${adoptCalls}"
+if [[ "\${1:-}" == adopt ]]; then
+  mkdir -p "$LUNA_TEST_SYSTEMD_DIR"
+  : > "$LUNA_TEST_SYSTEMD_DIR/luna-guardian-\${2:?}.timer"
+fi
+exit 0
+`,
+      )
+      const bin = join(temp, "bin")
+      mkdirSync(bin, { recursive: true })
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bash
+case "$*" in
+  *"fetch origin"*) exit 0 ;;
+  *"rev-parse HEAD"|*"rev-parse origin/"*) printf 'aaaaaaaaa\\n' ;;
+  *) exit 0 ;;
+esac
+`,
+      )
+      // mv stub, guardian-harness style: inert unless LUNA_TEST_MV_FAIL_GLOB
+      // matches — lets one test make exactly the marker rename fail.
+      writeFileSync(
+        join(bin, "mv"),
+        `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_MV_FAIL_GLOB:-}" ]]; then
+  for a in "$@"; do
+    case "$a" in
+      \${LUNA_TEST_MV_FAIL_GLOB}) printf 'mv: simulated failure: %s\\n' "$a" >&2; exit 1 ;;
+    esac
+  done
+fi
+exec /bin/mv "$@"
+`,
+      )
+      spawnSync("chmod", ["+x", join(repo, "scripts", "luna-guardian"), join(bin, "git"), join(bin, "mv")])
+      const registry = join(temp, "servers.toml")
+      writeFileSync(
+        registry,
+        [
+          `kind = "registry"`,
+          `[[server]]`,
+          `name = "stable"`,
+          `update.params.hostRepoDir = "${repo}"`,
+          `update.params.ref = "origin/master"`,
+          `ports.proxy = 4753`,
+          `deploy.timer = true`,
+        ].join("\n") + "\n",
+      )
+      const guardianState = join(temp, "guardian-state")
+      // Hermetic unit dir: the migration-marker validity check consults the
+      // guardian timer unit file, which must never read the REAL host's
+      // /etc/systemd/system.
+      const systemdDir = join(temp, "systemd")
+      mkdirSync(systemdDir, { recursive: true })
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LUNA_SERVERS_CONFIG: registry,
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_GUARDIAN_STATE_DIR: guardianState,
+        LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
+        LUNA_TEST_SYSTEMD_DIR: systemdDir,
+      }
+      return { temp, adoptCalls, guardianState, systemdDir, env }
+    }
+
+    const adoptCallLines = (path: string) =>
+      (existsSync(path) ? readFileSync(path, "utf8") : "").split("\n").filter(Boolean)
+
+    const runAutodeploy = (
+      env: Record<string, string | undefined>,
+      args: ReadonlyArray<string>,
+      extraEnv: Record<string, string | undefined> = {},
+    ) =>
+      spawnSync("bash", [LUNA_AUTODEPLOY_REAL, ...args], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...env, ...extraEnv },
+      })
+
+    it("migration marker lifecycle: adopt once, record durably, then silence forever", () => {
+      const h = makeConvergedAutodeployEnv()
+      const marker = join(h.guardianState, "migrated-stable")
+
+      // Tick 1: migrates loudly, invokes adopt exactly once, records the marker.
+      const first = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(first.status, first.stdout + first.stderr).toBe(0)
+      expect(first.stdout).toContain("MIGRATING legacy timer")
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable"])
+      expect(existsSync(marker)).toBe(true)
+
+      // Tick 2: prints NOTHING and does not re-invoke adopt.
+      const second = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(second.status, second.stdout + second.stderr).toBe(0)
+      expect(second.stdout).toBe("")
+      expect(second.stderr).toBe("")
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable"])
+    })
+
+    it("a failed marker write is loud, non-fatal, and retried next tick", () => {
+      const h = makeConvergedAutodeployEnv()
+      const marker = join(h.guardianState, "migrated-stable")
+
+      const failed = runAutodeploy(h.env, ["stable", "--from-timer"], {
+        LUNA_TEST_MV_FAIL_GLOB: "*migrated-stable*",
+      })
+      expect(failed.status, failed.stdout + failed.stderr).toBe(0)
+      expect(failed.stderr).toContain("could not record guardian migration completion")
+      expect(existsSync(marker)).toBe(false)
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable"])
+
+      // Marker missing -> the next tick re-verifies (re-adopts) and records.
+      const retry = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(retry.status, retry.stdout + retry.stderr).toBe(0)
+      expect(retry.stdout).toContain("MIGRATING legacy timer")
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable", "adopt stable"])
+      expect(existsSync(marker)).toBe(true)
+    })
+
+    it("a converged autodeploy tick is completely silent; a manual run keeps its feedback", () => {
+      const h = makeConvergedAutodeployEnv()
+      mkdirSync(h.guardianState, { recursive: true })
+      writeFileSync(join(h.guardianState, "migrated-stable"), "profile=stable\nmigrated_at=1\n")
+      writeFileSync(join(h.systemdDir, "luna-guardian-stable.timer"), "")
+
+      // Up-to-date --from-timer with the marker present: total silence.
+      const timerTick = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(timerTick.status, timerTick.stdout + timerTick.stderr).toBe(0)
+      expect(timerTick.stdout).toBe("")
+      expect(timerTick.stderr).toBe("")
+      expect(adoptCallLines(h.adoptCalls)).toEqual([])
+
+      // A MANUAL up-to-date run still tells the human it was a no-op.
+      const manual = runAutodeploy(h.env, ["stable"])
+      expect(manual.status, manual.stdout + manual.stderr).toBe(0)
+      expect(manual.stdout).toContain("up to date at aaaaaaaa")
+      expect(manual.stdout).toContain("no-op")
+    })
+
+    it("knob-off --from-timer runs are silent too", () => {
+      const h = makeConvergedAutodeployEnv()
+      // Rewrite the registry with deploy.autoUpdate=false.
+      writeFileSync(
+        join(h.temp, "servers.toml"),
+        [
+          `kind = "registry"`,
+          `[[server]]`,
+          `name = "stable"`,
+          `update.params.hostRepoDir = "${join(h.temp, "repo")}"`,
+          `update.params.ref = "origin/master"`,
+          `ports.proxy = 4753`,
+          `deploy.timer = true`,
+          `deploy.autoUpdate = false`,
+        ].join("\n") + "\n",
+      )
+      mkdirSync(h.guardianState, { recursive: true })
+      writeFileSync(join(h.guardianState, "migrated-stable"), "profile=stable\nmigrated_at=1\n")
+      writeFileSync(join(h.systemdDir, "luna-guardian-stable.timer"), "")
+
+      const tick = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+      expect(tick.stdout).toBe("")
+    })
+
+    it("the migration marker is a cache, not authority: a vanished guardian control plane re-arms adoption", () => {
+      // Units restored from a pre-migration backup (or an operator removing the
+      // guardian and reinstalling the legacy timer): the marker survives in the
+      // state dir while the guardian timer unit is GONE. Pre-fix the marker
+      // alone suppressed re-adoption forever, silently — a self-healing
+      // regression versus the pre-marker behaviour.
+      const h = makeConvergedAutodeployEnv()
+      mkdirSync(h.guardianState, { recursive: true })
+      writeFileSync(join(h.guardianState, "migrated-stable"), "profile=stable\nmigrated_at=1\n")
+      // No luna-guardian-stable.timer in the hermetic unit dir.
+
+      const tick = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+      expect(tick.stdout).toContain("MIGRATING legacy timer")
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable"])
+      // Adopt reinstalled the control plane; the next tick is silent again.
+      const second = runAutodeploy(h.env, ["stable", "--from-timer"])
+      expect(second.status, second.stdout + second.stderr).toBe(0)
+      expect(second.stdout).toBe("")
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable"])
+    })
+
+    it("record_migration's mkdir-failure arm is loud, non-fatal, and re-verified next tick", () => {
+      const h = makeConvergedAutodeployEnv()
+      // A guardian state dir whose PARENT is a regular file: mkdir -p fails.
+      const blocker = join(h.temp, "blocker")
+      writeFileSync(blocker, "not a directory\n")
+      const tick = runAutodeploy(h.env, ["stable", "--from-timer"], {
+        LUNA_GUARDIAN_STATE_DIR: join(blocker, "state"),
+      })
+      expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+      expect(tick.stderr).toContain("could not record guardian migration completion")
+      expect(adoptCallLines(h.adoptCalls)).toEqual(["adopt stable"])
+    })
+
+    it("install-timer verifies its enable postcondition; uninstall-timer converges to silence", () => {
+      // Permissive stub (answers the correct states): green.
+      const green = makeTempDir()
+      const greenUnits = join(green, "units")
+      const greenBin = join(green, "bin")
+      mkdirSync(greenUnits, { recursive: true })
+      mkdirSync(greenBin, { recursive: true })
+      const greenLog = join(green, "systemctl.log")
+      writeFileSync(
+        join(greenBin, "systemctl"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${greenLog}"
+case "$*" in
+  *LoadState*) printf 'loaded\\n' ;;
+  *UnitFileState*) printf 'enabled\\n' ;;
+  *ActiveState*) printf 'active\\n' ;;
+esac
+exit 0
+`,
+      )
+      spawnSync("chmod", ["+x", join(greenBin, "systemctl")])
+      const baseEnv = {
+        ...process.env,
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_SERVERS_CONFIG: join(repoRoot, "test/fixtures/servers.toml"),
+      }
+      const ok = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-autodeploy"), "install-timer", "stable"],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: { ...baseEnv, PATH: `${greenBin}:${process.env.PATH}`, LUNA_TEST_SYSTEMD_DIR: greenUnits },
+        },
+      )
+      expect(ok.status, ok.stdout + ok.stderr).toBe(0)
+      expect(ok.stdout).toContain("installed + enabled")
+      expect(ok.stderr).not.toContain("POSTCONDITION")
+
+      // Wrong-state stub (enable visibly did not take): exit 2, POSTCONDITION.
+      const bad = makeTempDir()
+      const badUnits = join(bad, "units")
+      const badBin = join(bad, "bin")
+      mkdirSync(badUnits, { recursive: true })
+      mkdirSync(badBin, { recursive: true })
+      writeFileSync(
+        join(badBin, "systemctl"),
+        `#!/usr/bin/env bash
+case "$*" in
+  *LoadState*) printf 'loaded\\n' ;;
+  *UnitFileState*) printf 'disabled\\n' ;;
+  *ActiveState*) printf 'inactive\\n' ;;
+esac
+exit 0
+`,
+      )
+      spawnSync("chmod", ["+x", join(badBin, "systemctl")])
+      const fail = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-autodeploy"), "install-timer", "stable"],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: { ...baseEnv, PATH: `${badBin}:${process.env.PATH}`, LUNA_TEST_SYSTEMD_DIR: badUnits },
+        },
+      )
+      expect(fail.status, fail.stdout + fail.stderr).toBe(2)
+      expect(fail.stderr).toContain("POSTCONDITION")
+      expect(fail.stderr).toContain("loaded/enabled/active")
+
+      // Converged-absent uninstall: nothing installed -> silent, zero reloads.
+      const empty = makeTempDir()
+      const emptyUnits = join(empty, "units")
+      const emptyBin = join(empty, "bin")
+      mkdirSync(emptyUnits, { recursive: true })
+      mkdirSync(emptyBin, { recursive: true })
+      const emptyLog = join(empty, "systemctl.log")
+      writeFileSync(
+        join(emptyBin, "systemctl"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${emptyLog}"
+case "$*" in
+  *LoadState*) printf 'not-found\\n' ;;
+esac
+exit 0
+`,
+      )
+      spawnSync("chmod", ["+x", join(emptyBin, "systemctl")])
+      const quiet = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-autodeploy"), "uninstall-timer", "stable"],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: { ...baseEnv, PATH: `${emptyBin}:${process.env.PATH}`, LUNA_TEST_SYSTEMD_DIR: emptyUnits },
+        },
+      )
+      expect(quiet.status, quiet.stdout + quiet.stderr).toBe(0)
+      expect(quiet.stdout).toBe("")
+      expect(quiet.stderr).toBe("")
+      const invocations = existsSync(emptyLog) ? readFileSync(emptyLog, "utf8") : ""
+      expect(invocations).not.toContain("daemon-reload")
+      expect(invocations).not.toContain("disable")
+    })
+
+    it("install-timer exits 2 loudly when a unit write fails (service and timer arms)", () => {
+      const makeMvFailEnv = () => {
+        const temp = makeTempDir()
+        const units = join(temp, "units")
+        const bin = join(temp, "bin")
+        mkdirSync(units, { recursive: true })
+        mkdirSync(bin, { recursive: true })
+        writeFileSync(
+          join(bin, "systemctl"),
+          `#!/usr/bin/env bash
+case "$*" in
+  *LoadState*) printf 'loaded\\n' ;;
+  *UnitFileState*) printf 'enabled\\n' ;;
+  *ActiveState*) printf 'active\\n' ;;
+esac
+exit 0
+`,
+        )
+        writeFileSync(
+          join(bin, "mv"),
+          `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_MV_FAIL_GLOB:-}" ]]; then
+  for a in "$@"; do case "$a" in \${LUNA_TEST_MV_FAIL_GLOB}) exit 1 ;; esac; done
+fi
+exec /bin/mv "$@"
+`,
+        )
+        spawnSync("chmod", ["+x", join(bin, "systemctl"), join(bin, "mv")])
+        return { units, bin }
+      }
+      const baseEnv = {
+        ...process.env,
+        LUNA_TEST_WS_COUNT: "0",
+        LUNA_TEST_STAT_MODE: "600",
+        LUNA_SERVERS_CONFIG: join(repoRoot, "test/fixtures/servers.toml"),
+      }
+      for (const glob of ["*luna-autodeploy-stable.service*", "*luna-autodeploy-stable.timer*"]) {
+        const { units, bin } = makeMvFailEnv()
+        const r = spawnSync(
+          "bash",
+          [join(repoRoot, "scripts/luna-autodeploy"), "install-timer", "stable"],
+          {
+            cwd: repoRoot,
+            encoding: "utf8",
+            env: {
+              ...baseEnv,
+              PATH: `${bin}:${process.env.PATH}`,
+              LUNA_TEST_SYSTEMD_DIR: units,
+              LUNA_TEST_MV_FAIL_GLOB: glob,
+            },
+          },
+        )
+        expect(r.status, glob + ": " + r.stdout + r.stderr).toBe(2)
+        expect(r.stderr, glob).toContain("cannot write")
+        expect(r.stdout, glob).not.toContain("installed + enabled")
+      }
     })
   })
 })
