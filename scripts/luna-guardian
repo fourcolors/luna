@@ -53,6 +53,25 @@ diagnose() {
     printf '\n[ready]\n'; run_runtime curl -fsS --max-time 4 \
       "http://127.0.0.1:$P_PORT/readyz" 2>&1 || true
     printf '\n[capacity]\n'; run_runtime df -h "$runtime_repo" 2>&1 || true
+    if [[ "$P_LAYOUT" == "releases" ]]; then
+      # Releases-layout evidence: where current/previous point, whether the
+      # resolved release is complete, the mirror's branch tip, and deploy-root
+      # capacity — the four questions a 3am responder asks first.
+      printf '\n[releases]\n'
+      printf 'current -> %s\n' "$(readlink "$P_DEPLOY_ROOT/current" 2>/dev/null || printf '<unreadable>')"
+      printf 'previous -> %s\n' "$(readlink "$P_DEPLOY_ROOT/previous" 2>/dev/null || printf '<unreadable>')"
+      local _cur_phys
+      _cur_phys="$(cd -P "$P_DEPLOY_ROOT/current" 2>/dev/null && pwd || true)"
+      printf 'resolved sha: %s\n' "${_cur_phys##*/}"
+      if [[ -n "$_cur_phys" && -f "$_cur_phys/.complete" ]]; then
+        printf '.complete: present\n'
+      else
+        printf '.complete: MISSING\n'
+      fi
+      printf 'mirror origin/%s: %s\n' "$P_BRANCH" \
+        "$(git --git-dir "$P_DEPLOY_ROOT/mirror.git" rev-parse "origin/$P_BRANCH" 2>&1 || true)"
+      df -h "$P_DEPLOY_ROOT" 2>&1 || true
+    fi
     printf '\n[journal]\n'; run_runtime journalctl -u "$P_SERVICE_NAME" \
       --no-pager -n 80 2>&1 || true
   } | redact > "$tmp"
@@ -423,12 +442,26 @@ reconcile_unit_if_idle() {
   fi
   if (( n > 0 )); then luna_warn "unit drift: $n active session(s); deferring"; return 1; fi
   luna_warn "reconciling supervisor unit before repair restart"
+  # Releases layout: the installer must render THROUGH current and skip the
+  # .git guard (--layout releases); in-container paths follow the bind-mounted
+  # deploy root (LUNA_CONTAINER_DEPLOY_ROOT seam, default /root/luna).
+  local _cdr="${LUNA_CONTAINER_DEPLOY_ROOT:-/root/luna}"
   if [[ -n "$P_INCUS" ]]; then
-    run_runtime /root/luna/scripts/luna-server-install --profile "$profile" \
-      --repo-dir /root/luna --luna-home /root/.luna --units-only --no-enable --no-start
+    if [[ "$P_LAYOUT" == "releases" ]]; then
+      run_runtime "$_cdr/current/scripts/luna-server-install" --profile "$profile" \
+        --repo-dir "$_cdr/current" --luna-home /root/.luna --units-only --no-enable --no-start --layout releases
+    else
+      run_runtime /root/luna/scripts/luna-server-install --profile "$profile" \
+        --repo-dir /root/luna --luna-home /root/.luna --units-only --no-enable --no-start
+    fi
   else
-    "$P_REPO/scripts/luna-server-install" --profile "$profile" \
-      --repo-dir "$P_REPO" --units-only --no-enable --no-start
+    if [[ "$P_LAYOUT" == "releases" ]]; then
+      "$P_REPO/scripts/luna-server-install" --profile "$profile" \
+        --repo-dir "$P_REPO" --units-only --no-enable --no-start --layout releases
+    else
+      "$P_REPO/scripts/luna-server-install" --profile "$profile" \
+        --repo-dir "$P_REPO" --units-only --no-enable --no-start
+    fi
   fi
 }
 

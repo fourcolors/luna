@@ -76,6 +76,9 @@ const loadServer = (
     'echo "P_AUTO_UPDATE=$P_AUTO_UPDATE"',
     'echo "P_TIMER_INTERVAL=$P_TIMER_INTERVAL"',
     'echo "P_SERVICE_NAME=$P_SERVICE_NAME"',
+    'echo "P_LAYOUT=$P_LAYOUT"',
+    'echo "P_DEPLOY_ROOT=$P_DEPLOY_ROOT"',
+    'echo "P_RELEASES_KEEP=$P_RELEASES_KEEP"',
     'echo "P_UPDATE_ARGS=${P_UPDATE_ARGS[*]}"',
   ].join("; ")
   return spawnSync(
@@ -883,6 +886,152 @@ describe("kill-switch LUNA_REGISTRY_DISABLE=1", () => {
     })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain("DRY-RUN")
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4: deploy.layout knob (per-profile releases opt-in)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("phase 4: deploy.layout knob", () => {
+  const makeLayoutRegistry = (lines: string[] = []) => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `deploy.timer = true`,
+        ...lines,
+      ].join("\n") + "\n",
+    )
+    return reg
+  }
+
+  it("layout ABSENT → P_LAYOUT=inplace, P_UPDATE_ARGS byte-identical to today (no --layout)", () => {
+    const result = loadServer("stable", { registryFile: makeLayoutRegistry() })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^P_LAYOUT=inplace$/m)
+    expect(result.stdout).toContain(
+      "P_UPDATE_ARGS=--profile stable --incus luna-stable --ref origin/master",
+    )
+    expect(result.stdout).not.toContain("--layout")
+    expect(result.stdout).not.toContain("--deploy-root")
+    expect(result.stdout).toMatch(/^P_REPO=\/root\/luna\/stable\/repo$/m)
+  })
+
+  it('layout "inplace" → identical to absent (explicit spelling accepted)', () => {
+    const result = loadServer("stable", {
+      registryFile: makeLayoutRegistry([`deploy.layout = "inplace"`]),
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^P_LAYOUT=inplace$/m)
+    expect(result.stdout).toContain(
+      "P_UPDATE_ARGS=--profile stable --incus luna-stable --ref origin/master",
+    )
+    expect(result.stdout).not.toContain("--layout")
+  })
+
+  it('layout "releases" → P_REPO=<root>/current, P_DEPLOY_ROOT defaults to parent of hostRepoDir, --layout/--deploy-root appended', () => {
+    const result = loadServer("stable", {
+      registryFile: makeLayoutRegistry([`deploy.layout = "releases"`]),
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^P_LAYOUT=releases$/m)
+    expect(result.stdout).toMatch(/^P_DEPLOY_ROOT=\/root\/luna\/stable$/m)
+    expect(result.stdout).toMatch(/^P_REPO=\/root\/luna\/stable\/current$/m)
+    expect(result.stdout).toContain(
+      "P_UPDATE_ARGS=--profile stable --incus luna-stable --ref origin/master --layout releases --deploy-root /root/luna/stable",
+    )
+    // releasesKeep absent → engine default rides implicitly, no extra flag
+    expect(result.stdout).not.toContain("--releases-keep")
+    expect(result.stdout).toMatch(/^P_RELEASES_KEEP=3$/m)
+  })
+
+  it("deploy.root honored when set (absolute), refused when relative", () => {
+    const good = loadServer("stable", {
+      registryFile: makeLayoutRegistry([
+        `deploy.layout = "releases"`,
+        `deploy.root = "/srv/luna-stable"`,
+      ]),
+    })
+    expect(good.status, good.stderr).toBe(0)
+    expect(good.stdout).toMatch(/^P_DEPLOY_ROOT=\/srv\/luna-stable$/m)
+    expect(good.stdout).toMatch(/^P_REPO=\/srv\/luna-stable\/current$/m)
+    expect(good.stdout).toContain("--deploy-root /srv/luna-stable")
+
+    const bad = loadServer("stable", {
+      registryFile: makeLayoutRegistry([
+        `deploy.layout = "releases"`,
+        `deploy.root = "relative/root"`,
+      ]),
+    })
+    expect(bad.status).toBe(2)
+    expect(bad.stderr).toContain("deploy.root")
+    expect(bad.stderr).toContain("not an absolute path")
+  })
+
+  it("junk deploy.layout value → hard exit 2 (a typo must fail loudly, never silently inplace)", () => {
+    const result = loadServer("stable", {
+      registryFile: makeLayoutRegistry([`deploy.layout = "release"`]),
+    })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain("deploy.layout")
+    expect(result.stderr).toContain("invalid")
+  })
+
+  it("deploy.releasesKeep: default 3; explicit value appended and validated >= 2", () => {
+    const explicit = loadServer("stable", {
+      registryFile: makeLayoutRegistry([
+        `deploy.layout = "releases"`,
+        `deploy.releasesKeep = 5`,
+      ]),
+    })
+    expect(explicit.status, explicit.stderr).toBe(0)
+    expect(explicit.stdout).toMatch(/^P_RELEASES_KEEP=5$/m)
+    expect(explicit.stdout).toContain("--releases-keep 5")
+
+    for (const bad of ["1", "0", `"lots"`]) {
+      const r = loadServer("stable", {
+        registryFile: makeLayoutRegistry([
+          `deploy.layout = "releases"`,
+          `deploy.releasesKeep = ${bad}`,
+        ]),
+      })
+      expect(r.status, `releasesKeep=${bad}: ${r.stdout}${r.stderr}`).toBe(2)
+      expect(r.stderr).toContain("releasesKeep")
+    }
+  })
+
+  it("NO env override for layout: LUNA_STABLE_LAYOUT / LUNA_STABLE_DEPLOY_LAYOUT must not win", () => {
+    const result = loadServer("stable", {
+      registryFile: makeLayoutRegistry(),
+      extraEnv: {
+        LUNA_STABLE_LAYOUT: "releases",
+        LUNA_STABLE_DEPLOY_LAYOUT: "releases",
+      },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^P_LAYOUT=inplace$/m)
+    expect(result.stdout).not.toContain("--layout")
+  })
+
+  it("static: the LUNA_REGISTRY_DISABLE hardcoded fallback contains zero layout awareness", () => {
+    // The one-flag kill switch stays inplace forever: extract the fallback
+    // case block inside profile_config and prove no layout/releases string
+    // ever entered it.
+    const src = readFileSync(LUNA_AUTODEPLOY, "utf8")
+    const start = src.indexOf("# ── HARDCODED FALLBACK")
+    expect(start).toBeGreaterThan(0)
+    const end = src.indexOf("esac", start)
+    expect(end).toBeGreaterThan(start)
+    const block = src.slice(start, end)
+    expect(block).not.toMatch(/P_LAYOUT|--layout|releases|DEPLOY_ROOT/i)
   })
 })
 

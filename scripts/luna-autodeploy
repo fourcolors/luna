@@ -222,6 +222,10 @@ luna_pin_engine() {
 # luna_load_server; the hardcoded fallback sets them inline.
 P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" P_SERVICE_NAME="" P_TIMER_ALLOWED=""
 P_AUTO_UPDATE="" P_TIMER_INTERVAL=""
+# Releases layout (registry-only; the hardcoded fallback below NEVER sets
+# these — it stays inplace forever as the one-flag kill switch, pinned by a
+# static grep test). Empty P_LAYOUT reads as inplace at every consumer.
+P_LAYOUT="" P_DEPLOY_ROOT="" P_RELEASES_KEEP=""
 P_UPDATE_ARGS=()
 
 profile_config() {
@@ -392,8 +396,19 @@ do_deploy() {
     return 0
   fi
 
-  git -C "$P_REPO" fetch origin "$P_BRANCH" --quiet
-  remote_sha="$(git -C "$P_REPO" rev-parse "origin/$P_BRANCH")"
+  # Releases layout: the ONLY fetch target is the bare mirror. With
+  # P_REPO=<root>/current, an unforked fetch would write into an immutable
+  # release's .git — an immutability violation and a stale-read hazard (the
+  # engine resolves the target against the MIRROR's refs, so a release-side
+  # fetch would leave the two views disagreeing). local_sha stays rev-parse
+  # through current: by construction it IS the deployed release sha.
+  if [[ "$P_LAYOUT" == "releases" ]]; then
+    git --git-dir "$P_DEPLOY_ROOT/mirror.git" fetch origin "$P_BRANCH" --quiet
+    remote_sha="$(git --git-dir "$P_DEPLOY_ROOT/mirror.git" rev-parse "origin/$P_BRANCH")"
+  else
+    git -C "$P_REPO" fetch origin "$P_BRANCH" --quiet
+    remote_sha="$(git -C "$P_REPO" rev-parse "origin/$P_BRANCH")"
+  fi
 
   if [[ "$local_sha" == "$remote_sha" && "$FORCE" != true && ! -f "$pending_transaction" ]]; then
     # Timer ticks converge to silence; a human typing the command still gets
@@ -481,6 +496,13 @@ do_deploy() {
 do_repair() {
   local profile="$1"; profile_config "$profile"
   [[ -x "$UPDATE_SERVER" ]] || { echo "luna-autodeploy: $UPDATE_SERVER not found/executable" >&2; exit 2; }
+  # Releases layout: refuse unattended repair on unreadable evidence — a
+  # current that does not physically resolve means the deployed identity is
+  # unknown, and rung 2 pinned to a guessed sha could ship the wrong build.
+  if [[ "$P_LAYOUT" == "releases" ]] && ! (cd -P "$P_REPO" >/dev/null 2>&1); then
+    echo "luna-autodeploy: current release link $P_REPO does not resolve — refusing unattended repair on unreadable evidence (manual remedy: ln -sfT releases/<sha> $P_REPO)" >&2
+    exit 2
+  fi
   [[ -d "$P_REPO/.git" ]] || { echo "luna-autodeploy: $P_REPO is not a git repo" >&2; exit 2; }
   # Pin the repair target to the checkout's CURRENT HEAD: strip the registry's
   # --ref pair (which names the moving origin/<branch>) and substitute HEAD.
@@ -534,16 +556,44 @@ do_validate() {
 
   echo "[validate:$profile] Checking registry entries..."
 
-  # 1. Repo dir
+  # 1. Repo dir / releases deploy-root shape
+  # Releases layout replaces the plain .git check with the releases shape:
+  # bare mirror + explicit origin refspec + current resolving to a .complete
+  # release. Each broken element fails with its own named cause. The
+  # LUNA_TEST_VALIDATE_REPO seam still short-circuits the whole group.
   local repo_ok
   if [[ "${LUNA_TEST_VALIDATE_REPO+set}" == "set" ]]; then
     repo_ok="$LUNA_TEST_VALIDATE_REPO"
-  elif [[ -d "$P_REPO/.git" ]]; then
+    if [[ "$repo_ok" == "true" ]]; then
+      echo "[validate:$profile] OK: repo dir $P_REPO"
+    else
+      echo "[validate:$profile] FAIL: repo dir $P_REPO not found or not a git repo" >&2
+      ok=false
+    fi
+  elif [[ "$P_LAYOUT" == "releases" ]]; then
+    local _mirror="$P_DEPLOY_ROOT/mirror.git" _cur_phys=""
     repo_ok="true"
-  else
-    repo_ok="false"
-  fi
-  if [[ "$repo_ok" == "true" ]]; then
+    if [[ "$(git --git-dir "$_mirror" rev-parse --is-bare-repository 2>/dev/null)" != "true" ]]; then
+      echo "[validate:$profile] FAIL: mirror $_mirror missing or not a bare repository" >&2
+      repo_ok="false"
+    elif [[ "$(git --git-dir "$_mirror" config --get remote.origin.fetch 2>/dev/null)" != *"refs/remotes/origin/"* ]]; then
+      echo "[validate:$profile] FAIL: mirror $_mirror lacks the remote.origin.fetch refspec mapping to refs/remotes/origin/*" >&2
+      repo_ok="false"
+    fi
+    _cur_phys="$(cd -P "$P_DEPLOY_ROOT/current" 2>/dev/null && pwd || true)"
+    if [[ -z "$_cur_phys" || "$_cur_phys" != "$(cd -P "$P_DEPLOY_ROOT/releases" 2>/dev/null && pwd || printf '/nonexistent')/"* ]]; then
+      echo "[validate:$profile] FAIL: $P_DEPLOY_ROOT/current does not resolve into $P_DEPLOY_ROOT/releases/" >&2
+      repo_ok="false"
+    elif [[ ! -f "$_cur_phys/.complete" ]]; then
+      echo "[validate:$profile] FAIL: current release $_cur_phys is missing its .complete marker" >&2
+      repo_ok="false"
+    fi
+    if [[ "$repo_ok" == "true" ]]; then
+      echo "[validate:$profile] OK: releases deploy root $P_DEPLOY_ROOT (mirror + current -> ${_cur_phys##*/})"
+    else
+      ok=false
+    fi
+  elif [[ -d "$P_REPO/.git" ]]; then
     echo "[validate:$profile] OK: repo dir $P_REPO"
   else
     echo "[validate:$profile] FAIL: repo dir $P_REPO not found or not a git repo" >&2

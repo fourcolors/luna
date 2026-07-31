@@ -143,6 +143,23 @@ Options:
                             + readiness probe. No checkout mutation, no bun
                             install/build, no rollback. A pending update
                             transaction runs normal recovery instead.
+  --layout <inplace|releases>
+                            Deploy layout. inplace (default): today's mutate-
+                            the-checkout-in-place behaviour, unchanged.
+                            releases: content-addressed immutable releases
+                            under <deploy-root>/releases/<sha>, fetched only
+                            into <deploy-root>/mirror.git, served through the
+                            <deploy-root>/current symlink which is flipped
+                            ATOMICALLY inside the guarded restart window.
+                            git reset --hard never runs in releases mode.
+  --deploy-root <path>      Releases layout root (holds mirror.git/, releases/,
+                            current, previous). Required with --layout releases.
+  --releases-keep <n>       Releases retention count (>= 2). Default: 3.
+  --materialize             Releases-layout bootstrap: fetch the mirror,
+                            materialize + build releases/<sha> for --ref and
+                            create current if absent. NO restart, NO unit
+                            interaction — inert while units still reference the
+                            in-place checkout (see docs/deploy-layout-migration.md).
   --dry-run                 Print the plan and change NOTHING.
   --supervisor   <systemd|launchd>   supervisor backend (default: systemd; env: LUNA_SUPERVISOR)
   --user                             use systemd --user scope (systemd only)
@@ -168,6 +185,27 @@ EOF
 
 SUPERVISOR="${LUNA_SUPERVISOR:-systemd}"       # systemd | launchd
 SYSTEMD_USER=false                              # --user flag
+# Releases layout (phase 4). LAYOUT selects the mutation strategy at the
+# git_target waist and the apply/rollback dispatchers; everything else (guard,
+# journal, readiness, supervisor) is SHARED. CONTAINER_DEPLOY_ROOT is the
+# in-container view of the deploy root (the luna-repo bind mount target);
+# LUNA_CONTAINER_DEPLOY_ROOT is the migration-bootstrap seam (the runbook's
+# temporary additive mount uses /root/luna-deploy). RESTART_PRESTART_HOOK is
+# the command restart_service runs BETWEEN confirmed stop+settle and start —
+# set ONLY by releases-mode deploy/rollback to the current-symlink flip, never
+# by --restart-only, so a session-guard defer leaves current UNTOUCHED and
+# there is never a current-vs-served divergence window.
+LAYOUT="inplace"
+DEPLOY_ROOT=""
+RELEASES_KEEP=3
+MATERIALIZE_ONLY=false
+CONTAINER_DEPLOY_ROOT="${LUNA_CONTAINER_DEPLOY_ROOT:-/root/luna}"
+CONTAINER_ENV_FILE="${LUNA_CONTAINER_ENV_FILE:-/root/.luna/.env}"
+RESTART_PRESTART_HOOK=()
+MIRROR_GIT=""
+RELEASES_DIR=""
+CURRENT_LINK=""
+PREVIOUS_LINK=""
 LAUNCHD_LABEL="${LUNA_LAUNCHD_LABEL:-com.user.luna-chat-server}"
 LAUNCHD_PLIST="${LUNA_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist}"
 
@@ -187,6 +225,10 @@ while [[ $# -gt 0 ]]; do
     --no-rollback) ROLLBACK=false; shift ;;
     --operator-override) OPERATOR_OVERRIDE_REASON="${2:?missing --operator-override reason}"; shift 2 ;;
     --restart-only) RESTART_ONLY=true; shift ;;
+    --layout) LAYOUT="${2:?missing --layout value}"; shift 2 ;;
+    --deploy-root) DEPLOY_ROOT="${2:?missing --deploy-root value}"; shift 2 ;;
+    --releases-keep) RELEASES_KEEP="${2:?missing --releases-keep value}"; shift 2 ;;
+    --materialize) MATERIALIZE_ONLY=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --supervisor)  SUPERVISOR="${2:?missing --supervisor value}"; shift 2 ;;
     --user)        SYSTEMD_USER=true; shift ;;
@@ -203,6 +245,22 @@ done
   luna_die "--operator-override requires a non-empty reason"
 
 luna_validate_profile "$PROFILE"
+
+# Layout validation — same fail-loud posture as the registry loader: a typo'd
+# layout must never silently degrade to inplace behaviour.
+[[ "$LAYOUT" == "inplace" || "$LAYOUT" == "releases" ]] ||
+  luna_die "invalid --layout: '$LAYOUT' (expected 'inplace' or 'releases')"
+if [[ "$LAYOUT" == "releases" ]]; then
+  [[ -n "$DEPLOY_ROOT" ]] ||
+    luna_die "--layout releases requires --deploy-root (the registry passes it; see docs/deploy-layout-migration.md)"
+  [[ "$DEPLOY_ROOT" == /* ]] || luna_die "--deploy-root must be an absolute path (got '$DEPLOY_ROOT')"
+  [[ "$RELEASES_KEEP" =~ ^[0-9]+$ ]] && (( RELEASES_KEEP >= 2 )) ||
+    luna_die "--releases-keep must be an integer >= 2 (got '$RELEASES_KEEP')"
+  [[ "$SUPERVISOR" == "systemd" ]] ||
+    luna_die "--layout releases supports only the systemd supervisor"
+else
+  [[ "$MATERIALIZE_ONLY" == false ]] || luna_die "--materialize requires --layout releases"
+fi
 
 # Supervisor validation — incompatible combinations are caught early before any
 # mutating step so the operator sees a clear diagnosis, not a half-updated server.
@@ -261,6 +319,25 @@ else
   CONTAINER_REPO_DIR="$REPO_DIR"
 fi
 
+# Releases layout path resolution OVERRIDES the repo-dir conventions above:
+# the operator-facing "repo" is the current release, always read THROUGH the
+# atomically-flipped symlink. HOST_* paths are host-side (the bind-mount
+# source); CONTAINER_* paths are what the in-container steps (bun --cwd,
+# claude re-pin, dream-wake seed) use. In bare-host mode both views coincide.
+if [[ "$LAYOUT" == "releases" ]]; then
+  MIRROR_GIT="$DEPLOY_ROOT/mirror.git"
+  RELEASES_DIR="$DEPLOY_ROOT/releases"
+  CURRENT_LINK="$DEPLOY_ROOT/current"
+  PREVIOUS_LINK="$DEPLOY_ROOT/previous"
+  HOST_REPO_DIR="$CURRENT_LINK"
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    CONTAINER_REPO_DIR="$CONTAINER_DEPLOY_ROOT/current"
+  else
+    CONTAINER_REPO_DIR="$CURRENT_LINK"
+    CONTAINER_DEPLOY_ROOT="$DEPLOY_ROOT"
+  fi
+fi
+
 ENV_FILE="$LUNA_HOME/.env"
 SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME"
 
@@ -298,12 +375,25 @@ run_target_capture() {
 # `incus exec` would (a) require git inside the container and (b) operate on the
 # in-container path — both wrong. So git_target is just luna_run (dry-run-aware),
 # never run_target. git_target_capture runs git directly to capture stdout.
+# Releases-layout fork at the narrow waist: EVERY network/ref git operation
+# targets the bare mirror — the only thing any fetch ever touches. The current
+# release keeps a real .git (a --local clone of the mirror), so identity reads
+# (rev-parse HEAD for buildSha/repair/status) still go through $HOST_REPO_DIR
+# via plain `git -C` at their call sites; git_target is the MUTATION/REF path.
 git_target() {
-  luna_run git -C "$HOST_REPO_DIR" "$@"
+  if [[ "$LAYOUT" == "releases" ]]; then
+    luna_run git --git-dir "$MIRROR_GIT" "$@"
+  else
+    luna_run git -C "$HOST_REPO_DIR" "$@"
+  fi
 }
 
 git_target_capture() {
-  git -C "$HOST_REPO_DIR" "$@"
+  if [[ "$LAYOUT" == "releases" ]]; then
+    git --git-dir "$MIRROR_GIT" "$@"
+  else
+    git -C "$HOST_REPO_DIR" "$@"
+  fi
 }
 
 # --- preflight ----------------------------------------------------------------
@@ -331,14 +421,39 @@ fi
 # The repo must be a git clone — updating a non-clone is meaningless. git runs on
 # the HOST in BOTH modes (in incus mode HOST_REPO_DIR is the bind-mount source the
 # host can always stat), so the check is the same host-side test for both shapes.
-[[ -d "$HOST_REPO_DIR/.git" ]] || luna_die "$HOST_REPO_DIR is not a git clone"
+# Releases layout replaces this with the mirror + current-release shape checks:
+# the mirror must be bare WITH the explicit remote.origin.fetch refspec
+# (git clone --bare creates NO fetch refspec, and without one every caller's
+# origin/<branch> spelling would silently stop resolving new commits), and
+# current must resolve into releases/ with a .complete marker — except under
+# --materialize, whose whole job is to create the first release/current.
+if [[ "$LAYOUT" == "releases" ]]; then
+  [[ -d "$MIRROR_GIT" ]] ||
+    luna_die "mirror $MIRROR_GIT not found; create it per docs/deploy-layout-migration.md"
+  [[ "$(git --git-dir "$MIRROR_GIT" rev-parse --is-bare-repository 2>/dev/null)" == "true" ]] ||
+    luna_die "$MIRROR_GIT is not a bare git repository"
+  MIRROR_REFSPEC="$(git --git-dir "$MIRROR_GIT" config --get remote.origin.fetch 2>/dev/null || true)"
+  [[ "$MIRROR_REFSPEC" == *"refs/remotes/origin/"* ]] ||
+    luna_die "$MIRROR_GIT lacks the remote.origin.fetch refspec mapping to refs/remotes/origin/* (LOAD-BEARING: clone --bare creates none); run: git --git-dir $MIRROR_GIT config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+  if [[ "$MATERIALIZE_ONLY" == false ]]; then
+    _cur_resolved="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd || true)"
+    _rel_resolved="$(cd -P "$RELEASES_DIR" 2>/dev/null && pwd || true)"
+    [[ -n "$_cur_resolved" && -n "$_rel_resolved" && "$_cur_resolved" == "$_rel_resolved/"* &&
+       -f "$_cur_resolved/.complete" ]] ||
+      luna_die "$CURRENT_LINK does not resolve to a complete release under $RELEASES_DIR; bootstrap with --materialize per docs/deploy-layout-migration.md"
+  fi
+else
+  [[ -d "$HOST_REPO_DIR/.git" ]] || luna_die "$HOST_REPO_DIR is not a git clone"
+fi
 
 # Unit-existence preflight: confirm the supervisor artifact (systemd unit or launchd
 # plist) actually exists before we mutate the repo. Running without one means we
 # would update the code but have no way to restart the service — a silent half-deploy.
 # Dry-run is exempt: it prints the plan without touching anything, so a missing unit
-# should not block a dry inspection of what WOULD happen.
-if [[ "$DRY_RUN" == false ]]; then
+# should not block a dry inspection of what WOULD happen. --materialize is also
+# exempt: it is the inert releases bootstrap that touches NO unit and issues NO
+# restart, and it deliberately runs while units still reference the old layout.
+if [[ "$DRY_RUN" == false && "$MATERIALIZE_ONLY" == false ]]; then
   if [[ "$SUPERVISOR" == "launchd" ]]; then
     [[ -f "$LAUNCHD_PLIST" ]] ||
       luna_die "launchd plist $LAUNCHD_PLIST not found; create it (e.g. via render_launchd_plist) before running luna-update-server"
@@ -363,6 +478,13 @@ fi
 # remote-tracking branch of the current checkout; fall back to origin/master if
 # detached. git runs on the host in BOTH modes, so HOST_REPO_DIR's HEAD is
 # readable for the incus path too.
+# Releases layout: there is NO default — the current release is a detached
+# checkout by construction, so the inplace fallback would silently degrade
+# every run to origin/master. The registry always passes --ref origin/<branch>;
+# a missing ref is a caller bug that must fail loudly.
+if [[ "$LAYOUT" == "releases" && -z "$REF" ]]; then
+  luna_die "--layout releases requires an explicit --ref (the registry passes --ref origin/<branch>; a detached current release must never default to origin/master)"
+fi
 if [[ -z "$REF" ]]; then
   CUR_BRANCH=""
   if [[ -d "$HOST_REPO_DIR/.git" ]]; then
@@ -397,6 +519,393 @@ lockfile_hash() {
   else
     printf ''
   fi
+}
+
+# --- releases layout helpers (phase 4) ----------------------------------------
+# The mutation surface of the releases layout, all host-side unless noted:
+#   deployed_sha        — resolve current -> releases/<sha>, fail closed
+#   mirror_lock_blob    — bun.lock blob id at a sha, read from the mirror
+#   materialize_release — immutable build: clone --local + detach + install +
+#                         build + .complete LAST (publish_engine idiom)
+#   flip_current        — previous := outgoing current, then staged ln + mv -fT
+#                         + cd -P re-resolve assert on BOTH mount sides
+#   repin_claude_releases — through-current claude pin with read-back
+#   prune_releases      — retention with the prune_engines protection discipline
+
+# deployed_sha — print the sha of the release current resolves to. Returns
+# non-zero (and prints nothing usable) when current is absent, dangling, does
+# not land inside releases/, is not named by a full sha, or lacks .complete.
+# Callers die or map the failure to INCONCLUSIVE — first-deploy and corruption
+# both fail closed, never degrade to a guess.
+deployed_sha() {
+  local dir sha rel_phys
+  dir="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd)" || return 1
+  rel_phys="$(cd -P "$RELEASES_DIR" 2>/dev/null && pwd)" || return 1
+  [[ "$dir" == "$rel_phys/"* ]] || return 1
+  sha="${dir##*/}"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ -f "$dir/.complete" ]] || return 1
+  printf '%s' "$sha"
+}
+
+# mirror_lock_blob <sha> — the git blob id of bun.lock at <sha>, read from the
+# bare mirror. Empty when the file/sha is unavailable (treated as "changed",
+# which forces the safe fresh-install path).
+mirror_lock_blob() {
+  git --git-dir "$MIRROR_GIT" rev-parse --verify -q "$1:bun.lock" 2>/dev/null || printf ''
+}
+
+# release_artifacts_ok <release-dir> — the reuse gate: .complete AND
+# node_modules AND a non-empty SPA entry point. Host-side stats (the host can
+# always stat the bind-mount source).
+release_artifacts_ok() {
+  local rel="$1"
+  [[ -f "$rel/.complete" && -d "$rel/node_modules" && -s "$rel/apps/ui-web/dist/index.html" ]]
+}
+
+# _build_release_tree <build_dir> <crel> <sha> [prev_lock_blob] — the shared
+# build body: clone --local + detach + HEAD postcondition + seed + install +
+# build + .complete LAST. <build_dir> is the host-side tree being built (either
+# the final releases/<sha> or a staged sibling); <crel> is its in-container
+# spelling. Every step is `|| return 1`; the CALLER owns cleanup of a failed
+# tree (materialize_release removes it — a failed build tree is never the
+# serving tree, so removing it cannot touch what current serves).
+_build_release_tree() {
+  local build_dir="$1" crel="$2" sha="$3" prev_lock_blob="${4:-}"
+  local head_now new_lock cur_sha
+  luna_run git clone --no-checkout --local "$MIRROR_GIT" "$build_dir" || return 1
+  luna_run git -C "$build_dir" checkout --detach "$sha" || return 1
+  # POSTCONDITION: the release identifies as exactly the target sha — this IS
+  # the identity chain buildSha/repair/status read later, so it must be proven
+  # at build time, not assumed.
+  head_now="$(git -C "$build_dir" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "${head_now,,}" != "${sha,,}" ]]; then
+    luna_warn "POSTCONDITION: release checkout HEAD is '${head_now:-unreadable}', expected $sha — refusing to continue"
+    return 1
+  fi
+  # node_modules seeding: when the mirror says bun.lock is byte-identical
+  # between the deployed release and the target, seed via plain cp -a (NEVER
+  # hardlinks: bun rewriting a shared inode would corrupt the immutable
+  # previous release). The frozen install still runs after seeding — on a
+  # satisfied tree it is a fast no-op check, and the node_modules
+  # postcondition below is unchanged either way.
+  new_lock="$(mirror_lock_blob "$sha")"
+  if [[ -n "$prev_lock_blob" && -n "$new_lock" && "$new_lock" == "$prev_lock_blob" ]]; then
+    cur_sha="$(deployed_sha 2>/dev/null || true)"
+    if [[ -n "$cur_sha" && -d "$RELEASES_DIR/$cur_sha/node_modules" ]]; then
+      luna_info "bun.lock unchanged (blob ${new_lock:0:12}) -> seeding node_modules from release ${cur_sha:0:12} (cp -a)"
+      if ! cp -a "$RELEASES_DIR/$cur_sha/node_modules" "$build_dir/node_modules"; then
+        luna_warn "node_modules seed failed; falling back to a fresh install"
+        rm -rf "$build_dir/node_modules" || return 1
+      fi
+    fi
+  fi
+  run_target "$BUN_BIN" install --cwd "$crel" --frozen-lockfile || return 1
+  # POSTCONDITION: the install's declared artifact exists (in-container view).
+  if ! run_target test -d "$crel/node_modules"; then
+    luna_warn "POSTCONDITION: bun install exited 0 but $crel/node_modules is missing"
+    return 1
+  fi
+  run_target "$BUN_BIN" run --cwd "$crel" --filter "@luna/ui-web" build || return 1
+  # POSTCONDITION: the build's declared artifact exists and is non-empty.
+  if ! run_target test -s "$crel/apps/ui-web/dist/index.html"; then
+    luna_warn "POSTCONDITION: ui-web build exited 0 but $crel/apps/ui-web/dist/index.html is missing or empty"
+    return 1
+  fi
+  # Deliberate SIGKILL seam (tests): a crash BEFORE the marker must leave a
+  # partial the next run sweeps and rebuilds — the publish_engine idiom.
+  if [[ -n "${LUNA_TEST_CRASH_BEFORE_COMPLETE:-}" ]]; then
+    kill -KILL "$$"
+  fi
+  # .complete is written LAST so a partial is never seen as complete.
+  if ! touch "$build_dir/.complete" || [[ ! -f "$build_dir/.complete" ]]; then
+    luna_warn "POSTCONDITION: could not publish $build_dir/.complete"
+    return 1
+  fi
+  return 0
+}
+
+# materialize_release <sha> [prev_lock_blob] — build the immutable release
+# checkout. Never touches current/previous. Every step is `|| return 1` so a
+# failure routes to the caller (pre-flip: warn + exit 1, current untouched).
+#
+# INVARIANT (the serving-tree rule): this function never removes the tree
+# `current` physically resolves to — that directory is the running unit's
+# WorkingDirectory and the thing every failure message promises is untouched.
+# When the DEPLOYED release's artifacts are damaged (the repair-rung-2 damage
+# class: node_modules lost to disk-pressure cleanup), the rebuild happens in a
+# staged sibling (releases/.stage.<sha>) and is swapped in ONLY once complete —
+# a failed rebuild (bun registry unreachable at 3am) leaves the damaged-but-
+# extant tree in place: current still resolves, the exit-1 "current untouched"
+# routing stays true, and the preflight complete-release check still passes on
+# the next attempt. Staged/failed build trees are removed on the way out so
+# consecutive failing deploys of DISTINCT shas cannot accumulate unbounded
+# multi-GB partials (retention only runs on healthy/rolled-back exits).
+materialize_release() {
+  local sha="$1" prev_lock_blob="${2:-}"
+  local rel="$RELEASES_DIR/$sha" build_dir crel cur_phys rel_phys staged=false aside
+  if [[ "$DRY_RUN" == true ]]; then
+    if [[ -n "$INCUS_CONTAINER" ]]; then
+      crel="$CONTAINER_DEPLOY_ROOT/releases/$sha"
+    else
+      crel="$rel"
+    fi
+    luna_run git clone --no-checkout --local "$MIRROR_GIT" "$rel"
+    luna_run git -C "$rel" checkout --detach "$sha"
+    run_target "$BUN_BIN" install --cwd "$crel" --frozen-lockfile
+    run_target "$BUN_BIN" run --cwd "$crel" --filter "@luna/ui-web" build
+    luna_run touch "$rel/.complete"
+    return 0
+  fi
+  mkdir -p "$RELEASES_DIR" || return 1
+  # Reuse gate: a COMPLETE release with intact artifacts is immutable and
+  # rebuilt never — recovery and repair re-runs no-op here (content-addressed,
+  # the guardian engine@<sha> idiom).
+  if release_artifacts_ok "$rel"; then
+    luna_info "release $sha already materialized and complete — reusing"
+    return 0
+  fi
+  build_dir="$rel"
+  if [[ -e "$rel" ]]; then
+    cur_phys="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd || true)"
+    rel_phys="$(cd -P "$rel" 2>/dev/null && pwd || true)"
+    if [[ -n "$cur_phys" && "$cur_phys" == "$rel_phys" ]]; then
+      # The DEPLOYED release with damaged artifacts: NEVER rm -rf it (see the
+      # serving-tree rule above). Rebuild into a staged sibling and swap.
+      staged=true
+      build_dir="$RELEASES_DIR/.stage.$sha"
+      luna_warn "deployed release $sha has damaged artifacts — rebuilding into a staged sibling (the serving tree stays in place until a complete swap)"
+      rm -rf "$build_dir" || return 1
+    else
+      # A partial without .complete (crash mid-build) or a .complete whose
+      # declared artifacts are damaged — and NOT the deployed release — is
+      # swept and rebuilt from scratch.
+      luna_warn "removing stale/incomplete release $sha and rebuilding"
+      rm -rf "$rel" || return 1
+    fi
+  fi
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    crel="$CONTAINER_DEPLOY_ROOT/releases/${build_dir##*/}"
+  else
+    crel="$build_dir"
+  fi
+  if ! _build_release_tree "$build_dir" "$crel" "$sha" "$prev_lock_blob"; then
+    # PRE-flip cleanup: by construction the failed tree is never the serving
+    # tree (staged, or a non-deployed sha dir), so removing it is safe and
+    # keeps distinct failing shas from leaking ~GB partials run after run.
+    rm -rf "$build_dir" 2>/dev/null || true
+    return 1
+  fi
+  if [[ "$staged" == true ]]; then
+    # Swap the complete staged tree into place. The exposure window is two
+    # renames (vs the whole multi-minute build); on any swap failure the
+    # damaged-but-extant tree is restored so current never dangles.
+    aside="$RELEASES_DIR/.old.$sha.$$"
+    rm -rf "$aside" 2>/dev/null || true
+    if ! mv -T "$rel" "$aside"; then
+      luna_warn "POSTCONDITION: could not move damaged release $sha aside — deployed tree left untouched"
+      rm -rf "$build_dir" 2>/dev/null || true
+      return 1
+    fi
+    if ! mv -T "$build_dir" "$rel"; then
+      mv -T "$aside" "$rel" 2>/dev/null || true
+      luna_warn "POSTCONDITION: staged swap of release $sha did not land — damaged tree restored"
+      rm -rf "$build_dir" 2>/dev/null || true
+      return 1
+    fi
+    rm -rf "$aside" 2>/dev/null || true
+    # POSTCONDITION: current still resolves into the (now rebuilt) release.
+    cur_phys="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd || true)"
+    rel_phys="$(cd -P "$rel" 2>/dev/null && pwd || true)"
+    if [[ -z "$cur_phys" || "$cur_phys" != "$rel_phys" ]]; then
+      luna_warn "POSTCONDITION: current no longer resolves to releases/$sha after the staged swap"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# flip_current <sha> — atomically point current at releases/<sha>, restamping
+# previous to the OUTGOING target first (forward AND rollback: after a
+# rollback, previous names the failed release, retained for forensics). All
+# links are RELATIVE (an absolute link would dangle in-container — the bind
+# mount pins the source, only in-tree symlinks propagate). A re-flip to the
+# sha current already names (idempotent journal recovery) leaves previous
+# untouched — restamping it would destroy the rollback target.
+# Runs INSIDE the restart window (RESTART_PRESTART_HOOK): on failure it
+# returns 1 with a POSTCONDITION-prefixed warn — never dies mid-primitive
+# with the service stopped — so restart_service routes the failure to
+# fail_forward -> rollback flip-back.
+flip_current() {
+  local sha="$1" outgoing_dir outgoing_sha="" linktmp resolved in_container_resolved
+  if [[ "$DRY_RUN" == true ]]; then
+    luna_run ln -sfT "releases/$sha" "$CURRENT_LINK"
+    return 0
+  fi
+  if [[ ! -f "$RELEASES_DIR/$sha/.complete" ]]; then
+    luna_warn "POSTCONDITION: refusing to flip current to releases/$sha — not a complete release"
+    return 1
+  fi
+  outgoing_dir="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd || true)"
+  if [[ -n "$outgoing_dir" ]]; then
+    outgoing_sha="${outgoing_dir##*/}"
+  fi
+  if [[ -n "$outgoing_sha" && "$outgoing_sha" != "$sha" ]]; then
+    linktmp="$PREVIOUS_LINK.tmp.$$"
+    rm -f "$linktmp"
+    if ! ln -s "releases/$outgoing_sha" "$linktmp" || ! mv -fT "$linktmp" "$PREVIOUS_LINK"; then
+      rm -f "$linktmp" 2>/dev/null || true
+      luna_warn "POSTCONDITION: could not restamp $PREVIOUS_LINK -> releases/$outgoing_sha"
+      return 1
+    fi
+  fi
+  # Staged ln + mv -fT: -T is load-bearing (mv onto an existing symlink-to-dir
+  # would otherwise nest the new link INSIDE the old release — the engine-pin
+  # regression class). Then PROVE the flip landed by physical re-resolution.
+  linktmp="$CURRENT_LINK.tmp.$$"
+  rm -f "$linktmp"
+  if ! ln -s "releases/$sha" "$linktmp" || ! mv -fT "$linktmp" "$CURRENT_LINK"; then
+    rm -f "$linktmp" 2>/dev/null || true
+    luna_warn "POSTCONDITION: could not publish $CURRENT_LINK -> releases/$sha"
+    return 1
+  fi
+  resolved="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd || true)"
+  if [[ "${resolved##*/}" != "$sha" ]]; then
+    luna_warn "POSTCONDITION: current flip did not land — $CURRENT_LINK resolves to '${resolved:-<unresolvable>}', expected releases/$sha"
+    return 1
+  fi
+  # BOTH sides of the bind mount must witness the flip: the container is the
+  # side that actually serves, and it runs even while the unit is stopped.
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    in_container_resolved="$(run_target_capture readlink -f "$CONTAINER_DEPLOY_ROOT/current" 2>/dev/null || true)"
+    if [[ "$in_container_resolved" != */releases/"$sha" ]]; then
+      luna_warn "POSTCONDITION: in-container $CONTAINER_DEPLOY_ROOT/current resolves to '${in_container_resolved:-<unreadable>}', expected .../releases/$sha"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# repin_claude_releases <sha> — graft 2: the keep-if-executable fast path is
+# BYPASSED in releases mode (retained old releases keep old binaries
+# executable forever, so the stale-pin detector would never fire). Detect the
+# binary inside the NAMED release, rewrite the physical releases/<sha> prefix
+# to the through-current spelling, write it with a read-back, and verify the
+# PHYSICAL binary is executable (the through-current path only dereferences
+# to this release once the flip lands — systemd reads EnvironmentFile at unit
+# start, after the in-window flip, so the pin takes effect exactly with the
+# release). Missing binary keeps the exit-9-style warn-only degrade.
+repin_claude_releases() {
+  local sha="$1"
+  local rel="$RELEASES_DIR/$sha" detected through_current
+  [[ "$DRY_RUN" == true ]] && return 0
+  detected="$(
+    find "$rel/node_modules" \
+      -path '*/@anthropic-ai/claude-agent-sdk-linux-x64/claude' \
+      -type f -perm -111 2>/dev/null |
+      sort |
+      tail -n 1
+  )" || true
+  if [[ -z "$detected" ]]; then
+    if run_target bash -lc 'command -v claude >/dev/null 2>&1'; then
+      return 0
+    fi
+    luna_warn "POSTCONDITION degraded: no usable claude executable in release ${sha:0:12} — server will boot but cannot spawn claude"
+    return 0
+  fi
+  through_current="$CONTAINER_REPO_DIR${detected#"$rel"}"
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    # The container's .env is a container-FS artifact; write it in-container
+    # sourcing the release's own lib copy (present pre-flip), then read back.
+    run_target bash -lc \
+      "source $CONTAINER_DEPLOY_ROOT/releases/$sha/scripts/lib/luna-deploy.sh && luna_upsert_env $CONTAINER_ENV_FILE LUNA_CLAUDE_CODE_EXECUTABLE '$through_current' && [[ \"\$(luna_env_value $CONTAINER_ENV_FILE LUNA_CLAUDE_CODE_EXECUTABLE)\" == '$through_current' ]]" || {
+      luna_warn "POSTCONDITION: through-current claude pin write did not read back in-container"
+      return 1
+    }
+  else
+    luna_upsert_env "$ENV_FILE" "LUNA_CLAUDE_CODE_EXECUTABLE" "$through_current" || return 1
+    if [[ "$(luna_env_value "$ENV_FILE" LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true)" != "$through_current" ]]; then
+      luna_warn "POSTCONDITION: through-current claude pin write did not read back in $ENV_FILE"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# prune_releases — retention at the END of a healthy deploy only. Protection
+# discipline is a direct port of the guardian's prune_engines: protected =
+# resolved(current) + resolved(previous) + any sha named in a live transaction
+# journal; refuse-all when current OR previous dangles; postcondition
+# re-resolves both links and is fatal ONLY when this run actually pruned
+# (pre-existing corruption is warned with the right attribution, never blamed
+# on prune).
+prune_releases() {
+  local keep="$RELEASES_KEEP" index=0 dir protected=" " cur prev_phys prev_sha="" pruned_any=false resolved jsha
+  if ! cur="$(deployed_sha)"; then
+    luna_warn "prune refused: $CURRENT_LINK does not resolve to a complete release; not pruning any releases this run"
+    return 0
+  fi
+  protected+="$cur "
+  if [[ -L "$PREVIOUS_LINK" || -e "$PREVIOUS_LINK" ]]; then
+    if ! prev_phys="$(cd -P "$PREVIOUS_LINK" 2>/dev/null && pwd)"; then
+      luna_warn "prune refused: $PREVIOUS_LINK does not resolve; not pruning any releases this run"
+      return 0
+    fi
+    prev_sha="${prev_phys##*/}"
+    if [[ ! -f "$prev_phys/.complete" ]]; then
+      luna_warn "prune: previous resolves to a release missing its .complete marker (pre-existing corruption, not caused by prune; it stays protected)"
+    fi
+    protected+="$prev_sha "
+  fi
+  # A live journal names shas a crashed/recovering transaction still depends on.
+  if [[ -f "$UPDATE_JOURNAL" ]]; then
+    for jsha in "$(sed -n 's/^prev=//p' "$UPDATE_JOURNAL" | head -1)" \
+                "$(sed -n 's/^target=//p' "$UPDATE_JOURNAL" | head -1)"; do
+      [[ "$jsha" =~ ^[0-9a-fA-F]{7,64}$ ]] && protected+="$jsha "
+    done
+  fi
+  # Stale staged build trees (.stage.<sha>, SIGKILL leftovers) are rebuildable
+  # debris that is never the serving tree; sweep them unconditionally. (The
+  # glob may match nothing — the -e guard skips the literal.)
+  local stale
+  for stale in "$RELEASES_DIR"/.stage.*; do
+    [[ -e "$stale" ]] || continue
+    rm -rf "$stale" 2>/dev/null || luna_warn "prune: could not remove stale staged tree $stale"
+  done
+  # shellcheck disable=SC2012
+  for dir in $(ls -dt "$RELEASES_DIR"/*/ 2>/dev/null || true); do
+    dir="${dir%/}"
+    [[ "${dir##*/}" =~ ^[0-9a-fA-F]{7,64}$ ]] || continue
+    if [[ ! -f "$dir/.complete" ]]; then
+      # A partial (no .complete) NEVER counts toward keep — an unusable build
+      # residue occupying a newest-by-mtime slot would silently evict complete
+      # rollback candidates from retention. Unless protected (journal-named /
+      # current / previous), it is removed regardless of age.
+      if [[ "$protected" == *" ${dir##*/} "* ]]; then continue; fi
+      pruned_any=true
+      rm -rf "$dir" || luna_warn "prune: could not remove partial $dir"
+      continue
+    fi
+    index=$((index + 1))
+    if (( index <= keep )); then continue; fi
+    if [[ "$protected" == *" ${dir##*/} "* ]]; then continue; fi
+    pruned_any=true
+    rm -rf "$dir" || luna_warn "prune: could not remove $dir"
+  done
+  # POSTCONDITION: the links prune must never break still resolve.
+  if ! resolved="$(deployed_sha)"; then
+    if [[ "$pruned_any" == true ]]; then
+      luna_die "POSTCONDITION: release prune broke $CURRENT_LINK"
+    fi
+    luna_warn "current is broken but prune deleted nothing this run — pre-existing corruption"
+  fi
+  if [[ -n "$prev_sha" ]] && ! (cd -P "$PREVIOUS_LINK" >/dev/null 2>&1); then
+    if [[ "$pruned_any" == true ]]; then
+      luna_die "POSTCONDITION: release prune broke $PREVIOUS_LINK"
+    fi
+    luna_warn "previous is broken but prune deleted nothing this run — pre-existing corruption"
+  fi
+  return 0
 }
 
 # --- crash-safe transaction + per-profile exclusion -------------------------
@@ -612,7 +1121,35 @@ readiness_ok() {
 # becomes a RETURN VALUE the caller routes into rollback — NOT a `set -e` abort
 # that would skip rollback entirely. `|| return 1` is safe under `set -e` in any
 # call context (it is the rightmost element of an OR list).
+# apply_ref is a DISPATCHER: the inplace arm is the pre-phase-4 body VERBATIM
+# (all phase 1-3 behaviour byte-preserved); the releases arm materializes an
+# immutable release and NEVER flips current (the flip runs inside the guarded
+# restart window — see restart_service). git reset --hard exists ONLY in the
+# inplace arm.
 apply_ref() {
+  if [[ "$LAYOUT" == "releases" ]]; then
+    apply_ref_releases "$@"
+  else
+    apply_ref_inplace "$@"
+  fi
+}
+
+# Releases arm: materialize + build PRE-flip, then the through-current claude
+# re-pin. No mutation of current/previous/mirror-worktrees happens here — a
+# failure leaves the deploy root serving exactly what it served before.
+apply_ref_releases() {
+  local target="$1"
+  local prev_lock_hash="$2"
+  # third arg (--no-fetch) accepted for signature compatibility; the releases
+  # main flow always fetches the mirror up front, exactly like inplace.
+  materialize_release "$target" "$prev_lock_hash" || return 1
+  if [[ "$TRANSACTION_TRACK_APPLY" == true ]]; then
+    write_transaction "checkout" || return 1
+  fi
+  repin_claude_releases "$target" || return 1
+}
+
+apply_ref_inplace() {
   local target="$1"
   local prev_lock_hash="$2"
   local no_fetch="${3:-}"
@@ -973,6 +1510,26 @@ restart_service() {
   sup_reload || return 1
   sup_stop   || return 1
   settle_after_stop
+  # Graft 1 (releases layout): the current-symlink flip lives INSIDE the
+  # restart window — after the confirmed stop+settle, before start. A
+  # session-guard defer (first line above) therefore leaves current UNTOUCHED:
+  # there is never a window where current names a build the server is not
+  # serving. The hook is set ONLY by releases-mode deploy/rollback (never by
+  # --restart-only); it returns 1 on failure (POSTCONDITION-prefixed warn
+  # inside the flip, never a die mid-primitive with the service stopped) so
+  # the caller routes it into rollback's flip-back.
+  if (( ${#RESTART_PRESTART_HOOK[@]} > 0 )); then
+    "${RESTART_PRESTART_HOOK[@]}" || return 1
+    # Deliberate SIGKILL seam (tests): a crash BETWEEN the landed flip and
+    # sup_start is the narrowest recovery window (journal=restarting, current
+    # already names the target, unit stopped). Recovery must re-flip
+    # idempotently WITHOUT restamping previous — restamping it to the target
+    # (= itself) would destroy the rollback target's `previous` identity and
+    # its prune protection (see flip_current's outgoing_sha != sha guard).
+    if [[ -n "${LUNA_TEST_CRASH_AFTER_FLIP:-}" ]]; then
+      kill -KILL "$$"
+    fi
+  fi
   sup_start  || return 1
   if [[ "$DRY_RUN" != true && "$SUPERVISOR" == "systemd" ]] &&
      [[ "$pre_pid" =~ ^[0-9]+$ && "$pre_pid" != 0 ]]; then
@@ -995,7 +1552,74 @@ restart_service() {
   fi
 }
 
+# --- releases bootstrap: --materialize ----------------------------------------
+# Inert by design (graft 6): materialize + build + create current WITHOUT any
+# restart or unit interaction, so it can run beside the live in-place server
+# during the migration (via the temporary additive device mount — the
+# LUNA_CONTAINER_DEPLOY_ROOT seam). current is created only when absent; an
+# established current is never moved by a bootstrap.
+if [[ "$MATERIALIZE_ONLY" == true ]]; then
+  if [[ "$DRY_RUN" == false ]]; then
+    if ! acquire_update_lock; then
+      luna_die "another update holds the profile '$PROFILE' lock; retry when it finishes"
+    fi
+    git_target fetch origin || luna_die "mirror fetch failed"
+    if [[ "$REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+      MAT_SHA="${REF,,}"
+    else
+      MAT_SHA="$(git_target_capture rev-parse "${REF}^{commit}" 2>/dev/null || true)"
+    fi
+    [[ "$MAT_SHA" =~ ^[0-9a-f]{40}$ ]] || luna_die "could not resolve --ref '$REF' in $MIRROR_GIT"
+  else
+    git_target fetch origin
+    MAT_SHA="$REF"
+  fi
+  materialize_release "$MAT_SHA" || luna_die "materialize of $MAT_SHA failed (failed build tree cleaned up; deploy root unchanged)"
+  if [[ "$DRY_RUN" == false ]] && deployed_sha >/dev/null 2>&1; then
+    luna_info "current already resolves to a complete release — left untouched (bootstrap never moves an established current)"
+  else
+    flip_current "$MAT_SHA" || luna_die "could not create $CURRENT_LINK -> releases/$MAT_SHA"
+  fi
+  luna_info "materialized release $MAT_SHA (no restart, no unit interaction — see docs/deploy-layout-migration.md for the cutover)"
+  exit 0
+fi
+
 # --- plan / dry-run -----------------------------------------------------------
+if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
+  luna_info "Plan (dry-run — releases layout; nothing will be executed):"
+  PREV="$(deployed_sha 2>/dev/null || printf '(current release)')"
+  printf '1. record PREV = %s (deploy root %s; deployed release resolved via current)\n' "$PREV" "$DEPLOY_ROOT"
+  printf '2. mirror fetch: git --git-dir %s fetch origin (the ONLY tree any fetch touches; no reset of any kind)\n' "$MIRROR_GIT"
+  printf '3. materialize release: git clone --no-checkout --local %s releases/<sha> + checkout --detach (reused if already .complete)\n' "$MIRROR_GIT"
+  printf '4. build-in-release: %s install --frozen-lockfile + @luna/ui-web build INSIDE releases/<sha> (pre-flip; cp -a node_modules seed when bun.lock blob unchanged)\n' "$BUN_BIN"
+  printf '5. re-pin LUNA_CLAUDE_CODE_EXECUTABLE through current (detected in the NEW release, written as the through-current spelling)\n'
+  printf '6. session guard: refuse stop if live sessions on :%s (dead-server exception: unit inactive/failed permits)\n' "$READINESS_PORT"
+  printf '7. flip-inside-restart: stop %s -> settle %ss -> flip current -> releases/<sha> (previous := outgoing; staged ln + mv -fT + cd -P assert) -> start\n' "$SERVICE_NAME" "$RESTART_SETTLE_SECS"
+  printf '8. verify: readiness probe is-active + NRestarts-stable + /healthz==200 + /readyz mode=normal + buildSha==<sha> (<=%ss)\n' "$READINESS_TIMEOUT"
+  printf '9. on readiness OK: prune releases (keep %s; current/previous/journal-named protected) + seed dream/wake rows through current\n' "$RELEASES_KEEP"
+  if [[ "$ROLLBACK" == true ]]; then
+    printf '10. rollback = flip back to previous (no git surgery, no install, no rebuild); if the flip-back also fails: CRITICAL, exit 2\n'
+  else
+    printf '10. rollback DISABLED (--no-rollback): on readiness FAIL, exit 1 without flipping back\n'
+  fi
+  # Concrete commands that WOULD run, executing nothing (routed exactly as the
+  # live path: mirror-only git, bun/systemctl via run_target). The live path
+  # resolves --ref to a full lowercase sha BEFORE any path is formed, so the
+  # trace must too: resolve READ-ONLY against the existing mirror (no fetch —
+  # dry-run mutates nothing) and fall back to a <sha> placeholder when the ref
+  # only exists upstream. Printing the raw symbolic ref would trace paths like
+  # releases/origin/master that the live path never creates.
+  DRY_SHA="$(git --git-dir "$MIRROR_GIT" rev-parse --verify "${REF}^{commit}" 2>/dev/null || true)"
+  DRY_SHA="${DRY_SHA,,}"
+  [[ "$DRY_SHA" =~ ^[0-9a-f]{40}$ ]] || DRY_SHA="<sha>"
+  git_target fetch origin
+  materialize_release "$DRY_SHA"
+  RESTART_PRESTART_HOOK=(flip_current "$DRY_SHA")
+  restart_service
+  run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  luna_info "Dry run complete; no changes made."
+  exit 0
+fi
 if [[ "$DRY_RUN" == true ]]; then
   luna_info "Plan (dry-run — nothing will be executed):"
   PREV="(current HEAD)"
@@ -1091,7 +1715,72 @@ seed_dream_wake_jobs() {
 # failed its health probe OR a forward command (bun install / restart) errored.
 # Returns nothing: it always exits. Exit 1 = recovered to PREV; exit 2 = CRITICAL
 # (rollback itself failed, by command error OR by failing its own health probe).
+# Releases-layout rollback: flip current back to PREV inside the guarded
+# restart window. NO git surgery, NO install, NO rebuild — the previous
+# release is immutable and already built. Always exits (like do_rollback):
+# 1 recovered, 2 CRITICAL, 3 guard-deferred (journal retained).
+do_rollback_releases() {
+  # FORWARD_RESTART_RAN scoping is identical to inplace. In releases mode
+  # pre-flip failures (materialize/install/build) never enter rollback at all
+  # (current never moved, old server never stopped), so this path is normally
+  # reached only after a forward restart interrupted service — but the scoping
+  # stays explicit so a future caller cannot widen the exemption.
+  if [[ "$FORWARD_RESTART_RAN" == true ]]; then
+    GUARD_SESSIONS=false
+    luna_warn "rollback restart proceeds without the session guard: the forward restart already interrupted service, and blocking rollback would strand a broken build"
+  else
+    luna_warn "rollback before any forward restart: the old server was never stopped, so the session guard stays ACTIVE for the rollback restart"
+  fi
+  luna_warn "ROLLING BACK (flip) to $PREV"
+  write_transaction "rolling-back" || true
+  TRANSACTION_TRACK_APPLY=false
+  EXPECTED_BUILD_SHA="$PREV"
+  ALLOW_MISSING_BUILD_SHA=true
+  if [[ ! -f "$RELEASES_DIR/$PREV/.complete" ]]; then
+    printf 'CRITICAL: rollback target release %s is missing or incomplete (%s/.complete absent) — server may be DOWN. Manual remedy: re-materialize with --materialize --ref %s, or flip to another complete release: ln -sfT releases/<sha> %s && systemctl restart %s.\n' \
+      "$PREV" "$RELEASES_DIR/$PREV" "$PREV" "$CURRENT_LINK" "$SERVICE_NAME" >&2
+    write_transaction "rollback-failed" || true
+    exit 2
+  fi
+  # Re-pin claude against the rollback release, written through-current.
+  # Warn-only: restoring service outranks a pin defect (same reasoning as the
+  # inplace exit-9 degrade).
+  repin_claude_releases "$PREV" ||
+    luna_warn "claude re-pin against rollback release $PREV failed; pin may be stale (server still restored)"
+  local ok=true rollback_restart_rc=0
+  RESTART_PRESTART_HOOK=(flip_current "$PREV")
+  restart_service || rollback_restart_rc=$?
+  if (( rollback_restart_rc == 3 )); then
+    luna_warn "rollback restart DEFERRED by session guard (current untouched); transaction journal retained (phase=rolling-back) — resumes when sessions end"
+    exit 3
+  fi
+  (( rollback_restart_rc == 0 )) || ok=false
+  if [[ "$ok" == true ]]; then
+    local rollback_baseline
+    rollback_baseline="$(readiness_restart_baseline)"
+    if readiness_ok "$rollback_baseline"; then
+      luna_warn "update to $REF failed — ROLLED BACK (flipped) to $PREV ($SERVICE_NAME healthy)"
+      clear_transaction
+      # Retention runs on the recovered-rollback exit too: a branch that keeps
+      # advancing while every deploy fails readiness otherwise accumulates
+      # complete-but-failed releases without bound (nothing else prunes until
+      # a deploy finally SUCCEEDS). Protection covers current (=PREV) and
+      # previous (=the failed REF, retained for forensics).
+      prune_releases
+      exit 1
+    fi
+  fi
+  printf 'CRITICAL: update to %s failed AND rollback flip to %s also failed — server may be DOWN. Manual remedy: ln -sfT releases/%s %s && systemctl restart %s (see docs/deploy-layout-migration.md).\n' \
+    "$REF" "$PREV" "$PREV" "$CURRENT_LINK" "$SERVICE_NAME" >&2
+  write_transaction "rollback-failed" || true
+  exit 2
+}
+
 do_rollback() {
+  if [[ "$LAYOUT" == "releases" ]]; then
+    do_rollback_releases
+    # not reached — do_rollback_releases always exits
+  fi
   # The guard exemption is SCOPED, not unconditional. Two cases:
   #   - FORWARD_RESTART_RAN=true: the forward restart already interrupted
   #     service, so the guard has nothing left to protect and blocking rollback
@@ -1192,7 +1881,14 @@ if [[ "$RESTART_ONLY" == true ]]; then
     if (( RRC == 3 )); then exit 3; fi
     if (( RRC != 0 )); then luna_warn "restart-only: restart errored (checkout untouched; no rollback)"; exit 1; fi
     RESTART_BASELINE="$(readiness_restart_baseline)"
-    EXPECTED_BUILD_SHA="$(git_target_capture rev-parse HEAD)"
+    if [[ "$LAYOUT" == "releases" ]]; then
+      # The deployed identity is the resolved current release, never the
+      # mirror's meaningless HEAD. Fail closed on a dangling current.
+      EXPECTED_BUILD_SHA="$(deployed_sha)" ||
+        luna_die "cannot resolve the deployed release ($CURRENT_LINK) for the restart-only readiness gate"
+    else
+      EXPECTED_BUILD_SHA="$(git_target_capture rev-parse HEAD)"
+    fi
     if readiness_ok "$RESTART_BASELINE"; then
       luna_info "restart-only: $SERVICE_NAME healthy at ${EXPECTED_BUILD_SHA:0:12}"
       exit 0
@@ -1203,6 +1899,13 @@ if [[ "$RESTART_ONLY" == true ]]; then
 fi
 
 NEW_HEAD=""
+# RECOVERY_PHASE: the journal phase this run RECOVERED from ("" on a fresh
+# run). Captured at load time because write_transaction overwrites TX_PHASE
+# mid-run. Load-bearing for releases-mode failure routing: recovery of
+# phase=restarting/verifying means the crashed run may already have STOPPED
+# the unit and/or FLIPPED current, so an apply failure there must never claim
+# "old server still serving" nor destroy the journal.
+RECOVERY_PHASE=""
 if [[ -f "$UPDATE_JOURNAL" ]]; then
   if ! load_transaction; then
     printf 'CRITICAL: corrupt update transaction journal %s — refusing to mutate the checkout; inspect or remove it manually.\n' "$UPDATE_JOURNAL" >&2
@@ -1211,6 +1914,7 @@ if [[ -f "$UPDATE_JOURNAL" ]]; then
   PREV="$TX_PREV"
   REF="$TX_TARGET"
   PREV_LOCK_HASH="$TX_PREV_LOCK_HASH"
+  RECOVERY_PHASE="$TX_PHASE"
   luna_warn "RECOVERING interrupted update phase=$TX_PHASE prev=${PREV:0:9} target=${REF:0:9}"
   if [[ "$TX_PHASE" == "rolling-back" || "$TX_PHASE" == "rollback-failed" ]]; then
     # A mid-rollback journal means a prior run already began the rollback; the
@@ -1233,17 +1937,42 @@ if [[ -f "$UPDATE_JOURNAL" ]]; then
     fi
   fi
 else
-  PREV="$(git_target_capture rev-parse HEAD)"
-  [[ -n "$PREV" ]] || luna_die "could not read current HEAD in $HOST_REPO_DIR"
-  PREV_LOCK_HASH="$(lockfile_hash)"
-  luna_info "Current HEAD: $PREV"
+  if [[ "$LAYOUT" == "releases" ]]; then
+    # PREV is the RESOLVED deployed release — by construction the sha the
+    # server was built from (strictly stronger than a driftable HEAD), and the
+    # rollback flip target. The lock "hash" is the mirror's bun.lock blob id
+    # at PREV (journal field prev_lock_hash keeps its name and 40-hex shape).
+    PREV="$(deployed_sha)" ||
+      luna_die "could not resolve the deployed release via $CURRENT_LINK (dangling/incomplete current fails closed; see docs/deploy-layout-migration.md)"
+    PREV_LOCK_HASH="$(mirror_lock_blob "$PREV")"
+    luna_info "Current release: $PREV"
+  else
+    PREV="$(git_target_capture rev-parse HEAD)"
+    [[ -n "$PREV" ]] || luna_die "could not read current HEAD in $HOST_REPO_DIR"
+    PREV_LOCK_HASH="$(lockfile_hash)"
+    luna_info "Current HEAD: $PREV"
+  fi
 
   # Resolve the requested moving ref to an immutable commit while holding the
   # profile lock. The journal always records this exact target, so recovery can
   # finish the same transaction even if origin advances again meanwhile.
   REQUESTED_REF="$REF"
   git_target fetch origin || luna_die "fetch failed before update; checkout unchanged"
-  if [[ "$REQUESTED_REF" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+  if [[ "$LAYOUT" == "releases" ]]; then
+    # Releases mode normalizes EVERY ref — hex included — through the mirror
+    # to the FULL LOWERCASE sha (exactly what --materialize already does).
+    # Passing an operator-supplied hex ref through verbatim regresses two
+    # spellings inplace handles: an abbreviated sha fails materialize's
+    # exact-length HEAD postcondition with a misleading corruption warning,
+    # and an UPPERCASE sha survives the flip only to fail readiness's
+    # case-sensitive buildSha compare — flip-rolling-back a healthy deploy on
+    # every attempt. The full sha also names the release directory, so the
+    # canonical form is load-bearing, not cosmetic.
+    REF="$(git_target_capture rev-parse --verify "${REQUESTED_REF}^{commit}" 2>/dev/null || true)"
+    REF="${REF,,}"
+    [[ "$REF" =~ ^[0-9a-f]{40}$ ]] ||
+      luna_die "could not resolve target ref $REQUESTED_REF in $MIRROR_GIT"
+  elif [[ "$REQUESTED_REF" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
     REF="$REQUESTED_REF"
   else
     REF="$(git_target_capture rev-parse "${REQUESTED_REF}^{commit}")"
@@ -1261,17 +1990,51 @@ fi
 
 # A forward command-level failure (fetch/reset/install) routes into rollback —
 # NOT a `set -e` abort. This is the whole point of auto-rollback.
+# Releases layout: a PRE-FLIP failure (materialize/install/build) never enters
+# rollback at all — current never moved and the old server never stopped, so
+# there is nothing to roll back. Warn, clear the journal, exit 1; the failed
+# build tree was already cleaned up by materialize_release.
+# EXCEPT during journal RECOVERY of phase=restarting/verifying: there the
+# crashed run may already have stopped the unit and/or flipped current, so
+# "current untouched, old server still serving" would be a false claim, and
+# clearing the journal would (a) destroy the prev/target forensics and (b)
+# let autodeploy's local==remote check converge to a silent no-op with the
+# server actually down. Retain the journal (the next tick — timer, autodeploy,
+# or guardian --restart-only's recovery precedence — resumes it) and report
+# the true uncertainty.
 TRANSACTION_TRACK_APPLY=true
 if ! apply_ref "$REF" "$PREV_LOCK_HASH" --no-fetch; then
   TRANSACTION_TRACK_APPLY=false
+  if [[ "$LAYOUT" == "releases" ]]; then
+    if [[ "$RECOVERY_PHASE" == "restarting" || "$RECOVERY_PHASE" == "verifying" ]]; then
+      luna_warn "recovery (phase=$RECOVERY_PHASE) could not re-apply $REF: the interrupted run may already have stopped the unit and/or flipped current — journal RETAINED for the next tick; do NOT assume the old server is serving (verify: systemctl status $SERVICE_NAME)"
+      exit 1
+    fi
+    luna_warn "materialize/build of $REF failed PRE-flip — current untouched, old server still serving; nothing to roll back (failed build tree cleaned up)"
+    clear_transaction
+    exit 1
+  fi
   fail_forward "apply to $REF errored"
 fi
 TRANSACTION_TRACK_APPLY=false
-NEW_HEAD="$(git_target_capture rev-parse HEAD)"
-luna_info "Checked out: $NEW_HEAD"
+if [[ "$LAYOUT" == "releases" ]]; then
+  # The target was already resolved to an immutable sha against the mirror
+  # while holding the lock — no post-mutation read exists to disagree with it.
+  NEW_HEAD="$REF"
+  luna_info "Materialized release: $NEW_HEAD"
+else
+  NEW_HEAD="$(git_target_capture rev-parse HEAD)"
+  luna_info "Checked out: $NEW_HEAD"
+fi
 write_transaction "applied"
 
 write_transaction "restarting"
+# Releases layout: arm the in-window flip. From here every failure path is
+# post-guard-decision; a guard defer (rc=3 below) still leaves current
+# untouched because the hook runs strictly AFTER the guard permits the stop.
+if [[ "$LAYOUT" == "releases" ]]; then
+  RESTART_PRESTART_HOOK=(flip_current "$REF")
+fi
 # rc==3 (session-guard defer) must NOT route into fail_forward: fail_forward's
 # rollback would perform the very restart the guard just refused. Exit 3 keeps
 # the journal at phase=restarting; the next tick resumes when sessions end.
@@ -1297,6 +2060,12 @@ if readiness_ok "$RESTART_BASELINE"; then
   luna_info "updated $PREV -> $NEW_HEAD ($SERVICE_NAME healthy)"
   seed_dream_wake_jobs || true
   clear_transaction
+  # Retention runs ONLY at the end of a healthy releases deploy, after the
+  # journal is cleared (a prune postcondition failure must not strand a
+  # phase=verifying journal that recovery would re-restart from).
+  if [[ "$LAYOUT" == "releases" ]]; then
+    prune_releases
+  fi
   exit 0
 fi
 
