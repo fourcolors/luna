@@ -43,6 +43,23 @@ describe("ThreadRegistryService (SQLite layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(layer)))
   })
 
+  // REGRESSION: the SQL update guard binds `input.sdkSessionId !== undefined`,
+  // which was TRUE for an explicit null and ran
+  // `SET sdk_session_id = CASE WHEN 1=1 THEN NULL END`, clobbering a live id.
+  // Omitting the key must bind 0 and preserve the column.
+  test("upsert preserves an existing sdk session id when the key is omitted", async () => {
+    const layer = makeTestLayer(":memory:")
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_sq_sidkeep", sdkSessionId: "sdk-sq-keep" })
+      yield* reg.upsert({ id: "thr_sq_sidkeep", cwd: "/moved", model: "claude-y" })
+      const row = yield* reg.get("thr_sq_sidkeep")
+      expect(row?.sdkSessionId).toBe("sdk-sq-keep")
+      expect(row?.cwd).toBe("/moved")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(layer)))
+  })
+
   test("upsert + get round-trip", async () => {
     const layer = makeTestLayer(":memory:")
     const program = Effect.gen(function* () {
