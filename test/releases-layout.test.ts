@@ -35,6 +35,18 @@ const SERVER_INSTALL = join(repoRoot, "scripts/luna-server-install")
 const REAL_GIT = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
 const REAL_MV = spawnSync("bash", ["-c", "command -v mv"], { encoding: "utf8" }).stdout.trim()
 
+// Does the host mv support GNU -T (rename-onto, never descend into a dir the
+// destination symlink points at)? GNU coreutils yes; BSD/macOS mv no. Probed
+// once so the mv shim below can exec the real mv untouched on GNU hosts (CI
+// fidelity) and emulate -fT/-T only where the host lacks them (dev Macs).
+const MV_HAS_T = (() => {
+  const d = mkdtempSync(join(tmpdir(), "luna-mv-probe-"))
+  writeFileSync(join(d, "a"), "")
+  const ok = spawnSync(REAL_MV, ["-fT", join(d, "a"), join(d, "b")]).status === 0
+  rmSync(d, { recursive: true, force: true })
+  return ok
+})()
+
 const tempDirs: string[] = []
 const makeTempDir = () => {
   const dir = mkdtempSync(join(tmpdir(), "luna-releases-test-"))
@@ -133,7 +145,6 @@ const makeReleasesStubBin = (
     readonly readyAtTarget: boolean
     readonly readyAtPrev: boolean
     readonly withIncus?: boolean
-    readonly withMvShim?: boolean
   },
 ) => {
   const bin = join(root, "bin")
@@ -216,13 +227,18 @@ exec "${REAL_GIT}" "$@"
 `,
   )
 
-  if (opts.withMvShim) {
-    // Sabotage seam: an mv -fT whose STAGED LINK points at
-    // $STUB_MV_SABOTAGE_TARGET silently "succeeds" without moving — the
-    // rigged non-landing mv the flip postcondition must catch.
-    writeFileSync(
-      join(bin, "mv"),
-      `#!/usr/bin/env bash
+  // mv shim, always on PATH, two seams in one script:
+  //   1. Sabotage (env-keyed, harmless when STUB_MV_SABOTAGE_TARGET unset): an
+  //      mv -fT whose STAGED LINK points at $STUB_MV_SABOTAGE_TARGET silently
+  //      "succeeds" without moving — the rigged non-landing mv the flip
+  //      postcondition must catch.
+  //   2. Host-keyed -T emulation (baked in only when the host mv lacks GNU -T,
+  //      i.e. BSD/macOS): rename-onto semantics that refuse loudly rather than
+  //      ever descending into a directory, so the staged-swap and flip paths
+  //      are hermetic on any dev machine. GNU hosts exec the real mv untouched.
+  writeFileSync(
+    join(bin, "mv"),
+    `#!/usr/bin/env bash
 if [[ -n "\${STUB_MV_SABOTAGE_TARGET:-}" && "$1" == "-fT" ]]; then
   tgt="$(readlink "$2" 2>/dev/null || true)"
   if [[ "$tgt" == "\$STUB_MV_SABOTAGE_TARGET" ]]; then
@@ -230,10 +246,18 @@ if [[ -n "\${STUB_MV_SABOTAGE_TARGET:-}" && "$1" == "-fT" ]]; then
     exit 0
   fi
 fi
-exec "${REAL_MV}" "$@"
+${MV_HAS_T ? "" : `if [[ "$1" == "-fT" || "$1" == "-T" ]]; then
+  src="$2"; dst="$3"
+  [[ "$1" == "-fT" ]] && rm -f "$dst" 2>/dev/null
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    printf 'mv shim: refusing %s onto existing %s\\n' "$1" "$dst" >&2
+    exit 1
+  fi
+  exec "${REAL_MV}" -f "$src" "$dst"
+fi
+`}exec "${REAL_MV}" "$@"
 `,
-    )
-  }
+  )
 
   if (opts.withIncus) {
     writeFileSync(
@@ -255,7 +279,7 @@ exit 0
     )
   }
 
-  for (const f of ["systemctl", "curl", "bun", "git", ...(opts.withMvShim ? ["mv"] : []), ...(opts.withIncus ? ["incus"] : [])]) {
+  for (const f of ["systemctl", "curl", "bun", "git", "mv", ...(opts.withIncus ? ["incus"] : [])]) {
     spawnSync("chmod", ["+x", join(bin, f)])
   }
   return { bin, systemctlLog, orderLog, curlLog, bunLog, gitLog, incusLog }
@@ -883,7 +907,7 @@ describe("releases layout — rollback", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
-      prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true, withMvShim: true,
+      prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
     const r = runReleases(fx, stubs, temp, [], {
       STUB_MV_SABOTAGE_TARGET: `releases/${fx.targetSha}`,
@@ -1084,7 +1108,9 @@ describe("releases layout — prune", () => {
     // The start hook dangles previous AFTER the flip restamped it (the only
     // window where prune can observe a dangling link).
     const r = runReleases(fx, stubs, temp, ["--releases-keep", "2"], {
-      STUB_START_HOOK: `ln -sfT releases/${"f".repeat(40)} ${fx.deploy}/previous`,
+      // -sfn, not -sfT: same replace-the-symlink semantics on GNU, but BSD ln
+      // has no -T and the hook must dangle previous on macOS hosts too.
+      STUB_START_HOOK: `ln -sfn releases/${"f".repeat(40)} ${fx.deploy}/previous`,
     })
     expect(r.status, r.stdout + r.stderr).toBe(0)
     expect(r.stderr).toContain("prune refused")
@@ -1282,7 +1308,11 @@ describe("luna-server-install — releases layout", () => {
     const bin = join(temp, "ibin")
     mkdirSync(bin, { recursive: true })
     writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
-    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+    // Stub bun: --units-only never invokes it, but the installer's [[ -x ]]
+    // existence check must pass on any host — pointing LUNA_TEST_BUN_PATH at
+    // a real path like /root/.bun/bin/bun only works inside the container.
+    writeFileSync(join(bin, "bun"), "#!/usr/bin/env bash\nexit 0\n")
+    for (const f of ["systemctl", "bun"]) spawnSync("chmod", ["+x", join(bin, f)])
     return spawnSync("bash", [SERVER_INSTALL, ...args], {
       cwd: repoRoot,
       encoding: "utf8",
@@ -1290,7 +1320,7 @@ describe("luna-server-install — releases layout", () => {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
         LUNA_TAILSCALE_IP: "",
-        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_TEST_BUN_PATH: join(bin, "bun"),
       },
     })
   }
@@ -1420,7 +1450,23 @@ exit 0
   // for 40-hex runs and would read a whole commit id as a leaked credential.
   const PHASE3_TIP = "c8f135057ae16d1bf159" + "6ae1423f219b75e4f87b"
 
-  it("the phase-4 engine's inplace command stream is byte-identical to the committed pre-phase-4 engine's", () => {
+  // The pinned engine is a HISTORICAL artifact that needs bash 4+ (${var,,});
+  // under macOS's /bin/bash 3.2 it crashes mid-deploy with "bad substitution"
+  // yet exits 0. Before the live engine was made 3.2-clean, BOTH sides crashed
+  // identically there, and this compare passed VACUOUSLY on empty-vs-empty
+  // command streams. A real comparison needs a bash that can still run the
+  // historical side: probe for one, skip honestly when the host has none.
+  // The blocking CI gate always has bash 4+, so the guarantee never lapses
+  // where it counts.
+  const BASH4 = (() => {
+    for (const candidate of ["bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"]) {
+      const r = spawnSync(candidate, ["-c", 'x=A; [[ "${x,,}" == a ]]'], { encoding: "utf8" })
+      if (r.status === 0) return candidate
+    }
+    return null
+  })()
+
+  it.skipIf(BASH4 === null)("the phase-4 engine's inplace command stream is byte-identical to the committed pre-phase-4 engine's", () => {
     // Extract the phase-3 engine at the pinned commit and run BOTH engines
     // over identical fixtures, comparing the full recorded command streams.
     const temp = makeTempDir()
@@ -1446,7 +1492,7 @@ exit 0
       const serviceDir = join(root, "systemd")
       writeUnit(serviceDir)
       const r = spawnSync(
-        "bash",
+        BASH4 as string,
         [engine, "--profile", "stable", "--repo-dir", fx.work, "--ref", "origin/master",
           "--luna-home", join(root, "state"), "--service-dir", serviceDir,
           "--readiness-timeout", "5", "--readiness-interval", "1"],
