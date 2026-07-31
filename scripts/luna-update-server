@@ -466,6 +466,16 @@ acquire_update_lock() {
   fingerprint="$(process_fingerprint "$$")"
   [[ -n "$fingerprint" ]] || { rm -rf "$UPDATE_LOCK_DIR"; return 1; }
   ( umask 077; printf 'pid=%s\nfingerprint=%s\n' "$$" "$fingerprint" > "$UPDATE_LOCK_DIR/owner" )
+  # Reader-shape re-verify of our own ownership record (implies -s, and closes
+  # the partial pid-without-fingerprint window): a lock whose owner record other
+  # contenders cannot witness would be classified stale and stolen mid-update.
+  # This function runs errexit-suspended (`if ! acquire_update_lock`), so the
+  # explicit check is load-bearing.
+  if ! lock_owner_alive; then
+    rm -rf "$UPDATE_LOCK_DIR"
+    luna_warn "cannot record update-lock ownership; deferring"
+    return 1
+  fi
   UPDATE_LOCK_HELD=true
   trap release_update_lock EXIT INT TERM
 }
@@ -610,6 +620,23 @@ apply_ref() {
     git_target fetch origin || return 1
   fi
   git_target reset --hard "$target" || return 1
+  # POSTCONDITION: the reset must have MOVED HEAD to the target. A silently
+  # no-opped reset previously fed the old HEAD into NEW_HEAD and
+  # EXPECTED_BUILD_SHA, so the readiness gate verified the OLD build and the
+  # run exited 0 — a self-referential success. Bidirectional prefix match:
+  # $target is pre-validated 7-64 hex while HEAD is full-length. Covers the
+  # forward, recovery, and rollback invocations identically. Case-normalized:
+  # the --ref validation (and the journal's TX_TARGET) accept UPPERCASE hex,
+  # git accepts it and moves HEAD, but rev-parse answers lowercase — without
+  # normalization a correct reset to an uppercase sha would be reported as a
+  # lying reset and rolled back on every attempt.
+  local head_now head_lc target_lc
+  head_now="$(git_target_capture rev-parse HEAD 2>/dev/null || true)"
+  head_lc="${head_now,,}"; target_lc="${target,,}"
+  if [[ -z "$head_now" || ( "$head_lc" != "$target_lc"* && "$target_lc" != "$head_lc"* ) ]]; then
+    luna_warn "POSTCONDITION: git reset reported success but HEAD is '${head_now:-unreadable}', expected $target — refusing to continue"
+    return 1
+  fi
   if [[ "$TRANSACTION_TRACK_APPLY" == true ]]; then
     write_transaction "checkout" || return 1
   fi
@@ -622,6 +649,13 @@ apply_ref() {
     # in bare-host mode. run_target wraps it in `incus exec` for incus so deps
     # install inside the container (host git already changed the bind-mounted files).
     run_target "$BUN_BIN" install --cwd "$CONTAINER_REPO_DIR" --frozen-lockfile || return 1
+    # POSTCONDITION: the install's declared artifact must exist (in-container
+    # via run_target in incus mode). An install that exits 0 without producing
+    # node_modules gates readiness on a build that cannot boot.
+    if ! run_target test -d "$CONTAINER_REPO_DIR/node_modules"; then
+      luna_warn "POSTCONDITION: bun install exited 0 but $CONTAINER_REPO_DIR/node_modules is missing"
+      return 1
+    fi
   else
     luna_info "bun.lock unchanged -> skipping bun install"
   fi
@@ -630,6 +664,12 @@ apply_ref() {
   # so chat-server serves the current UI on :4753. The guarded build refuses to
   # bake VITE_UI_WS_TOKEN (deploy env never sets it); failure routes to rollback.
   run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build || return 1
+  # POSTCONDITION: the build's declared artifact (the SPA entry point served on
+  # :4753) must exist and be non-empty.
+  if ! run_target test -s "$CONTAINER_REPO_DIR/apps/ui-web/dist/index.html"; then
+    luna_warn "POSTCONDITION: ui-web build exited 0 but $CONTAINER_REPO_DIR/apps/ui-web/dist/index.html is missing or empty"
+    return 1
+  fi
 
   # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE (no-op in dry-run). Deps can move on
   # `bun install` and the override path goes stale — without re-pinning the
@@ -640,11 +680,31 @@ apply_ref() {
     # write a host-perspective path into the container's .env (wrong). Run the same
     # helper INSIDE the container against the container's .env (/root/.luna/.env)
     # and repo (/root/luna), sourcing the shared lib there. (no-op in dry-run.)
+    #
+    # POSTCONDITION (warn-only): the re-pin helper returns 0 even when it found
+    # nothing to pin — the silent half of the real incident where the server
+    # boots but cannot spawn `claude`. The verification rides the SAME payload
+    # so it observes the container's PATH/.env; exit 9 marks "no usable claude"
+    # distinctly from a transport/exec failure. Warn-only because rollback
+    # cannot fix an absent binary, and failing the deploy would deadlock
+    # updates on an orthogonal defect.
+    local repin_rc=0
     run_target bash -lc \
-      "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna" ||
+      "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }" ||
+      repin_rc=$?
+    if (( repin_rc == 9 )); then
+      luna_warn "POSTCONDITION degraded: no usable claude executable after re-pin — server will boot but cannot spawn claude"
+    elif (( repin_rc != 0 )); then
       return 1
+    fi
   else
     luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR" || return 1
+    # Same warn-only postcondition, evaluated host-side.
+    local claude_pin
+    claude_pin="$(luna_env_value "$ENV_FILE" LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true)"
+    if [[ -z "$claude_pin" || ! -x "$claude_pin" ]] && ! command -v claude >/dev/null 2>&1; then
+      luna_warn "POSTCONDITION degraded: no usable claude executable after re-pin — server will boot but cannot spawn claude"
+    fi
   fi
 
 }
@@ -800,6 +860,22 @@ sup_restart_count() {
   printf '%s' "$n"
 }
 
+# sup_main_pid — the supervised service's current main PID, systemd-only.
+# Prints a decimal PID (possibly 0 = no main process) or the empty string when
+# no numeric answer could be read (transport failure, non-systemd supervisor).
+# launchd deliberately answers empty: the launchd integration fakes return a
+# constant PID, launchd is the operator's own macOS laptop whose stop path
+# already death-polls and warns loudly, and the unattended guardian ladder that
+# needs the MainPID proof is systemd-only.
+sup_main_pid() {
+  local pid=""
+  if [[ "$SUPERVISOR" == "systemd" ]]; then
+    pid="$(run_target_capture systemctl $(_systemctl_user_flag) show "$SERVICE_NAME" --property=MainPID --value 2>/dev/null || true)"
+  fi
+  [[ "$pid" =~ ^[0-9]+$ ]] || pid=""
+  printf '%s' "$pid"
+}
+
 # _systemctl_user_flag — emit "--user" when the --user flag was passed, empty otherwise.
 # Used by every systemctl call so bare-host system-scope is unchanged and user-scope
 # is a single toggle. This is a helper, not a supervisor abstraction function.
@@ -878,6 +954,19 @@ restart_service() {
   # First line, belt-and-suspenders: any caller of the primitive is guarded.
   # rc==3 is unambiguous — sup_reload/sup_stop/sup_start return 1, settle 0.
   restart_session_guard || return 3
+  # MainPID-changed postcondition, IN THE PRIMITIVE so no caller can skip it
+  # (phase-2 philosophy), systemd-only and never in dry-run (run_target_capture
+  # executes even under --dry-run, and the dry-run plan block calls this
+  # function). Fail only on POSITIVE proof: a known-nonzero pre-PID that did
+  # not change across stop->start means the stop silently failed and the OLD
+  # process is still serving — today that reads as a successful restart. An
+  # unknown/zero pre-PID skips the check entirely (dead server, transport
+  # failure, default test stubs answering 0): absence of an answer is not
+  # proof of failure — phase-1 tri-state philosophy; readiness_ok still gates.
+  local pre_pid="" post_pid=""
+  if [[ "$DRY_RUN" != true && "$SUPERVISOR" == "systemd" ]]; then
+    pre_pid="$(sup_main_pid)"
+  fi
   # Stop -> settle -> start instead of a fast supervisor-restart. sup_stop handles
   # the async launchd death-poll internally, so settle_after_stop always runs on
   # confirmed-dead (or timed-out-with-warning). sup_reload is a no-op for launchd.
@@ -885,6 +974,25 @@ restart_service() {
   sup_stop   || return 1
   settle_after_stop
   sup_start  || return 1
+  if [[ "$DRY_RUN" != true && "$SUPERVISOR" == "systemd" ]] &&
+     [[ "$pre_pid" =~ ^[0-9]+$ && "$pre_pid" != 0 ]]; then
+    post_pid="$(sup_main_pid)"
+    if [[ ! "$post_pid" =~ ^[0-9]+$ ]]; then
+      # The same skip-unless-answered rule the pre-read gets: an unreadable
+      # post-restart MainPID is a transport failure (the incus-exec/dbus flake
+      # class), NOT evidence that the old process survived. Failing here would
+      # route a healthy forward deploy into rollback on a read blip. The
+      # readiness gate still verifies the build that is actually serving.
+      luna_warn "restart postcondition INCONCLUSIVE: post-restart MainPID unreadable (transport failure?); skipping the PID-change check — readiness still gates"
+    elif [[ "$post_pid" == "$pre_pid" ]]; then
+      # POSITIVE proof: systemd answered, and the answer is the OLD pid — the
+      # stop silently failed and the old process is still the supervised one.
+      luna_warn "POSTCONDITION: restart did not replace the server process (MainPID before=$pre_pid after=$post_pid) — the stop silently failed"
+      return 1
+    fi
+    # post_pid == 0 passes: systemd answered "no main process", which disproves
+    # "the old process is still serving"; a failed START is readiness_ok's job.
+  fi
 }
 
 # --- plan / dry-run -----------------------------------------------------------
@@ -943,7 +1051,7 @@ if [[ "$DRY_RUN" == true ]]; then
   run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build
   if [[ -n "$INCUS_CONTAINER" ]]; then
     run_target bash -lc \
-      "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna"
+      "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }"
   fi
   restart_service
   run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"

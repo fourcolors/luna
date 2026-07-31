@@ -614,13 +614,16 @@ describe("deploy.autoUpdate knob (--from-timer runs)", () => {
     expect(result.stdout).not.toContain("auto-update is OFF")
   })
 
-  it("knob OFF: a --from-timer run is a quiet no-op (exit 0, no deploy)", () => {
+  it("knob OFF: a --from-timer run is a SILENT no-op (exit 0, no deploy, no output)", () => {
+    // Phase 3: the knob-off branch is only reachable from the timer, so the
+    // per-tick "auto-update is OFF" line was pure log noise — a converged tick
+    // emits nothing (journalctl still timestamps each unit run).
     const result = runDryRun("stable", {
       registryFile: makeKnobOffRegistry(),
       extraArgs: ["--from-timer"],
     })
     expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout).toContain("auto-update is OFF")
+    expect(result.stdout).toBe("")
     expect(result.stdout).not.toContain("DRY-RUN")
   })
 
@@ -701,13 +704,21 @@ describe("deploy.autoUpdate knob (--from-timer runs)", () => {
         LUNA_TEST_STAT_MODE: "600",
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
         LUNA_TEST_MIGRATION_MARKER: marker,
+        // Phase 3 hermeticity: the migration-completion marker lives in the
+        // guardian STATE_DIR — without a temp override the marker check/write
+        // would READ AND MUTATE the real /var/lib/luna-guardian on this host.
+        // Same for the pending-transaction probe against the real /root/.luna.
+        LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
+        LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
       },
     })
 
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain("MIGRATING legacy timer")
-    expect(result.stdout).toContain("auto-update is OFF")
+    // Phase 3: the knob-off line is gone (silent converged branch); the
+    // migration itself must record durable completion instead.
     expect(readFileSync(marker, "utf8").trim()).toBe("adopt stable")
+    expect(existsSync(join(temp, "guardian-state", "migrated-stable"))).toBe(true)
   })
 
   it("a failed guardian migration fails loudly and remains retryable", () => {
@@ -745,11 +756,17 @@ describe("deploy.autoUpdate knob (--from-timer runs)", () => {
         LUNA_SERVERS_CONFIG: registry,
         LUNA_TEST_STAT_MODE: "600",
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        // Phase 3 hermeticity: keep the migration marker and pending-transaction
+        // probes off the real /var/lib/luna-guardian and /root/.luna.
+        LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
+        LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
       },
     })
 
     expect(result.status, result.stdout + result.stderr).toBe(2)
     expect(result.stderr).toContain("guardian migration failed")
+    // A failed adoption must NOT record completion — the next tick retries.
+    expect(existsSync(join(temp, "guardian-state", "migrated-stable"))).toBe(false)
   })
 })
 

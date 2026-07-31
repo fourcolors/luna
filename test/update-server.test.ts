@@ -63,6 +63,15 @@ const makeDeployRepo = (root: string) => {
   git(work, "config", "user.name", "Test")
   git(work, "checkout", "--quiet", prevSha)
 
+  // Phase-3 artifact-postcondition fixtures: the engine now verifies that
+  // `bun install` produced node_modules/ and the ui-web build produced a
+  // non-empty dist/index.html. UNTRACKED files survive `git reset --hard` in
+  // both directions, so every happy/rollback path stays green.
+  mkdirSync(join(work, "node_modules"), { recursive: true })
+  writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
+  mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
+  writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
+
   return { origin, work, prevSha, targetSha }
 }
 
@@ -200,6 +209,14 @@ if [[ "$1" == "exec" ]]; then
   shift            # drop 'exec'
   shift            # drop <container>
   [[ "$1" == "--" ]] && shift   # drop '--'
+  # Hermetic in-container artifact probes (phase 3): never let \`test\` fall
+  # through to the passthrough, or it would stat the REAL host /root/luna.
+  # \`test -f\` is the unit-existence preflight (always passes, as before);
+  # STUB_INCUS_TEST_RC drives the -d/-s artifact probes.
+  if [[ "$1" == "test" ]]; then
+    if [[ "$2" == "-f" ]]; then exit 0; fi
+    exit "\${STUB_INCUS_TEST_RC:-0}"
+  fi
   # Hermetic no-op for the in-container claude re-pin (would need /root/luna).
   if [[ "$1" == "bash" && "$*" == *"luna_configure_claude_executable"* ]]; then
     exit 0
@@ -610,6 +627,11 @@ describe("luna-update-server", () => {
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
+    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    mkdirSync(join(work, "node_modules"), { recursive: true })
+    writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
+    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
+    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -672,6 +694,11 @@ describe("luna-update-server", () => {
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
+    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    mkdirSync(join(work, "node_modules"), { recursive: true })
+    writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
+    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
+    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -1791,6 +1818,11 @@ exec "${realGit}" "$@"
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
+    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    mkdirSync(join(work, "node_modules"), { recursive: true })
+    writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
+    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
+    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     const updateState = join(temp, "update-state")
@@ -1878,5 +1910,430 @@ exit 0
     const sys = readLog(systemctlLog)
     expect(sys).toContain("stop luna-chat-server.service")
     expect(sys).toContain("start luna-chat-server.service")
+  })
+
+  // ── phase 3: verify every mutation ─────────────────────────────────────────
+
+  it("a silently no-opped git reset cannot read as success", () => {
+    // The self-referential verification loop: NEW_HEAD and EXPECTED_BUILD_SHA
+    // are derived from ACTUAL state, so a reset that lied fed the OLD sha into
+    // the readiness gate, which then verified the OLD build and exited 0.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    // git passthrough EXCEPT `reset --hard`: exit 0 without moving HEAD.
+    const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim()
+    writeFileSync(
+      join(bin, "git"),
+      `#!/usr/bin/env bash
+if [[ "$*" == *"reset --hard"* ]]; then exit 0; fi
+exec "${realGit}" "$@"
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "git")])
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    // Forward apply fails the HEAD postcondition -> rollback. The rollback's
+    // own reset assert passes because HEAD is already PREV (the lying reset is
+    // a no-op onto the right sha), so the run recovers cleanly: exit 1.
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("POSTCONDITION: git reset reported success")
+    expect(r.stderr).toContain(targetSha)
+    expect(r.stderr).toContain(prevSha)
+    expect(r.stdout).not.toContain("healthy)")
+    expect(r.stdout).not.toContain(`updated ${prevSha}`)
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  // Bespoke systemctl stub for the MainPID postcondition: `show ... MainPID`
+  // reads a pid file; `start` increments it — unless the live HEAD equals a
+  // frozen sha, modelling a stop that silently failed (old process retained).
+  const makePidStubBin = (
+    temp: string,
+    opts: {
+      readonly repo: string
+      readonly prevSha: string
+      readonly targetSha: string
+      readonly readyAtTarget: boolean
+      readonly readyAtPrev: boolean
+      readonly frozenAtSha?: string
+    },
+  ) => {
+    const { bin, systemctlLog, curlLog } = makeStubBin(temp, opts)
+    const pidFile = join(temp, "main-pid")
+    writeFileSync(pidFile, "100\n")
+    const frozen = opts.frozenAtSha ?? ""
+    writeFileSync(
+      join(bin, "systemctl"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${systemctlLog}"
+case "$1" in
+  is-active) printf 'active\\n'; exit 0 ;;
+  start)
+    head="$(git -C "${opts.repo}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+    if [[ -n "${frozen}" && "$head" == "${frozen}" ]]; then
+      : # frozen: the "new" process is the old one — MainPID does not change
+    else
+      pid="$(cat "${pidFile}")"
+      printf '%s\\n' "$((pid + 1))" > "${pidFile}"
+    fi
+    exit 0
+    ;;
+  show)
+    if [[ "$*" == *"MainPID"* ]]; then cat "${pidFile}"; else printf '0\\n'; fi
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+    return { bin, systemctlLog, curlLog }
+  }
+
+  it("MainPID postcondition: a real restart (PID changes) passes --restart-only", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makePidStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).not.toContain("POSTCONDITION")
+    expect(r.stdout).toContain("healthy")
+  })
+
+  it("MainPID postcondition: a silently failed stop fails --restart-only (exit 1)", () => {
+    // The named hole: the stop silently fails, the old wedged process keeps
+    // serving, and rung 1 read that as success — clearing the guardian's
+    // strikes on a server that was never actually restarted.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makePidStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+      frozenAtSha: prevSha, // start never replaces the process at PREV
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toMatch(/POSTCONDITION.*MainPID/)
+    expect(r.stderr).toContain("restart-only: restart errored")
+    // Checkout untouched: rung 1 never mutates.
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("MainPID postcondition: the transaction path routes the same failure into rollback", () => {
+    // Frozen at TARGET: the forward restart cannot replace the process, so the
+    // transaction fails forward and rolls back; at PREV the restart is real
+    // (PID increments) and the rollback recovers -> exit 1, ROLLED BACK.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makePidStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+      frozenAtSha: targetSha,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toMatch(/POSTCONDITION.*MainPID/)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("MainPID postcondition: an unreadable post-restart read is INCONCLUSIVE, not a failed restart", () => {
+    // The pre-read already skips on absence (tri-state); the post-read must
+    // too. A transient transport failure on the single post-restart MainPID
+    // query (the incus-exec/dbus flake class) is not evidence the old process
+    // survived — pre-fix it returned 1 and routed a healthy deploy into
+    // rollback with a false "the stop silently failed" diagnosis.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+    // systemctl: first MainPID read answers 100; every later MainPID read
+    // ERRORS (transport failure). All other queries behave normally.
+    const countFile = join(temp, "mainpid-reads")
+    writeFileSync(
+      join(bin, "systemctl"),
+      `#!/usr/bin/env bash
+case "$1" in
+  is-active) printf 'active\\n'; exit 0 ;;
+  show)
+    if [[ "$*" == *"MainPID"* ]]; then
+      n="$(cat "${countFile}" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" > "${countFile}"
+      if [[ "$n" -eq 1 ]]; then printf '100\\n'; exit 0; fi
+      exit 1
+    fi
+    printf '0\\n'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("INCONCLUSIVE")
+    expect(r.stderr).not.toMatch(/POSTCONDITION.*MainPID/)
+    expect(r.stdout).toContain("healthy")
+  })
+
+  it("HEAD postcondition accepts an UPPERCASE --ref sha (case-normalized prefix match)", () => {
+    // The --ref validation and git both accept uppercase hex; rev-parse answers
+    // lowercase. Pre-fix the bidirectional prefix match was case-sensitive, so
+    // a correct reset was reported as a lying reset and rolled back forever.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir", work,
+      "--ref", targetSha.toUpperCase(),
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "2",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).not.toContain("POSTCONDITION: git reset reported success")
+    expect(r.stdout).toContain("healthy")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+  })
+
+  it("artifact postcondition: bun install exit 0 without node_modules rolls back", () => {
+    const temp = makeTempDir()
+    // Lockfile differs prev<->target so the install (and its probe) fire; the
+    // bun stub creates node_modules ONLY at PREV, so the forward apply fails
+    // its artifact postcondition and the rollback succeeds.
+    const origin = join(temp, "origin.git")
+    const seed = join(temp, "seed")
+    const work = join(temp, "repo")
+    mkdirSync(origin, { recursive: true })
+    git(origin, "init", "--quiet", "--bare")
+    mkdirSync(seed, { recursive: true })
+    git(seed, "init", "--quiet")
+    git(seed, "config", "user.email", "t@example.test")
+    git(seed, "config", "user.name", "Test")
+    git(seed, "checkout", "-q", "-B", "master")
+    writeFileSync(join(seed, "bun.lock"), "lock-v1\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "--quiet", "-m", "prev")
+    const prevSha = git(seed, "rev-parse", "HEAD")
+    writeFileSync(join(seed, "bun.lock"), "lock-v2\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "--quiet", "-m", "target")
+    const targetSha = git(seed, "rev-parse", "HEAD")
+    git(seed, "remote", "add", "origin", origin)
+    git(seed, "push", "--quiet", "origin", "master")
+    git(temp, "clone", "--quiet", origin, work)
+    git(work, "checkout", "--quiet", prevSha)
+    // dist fixture present (the build probe must pass); node_modules ABSENT.
+    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
+    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
+
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/usr/bin/env bash
+head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ "$1" == "install" && "$head" == "${prevSha}" ]]; then
+  mkdir -p "${join(work, "node_modules")}"
+fi
+exit 0
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "bun")])
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toMatch(/POSTCONDITION.*node_modules/)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("artifact postcondition: ui-web build exit 0 without dist/index.html rolls back", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    // Remove the fixture: the build probe must fail forward. The bun stub
+    // recreates it ONLY at PREV so the rollback recovers.
+    rmSync(join(work, "apps", "ui-web", "dist"), { recursive: true, force: true })
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    const distFile = join(work, "apps", "ui-web", "dist", "index.html")
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/usr/bin/env bash
+head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ "$*" == *"build"* && "$head" == "${prevSha}" ]]; then
+  mkdir -p "$(dirname "${distFile}")"
+  printf '<!doctype html>\\n' > "${distFile}"
+fi
+exit 0
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "bun")])
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toMatch(/POSTCONDITION.*dist\/index\.html/)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+  })
+
+  it("artifact postcondition (incus arm): the probe runs IN-CONTAINER and a failing probe rolls back", () => {
+    // STUB_INCUS_TEST_RC=1 makes every in-container -d/-s probe fail, proving
+    // (a) the probe is routed through incus exec — never the host FS — and
+    // (b) a missing in-container artifact routes into rollback. The rollback's
+    // probe fails the same way, so the run ends CRITICAL (exit 2) — the
+    // deterministic worst case, loudly reported.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir, "luna-dev-chat-server.service")
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    const incusLog = join(temp, "incus.log")
+    addIncusStub(bin, incusLog)
+
+    const r = runUpdate([
+      "--profile", "dev",
+      "--incus", "luna-dev",
+      "--repo-dir", work,
+      "--ref", "origin/master",
+      "--luna-home", join(temp, "state"),
+      "--service-dir", serviceDir,
+      "--readiness-timeout", "1",
+      "--readiness-interval", "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      STUB_INCUS_TEST_RC: "1",
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(2)
+    expect(r.stderr).toMatch(/POSTCONDITION.*dist\/index\.html/)
+    expect(r.stderr).toContain("CRITICAL")
+    // The probe went through incus exec (in-container), not the host.
+    expect(readLog(incusLog)).toContain("exec luna-dev -- test -s /root/luna/apps/ui-web/dist/index.html")
+  })
+
+  it("claude re-pin degradation warns loudly but never fails the deploy (bare host)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+
+    // Isolated PATH: the stub bin plus a minimal toolchain dir with NO claude.
+    // An empty .env + no claude binary anywhere = the real incident's shape.
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("no usable claude executable")
+    expect(r.stdout).toContain(`updated ${prevSha} -> ${targetSha}`)
+  })
+
+  it("an unwitnessable update-lock ownership record defers instead of holding a stealable lock", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+    // Injection: sed answers nothing for reads of THIS profile's lock-owner
+    // record (passthrough otherwise), so the engine cannot re-verify its own
+    // ownership write — exactly what a torn/unreadable owner file looks like
+    // to every other contender.
+    const realSed = spawnSync("which", ["sed"], { encoding: "utf8" }).stdout.trim()
+    writeFileSync(
+      join(bin, "sed"),
+      `#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *lock-stable/owner*) exit 0 ;;
+  esac
+done
+exec "${realSed}" "$@"
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "sed")])
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_UPDATE_STATE_DIR: updateState,
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("cannot record update-lock ownership; deferring")
+    // Nothing mutated, nothing restarted, no lock left behind to steal.
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    expect(readLog(systemctlLog)).not.toContain("stop")
+    expect(existsSync(join(updateState, "lock-stable"))).toBe(false)
   })
 })

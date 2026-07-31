@@ -56,7 +56,16 @@ diagnose() {
     printf '\n[journal]\n'; run_runtime journalctl -u "$P_SERVICE_NAME" \
       --no-pager -n 80 2>&1 || true
   } | redact > "$tmp"
-  chmod 600 "$tmp"; mv "$tmp" "$out"; printf '%s\n' "$out"
+  # diagnose usually runs inside $(...) in luna_warn arguments (errexit is
+  # suspended there), so a failed capture must be visible IN THE PAGE TEXT: a
+  # dead-obvious marker instead of a path to a file that does not exist.
+  chmod 600 "$tmp" 2>/dev/null || true
+  if ! mv "$tmp" "$out" || [[ ! -s "$out" ]]; then
+    rm -f "$tmp" 2>/dev/null || true
+    printf 'INCIDENT-CAPTURE-FAILED'
+    return 1
+  fi
+  printf '%s\n' "$out"
 }
 
 # Classified deep-health probe. Exit codes are luna_runtime_matches_checkout's:
@@ -155,10 +164,17 @@ status_value() {
   sed -n "s/^${key}=//p" "$file" | head -1
 }
 
+# Returns non-zero when the record could not be durably written — the same
+# contract as health_journal_write. Callers MUST check (with a non-fatal warn):
+# the status file is the release-acceptance heartbeat, and a silently no-opped
+# write would let accept_profile attest stale evidence while every tick claims
+# success. It cannot be `set -e`'s job: run_check's whole dynamic extent runs
+# errexit-suspended (see health_journal_write's note).
 write_guardian_status() {
   local profile="$1" outcome="$2" file tmp repo_sha engine_sha now previous_sha previous_outcome previous_count count=0
   file="$STATE_DIR/status-$profile"; tmp="$file.tmp.$$"
-  mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR" 2>/dev/null || true
+  mkdir -p "$STATE_DIR" || return 1
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
   repo_sha="$(git -C "$P_REPO" rev-parse HEAD 2>/dev/null || true)"
   engine_sha="$(installed_engine_sha "$profile" 2>/dev/null || true)"
   now="$(date +%s)"
@@ -172,9 +188,15 @@ write_guardian_status() {
       count=1
     fi
   fi
-  ( umask 077; printf 'profile=%s\ncompleted_at=%s\nrepo_sha=%s\nengine_sha=%s\noutcome=%s\nconsecutive_healthy=%s\n' \
-      "$profile" "$now" "$repo_sha" "$engine_sha" "$outcome" "$count" > "$tmp" )
-  mv "$tmp" "$file"
+  if ! ( umask 077; printf 'profile=%s\ncompleted_at=%s\nrepo_sha=%s\nengine_sha=%s\noutcome=%s\nconsecutive_healthy=%s\n' \
+      "$profile" "$now" "$repo_sha" "$engine_sha" "$outcome" "$count" > "$tmp" ); then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv "$tmp" "$file"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
 }
 
 # ── deep-health debounce journal ─────────────────────────────────────────────
@@ -263,6 +285,28 @@ health_journal_write() {
   HJ_LAST_REPAIR="$last"; HJ_NEGATIVE_AT="$negative_at"
 }
 
+# health_journal_zero_recorded <profile> — pure read: true iff the STORED record
+# already says all-zero strikes and its last_repair_at matches what this tick
+# would carry forward, so an all-zero write would change nothing. Deliberately
+# reads the RAW file (status_value), NOT the validated HJ_* view: a stored
+# NONZERO strike under an older sha must still be overwritten by zeros, or a
+# rollback inside the freshness window would resurrect it. An absent file counts
+# as all-zero (healthy ticks never create it). A stale updated_at on an all-zero
+# record is harmless: freshness only ages NONZERO strikes.
+health_journal_zero_recorded() {
+  local profile="$1" file raw stored_last=0
+  file="$(health_journal_path "$profile")"
+  raw="$(status_value "$file" consecutive_negative 2>/dev/null || true)"
+  [[ -z "$raw" || "$raw" == 0 ]] || return 1
+  raw="$(status_value "$file" consecutive_unknown 2>/dev/null || true)"
+  [[ -z "$raw" || "$raw" == 0 ]] || return 1
+  raw="$(status_value "$file" negative_at 2>/dev/null || true)"
+  [[ -z "$raw" || "$raw" == 0 ]] || return 1
+  raw="$(status_value "$file" last_repair_at 2>/dev/null || true)"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then stored_last="$raw"; fi
+  [[ "$stored_last" == "$HJ_LAST_REPAIR" ]]
+}
+
 # Guardian installation and the deploy transaction both read executable files
 # from the mutable checkout. Share the updater's mkdir-lock protocol so a manual
 # deploy cannot start between the runtime trust proof and immutable pin
@@ -314,6 +358,16 @@ acquire_guardian_update_lock() {
   fingerprint="$(guardian_process_fingerprint "$$")"
   [[ -n "$fingerprint" ]] || { rm -rf "$lock"; return 10; }
   ( umask 077; printf 'pid=%s\nfingerprint=%s\n' "$$" "$fingerprint" > "$lock/owner" )
+  # Reader-shape re-verify of our own ownership record (implies -s, and catches
+  # a partial pid-without-fingerprint write): an unwitnessable claim would be
+  # classified stale and STOLEN mid-critical-section by another contender. This
+  # function already runs errexit-suspended (`|| lock_rc=$?` at the call site),
+  # so the explicit check is load-bearing.
+  if ! guardian_update_lock_owner_alive "$lock"; then
+    rm -rf "$lock"
+    luna_warn "cannot record update-lock ownership for profile '$profile'; treating as contention"
+    return 10
+  fi
   GUARDIAN_UPDATE_LOCK="$lock"
   GUARDIAN_UPDATE_LOCK_HELD=true
   trap release_guardian_update_lock EXIT INT TERM
@@ -336,7 +390,12 @@ refresh_guardian_if_needed() {
     return 1
   fi
   luna_warn "advancing guardian engine ${engine_sha:0:12} -> ${repo_sha:0:12}"
-  "$candidate" install "$profile" || rc=$?
+  # Pass the current cadence through: `install` defaults --interval to 1min, so
+  # a bare install here would silently reset a custom timer cadence on every
+  # engine advance — undoing the very preservation the check-tick drift gate
+  # provides. guardian_timer_interval prefers the durable desired-interval
+  # record and falls back to the installed timer, then 1min.
+  "$candidate" install "$profile" --interval "$(guardian_timer_interval "$profile")" || rc=$?
   if (( rc == 10 )); then
     luna_warn "guardian engine refresh deferred by update transaction/lock"
     return 0
@@ -374,12 +433,32 @@ reconcile_unit_if_idle() {
 }
 
 check_profile() {
-  local profile="$1" update="$SCRIPT_DIR/luna-autodeploy"
+  local profile="$1" update="$SCRIPT_DIR/luna-autodeploy" cp_interval
   load_profile "$profile"
   [[ -x "$update" ]] || luna_die "pinned updater missing: $update"
-  if ! guardian_control_plane_adopted "$profile"; then
-    luna_warn "control-plane drift detected; reconciling pinned guardian units"
-    render_control_plane "$profile" "1min" "$PIN_BASE/current-$profile"
+  # Desired-vs-actual reconcile: repair only on drift, and preserve the timer's
+  # installed cadence instead of resetting a custom --interval to 1min on every
+  # repair. control_plane_units_current adds CONTENT drift (a truncated or
+  # hand-edited unit) to the adoption-state checks. Residual: if the TIMER file
+  # itself is the drifted artifact its cadence is unreadable, so the repair
+  # renders the 1min default until the next explicit `install --interval`.
+  cp_interval="$(guardian_timer_interval "$profile")"
+  if ! guardian_control_plane_adopted "$profile" ||
+     ! control_plane_units_current "$profile" "$cp_interval" "$PIN_BASE/current-$profile" ||
+     ! control_plane_loaded_current "$profile"; then
+    # Desired unit content embeds THIS invocation's STATE_DIR/PIN_BASE/LUNA_HOME.
+    # The timer-driven tick inherits them from the unit itself, so it can never
+    # disagree; only a manual run with debug overrides (LUNA_GUARDIAN_STATE_DIR=
+    # /tmp/dbg ...) can. Such a run must not "repair" the live control plane to
+    # point at its debug paths — that would disarm the real repair cooldown and
+    # orphan the real status history. Refuse loudly; `install` remains the
+    # deliberate way to change the recorded environment.
+    if guardian_env_conflicts_with_installed "$profile"; then
+      luna_warn "control-plane drift detected, but the installed service unit declares a different guardian environment (STATE_DIR/PIN_BASE/LUNA_HOME) than this invocation — refusing to rewrite the live control plane from a non-default environment; run 'luna-guardian install $profile' from the intended environment to change it deliberately"
+    else
+      luna_warn "control-plane drift detected; reconciling pinned guardian units"
+      render_control_plane "$profile" "$cp_interval" "$PIN_BASE/current-$profile"
+    fi
   fi
   local health_rc=0 strikes unknown_limit unknown_repair cooldown
   local negatives=0 unknowns=0 now elapsed rc=0 pager_rc=0 reason=""
@@ -455,9 +534,19 @@ check_profile() {
     fi
   fi
   if [[ "$escalate" != true ]]; then
-    health_journal_write "$profile" "$write_negatives" "$write_unknowns" \
-      "$HJ_LAST_REPAIR" "$write_negative_at" ||
-      luna_warn "health journal write failed; deep-health debounce is not persisting"
+    # Zero-skip lives at THIS call site only: the arming write (above) and the
+    # post-repair write (below) are structurally unable to skip, so the phase-1
+    # arm-before-act contract cannot be weakened even by a refactor of the write
+    # function. A converged healthy tick writes nothing; a stored nonzero strike
+    # always gets its explicit zero overwrite.
+    if (( write_negatives == 0 && write_unknowns == 0 && write_negative_at == 0 )) &&
+       health_journal_zero_recorded "$profile"; then
+      : # already recorded as all-zero; rewriting would only churn updated_at
+    else
+      health_journal_write "$profile" "$write_negatives" "$write_unknowns" \
+        "$HJ_LAST_REPAIR" "$write_negative_at" ||
+        luna_warn "health journal write failed; deep-health debounce is not persisting"
+    fi
   fi
 
   if ! unit_hardened; then
@@ -508,9 +597,14 @@ run_check() {
   local profile="$1" rc=0 outcome
   load_profile "$profile"
   if [[ "$P_TIMER_ALLOWED" != "true" ]]; then
-    luna_warn "deploy.timer=false; removing guardian units for profile '$profile'"
-    uninstall_guardian "$profile"
-    write_guardian_status "$profile" "disabled"
+    # Converge, don't re-apply: once the units are gone, later ticks are silent.
+    # The status heartbeat still writes every tick (outcome=disabled).
+    if ! guardian_units_absent "$profile"; then
+      luna_warn "deploy.timer=false; removing guardian units for profile '$profile'"
+      uninstall_guardian "$profile"
+    fi
+    write_guardian_status "$profile" "disabled" ||
+      luna_warn "guardian status write failed for profile '$profile' ($STATE_DIR/status-$profile); heartbeat/consecutive_healthy attestation is not persisting"
     return 0
   fi
   if check_profile "$profile"; then
@@ -525,20 +619,23 @@ run_check() {
   else
     rc=$?; outcome="failed"
   fi
-  write_guardian_status "$profile" "$outcome"
+  write_guardian_status "$profile" "$outcome" ||
+    luna_warn "guardian status write failed for profile '$profile' ($STATE_DIR/status-$profile); heartbeat/consecutive_healthy attestation is not persisting"
   return "$rc"
 }
 
-render_control_plane() {
-  local profile="$1" interval="$2" current="$3"
+# ── desired control-plane state (pure renderers) ─────────────────────────────
+# Single source of truth for both the write path (guardian_unit_write) and the
+# reconcile predicate (control_plane_units_current). Equality is compared as
+# `[[ "$(cat file)" == "$(renderer)" ]]`: command substitution strips trailing
+# newlines on BOTH sides and the writer emits exactly one final newline, so the
+# comparison is byte-exact modulo trailing newlines — pre-phase-3 heredoc-written
+# files compare equal to identical desired content (no rewrite storm), and ANY
+# interior drift rewrites that one file.
+desired_guardian_service() {
+  local profile="$1" current="$2"
   local luna_home="${LUNA_HOME:-${HOME:-/root}/.luna}"
-  local guardian_timer="luna-guardian-$profile.timer" legacy_timer="luna-autodeploy-$profile.timer"
-  local guardian_service="$SYSTEMD_DIR/luna-guardian-$profile.service"
-  local guardian_alert="$SYSTEMD_DIR/luna-guardian-alert-$profile.service"
-  local legacy_service="$SYSTEMD_DIR/luna-autodeploy-$profile.service"
-  [[ -x "$current/luna-guardian" && -x "$current/luna-pager" ]] ||
-    luna_die "guardian engine is incomplete: $current"
-  cat > "$guardian_service.tmp.$$" <<EOF
+  cat <<EOF
 [Unit]
 Description=Luna guardian ($profile) - deep health, recovery, updates
 After=network-online.target incus.service
@@ -553,8 +650,12 @@ Environment=LUNA_GUARDIAN_STATE_DIR=$STATE_DIR
 ExecStart=$current/luna-guardian check $profile
 TimeoutStartSec=12min
 EOF
-  mv "$guardian_service.tmp.$$" "$guardian_service"
-  cat > "$guardian_alert.tmp.$$" <<EOF
+}
+
+desired_guardian_alert() {
+  local profile="$1" current="$2"
+  local luna_home="${LUNA_HOME:-${HOME:-/root}/.luna}"
+  cat <<EOF
 [Unit]
 Description=Luna guardian failure pager ($profile)
 [Service]
@@ -563,8 +664,11 @@ Environment=LUNA_HOME=$luna_home
 EnvironmentFile=-$luna_home/pager.env
 ExecStart=$current/luna-pager luna-guardian-$profile
 EOF
-  mv "$guardian_alert.tmp.$$" "$guardian_alert"
-  cat > "$SYSTEMD_DIR/$guardian_timer.tmp.$$" <<EOF
+}
+
+desired_guardian_timer() {
+  local profile="$1" interval="$2"
+  cat <<EOF
 [Unit]
 Description=Luna guardian ($profile) timer
 [Timer]
@@ -575,21 +679,196 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-  mv "$SYSTEMD_DIR/$guardian_timer.tmp.$$" "$SYSTEMD_DIR/$guardian_timer"
-  systemctl daemon-reload
-  systemctl enable --now "$guardian_timer"
+}
+
+# guardian_unit_write <path> <content> — write only on difference, then verify.
+# A no-op (content already current) writes nothing and stays silent; a real
+# write is atomic (tmp + mv), re-read afterwards (the mutation must prove its
+# effect), marks CP_UNITS_CHANGED so the caller reloads at most once, and logs
+# exactly one line naming the unit that actually changed.
+CP_UNITS_CHANGED=false
+guardian_unit_write() {
+  local path="$1" content="$2" tmp
+  if [[ "$(cat "$path" 2>/dev/null)" == "$content" ]]; then return 0; fi
+  tmp="$path.tmp.$$"
+  if ! printf '%s\n' "$content" > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null || true
+    luna_die "control plane: cannot write $path"
+  fi
+  if ! mv "$tmp" "$path"; then
+    rm -f "$tmp" 2>/dev/null || true
+    luna_die "control plane: cannot write $path"
+  fi
+  [[ "$(cat "$path" 2>/dev/null)" == "$content" ]] ||
+    luna_die "POSTCONDITION: $path content does not match the rendered unit after write"
+  CP_UNITS_CHANGED=true
+  luna_warn "control plane: updated ${path##*/}"
+}
+
+# control_plane_units_current <profile> <interval> <current> — pure read: all
+# three unit files match their rendered desired text. This is what makes a
+# truncated or hand-edited service/alert unit visible to the reconcile gate;
+# guardian_control_plane_adopted only checks timer/legacy unit STATE.
+control_plane_units_current() {
+  local profile="$1" interval="$2" current="$3"
+  [[ "$(cat "$SYSTEMD_DIR/luna-guardian-$profile.service" 2>/dev/null)" == \
+     "$(desired_guardian_service "$profile" "$current")" ]] || return 1
+  [[ "$(cat "$SYSTEMD_DIR/luna-guardian-alert-$profile.service" 2>/dev/null)" == \
+     "$(desired_guardian_alert "$profile" "$current")" ]] || return 1
+  [[ "$(cat "$SYSTEMD_DIR/luna-guardian-$profile.timer" 2>/dev/null)" == \
+     "$(desired_guardian_timer "$profile" "$interval")" ]] || return 1
+}
+
+# control_plane_loaded_current <profile> — systemd's LOADED definitions are not
+# stale for any guardian unit. The byte-level compare above reads the DISK; it
+# cannot see a daemon-reload that failed (or a crash between a unit write and
+# its reload), which leaves systemd executing the old in-memory definition
+# forever while every later tick reads converged-silent. systemd exposes
+# exactly this as NeedDaemonReload. Only an explicit "yes" is drift: an empty
+# answer is a stub/transport absence, and absence of an answer is not proof.
+control_plane_loaded_current() {
+  local profile="$1" unit
+  for unit in "luna-guardian-$profile.service" \
+    "luna-guardian-alert-$profile.service" \
+    "luna-guardian-$profile.timer"; do
+    [[ "$(host_unit_property "$unit" NeedDaemonReload)" != "yes" ]] || return 1
+  done
+  return 0
+}
+
+# guardian_env_conflicts_with_installed <profile> — true iff the INSTALLED
+# service unit explicitly declares a guardian environment (state dir, luna
+# home, or engine pin base) different from this invocation's. Used by the
+# check-tick drift gate to refuse rewriting the live control plane from a
+# manual run with debug overrides. Absent/blank lines never conflict — a
+# truncated unit must still be repairable.
+guardian_env_conflicts_with_installed() {
+  local profile="$1" unit installed
+  unit="$SYSTEMD_DIR/luna-guardian-$profile.service"
+  [[ -f "$unit" ]] || return 1
+  local luna_home="${LUNA_HOME:-${HOME:-/root}/.luna}"
+  installed="$(sed -n 's/^Environment=LUNA_GUARDIAN_STATE_DIR=//p' "$unit" 2>/dev/null | head -1)"
+  if [[ -n "$installed" && "$installed" != "$STATE_DIR" ]]; then return 0; fi
+  installed="$(sed -n 's/^Environment=LUNA_HOME=//p' "$unit" 2>/dev/null | head -1)"
+  if [[ -n "$installed" && "$installed" != "$luna_home" ]]; then return 0; fi
+  installed="$(sed -n 's/^ExecStart=//p' "$unit" 2>/dev/null | head -1)"
+  if [[ -n "$installed" && "$installed" != "$PIN_BASE/current-$profile/"* ]]; then return 0; fi
+  return 1
+}
+
+# Durable desired-interval record, in the STATE_DIR pattern. Deriving desired
+# cadence from the installed timer alone would self-bless any hand-edit of
+# OnUnitInactiveSec (the drift gate renders desired content with the edited
+# value and compares equal), permanently exempting the guardian's own tick
+# cadence from drift repair. The record captures operator INTENT at install
+# time; the installed timer is only a fallback for pre-record installs.
+guardian_interval_record_path() { printf '%s/interval-%s' "$STATE_DIR" "$1"; }
+
+# record_guardian_interval <profile> <interval> — returns non-zero when the
+# record could not be durably written (same contract as write_guardian_status /
+# health_journal_write; callers MUST warn). Equal stored value writes nothing.
+record_guardian_interval() {
+  local profile="$1" interval="$2" file tmp
+  file="$(guardian_interval_record_path "$profile")"; tmp="$file.tmp.$$"
+  [[ "$(status_value "$file" interval 2>/dev/null || true)" == "$interval" ]] && return 0
+  mkdir -p "$STATE_DIR" || return 1
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
+  if ! ( umask 077; printf 'profile=%s\ninterval=%s\nrecorded_at=%s\n' \
+      "$profile" "$interval" "$(date +%s)" > "$tmp" ); then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv "$tmp" "$file"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+}
+
+# guardian_timer_interval <profile> — the DESIRED timer cadence: the durable
+# record first (operator intent, hand-edit-proof), the installed timer second
+# (pre-record installs), 1min last. Also what refresh_guardian_if_needed passes
+# through so an engine advance preserves a custom --interval.
+guardian_timer_interval() {
+  local profile="$1" interval
+  interval="$(status_value "$(guardian_interval_record_path "$profile")" interval 2>/dev/null || true)"
+  if [[ ! "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]]; then
+    interval="$(sed -n 's/^OnUnitInactiveSec=//p' "$SYSTEMD_DIR/luna-guardian-$profile.timer" 2>/dev/null | head -1)"
+  fi
+  [[ "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]] || interval="1min"
+  printf '%s' "$interval"
+}
+
+# guardian_units_absent <profile> — pure read: all three unit files gone AND the
+# timer unit not loaded. The disallowed-profile tick converges to silence on it.
+guardian_units_absent() {
+  local profile="$1"
+  [[ ! -e "$SYSTEMD_DIR/luna-guardian-$profile.service" &&
+     ! -e "$SYSTEMD_DIR/luna-guardian-$profile.timer" &&
+     ! -e "$SYSTEMD_DIR/luna-guardian-alert-$profile.service" ]] || return 1
+  [[ "$(host_unit_property "luna-guardian-$profile.timer" LoadState)" != "loaded" ]]
+}
+
+render_control_plane() {
+  local profile="$1" interval="$2" current="$3"
+  local guardian_timer="luna-guardian-$profile.timer" legacy_timer="luna-autodeploy-$profile.timer"
+  local guardian_service="$SYSTEMD_DIR/luna-guardian-$profile.service"
+  local guardian_alert="$SYSTEMD_DIR/luna-guardian-alert-$profile.service"
+  local legacy_service="$SYSTEMD_DIR/luna-autodeploy-$profile.service"
+  local legacy_removed=false
+  [[ -x "$current/luna-guardian" && -x "$current/luna-pager" ]] ||
+    luna_die "guardian engine is incomplete: $current"
+  # Desired-vs-actual: write (and later reload) ONLY the units that differ. A
+  # fully converged render writes nothing and reloads nothing. Ordering is the
+  # phase-2 transactional handoff, unchanged: prove the guardian first, then
+  # retire the legacy trigger — never report adoption while both are enabled.
+  # Reload budget: 0 converged, 1 on unit drift, ≤2 on the once-ever legacy
+  # handoff (deliberate: the second reload preserves the prove-then-retire order).
+  CP_UNITS_CHANGED=false
+  guardian_unit_write "$guardian_service" "$(desired_guardian_service "$profile" "$current")"
+  guardian_unit_write "$guardian_alert" "$(desired_guardian_alert "$profile" "$current")"
+  guardian_unit_write "$SYSTEMD_DIR/$guardian_timer" "$(desired_guardian_timer "$profile" "$interval")"
+  local reloaded=false
+  if [[ "$CP_UNITS_CHANGED" == true ]]; then
+    systemctl daemon-reload || luna_die "daemon-reload failed after unit render"
+    reloaded=true
+  elif ! control_plane_loaded_current "$profile"; then
+    # Bytes are current but systemd says its LOADED definitions are stale — a
+    # prior reload failed or a crash landed between write and reload. Retry the
+    # reload; without this the stale in-memory unit would run forever behind a
+    # converged-silent disk state.
+    luna_warn "control plane: unit files current but systemd reports stale loaded definitions (NeedDaemonReload); reloading"
+    systemctl daemon-reload || luna_die "daemon-reload failed after unit render"
+    reloaded=true
+  fi
+  if [[ "$reloaded" == true ]]; then
+    # The reload must prove its effect: only an explicit "yes" fails (the
+    # helper treats an unanswered query as not-stale, so stubs/transport
+    # absence cannot false-alarm).
+    control_plane_loaded_current "$profile" ||
+      luna_die "POSTCONDITION: systemd still reports stale unit definitions after daemon-reload"
+  fi
+  if [[ "$(host_unit_property "$guardian_timer" LoadState)" != "loaded" ||
+        "$(host_unit_property "$guardian_timer" UnitFileState)" != "enabled" ||
+        "$(host_unit_property "$guardian_timer" ActiveState)" != "active" ]]; then
+    systemctl enable --now "$guardian_timer"
+  fi
   [[ "$(host_unit_property "$guardian_timer" LoadState)" == "loaded" &&
      "$(host_unit_property "$guardian_timer" UnitFileState)" == "enabled" &&
      "$(host_unit_property "$guardian_timer" ActiveState)" == "active" ]] ||
     luna_die "guardian timer failed to become loaded, enabled, and active"
 
-  # Handoff is transactional in ordering: prove the guardian first, then retire
-  # the legacy trigger. Never report adoption while both pollers are enabled.
   if [[ "$(host_unit_property "$legacy_timer" LoadState)" != "not-found" ]]; then
     systemctl disable --now "$legacy_timer" || luna_die "failed to disable legacy timer $legacy_timer"
   fi
-  rm -f "$SYSTEMD_DIR/$legacy_timer" "$legacy_service"
-  systemctl daemon-reload
+  if [[ -e "$SYSTEMD_DIR/$legacy_timer" || -e "$legacy_service" ]]; then
+    rm -f "$SYSTEMD_DIR/$legacy_timer" "$legacy_service"
+    [[ ! -e "$SYSTEMD_DIR/$legacy_timer" && ! -e "$legacy_service" ]] ||
+      luna_die "POSTCONDITION: legacy autodeploy units still present after removal"
+    legacy_removed=true
+  fi
+  if [[ "$legacy_removed" == true ]]; then
+    systemctl daemon-reload || luna_die "daemon-reload failed after legacy timer retirement"
+  fi
   guardian_control_plane_adopted "$profile" ||
     luna_die "guardian handoff verification failed; inspect guardian and legacy timer state"
 }
@@ -602,7 +881,14 @@ publish_engine() {
 
   for ((attempt = 1; attempt <= 50; attempt++)); do
     if mkdir "$lock" 2>/dev/null; then
-      printf '%s\n' "$$" > "$lock/pid"
+      # An ownership claim nobody can witness is not a claim: if the pid record
+      # cannot be written and re-read, the stale-classifier below would steal
+      # this lock mid-critical-section. Self-release and re-contend instead.
+      if ! printf '%s\n' "$$" > "$lock/pid" 2>/dev/null || [[ ! -s "$lock/pid" ]]; then
+        rm -rf "$lock" "$tmp"
+        sleep 0.1
+        continue
+      fi
       rm -rf "$tmp"
       [[ ! -e "$pin" || -f "$pin/.complete" ]] || rm -rf "$pin"
       if [[ ! -f "$pin/.complete" ]]; then
@@ -629,26 +915,80 @@ publish_engine() {
 }
 
 prune_engines() {
-  local keep=5 index=0 dir link target protected=" "
+  local keep=5 index=0 dir link target protected=" " known_broken=" " pruned_any=false
+  # PRECONDITION: every live pin must resolve before anything is deleted. A
+  # dangling current-* would otherwise silently drop out of the protected set
+  # and its engine could be pruned. Refusal only warns — pruning is optional,
+  # breaking a pin is not. A pin that resolves but is missing its .complete is
+  # PRE-EXISTING corruption prune cannot cause and will not touch (the target
+  # joins the protected set): warn with the right attribution and remember it,
+  # so the postcondition below cannot blame prune for it — this run's install
+  # must not fail for a defect prune provably did not create.
   for link in "$PIN_BASE"/current-*; do
-    [[ -e "$link" ]] || continue
-    target="$(cd -P "$link" 2>/dev/null && pwd || true)"
-    [[ -n "$target" ]] && protected+="$target "
+    [[ -e "$link" || -L "$link" ]] || continue
+    if ! target="$(cd -P "$link" 2>/dev/null && pwd)"; then
+      luna_warn "prune refused: ${link##*/} does not resolve; not pruning any engines this run"
+      return 0
+    fi
+    if [[ ! -f "$target/.complete" ]]; then
+      luna_warn "prune: ${link##*/} resolves to an engine missing its .complete marker (pre-existing corruption, not caused by prune; the engine is protected from pruning)"
+      known_broken+="$link "
+    fi
+    protected+="$target "
   done
   # shellcheck disable=SC2012
   for dir in $(ls -dt "$PIN_BASE"/engine@* 2>/dev/null || true); do
     index=$((index + 1))
     if (( index <= keep )); then continue; fi
     if [[ "$protected" == *" $dir "* ]]; then continue; fi
-    rm -rf "$dir"
+    pruned_any=true
+    rm -rf "$dir" || luna_warn "prune: could not remove $dir"
+  done
+  # POSTCONDITION: the kept set still contains every engine a current-* pin
+  # resolves into — prune must never break the pin the guardian runs from.
+  # Fatal only when prune actually deleted something this run (the breakage is
+  # then plausibly ours); otherwise it is the pre-existing corruption warned
+  # about above, and killing THIS profile's completed install over it would
+  # misattribute the defect.
+  for link in "$PIN_BASE"/current-*; do
+    [[ -e "$link" || -L "$link" ]] || continue
+    [[ "$known_broken" != *" $link "* ]] || continue
+    target="$(cd -P "$link" 2>/dev/null && pwd || true)"
+    if [[ -z "$target" || ! -f "$target/.complete" ]]; then
+      if [[ "$pruned_any" == true ]]; then
+        luna_die "POSTCONDITION: engine prune broke ${link##*/} (resolves to '${target:-<unresolvable>}')"
+      fi
+      luna_warn "engine pin ${link##*/} is broken (resolves to '${target:-<unresolvable>}') but prune deleted nothing this run — pre-existing corruption"
+    fi
   done
 }
 
 install_guardian() {
   local profile="$1" interval="$2" root sha pin current linktmp pending lock_rc=0
+  local resolved pin_phys
   load_profile "$profile"
   [[ "$P_TIMER_ALLOWED" == "true" ]] || luna_die \
     "guardian is not allowed for profile '$profile' (registry deploy.timer=false)"
+  root="$(cd "$SCRIPT_DIR/.." && pwd)"
+  sha="$(git -C "$root" rev-parse HEAD 2>/dev/null || shasum "$SELF" | awk '{print $1}')"
+  pin="$PIN_BASE/engine@$sha"; current="$PIN_BASE/current-$profile"
+  # CONVERGED FAST-PATH (pure reads, so no lock is needed; a stale read
+  # worst-cases as one skipped tick and mutates nothing): when the pin already
+  # resolves to this exact engine, the engine is COMPLETE (the same -x checks
+  # render_control_plane would die on — a pin that lost luna-pager must not
+  # read as converged silence), and the control plane is byte-current with no
+  # stale loaded definitions, there is nothing to install — return silently
+  # after converging the durable interval record. The converged install
+  # performs no lock, no probe, no publish, no flip, no render, and no prune.
+  if [[ "$(installed_engine_sha "$profile" 2>/dev/null || true)" == "$sha" && -f "$pin/.complete" &&
+        -x "$current/luna-guardian" && -x "$current/luna-pager" ]] &&
+     guardian_control_plane_adopted "$profile" &&
+     control_plane_units_current "$profile" "$interval" "$current" &&
+     control_plane_loaded_current "$profile"; then
+    record_guardian_interval "$profile" "$interval" ||
+      luna_warn "cannot record desired interval in $(guardian_interval_record_path "$profile"); a hand-edited timer cadence would self-bless"
+    return 0
+  fi
   acquire_guardian_update_lock "$profile" || lock_rc=$?
   (( lock_rc == 0 )) || return "$lock_rc"
   pending="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}/transaction-$profile"
@@ -660,16 +1000,31 @@ install_guardian() {
     luna_warn "DEFERRED: runtime does not prove checkout HEAD for profile '$profile'; guardian pin unchanged"
     return 10
   fi
-  root="$(cd "$SCRIPT_DIR/.." && pwd)"
-  sha="$(git -C "$root" rev-parse HEAD 2>/dev/null || shasum "$SELF" | awk '{print $1}')"
-  pin="$PIN_BASE/engine@$sha"; current="$PIN_BASE/current-$profile"
   mkdir -p "$PIN_BASE" "$STATE_DIR"; chmod 700 "$STATE_DIR"
   publish_engine "$root" "$sha" "$pin"
+  [[ -f "$pin/.complete" ]] ||
+    luna_die "POSTCONDITION: published engine $pin is missing its .complete marker"
   # -T is load-bearing: without it, `mv` onto an existing symlink-to-directory
   # dereferences the destination and drops the new link *inside* the old engine
-  # instead of replacing it, so the pin never advances.
-  linktmp="$current.tmp.$$"; ln -s "$pin" "$linktmp"; mv -fT "$linktmp" "$current"
+  # instead of replacing it, so the pin never advances. And because exactly that
+  # silent no-op once lied for a week, the flip must PROVE its effect: re-resolve
+  # the link and require it to land on the just-published pin (both sides
+  # resolved physically, so a symlinked PIN_BASE cannot false-alarm).
+  linktmp="$current.tmp.$$"
+  rm -f "$linktmp"
+  ln -s "$pin" "$linktmp" || luna_die "cannot stage engine link $linktmp"
+  mv -fT "$linktmp" "$current" || luna_die "cannot publish engine link $current"
+  resolved="$(cd -P "$current" 2>/dev/null && pwd || true)"
+  pin_phys="$(cd -P "$pin" 2>/dev/null && pwd || true)"
+  [[ -n "$resolved" && "$resolved" == "$pin_phys" ]] ||
+    luna_die "POSTCONDITION: engine pin flip did not land — current-$profile resolves to '${resolved:-<unresolvable>}', expected $pin"
   render_control_plane "$profile" "$interval" "$current"
+  # Record operator intent AFTER the render proved the cadence took effect, so
+  # the check-tick drift gate can distinguish a hand-edited OnUnitInactiveSec
+  # from a deliberate --interval. Non-fatal: without the record the installed
+  # timer is still the fallback (pre-record behaviour), just self-blessing.
+  record_guardian_interval "$profile" "$interval" ||
+    luna_warn "cannot record desired interval in $(guardian_interval_record_path "$profile"); a hand-edited timer cadence would self-bless"
   prune_engines
   printf 'luna-guardian: installed %s (engine %s, interval %s)\n' \
     "$profile" "$(printf '%s' "$sha" | cut -c1-12)" "$interval"
@@ -755,11 +1110,21 @@ accept_profile() {
 }
 
 uninstall_guardian() {
-  local profile="$1"
+  local profile="$1" f
+  # Converged-absent: nothing to remove, so remove nothing, reload nothing, and
+  # say nothing — a disallowed profile's steady-state tick must be silent.
+  if guardian_units_absent "$profile"; then
+    return 0
+  fi
   systemctl disable --now "luna-guardian-$profile.timer" 2>/dev/null || true
   rm -f "$SYSTEMD_DIR/luna-guardian-$profile.service" \
     "$SYSTEMD_DIR/luna-guardian-$profile.timer" \
     "$SYSTEMD_DIR/luna-guardian-alert-$profile.service"
+  for f in "$SYSTEMD_DIR/luna-guardian-$profile.service" \
+    "$SYSTEMD_DIR/luna-guardian-$profile.timer" \
+    "$SYSTEMD_DIR/luna-guardian-alert-$profile.service"; do
+    [[ ! -e "$f" ]] || luna_die "POSTCONDITION: guardian unit removal left $f in place"
+  done
   systemctl daemon-reload
 }
 
