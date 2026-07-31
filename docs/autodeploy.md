@@ -122,6 +122,8 @@ luna-autodeploy dev --force             # bypass the no-op + connect-aware check
 
 # guardian (default control plane; one-minute deep-health cadence)
 luna-guardian adopt stable
+# human release attestation — the SAME status-file evidence the guardian's own
+# engine-pin promotion gate consumes (see "Engine-pin promotion" below)
 luna-guardian accept stable --expected-sha <full-sha> --min-cycles 2
 luna-guardian diagnose stable           # capture a redacted incident bundle now
 luna-guardian uninstall stable
@@ -151,10 +153,42 @@ cat /var/lib/luna-guardian/status-stable
 ```
 
 The status file is written atomically after every guardian run and records the
-checkout SHA, pinned engine SHA, outcome, completion time, and consecutive fully
-healthy count. Deferred unit reconciliation never increments that count. This
-is also the heartbeat surface for an off-host dead-man monitor; a host cannot
-report its own total failure or a disabled timer.
+checkout SHA, pinned engine SHA, outcome, completion time, consecutive fully
+healthy count, and the consecutive runtime-proof count
+(`consecutive_runtime_healthy` — healthy runtime at the CHECKOUT sha, counted
+even while the engine pin lags behind a fresh deploy). Deferred unit
+reconciliation never increments the fully-healthy count. This is also the
+heartbeat surface for an off-host dead-man monitor; a host cannot report its
+own total failure or a disabled timer.
+
+### Engine-pin promotion (accept-grade, automatic)
+
+`accept` is the human attestation; the guardian's OWN engine pin now
+self-promotes only on accept-grade stored evidence. A new checkout sha must
+first accumulate `LUNA_GUARDIAN_PROMOTE_MIN_CYCLES` (default 2, accept parity;
+`0` disables the gate entirely; otherwise clamped to 2..10 with invalid values
+falling back to 2) consecutive runtime-proven ticks in the status file — read
+through the same verifier `accept` uses — before `refresh_guardian_if_needed`
+advances the pin. Until then the tick logs one `promotion pending` line when
+the candidate first appears (not per tick) and keeps running on the current
+pin; deploys themselves are never delayed, only the supervisor's
+self-upgrade. Repairs are unaffected: the repair ladder runs before the
+post-repair refresh, so missing promotion evidence can never block a repair.
+Manual `luna-guardian install <profile>` and `adopt` bypass the gate — typing
+the command is the attestation. One AUTOMATED path shares the `adopt` bypass:
+if the guardian timer unit file goes missing while the legacy `luna-autodeploy`
+timer is still active, its migration step re-runs `luna-guardian adopt`, which
+re-pins the engine to the current checkout after a single runtime proof (no
+stored-evidence requirement) and resets the timer cadence to adopt's 1min
+default. This is a deliberate disaster-recovery trade-off — re-establishing a
+functioning control plane beats gating its bootstrap — but it means a host
+restored from a pre-guardian backup can advance the pin without accept-grade
+evidence on the next legacy tick.
+
+Known bounded limitation: a guardian timer cadence longer than
+`LUNA_GUARDIAN_HEALTH_WINDOW_SEC` (default 900s) reads every stored heartbeat
+as stale and quietly starves auto-promotion; the escapes are a manual
+`install` or `LUNA_GUARDIAN_PROMOTE_MIN_CYCLES=0`.
 
 When deep health fails, the guardian captures a redacted incident bundle (git,
 unit, `/readyz`, capacity, and journal snapshots with tokens/secrets stripped)

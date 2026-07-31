@@ -21,11 +21,12 @@
  * The three baseline test files are untouched: the ENTIRE existing suite
  * exercises the inplace arm unchanged.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
+import { releaseManifest } from "./helpers/guardian-harness"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const ENGINE = join(repoRoot, "scripts/luna-update-server")
@@ -308,20 +309,8 @@ const readLog = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 const currentOf = (deploy: string) => readlinkSync(join(deploy, "current"))
 const previousOf = (deploy: string) => readlinkSync(join(deploy, "previous"))
 
-/**
- * Recursive release manifest: nanosecond mtime + inode + size of EVERY file,
- * plus a content hash of every file. A single-file whole-second stat witness
- * is blind to in-run mutations (the happy path completes in ~330ms — any
- * write lands in the same epoch second) and to NEW files; this catches any
- * write anywhere in the tree, which is the actual "releases are immutable,
- * built once, never mutated" property.
- */
-const releaseManifest = (dir: string) =>
-  spawnSync(
-    "bash",
-    ["-c", `cd "${dir}" && find . -type f -printf '%P %T@ %i %s\\n' | sort && find . -type f -print0 | sort -z | xargs -0 sha1sum`],
-    { encoding: "utf8" },
-  ).stdout
+// releaseManifest (recursive nanosecond-mtime + inode + content-hash witness)
+// moved to test/helpers/guardian-harness.ts (phase 5, W1) — imported above.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Static properties
@@ -976,6 +965,31 @@ describe("releases layout — prune", () => {
     expect(existsSync(join(fx.releases, fx.targetSha, ".complete"))).toBe(true)
     expect(existsSync(join(fx.releases, fx.prevSha, ".complete"))).toBe(true)
     for (const f of fakes) expect(existsSync(join(fx.releases, f)), f).toBe(false)
+  })
+
+  it("a second healthy deploy's prune deletes nothing more", () => {
+    // Idempotency property (phase 5): after a keep-honored prune, re-deploying
+    // the SAME sha (reuse gate no-ops the build; deploy completes healthy;
+    // prune runs on the healthy exit) must delete nothing further. Snapshot
+    // equality, not named survivors — robust to mtime perturbation.
+    const temp = makeTempDir()
+    const fx = makeReleasesFixture(temp)
+    seedFakeReleases(fx.releases, 3)
+    const stubs = makeReleasesStubBin(temp, fx.deploy, {
+      prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    const r1 = runReleases(fx, stubs, temp, ["--releases-keep", "2"])
+    expect(r1.status, r1.stdout + r1.stderr).toBe(0)
+    const after1 = readdirSync(fx.releases).sort()
+    const current1 = currentOf(fx.deploy)
+    const previous1 = previousOf(fx.deploy)
+
+    const r2 = runReleases(fx, stubs, temp, ["--releases-keep", "2", "--ref", fx.targetSha])
+    expect(r2.status, r2.stdout + r2.stderr).toBe(0)
+    expect(readdirSync(fx.releases).sort()).toEqual(after1)
+    expect(r2.stderr).not.toContain("prune")
+    expect(currentOf(fx.deploy)).toBe(current1)
+    expect(previousOf(fx.deploy)).toBe(previous1)
   })
 
   it("default keep=3: the newest unprotected release survives, older ones are pruned", () => {

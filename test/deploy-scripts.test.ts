@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
+import { makeRestrictedBin } from "./helpers/guardian-harness"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const tempDirs: string[] = []
@@ -572,6 +573,11 @@ exit 1
   it("container creation fails before mutation when Incus is unavailable", () => {
     const temp = makeTempDir()
 
+    // PATH contains EXACTLY the tools the script needs up to the incus
+    // preflight — and no incus. The old PATH=/usr/bin:/bin found the real
+    // /usr/bin/incus on jax-box, so the preflight PASSED and the script ran a
+    // REAL network clone of fourcolors/luna before failing later.
+    const restricted = makeRestrictedBin(temp, ["bash", "dirname", "sed", "tr"])
     const result = runScript("scripts/luna-container-create", [
       "--name",
       "luna-test",
@@ -581,12 +587,14 @@ exit 1
       join(temp, "state"),
     ], {
       env: {
-        PATH: "/usr/bin:/bin",
+        PATH: restricted,
       },
     })
 
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain("Incus CLI not found")
+    // Fails BEFORE mutation: no clone, no repo dir — the property in the name.
+    expect(existsSync(join(temp, "repo"))).toBe(false)
   })
 
   it("container creation fails early when the in-container install never rendered its systemd unit", () => {
@@ -2345,8 +2353,14 @@ esac
 
     it("--supervisor launchd: dry-run prints bootout/bootstrap, not systemctl", () => {
       const temp = makeTempDir()
-      const { repo } = makeUpdateEnv(temp)
-      // We don't need the plist to exist for dry-run — preflight is skipped.
+      const { repo, bin } = makeUpdateEnv(temp)
+      // Inject a stub launchctl so the "launchctl required" preflight passes on
+      // a Linux host (the comment always promised this; the stub was missing,
+      // so the test died on `--supervisor launchd requires launchctl`). The
+      // stub logs argv: dry-run may only SEE the binary via `command -v`,
+      // never execute it.
+      const launchctlLog = join(temp, "launchctl.log")
+      writeFake(join(bin, "launchctl"), `printf '%s\\n' "$*" >> "${launchctlLog}"\nexit 0`)
       const result = spawnSync(
         "bash",
         [join(repoRoot, "scripts/luna-update-server"),
@@ -2359,10 +2373,8 @@ esac
           encoding: "utf8",
           env: {
             ...process.env,
-            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
             LUNA_RESTART_SETTLE_SECS: "0",
-            // Inject launchctl so the "launchctl required" preflight passes
-            // (we only need it in PATH for the binary-presence check)
           },
         },
       )
@@ -2372,6 +2384,15 @@ esac
       expect(result.stdout).toContain("bootout")
       expect(result.stdout).toContain("bootstrap")
       expect(result.stdout).not.toContain("daemon-reload")
+      // Dry-run never EXECUTES a mutating launchctl primitive. (It does run
+      // ONE read-only `launchctl list` — sup_stop's pid capture sits before
+      // its DRY_RUN branch — so "log absent" would be asserting a property
+      // the engine does not have; the property that matters is that bootout/
+      // bootstrap are only PRINTED, never run.)
+      const launchctlCalls = (existsSync(launchctlLog) ? readFileSync(launchctlLog, "utf8") : "")
+        .split("\n")
+        .filter(Boolean)
+      expect(launchctlCalls.filter((line) => !line.startsWith("list"))).toEqual([])
     })
 
     it("--supervisor launchd: parses a real \"PID\" = <n>; line, runs the death-poll, then bootout->bootstrap in order, tolerating bootout rc=3", () => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
+import { processFingerprint } from "./helpers/guardian-harness"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const tempDirs: string[] = []
@@ -488,10 +489,10 @@ describe("luna-update-server", () => {
     const lockDir = join(updateState, "lock-stable")
     writeUnit(serviceDir)
     mkdirSync(lockDir, { recursive: true })
-    const fingerprint = spawnSync("ps", ["-p", String(process.pid), "-o", "lstart="], {
-      encoding: "utf8",
-    }).stdout.replace(/\n/g, "")
-    writeFileSync(join(lockDir, "owner"), `pid=${process.pid}\nfingerprint=${fingerprint}\n`)
+    // Fingerprint via the engine's own /proc-first protocol: a ps-format
+    // fingerprint reads as MISMATCHED on Linux, so the lock was reaped as
+    // stale and the "concurrent" update ran for real against the checkout.
+    writeFileSync(join(lockDir, "owner"), `pid=${process.pid}\nfingerprint=${processFingerprint(process.pid)}\n`)
 
     const r = runUpdate([
       "--repo-dir", work, "--ref", "origin/master",

@@ -1,83 +1,40 @@
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
+import {
+  type Harness,
+  allCalls,
+  cleanupTracked,
+  forceCalls,
+  headSha,
+  incidentCount,
+  installHarness,
+  invocationLines,
+  journalPath,
+  journalValue,
+  makeConvergedHarness,
+  makeHarness,
+  makeRestrictedBin,
+  MUTATING_SYSTEMCTL,
+  pinnedGuardian,
+  processFingerprint,
+  releaseManifest,
+  repairCalls,
+  runCheck,
+  runPinnedCheck,
+  seedJournal,
+  snapshotUnits,
+  statusValue,
+  trackDir,
+  writeStub,
+  writeSystemctlStub,
+} from "./helpers/guardian-harness"
 
 const root = new URL("..", import.meta.url).pathname
 const guardian = join(root, "scripts/luna-guardian")
 const fixture = join(root, "test/fixtures/servers.toml")
-const dirs: string[] = []
-
-const writeSystemctlStub = (bin: string) => {
-  const path = join(bin, "systemctl")
-  writeFileSync(path, `#!/usr/bin/env bash
-set -u
-state="$LUNA_TEST_SYSTEMCTL_STATE"
-units="$LUNA_TEST_SYSTEMD_DIR"
-mkdir -p "$state"
-cmd="\${1:-}"; shift || true
-# Convergence-test recorder: every systemctl invocation, one line each, so a
-# test can assert a converged tick performed ZERO reload/enable/disable/start/
-# stop calls (show reads are allowed and recorded too).
-printf '%s %s\\n' "$cmd" "$*" >> "$state/invocations.log"
-prop_value() {
-  unit="$1"; prop="$2"
-  case "$unit:$prop" in
-    luna-guardian-*.timer:LoadState) [[ -f "$units/$unit" ]] && echo loaded || echo not-found ;;
-    luna-guardian-*.timer:UnitFileState) [[ -f "$state/guardian-enabled" ]] && echo enabled || echo disabled ;;
-    luna-guardian-*.timer:ActiveState) [[ -f "$state/guardian-active" ]] && echo active || echo inactive ;;
-    luna-autodeploy-*.timer:LoadState) [[ -f "$units/$unit" ]] && echo loaded || echo not-found ;;
-    luna-autodeploy-*.timer:UnitFileState) [[ -f "$units/$unit" ]] && echo enabled || echo disabled ;;
-    luna-autodeploy-*.timer:ActiveState) [[ -f "$units/$unit" ]] && echo active || echo inactive ;;
-    luna-guardian-*.service:Result) echo success ;;
-    luna-guardian-*.service:ExecStart)
-      profile="\${unit#luna-guardian-}"; profile="\${profile%.service}"
-      echo "{ path=$LUNA_GUARDIAN_PIN_BASE/current-$profile/luna-guardian ; argv[]=$LUNA_GUARDIAN_PIN_BASE/current-$profile/luna-guardian check $profile ; }"
-      ;;
-    *:NeedDaemonReload) [[ -f "$state/needs-reload" ]] && echo yes || echo no ;;
-    *) echo "" ;;
-  esac
-}
-case "$cmd" in
-  daemon-reload) rm -f "$state/needs-reload"; exit 0 ;;
-  enable)
-    unit="\${@: -1}"
-    [[ "$unit" == luna-guardian-*.timer ]] && touch "$state/guardian-enabled" "$state/guardian-active"
-    exit 0
-    ;;
-  disable)
-    unit="\${@: -1}"
-    if [[ "$unit" == luna-autodeploy-*.timer && "\${LUNA_TEST_LEGACY_DISABLE_FAIL:-false}" == true ]]; then exit 1; fi
-    [[ "$unit" == luna-guardian-*.timer ]] && rm -f "$state/guardian-enabled" "$state/guardian-active"
-    exit 0
-    ;;
-  show)
-    unit="$1"; shift; prop=""
-    while [[ $# -gt 0 ]]; do case "$1" in -p) prop="$2"; shift 2 ;; *) shift ;; esac; done
-    prop_value "$unit" "$prop"
-    ;;
-  start)
-    unit="$1"
-    if [[ "$unit" == luna-guardian-*.service && -n "\${LUNA_TEST_ACCEPT_SHA:-}" ]]; then
-      profile="\${unit#luna-guardian-}"; profile="\${profile%.service}"
-      status="$LUNA_GUARDIAN_STATE_DIR/status-$profile"
-      count_file="$state/cycles-$profile"
-      count="$(cat "$count_file" 2>/dev/null || echo 0)"; count=$((count + 1)); echo "$count" > "$count_file"
-      mkdir -p "$LUNA_GUARDIAN_STATE_DIR"
-      printf 'profile=%s\ncompleted_at=%s\nrepo_sha=%s\nengine_sha=%s\noutcome=healthy\nconsecutive_healthy=%s\n' \
-        "$profile" "$(date +%s)" "$LUNA_TEST_ACCEPT_SHA" "$LUNA_TEST_ACCEPT_SHA" "$count" > "$status"
-    fi
-    exit 0
-    ;;
-  list-unit-files)
-    unit="$1"; [[ -f "$units/$unit" ]] && printf '%s enabled\n' "$unit"
-    ;;
-  *) exit 0 ;;
-esac
-`)
-  spawnSync("chmod", ["+x", path])
-}
 
 const writeGuardianRegistry = (file: string) => {
   writeFileSync(
@@ -95,234 +52,6 @@ const writeGuardianRegistry = (file: string) => {
   )
 }
 
-const writeStub = (path: string, body: string) => {
-  writeFileSync(path, body)
-  spawnSync("chmod", ["+x", path])
-}
-
-const headSha = () =>
-  spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
-
-// A hermetic guardian: the engine is a *copy* of scripts/ whose luna-autodeploy
-// is a recording stub, and the registry declares no incus container so
-// diagnose() can never reach the live luna-stable container. This is the only
-// way to exercise check_profile's destructive `--force` branch without invoking
-// the real updater against the production deploy.
-type Harness = {
-  temp: string
-  guardian: string
-  state: string
-  calls: string
-  env: NodeJS.ProcessEnv
-}
-
-const makeHarness = (label: string): Harness => {
-  const temp = mkdtempSync(join(tmpdir(), label))
-  dirs.push(temp)
-  const bin = join(temp, "bin")
-  const units = join(temp, "systemd")
-  const scripts = join(temp, "scripts")
-  const state = join(temp, "state")
-  const calls = join(temp, "autodeploy-calls")
-  const registry = join(temp, "servers.toml")
-  mkdirSync(bin, { recursive: true })
-  mkdirSync(units, { recursive: true })
-  writeSystemctlStub(bin)
-  writeStub(join(bin, "journalctl"), "#!/usr/bin/env bash\nexit 0\n")
-  writeStub(join(bin, "curl"), "#!/usr/bin/env bash\nexit 7\n")
-  // Inert unless LUNA_TEST_MV_FAIL_GLOB is set: lets a test make exactly the
-  // health-journal rename fail, the way ENOSPC or an errors=remount-ro /var
-  // does, without disturbing any other atomic rename in the tick.
-  // LUNA_TEST_MV_LIE_GLOB is the nastier cousin: exit 0 WITHOUT executing —
-  // the shape of the original engine-pin disaster, where mv "succeeded" and
-  // did nothing. Used to prove the flip postcondition fails loudly.
-  writeStub(join(bin, "mv"), `#!/usr/bin/env bash
-if [[ -n "\${LUNA_TEST_MV_FAIL_GLOB:-}" ]]; then
-  for a in "$@"; do
-    case "$a" in
-      \${LUNA_TEST_MV_FAIL_GLOB}) printf 'mv: simulated failure: %s\\n' "$a" >&2; exit 1 ;;
-    esac
-  done
-fi
-if [[ -n "\${LUNA_TEST_MV_LIE_GLOB:-}" ]]; then
-  for a in "$@"; do
-    case "$a" in
-      \${LUNA_TEST_MV_LIE_GLOB}) exit 0 ;;
-    esac
-  done
-fi
-exec /bin/mv "$@"
-`)
-  spawnSync("cp", ["-a", join(root, "scripts"), scripts])
-  writeStub(
-    join(scripts, "luna-autodeploy"),
-    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$LUNA_TEST_AUTODEPLOY_CALLS"\nexit 0\n`,
-  )
-  writeFileSync(
-    registry,
-    [
-      `kind = "registry"`,
-      `[[server]]`,
-      `name = "stable"`,
-      `update.params.hostRepoDir = "${root}"`,
-      `update.params.ref = "origin/master"`,
-      `ports.proxy = 4753`,
-      `deploy.timer = true`,
-    ].join("\n") + "\n",
-  )
-  return {
-    temp,
-    guardian: join(scripts, "luna-guardian"),
-    state,
-    calls,
-    env: {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-      LUNA_SERVERS_CONFIG: registry,
-      LUNA_TEST_STAT_MODE: "600",
-      LUNA_HOME: join(temp, "luna-home"),
-      LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
-      LUNA_GUARDIAN_STATE_DIR: state,
-      LUNA_UPDATE_STATE_DIR: join(temp, "update"),
-      LUNA_TEST_SYSTEMD_DIR: units,
-      LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
-      LUNA_TEST_GUARDIAN_UNIT_HARDENED: "true",
-      LUNA_TEST_AUTODEPLOY_CALLS: calls,
-      LUNA_GUARDIAN_HEALTH_RETRY_DELAY: "0",
-    },
-  }
-}
-
-const installHarness = (h: Harness) => {
-  const install = spawnSync("bash", [h.guardian, "install", "stable"], {
-    cwd: root,
-    encoding: "utf8",
-    env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
-  })
-  expect(install.status, install.stdout + install.stderr).toBe(0)
-  rmSync(h.calls, { force: true })
-}
-
-const runCheck = (h: Harness, seam: string, extra: Record<string, string> = {}) =>
-  spawnSync("bash", [h.guardian, "check", "stable"], {
-    cwd: root,
-    encoding: "utf8",
-    env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: seam, ...extra },
-  })
-
-// ── phase 3: fully-converged harness ─────────────────────────────────────────
-// makeHarness + three additions so a tick can be run exactly as production runs
-// it and reach TOTAL convergence:
-//   (a) the copied $temp tree is git-inited+committed, so the engine sha is a
-//       real `git -C $temp rev-parse HEAD`;
-//   (b) the registry's hostRepoDir is $temp itself, so P_REPO == the engine's
-//       own repo and the pin engine@sha == P_REPO HEAD — closing the
-//       refresh_guardian_if_needed gate;
-//   (c) ticks are run FROM THE PIN ($pins/current-stable/luna-guardian),
-//       modelling the production ExecStart; the pin contains the recording
-//       stub luna-autodeploy copied from $temp/scripts.
-const makeConvergedHarness = (label: string): Harness => {
-  const h = makeHarness(label)
-  spawnSync("git", ["-C", h.temp, "init", "-q"], { encoding: "utf8" })
-  spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
-    "commit", "-q", "--allow-empty", "-m", "engine"], { encoding: "utf8" })
-  writeFileSync(
-    join(h.temp, "servers.toml"),
-    [
-      `kind = "registry"`,
-      `[[server]]`,
-      `name = "stable"`,
-      `update.params.hostRepoDir = "${h.temp}"`,
-      `update.params.ref = "origin/master"`,
-      `ports.proxy = 4753`,
-      `deploy.timer = true`,
-    ].join("\n") + "\n",
-  )
-  return h
-}
-
-const pinnedGuardian = (h: Harness) =>
-  join(h.env.LUNA_GUARDIAN_PIN_BASE as string, "current-stable", "luna-guardian")
-
-// A tick exactly as production runs it: from the immutable pin, machine-driven.
-const runPinnedCheck = (h: Harness, extra: Record<string, string> = {}) =>
-  spawnSync("bash", [pinnedGuardian(h), "check", "stable"], {
-    cwd: root,
-    encoding: "utf8",
-    env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true", ...extra },
-  })
-
-const invocationsLog = (h: Harness) =>
-  join(h.env.LUNA_TEST_SYSTEMCTL_STATE as string, "invocations.log")
-
-const invocationLines = (h: Harness) =>
-  (existsSync(invocationsLog(h)) ? readFileSync(invocationsLog(h), "utf8") : "")
-    .split("\n")
-    .filter(Boolean)
-
-const unitFiles = (h: Harness) =>
-  ["luna-guardian-stable.service", "luna-guardian-alert-stable.service", "luna-guardian-stable.timer"]
-    .map((name) => join(h.env.LUNA_TEST_SYSTEMD_DIR as string, name))
-
-const snapshotUnits = (h: Harness) =>
-  unitFiles(h).map((path) => {
-    const s = statSync(path)
-    return { path, mtimeMs: s.mtimeMs, ino: s.ino, content: readFileSync(path, "utf8") }
-  })
-
-const statusValue = (h: Harness, key: string) => {
-  const file = join(h.state, "status-stable")
-  const match = readFileSync(file, "utf8").match(new RegExp(`^${key}=(.*)$`, "m"))
-  return match ? match[1] : ""
-}
-
-const MUTATING_SYSTEMCTL = /^(daemon-reload|enable|disable|start|stop)\b/
-
-const forceCalls = (h: Harness) =>
-  (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "")
-    .split("\n")
-    .filter((line) => line.includes("--force"))
-
-const repairCalls = (h: Harness) =>
-  (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "")
-    .split("\n")
-    .filter((line) => line.includes("--repair"))
-
-const allCalls = (h: Harness) =>
-  (existsSync(h.calls) ? readFileSync(h.calls, "utf8") : "").split("\n").filter(Boolean)
-
-const journalPath = (h: Harness) => join(h.state, "health-stable")
-
-const seedJournal = (h: Harness, fields: Record<string, string | number>) => {
-  mkdirSync(h.state, { recursive: true })
-  const record: Record<string, string | number> = {
-    profile: "stable",
-    updated_at: Math.floor(Date.now() / 1000),
-    repo_sha: headSha(),
-    consecutive_negative: 0,
-    negative_at: 0,
-    consecutive_unknown: 0,
-    last_repair_at: 0,
-    ...fields,
-  }
-  writeFileSync(
-    journalPath(h),
-    Object.entries(record).map(([key, value]) => `${key}=${value}`).join("\n") + "\n",
-  )
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-const journalValue = (h: Harness, key: string) => {
-  const match = readFileSync(journalPath(h), "utf8").match(new RegExp(`^${key}=(.*)$`, "m"))
-  return match ? match[1] : ""
-}
-
-const incidentCount = (h: Harness) => {
-  const dir = join(h.state, "incidents", "stable")
-  return existsSync(dir) ? readdirSync(dir).length : 0
-}
-
 // Classify a single probe outcome through the real library function, with
 // systemctl/curl/incus replaced by stubs driven from the environment.
 //
@@ -334,8 +63,7 @@ const incidentCount = (h: Harness) => {
 type ProbeFixture = { bin: string; isolated: string; repo: string; head: string }
 
 const makeProbeFixture = (): ProbeFixture => {
-  const temp = mkdtempSync(join(tmpdir(), "luna-classify-"))
-  dirs.push(temp)
+  const temp = trackDir(mkdtempSync(join(tmpdir(), "luna-classify-")))
   const bin = join(temp, "bin")
   const isolated = join(temp, "isolated")
   const repo = join(temp, "repo")
@@ -410,14 +138,14 @@ const seamCode = (value: string) => {
   return Number(result.stdout)
 }
 
-afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+afterEach(cleanupTracked)
 
 describe("luna-guardian", () => {
   it("units-only reconciliation never mutates state or restarts", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-units-test-"))
-    dirs.push(temp)
+    trackDir(temp)
     const result = spawnSync("bash", [
       join(root, "scripts/luna-server-install"), "--dry-run", "--units-only",
       "--profile", "stable", "--repo-dir", join(temp, "repo"),
@@ -440,11 +168,18 @@ describe("luna-guardian", () => {
     const source = readFileSync(guardian, "utf8")
     expect(source).toContain("refresh_guardian_if_needed")
     expect(source).toContain("if runtime_health; then refresh_guardian_if_needed")
+    // The promotion gate must live INSIDE refresh_guardian_if_needed — the
+    // single choke point both automated pin advances flow through
+    // (update_then_refresh and the post-repair check) — and must consume the
+    // SAME evidence verifier accept uses, not a forked format.
+    const refreshBody = source.match(/refresh_guardian_if_needed\(\) \{[\s\S]*?\n\}/)?.[0] ?? ""
+    expect(refreshBody).toContain("guardian_status_evidence")
+    expect(refreshBody).toContain("consecutive_runtime_healthy")
   })
 
   it("installs an immutable engine and independent timer/alert units", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-test-"))
-    dirs.push(temp)
+    trackDir(temp)
     const bin = join(temp, "bin")
     const units = join(temp, "systemd")
     const pins = join(temp, "pins")
@@ -501,7 +236,7 @@ describe("luna-guardian", () => {
 
   it("replaces the pin symlink on re-install instead of nesting it in the old engine", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reinstall-"))
-    dirs.push(temp)
+    trackDir(temp)
     const bin = join(temp, "bin")
     const units = join(temp, "systemd")
     const pins = join(temp, "pins")
@@ -542,7 +277,7 @@ describe("luna-guardian", () => {
 
   it("refuses installation when the registry disables the timer", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-disabled-"))
-    dirs.push(temp)
+    trackDir(temp)
     const registry = join(temp, "servers.toml")
     writeFileSync(
       registry,
@@ -572,7 +307,7 @@ describe("luna-guardian", () => {
 
   it("self-removes its units when deploy.timer is later switched off", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-hard-rail-"))
-    dirs.push(temp)
+    trackDir(temp)
     const bin = join(temp, "bin")
     const units = join(temp, "systemd")
     const registry = join(temp, "servers.toml")
@@ -608,9 +343,35 @@ describe("luna-guardian", () => {
     expect(readFileSync(join(state, "status-stable"), "utf8")).toContain("outcome=disabled")
   })
 
+  // The three adopt-defer tests below run against a stubbed systemd (empty
+  // unit dir + empty stub state), so guardian_control_plane_adopted answers
+  // NO on every host — on jax-box the REAL systemctl answers "adopted" for
+  // stable and adopt short-circuited before ever reaching the check under
+  // test. The stub state is identical on a host with stable adopted and on a
+  // bare CI runner: that is the hermeticity contract.
+  const adoptEnv = (temp: string) => {
+    const bin = join(temp, "bin")
+    const units = join(temp, "systemd")
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(units, { recursive: true })
+    writeSystemctlStub(bin)
+    return {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      LUNA_SERVERS_CONFIG: fixture,
+      LUNA_TEST_STAT_MODE: "600",
+      LUNA_TEST_SYSTEMD_DIR: units,
+      LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
+      LUNA_HOME: join(temp, "luna-home"),
+      LUNA_GUARDIAN_STATE_DIR: join(temp, "state"),
+      LUNA_UPDATE_STATE_DIR: join(temp, "update"),
+      LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
+    }
+  }
+
   it("defers adoption while an update transaction is pending", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-pending-"))
-    dirs.push(temp)
+    trackDir(temp)
     const update = join(temp, "update")
     mkdirSync(update)
     writeFileSync(join(update, "transaction-stable"), "phase=checkout\n")
@@ -619,11 +380,14 @@ describe("luna-guardian", () => {
       cwd: root,
       encoding: "utf8",
       env: {
-        ...process.env,
-        LUNA_SERVERS_CONFIG: fixture,
-        LUNA_TEST_STAT_MODE: "600",
-        LUNA_UPDATE_STATE_DIR: update,
-        LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
+        ...adoptEnv(temp),
+        // Reorder defense: the fixture registry names the live luna-stable
+        // container. Should a future refactor move the pending check behind
+        // the runtime probe, the seam keeps the probe off the real container;
+        // the pending branch must still defer (mutation: with the branch
+        // deleted, seam=true lets adoption PROCEED and the pins-absent
+        // assertion below fails the mutant via STATE, not just a message).
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
       },
     })
 
@@ -634,17 +398,13 @@ describe("luna-guardian", () => {
 
   it("defers adoption when runtime does not prove checkout HEAD", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-mismatch-"))
-    dirs.push(temp)
+    trackDir(temp)
     const result = spawnSync("bash", [guardian, "adopt", "stable"], {
       cwd: root,
       encoding: "utf8",
       env: {
-        ...process.env,
-        LUNA_SERVERS_CONFIG: fixture,
-        LUNA_TEST_STAT_MODE: "600",
+        ...adoptEnv(temp),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "false",
-        LUNA_UPDATE_STATE_DIR: join(temp, "update"),
-        LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
       },
     })
     expect(result.status, result.stdout + result.stderr).toBe(10)
@@ -654,25 +414,23 @@ describe("luna-guardian", () => {
 
   it("defers pin publication while the updater owns the shared profile lock", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-update-lock-"))
-    dirs.push(temp)
+    trackDir(temp)
     const update = join(temp, "update")
     const lock = join(update, "lock-stable")
     mkdirSync(lock, { recursive: true })
-    const fingerprint = spawnSync("ps", ["-p", String(process.pid), "-o", "lstart="], {
-      encoding: "utf8",
-    }).stdout.replace(/\n/g, "")
-    writeFileSync(join(lock, "owner"), `pid=${process.pid}\nfingerprint=${fingerprint}\n`)
+    // The owner fingerprint must match what the guardian computes for a live
+    // pid: /proc starttime FIRST on Linux. The old `ps -o lstart=` planting
+    // read as a MISMATCHED fingerprint on Linux, so the lock was reaped as
+    // stale and adoption proceeded — the test then failed on the live host's
+    // real profile state, never on the code under test.
+    writeFileSync(join(lock, "owner"), `pid=${process.pid}\nfingerprint=${processFingerprint(process.pid)}\n`)
 
     const result = spawnSync("bash", [guardian, "adopt", "stable"], {
       cwd: root,
       encoding: "utf8",
       env: {
-        ...process.env,
-        LUNA_SERVERS_CONFIG: fixture,
-        LUNA_TEST_STAT_MODE: "600",
+        ...adoptEnv(temp),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
-        LUNA_UPDATE_STATE_DIR: update,
-        LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
       },
     })
 
@@ -683,7 +441,7 @@ describe("luna-guardian", () => {
 
   it("cannot report success when legacy timer retirement fails", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-handoff-"))
-    dirs.push(temp)
+    trackDir(temp)
     const bin = join(temp, "bin")
     const units = join(temp, "systemd")
     mkdirSync(bin, { recursive: true })
@@ -736,7 +494,7 @@ describe("luna-guardian", () => {
 
   it("publishes one complete engine under simultaneous profile installs", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-concurrent-"))
-    dirs.push(temp)
+    trackDir(temp)
     const bin = join(temp, "bin")
     const units = join(temp, "systemd")
     const pins = join(temp, "pins")
@@ -771,7 +529,7 @@ describe("luna-guardian", () => {
 
   it("accepts only after two healthy cycles attest the exact SHA", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-accept-"))
-    dirs.push(temp)
+    trackDir(temp)
     const bin = join(temp, "bin")
     const units = join(temp, "systemd")
     const pins = join(temp, "pins")
@@ -1438,6 +1196,9 @@ exit 0
     const beforeInvocations = invocationLines(h).length
     const enginesBefore = readdirSync(h.env.LUNA_GUARDIAN_PIN_BASE as string)
       .filter((name) => name.startsWith("engine@"))
+    // The durable interval record converges too: record_guardian_interval's
+    // equal-value early return must leave the file untouched (mtime AND inode).
+    const intervalBefore = statSync(join(h.state, "interval-stable"))
 
     const again = spawnSync("bash", [h.guardian, "install", "stable"], {
       cwd: root,
@@ -1457,6 +1218,9 @@ exit 0
     for (let i = 0; i < before.length; i++) {
       expect(after[i].mtimeMs, after[i].path).toBe(before[i].mtimeMs)
     }
+    const intervalAfter = statSync(join(h.state, "interval-stable"))
+    expect(intervalAfter.mtimeMs).toBe(intervalBefore.mtimeMs)
+    expect(intervalAfter.ino).toBe(intervalBefore.ino)
   })
 
   it("the pin-flip postcondition fails loudly when mv lies", () => {
@@ -1588,7 +1352,10 @@ exit 0
       "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
     const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
 
-    const tick = runPinnedCheck(h)
+    // Promotion gate disabled: this test pins the CADENCE property of an
+    // engine advance (and, since phase 5, the knob's 0-disables escape hatch);
+    // gated-advance cadence preservation is pinned by the promotion suite.
+    const tick = runPinnedCheck(h, { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "0" })
     expect(tick.status, tick.stdout + tick.stderr).toBe(0)
     expect(tick.stderr).toContain("advancing guardian engine")
     // The pin advanced to the new sha...
@@ -1907,4 +1674,536 @@ printf 'rc=%s\\n' "$rc"
     expect(delta.filter((line) => MUTATING_SYSTEMCTL.test(line))).toEqual([])
     expect(statusValue(h, "outcome")).toBe("disabled")
   })
+
+  // ── phase 5: idempotency properties ────────────────────────────────────────
+
+  it("SIGNATURE 1R: a fully converged tick under P_LAYOUT=releases is silent and writes nothing", async () => {
+    const h = makeConvergedHarness("luna-guardian-converged-rel-", { layout: "releases" })
+    installHarness(h)
+    const deploy = join(h.temp, "deploy")
+    const relSha = readlinkSync(join(deploy, "current")).replace("releases/", "")
+    const releaseDir = join(deploy, "releases", relSha)
+
+    // Tick A establishes convergence (it may log while getting there).
+    const tickA = runPinnedCheck(h)
+    expect(tickA.status, tickA.stdout + tickA.stderr).toBe(0)
+
+    const before = snapshotUnits(h)
+    const beforeInvocations = invocationLines(h).length
+    const beforeEngines = readdirSync(h.env.LUNA_GUARDIAN_PIN_BASE as string).sort()
+    const beforeCalls = allCalls(h).length
+    const beforeCompleted = Number(statusValue(h, "completed_at"))
+    const beforeCurrent = readlinkSync(join(deploy, "current"))
+    const beforeManifest = releaseManifest(releaseDir)
+    expect(existsSync(journalPath(h))).toBe(false)
+    await sleep(1100)
+
+    const tickB = runPinnedCheck(h)
+    expect(tickB.status, tickB.stdout + tickB.stderr).toBe(0)
+    expect(tickB.stdout).toBe("")
+    expect(tickB.stderr).toBe("")
+    const after = snapshotUnits(h)
+    for (let i = 0; i < before.length; i++) {
+      expect(after[i].mtimeMs, after[i].path).toBe(before[i].mtimeMs)
+      expect(after[i].ino, after[i].path).toBe(before[i].ino)
+    }
+    const delta = invocationLines(h).slice(beforeInvocations)
+    expect(delta.filter((line) => MUTATING_SYSTEMCTL.test(line))).toEqual([])
+    expect(existsSync(journalPath(h))).toBe(false)
+    expect(readdirSync(h.env.LUNA_GUARDIAN_PIN_BASE as string).sort()).toEqual(beforeEngines)
+    // Releases-layout additions: the deploy topology is untouched by the tick.
+    expect(readlinkSync(join(deploy, "current"))).toBe(beforeCurrent)
+    expect(existsSync(join(deploy, "previous"))).toBe(false)
+    expect(releaseManifest(releaseDir)).toBe(beforeManifest)
+    // The ONE allowed write: the status heartbeat advanced.
+    expect(Number(statusValue(h, "completed_at"))).toBeGreaterThan(beforeCompleted)
+    expect(statusValue(h, "outcome")).toBe("healthy")
+    expect(allCalls(h).length).toBe(beforeCalls + 1)
+    expect(allCalls(h)[allCalls(h).length - 1]).toBe("stable --from-timer")
+  })
+
+  it("adopt on an adopted profile answers one line and mutates nothing", () => {
+    // Deliberately NOT silent — adopt is a human/migration command and
+    // maybe_migrate depends on rc 0; the property is no-mutation plus a
+    // stable one-line answer.
+    const h = makeConvergedHarness("luna-guardian-adopt-noop-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const before = snapshotUnits(h)
+    const beforeInvocations = invocationLines(h).length
+    const enginesBefore = readdirSync(pins).filter((n) => n.startsWith("engine@")).sort()
+
+    const result = spawnSync("bash", [pinnedGuardian(h), "adopt", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toBe("luna-guardian: already adopted stable\n")
+    expect(result.stderr).toBe("")
+    const delta = invocationLines(h).slice(beforeInvocations)
+    expect(delta.filter((line) => MUTATING_SYSTEMCTL.test(line))).toEqual([])
+    // The fast path never touches the update lock or re-installs.
+    expect(existsSync(join(h.env.LUNA_UPDATE_STATE_DIR as string, "lock-stable"))).toBe(false)
+    expect(readdirSync(pins).filter((n) => n.startsWith("engine@")).sort()).toEqual(enginesBefore)
+    const after = snapshotUnits(h)
+    for (let i = 0; i < before.length; i++) {
+      expect(after[i].mtimeMs, after[i].path).toBe(before[i].mtimeMs)
+      expect(after[i].ino, after[i].path).toBe(before[i].ino)
+    }
+  })
+
+  it("a second accept with the same --expected-sha also passes and leaves evidence untouched", () => {
+    const temp = mkdtempSync(join(tmpdir(), "luna-guardian-accept-twice-"))
+    trackDir(temp)
+    const bin = join(temp, "bin")
+    const units = join(temp, "systemd")
+    const pins = join(temp, "pins")
+    const state = join(temp, "state")
+    const registry = join(temp, "servers.toml")
+    const sha = headSha()
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(units, { recursive: true })
+    writeSystemctlStub(bin)
+    writeGuardianRegistry(registry)
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      LUNA_SERVERS_CONFIG: registry,
+      LUNA_TEST_STAT_MODE: "600",
+      LUNA_GUARDIAN_PIN_BASE: pins,
+      LUNA_GUARDIAN_STATE_DIR: state,
+      LUNA_UPDATE_STATE_DIR: join(temp, "update"),
+      LUNA_TEST_SYSTEMD_DIR: units,
+      LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
+      LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      LUNA_TEST_GUARDIAN_UNIT_HARDENED: "true",
+      LUNA_TEST_ACCEPT_SHA: sha,
+      LUNA_TEST_DOCTOR_INCUS_ACTIVE: "true",
+      LUNA_TEST_DOCTOR_HOST_ACTIVE: "false",
+      LUNA_TEST_DOCTOR_TIMER_PRESENT: "true",
+      LUNA_TEST_DOCTOR_GUARDIAN_TIMER_STATE: "active",
+      LUNA_TEST_DOCTOR_LEGACY_TIMER_STATE: "missing",
+      LUNA_TAILSCALE_IP: "",
+    }
+    const install = spawnSync("bash", [guardian, "install", "stable"], { cwd: root, encoding: "utf8", env })
+    expect(install.status, install.stdout + install.stderr).toBe(0)
+    const unitPaths = readdirSync(units).map((n) => join(units, n))
+    const unitStats = unitPaths.map((p) => statSync(p).mtimeMs)
+    const enginesBefore = readdirSync(pins).filter((n) => n.startsWith("engine@")).sort()
+
+    const first = spawnSync("bash",
+      [guardian, "accept", "stable", "--expected-sha", sha, "--min-cycles", "2"],
+      { cwd: root, encoding: "utf8", env })
+    expect(first.status, first.stdout + first.stderr).toBe(0)
+    const countAfterFirst = Number(readFileSync(join(state, "status-stable"), "utf8")
+      .match(/^consecutive_healthy=(.*)$/m)?.[1])
+
+    const second = spawnSync("bash",
+      [guardian, "accept", "stable", "--expected-sha", sha, "--min-cycles", "2"],
+      { cwd: root, encoding: "utf8", env })
+    expect(second.status, second.stdout + second.stderr).toBe(0)
+    expect(second.stdout).toContain("ACCEPTED stable")
+    // Evidence only GROWS: accept reads, never truncates or rewrites.
+    const countAfterSecond = Number(readFileSync(join(state, "status-stable"), "utf8")
+      .match(/^consecutive_healthy=(.*)$/m)?.[1])
+    expect(countAfterSecond).toBeGreaterThan(countAfterFirst)
+    // Pins and units untouched by either accept.
+    expect(readdirSync(pins).filter((n) => n.startsWith("engine@")).sort()).toEqual(enginesBefore)
+    expect(unitPaths.map((p) => statSync(p).mtimeMs)).toEqual(unitStats)
+  })
+
+  it("a second full install prunes nothing and warns nothing", () => {
+    const h = makeConvergedHarness("luna-guardian-prune-idem-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const units = h.env.LUNA_TEST_SYSTEMD_DIR as string
+
+    // Seed 6 stale complete engines with staggered OLD mtimes; current-dev
+    // pins the oldest (same shape as the prune-protection test).
+    const now = Date.now() / 1000
+    const fakes: string[] = []
+    for (let i = 1; i <= 6; i++) {
+      const dir = join(pins, `engine@${String(i).repeat(40)}`)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, ".complete"), "")
+      utimesSync(dir, now - 1000 * i, now - 1000 * i)
+      fakes.push(dir)
+    }
+    const oldest = fakes[5]
+    symlinkSync(oldest, join(pins, "current-dev"))
+
+    // Full install #1 (drift one unit): prunes down to keep+protected.
+    rmSync(join(units, "luna-guardian-stable.timer"))
+    const install1 = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root, encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(install1.status, install1.stdout + install1.stderr).toBe(0)
+    const after1 = readdirSync(pins).filter((n) => n.startsWith("engine@")).sort()
+
+    // Full install #2 (drift again): prune has converged — deletes NOTHING.
+    rmSync(join(units, "luna-guardian-stable.timer"))
+    const install2 = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root, encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(install2.status, install2.stdout + install2.stderr).toBe(0)
+    expect(install2.stderr).not.toContain("prune")
+    expect(install2.stderr).not.toContain("could not remove")
+    expect(readdirSync(pins).filter((n) => n.startsWith("engine@")).sort()).toEqual(after1)
+    expect(existsSync(join(oldest, ".complete"))).toBe(true)
+  })
+
+  // ── phase 5: wait_runtime_healthy — the REAL polling loop, executed ────────
+
+  // Drive the real loop through the real CLI repair path: a NEGATIVE third
+  // strike escalates, the repair stub flips a phase file, and the post-repair
+  // verification must poll through boot-time INCONCLUSIVE probes to healthy.
+  const waitHarness = (label: string, opts: { postHealthzFailures: number }) => {
+    const h = makeHarness(label)
+    installHarness(h)
+    const repaired = join(h.temp, "repaired")
+    const healthzCount = join(h.temp, "healthz-count")
+    writeStub(join(h.temp, "scripts", "luna-autodeploy"), `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$LUNA_TEST_AUTODEPLOY_CALLS"
+for a in "$@"; do [[ "$a" == "--repair" ]] && { touch "${repaired}"; exit 0; }; done
+exit 0
+`)
+    // Pre-repair: server answers, WRONG buildSha (NEGATIVE — a real strike).
+    // Post-repair: first N healthz probes fail transport (INCONCLUSIVE, the
+    // boot window), then healthz+readyz prove the checkout HEAD.
+    writeStub(join(h.temp, "bin", "curl"), `#!/usr/bin/env bash
+for a in "$@"; do case "$a" in
+  *healthz)
+    if [[ ! -f "${repaired}" ]]; then exit 0; fi
+    n="$(cat "${healthzCount}" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" > "${healthzCount}"
+    if (( n <= ${String(opts.postHealthzFailures)} )); then exit 7; fi
+    exit 0
+    ;;
+  *readyz)
+    if [[ ! -f "${repaired}" ]]; then
+      printf '{"status":"ok","mode":"normal","credentialOk":true,"buildSha":"aaaaaaaaaaaa"}'
+      exit 0
+    fi
+    printf '{"status":"ok","mode":"normal","credentialOk":true,"buildSha":"${headSha()}"}'
+    exit 0
+    ;;
+esac; done
+exit 0
+`)
+    return { h, healthzCount }
+  }
+
+  // The tick env: seam UNSET (h.env has none) so runtime_health runs the real
+  // classifier against the stub systemctl (is-active answers "active") + curl.
+  const realProbeTick = (h: Harness, extra: Record<string, string> = {}) =>
+    spawnSync("bash", [h.guardian, "check", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { ...h.env, ...extra },
+    })
+
+  it("post-repair verification polls through boot-time INCONCLUSIVE to healthy", () => {
+    const { h, healthzCount } = waitHarness("luna-guardian-wait-poll-", { postHealthzFailures: 2 })
+    seedJournal(h, { consecutive_negative: 2, negative_at: Math.floor(Date.now() / 1000) })
+
+    const tick = realProbeTick(h)
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(tick.stderr).toContain("deep health failed 3 consecutive checks")
+    expect(tick.stderr).not.toContain("repair failed")
+    expect(repairCalls(h)).toHaveLength(1)
+    // Post-repair the journal is zeroed — the repair VERIFIED, not assumed.
+    expect(journalValue(h, "consecutive_negative")).toBe("0")
+    // The loop probed more than once after the repair (2 INCONCLUSIVE + the
+    // healthy one at minimum; semantics, not exact counts — diagnose curls too).
+    expect(Number(readFileSync(healthzCount, "utf8").trim())).toBeGreaterThanOrEqual(3)
+  })
+
+  it("the deadline bounds post-repair verification", { timeout: 30_000 }, () => {
+    // Probes never succeed after the repair; a 1s deadline must terminate the
+    // loop and classify the repair as failed (paging), not hang the tick.
+    const { h } = waitHarness("luna-guardian-wait-deadline-", { postHealthzFailures: 1_000_000 })
+    seedJournal(h, { consecutive_negative: 2, negative_at: Math.floor(Date.now() / 1000) })
+
+    const tick = realProbeTick(h, { LUNA_GUARDIAN_REPAIR_VERIFY_SEC: "1" })
+    expect(tick.status, tick.stdout + tick.stderr).toBe(2)
+    expect(tick.stderr).toContain("repair failed")
+    expect(repairCalls(h)).toHaveLength(1)
+  })
+
+  it("clock skew returns after exactly one probe", () => {
+    // The `now < started` branch is unreachable hermetically through the CLI
+    // (it needs the wall clock to move backwards mid-loop), so the loop body
+    // is extracted by sed and driven with scripted date()/runtime_health()
+    // shell functions. The extraction is asserted non-empty before eval.
+    const temp = mkdtempSync(join(tmpdir(), "luna-guardian-wait-skew-"))
+    trackDir(temp)
+    const probeCount = join(temp, "probes")
+    const dateCount = join(temp, "dates")
+    const driver = `
+body="$(sed -n '/^wait_runtime_healthy() {/,/^}/p' "$1")"
+if [[ -z "$body" ]]; then echo "EXTRACTION-EMPTY" >&2; exit 9; fi
+runtime_health() {
+  n="$(cat "${probeCount}" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" > "${probeCount}"
+  return 1
+}
+date() {
+  n="$(cat "${dateCount}" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" > "${dateCount}"
+  case "$n" in 1) echo 1000 ;; 2) echo 500 ;; *) echo 999999 ;; esac
+}
+eval "$body"
+rc=0
+wait_runtime_healthy || rc=$?
+printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
+`
+    const result = spawnSync("bash", ["-c", driver, "_", guardian], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, LUNA_GUARDIAN_HEALTH_RETRY_DELAY: "0" },
+    })
+    expect(result.stderr).not.toContain("EXTRACTION-EMPTY")
+    // started=1000, first loop reads now=500: the clock moved BACKWARDS, so
+    // the loop must return (non-zero) after exactly ONE probe — with the skew
+    // clause deleted, the third scripted date (999999) terminates it via the
+    // deadline on probe TWO, failing this assertion deterministically.
+    expect(result.stdout).toContain("rc=1 probes=1")
+  })
+
+  // ── phase 5: accept-grade engine-pin promotion gate ────────────────────────
+
+  it("T1: the engine pin advances only on accept-grade evidence (cadence preserved)", () => {
+    const h = makeConvergedHarness("luna-guardian-gate-advance-")
+    const install = spawnSync("bash", [h.guardian, "install", "stable", "--interval", "5min"], {
+      cwd: root, encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(install.status, install.stdout + install.stderr).toBe(0)
+    const timerPath = join(h.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer")
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" }
+    const pinTarget = () =>
+      spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    const oldSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    // A converged tick stores status at OLD, so the advance below is a real
+    // state change for the log-once rule to notice.
+    expect(runPinnedCheck(h, gateEnv).status).toBe(0)
+
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+
+    // Tick 1: candidate appears — exactly ONE pending line, no advance.
+    const tick1 = runPinnedCheck(h, gateEnv)
+    expect(tick1.status, tick1.stdout + tick1.stderr).toBe(0)
+    const pending1 = tick1.stderr.split("\n").filter((l) => l.includes("promotion pending"))
+    expect(pending1).toHaveLength(1)
+    expect(pending1[0]).toContain(oldSha.slice(0, 12))
+    expect(pending1[0]).toContain(newSha.slice(0, 12))
+    // The pending line reports the CANDIDATE's proven count (structurally 0 on
+    // its first tick), not the previous sha's stored counter — the stored
+    // record here holds consecutive_runtime_healthy=1 at OLD, and leaking it
+    // would tell the operator the evidence bar is already met while deferring.
+    expect(pending1[0]).toContain("(0/2 proven cycles)")
+    expect(pinTarget().endsWith(`engine@${oldSha}`)).toBe(true)
+    expect(statusValue(h, "consecutive_runtime_healthy")).toBe("1")
+    expect(statusValue(h, "outcome")).toBe("deferred")
+
+    // Tick 2: still accumulating — SILENT defer (state-change logging).
+    const tick2 = runPinnedCheck(h, gateEnv)
+    expect(tick2.status, tick2.stdout + tick2.stderr).toBe(0)
+    expect(tick2.stderr).not.toContain("promotion pending")
+    expect(pinTarget().endsWith(`engine@${oldSha}`)).toBe(true)
+    expect(statusValue(h, "consecutive_runtime_healthy")).toBe("2")
+
+    // Tick 3: evidence sufficient — advance, cadence preserved.
+    const tick3 = runPinnedCheck(h, gateEnv)
+    expect(tick3.status, tick3.stdout + tick3.stderr).toBe(0)
+    expect(tick3.stderr).toContain("advancing guardian engine")
+    expect(pinTarget().endsWith(`engine@${newSha}`)).toBe(true)
+    expect(readFileSync(timerPath, "utf8")).toContain("OnUnitInactiveSec=5min")
+    expect(readFileSync(timerPath, "utf8")).not.toContain("OnUnitInactiveSec=1min")
+  })
+
+  it("T2: an unproven tick resets the promotion streak", () => {
+    const h = makeConvergedHarness("luna-guardian-gate-reset-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" }
+    const pinTarget = () =>
+      spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    const oldSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+
+    expect(runPinnedCheck(h, gateEnv).status).toBe(0) // defer, streak 1
+    expect(statusValue(h, "consecutive_runtime_healthy")).toBe("1")
+
+    // An INCONCLUSIVE tick is not evidence: streak resets, and no second
+    // pending line appears (the candidate did not change).
+    const blip = runPinnedCheck(h, { ...gateEnv, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "inconclusive" })
+    expect(blip.status, blip.stdout + blip.stderr).toBe(0)
+    expect(blip.stderr).not.toContain("promotion pending")
+    expect(statusValue(h, "consecutive_runtime_healthy")).toBe("0")
+    expect(pinTarget().endsWith(`engine@${oldSha}`)).toBe(true)
+
+    expect(runPinnedCheck(h, gateEnv).status).toBe(0) // streak 1
+    expect(statusValue(h, "consecutive_runtime_healthy")).toBe("1")
+    expect(pinTarget().endsWith(`engine@${oldSha}`)).toBe(true)
+    expect(runPinnedCheck(h, gateEnv).status).toBe(0) // streak 2, still gated this tick
+    expect(statusValue(h, "consecutive_runtime_healthy")).toBe("2")
+    expect(pinTarget().endsWith(`engine@${oldSha}`)).toBe(true)
+    const advance = runPinnedCheck(h, gateEnv)
+    expect(advance.status, advance.stdout + advance.stderr).toBe(0)
+    expect(advance.stderr).toContain("advancing guardian engine")
+    expect(pinTarget().endsWith(`engine@${newSha}`)).toBe(true)
+  })
+
+  it("T3: stale evidence defers promotion", () => {
+    const h = makeConvergedHarness("luna-guardian-gate-stale-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" }
+    const pinTarget = () =>
+      spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    const oldSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+
+    // Hand-written evidence: plenty of cycles at NEW but a heartbeat OLDER
+    // than LUNA_GUARDIAN_HEALTH_WINDOW_SEC — stale evidence is not evidence.
+    mkdirSync(h.state, { recursive: true })
+    writeFileSync(join(h.state, "status-stable"), [
+      `profile=stable`,
+      `completed_at=${Math.floor(Date.now() / 1000) - 2000}`,
+      `repo_sha=${newSha}`,
+      `engine_sha=${oldSha}`,
+      `outcome=deferred`,
+      `consecutive_healthy=0`,
+      `consecutive_runtime_healthy=5`,
+    ].join("\n") + "\n")
+
+    const tick = runPinnedCheck(h, gateEnv)
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(tick.stderr).not.toContain("advancing guardian engine")
+    expect(pinTarget().endsWith(`engine@${oldSha}`)).toBe(true)
+  })
+
+  it("T3b: a non-numeric or zero LUNA_GUARDIAN_HEALTH_WINDOW_SEC falls back to 900 instead of starving promotion", () => {
+    // An unvalidated window ("15m", or 0 under which every ~cadence-old
+    // heartbeat reads stale) would make the freshness test fail on every tick
+    // — permanent silent starvation of auto-promotion, plus a bash arithmetic
+    // error per gated tick. The gate must validate like health_journal_read.
+    for (const badWindow of ["15m", "0"]) {
+      const h = makeConvergedHarness(`luna-guardian-gate-window-${badWindow === "0" ? "zero" : "suffix"}-`)
+      installHarness(h)
+      const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+      const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2", LUNA_GUARDIAN_HEALTH_WINDOW_SEC: badWindow }
+      const pinTarget = () =>
+        spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+      spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+        "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+      const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+
+      const tick1 = runPinnedCheck(h, gateEnv)
+      expect(tick1.status, tick1.stdout + tick1.stderr).toBe(0)
+      expect(tick1.stderr).not.toContain("value too great") // no raw arithmetic on the bad value
+      const tick2 = runPinnedCheck(h, gateEnv)
+      expect(tick2.status, tick2.stdout + tick2.stderr).toBe(0)
+      const tick3 = runPinnedCheck(h, gateEnv)
+      expect(tick3.status, tick3.stdout + tick3.stderr).toBe(0)
+      expect(tick3.stderr, `window=${badWindow} starved promotion`).toContain("advancing guardian engine")
+      expect(pinTarget().endsWith(`engine@${newSha}`)).toBe(true)
+    }
+  })
+
+  it("T4: LUNA_GUARDIAN_PROMOTE_MIN_CYCLES=0 disables the gate", () => {
+    const h = makeConvergedHarness("luna-guardian-gate-disable-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    const tick = runPinnedCheck(h, { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "0" })
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(tick.stderr).toContain("advancing guardian engine")
+    const resolved = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    expect(resolved.endsWith(`engine@${newSha}`)).toBe(true)
+  })
+
+  it("T5: manual install bypasses the gate with zero stored evidence", () => {
+    const h = makeConvergedHarness("luna-guardian-gate-manual-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    const newSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    // No ticks have run: the status file does not even exist.
+    expect(existsSync(join(h.state, "status-stable"))).toBe(false)
+    const install = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root, encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true", LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" },
+    })
+    expect(install.status, install.stdout + install.stderr).toBe(0)
+    const resolved = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    expect(resolved.endsWith(`engine@${newSha}`)).toBe(true)
+  })
+
+  it("a repair is never blocked by missing promotion evidence", () => {
+    // The repair ladder runs BEFORE the post-repair refresh — the gate can
+    // only defer the pin advance that FOLLOWS a repair, never the repair.
+    const h = makeConvergedHarness("luna-guardian-gate-repair-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const oldSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    // Third NEGATIVE strike with ZERO stored promotion evidence at the new sha.
+    seedJournal(h, {
+      repo_sha: spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(),
+      consecutive_negative: 2,
+      negative_at: Math.floor(Date.now() / 1000),
+    })
+    const tick = runPinnedCheck(h, { LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "false", LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" })
+    // The repair RAN (stub exit 0), its verification (seam=false) failed → page.
+    expect(tick.status, tick.stdout + tick.stderr).toBe(2)
+    expect(repairCalls(h)).toHaveLength(1)
+    // And the pin did not advance without evidence.
+    const resolved = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    expect(resolved.endsWith(`engine@${oldSha}`)).toBe(true)
+  })
+
+  // ── phase 5: hermeticity canary ────────────────────────────────────────────
+
+  it("a converged tick is hermetic under a minimal PATH", async () => {
+    // The most-executed path in production, run with a PATH containing ONLY
+    // the harness stubs plus an explicit allowlist of real tools. Any future
+    // host-binary coupling on the converged tick fails this loudly — the
+    // regression class the six formerly-failing tests embodied.
+    const h = makeConvergedHarness("luna-guardian-canary-")
+    installHarness(h)
+    expect(runPinnedCheck(h).status).toBe(0)
+    await sleep(1100)
+    const restricted = makeRestrictedBin(h.temp, [
+      "bash", "env", "git", "sed", "awk", "grep", "date", "mkdir", "chmod",
+      "cat", "rm", "ln", "ls", "cut", "head", "sleep", "cp", "touch", "tr",
+      "dirname", "basename", "mktemp", "stat", "id", "mv",
+    ])
+    const tick = spawnSync("bash", [pinnedGuardian(h), "check", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...h.env,
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        PATH: `${join(h.temp, "bin")}:${restricted}`,
+      },
+    })
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(tick.stdout).toBe("")
+    expect(tick.stderr).toBe("")
+  })
+
 })
