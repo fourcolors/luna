@@ -579,7 +579,7 @@ _build_release_tree() {
   # the identity chain buildSha/repair/status read later, so it must be proven
   # at build time, not assumed.
   head_now="$(git -C "$build_dir" rev-parse HEAD 2>/dev/null || true)"
-  if [[ "${head_now,,}" != "${sha,,}" ]]; then
+  if [[ "$(luna_lc "$head_now")" != "$(luna_lc "$sha")" ]]; then
     luna_warn "POSTCONDITION: release checkout HEAD is '${head_now:-unreadable}', expected $sha — refusing to continue"
     return 1
   fi
@@ -1169,7 +1169,7 @@ apply_ref_inplace() {
   # lying reset and rolled back on every attempt.
   local head_now head_lc target_lc
   head_now="$(git_target_capture rev-parse HEAD 2>/dev/null || true)"
-  head_lc="${head_now,,}"; target_lc="${target,,}"
+  head_lc="$(luna_lc "$head_now")"; target_lc="$(luna_lc "$target")"
   if [[ -z "$head_now" || ( "$head_lc" != "$target_lc"* && "$target_lc" != "$head_lc"* ) ]]; then
     luna_warn "POSTCONDITION: git reset reported success but HEAD is '${head_now:-unreadable}', expected $target — refusing to continue"
     return 1
@@ -1565,7 +1565,7 @@ if [[ "$MATERIALIZE_ONLY" == true ]]; then
     fi
     git_target fetch origin || luna_die "mirror fetch failed"
     if [[ "$REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-      MAT_SHA="${REF,,}"
+      MAT_SHA="$(luna_lc "$REF")"
     else
       MAT_SHA="$(git_target_capture rev-parse "${REF}^{commit}" 2>/dev/null || true)"
     fi
@@ -1610,7 +1610,7 @@ if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
   # only exists upstream. Printing the raw symbolic ref would trace paths like
   # releases/origin/master that the live path never creates.
   DRY_SHA="$(git --git-dir "$MIRROR_GIT" rev-parse --verify "${REF}^{commit}" 2>/dev/null || true)"
-  DRY_SHA="${DRY_SHA,,}"
+  DRY_SHA="$(luna_lc "$DRY_SHA")"
   [[ "$DRY_SHA" =~ ^[0-9a-f]{40}$ ]] || DRY_SHA="<sha>"
   git_target fetch origin
   materialize_release "$DRY_SHA"
@@ -1969,7 +1969,7 @@ else
     # every attempt. The full sha also names the release directory, so the
     # canonical form is load-bearing, not cosmetic.
     REF="$(git_target_capture rev-parse --verify "${REQUESTED_REF}^{commit}" 2>/dev/null || true)"
-    REF="${REF,,}"
+    REF="$(luna_lc "$REF")"
     [[ "$REF" =~ ^[0-9a-f]{40}$ ]] ||
       luna_die "could not resolve target ref $REQUESTED_REF in $MIRROR_GIT"
   elif [[ "$REQUESTED_REF" =~ ^[0-9a-fA-F]{7,64}$ ]]; then

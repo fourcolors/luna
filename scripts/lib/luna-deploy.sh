@@ -379,6 +379,13 @@ luna_runtime_matches_checkout() {
   [[ "$expected" == "$build"* || "$build" == "$expected"* ]]
 }
 
+# Portable lowercase: bash 3.2 (macOS /bin/bash) rejects ${var,,} at expansion
+# time with "bad substitution", killing the whole script under set -e. The
+# hermetic test suite runs these scripts on dev Macs, so no bash-4isms.
+luna_lc() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 luna_find_bun() {
   if [[ -n "${LUNA_TEST_BUN_PATH:-}" ]]; then
     printf '%s\n' "$LUNA_TEST_BUN_PATH"
