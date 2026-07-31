@@ -83,6 +83,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history, not the depth-1 default: the guardian
+          # engine-preservation test (test/releases-layout.test.ts) extracts
+          # the pinned pre-phase-4 engine via `git show <commit>:<path>`,
+          # which a shallow checkout cannot serve.
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

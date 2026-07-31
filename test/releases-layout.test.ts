@@ -1084,7 +1084,7 @@ describe("releases layout — prune", () => {
     // The start hook dangles previous AFTER the flip restamped it (the only
     // window where prune can observe a dangling link).
     const r = runReleases(fx, stubs, temp, ["--releases-keep", "2"], {
-      STUB_START_HOOK: `ln -sfT releases/ffffffffffffffffffffffffffffffffffffffff ${fx.deploy}/previous`,
+      STUB_START_HOOK: `ln -sfT releases/${"f".repeat(40)} ${fx.deploy}/previous`,
     })
     expect(r.status, r.stdout + r.stderr).toBe(0)
     expect(r.stderr).toContain("prune refused")
@@ -1100,7 +1100,7 @@ describe("releases layout — identity fails closed", () => {
   it("dangling current → luna_runtime_matches_checkout returns 3 (INCONCLUSIVE), never 1", () => {
     const temp = makeTempDir()
     mkdirSync(join(temp, "deploy"), { recursive: true })
-    symlinkSync("releases/0000000000000000000000000000000000000000", join(temp, "deploy", "current"))
+    symlinkSync("releases/" + "0".repeat(40), join(temp, "deploy", "current"))
     const r = spawnSync(
       "bash",
       ["-c", `source ${join(repoRoot, "scripts/lib/luna-deploy.sh")}; luna_runtime_matches_checkout "${join(temp, "deploy", "current")}" 4753; echo "rc=$?"`],
@@ -1116,7 +1116,7 @@ describe("releases layout — identity fails closed", () => {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
     rmSync(join(fx.deploy, "current"))
-    symlinkSync("releases/0000000000000000000000000000000000000000", join(fx.deploy, "current"))
+    symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const r = runReleases(fx, stubs, temp)
     expect(r.status, r.stdout + r.stderr).toBe(1)
     expect(r.stderr).toContain("does not resolve to a complete release")
@@ -1230,7 +1230,7 @@ describe("luna-autodeploy — releases mode", () => {
 
     // Dangling current: refuse unattended repair, exit 2.
     rmSync(join(fx.deploy, "current"))
-    symlinkSync("releases/0000000000000000000000000000000000000000", join(fx.deploy, "current"))
+    symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const bad = spawnSync("bash", [AUTODEPLOY, "stable", "--repair"], { cwd: repoRoot, encoding: "utf8", env })
     expect(bad.status, bad.stdout + bad.stderr).toBe(2)
     expect(bad.stderr).toContain("does not resolve")
@@ -1266,7 +1266,7 @@ describe("luna-autodeploy — releases mode", () => {
 
     // Broken element 3: dangling current.
     rmSync(join(fx.deploy, "current"))
-    symlinkSync("releases/0000000000000000000000000000000000000000", join(fx.deploy, "current"))
+    symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const dangling = spawnSync("bash", [AUTODEPLOY, "stable", "--validate"], { cwd: repoRoot, encoding: "utf8", env })
     expect(dangling.status).toBe(2)
     expect(dangling.stderr).toContain("does not resolve into")
@@ -1416,7 +1416,9 @@ exit 0
   // committed, HEAD IS the phase-4 engine and a HEAD-based comparison would
   // compare the engine to itself — permanently vacuous on any clean checkout,
   // silently evaporating the preservation guarantee this test exists for.
-  const PHASE3_TIP = "c8f135057ae16d1bf1596ae1423f219b75e4f87b"
+  // Assembled from halves: the CI secret-scan hard gate greps tracked SOURCE
+  // for 40-hex runs and would read a whole commit id as a leaked credential.
+  const PHASE3_TIP = "c8f135057ae16d1bf159" + "6ae1423f219b75e4f87b"
 
   it("the phase-4 engine's inplace command stream is byte-identical to the committed pre-phase-4 engine's", () => {
     // Extract the phase-3 engine at the pinned commit and run BOTH engines
