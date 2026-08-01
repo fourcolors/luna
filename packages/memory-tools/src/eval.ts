@@ -1,5 +1,3 @@
-import type { TurnCandidateKind, TurnMemoryCandidate } from "./turn-memory.js"
-
 export interface EmbeddingEvalPreflight {
   readonly valid: boolean
   readonly activeDimension: number
@@ -86,40 +84,5 @@ export function scoreRetrievalEval(
     forbiddenHitRate: returned === 0 ? 0 : forbiddenHits / returned,
     averagePackedChars: packedChars / results.length,
     truncationRate: truncated / results.length,
-  }
-}
-
-export interface ExtractionEvalResult {
-  readonly caseId: string
-  readonly expectedKinds: ReadonlyArray<TurnCandidateKind>
-  readonly candidates: ReadonlyArray<TurnMemoryCandidate>
-}
-
-export interface ExtractionEvalMetrics {
-  readonly cases: number
-  readonly precision: number
-  readonly recall: number
-}
-
-/** Kind-level micro metrics for the deterministic baseline extractor. */
-export function scoreExtractionEval(
-  results: ReadonlyArray<ExtractionEvalResult>,
-): ExtractionEvalMetrics {
-  let truePositive = 0
-  let predicted = 0
-  let expected = 0
-  for (const result of results) {
-    const expectedKinds = new Set(result.expectedKinds)
-    const predictedKinds = new Set(result.candidates.map((c) => c.kind))
-    expected += expectedKinds.size
-    predicted += predictedKinds.size
-    for (const kind of predictedKinds) {
-      if (expectedKinds.has(kind)) truePositive++
-    }
-  }
-  return {
-    cases: results.length,
-    precision: predicted === 0 ? (expected === 0 ? 1 : 0) : truePositive / predicted,
-    recall: expected === 0 ? 1 : truePositive / expected,
   }
 }

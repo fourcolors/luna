@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { Effect, Stream } from "effect"
 import {
   applyRerank,
@@ -7,10 +6,8 @@ import {
   type ObservabilityApi,
 } from "@luna/core"
 import {
-  makeRecord,
   type MemoryRecord,
   type MemoryRouter,
-  type MemoryScope,
   type MemoryScopeQuery,
 } from "@luna/memory"
 import {
@@ -28,9 +25,6 @@ import {
  * (packages/memory-tools/src/tools.ts's RERANK_OVERFETCH_TOP_K), the pool
  * size the bench's recall lift was measured against. */
 const RECALL_RERANK_OVERFETCH_TOP_K = 20
-
-export const MEMORY_CANDIDATE_KIND = "memory-candidate"
-export const MEMORY_CANDIDATE_NAMESPACE = "memory-candidates"
 
 export interface RecallContextOptions {
   readonly maxHits: number
@@ -108,7 +102,6 @@ export function packRecallContext(
       truncated = true
       break
     }
-    if (hit.record.kind === MEMORY_CANDIDATE_KIND) continue
     const raw = memoryText(hit.record)
     if (raw === null || raw.length === 0) continue
     const normalized = raw.toLowerCase().replace(/\s+/g, " ")
@@ -280,7 +273,7 @@ export function recallForTurn(input: {
     input.reranker !== undefined && rerankFlagEnabled("LUNA_RECALL_RERANK")
   // MemoryRouter already over-fetches scoped searches by 4x before its
   // post-ranking scope filter. Ask it for only 2x packing headroom here
-  // (candidate/non-active filtering + de-duplication), otherwise the two
+  // (non-active filtering + de-duplication), otherwise the two
   // layers multiply to an 80-hit backend request for the default 5 hits.
   // When rerank is active, floor the pool at RECALL_RERANK_OVERFETCH_TOP_K
   // (the pool size the bench's recall lift was measured against).
@@ -312,119 +305,6 @@ export function recallForTurn(input: {
       Effect.logWarning(
         `[luna/memory] automatic recall failed; continuing without context: ${String(cause)}`,
       ).pipe(Effect.as(null)),
-    ),
-  )
-}
-
-export type TurnCandidateKind = "durable-fact" | "belief-evidence"
-
-export interface TurnMemoryCandidate {
-  readonly id: string
-  readonly kind: TurnCandidateKind
-  readonly text: string
-  readonly confidence: number
-  readonly signal: string
-}
-
-const DURABLE_SIGNALS: ReadonlyArray<readonly [RegExp, string, number]> = [
-  [/\bremember (?:that|this)\b/i, "explicit-remember", 0.98],
-  [/\bI (?:prefer|like|use|work with|am|have)\b/i, "first-person-fact", 0.8],
-  [/\bmy [a-z][a-z -]{1,30} (?:is|are)\b/i, "possessive-fact", 0.85],
-  [/\bwe (?:decided|agreed|standardized|chose)\b/i, "decision", 0.9],
-  [/\bfrom now on\b/i, "future-policy", 0.9],
-]
-
-const BELIEF_SIGNALS: ReadonlyArray<readonly [RegExp, string, number]> = [
-  [/\bI (?:want|need|expect) you to\b/i, "operator-expectation", 0.75],
-  [/\byou should (?:always|never)\b/i, "agent-policy", 0.8],
-  [/\bwhat (?:I|we) value\b/i, "stated-value", 0.75],
-]
-
-function stableCandidateId(
-  kind: TurnCandidateKind,
-  scope: MemoryScope,
-  text: string,
-): string {
-  const digest = createHash("sha256")
-    .update(`${kind}\0${scope.observerId}\0${scope.subjectId}\0${text}`)
-    .digest("hex")
-    .slice(0, 20)
-  return `candidate-${digest}`
-}
-
-/** Conservative baseline extractor. Model-backed variants can be evaled later. */
-export function extractTurnCandidates(input: {
-  readonly userText: string
-  readonly scope: MemoryScope
-}): ReadonlyArray<TurnMemoryCandidate> {
-  const segments = input.userText
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((part) => part.trim().replace(/\s+/g, " "))
-    .filter((part) => part.length >= 8 && part.length <= 1_000)
-  const out: TurnMemoryCandidate[] = []
-  const seen = new Set<string>()
-
-  for (const text of segments) {
-    const matches = (
-      kind: TurnCandidateKind,
-      signals: ReadonlyArray<readonly [RegExp, string, number]>,
-    ) => {
-      for (const [pattern, signal, confidence] of signals) {
-        if (!pattern.test(text)) continue
-        const id = stableCandidateId(kind, input.scope, text.toLowerCase())
-        if (!seen.has(id)) {
-          seen.add(id)
-          out.push({ id, kind, text, confidence, signal })
-        }
-        return
-      }
-    }
-    matches("durable-fact", DURABLE_SIGNALS)
-    matches("belief-evidence", BELIEF_SIGNALS)
-  }
-  return out
-}
-
-export function captureTurnCandidates(input: {
-  readonly router: MemoryRouter
-  readonly sessionId: string
-  readonly userMessageId: string
-  readonly userText: string
-  readonly scope: MemoryScope
-}): Effect.Effect<number, never> {
-  const candidates = extractTurnCandidates(input)
-  return Effect.forEach(
-    candidates,
-    (candidate) =>
-      input.router.put(
-        makeRecord({
-          id: candidate.id,
-          namespace: MEMORY_CANDIDATE_NAMESPACE,
-          kind: MEMORY_CANDIDATE_KIND,
-          content: {
-            // Deliberately not `text`: sqlite-vector auto-embeds content.text.
-            // Inert candidates must not crowd the recall index before review.
-            candidateText: candidate.text,
-            candidateKind: candidate.kind,
-            confidence: candidate.confidence,
-            signal: candidate.signal,
-          },
-          tags: [`candidate:${candidate.kind}`, `signal:${candidate.signal}`],
-          scope: input.scope,
-          provenance: {
-            source: "turn-extraction",
-            sessionId: input.sessionId,
-            messageIds: [input.userMessageId],
-          },
-        }),
-      ),
-    { concurrency: 1, discard: true },
-  ).pipe(
-    Effect.as(candidates.length),
-    Effect.catchAllCause((cause) =>
-      Effect.logWarning(
-        `[luna/memory] candidate capture failed; turn remains complete: ${String(cause)}`,
-      ).pipe(Effect.as(0)),
     ),
   )
 }

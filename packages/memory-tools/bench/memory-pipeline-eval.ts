@@ -15,9 +15,7 @@ import {
 } from "@luna/core"
 import {
   checkEmbeddingEvalPreflight,
-  extractTurnCandidates,
   packRecallContext,
-  scoreExtractionEval,
   scoreRetrievalEval,
 } from "@luna/memory-tools"
 import {
@@ -125,23 +123,10 @@ const scored = await Effect.runPromise(
           truncated: packed?.truncated ?? false,
         })
       }
-      const extraction = corpus.extractionCases.map((evalCase) => ({
-        caseId: evalCase.id,
-        expectedKinds: evalCase.expectedKinds,
-        candidates: extractTurnCandidates({
-          userText: evalCase.userText,
-          scope: {
-            observerId: "luna",
-            subjectId: "operator",
-            visibility: "private",
-          },
-        }),
-      }))
       return {
         corpusVersion: corpus.version,
         embedder,
         retrieval: scoreRetrievalEval(retrieval),
-        extraction: scoreExtractionEval(extraction),
       }
     }),
   ).pipe(Effect.provide(layer)),
@@ -166,15 +151,13 @@ try {
       storedDimensions: status.groups.map((group) => group.dimension),
     }),
     retrieval: scored.retrieval,
-    extraction: scored.extraction,
   }
 
   console.log(JSON.stringify(result, null, 2))
   if (
     !result.preflight.valid ||
     result.retrieval.recallAtK < 1 ||
-    result.retrieval.forbiddenHitRate > 0 ||
-    result.extraction.recall < 1
+    result.retrieval.forbiddenHitRate > 0
   ) {
     process.exitCode = 1
   }
