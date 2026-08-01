@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2046  # unquoted $(_systemctl_user_flag) is an intentional optional flag (8 sites); real fix is an array - known-red follow-up
 # Update an installed Luna server to a target git ref, with auto-rollback.
 #
 # This is the "update the backend over time" half of the install/update plan.

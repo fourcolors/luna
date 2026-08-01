@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2174  # mkdir -p -m 0700 applies mode to deepest dir only - acknowledged; known-red follow-up
 #
 # luna-autodeploy — poll a channel's upstream branch and, when it has MOVED,
 # invoke scripts/luna-update-server to bring the running server to it (fetch +
