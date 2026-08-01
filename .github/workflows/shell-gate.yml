@@ -1,0 +1,164 @@
+# Shell quality gate for the deploy scripts.
+#
+# WHY THIS EXISTS: the deploy scripts (scripts/luna-guardian,
+# scripts/luna-update-server, etc.) are plain bash, and macOS ships bash 3.2
+# (Apple's last GPLv2 release) as /bin/bash. Bash 3.2 does not support several
+# bash 4+ constructs, and critically it does not always fail loudly when it
+# hits one - a "bad substitution" can leave a deploy gate exiting 0 instead of
+# failing. See the releases-layout Mac hermeticity fix for a real incident.
+#
+# THREE checks, three different failure modes:
+#   1. shellcheck (ubuntu-latest) - general shell lint: quoting, globbing,
+#      unset-variable, and portability warnings. Known-red exceptions live as
+#      file-level "shellcheck disable" directives IN the two affected scripts,
+#      so new occurrences in any other file still fail here.
+#   2. bash -n (macos-latest) - parse-only check under the SAME /bin/bash a
+#      real macOS host runs. Catches true 3.2 syntax errors (|&, ;;&, [[ -v ]]).
+#   3. bash-4 construct banlist (same macOS job) - THE LOAD-BEARING CHECK for
+#      the incident class. Verified empirically on Apple bash 3.2.57:
+#      '${FOO,,}' and 'declare -A' both PASS bash -n and then fail at RUNTIME
+#      with "bad substitution"/"invalid option" while the script EXITS 0.
+#      Parse-only checking cannot see them; the banlist can.
+#
+# Both jobs discover their file list the same way: every git-tracked file
+# under scripts/ or install.sh whose shebang names bash. This mirrors the
+# "scan surface = git-tracked files" approach ci.yml's secret-scan job already
+# uses. *.ts tooling scripts (bun) and non-bash files are naturally excluded
+# by the shebang check.
+
+name: Shell quality gate
+
+on:
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "install.sh"
+      - ".github/workflows/shell-gate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # shellcheck ships preinstalled on the ubuntu-latest runner image.
+      - name: ShellCheck deploy scripts
+        run: |
+          set -euo pipefail
+
+          shellcheck --version | head -n2
+
+          # Capture first so a git failure stops the job (a failed process
+          # substitution would be silently ignored even under set -e).
+          tracked=$(git ls-files 'scripts/**' 'install.sh')
+
+          files=()
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if head -n1 "$f" 2>/dev/null | grep -qE '^#!.*bash'; then
+              files+=("$f")
+            fi
+          done <<< "$tracked"
+
+          echo "shellcheck: ${#files[@]} bash script(s)"
+          # Zero matches is only legitimate when NOTHING is tracked there
+          # (e.g. a future stack replaces the bash scripts entirely). If
+          # tracked files exist but the shebang scan found none, discovery
+          # regressed - fail loudly instead of going silently green.
+          if [ "${#files[@]}" -eq 0 ]; then
+            if [ -z "$tracked" ]; then
+              echo "no tracked files under scripts/ or install.sh - nothing to check"
+              exit 0
+            fi
+            echo "::error::shell-gate discovery regression: tracked scripts exist but none matched the bash shebang scan"
+            exit 1
+          fi
+          printf '  %s\n' "${files[@]}"
+
+          shellcheck --severity=warning "${files[@]}"
+
+  bash-3-2-syntax:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # macos-latest's /bin/bash IS the real 3.2.57 Apple ships (no Homebrew
+      # bash preinstalled), so `bash -n` here parses with the exact
+      # interpreter a deployed Mac host uses. `-n` only parses, it never
+      # executes, so this is safe to run against scripts that assume host
+      # state (incus, launchd, etc).
+      - name: bash 3.2 parse check and bash-4 construct banlist
+        run: |
+          set -euo pipefail
+
+          BASH_BIN=/bin/bash
+          echo "Using: $("$BASH_BIN" --version | head -n1)"
+
+          # Escape a value for a workflow-command property (::error file=...).
+          # Filenames come from the git tree; unescaped %, CR, LF, ':' or ','
+          # could break or inject workflow commands in the log.
+          esc() {
+            local s="$1"
+            s="${s//%/%25}"
+            s="${s//$'\r'/%0D}"
+            s="${s//$'\n'/%0A}"
+            s="${s//:/%3A}"
+            s="${s//,/%2C}"
+            printf '%s' "$s"
+          }
+
+          tracked=$(git ls-files 'scripts/**' 'install.sh')
+
+          files=()
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if head -n1 "$f" 2>/dev/null | grep -qE '^#!.*bash'; then
+              files+=("$f")
+            fi
+          done <<< "$tracked"
+
+          echo "bash 3.2 gate: ${#files[@]} bash script(s)"
+          # Guard BEFORE expanding the array: under bash 3.2's set -u, an
+          # empty "${files[@]}" is itself an unbound-variable error. And a
+          # zero count with tracked files present means discovery regressed.
+          if [ "${#files[@]}" -eq 0 ]; then
+            if [ -z "$tracked" ]; then
+              echo "no tracked files under scripts/ or install.sh - nothing to check"
+              exit 0
+            fi
+            echo "::error::shell-gate discovery regression: tracked scripts exist but none matched the bash shebang scan"
+            exit 1
+          fi
+          printf '  %s\n' "${files[@]}"
+
+          fail=0
+
+          # Check 1: parse errors (what bash -n CAN see: |&, ;;&, [[ -v ]], ...)
+          for f in "${files[@]}"; do
+            if ! "$BASH_BIN" -n "$f"; then
+              echo "::error file=$(esc "$f")::bash -n failed under macOS system bash 3.2"
+              fail=1
+            fi
+          done
+
+          # Check 2: expansion-time bash-4 constructs bash -n CANNOT see.
+          # Verified on 3.2.57: '${FOO,,}' and 'declare -A' pass -n, then die
+          # at runtime with EXIT 0 - the silent-pass incident class itself.
+          # Comment-only lines are filtered to avoid doc false-positives.
+          ban='\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,,|\^\^|@[A-Za-z])|(^|[^A-Za-z0-9_-])(declare|typeset) +-[A-Za-z]*A|(^|[^A-Za-z0-9_.-])(mapfile|readarray)([^A-Za-z0-9_-]|$)|&>>|(^|[^A-Za-z0-9_-])coproc([^A-Za-z0-9_-]|$)'
+          for f in "${files[@]}"; do
+            hits=$(grep -nE "$ban" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+            if [ -n "$hits" ]; then
+              first="${hits%%$'\n'*}"
+              echo "::error file=$(esc "$f")::bash-4-only construct (runtime-fails silently on bash 3.2) at line ${first%%:*}"
+              printf '%s\n' "$hits" | sed 's/^/    /'
+              fail=1
+            fi
+          done
+
+          exit "$fail"
