@@ -684,10 +684,10 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
     })
   })
 
-  it("flag OFF (default) → NO outputFormat in the SDK options (byte-identical back-compat)", async () => {
+  it("no explicit override, default lane (anthropic - capability-driven) → outputFormat included by default", async () => {
     const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
     const frame = {
-      ...makeResultMessage("sid", "uuid-doff"),
+      ...makeResultMessage("sid", "uuid-default-on"),
       result: JSON.stringify([RAW_BELIEF_OP]),
     } as unknown as SDKMessage
     await withFlag(undefined, async () => {
@@ -697,8 +697,66 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
       expect(ops).toHaveLength(1)
     })
     const opts = sink.last!.options
+    const outputFormat = opts["outputFormat"] as
+      | { type?: string; schema?: { type?: string } }
+      | undefined
+    expect(outputFormat).toBeDefined()
+    expect(outputFormat!.type).toBe("json_schema")
+    expect(outputFormat!.schema?.type).toBe("array")
+    expect(opts["maxTurns"]).toBe(1)
+  })
+
+  it("explicit override OFF rolls back structured output even on a capable (anthropic) lane", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-forced-off"),
+      result: JSON.stringify([RAW_BELIEF_OP]),
+    } as unknown as SDKMessage
+    await withFlag("0", async () => {
+      const ops = await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+      )
+      expect(ops).toHaveLength(1)
+    })
+    const opts = sink.last!.options
     expect("outputFormat" in opts).toBe(false)
     expect(opts["maxTurns"]).toBe(1)
+  })
+
+  it("no explicit override, incapable lane (openai, structuredOutput=\"none\") → NO outputFormat", async () => {
+    const OPENAI_TOK_ENV = "DREAM_OPENAI_TOK"
+    const openaiBroker: Layer.Layer<AccountBroker> = AccountBrokerLayer.fromAccounts([
+      { id: "o1", kind: "openai", secretRef: `env:${OPENAI_TOK_ENV}` },
+    ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-incapable"),
+      result: JSON.stringify([RAW_BELIEF_OP]),
+    } as unknown as SDKMessage
+    const prevModel = process.env["LUNA_DREAM_MODEL"]
+    const prevTok = process.env[OPENAI_TOK_ENV]
+    process.env["LUNA_DREAM_MODEL"] = "gpt-4o"
+    process.env[OPENAI_TOK_ENV] = "openai-secret"
+    try {
+      await withFlag(undefined, async () => {
+        const ops = await Effect.runPromise(
+          runReason(
+            EMPTY_INPUTS,
+            recordingClientWith(sink, frame),
+            FakeMemory(),
+            openaiBroker,
+          ),
+        )
+        expect(ops).toHaveLength(1)
+      })
+    } finally {
+      if (prevModel === undefined) delete process.env["LUNA_DREAM_MODEL"]
+      else process.env["LUNA_DREAM_MODEL"] = prevModel
+      if (prevTok === undefined) delete process.env[OPENAI_TOK_ENV]
+      else process.env[OPENAI_TOK_ENV] = prevTok
+    }
+    const opts = sink.last!.options
+    expect("outputFormat" in opts).toBe(false)
   })
 })
 
@@ -761,7 +819,11 @@ describe("buildDreamPrompt — distilled sessions + bounded memories (S4)", () =
       windowMessageCount: 1,
     }
     const inputs = makeInputs({ sessions: [hugeSession] })
-    const expectedTokens = estimateTokens(buildDreamPrompt(inputs))
+    // runReason's default broker/model resolves to the bare "default" (anthropic)
+    // lane, which is structured-output-capable, so the reasoner's internal
+    // buildDreamPrompt call uses the shortened structured-path prompt - mirror
+    // that here so expectedTokens matches what reason() actually estimates.
+    const expectedTokens = estimateTokens(buildDreamPrompt(inputs, true))
     expect(expectedTokens).toBeGreaterThan(DREAM_PROMPT_TOKEN_BUDGET) // fixture sanity
 
     let calls = 0
@@ -789,5 +851,27 @@ describe("buildDreamPrompt — distilled sessions + bounded memories (S4)", () =
     // The pre-flight must reject BEFORE any sdk.query() call — zero cost on a
     // prompt that would never fit the model's context window anyway.
     expect(calls).toBe(0)
+  })
+})
+
+describe("buildDreamPrompt - structured-output prompt shortening", () => {
+  it("structuredOutputEnabled=false (default) keeps the full op field-by-field restatement", () => {
+    const prompt = buildDreamPrompt(EMPTY_INPUTS)
+    expect(prompt).toContain("2. Each op MUST have exactly these fields:")
+    expect(prompt).toContain('"domain"?: ..., "statement"?: ..., "confidence"?: ...')
+  })
+
+  it("structuredOutputEnabled=true drops the field-by-field restatement for a short instruction plus one worked example", () => {
+    const prompt = buildDreamPrompt(EMPTY_INPUTS, true)
+    expect(prompt).not.toContain("2. Each op MUST have exactly these fields:")
+    expect(prompt).not.toContain('"domain"?: ..., "statement"?: ..., "confidence"?: ...')
+    expect(prompt).toContain("enforced by the response schema")
+    expect(prompt).toContain('"kind": "belief_candidate"')
+  })
+
+  it("structuredOutputEnabled=true keeps the substantive per-kind rules (category boundary, skill-chip cap) the schema does NOT encode", () => {
+    const prompt = buildDreamPrompt(EMPTY_INPUTS, true)
+    expect(prompt).toContain("CATEGORY BOUNDARY")
+    expect(prompt).toContain("hard cap of ~3 skill chips per night")
   })
 })
