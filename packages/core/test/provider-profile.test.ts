@@ -12,6 +12,9 @@ import {
   resolveProfile,
   toWireModel,
   ANTHROPIC_KIND,
+  laneSupportsStructuredOutput,
+  profileForKind,
+  readProviderEnv,
 } from "../src/provider-profile.js"
 
 const GW = { LUNA_LLM_GATEWAY_URL: "http://gw:4000" }
@@ -128,5 +131,46 @@ describe("toWireModel — strips luna's routing token from the wire name", () =>
     // leading prefix, are part of the real name on a non-ollama kind → untouched.
     expect(toWireModel("my-local/model", "google")).toBe("my-local/model")
     expect(toWireModel("cloud:thing", "ollama-cloud")).toBe("cloud:thing")
+  })
+})
+
+describe("laneSupportsStructuredOutput — single definition of JSON-capable", () => {
+  // Deterministic provider env (no real process.env): all defaults.
+  const PROVIDER_ENV = readProviderEnv({})
+
+  it("anthropic can emit structured output", () => {
+    expect(
+      laneSupportsStructuredOutput(profileForKind(ANTHROPIC_KIND, PROVIDER_ENV)),
+    ).toBe(true)
+  })
+
+  it("google (gemini) can emit structured output", () => {
+    expect(laneSupportsStructuredOutput(profileForKind("google", PROVIDER_ENV))).toBe(
+      true,
+    )
+  })
+
+  it("openai cannot emit structured output (gateway lane)", () => {
+    expect(laneSupportsStructuredOutput(profileForKind("openai", PROVIDER_ENV))).toBe(
+      false,
+    )
+  })
+
+  it("ollama-cloud cannot emit structured output", () => {
+    expect(
+      laneSupportsStructuredOutput(profileForKind("ollama-cloud", PROVIDER_ENV)),
+    ).toBe(false)
+  })
+
+  it("ollama-local cannot emit structured output", () => {
+    expect(
+      laneSupportsStructuredOutput(profileForKind("ollama-local", PROVIDER_ENV)),
+    ).toBe(false)
+  })
+
+  it("an unrecognized kind falls through to the gateway default and cannot emit structured output", () => {
+    expect(
+      laneSupportsStructuredOutput(profileForKind("mistral", PROVIDER_ENV)),
+    ).toBe(false)
   })
 })

@@ -16,6 +16,7 @@ import {
   readProviderEnv,
   profileForKind,
   resolveKind,
+  laneSupportsStructuredOutput,
 } from "../provider-profile.js"
 import {
   type OverflowConfig,
@@ -182,7 +183,7 @@ export const validateAndPrepare = (
       const pref = binding.preferenceList![i]!
       const kind = pref.provider ?? resolveKind(pref.model, effectiveProviderEnv)
       const profile = profileForKind(kind, effectiveProviderEnv)
-      if (profile.capabilities.structuredOutput === "none") {
+      if (!laneSupportsStructuredOutput(profile)) {
         roleFindings.push(
           `Role "${binding.role}" step ${i} (model "${pref.model}", kind "${kind}") ` +
             `cannot produce structured output but the lane consumes JSON.`,
