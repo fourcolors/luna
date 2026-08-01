@@ -363,7 +363,6 @@ import {
   OPERATOR_MEMORY_SCOPE,
 } from "@luna/memory"
 import {
-  captureTurnCandidates,
   MemoryRouterLayer,
   MemoryToolsLayer,
   MemoryToolsService,
@@ -900,8 +899,6 @@ export const ThreadToolsProviderLayer = (
       const mem = yield* MemoryRouterTag
       const autoRecallEnabled =
         process.env["LUNA_MEMORY_AUTO_RECALL"]?.trim() !== "0"
-      const turnExtractionEnabled =
-        process.env["LUNA_MEMORY_TURN_EXTRACTION"]?.trim() !== "0"
       // Phase 3 production reranker (PR #332 bench): resolved once at boot,
       // same lifetime as `mem` above. Effect.serviceOption -> R=never, so
       // this stays undefined (byte-identical to before) unless the caller
@@ -915,7 +912,6 @@ export const ThreadToolsProviderLayer = (
       console.log(
         "[luna/memory] turn pipeline:",
         `recall=${autoRecallEnabled ? "on" : "off"}`,
-        `extraction=${turnExtractionEnabled ? "on" : "off"}`,
         // Reflect the actual runtime gate (flag AND service), not mere layer
         // construction - "available" when the flag is off misread as enabled.
         `recallRerank=${
@@ -1066,26 +1062,6 @@ export const ThreadToolsProviderLayer = (
                       reranker: recallReranker,
                       observability: memObs,
                     }).pipe(Effect.map((packed) => packed?.text ?? null)),
-                }
-              : {}),
-            ...(turnExtractionEnabled
-              ? {
-                  observeTurn: ({
-                    sessionId,
-                    userMessageId,
-                    userText,
-                  }: {
-                    sessionId: string
-                    userMessageId: string
-                    userText: string
-                  }) =>
-                    captureTurnCandidates({
-                      router: mem,
-                      sessionId,
-                      userMessageId,
-                      userText,
-                      scope: OPERATOR_MEMORY_SCOPE,
-                    }).pipe(Effect.asVoid),
                 }
               : {}),
             onBound: (sessionId: string) => {
