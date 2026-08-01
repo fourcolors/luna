@@ -315,7 +315,6 @@ import {
   WorkflowWorkerLayer,
   JobRunToolsProviderTag,
   ChatThreadPosterTag,
-  MemoryRerankerDefault,
   CrossEncoderRerankerLayer,
   BulletinWriterDefault,
 } from "@luna/adapter-sdk"
@@ -2328,18 +2327,11 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
-  // The Phase 3 reranker closes over the SAME boot identities as
-  // dreamWorkerReasonerL below. LUNA_RERANK_ENGINE=cross-encoder selects the
-  // dependency-free local layer; any other value preserves the Haiku layer.
-  // ACTUAL reranking stays gated per-request by LUNA_MEMORY_RERANK=1 /
-  // LUNA_RECALL_RERANK=1 (both DEFAULT OFF) inside memory-tools.
-  const memoryRerankerL =
-    process.env["LUNA_RERANK_ENGINE"] === "cross-encoder"
-      ? CrossEncoderRerankerLayer()
-      : MemoryRerankerDefault.pipe(
-          Layer.provide(sdkClientL),
-          Layer.provide(brokerL),
-        )
+  // The deterministic, dependency-free cross-encoder is the only
+  // MemoryReranker engine. ACTUAL reranking stays gated per-request by
+  // LUNA_MEMORY_RERANK=1 / LUNA_RECALL_RERANK=1 (both DEFAULT OFF) inside
+  // memory-tools.
+  const memoryRerankerL = CrossEncoderRerankerLayer()
   // Hot-tier bulletin (BULLETIN.md): a plain mutable holder read
   // synchronously by decorate() (same doctrine as the beliefs holder), a
   // digest file next to luna.db for warm restarts, and a refresh loop that
