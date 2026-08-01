@@ -12,10 +12,11 @@
  *      memories = current state to reconcile). The category boundary (belief ops
  *      must derive from transcripts, never telemetry) is stated in the prompt.
  *   2. Call sdk.query({ prompt }) → collect the type:"result"/subtype:"success"
- *      message. When LUNA_REASONER_STRUCTURED_OUTPUT is on (default OFF), the
- *      turn is issued with an `outputFormat` json_schema (DREAM_OPS_SCHEMA) and
- *      we consume the SDK's schema-validated `structured_output`; otherwise we
- *      take the message's `.result: string`.
+ *      message. When the dream lane's resolved provider profile supports
+ *      structured output (default ON for capable lanes; LUNA_REASONER_STRUCTURED_OUTPUT
+ *      overrides in either direction), the turn is issued with an `outputFormat`
+ *      json_schema (DREAM_OPS_SCHEMA) and we consume the SDK's schema-validated
+ *      `structured_output`; otherwise we take the message's `.result: string`.
  *   3. Structured path → validate op array shapes directly; text path →
  *      JSON.parse → validate op array shapes (shared validateRawOpsArray).
  *   4. For belief_candidate ops: derive targetId, build a proposed MemoryRecord,
@@ -177,9 +178,20 @@ function capMemories(lines: ReadonlyArray<string>, budget: number): string {
  * prompt, and leaking summary fields (title, etc.) is both bloat and a category
  * leak. Memories render one line each, capped at DEFAULT_DISTILL_OPTIONS.memoriesChars.
  *
+ * `structuredOutputEnabled` (default false, i.e. today's prose) drops the
+ * verbose field-by-field union restatement (rule 2) in favor of a short
+ * instruction plus one worked example when the turn will carry a native
+ * `outputFormat` json_schema (DREAM_OPS_SCHEMA already enforces the top-level
+ * field union) - the substantive per-kind rules (3-6: category boundary,
+ * required fields NOT covered by the permissive top-level schema, the skill-chip
+ * cap, etc.) are unaffected either way, since the schema doesn't encode them.
+ *
  * Exported so it can be unit-tested independently of the full layer.
  */
-export function buildDreamPrompt(inputs: DreamInputs): string {
+export function buildDreamPrompt(
+  inputs: DreamInputs,
+  structuredOutputEnabled = false,
+): string {
   const sessions = inputs.sessions
     .map(
       (s) =>
@@ -202,6 +214,26 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
   // Cap skill catalog block hard so a large registry cannot bloat the prompt.
   const skillsBlock = capMemories(skillLines, 4_000)
 
+  // Rule 2 (op field shape): on the structured path, the SDK's outputFormat
+  // json_schema (DREAM_OPS_SCHEMA) already enforces the field union, so
+  // restating it in prose is redundant - a short instruction plus one worked
+  // example is enough. The parse path (structured output off, "none" lanes or
+  // an explicit rollback) keeps the full field-by-field restatement, since it
+  // is the model's ONLY source of the required shape there.
+  const opShapeRule = structuredOutputEnabled
+    ? [
+        "2. The op field shape is enforced by the response schema. Example op:",
+        '   { "kind": "belief_candidate", "domain": "comms", "statement": "...",',
+        '     "confidence": 0.8, "evidence": ["session:s-1#m-1"], "rationale": "..." }',
+      ]
+    : [
+        "2. Each op MUST have exactly these fields:",
+        '   { "kind": ..., "domain"?: ..., "statement"?: ..., "confidence"?: ...,',
+        '     "evidence"?: [...], "targetId"?: ..., "before"?: ..., "after"?: ...,',
+        '     "mode"?: ..., "skillId"?: ..., "title"?: ..., "detail"?: ..., "prompt"?: ...,',
+        '     "rationale": "..." }',
+      ]
+
   return [
     "You are Luna's nightly Dream reasoner. Reflect over the sessions and current",
     "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops.",
@@ -210,11 +242,7 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
     "",
     "1. Output ONLY a JSON array. No markdown, no prose, no code fences.",
     "",
-    "2. Each op MUST have exactly these fields:",
-    '   { "kind": ..., "domain"?: ..., "statement"?: ..., "confidence"?: ...,',
-    '     "evidence"?: [...], "targetId"?: ..., "before"?: ..., "after"?: ...,',
-    '     "mode"?: ..., "skillId"?: ..., "title"?: ..., "detail"?: ..., "prompt"?: ...,',
-    '     "rationale": "..." }',
+    ...opShapeRule,
     "",
     `3. kind MUST be one of: ${[...VALID_KINDS].join(" | ")}`,
     "",
@@ -503,10 +531,14 @@ export const DreamReasonerDefault: Layer.Layer<
     // account → no env overlay, no options.model → today's behavior exactly.
     const dreamModel = resolveReasonerModel("LUNA_DREAM_MODEL")
 
-    // Native structured output gate (default OFF). When on, each dream turn is
-    // issued with an outputFormat json_schema and we consume the SDK's validated
-    // structured_output; when off, behavior is byte-identical to before.
-    const structuredOutputEnabled = reasonerStructuredOutputEnabled()
+    // Native structured output gate. DEFAULT ON whenever dreamModel's resolved
+    // provider profile supports structured output (laneSupportsStructuredOutput,
+    // via @luna/core's provider-profile registry) - the "default" lane (anthropic)
+    // and google both qualify today; a "none" lane falls back to prompt-and-parse
+    // exactly as before. LUNA_REASONER_STRUCTURED_OUTPUT overrides in EITHER
+    // direction: force it on to try a lane ahead of the capability check, or off
+    // to roll back instantly if dream's op-validation failure rate rises.
+    const structuredOutputEnabled = reasonerStructuredOutputEnabled(dreamModel)
 
     /**
      * The SDK package ships per-arch native binaries under
@@ -557,7 +589,7 @@ export const DreamReasonerDefault: Layer.Layer<
 
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
-        const prompt = buildDreamPrompt(inputs)
+        const prompt = buildDreamPrompt(inputs, structuredOutputEnabled)
 
         // Pre-flight token budget gate (issue #255): distillation bounds each
         // session/memory scope, but a pathological input can still overflow the

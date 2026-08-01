@@ -3,9 +3,10 @@
 // Model-backed WakeReasoner layer. Mirrors dream-reasoner.ts:
 //   1. Build a deterministic prompt from WakeInputs.
 //   2. Call sdk.query({ prompt, options: { maxTurns: 1 } }) — single-shot,
-//      no MCP access, no tool calls. Just JSON in / JSON out. When
-//      LUNA_REASONER_STRUCTURED_OUTPUT is on (default OFF), the turn carries an
-//      `outputFormat` json_schema (WAKE_DIGEST_SCHEMA).
+//      no MCP access, no tool calls. Just JSON in / JSON out. When the wake
+//      lane's resolved provider profile supports structured output (default ON
+//      for capable lanes; LUNA_REASONER_STRUCTURED_OUTPUT overrides in either
+//      direction), the turn carries an `outputFormat` json_schema (WAKE_DIGEST_SCHEMA).
 //   3. Collect the type:"result" / subtype:"success" message — its
 //      schema-validated `structured_output` when present, else `.result` string.
 //   4. Structured path → validateDigest; text path → JSON.parse → parseDigest.
@@ -79,8 +80,17 @@ export const WAKE_DIGEST_SCHEMA: Record<string, unknown> = {
 /**
  * Build a deterministic wake prompt from WakeInputs. Pure function — no
  * side effects — so it can be unit-tested independently of any model call.
+ *
+ * `structuredOutputEnabled` (default false, i.e. today's prose) swaps the
+ * abstract field-by-field "Shape:" listing for a short instruction plus one
+ * worked example when the turn will carry a native `outputFormat` json_schema
+ * (WAKE_DIGEST_SCHEMA already enforces the shape) - the parse path (structured
+ * output off) keeps the full shape listing as the model's only source of it.
  */
-export function buildWakePrompt(inputs: WakeInputs): string {
+export function buildWakePrompt(
+  inputs: WakeInputs,
+  structuredOutputEnabled = false,
+): string {
   const goals =
     inputs.openGoals.length === 0
       ? "(no active goals)"
@@ -105,6 +115,42 @@ export function buildWakePrompt(inputs: WakeInputs): string {
               `- @${new Date(w.wokeAt).toISOString()} [${w.outcome}] ${w.summary}`,
           )
           .join("\n")
+
+  // On the structured path, WAKE_DIGEST_SCHEMA already enforces the object
+  // shape, so the abstract field-by-field listing is redundant - a short
+  // instruction plus one worked example is enough. The parse path (structured
+  // output off) keeps the full shape listing as the model's only source of it.
+  const outputSection = structuredOutputEnabled
+    ? [
+        "## Output",
+        // Kept even though the schema is enforced: if a lane ignores
+        // outputFormat (or the env override forces this path on), the broker
+        // falls back to parsing turn.text, and prose would break JSON.parse.
+        "Reply with a single JSON object only - no prose before or after, no code fences.",
+        "The response schema (fields + types) is enforced automatically. Example digest:",
+        "{",
+        '  "observations": ["one open action", "two goals"],',
+        '  "picked_action_id": 1,',
+        '  "picked_reason": "highest priority and actionable",',
+        '  "proposed_actions": [',
+        '    { "action": "file follow-up", "priority": 2, "rationale": "preventive", "goal_slug": "g1" }',
+        "  ]",
+        "}",
+      ]
+    : [
+        "## Output",
+        "Reply with ONLY a JSON object — no prose before or after, no code fences.",
+        "Shape:",
+        "{",
+        '  "observations": ["..."],         // 1-3 short observations about current state',
+        '  "picked_action_id": <number|null>, // id from the open next_actions list, or null',
+        '  "picked_reason": "...",          // why this action (or why none fits)',
+        '  "proposed_actions": [            // 0-3 new actions to file (often empty)',
+        '    { "action": "...", "priority": 1-5, "rationale": "...", "goal_slug": "..." | null }',
+        "  ]",
+        "}",
+      ]
+
   return [
     "You are Luna's wake reasoner. A cron just fired. Look at the workspace state",
     "below and emit a JSON digest describing the highest-leverage next action.",
@@ -127,17 +173,7 @@ export function buildWakePrompt(inputs: WakeInputs): string {
     "## Recent wakes (last 5)",
     wakes,
     "",
-    "## Output",
-    "Reply with ONLY a JSON object — no prose before or after, no code fences.",
-    "Shape:",
-    "{",
-    '  "observations": ["..."],         // 1-3 short observations about current state',
-    '  "picked_action_id": <number|null>, // id from the open next_actions list, or null',
-    '  "picked_reason": "...",          // why this action (or why none fits)',
-    '  "proposed_actions": [            // 0-3 new actions to file (often empty)',
-    '    { "action": "...", "priority": 1-5, "rationale": "...", "goal_slug": "..." | null }',
-    "  ]",
-    "}",
+    ...outputSection,
   ].join("\n")
 }
 
@@ -310,10 +346,14 @@ export const WakeReasonerDefault: Layer.Layer<
       // login-ref account → no env overlay, no options.model → today's behavior.
       const wakeModel = resolveReasonerModel("LUNA_WAKE_MODEL")
 
-      // Native structured output gate (default OFF). When on, the turn is issued
-      // with an outputFormat json_schema and we consume the SDK's validated
-      // structured_output; when off, behavior is byte-identical to before.
-      const structuredOutputEnabled = reasonerStructuredOutputEnabled()
+      // Native structured output gate. DEFAULT ON whenever wakeModel's resolved
+      // provider profile supports structured output (laneSupportsStructuredOutput,
+      // via @luna/core's provider-profile registry) - the "default" lane (anthropic)
+      // and google both qualify today; a "none" lane falls back to prompt-and-parse
+      // exactly as before. LUNA_REASONER_STRUCTURED_OUTPUT overrides in EITHER
+      // direction: force it on to try a lane ahead of the capability check, or off
+      // to roll back instantly if wake's op-validation failure rate rises.
+      const structuredOutputEnabled = reasonerStructuredOutputEnabled(wakeModel)
 
       // Same Bun-on-linux musl-vs-glibc footgun as dream-reasoner: the SDK
       // ships a per-arch claude binary lookup that resolves to a musl variant
@@ -339,7 +379,7 @@ export const WakeReasonerDefault: Layer.Layer<
 
       const reason: WakeReasonerApi["reason"] = (inputs: WakeInputs) =>
         Effect.gen(function* () {
-          const prompt = buildWakePrompt(inputs)
+          const prompt = buildWakePrompt(inputs, structuredOutputEnabled)
           yield* Effect.logInfo("[luna/wake] reasoner.reason: starting", {
             workspace: inputs.workspaceSlug,
             goals: inputs.openGoals.length,
