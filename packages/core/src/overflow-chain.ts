@@ -13,6 +13,7 @@
 
 import {
   type ProviderEnv,
+  laneSupportsStructuredOutput,
   profileForKind,
   readProviderEnv,
   resolveKind,
@@ -144,7 +145,7 @@ export function validateOverflowConfig(
     steps.forEach((step, i) => {
       const kind = step.kind ?? resolveKind(step.model, providerEnv)
       const profile = profileForKind(kind, providerEnv)
-      if (profile.capabilities.structuredOutput === "none") {
+      if (!laneSupportsStructuredOutput(profile)) {
         findings.push(
           `lane "${lane}" step ${i} (model "${step.model}", kind "${kind}") ` +
             `cannot produce structured output (structuredOutput="none") but the ` +
