@@ -5,10 +5,9 @@
  * `workflow` workers are typed `Worker<never>` and close over only
  * `SDKClient` + `AgentNotesService` (prompt-worker.ts). They cannot carry the
  * dream cycle, which requires `DreamStore | DreamReasoner | SessionStore |
- * MemoryRouter | Clock` (+ optional CalibrationStore / SuggestedActions /
- * SkillRegistry). So dream gets its OWN worker kind — exactly mirroring how
- * `PromptWorkerLayer` resolves real services at boot and registers a
- * closed-over `Worker<never>`.
+ * MemoryRouter | Clock` (+ optional SuggestedActions / SkillRegistry). So
+ * dream gets its OWN worker kind — exactly mirroring how `PromptWorkerLayer`
+ * resolves real services at boot and registers a closed-over `Worker<never>`.
  *
  * The dream LOGIC is reused wholesale: the worker simply runs `runDream(now)`
  * (the same effect the legacy `registerDreamCron` cron fired). Only the
@@ -18,7 +17,6 @@
  * clock — see runDream's idempotency notes).
  *
  * Optional deps (serviceOption at layer build, folded into captured context):
- *   - CalibrationStore → ECE calibration rows from belief_candidate
  *   - SuggestedActions → skill_improvement chips (source:"dream")
  *   - SkillRegistry → skill catalog snapshot for the reasoner prompt
  * Absent any of them → dream turn still runs; chip/catalog paths degrade loudly.
@@ -26,7 +24,6 @@
 import { Context, Effect, Layer, Option } from "effect"
 import type { MemoryRouter } from "@luna/memory"
 import { Clock } from "../clock.js"
-import { CalibrationStore } from "../alignment/calibration-store.js"
 import { SessionStore } from "../session/session-store.js"
 import { SkillRegistry } from "../skill-registry/skill-registry.js"
 import { SuggestedActions } from "../suggested-actions/suggested-actions.js"
@@ -73,8 +70,8 @@ export interface DreamWorkerLayerOptions {
  * service environment captured at layer-build time. The captured context erases
  * the worker's R to `never` (via `Effect.provide`), satisfying the registry's
  * `Worker<never>` contract. `ctx` may additionally carry optional services
- * (CalibrationStore, SuggestedActions, SkillRegistry) folded in by
- * `DreamWorkerLayer`; providing a wider context is harmless.
+ * (SuggestedActions, SkillRegistry) folded in by `DreamWorkerLayer`; providing
+ * a wider context is harmless.
  *
  * The dream `payload` is intentionally ignored — a dream cycle reads its window
  * from the watermark + SessionStore, not from the job row. The payload column
@@ -123,15 +120,13 @@ export const buildDreamWorker = (
 /**
  * Layer that registers the dream worker into the WorkerRegistry at boot.
  * Requires the dream service environment + WorkerRegistry; reads OPTIONAL
- * CalibrationStore / SuggestedActions / SkillRegistry via serviceOption (so
- * the layer's R does not grow and compositions without them — tests, smokes —
- * keep working).
+ * SuggestedActions / SkillRegistry via serviceOption (so the layer's R does
+ * not grow and compositions without them — tests, smokes — keep working).
  *
  *   const dreamWorkerL = DreamWorkerLayer().pipe(
  *     Layer.provide(Layer.mergeAll(
  *       dreamStoreL, dreamReasonerL, sessionStoreL, memoryRouterL, clockL,
- *       workerRegistryL, calibrationStoreL /* optional *\/,
- *       suggestedActionsL /* optional *\/, skillRegistryL /* optional *\/,
+ *       workerRegistryL, suggestedActionsL /* optional *\/, skillRegistryL /* optional *\/,
  *     )),
  *   )
  */
@@ -152,13 +147,9 @@ export const DreamWorkerLayer = (
       // serviceOption resolves them at dispatch time. The cast narrows the
       // wider Context back to DreamCtx — safe: a superset only ever satisfies
       // MORE requirements.
-      const calOpt = yield* Effect.serviceOption(CalibrationStore)
       const saOpt = yield* Effect.serviceOption(SuggestedActions)
       const skillsOpt = yield* Effect.serviceOption(SkillRegistry)
       let ctx: Context.Context<DreamCtx> = base
-      if (Option.isSome(calOpt)) {
-        ctx = Context.add(ctx, CalibrationStore, calOpt.value) as Context.Context<DreamCtx>
-      }
       if (Option.isSome(saOpt)) {
         ctx = Context.add(ctx, SuggestedActions, saOpt.value) as Context.Context<DreamCtx>
       }

@@ -34,8 +34,6 @@ import {
 import { DreamStore } from "./dream-store.js"
 import { FakeReasoner } from "./reasoner.js"
 import { SessionStore } from "../session/session-store.js"
-import { CalibrationStore } from "../alignment/calibration-store.js"
-import { makeBeliefRecord } from "../beliefs/types.js"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import type { DreamOp } from "./types.js"
@@ -203,56 +201,6 @@ describe("DreamWorkerLayer", () => {
       expect([...kinds]).toEqual(["dream_nightly"])
     })
     await Effect.runPromise(prog.pipe(Effect.provide(stack)))
-  })
-
-  // ── CalibrationStore preservation (advisor change 3) ──────────────────────
-  // CalibrationStore is an OPTIONAL dep read via Effect.serviceOption inside
-  // applyOps. The worker must FOLD it into the captured context so a
-  // belief_candidate op still writes a calibration row at dispatch time. This
-  // is the regression guard for "instrumentation silently no-ops once dream
-  // runs through V2" — the exact bug the advisor flagged.
-  it("(e) a CalibrationStore in the worker composition is forwarded to the fired dream (serviceOption)", async () => {
-    const candidate = makeBeliefRecord({
-      statement: "Operator prefers terse answers",
-      confidence: 0.6,
-      domain: "comms",
-      now: 0,
-    })
-    const beliefOps: ReadonlyArray<DreamOp> = [
-      {
-        kind: "belief_candidate",
-        targetId: candidate.id,
-        before: null,
-        after: candidate,
-        rationale: "pattern",
-      },
-    ]
-    // ONE memoized CalibrationStore instance — referenced both inside the
-    // worker composition (so serviceOption resolves it) and by the read path.
-    const calL = CalibrationStore.Memory.pipe(Layer.provide(Clock.Test(0)))
-    const baseDeps = Layer.mergeAll(
-      DreamStore.Memory,
-      FakeReasoner.of(beliefOps),
-      SessionStore.Default,
-      FakeMemoryEmpty,
-      makeWorkerRegistry({}),
-    ).pipe(Layer.provideMerge(Clock.Default))
-    const workerL = DreamWorkerLayer().pipe(
-      Layer.provideMerge(Layer.merge(baseDeps, calL)),
-    )
-
-    const rows = await Effect.runPromise(
-      Effect.gen(function* () {
-        const reg = yield* WorkerRegistry
-        yield* reg.dispatch(DREAM_WORKER_KIND, {}, ctx)
-        const cal = yield* CalibrationStore
-        return yield* cal.list()
-      }).pipe(Effect.provide(workerL)),
-    )
-
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.beliefId).toBe(candidate.id)
-    expect(rows[0]?.confidence).toBe(0.6)
   })
 
   // ── S8 — deadline seam (Loop C: chunked dream + deadline-aware stop) ─────
