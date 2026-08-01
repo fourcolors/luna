@@ -270,11 +270,10 @@ its stderr prefixed `aborted: dispatch interrupted`.
 
 A dedicated worker kind (`DREAM_WORKER_KIND`,
 `packages/core/src/dream/dream-worker.ts`), NOT a `prompt` row: the dream
-cycle needs `DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`
-(+ an optional `CalibrationStore`), which the generic `prompt` worker cannot
-carry. It runs one `runDream(now)` and **ignores its payload** — the window
-comes from the dream watermark, not the row. There is **ONE** nightly `dream`
-row (default schedule `0 3 * * *`).
+cycle needs `DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`,
+which the generic `prompt` worker cannot carry. It runs one `runDream(now)`
+and **ignores its payload** — the window comes from the dream watermark, not
+the row. There is **ONE** nightly `dream` row (default schedule `0 3 * * *`).
 
 #### `wake` — per-workspace digest cycle
 

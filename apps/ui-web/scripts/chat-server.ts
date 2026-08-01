@@ -205,7 +205,6 @@ import {
   BELIEF_NAMESPACE,
   BeliefWriter,
   BUILTIN_SKILLS,
-  CalibrationStore,
   Clock,
   DEFAULT_UI_KINDS,
   DreamStore,
@@ -1927,9 +1926,8 @@ export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
 //
 // Leaf deps are passed in (already built by the caller) so this stays a pure
 // composition with no SDKClient / SQLite / workspace.db assumptions of its own.
-// Optional deps (calibrationStoreL — dream's ECE serviceOption sink;
-// jobInputToolsL — the prompt/workflow request_input serviceOption provider) are
-// folded in only when supplied.
+// Optional deps (jobInputToolsL — the prompt/workflow request_input
+// serviceOption provider) are folded in only when supplied.
 export interface BuildWorkerRegistryLayerOpts {
   readonly clockL: Layer.Layer<Clock>
   readonly sdkClientL: Layer.Layer<SDKClient>
@@ -1943,8 +1941,6 @@ export interface BuildWorkerRegistryLayerOpts {
   readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
   readonly sessionStoreL: Layer.Layer<SessionStore, never, import("@luna/memory").LunaSqliteBootstrap>
   readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
-  /** Optional ECE calibration sink (dream serviceOption). */
-  readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   /** Optional SuggestedActions (dream skill_improvement chips, serviceOption). */
   readonly suggestedActionsL?: Layer.Layer<import("@luna/core").SuggestedActions>
   /** Optional SkillRegistry (dream skill catalog snapshot, serviceOption). */
@@ -1984,18 +1980,14 @@ export const buildWorkerRegistryLayer = (
     opts.jobInputToolsL === undefined
       ? base
       : Layer.merge(base, opts.jobInputToolsL)
-  const withCalibration =
-    opts.calibrationStoreL === undefined
-      ? withJobTools
-      : Layer.merge(withJobTools, opts.calibrationStoreL)
   // #124 chat_thread delivery sink — folded in only when supplied, exactly like
   // jobInputToolsL above. PromptWorker resolves ChatThreadPosterTag via
   // serviceOption, so omitting it keeps the workers' R clean (no chat_thread
   // delivery, the pre-#124 behaviour).
   const withChatPoster =
     opts.chatThreadPosterL === undefined
-      ? withCalibration
-      : Layer.merge(withCalibration, opts.chatThreadPosterL)
+      ? withJobTools
+      : Layer.merge(withJobTools, opts.chatThreadPosterL)
   // Dream skill-improvement chips: fold SuggestedActions + SkillRegistry when
   // provided so DreamWorkerLayer's serviceOption resolves them at boot (same
   // instances the chat layer uses — Effect memoizes layers by reference).
@@ -2414,13 +2406,6 @@ export const buildBaseLayer = (
   // satisfied at the bottom of buildServerLayer, same as every other
   // SQLite-backed layer here.
   const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
-  // MEASURE-ONLY calibration sink (PR #100): same luna.db, additive
-  // calibration_log table. Presence of this layer turns the instrumentation ON
-  // (rows recorded + reasoner sampling extras run); the DreamWorker reads it via
-  // Effect.serviceOption.
-  const calibrationStoreL = CalibrationStore.makeLayer(paths.lunaDbPath).pipe(
-    Layer.provide(clockL),
-  )
 
   // Wake (Path A) workspace path: the V2 WakeWorker opens
   // <workspacePath>/.workspace/workspace.db (wakeWorkerLogStoreL below). Resolved
@@ -2783,7 +2768,6 @@ export const buildBaseLayer = (
     dreamReasonerL: dreamWorkerReasonerL,
     sessionStoreL: storeL,
     memoryRouterL,
-    calibrationStoreL,
     suggestedActionsL,
     skillRegistryL,
     wakeReasonerL: wakeWorkerReasonerL,
