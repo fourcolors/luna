@@ -2246,9 +2246,9 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           const reg = yield* ThreadRegistryService
           // A pre-#253 row: known thread, no sid (Case B re-create), and — the
           // point of this test — no persisted model.
+          // sdkSessionId omitted → inserts with the column NULL (Case B).
           yield* reg.upsert({
             id: THREAD_ID,
-            sdkSessionId: null,
             cwd: "/test/cwd",
             model: null,
           })
@@ -2304,7 +2304,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           // restarted before the first turn completed).
           yield* reg.upsert({
             id: THREAD_ID,
-            sdkSessionId: null, // no sid — Case B
+            // sdkSessionId omitted → no sid, Case B
             cwd: "/test/cwd",
             model: SAVED_MODEL,
           })
@@ -2411,6 +2411,57 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
     { timeout: 15_000 },
   )
 
+  // REGRESSION (silent context loss): Case A resume routes through
+  // createThread(), which used to pass `sdkSessionId: null` into reg.upsert().
+  // Since `null !== undefined`, the registry cleared the column — so the act of
+  // RESUMING a healthy thread destroyed the pointer it had just resumed from.
+  // The next open then fell through to Case B and re-created the thread with
+  // EMPTY history, leaving the user with a full on-screen transcript in front
+  // of an amnesiac model. 45 of 94 real threads on the live server were
+  // damaged this way before the fix.
+  it(
+    "subscribe() Case A resume must NOT clear the persisted sdk session id",
+    async () => {
+      const THREAD_ID = "thr_test_sidkeep01"
+      const PERSISTED_SID = "sdk-must-survive-resume"
+      let sidAfterResume: string | null | undefined
+
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: PERSISTED_SID,
+          responseFor: (t) => `echo:${t}`,
+        }),
+      )
+
+      await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const reg = yield* ThreadRegistryService
+          yield* reg.upsert({
+            id: THREAD_ID,
+            sdkSessionId: PERSISTED_SID,
+            cwd: "/test/cwd",
+            model: "claude-test",
+          })
+
+          const chat = yield* ChatService
+          const fiber = yield* Effect.fork(
+            chat.subscribe(THREAD_ID).pipe(Stream.take(1), Stream.runCollect),
+          )
+          yield* Effect.sleep("100 millis")
+          yield* Fiber.interrupt(fiber)
+
+          const row = yield* reg.get(THREAD_ID)
+          sidAfterResume = row?.sdkSessionId
+        }),
+        fakeLayer,
+      )
+
+      expect(sidAfterResume).toBe(PERSISTED_SID)
+    },
+    { timeout: 15_000 },
+  )
+
   // PING (fix #4 — degradation): when cwd is NULL in the registry, subscribe()
   // must still re-create the thread live (not 404) using a fallback cwd.
   it(
@@ -2503,7 +2554,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
             // Step 1: seed ThreadRegistry with sdkSessionId=null (Case B).
             yield* reg.upsert({
               id: THREAD_ID,
-              sdkSessionId: null,
+              // sdkSessionId omitted → seeds Case B (no sid).
               cwd: "/test/cwd",
               model: SAVED_MODEL,
             })
@@ -3215,7 +3266,7 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
 
             // Seed registry WITHOUT a sid (Case B — server restarted before first turn).
             const reg = yield* ThreadRegistryService
-            yield* reg.upsert({ id: t.id, sdkSessionId: null, cwd: "/test", model: "claude-test" })
+            yield* reg.upsert({ id: t.id, cwd: "/test", model: "claude-test" })
 
             // Wait for idle-eligibility, then reap.
             yield* waitForIdleEligibility()

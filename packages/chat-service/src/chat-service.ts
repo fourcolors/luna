@@ -1102,14 +1102,24 @@ export class ChatService extends Effect.Service<ChatService>()(
               ? ULTRACODE
               : createClamp.effort
 
-          // Upsert the thread row (sid comes later via onSdkSessionId).
+          // Upsert the thread row.
+          //
+          // NEVER pass `sdkSessionId: null` here. createThread is reused by
+          // ensureThreadLive Case A to RESUME an existing thread, and upsert
+          // treats an explicit null as "clear this column" (null !== undefined),
+          // so passing null would wipe the very resume pointer we just read —
+          // leaving the thread with a full on-screen transcript and an EMPTY
+          // model context, silently, on the next open.
+          //
+          // We therefore OMIT the key entirely: on a genuine insert the column
+          // defaults to NULL and onSdkSessionId fills it in; on a Case A resume
+          // the existing value is preserved untouched.
           yield* Option.match(threadRegistry, {
             onNone: () => Effect.void,
             onSome: (reg) =>
               reg
                 .upsert({
                   id,
-                  sdkSessionId: null,
                   cwd:
                     (opts as { cwd?: string }).cwd ??
                     process.env["LUNA_REPO_ROOT"] ??
@@ -1151,11 +1161,27 @@ export class ChatService extends Effect.Service<ChatService>()(
               const reg = threadRegistry.value
               return (sdkSid: string) => {
                 // Best-effort background persist: run the Effect from this
-                // synchronous callback using the captured runtime. Errors are
-                // swallowed so a DB glitch never breaks a live chat session.
+                // synchronous callback using the captured runtime. A failure
+                // must never break a live chat session — but it must not be
+                // INVISIBLE either. This single UPDATE is the only thing that
+                // lets a thread resume with its model context; when it fails or
+                // matches no row, the user gets a full on-screen transcript in
+                // front of an amnesiac model. That silence is why the
+                // sdk_session_id clobber survived six weeks undetected.
                 Runtime.runFork(runtime)(
                   reg.setSid(id, sdkSid).pipe(
-                    Effect.catchAllCause(() => Effect.void),
+                    Effect.tap((ok) =>
+                      ok
+                        ? Effect.void
+                        : Effect.logWarning(
+                            `[chat] setSid(${id}) matched no row — this thread will lose model context on resume`,
+                          ).pipe(Effect.zipRight(inc("luna.chat.sdk_sid_persist.failures"))),
+                    ),
+                    Effect.catchAllCause((cause) =>
+                      Effect.logWarning(
+                        `[chat] setSid(${id}) failed: ${Cause.pretty(cause)}`,
+                      ).pipe(Effect.zipRight(inc("luna.chat.sdk_sid_persist.failures"))),
+                    ),
                   ),
                 )
               }
@@ -1174,9 +1200,15 @@ export class ChatService extends Effect.Service<ChatService>()(
           })()
           let activeSdkSessionId = opts.resumeFromSessionId ?? null
           const recordSdkSession = (sdkSid: string): void => {
-            const changed = sdkSid !== activeSdkSessionId
             activeSdkSessionId = sdkSid
-            if (changed) persistSdkSession?.(sdkSid)
+            // Persist UNCONDITIONALLY. This used to be gated on
+            // `sdkSid !== activeSdkSessionId`, but activeSdkSessionId is seeded
+            // from opts.resumeFromSessionId — so a resumed session re-announcing
+            // its own (unchanged) id skipped the write entirely. That made an
+            // already-NULL row unable to ever repair itself. setSid is an
+            // idempotent single-row UPDATE, so the redundant write is cheap and
+            // buys us self-healing on the next turn of any damaged thread.
+            persistSdkSession?.(sdkSid)
           }
 
           const onMirrorError = (_msg: SDKMessage, cause: unknown) =>

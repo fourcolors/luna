@@ -87,6 +87,26 @@ describe("ThreadRegistryService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  // REGRESSION: upsert must never clear a live sdk session id.
+  // chat-service reuses createThread() to RESUME a thread, and it used to pass
+  // `sdkSessionId: null`. Because `null !== undefined`, the update guard fired
+  // and wiped the column — so resuming a thread destroyed the pointer it had
+  // just resumed from. The type is now `string | undefined` so null cannot be
+  // passed at all; this test pins the omitted-key behaviour it relies on.
+  it("upsert preserves an existing sdk session id when the key is omitted", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_sid_keep", sdkSessionId: "sdk-keep-me" })
+      // A later upsert touching OTHER fields must leave the sid intact.
+      yield* reg.upsert({ id: "thr_sid_keep", cwd: "/elsewhere", model: "claude-x" })
+      const row = yield* reg.get("thr_sid_keep")
+      expect(row?.sdkSessionId).toBe("sdk-keep-me")
+      expect(row?.cwd).toBe("/elsewhere")
+      expect(row?.model).toBe("claude-x")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   it("setConfig updates model and effort independently", async () => {
     const program = Effect.gen(function* () {
       const reg = yield* ThreadRegistryService
