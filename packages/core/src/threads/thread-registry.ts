@@ -116,7 +116,21 @@ export interface ThreadRow {
 /** Input for upsert() — all optional except id. */
 export interface ThreadUpsertInput {
   readonly id: string
-  readonly sdkSessionId?: string | null
+  /**
+   * The SDK session id (resume pointer).
+   *
+   * Deliberately `string | undefined` and NOT `string | null`: upsert treats a
+   * supplied value as "write this" and an omitted key as "leave alone", and
+   * because `null !== undefined`, an explicit null used to mean "clear it".
+   * chat-service reuses createThread to RESUME a thread, so passing null there
+   * wiped the very pointer being resumed from and left the thread with a full
+   * transcript and an empty model context. Omitting the key is correct for both
+   * insert (column defaults to NULL) and update (existing value preserved).
+   *
+   * If clearing a sid is ever genuinely needed, add an explicit `clearSid`
+   * method rather than widening this back to accept null.
+   */
+  readonly sdkSessionId?: string
   readonly cwd?: string | null
   readonly title?: string | null
   readonly model?: string | null
