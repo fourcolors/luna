@@ -70,6 +70,9 @@ export default defineConfig({
       "test/**/*.test.ts",
       // React-component tests need JSX (see apps/ui-moon-tauri's Astryx
       // panel conversions) - mirrors the .test.ts patterns above.
+      // Deliberately NO packages/**/*.test.tsx pattern: no package has
+      // shipped .tsx tests since ui-shared-solid was deleted (PR #407).
+      // Add the pattern back if one ever does.
       "apps/**/*.test.tsx",
       "test/**/*.test.tsx",
     ],

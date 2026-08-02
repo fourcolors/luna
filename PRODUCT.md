@@ -6,7 +6,7 @@
 
 adaptive
 
-Moon and Studio are Tauri apps whose design language is genuinely macOS-native (traffic lights, independent child windows, deep links, menu-bar presence), while ui-web and widget/panel pages are pure web.
+Moon is a Tauri app whose design language is genuinely macOS-native (traffic lights, independent child windows, deep links, menu-bar presence), while ui-web and widget/panel pages are pure web.
 Desktop work follows macOS conventions; browser work follows web conventions.
 
 ## Users
@@ -30,13 +30,13 @@ Claims a neighboring product could not truthfully copy, all confirmed:
 - Ambient desktop presence: Moon's floating always-available widget makes the agent a persistent desktop companion, not a browser tab.
 - Composable Effect-TS layers: every capability is a swappable Layer, so modules are testable and replaceable in isolation.
 - Remote and local at once: the server can run on a remote box while the Operator tunnels in, or run fully local.
-- Vibecoded widgets: the Operator can ask the agent to build custom widgets that snap onto the dashboard, Winamp-style (including skins), or live in a Studio window.
+- Vibecoded widgets: the Operator can ask the agent to build custom widgets that snap onto the dashboard, Winamp-style (including skins).
 - Harness-agnostic: Luna can be used with other agent harnesses (e.g. Hermes) rather than being married to a single one.
 
 ## Operating Context
 
 - The Operator runs a home server with `stable` and `dev` deployment channels (systemd/containers) and auto-deploy timers; the desktop apps connect to those channels over WebSocket.
-- Surfaces: Moon (Tauri floating widget + panel windows, macOS), Studio (Tauri desktop app, macOS), Luna Studio web (React + Vite), the `luna` terminal client, and Telegram.
+- Surfaces: Moon (Tauri floating widget + panel windows, macOS), Luna Studio web (React + Vite, retiring after the server extraction), the `luna` terminal client, and Telegram.
 - Local dev: chat-server on `:4753` plus Vite on `:5174`; Moon pages are standalone HTML loadable over `file://` for screenshot-driven UI verification.
 - Unattended operation is a real workflow: scheduled jobs (JobTicker), nightly dreams, maintainer sweeps, and result delivery back into chat threads.
 - Releases: Moon ships versioned macOS builds via tag-triggered CI (`moon-v*`); the server self-updates per channel.
@@ -48,7 +48,7 @@ Claims a neighboring product could not truthfully copy, all confirmed:
 - Root `DESIGN.md` is the frozen architecture document, not a visual design system; do not treat it as Impeccable visual authority.
 - Identity constraint: the agent presents as Luna, never as Claude or a generic assistant (see `DNA.md`, which is loaded into every thread's system prompt).
 - The repository is public: product docs must never contain personal infrastructure details (hostnames, IPs, account identifiers).
-- Terminology: "Moon" (floating widget app), "Studio" (desktop app), "panels/widgets" (snap-on surfaces), "threads" (chat sessions), "channels" (stable/dev deploys), "Operator" (the primary user).
+- Terminology: "Moon" (floating widget app), "Studio" (retired desktop app; the name survives only in Luna Studio web), "panels/widgets" (snap-on surfaces), "threads" (chat sessions), "channels" (stable/dev deploys), "Operator" (the primary user).
 - Undecided: whether the developer/self-hoster audience ever becomes a design target; currently explicitly not.
 
 ## Brand Commitments
@@ -60,7 +60,8 @@ Claims a neighboring product could not truthfully copy, all confirmed:
 
 ## Evidence on Hand
 
-- Real shipping apps: `apps/ui-moon-tauri` (releases through `moon-v0.0.61`), `apps/ui-studio-tauri`, `apps/ui-web`, `apps/agent-cli`.
+- Real shipping apps: `apps/ui-moon-tauri` (releases through `moon-v0.0.65`), `apps/ui-web`, `apps/agent-cli`.
+  Studio (`apps/ui-studio-tauri`) was retired in PR #405 (2026-07-31); Moon is the only desktop GUI.
 - `DNA.md` (end-user-facing identity and operating contract) and `DESIGN.md` (architecture) are authoritative written sources.
 - UI truth is verified by rendered screenshots (project rule): Moon pages drive real HTML via `agent-browser` and `__MoonInternals.handleFrame`; a real-Tauri WKWebView glance precedes releases.
 - No customers, testimonials, pricing, or market claims exist; future work must not fabricate any.

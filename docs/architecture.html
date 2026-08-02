@@ -328,20 +328,19 @@
       <tr><td class="mono">@luna/chat-service</td><td>Per-thread state machine: an inbox <code>Queue</code>, a <code>PubSub&lt;ChatFrame&gt;</code>, persistence, and the <code>ThreadToolsProvider</code> that injects MCP servers + system prompt per thread.</td></tr>
       <tr><td class="mono">@luna/control-server</td><td>tRPC sidecar on <code>:4754</code> for process control (restart / status / version). <span class="badge b-asp">macOS-only</span> restart shells <code>launchctl</code>; not wired to systemd.</td></tr>
       <tr><td class="mono">@luna/memory</td><td>The memory abstraction: <code>MemoryRouter</code> + backends (in-memory, file, sqlite, <b>sqlite-vector</b>). Owns <code>memory.db</code>, the embedder selection, and the Vectorlite HNSW bootstrap.</td></tr>
-      <tr><td class="mono">@luna/memory-tools</td><td>The MCP memory tools (<code>memory_save</code>, <code>memory_search</code>, <code>memory_delete</code>) + the system-prompt addendum that tells the agent to use them, plus the turn pipeline seams: <code>recallForTurn</code> (bounded scoped context packer) and <code>captureTurnCandidates</code> (post-turn candidate extractor) with a data-driven eval harness.</td></tr>
+      <tr><td class="mono">@luna/memory-tools</td><td>The MCP memory tools (<code>memory_save</code>, <code>memory_search</code>, <code>memory_delete</code>) + the system-prompt addendum that tells the agent to use them, plus the turn pipeline seam: <code>recallForTurn</code> (bounded scoped context packer).</td></tr>
       <tr><td class="mono">@luna/tools</td><td>Tool-building infrastructure: <code>defineTool()</code>, <code>makeSdkMcpServer()</code>, and interceptor combinators (deny / allow / redact). Not a tool source itself.</td></tr>
       <tr><td class="mono">@luna/scheduler-tools</td><td>Cron scheduling tools (<code>schedule_create / list / cancel</code>) — each schedule is a durable <code>kind:"prompt"</code> row in the <code>jobs</code> table, drained by the <code>JobTicker</code>.</td></tr>
       <tr><td class="mono">@luna/local-shell-tools</td><td><code>local_shell_run</code> — forwards a command over a WS bridge to the attached terminal client for per-request approval.</td></tr>
       <tr><td class="mono">@luna/observability-tools</td><td>Self-inspection tools (<code>obs_note</code>, <code>obs_session_explain</code>, <code>obs_session_anomalies</code>, …) querying the agent's own telemetry.</td></tr>
       <tr><td class="mono">@luna/ui-ws</td><td>The WebSocket server + the authoritative wire protocol (<code>protocol.ts</code>, <code>UI_WS_PROTOCOL_VERSION = 2</code>).</td></tr>
       <tr><td class="mono">@luna/ui-shared</td><td>Framework-agnostic client core: <code>browserWebSocketTransport</code>, the pure state <code>reduce</code>r, browser-safe wire types.</td></tr>
-      <tr><td class="mono">@luna/ui-shared-solid</td><td>Solid.js component library (ChatPanel, Sidebar, ObsPanel, AccountSwitcher) + reducer-backed store + transport composable.</td></tr>
     </table>
     <h3>Apps — the executables</h3>
     <table>
       <tr><th>App</th><th>What it is</th></tr>
       <tr><td class="mono">apps/agent-cli</td><td>The <code>luna</code> CLI — the operator's command surface: chat (Ink TUI), account, memory, doctor, pair. Also hosts the local-shell bridge endpoint the agent calls back into.</td></tr>
-      <tr><td class="mono">apps/ui-web</td><td>The Solid.js web UI (Vite, <code>:5174</code>) + <code>scripts/chat-server.ts</code>, the boot entry point that assembles the whole runtime.</td></tr>
+      <tr><td class="mono">apps/ui-web</td><td>The React web UI (Vite, <code>:5174</code>) + <code>scripts/chat-server.ts</code>, the boot entry point that assembles the whole runtime.</td></tr>
       <tr><td class="mono">apps/ui-moon-tauri</td><td>The floating crescent "Moon" widget — a Tauri shell around a single dependency-free HTML file.</td></tr>
     </table>
     <div class="note info"><b>Where the server actually lives.</b> The server is not its own app — it is <code>apps/ui-web/scripts/chat-server.ts</code>, run with <code>bun run scripts/chat-server.ts</code>. It composes the package layers into a single <code>ManagedRuntime</code> and starts the WebSocket (<code>:4753</code>) and control (<code>:4754</code>) servers.</div>
@@ -396,7 +395,7 @@
       <li><b>Per-thread streaming connection.</b> The adapter converts the inbox <code>Queue</code> to an <code>AsyncIterable</code> and runs the SDK's <code>for await</code> loop as a detached producer feeding an unbounded queue; the consumer is an Effect <code>Stream</code>. Idle-timeout is disabled for chat threads.</li>
       <li><b>Persist-then-offer.</b> The user turn is written to <code>SessionStore</code> before it reaches the model, and every SDK message is mirrored to the store as it streams — so reconnecting clients get an accurate snapshot.</li>
       <li><b>Message dispatch.</b> <code>stream_event</code> → <code>assistant-delta</code> (cumulative text); <code>assistant</code> → <code>assistant-done</code> + <code>tool-call</code> frames; <code>user</code> → <code>tool-result</code>; <code>result</code> → cost + session-end observability events.</li>
-      <li><b>Scoped recall &amp; post-turn capture.</b> When enabled, a per-thread <code>recallMemory</code> hook injects bounded scoped recall as a system-prompt suffix <em>before</em> the finite resumed SDK query, and on the exactly-once <code>result</code> event an <code>observeTurn</code> hook runs in a supervised background fiber to extract inert durable-memory / belief-evidence candidates - never blocking the turn and never materializing an active belief. Turn extraction defaults on and is disabled with <code>LUNA_MEMORY_TURN_EXTRACTION=0</code>.</li>
+      <li><b>Scoped recall.</b> When enabled, a per-thread <code>recallMemory</code> hook injects bounded scoped recall as a system-prompt suffix <em>before</em> the finite resumed SDK query. Durable capture is the model's explicit <code>memory_save</code> tool - the regex post-turn candidate extractor was removed in PR #410, so the model decides what is worth remembering.</li>
       <li><b>Bottom-up layer order.</b> <code>LunaSqliteBootstrap</code> is provided last so it builds <em>first</em> — swapping in the Vectorlite-capable SQLite before any <code>new Database()</code> opens.</li>
     </ul>
   </section>
@@ -550,10 +549,10 @@
       </div>
       <div class="card">
         <h4>🖥️ ui-web <span class="badge b-impl">Implemented</span></h4>
-        <p>The full Solid.js web UI on Vite <code>:5174</code>. Chat + observability panes, an account switcher, the setup-mode terminal (xterm.js), and the alignment survey modal. Config in localStorage; auto-connects when a ≥16-char token is present.</p>
+        <p>The React web UI on Vite <code>:5174</code>. Chat + observability panes, an account switcher, the setup-mode terminal (xterm.js), and the alignment survey modal. Config in localStorage; auto-connects when a ≥16-char token is present.</p>
       </div>
     </div>
-    <p class="small"><b>Shared core.</b> <code>@luna/ui-shared</code> supplies the transport + pure reducer; <code>@luna/ui-shared-solid</code> supplies the components. Caveat: the browser-safe <code>wire.ts</code> mirror omits several newer frames (local-shell, tool-call/result, memory-search, survey), so Solid clients see a narrower union than the server defines.</p>
+    <p class="small"><b>Shared core.</b> <code>@luna/ui-shared</code> supplies the transport + pure reducer; each surface brings its own React components (ui-shared-solid was deleted in PR #407). Caveat: the browser-safe <code>wire.ts</code> mirror omits several newer frames (local-shell, tool-call/result, memory-search, survey), so web clients see a narrower union than the server defines.</p>
   </section>
 
   <!-- 12 -->
