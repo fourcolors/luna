@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-const main = fs.readFileSync(path.resolve(__dirname, '../src-tauri/src/main.rs'), 'utf8')
+// Native window chrome (traffic lights, resize, panel/artifact window
+// builders) lives in src-tauri/src/windows.rs, split out of main.rs in the
+// moon-next main.rs split - main.rs itself no longer has any of this code.
+const windowsRs = fs.readFileSync(path.resolve(__dirname, '../src-tauri/src/windows.rs'), 'utf8')
 const appearance = fs.readFileSync(
   path.resolve(__dirname, '../frontend/vendor/moon-appearance.js'),
   'utf8',
@@ -25,16 +28,16 @@ const pages = [
 
 describe('native macOS titlebar ownership', () => {
   it('configures AppKit traffic lights once when each native window is created', () => {
-    const placements = main.match(
+    const placements = windowsRs.match(
       /\.traffic_light_position\(tauri::LogicalPosition::new\(\s*TRAFFIC_LIGHT_INSET_X,\s*TRAFFIC_LIGHT_INSET_Y,?\s*\)\)/g,
     )
     expect(placements).toHaveLength(2)
     // One source of truth for the inset — builders and the AppKit re-apply
     // share these consts so the two placements cannot drift apart.
-    expect(main).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 36.0')
-    expect(main).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 14.0')
-    expect(main).toContain('fn configure_native_window_chrome(')
-    expect(main).toContain('button.setHidden(false)')
+    expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 36.0')
+    expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 14.0')
+    expect(windowsRs).toContain('fn configure_native_window_chrome(')
+    expect(windowsRs).toContain('button.setHidden(false)')
   })
 
   it('uses standard native traffic lights everywhere: the zoom (green) button is never disabled', () => {
@@ -42,20 +45,20 @@ describe('native macOS titlebar ownership', () => {
     // call setEnabled(false) on the zoom button, so the green light rendered as a
     // gray DISABLED dot. Standard native chrome keeps all three buttons enabled:
     // no per-window zoom gating, no setEnabled call that could gray the green.
-    expect(main).not.toContain('zoom_enabled')
-    expect(main).not.toMatch(/setEnabled/)
+    expect(windowsRs).not.toContain('zoom_enabled')
+    expect(windowsRs).not.toMatch(/setEnabled/)
     // Both native window builders (spawn_panel_at + open_artifact_widget) opt the
     // zoom button into the style mask so AppKit renders it enabled/green.
-    expect(main.match(/\.maximizable\(true\)/g)).toHaveLength(2)
-    expect(main).not.toMatch(/\.maximizable\(false\)/)
+    expect(windowsRs.match(/\.maximizable\(true\)/g)).toHaveLength(2)
+    expect(windowsRs).not.toMatch(/\.maximizable\(false\)/)
   })
 
   it('zoom means zoom: card windows opt out of the native fullscreen Space', () => {
-    expect(main).toContain('NSWindowCollectionBehavior::FullScreenNone')
+    expect(windowsRs).toContain('NSWindowCollectionBehavior::FullScreenNone')
   })
 
   it('has no runtime traffic-light commands or appearance IPC', () => {
-    expect(main).not.toMatch(/sync_traffic_light_position|set_native_controls_visible/)
+    expect(windowsRs).not.toMatch(/sync_traffic_light_position|set_native_controls_visible/)
     expect(appearance).not.toMatch(/sync_traffic_light_position|set_native_controls_visible/)
   })
 
