@@ -316,14 +316,6 @@
         "zod": "^4.0.0",
       },
     },
-    "packages/protocol-descriptor": {
-      "name": "@luna/protocol-descriptor",
-      "version": "0.0.1",
-      "devDependencies": {
-        "typescript": "^5.6.3",
-        "vitest": "^2.1.5",
-      },
-    },
     "packages/scheduler-tools": {
       "name": "@luna/scheduler-tools",
       "version": "0.0.1",
@@ -364,7 +356,7 @@
       "name": "@luna/server-registry",
       "version": "0.0.1",
       "dependencies": {
-        "@luna/protocol-descriptor": "workspace:*",
+        "@luna/tools": "workspace:*",
       },
       "devDependencies": {
         "typescript": "^5.6.3",
@@ -445,7 +437,7 @@
       "name": "@luna/ui-shared",
       "version": "0.0.1",
       "dependencies": {
-        "@luna/protocol-descriptor": "workspace:*",
+        "@luna/tools": "workspace:*",
       },
       "devDependencies": {
         "typescript": "^5.6.3",
@@ -473,8 +465,8 @@
       "dependencies": {
         "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
-        "@luna/protocol-descriptor": "workspace:*",
         "@luna/server-registry": "workspace:*",
+        "@luna/tools": "workspace:*",
         "effect": "^3.21.0",
         "ws": "^8.18.0",
       },
@@ -801,8 +793,6 @@
     "@luna/oauth": ["@luna/oauth@workspace:packages/oauth"],
 
     "@luna/observability-tools": ["@luna/observability-tools@workspace:packages/observability-tools"],
-
-    "@luna/protocol-descriptor": ["@luna/protocol-descriptor@workspace:packages/protocol-descriptor"],
 
     "@luna/scheduler-tools": ["@luna/scheduler-tools@workspace:packages/scheduler-tools"],
 

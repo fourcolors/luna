@@ -6,8 +6,8 @@
  * connection gets a fresh, monotonically-increasing generation number that
  * lets clients detect a server restart between connections.
  */
-import type { ServerDescriptor, ServerDescriptorCapability } from "@luna/protocol-descriptor"
-import { UI_WS_PROTOCOL_VERSION } from "@luna/protocol-descriptor"
+import type { ServerDescriptor, ServerDescriptorCapability } from "@luna/tools/protocol-descriptor"
+import { UI_WS_PROTOCOL_VERSION } from "@luna/tools/protocol-descriptor"
 
 // Module-level monotonic counter: incremented once per descriptor build
 // (i.e. once per new WebSocket connection). Resets to 0 on process restart,
