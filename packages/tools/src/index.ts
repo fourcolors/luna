@@ -1,5 +1,6 @@
 export * from "./errors.js"
 export * from "./builder.js"
+export * from "./define-tool-package.js"
 export * from "./interception.js"
 export * from "./effect-class.js"
 export * from "./egress-policy.js"
