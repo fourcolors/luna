@@ -47,7 +47,7 @@ import {
   SessionSync,
   makeDuckDbLayer,
 } from "@luna/core"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type {
   AnyZodRawShape,
   McpSdkServerConfigWithInstance,
@@ -128,12 +128,13 @@ export const OBS_SYSTEM_PROMPT_ADDENDUM =
 
 export const buildObsMcpServer = (
   tools: ReturnType<typeof makeObsTools>,
-): McpSdkServerConfigWithInstance => {
-  const widened = tools as unknown as ReadonlyArray<
-    SdkMcpToolDefinition<AnyZodRawShape>
-  >
-  return makeSdkMcpServer("observability", "0.1.0", widened)
-}
+): McpSdkServerConfigWithInstance =>
+  defineToolPackage({
+    name: "observability",
+    tools: tools as unknown as ReadonlyArray<
+      SdkMcpToolDefinition<AnyZodRawShape>
+    >,
+  }).server
 
 // ── Layer factory ──────────────────────────────────────────────────────────────
 
@@ -220,12 +221,18 @@ export const ObsToolsLayer = (
           { eventSink: eventSink.health, sessionSync: sessionSync.health },
           opts?.runtimeProbe ?? null,
         )
-        const server = buildObsMcpServer(tools)
+        const { server, systemPromptAddendum } = defineToolPackage({
+          name: "observability",
+          tools: tools as unknown as ReadonlyArray<
+            SdkMcpToolDefinition<AnyZodRawShape>
+          >,
+          addendum: OBS_SYSTEM_PROMPT_ADDENDUM,
+        })
 
         return {
           serverName: "observability" as const,
           server,
-          systemPromptAddendum: OBS_SYSTEM_PROMPT_ADDENDUM,
+          systemPromptAddendum,
           bindSession,
         }
       }
