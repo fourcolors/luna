@@ -12,7 +12,7 @@
  * instruction — duplicating it here would spend context twice.
  */
 import { Effect, Layer } from "effect"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import { SkillRegistry } from "@luna/core"
 import type {
   AnyZodRawShape,
@@ -38,27 +38,14 @@ export class SkillToolsService extends Effect.Tag("luna/SkillToolsService")<
   SkillToolsConfig
 >() {}
 
-export const buildSkillToolsMcpServer = (
-  tools: ReturnType<typeof makeSkillTools>,
-): McpSdkServerConfigWithInstance => {
-  const widened = tools as unknown as ReadonlyArray<
-    SdkMcpToolDefinition<AnyZodRawShape>
-  >
-  return makeSdkMcpServer("skill_tools", "0.1.0", widened)
-}
-
 const createSkillToolsConfig = (
   registry: (typeof SkillRegistry)["Service"],
 ): SkillToolsSessionConfig => {
-  const tools = makeSkillTools(registry)
-  const server = buildSkillToolsMcpServer(tools)
-  return {
-    serverName: "skill_tools",
-    server,
-    systemPromptAddendum: "",
-    bindSession: () => {},
-    clearSession: () => {},
-  }
+  const tools = makeSkillTools(registry) as unknown as ReadonlyArray<
+    SdkMcpToolDefinition<AnyZodRawShape>
+  >
+  const config = defineToolPackage({ name: "skill_tools", tools })
+  return { ...config, serverName: "skill_tools" }
 }
 
 export const SkillToolsLayer = (): Layer.Layer<
