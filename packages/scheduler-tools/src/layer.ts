@@ -14,7 +14,7 @@
  */
 import { Effect, Layer } from "effect"
 import { JobsStoreService, type JobsStoreApi } from "@luna/core"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type {
   AnyZodRawShape,
   McpSdkServerConfigWithInstance,
@@ -82,7 +82,7 @@ export const buildSchedulerMcpServer = (
     jobsStore,
     systemSchedules,
   ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
-  return makeSdkMcpServer("scheduler", "0.1.0", tools)
+  return defineToolPackage({ name: "scheduler", tools }).server
 }
 
 /**
