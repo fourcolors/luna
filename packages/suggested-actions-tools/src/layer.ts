@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import { SuggestedActions } from "@luna/core"
 import type { SuggestedActionsApi } from "@luna/core"
 import type {
@@ -38,15 +38,6 @@ export const SUGGESTED_ACTION_TOOLS_SYSTEM_PROMPT_ADDENDUM =
   "create_workflow; provide `job_id` for run_workflow. Propose sparingly and only " +
   "for genuinely useful follow-ups — do not propose trivial things you can just do now."
 
-const buildServer = (
-  tools: ReturnType<typeof makeSuggestedActionTools>,
-): McpSdkServerConfigWithInstance => {
-  const widened = tools as unknown as ReadonlyArray<
-    SdkMcpToolDefinition<AnyZodRawShape>
-  >
-  return makeSdkMcpServer("suggested_actions", "0.1.0", widened)
-}
-
 const createConfig = (
   service: SuggestedActionsApi,
 ): SuggestedActionToolsSessionConfig => {
@@ -61,16 +52,17 @@ const createConfig = (
     }
   }
 
-  const tools = makeSuggestedActionTools(service, currentThreadId)
-  const server = buildServer(tools)
+  const tools = makeSuggestedActionTools(
+    service,
+    currentThreadId,
+  ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
+  const config = defineToolPackage({
+    name: "suggested_actions",
+    tools,
+    addendum: SUGGESTED_ACTION_TOOLS_SYSTEM_PROMPT_ADDENDUM,
+  })
 
-  return {
-    serverName: "suggested_actions",
-    server,
-    systemPromptAddendum: SUGGESTED_ACTION_TOOLS_SYSTEM_PROMPT_ADDENDUM,
-    bindSession,
-    clearSession,
-  }
+  return { ...config, serverName: "suggested_actions", bindSession, clearSession }
 }
 
 /**
