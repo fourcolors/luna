@@ -35,7 +35,9 @@ Every change lands as a small stacked PR on branch `luna-next` for Operator revi
 - Add the `defineToolPackage` factory, then migrate all ten tool packages onto it.
 - Extract the server to `apps/server` (coordinated deploy migration).
 - Delete the `ui-web` frontend.
-- Unify dream+wake into one `ReflectionJob`.
+- ~~Unify dream+wake into one `ReflectionJob`~~ — REJECTED on implementation contact (Operator adjudication, 2026-08-03).
+  Six deliberate divergences block the merge; see `DESIGN.md` §5.3.6.
+  Landed instead as slice 9a: the shared `defineWorkerLayer` registration wrapper (`jobs/define-worker.ts`), runtimes untouched.
 - Split `chat-service.ts` / `job-ticker.ts` / `main.rs` along existing seams.
 - Establish a `luna.db` schema-continuity contract before any daemon cutover.
 

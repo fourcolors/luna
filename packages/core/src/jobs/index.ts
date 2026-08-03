@@ -8,6 +8,13 @@ export {
   type SchedulerHealthSnapshot,
 } from "./job-ticker.js"
 export {
+  buildWorker,
+  defineWorkerLayer,
+  resolveEnvTimeoutMs,
+  type WorkerKindSpec,
+  type WorkerLayerOptions,
+} from "./define-worker.js"
+export {
   WorkerRegistry,
   WorkerError,
   makeWorkerRegistry,
