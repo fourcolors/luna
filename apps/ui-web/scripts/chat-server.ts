@@ -344,6 +344,7 @@ import {
   ChannelServiceLayer,
   ChannelSessionStore,
   InboundDedupStore,
+  makeDiscordAdapter,
   makeTelegramAdapter,
 } from "@luna/channels"
 import {
@@ -4753,6 +4754,85 @@ const buildMain = (
       }
     } else {
       console.log(`📨 telegram channel: idle — set TELEGRAM_BOT_TOKEN to enable`)
+    }
+
+    // ── Discord ──────────────────────────────────────────────────────────────
+    // Unlike telegram above, Discord is FAIL-CLOSED. This bot fronts an agent
+    // with an unrestricted local shell, so there is no configuration in which
+    // it accepts messages from an unknown sender:
+    //
+    //   env var set   → exactly those user ids
+    //   env var unset → the single compiled default id below
+    //   allowlist somehow empty → registration is REFUSED with a loud error
+    //
+    // The last branch is unreachable while the compiled default is non-empty.
+    // It is kept as a backstop so that emptying the default can never silently
+    // produce an open bot.
+    //
+    // LUNA_DISCORD_ALLOWED_USER_IDS is read from raw process.env, NOT through
+    // the SecretProvider chain. Two places therefore feed it, and only two:
+    // ~/.luna/.env (loaded into process.env at module scope near the top of
+    // this file, well before buildMain runs) and the launchd unit's
+    // EnvironmentVariables block, which wins on conflict. A shell-exported var
+    // reaches neither. A typo'd name falls back to the compiled default, which
+    // is still closed, and the boot log names the source that actually won so
+    // the mistake is visible rather than silent.
+    const dcSecret = yield* Effect.promise(() =>
+      resolveEnvSecret("DISCORD_BOT_TOKEN"),
+    )
+    const dcToken =
+      dcSecret === undefined ? undefined : Redacted.value(dcSecret).trim()
+    // Eric's Discord user id, compiled in as the boot default so a fresh
+    // install is functional AND closed. An env var overrides it entirely.
+    // Note this default is a single specific user — it is not "open", so
+    // there is no security reason to refuse boot when the env var is unset.
+    const DISCORD_DEFAULT_ALLOWED_USERS = ["000000000000000000"] as const
+    const dcAllowedUsersEnv = (
+      process.env["LUNA_DISCORD_ALLOWED_USER_IDS"] ?? ""
+    )
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+    const dcAllowedUsers =
+      dcAllowedUsersEnv.length > 0
+        ? dcAllowedUsersEnv
+        : [...DISCORD_DEFAULT_ALLOWED_USERS]
+    const dcUsingDefaultAllowlist = dcAllowedUsersEnv.length === 0
+    const dcAllowedChannels = (
+      process.env["LUNA_DISCORD_ALLOWED_CHANNEL_IDS"] ?? ""
+    )
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+    if (dcToken !== undefined && dcToken.length > 0) {
+      if (dcAllowedUsers.length === 0) {
+        console.error(
+          `\u{1F6D1} discord channel: REFUSED to start — DISCORD_BOT_TOKEN is set ` +
+            `but LUNA_DISCORD_ALLOWED_USER_IDS is empty. An open Discord bot in ` +
+            `front of a local shell is not permitted. Set the allowlist in ` +
+            `~/.luna/.env (or the launchd unit) and restart.`,
+        )
+      } else {
+        yield* channels.registerAdapter(
+          makeDiscordAdapter({
+            id: "discord-main",
+            token: Redacted.make(dcToken),
+            allowedUsers: dcAllowedUsers,
+            ...(dcAllowedChannels.length > 0
+              ? { allowedChannels: dcAllowedChannels }
+              : {}),
+          }),
+        )
+        yield* channels.startAdapters().pipe(Effect.scoped)
+        console.log(`\u{1F4E8} discord channel: started (discord-main)`)
+        console.log(
+          `\u{1F512} discord allowlist: ${dcAllowedUsers.length} user(s) ` +
+            `(${dcUsingDefaultAllowlist ? "compiled default" : "LUNA_DISCORD_ALLOWED_USER_IDS"}), ` +
+            `${dcAllowedChannels.length === 0 ? "any" : String(dcAllowedChannels.length)} channel(s)`,
+        )
+      }
+    } else {
+      console.log(`\u{1F4E8} discord channel: idle — set DISCORD_BOT_TOKEN to enable`)
     }
 
     // Park forever so the server scope stays open.

@@ -1975,3 +1975,87 @@ describe("dedup ordering (markSeen deferred)", () => {
     expect(sendCount).toBe(1)
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* startAdapters idempotency                                                   */
+/* -------------------------------------------------------------------------- */
+
+describe("startAdapters idempotency", () => {
+  /**
+   * Wrap a stock fake adapter so start() calls are COUNTED. makeFakeAdapterClean
+   * only records a boolean, which cannot tell "started" from "started twice" —
+   * precisely the distinction under test. Wrapping (rather than hand-rolling a
+   * second ChannelAdapter) keeps deliver/stop/setMessageHandler on the real
+   * implementations, so this test cannot drift from the contract.
+   */
+  const wrapCounting = (base: ChannelAdapter) => {
+    const state = { starts: 0 }
+    const adapter: ChannelAdapter = {
+      ...base,
+      start() {
+        state.starts += 1
+        return base.start()
+      },
+    }
+    return { adapter, state }
+  }
+
+  it("a second startAdapters() does not re-fork an already-started adapter", async () => {
+    // chat-server registers telegram and discord in SEPARATE blocks, and each
+    // block calls startAdapters(). Without the started-id guard in the service,
+    // the second call re-forks every adapter the first call already started.
+    // For a real bot that is two gateway connections on one token: Telegram
+    // 409-flaps between competing long-polls, Discord drops the duplicate
+    // session. Both fail silently from the operator's point of view.
+    const { service: chatService } = makeStubChatService(new Map())
+    const a = wrapCounting(makeFakeAdapterClean("idem-a", "final-only").adapter)
+    const b = wrapCounting(makeFakeAdapterClean("idem-b", "final-only").adapter)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(a.adapter)
+          yield* svc.startAdapters() // telegram-style first call
+          yield* svc.registerAdapter(b.adapter)
+          yield* svc.startAdapters() // discord-style second call
+          // start() is forked into the service scope; give those fibers a turn
+          // so a double-fork would actually be observable rather than pending.
+          yield* Effect.sleep("50 millis")
+        }),
+        baseLayer(
+          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
+        ),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Before the guard, `a` started twice (registered before both calls).
+    expect(a.state.starts).toBe(1)
+    expect(b.state.starts).toBe(1)
+  })
+
+  it("an adapter registered after the first start still starts on the next call", async () => {
+    // The guard must skip only adapters ALREADY started. A late registration
+    // (exactly what the discord block is) must still get its start() forked,
+    // otherwise the fix would trade a double-start for a never-start.
+    const { service: chatService } = makeStubChatService(new Map())
+    const late = wrapCounting(makeFakeAdapterClean("idem-late", "final-only").adapter)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.startAdapters() // nothing registered yet
+          yield* svc.registerAdapter(late.adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("50 millis")
+        }),
+        baseLayer(
+          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
+        ),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(late.state.starts).toBe(1)
+  })
+})

@@ -132,6 +132,10 @@ export const ChannelServiceLayer: Layer.Layer<
     // Registered adapters (mutable, set before startAdapters)
     const adapters = yield* Ref.make<ReadonlyArray<ChannelAdapter>>([])
 
+    // Ids of adapters whose start() has already been forked, so a second
+    // startAdapters() call is a no-op for them. See startAdapters below.
+    const startedAdapterIds = yield* Ref.make<ReadonlySet<string>>(new Set())
+
     // Active delivery fibers: (threadId:adapterId) → Fiber
     // One fiber per (thread, adapter) pair. Idempotent — the second inbound
     // on the same thread+adapter reuses the existing fiber.
@@ -221,6 +225,12 @@ export const ChannelServiceLayer: Layer.Layer<
         // 4. Spawn a delivery fiber per (threadId, adapter) — idempotent
         const adapterList = yield* Ref.get(adapters)
         for (const adapter of adapterList) {
+          // Only the adapter owning this transport may deliver. Without this
+          // guard every registered adapter forks a delivery fiber for every
+          // turn, so a Discord turn is also pushed at Telegram (and vice
+          // versa) using a foreign id — silently failing on every message.
+          // The command-reply path above already filters this way.
+          if (adapter.transport !== msg.transport) continue
           const fiberKey = `${threadId}:${adapter.id}`
           const fibers = yield* Ref.get(deliveryFibers)
           if (!fibers.has(fiberKey)) {
@@ -275,6 +285,17 @@ export const ChannelServiceLayer: Layer.Layer<
       Effect.gen(function* () {
         const adapterList = yield* Ref.get(adapters)
         for (const adapter of adapterList) {
+          // Idempotent per adapter id. Boot registers adapters in SEPARATE
+          // blocks (telegram, then discord) and each block calls
+          // startAdapters(), so without this guard the second call re-forks
+          // every adapter the first one already started. Two gateway
+          // connections on one bot token means 409-flapping long-polls for
+          // Telegram and an immediately-closed duplicate session for Discord.
+          const started = yield* Ref.get(startedAdapterIds)
+          if (started.has(adapter.id)) continue
+          yield* Ref.update(startedAdapterIds, (ids) =>
+            new Set(ids).add(adapter.id),
+          )
           // Fork each adapter's start() into the service scope so adapter
           // connections tear down with the service. Errors are swallowed —
           // one adapter failure must not prevent others from running.
