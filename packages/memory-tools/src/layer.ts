@@ -43,7 +43,7 @@ import {
   MemoryRouterTag,
   SqliteVectorBackend,
 } from "@luna/memory"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type {
   AnyZodRawShape,
   McpSdkServerConfigWithInstance,
@@ -132,14 +132,14 @@ export const buildMemoryMcpServer = (
   toolOptions?: MakeMemoryToolsOptions,
 ): McpSdkServerConfigWithInstance => {
   // The tuple has heterogeneous shapes; widen to the SDK's catch-all
-  // shape for the registry. Safe because makeSdkMcpServer treats the
+  // shape for the registry. Safe because defineToolPackage treats the
   // schema field opaquely until the MCP server is actually serving.
   const tools = makeMemoryTools(
     router,
     undefined,
     toolOptions,
   ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
-  return makeSdkMcpServer("memory", "0.1.0", tools)
+  return defineToolPackage({ name: "memory", tools }).server
 }
 
 /**
