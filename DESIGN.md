@@ -1176,6 +1176,19 @@ the current drift.
 - **Per-backend tuning knobs** (TTL, eviction policy, encryption-at-rest)
   remain backend-private until a real caller demands a uniform surface.
 
+### 10.6 Backend selection is a build-time composition choice, not an env branch
+
+`packages/memory-tools/src/layer.ts` exposes `makeMemoryRouterLayer(backendLayer, backendTag)`.
+It resolves `backendTag` out of `backendLayer` and routes everything ("*") to it, exactly like §10.4's `MemoryLayer({ rules })`.
+This is the seam a different memory backend swaps in through at the router-composition level: pass a different Layer/Tag pair and the resulting `MemoryRouter` is built on that backend, since the router only ever sees the `MemoryBackend` interface (§10.2).
+`MemoryRouterLayer(dbPath)` is a one-line convenience wrapper over it that pins `SqliteVectorBackend` - the shape most callers want, including the chat-server boot path.
+`MemoryToolsLayer`, the Layer that actually boots the memory MCP server the agent's tools run against, still calls `MemoryRouterLayer(dbPath)` directly and exposes only a sqlite-shaped `dbPath` option in `MemoryToolsLayerOptions` - swapping the backend behind `memory_save`/`memory_search` today still means editing that function, not just passing a different Layer/Tag pair at a caller; threading a `routerLayer` option through `MemoryToolsLayerOptions` is S04 scope.
+
+There is deliberately no `LUNA_MEMORY_BACKEND`-style environment selector.
+`InMemoryBackend` implements `MemoryBackend` but not `MemoryVectorBackend` (no `search`), so `hasVectorSearch` (`packages/memory/src/backend.ts`) is false for it and every `MemoryRouter.search` call fails - with "no vector backend for namespace X" on the namespaced branch, or "no vector backends registered" on the fan-out branch.
+An env var that could select `in-memory` in a real deployment would be a bootable production config that silently kills `memory_search` - a config-time footgun, not a decoupling win.
+Backend choice stays a call-site decision because the on-disk format differs per backend; swapping backends is a code change (pick the Layer/Tag pair passed to `makeMemoryRouterLayer`), never a runtime flag.
+
 ---
 
 ## §11. Gateway Adapter Details (revisable)

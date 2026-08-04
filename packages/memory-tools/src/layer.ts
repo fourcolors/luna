@@ -24,7 +24,7 @@
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import {
   Clock,
   EmbedderService,
@@ -42,6 +42,7 @@ import {
   MemoryLayer,
   MemoryRouterTag,
   SqliteVectorBackend,
+  type MemoryBackend,
 } from "@luna/memory"
 import { defineToolPackage } from "@luna/tools"
 import type {
@@ -143,6 +144,35 @@ export const buildMemoryMcpServer = (
 }
 
 /**
+ * makeMemoryRouterLayer - generic MemoryRouter composition: resolves
+ * `backendTag` out of an already-built `backendLayer` and routes everything
+ * ("*") to it. This is the seam a different memory backend swaps in through
+ * (a different Tag + Layer pair) without touching the router or any caller
+ * above it. `MemoryRouterLayer` below is the sqlite convenience wrapper most
+ * callers want.
+ *
+ * `BackendApi` only needs to satisfy `MemoryBackend` (put/get/query/delete/
+ * exportAll/importAll) - vector search is an optional capability the router
+ * detects per-backend via `hasVectorSearch` (`@luna/memory`'s `backend.ts`),
+ * not a requirement of this seam.
+ */
+export const makeMemoryRouterLayer = <
+  BackendId,
+  BackendApi extends MemoryBackend,
+  E,
+  R,
+>(
+  backendLayer: Layer.Layer<BackendId, E, R>,
+  backendTag: Context.Tag<BackendId, BackendApi>,
+) =>
+  Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const backend = yield* backendTag
+      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
+    }),
+  ).pipe(Layer.provideMerge(backendLayer))
+
+/**
  * MemoryRouterLayer — provides MemoryRouter with a single rule routing
  * everything ("*") to a SqliteVectorBackend opened at `dbPath`.
  *
@@ -150,12 +180,7 @@ export const buildMemoryMcpServer = (
  *   → `MemoryLayer({ rules: [{ pattern: "*", backend }] })`.
  */
 export const MemoryRouterLayer = (dbPath: string) =>
-  Layer.unwrapEffect(
-    Effect.gen(function* () {
-      const backend = yield* SqliteVectorBackend
-      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
-    }),
-  ).pipe(Layer.provideMerge(SqliteVectorBackend.fromPath(dbPath)))
+  makeMemoryRouterLayer(SqliteVectorBackend.fromPath(dbPath), SqliteVectorBackend)
 
 /**
  * MemoryToolsConfig — emitted by MemoryToolsLayer, carries the SDK MCP
