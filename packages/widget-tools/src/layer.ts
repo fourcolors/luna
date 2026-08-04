@@ -7,7 +7,7 @@
  * bindSession/clearSession are no-ops kept for uniformity.
  */
 import { Effect, Layer } from "effect"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import { ArtifactStore } from "@luna/core"
 import type {
   AnyZodRawShape,
@@ -41,13 +41,21 @@ export class WidgetToolsService extends Effect.Tag("luna/WidgetToolsService")<
   WidgetToolsConfig
 >() {}
 
+/**
+ * Kept as a thin wrapper (not inlined into createWidgetToolsConfig) because
+ * seeds/harness-corpus/probes/010-widget-tools-list.sh imports it directly
+ * from "@luna/widget-tools" to build the real server in isolation and drive
+ * tools/list against it - the same external-consumer constraint that keeps
+ * buildSchedulerMcpServer/buildLocalShellMcpServer's signatures untouched in
+ * this same slice.
+ */
 export const buildWidgetToolsMcpServer = (
   tools: ReadonlyArray<unknown>,
 ): McpSdkServerConfigWithInstance => {
   const widened = tools as unknown as ReadonlyArray<
     SdkMcpToolDefinition<AnyZodRawShape>
   >
-  return makeSdkMcpServer("widget_tools", "0.1.0", widened)
+  return defineToolPackage({ name: "widget_tools", tools: widened }).server
 }
 
 /**
@@ -100,15 +108,13 @@ const createWidgetToolsConfig = (
           makeShowArtifactTool(store, summoner),
         ]
       : []),
-  ]
-  const server = buildWidgetToolsMcpServer(tools)
-  return {
-    serverName: "widget_tools",
-    server,
-    systemPromptAddendum: buildWidgetToolsAddendum(summoner),
-    bindSession: () => {},
-    clearSession: () => {},
-  }
+  ] as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
+  const config = defineToolPackage({
+    name: "widget_tools",
+    tools,
+    addendum: buildWidgetToolsAddendum(summoner),
+  })
+  return { ...config, serverName: "widget_tools" }
 }
 
 export const WidgetToolsLayer = (
