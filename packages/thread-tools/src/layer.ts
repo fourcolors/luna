@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type {
   AnyZodRawShape,
   McpSdkServerConfigWithInstance,
@@ -38,15 +38,6 @@ export const THREAD_TOOLS_SYSTEM_PROMPT_ADDENDUM =
   "missed fork is far cheaper than a wrong one. Do not call fork_thread from a " +
   "thread that was itself created by a fork."
 
-const buildServer = (
-  tools: ReturnType<typeof makeForkThreadTools>,
-): McpSdkServerConfigWithInstance => {
-  const widened = tools as unknown as ReadonlyArray<
-    SdkMcpToolDefinition<AnyZodRawShape>
-  >
-  return makeSdkMcpServer("thread_tools", "0.1.0", widened)
-}
-
 const createConfig = (
   store: ForkProposalStoreApi,
 ): ThreadToolsSessionConfig => {
@@ -73,16 +64,18 @@ const createConfig = (
     }
   }
 
-  const tools = makeForkThreadTools(store, currentThreadId, isForkChildThread)
-  const server = buildServer(tools)
+  const tools = makeForkThreadTools(
+    store,
+    currentThreadId,
+    isForkChildThread,
+  ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
+  const config = defineToolPackage({
+    name: "thread_tools",
+    tools,
+    addendum: THREAD_TOOLS_SYSTEM_PROMPT_ADDENDUM,
+  })
 
-  return {
-    serverName: "thread_tools",
-    server,
-    systemPromptAddendum: THREAD_TOOLS_SYSTEM_PROMPT_ADDENDUM,
-    bindSession,
-    clearSession,
-  }
+  return { ...config, serverName: "thread_tools", bindSession, clearSession }
 }
 
 /**
