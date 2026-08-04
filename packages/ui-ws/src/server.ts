@@ -1412,6 +1412,12 @@ export const startUIWebSocketServer = (
           Ref.update(activeSockets, (xs) => xs.filter((x) => x !== ws)),
         )
 
+        // ORDER IS PROTOCOL-CRITICAL: subscribe BEFORE sending hello. The
+        // eager, queue-backed subscribe means hello-receipt guarantees the
+        // client's event queue exists, so an event emitted after a client
+        // sees hello can never be dropped. Tests (and any well-behaved
+        // client) use hello as the "safe to emit" barrier; reordering these
+        // two steps reintroduces a silent connect-time event-loss race.
         const stream = yield* ui.subscribe
 
         send(ws, {
