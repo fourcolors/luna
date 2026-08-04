@@ -50,42 +50,30 @@ const makeFullLayer = (config?: Parameters<typeof UIService.makeLayer>[0]) => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
+/**
+ * Poll `cond` every 10ms until true or `deadlineMs` elapses. Deterministic
+ * replacement for fixed-sleep waits on asynchronous server-side steps: the
+ * caller's assertion still runs (and fails loudly) if the condition never
+ * becomes true within the deadline.
+ */
+const pollUntil = async (
+  cond: () => boolean,
+  deadlineMs: number,
+): Promise<void> => {
+  const deadline = Date.now() + deadlineMs
+  while (!cond() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
+/** Collect takeN frames. Delegates to collectFramesAfterHello (single collector). */
 const collectFrames = (
   url: string,
   headers: Record<string, string>,
   takeN: number,
   timeoutMs = 2000,
 ): Promise<ServerFrame[]> =>
-  new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, { headers })
-    const out: ServerFrame[] = []
-    const timer = setTimeout(() => {
-      ws.close()
-      reject(new Error(`timeout: got ${out.length}/${takeN} frames`))
-    }, timeoutMs)
-    ws.on("error", (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-    ws.on("unexpected-response", (_req, res) => {
-      clearTimeout(timer)
-      reject(new Error(`unexpected ${res.statusCode}`))
-    })
-    ws.on("message", (raw) => {
-      try {
-        const frame = JSON.parse(raw.toString()) as ServerFrame
-        out.push(frame)
-        if (out.length >= takeN) {
-          clearTimeout(timer)
-          ws.close()
-          resolve(out)
-        }
-      } catch (e) {
-        clearTimeout(timer)
-        reject(e)
-      }
-    })
-  })
+  collectFramesAfterHello(url, headers, takeN, timeoutMs).frames
 
 /**
  * Like collectFrames, but exposes the moment the `hello` frame arrives so a
@@ -522,8 +510,13 @@ describe("UIWebSocketServer", () => {
       3,
     )
     // exchangeFrames closes the socket once it has all requested frames.
-    // Give the server's close finalizer a moment to drain.
-    await new Promise((r) => setTimeout(r, 50))
+    // The server's close finalizer drains asynchronously - poll until it
+    // has (deadline-bounded), instead of guessing with a fixed sleep (the
+    // same race family the hello-gate fix in this file eliminates).
+    await pollUntil(
+      () => released.includes("thr_disco_a") && released.includes("thr_disco_b"),
+      2000,
+    )
     expect(released).toEqual(expect.arrayContaining(["thr_disco_a", "thr_disco_b"]))
   })
 
