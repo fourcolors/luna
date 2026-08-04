@@ -30,7 +30,7 @@ import {
 } from "@luna/memory"
 
 // extractionCases removed with the enrichment path (bench verdict: HOLD;
-// enrichment never shipped) — the eval loaded them but no code ever ran them.
+// enrichment never shipped) - the eval loaded them but no code ever ran them.
 interface Corpus {
   readonly version: string
   readonly records: ReadonlyArray<{
