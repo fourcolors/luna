@@ -771,6 +771,19 @@ are kept indefinitely as deprecated synonyms; new code never writes them.
 Legacy `kind="cron"` rows left in an existing DB are skipped by the ticker (no
 `cron` worker), so they stay inert rather than firing or erroring.
 
+**Unification considered and rejected (2026-08, luna-next Stack 2, slice 09).**
+Merging dream + wake into one `ReflectionJob` was evaluated and blocked on six
+deliberate divergences: cardinality (one nightly row vs one row per
+workspace), storage home (`luna.db` `dream_audit`/`dream_state` vs
+per-workspace `workspace.db` `wake_log`), watermark-ratchet vs stateless
+progress, `DreamOp[]` vs single-`WakeDigest` output, propagate-for-retry vs
+never-fail error policy, and this section's worker-kind split.
+Only the registration/dispatch wrapper is shared
+(`jobs/define-worker.ts`, slice 9a); each worker file keeps its cycle body,
+payload contract, and optional-service folding as plug points.
+Re-opening full unification requires Operator adjudication of all six
+divergences (including a rewrite of this section), not a refactor PR.
+
 #### 5.3.7 Non-goals (V1)
 
 - ~~Retries with backoff~~ - SHIPPED (job-ticker-oban-deadlines): recurring
