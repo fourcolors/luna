@@ -76,7 +76,7 @@ function aclGrantsShell(label: string): boolean {
   })
 }
 
-// panel_label(kind) (main.rs:1370): lowercase kind, dots -> dashes, 'panel-' prefix.
+// panel_label(kind) (src-tauri/src/windows.rs): lowercase kind, dots -> dashes, 'panel-' prefix.
 function panelLabel(kind: string): string {
   return "panel-" + kind.replace(/\./g, "-")
 }

@@ -3,7 +3,7 @@
  * widget windows (chat.html / panel.html / widget.html).
  *
  * Panels and screens are created NOT always-on-top (see spawn_panel_at /
- * open_artifact_widget in src-tauri/src/main.rs). This script re-floats them
+ * open_artifact_widget in src-tauri/src/windows.rs). This script re-floats them
  * ONLY when the user has explicitly enabled the setting — i.e. it treats an
  * UNSET key as "off". That is the deliberate difference from the orb window
  * (index.html), which reads the same key as default-ON and is therefore left
