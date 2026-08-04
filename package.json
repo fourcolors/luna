@@ -9,7 +9,7 @@
     "build": "bun run --filter '@luna/core' build && bun run --filter '@luna/ui-web' build && bun run --filter '@luna/ui-moon-tauri' build -- --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:bun": "bun test packages/core packages/observability-tools packages/memory packages/vault packages/channels/test/dedup-sqlite.test.ts packages/mcp-servers",
+    "test:bun": "bun test packages/core packages/observability-tools packages/memory packages/memory-tools packages/vault packages/channels/test/dedup-sqlite.test.ts packages/mcp-servers",
     "test:hostenv": "LUNA_TEST_HOST_ENV=1 vitest run test/deploy-scripts.test.ts test/guardian.test.ts test/update-server.test.ts",
     "test:all": "bun run test && bun run test:bun && bun run test:hostenv",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/agent-cli/tsconfig.json && tsc --noEmit -p apps/ui-web/tsconfig.json",
