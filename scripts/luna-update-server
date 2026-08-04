@@ -524,14 +524,15 @@ lockfile_hash() {
 
 # --- releases layout helpers (phase 4) ----------------------------------------
 # The mutation surface of the releases layout, all host-side unless noted:
-#   deployed_sha        — resolve current -> releases/<sha>, fail closed
-#   mirror_lock_blob    — bun.lock blob id at a sha, read from the mirror
-#   materialize_release — immutable build: clone --local + detach + install +
+#   deployed_sha        - resolve current -> releases/<sha>, fail closed
+#   mirror_lock_blob    - bun.lock blob id at a sha, read from the mirror
+#   materialize_release - immutable build: clone --local + detach + install +
 #                         build + .complete LAST (publish_engine idiom)
-#   flip_current        — previous := outgoing current, then staged ln + mv -fT
-#                         + cd -P re-resolve assert on BOTH mount sides
-#   repin_claude_releases — through-current claude pin with read-back
-#   prune_releases      — retention with the prune_engines protection discipline
+#   flip_current        - previous := outgoing current, then staged ln +
+#                         luna_atomic_replace + cd -P re-resolve assert on
+#                         BOTH mount sides
+#   repin_claude_releases - through-current claude pin with read-back
+#   prune_releases      - retention with the prune_engines protection discipline
 
 # deployed_sha — print the sha of the release current resolves to. Returns
 # non-zero (and prints nothing usable) when current is absent, dangling, does
@@ -703,13 +704,13 @@ materialize_release() {
     # damaged-but-extant tree is restored so current never dangles.
     aside="$RELEASES_DIR/.old.$sha.$$"
     rm -rf "$aside" 2>/dev/null || true
-    if ! mv -T "$rel" "$aside"; then
+    if ! luna_atomic_replace "$rel" "$aside"; then
       luna_warn "POSTCONDITION: could not move damaged release $sha aside — deployed tree left untouched"
       rm -rf "$build_dir" 2>/dev/null || true
       return 1
     fi
-    if ! mv -T "$build_dir" "$rel"; then
-      mv -T "$aside" "$rel" 2>/dev/null || true
+    if ! luna_atomic_replace "$build_dir" "$rel"; then
+      luna_atomic_replace "$aside" "$rel" 2>/dev/null || true
       luna_warn "POSTCONDITION: staged swap of release $sha did not land — damaged tree restored"
       rm -rf "$build_dir" 2>/dev/null || true
       return 1
@@ -754,18 +755,20 @@ flip_current() {
   if [[ -n "$outgoing_sha" && "$outgoing_sha" != "$sha" ]]; then
     linktmp="$PREVIOUS_LINK.tmp.$$"
     rm -f "$linktmp"
-    if ! ln -s "releases/$outgoing_sha" "$linktmp" || ! mv -fT "$linktmp" "$PREVIOUS_LINK"; then
+    if ! ln -s "releases/$outgoing_sha" "$linktmp" || ! luna_atomic_replace "$linktmp" "$PREVIOUS_LINK"; then
       rm -f "$linktmp" 2>/dev/null || true
       luna_warn "POSTCONDITION: could not restamp $PREVIOUS_LINK -> releases/$outgoing_sha"
       return 1
     fi
   fi
-  # Staged ln + mv -fT: -T is load-bearing (mv onto an existing symlink-to-dir
-  # would otherwise nest the new link INSIDE the old release — the engine-pin
-  # regression class). Then PROVE the flip landed by physical re-resolution.
+  # Staged ln + luna_atomic_replace: the helper's rename(2) semantics are
+  # load-bearing here (an `mv` onto an existing symlink-to-dir without GNU
+  # `-T` would otherwise nest the new link INSIDE the old release - the
+  # engine-pin regression class). Then PROVE the flip landed by physical
+  # re-resolution.
   linktmp="$CURRENT_LINK.tmp.$$"
   rm -f "$linktmp"
-  if ! ln -s "releases/$sha" "$linktmp" || ! mv -fT "$linktmp" "$CURRENT_LINK"; then
+  if ! ln -s "releases/$sha" "$linktmp" || ! luna_atomic_replace "$linktmp" "$CURRENT_LINK"; then
     rm -f "$linktmp" 2>/dev/null || true
     luna_warn "POSTCONDITION: could not publish $CURRENT_LINK -> releases/$sha"
     return 1
@@ -1595,7 +1598,7 @@ if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
   printf '4. build-in-release: %s install --frozen-lockfile + @luna/ui-web build INSIDE releases/<sha> (pre-flip; cp -a node_modules seed when bun.lock blob unchanged)\n' "$BUN_BIN"
   printf '5. re-pin LUNA_CLAUDE_CODE_EXECUTABLE through current (detected in the NEW release, written as the through-current spelling)\n'
   printf '6. session guard: refuse stop if live sessions on :%s (dead-server exception: unit inactive/failed permits)\n' "$READINESS_PORT"
-  printf '7. flip-inside-restart: stop %s -> settle %ss -> flip current -> releases/<sha> (previous := outgoing; staged ln + mv -fT + cd -P assert) -> start\n' "$SERVICE_NAME" "$RESTART_SETTLE_SECS"
+  printf '7. flip-inside-restart: stop %s -> settle %ss -> flip current -> releases/<sha> (previous := outgoing; staged ln + atomic rename + cd -P assert) -> start\n' "$SERVICE_NAME" "$RESTART_SETTLE_SECS"
   printf '8. verify: readiness probe is-active + NRestarts-stable + /healthz==200 + /readyz mode=normal + buildSha==<sha> (<=%ss)\n' "$READINESS_TIMEOUT"
   printf '9. on readiness OK: prune releases (keep %s; current/previous/journal-named protected) + seed dream/wake rows through current\n' "$RELEASES_KEEP"
   if [[ "$ROLLBACK" == true ]]; then

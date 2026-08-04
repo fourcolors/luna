@@ -1223,8 +1223,8 @@ exit 0
     expect(intervalAfter.ino).toBe(intervalBefore.ino)
   })
 
-  it("the pin-flip postcondition fails loudly when mv lies", () => {
-    const h = makeConvergedHarness("luna-guardian-mv-lie-")
+  it("the pin-flip postcondition fails loudly when the flip lies", () => {
+    const h = makeConvergedHarness("luna-guardian-flip-lie-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
 
@@ -1242,7 +1242,7 @@ exit 0
       env: {
         ...h.env,
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
-        LUNA_TEST_MV_LIE_GLOB: "*current-stable*",
+        LUNA_TEST_FLIP_LIE_GLOB: "*current-stable*",
       },
     })
     expect(result.status).not.toBe(0)
@@ -2204,6 +2204,45 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     expect(tick.status, tick.stdout + tick.stderr).toBe(0)
     expect(tick.stdout).toBe("")
     expect(tick.stderr).toBe("")
+  })
+
+  it("an install flip is hermetic under a minimal PATH allowing perl and ps", () => {
+    // The converged tick above takes install_guardian's converged fast-path
+    // and never calls luna_atomic_replace, so it proves nothing about the
+    // perl coupling that helper adds. Stale the pin (as the flip-lie test
+    // above does) so install must re-flip: this is the one path that
+    // actually reaches luna_atomic_replace, so pulling "perl" off the
+    // allowlist below must turn this test red. acquire_guardian_update_lock's
+    // /proc-less fingerprint fallback (scripts/luna-guardian) shells out to
+    // "ps", so it is allowlisted here too - deliberately kept OFF the tick
+    // canary above, whose allowlist stays the pre-existing minimal set.
+    const h = makeConvergedHarness("luna-guardian-install-flip-canary-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const restricted = makeRestrictedBin(h.temp, [
+      "bash", "env", "git", "sed", "awk", "grep", "date", "mkdir", "chmod",
+      "cat", "rm", "ln", "ls", "cut", "head", "sleep", "cp", "touch", "tr",
+      "dirname", "basename", "mktemp", "stat", "id", "mv", "perl", "ps",
+    ])
+    const restrictedEnv = {
+      ...h.env,
+      LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      PATH: `${join(h.temp, "bin")}:${restricted}`,
+    }
+    const realSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    const stale = join(pins, "engine@" + "e".repeat(40))
+    mkdirSync(stale, { recursive: true })
+    writeFileSync(join(stale, ".complete"), "")
+    rmSync(join(pins, "current-stable"))
+    symlinkSync(stale, join(pins, "current-stable"))
+    const flip = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: restrictedEnv,
+    })
+    expect(flip.status, flip.stdout + flip.stderr).toBe(0)
+    const resolved = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    expect(resolved.endsWith(`engine@${realSha}`)).toBe(true)
   })
 
 })

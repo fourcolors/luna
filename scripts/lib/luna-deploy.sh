@@ -386,6 +386,46 @@ luna_lc() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# luna_atomic_replace <src> <dst> - atomically replace <dst> with <src> via the
+# rename(2) syscall (Perl's `rename` builtin is a thin wrapper around it, no
+# shell-out). One code path on every host: no GNU-vs-BSD `mv -T` probe, no
+# cached capability state. Deliberately NOT bun-based: the guardian's
+# engine-pin publish (luna-guardian's install_guardian) must still work when
+# the bun runtime is exactly what is broken.
+#
+# Hard dependency on perl being in PATH: acceptable because perl-base is
+# Essential on Debian/Ubuntu (present on every target host with no extra
+# install) and /usr/bin/perl ships on macOS; the guard below turns a missing
+# perl into a loud, self-describing failure instead of a silent no-op.
+#
+# rename(2) case table, MEASURED on macOS (BSD rename semantics; POSIX
+# mandates cases 1-2 and 3-4 identically, so this holds on Linux too):
+#   CASE 1 symlink -> an EXISTING symlink : exit 0, dst repointed atomically.
+#     Every RE-flip of an already-installed profile lands here (luna-guardian's
+#     engine-pin flip; luna-update-server's current/previous flips).
+#   CASE 2 directory -> a VACATED name    : exit 0, plain rename semantics.
+#     luna-update-server's staged-swap: the damaged tree is moved aside and
+#     the name vacated BEFORE the rebuilt tree is swapped in.
+#   CASE 3 directory -> a NON-EMPTY dir   : exit 1, refused loudly, dst intact.
+#     The safety property this helper has and `mv -fh` lacks: `mv -fh` exits 0
+#     and silently NESTS src inside a surviving dst, turning a loud pre-flip
+#     failure into a corrupt release tree that still satisfies
+#     release_artifacts_ok.
+#   CASE 4 directory -> a symlink-to-dir  : exit 1 (ENOTDIR), loud.
+#     Unreachable at every current call site - each one either flips a staged
+#     symlink onto an existing symlink (case 1) or moves a directory into a
+#     name vacated first (case 2). A future caller that does reach it fails
+#     loudly rather than silently, which is the property that matters.
+#   CASE 5 symlink -> an ABSENT name      : exit 0, dst created (same plain
+#     rename semantics as case 2, just with a symlink src). The FIRST
+#     install_guardian for a profile lands here: $PIN_BASE/current-<profile>
+#     does not exist until that first flip creates it.
+luna_atomic_replace() {
+  command -v perl >/dev/null 2>&1 ||
+    { luna_warn "luna_atomic_replace: perl not found in PATH"; return 127; }
+  perl -e 'rename($ARGV[0], $ARGV[1]) or do { warn "luna_atomic_replace: $ARGV[0] -> $ARGV[1]: $!\n"; exit 1 }' -- "$1" "$2"
+}
+
 luna_find_bun() {
   if [[ -n "${LUNA_TEST_BUN_PATH:-}" ]]; then
     printf '%s\n' "$LUNA_TEST_BUN_PATH"

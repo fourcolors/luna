@@ -1129,16 +1129,17 @@ install_guardian() {
   publish_engine "$root" "$sha" "$pin"
   [[ -f "$pin/.complete" ]] ||
     luna_die "POSTCONDITION: published engine $pin is missing its .complete marker"
-  # -T is load-bearing: without it, `mv` onto an existing symlink-to-directory
-  # dereferences the destination and drops the new link *inside* the old engine
-  # instead of replacing it, so the pin never advances. And because exactly that
-  # silent no-op once lied for a week, the flip must PROVE its effect: re-resolve
-  # the link and require it to land on the just-published pin (both sides
-  # resolved physically, so a symlinked PIN_BASE cannot false-alarm).
+  # luna_atomic_replace is load-bearing: an `mv` onto an existing
+  # symlink-to-directory without GNU `-T` dereferences the destination and
+  # drops the new link *inside* the old engine instead of replacing it, so the
+  # pin never advances. And because exactly that silent no-op once lied for a
+  # week, the flip must PROVE its effect: re-resolve the link and require it
+  # to land on the just-published pin (both sides resolved physically, so a
+  # symlinked PIN_BASE cannot false-alarm).
   linktmp="$current.tmp.$$"
   rm -f "$linktmp"
   ln -s "$pin" "$linktmp" || luna_die "cannot stage engine link $linktmp"
-  mv -fT "$linktmp" "$current" || luna_die "cannot publish engine link $current"
+  luna_atomic_replace "$linktmp" "$current" || luna_die "cannot publish engine link $current"
   resolved="$(cd -P "$current" 2>/dev/null && pwd || true)"
   pin_phys="$(cd -P "$pin" 2>/dev/null && pwd || true)"
   [[ -n "$resolved" && "$resolved" == "$pin_phys" ]] ||
