@@ -1065,7 +1065,13 @@ prune_engines() {
   for dir in $(ls -dt "$PIN_BASE"/engine@* 2>/dev/null || true); do
     index=$((index + 1))
     if (( index <= keep )); then continue; fi
-    if [[ "$protected" == *" $dir "* ]]; then continue; fi
+    # Compare physically resolved paths on both sides of the membership check -
+    # $dir is glob-expanded under $PIN_BASE unresolved, while $protected holds
+    # cd -P targets, so a symlinked PIN_BASE (e.g. macOS /var/folders ->
+    # /private/var/folders) would otherwise never match and prune could delete
+    # an engine a live pin still needs.
+    target="$(cd -P "$dir" 2>/dev/null && pwd || true)"
+    if [[ -n "$target" && "$protected" == *" $target "* ]]; then continue; fi
     pruned_any=true
     rm -rf "$dir" || luna_warn "prune: could not remove $dir"
   done
