@@ -1554,8 +1554,106 @@ exec "${realGit}" "$@"
     expect(sys).toContain("daemon-reload")
     expect(sys).toContain("stop luna-chat-server.service")
     expect(sys).toContain("start luna-chat-server.service")
+    // reset-failed is a refused-start recovery step, never a happy-path
+    // ritual: calling it ahead of a start that would have succeeded on its
+    // own would clear the unit's start-limit counter before OnFailure could
+    // ever fire, silencing the pager. A start that succeeds on the first try
+    // must never touch reset-failed.
+    const lines = sys.trim().split("\n")
+    expect(lines.filter((l) => l === "reset-failed luna-chat-server.service").length).toBe(0)
+    expect(lines.filter((l) => l === "start luna-chat-server.service").length).toBe(1)
     // No transaction journal was created.
     expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  // Fixture for the systemd start-limiter (scripts/luna-server-install:257-258,
+  // StartLimitIntervalSec=1800/StartLimitBurst=10): a unit that just burned
+  // through a burst of rapid failed starts is latched `failed` and refuses any
+  // further `start` for the rest of the interval UNTIL `reset-failed` clears
+  // the counter. Models the real systemd "start request repeated too quickly"
+  // lockout without needing an actual crash-looping process. is-failed and
+  // is-active both key off the same marker: is-failed drives sup_start's
+  // refused-start recovery check, is-active drives the session guard and the
+  // readiness probe.
+  const makeLockedUnitStubBin = (
+    temp: string,
+    opts: {
+      readonly repo: string
+      readonly prevSha: string
+      readonly targetSha: string
+      readonly readyAtTarget: boolean
+      readonly readyAtPrev: boolean
+    },
+  ) => {
+    const { bin, systemctlLog, curlLog } = makeStubBin(temp, opts)
+    const lockedMarker = join(temp, "start-limit-locked")
+    writeFileSync(lockedMarker, "1\n")
+    const recoveredMarker = join(temp, "recovered.marker")
+    writeFileSync(
+      join(bin, "systemctl"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${systemctlLog}"
+case "$1" in
+  reset-failed) rm -f "${lockedMarker}"; exit 0 ;;
+  start)
+    if [[ -f "${lockedMarker}" ]]; then
+      echo "Job for luna-chat-server.service failed because start of the service was attempted too often." >&2
+      exit 1
+    fi
+    : > "${recoveredMarker}"
+    exit 0
+    ;;
+  is-failed)
+    if [[ -f "${lockedMarker}" ]]; then printf 'failed\\n'; exit 0; fi
+    printf 'active\\n'; exit 1
+    ;;
+  is-active)
+    if [[ -f "${lockedMarker}" ]]; then printf 'failed\\n'; else printf 'active\\n'; fi
+    exit 0
+    ;;
+  show) printf '0\\n'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+    return { bin, systemctlLog, curlLog, recoveredMarker }
+  }
+
+  it("start-limit lockout: a unit latched `failed` by 10 rapid failed starts recovers via a single --restart-only", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog, recoveredMarker } = makeLockedUnitStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    // No manual step: one --restart-only call recovers the locked unit.
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stdout).toContain("healthy")
+    const sys = readLog(systemctlLog)
+    const lines = sys.trim().split("\n")
+    // reset-failed only runs AFTER the refused start (the latch that fires
+    // OnFailure has already happened by then) and the retry that follows it
+    // is what actually recovers the unit.
+    const startIdxs = lines.reduce<number[]>(
+      (acc, l, i) => (l === "start luna-chat-server.service" ? [...acc, i] : acc),
+      [],
+    )
+    const resetIdx = lines.indexOf("reset-failed luna-chat-server.service")
+    expect(startIdxs.length).toBe(2)
+    expect(resetIdx).toBeGreaterThan(startIdxs[0])
+    // The retry genuinely started the unit - the stub only writes this marker
+    // on a start that succeeds after the latch is cleared.
+    expect(existsSync(recoveredMarker)).toBe(true)
+    expect(r.stderr).toContain("start-limit latched failed")
+    expect(resetIdx).toBeLessThan(startIdxs[1])
   })
 
   it("--restart-only: readiness failure exits 1 with NO rollback", () => {

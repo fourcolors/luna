@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2046  # unquoted $(_systemctl_user_flag) is an intentional optional flag (8 sites); real fix is an array - known-red follow-up
+# shellcheck disable=SC2046  # unquoted $(_systemctl_user_flag) is an intentional optional flag (10 sites); real fix is an array - known-red follow-up
 # Update an installed Luna server to a target git ref, with auto-rollback.
 #
 # This is the "update the backend over time" half of the install/update plan.
@@ -1358,10 +1358,19 @@ sup_stop() {
 }
 
 # sup_start — load/start the supervised service.
-# systemd: systemctl start (picks up the unit from SERVICE_DIR, already reloaded).
+# systemd: start; only on refusal, reset-failed once and retry, and only if
+#   the unit is latched `failed` (StartLimitIntervalSec=1800 / StartLimitBurst=10,
+#   scripts/luna-server-install). reset-failed must never precede a start that
+#   would have succeeded on its own: the failed-state entry it would pre-empt
+#   is what fires OnFailure=luna-alert-* (scripts/luna-server-install).
 # launchd: bootstrap gui/$UID <plist> (reads the plist file at LAUNCHD_PLIST).
+#   launchd has no start-limit-counter concept, so there is nothing to reset.
 sup_start() {
   if [[ "$SUPERVISOR" == "systemd" ]]; then
+    run_target systemctl $(_systemctl_user_flag) start "$SERVICE_NAME" && return 0
+    run_target_capture systemctl $(_systemctl_user_flag) is-failed "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+    luna_warn "sup_start: $SERVICE_NAME is start-limit latched failed; clearing with reset-failed and retrying once"
+    run_target systemctl $(_systemctl_user_flag) reset-failed "$SERVICE_NAME" || true
     run_target systemctl $(_systemctl_user_flag) start "$SERVICE_NAME"
   else
     luna_run launchctl bootstrap "gui/$UID" "$LAUNCHD_PLIST"
