@@ -6,8 +6,9 @@
  *   - mirror-only fetches (git reset --hard provably absent from the arm)
  *   - materialize_release: clone --local + build-in-release + .complete LAST,
  *     stale-partial sweep, reuse gate, cp -a node_modules seeding
- *   - flip_current: relative links, previous restamp, staged ln + mv -fT,
- *     cd -P postconditions, flip strictly INSIDE the guarded restart window
+ *   - flip_current: relative links, previous restamp, staged ln + atomic
+ *     rename, cd -P postconditions, flip strictly INSIDE the guarded restart
+ *     window
  *   - session-guard invariants: defer leaves current untouched (fresh and
  *     mid-transaction)
  *   - rollback matrix: flip-back only (no git surgery, no rebuild), CRITICAL
@@ -33,19 +34,8 @@ const ENGINE = join(repoRoot, "scripts/luna-update-server")
 const AUTODEPLOY = join(repoRoot, "scripts/luna-autodeploy")
 const SERVER_INSTALL = join(repoRoot, "scripts/luna-server-install")
 const REAL_GIT = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
-const REAL_MV = spawnSync("bash", ["-c", "command -v mv"], { encoding: "utf8" }).stdout.trim()
-
-// Does the host mv support GNU -T (rename-onto, never descend into a dir the
-// destination symlink points at)? GNU coreutils yes; BSD/macOS mv no. Probed
-// once so the mv shim below can exec the real mv untouched on GNU hosts (CI
-// fidelity) and emulate -fT/-T only where the host lacks them (dev Macs).
-const MV_HAS_T = (() => {
-  const d = mkdtempSync(join(tmpdir(), "luna-mv-probe-"))
-  writeFileSync(join(d, "a"), "")
-  const ok = spawnSync(REAL_MV, ["-fT", join(d, "a"), join(d, "b")]).status === 0
-  rmSync(d, { recursive: true, force: true })
-  return ok
-})()
+const REAL_PERL = spawnSync("bash", ["-c", "command -v perl"], { encoding: "utf8" }).stdout.trim()
+if (!REAL_PERL) throw new Error("releases-layout.test.ts: perl not found on host")
 
 const tempDirs: string[] = []
 const makeTempDir = () => {
@@ -227,35 +217,23 @@ exec "${REAL_GIT}" "$@"
 `,
   )
 
-  // mv shim, always on PATH, two seams in one script:
-  //   1. Sabotage (env-keyed, harmless when STUB_MV_SABOTAGE_TARGET unset): an
-  //      mv -fT whose STAGED LINK points at $STUB_MV_SABOTAGE_TARGET silently
-  //      "succeeds" without moving — the rigged non-landing mv the flip
-  //      postcondition must catch.
-  //   2. Host-keyed -T emulation (baked in only when the host mv lacks GNU -T,
-  //      i.e. BSD/macOS): rename-onto semantics that refuse loudly rather than
-  //      ever descending into a directory, so the staged-swap and flip paths
-  //      are hermetic on any dev machine. GNU hosts exec the real mv untouched.
+  // perl shim: sabotage seam for luna_atomic_replace, the ONLY thing the flip
+  // and materialize's staged swap now go through. Env-keyed, harmless when
+  // STUB_FLIP_SABOTAGE_TARGET is unset: a rename(2) call whose staged-link
+  // SOURCE points at $STUB_FLIP_SABOTAGE_TARGET silently "succeeds" without
+  // renaming - the rigged non-landing flip the postcondition must catch.
   writeFileSync(
-    join(bin, "mv"),
+    join(bin, "perl"),
     `#!/usr/bin/env bash
-if [[ -n "\${STUB_MV_SABOTAGE_TARGET:-}" && "$1" == "-fT" ]]; then
-  tgt="$(readlink "$2" 2>/dev/null || true)"
-  if [[ "$tgt" == "\$STUB_MV_SABOTAGE_TARGET" ]]; then
-    rm -f "$2"
+if [[ -n "\${STUB_FLIP_SABOTAGE_TARGET:-}" && "$*" == *'rename('* ]]; then
+  src="\${@: -2:1}"
+  tgt="$(readlink "$src" 2>/dev/null || true)"
+  if [[ "$tgt" == "\$STUB_FLIP_SABOTAGE_TARGET" ]]; then
+    rm -f "$src"
     exit 0
   fi
 fi
-${MV_HAS_T ? "" : `if [[ "$1" == "-fT" || "$1" == "-T" ]]; then
-  src="$2"; dst="$3"
-  [[ "$1" == "-fT" ]] && rm -f "$dst" 2>/dev/null
-  if [[ -e "$dst" || -L "$dst" ]]; then
-    printf 'mv shim: refusing %s onto existing %s\\n' "$1" "$dst" >&2
-    exit 1
-  fi
-  exec "${REAL_MV}" -f "$src" "$dst"
-fi
-`}exec "${REAL_MV}" "$@"
+exec "${REAL_PERL}" "$@"
 `,
   )
 
@@ -279,7 +257,7 @@ exit 0
     )
   }
 
-  for (const f of ["systemctl", "curl", "bun", "git", "mv", ...(opts.withIncus ? ["incus"] : [])]) {
+  for (const f of ["systemctl", "curl", "bun", "git", "perl", ...(opts.withIncus ? ["incus"] : [])]) {
     spawnSync("chmod", ["+x", join(bin, f)])
   }
   return { bin, systemctlLog, orderLog, curlLog, bunLog, gitLog, incusLog }
@@ -903,14 +881,14 @@ describe("releases layout — rollback", () => {
     expect(currentOf(fx.deploy)).toBe(`releases/${fx.targetSha}`)
   })
 
-  it("(d) rigged non-landing mv: flip postcondition returns 1 (not die), routes to rollback flip-back, old release serving", () => {
+  it("(d) rigged non-landing flip: flip postcondition returns 1 (not die), routes to rollback flip-back, old release serving", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
     const r = runReleases(fx, stubs, temp, [], {
-      STUB_MV_SABOTAGE_TARGET: `releases/${fx.targetSha}`,
+      STUB_FLIP_SABOTAGE_TARGET: `releases/${fx.targetSha}`,
     })
     expect(r.status, r.stdout + r.stderr).toBe(1)
     expect(r.stderr).toContain("POSTCONDITION: current flip did not land")

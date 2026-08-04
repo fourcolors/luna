@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -2003,6 +2003,150 @@ exit 0
       const written = readFileSync(envFile, "utf8")
       expect(written).not.toContain("FOO=bar")
       expect(written).toContain("BAZ=qux")
+    })
+  })
+
+  describe("luna_atomic_replace (portable atomic flip via perl rename, finding: GNU-only mv -T)", () => {
+    const LIB = join(repoRoot, "scripts/lib/luna-deploy.sh")
+
+    // Source the lib in a fresh bash and call luna_atomic_replace directly -
+    // one code path on every host, so this is the same call GNU and BSD/macOS
+    // hosts take. No `mv` shim is needed: the helper never shells out to mv.
+    const runReplace = (src: string, dst: string) =>
+      spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_atomic_replace "$1" "$2"; echo "rc=$?"`, "_", src, dst],
+        { cwd: repoRoot, encoding: "utf8" },
+      )
+
+    it("case 1: symlink onto an EXISTING symlink - exit 0, dst repointed atomically", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      mkdirSync(join(temp, "realB"))
+      const src = join(temp, "linkSrc")
+      const dst = join(temp, "linkDst")
+      spawnSync("ln", ["-s", "realA", src])
+      spawnSync("ln", ["-s", "realB", dst])
+
+      const r = runReplace(src, dst)
+      expect(r.stdout).toContain("rc=0")
+      expect(readlinkSync(dst)).toBe("realA")
+      expect(existsSync(src)).toBe(false)
+    })
+
+    it("case 2: directory onto a VACATED name - exit 0, plain rename", () => {
+      const temp = makeTempDir()
+      const src = join(temp, "srcDir")
+      const dst = join(temp, "dstDir")
+      mkdirSync(src)
+      writeFileSync(join(src, "marker.txt"), "marker")
+
+      const r = runReplace(src, dst)
+      expect(r.stdout).toContain("rc=0")
+      expect(readFileSync(join(dst, "marker.txt"), "utf8")).toBe("marker")
+      expect(existsSync(src)).toBe(false)
+    })
+
+    it("case 3: directory onto a NON-EMPTY directory - exit 1, refused loudly, dst intact", () => {
+      const temp = makeTempDir()
+      const src = join(temp, "srcDir")
+      const dst = join(temp, "dstDir")
+      mkdirSync(src)
+      mkdirSync(dst)
+      writeFileSync(join(src, "a.txt"), "srcmarker")
+      writeFileSync(join(dst, "b.txt"), "dstmarker")
+
+      const r = runReplace(src, dst)
+      // An exact boundary, not a substring - "rc=1" also matches "rc=127"
+      // (the missing-perl guard's exit code), which would let this pass for
+      // the wrong reason.
+      expect(r.stdout).toMatch(/rc=1$/m)
+      // The warn the helper restores over the old mv -fT: the destination and
+      // the errno both land on stderr instead of being discarded like the mv
+      // implementation threw $! away.
+      expect(r.stderr).toContain("luna_atomic_replace:")
+      expect(r.stderr).toMatch(/luna_atomic_replace: .+ -> .+: .+/)
+      // Destination state intact - never silently nested (the mv -fh regression
+      // class), and the source is untouched since the rename never landed.
+      expect(readFileSync(join(dst, "b.txt"), "utf8")).toBe("dstmarker")
+      expect(existsSync(join(dst, "a.txt"))).toBe(false)
+      expect(readFileSync(join(src, "a.txt"), "utf8")).toBe("srcmarker")
+    })
+
+    it("case 4: directory onto a symlink-to-directory - exit 1 ENOTDIR, loud, dst intact", () => {
+      const temp = makeTempDir()
+      const src = join(temp, "srcDir")
+      const realTarget = join(temp, "realTarget")
+      const dst = join(temp, "dstLink")
+      mkdirSync(src)
+      mkdirSync(realTarget)
+      writeFileSync(join(src, "a.txt"), "srcmarker")
+      spawnSync("ln", ["-s", "realTarget", dst])
+
+      const r = runReplace(src, dst)
+      // An exact boundary, not a substring - "rc=1" also matches "rc=127".
+      expect(r.stdout).toMatch(/rc=1$/m)
+      expect(r.stderr).toMatch(/luna_atomic_replace: .+ -> .+: .+/)
+      // Destination symlink unchanged, source untouched - unreachable at every
+      // real call site, but must fail loudly rather than silently if ever hit.
+      expect(readlinkSync(dst)).toBe("realTarget")
+      expect(readFileSync(join(src, "a.txt"), "utf8")).toBe("srcmarker")
+    })
+
+    it("case 5: symlink onto an ABSENT name - exit 0, dst created (first install_guardian for a profile)", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      const src = join(temp, "linkSrc")
+      const dst = join(temp, "linkDst")
+      spawnSync("ln", ["-s", "realA", src])
+
+      const r = runReplace(src, dst)
+      expect(r.stdout).toContain("rc=0")
+      expect(readlinkSync(dst)).toBe("realA")
+      expect(existsSync(src)).toBe(false)
+    })
+
+    it("guard A: a dash-prefixed src name still flips (finding: `perl -e` without `--` parses a leading-dash argv as its OWN switches, prints usage, and exits 0 with NO rename)", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      mkdirSync(join(temp, "realB"))
+      // `./-dashlink` only works around `ln`'s own flag parsing during setup;
+      // the file's actual name on disk is the bare `-dashlink`, and that bare
+      // name is what gets passed to luna_atomic_replace below.
+      spawnSync("ln", ["-s", "realA", "./-dashlink"], { cwd: temp })
+      spawnSync("ln", ["-s", "realB", "linkDst"], { cwd: temp })
+
+      const r = spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_atomic_replace "$1" "$2"; echo "rc=$?"`, "_", "-dashlink", "linkDst"],
+        { cwd: temp, encoding: "utf8" },
+      )
+      expect(r.stdout).toContain("rc=0")
+      expect(readlinkSync(join(temp, "linkDst"))).toBe("realA")
+      expect(existsSync(join(temp, "-dashlink"))).toBe(false)
+    })
+
+    it("guard B: perl missing from PATH - exit 127, loud, no rename attempted", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      const src = join(temp, "linkSrc")
+      const dst = join(temp, "linkDst")
+      spawnSync("ln", ["-s", "realA", src])
+
+      // A PATH with only bash on it, the way a perl-less deploy host would
+      // present - no perl symlink is added, so `command -v perl` in the guard
+      // genuinely fails.
+      const restricted = makeRestrictedBin(temp, ["bash"])
+      const r = spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_atomic_replace "$1" "$2"; echo "rc=$?"`, "_", src, dst],
+        { cwd: repoRoot, encoding: "utf8", env: { PATH: restricted } },
+      )
+      expect(r.stdout).toContain("rc=127")
+      expect(r.stderr).toContain("luna_atomic_replace: perl not found in PATH")
+      // No rename attempted: the symlink is untouched.
+      expect(readlinkSync(src)).toBe("realA")
+      expect(existsSync(dst)).toBe(false)
     })
   })
 
