@@ -13,8 +13,8 @@
   "dependencies": {
     "@luna/chat-service": "workspace:*",
     "@luna/core": "workspace:*",
-    "@luna/protocol-descriptor": "workspace:*",
     "@luna/server-registry": "workspace:*",
+    "@luna/tools": "workspace:*",
     "effect": "^3.21.0",
     "ws": "^8.18.0"
   },

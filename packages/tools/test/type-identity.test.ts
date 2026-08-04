@@ -1,13 +1,13 @@
 /**
  * Type-identity test: ServerDescriptor from @luna/ui-ws (via protocol.ts) and
  * from @luna/ui-shared/core (via wire.ts) must be mutually assignable because
- * both re-export from @luna/protocol-descriptor.
+ * both re-export from @luna/tools.
  *
  * If this file compiles, type identity is confirmed at the TypeScript level.
  * No runtime assertions needed — the test is purely structural.
  *
  * NOTE: The mutual-assignability check below is near-trivially true because both
- * re-export the SAME definition from @luna/protocol-descriptor (F2 in the design —
+ * re-export the SAME definition from @luna/tools (F2 in the design —
  * single canonical source). Structural drift between the two export paths is
  * therefore impossible at the type level; this test primarily asserts that both
  * re-export PATHS resolve without error, not that the shapes differ and stay in sync.
@@ -16,7 +16,7 @@
 import { describe, it } from "vitest"
 import type { ServerDescriptor as DescriptorFromUiWs } from "@luna/ui-ws"
 import type { ServerDescriptor as DescriptorFromUiShared } from "@luna/ui-shared/core"
-import type { ServerDescriptor } from "@luna/protocol-descriptor"
+import type { ServerDescriptor } from "@luna/tools/protocol-descriptor"
 
 describe("ServerDescriptor type identity", () => {
   it("is mutually assignable between ui-ws and ui-shared/core", () => {

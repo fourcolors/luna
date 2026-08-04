@@ -27,9 +27,9 @@ import type { Artifact } from "@luna/chat-service"
 // exact by construction).
 export type { ArtifactKind }
 
-import type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor } from "@luna/protocol-descriptor"
+import type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor } from "@luna/tools/protocol-descriptor"
 export type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor }
-import { UI_WS_PROTOCOL_VERSION } from "@luna/protocol-descriptor"
+import { UI_WS_PROTOCOL_VERSION } from "@luna/tools/protocol-descriptor"
 export { UI_WS_PROTOCOL_VERSION }
 
 /* -------------------------------------------------------------------------- */
