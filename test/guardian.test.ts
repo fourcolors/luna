@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -267,8 +267,9 @@ describe("luna-guardian", () => {
     // installed_engine_sha() reads it to decide whether the release is healthy.
     const engines = readdirSync(pins).filter((name) => name.startsWith("engine@"))
     expect(engines).toHaveLength(1)
-    const resolved = spawnSync("readlink", ["-f", join(pins, "current-stable")], { encoding: "utf8" })
-    expect(resolved.stdout.trim()).toBe(join(pins, engines[0]))
+    // `pins` can sit under a symlink (macOS mktemp lands in /var/folders ->
+    // /private/var), so both sides of this comparison must be physically resolved.
+    expect(realpathSync(join(pins, "current-stable"))).toBe(realpathSync(join(pins, engines[0])))
 
     // A dereferenced `mv` would have dropped the temp link inside the engine.
     const leaked = readdirSync(join(pins, engines[0])).filter((name) => name.startsWith("current-"))
