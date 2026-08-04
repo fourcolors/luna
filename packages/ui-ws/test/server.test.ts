@@ -87,6 +87,70 @@ const collectFrames = (
     })
   })
 
+/**
+ * Like collectFrames, but exposes the moment the `hello` frame arrives so a
+ * test can sequence an obsEmit strictly AFTER the subscription provably
+ * exists. The server takes `ui.subscribe` (eager, queue-backed — see
+ * UIService's subscribeEvents contract) BEFORE it sends `hello`, so
+ * hello-receipt guarantees any later emit reaches this client. Replaces the
+ * fixed-sleep pattern that flaked in CI ("timeout: got 1/2 frames") when the
+ * connection took longer than the sleep.
+ */
+const collectFramesAfterHello = (
+  url: string,
+  headers: Record<string, string>,
+  takeN: number,
+  timeoutMs = 2000,
+): { hello: Promise<void>; frames: Promise<ServerFrame[]> } => {
+  let helloResolve!: () => void
+  let helloReject!: (e: Error) => void
+  const hello = new Promise<void>((res, rej) => {
+    helloResolve = res
+    helloReject = rej
+  })
+  const frames = new Promise<ServerFrame[]>((resolve, reject) => {
+    const ws = new WebSocket(url, { headers })
+    const out: ServerFrame[] = []
+    const fail = (err: Error) => {
+      ws.close()
+      helloReject(err)
+      reject(err)
+    }
+    const timer = setTimeout(
+      () => fail(new Error(`timeout: got ${out.length}/${takeN} frames`)),
+      timeoutMs,
+    )
+    ws.on("error", (err) => {
+      clearTimeout(timer)
+      fail(err as Error)
+    })
+    ws.on("unexpected-response", (_req, res) => {
+      clearTimeout(timer)
+      fail(new Error(`unexpected ${res.statusCode}`))
+    })
+    ws.on("message", (raw) => {
+      try {
+        const frame = JSON.parse(raw.toString()) as ServerFrame
+        out.push(frame)
+        if (out.length === 1) helloResolve()
+        if (out.length >= takeN) {
+          clearTimeout(timer)
+          ws.close()
+          resolve(out)
+        }
+      } catch (e) {
+        clearTimeout(timer)
+        fail(e as Error)
+      }
+    })
+  })
+  // A test that fails before awaiting `frames` must not surface a second,
+  // unhandled rejection from the pre-resolved pair.
+  hello.catch(() => {})
+  frames.catch(() => {})
+  return { hello, frames }
+}
+
 const exchangeFrames = (
   url: string,
   headers: Record<string, string>,
@@ -525,14 +589,15 @@ describe("UIWebSocketServer", () => {
   it("forwards a whitelisted event after subscribe", async () => {
     rig = await startRig()
     const url = rig.url
-    // Subscribe first; emit after a short delay.
-    const collectorP = collectFrames(
+    // Subscribe first; emit only once the hello frame proves the
+    // subscription exists (deterministic — no timing assumption).
+    const collector = collectFramesAfterHello(
       url,
       { authorization: `Bearer ${TOKEN}` },
       2,
       3000,
     )
-    await new Promise((r) => setTimeout(r, 100))
+    await collector.hello
     await rig.obsEmit({
       kind: "SessionStart",
       ts: new Date().toISOString(),
@@ -541,7 +606,7 @@ describe("UIWebSocketServer", () => {
       model: "x",
       optionsDigest: "y",
     })
-    const frames = await collectorP
+    const frames = await collector.frames
     expect(frames.map((f) => f.type)).toEqual(["hello", "event"])
     if (frames[1]?.type === "event") {
       expect(frames[1].event.kind).toBe("SessionStart")
@@ -587,15 +652,15 @@ describe("UIWebSocketServer", () => {
   for (const kind of DEFAULT_UI_KINDS) {
     it(`round-trips ${kind} events`, async () => {
       rig = await startRig()
-      const collectorP = collectFrames(
+      const collector = collectFramesAfterHello(
         rig.url,
         { authorization: `Bearer ${TOKEN}` },
         2,
         3000,
       )
-      await new Promise((r) => setTimeout(r, 100))
+      await collector.hello
       await rig.obsEmit(minimalEventFor(kind))
-      const frames = await collectorP
+      const frames = await collector.frames
       expect(frames[1]?.type).toBe("event")
       if (frames[1]?.type === "event") {
         expect(frames[1].event.kind).toBe(kind)
@@ -606,9 +671,9 @@ describe("UIWebSocketServer", () => {
   it("fan-out: two clients each receive the same event", async () => {
     rig = await startRig()
     const headers = { authorization: `Bearer ${TOKEN}` }
-    const aP = collectFrames(rig.url, headers, 2, 3000)
-    const bP = collectFrames(rig.url, headers, 2, 3000)
-    await new Promise((r) => setTimeout(r, 150))
+    const aC = collectFramesAfterHello(rig.url, headers, 2, 3000)
+    const bC = collectFramesAfterHello(rig.url, headers, 2, 3000)
+    await Promise.all([aC.hello, bC.hello])
     await rig.obsEmit({
       kind: "SessionStart",
       ts: new Date().toISOString(),
@@ -616,7 +681,7 @@ describe("UIWebSocketServer", () => {
       sessionId: "s2",
       model: "m",
     })
-    const [a, b] = await Promise.all([aP, bP])
+    const [a, b] = await Promise.all([aC.frames, bC.frames])
     expect(a[1]?.type).toBe("event")
     expect(b[1]?.type).toBe("event")
   })
