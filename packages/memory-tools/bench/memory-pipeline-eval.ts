@@ -29,7 +29,8 @@ import {
   type MemoryScopeQuery,
 } from "@luna/memory"
 
-type CandidateKind = "durable-fact" | "belief-evidence"
+// extractionCases removed with the enrichment path (bench verdict: HOLD;
+// enrichment never shipped) - the eval loaded them but no code ever ran them.
 interface Corpus {
   readonly version: string
   readonly records: ReadonlyArray<{
@@ -43,11 +44,6 @@ interface Corpus {
     readonly scope: MemoryScopeQuery
     readonly relevantIds: ReadonlyArray<string>
     readonly forbiddenIds: ReadonlyArray<string>
-  }>
-  readonly extractionCases: ReadonlyArray<{
-    readonly id: string
-    readonly userText: string
-    readonly expectedKinds: ReadonlyArray<CandidateKind>
   }>
 }
 
