@@ -18,8 +18,8 @@ cp -r seeds/agent-memory/* ~/.luna/agent-memory/
 ## What's here
 
 - **`luna-main/MEMORY.md`** — Luna's main-thread observational memory.
-  Loaded by `apps/ui-web/scripts/agent-memory-loader.ts` and injected into
-  the system prompt by `apps/ui-web/scripts/chat-server.ts`, capped at the
+  Loaded by `apps/server/src/agent-memory-loader.ts` and injected into
+  the system prompt by `apps/server/src/chat-server.ts`, capped at the
   first 200 lines / 25 KB (matching the subagent-memory skill's harness
   cliff). Apply the discipline at
   `~/.claude/skills/subagent-memory/SKILL.md` — priority emojis,

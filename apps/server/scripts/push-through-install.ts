@@ -76,10 +76,10 @@
  * halts), so even when enabled it does nothing until work is seeded.
  *
  * Usage:
- *   bun run apps/ui-web/scripts/push-through-install.ts            # install, disabled
- *   bun run apps/ui-web/scripts/push-through-install.ts --enable   # install + arm
- *   bun run apps/ui-web/scripts/push-through-install.ts --force    # replace existing
- *   bun run apps/ui-web/scripts/push-through-install.ts --uninstall
+ *   bun run apps/server/scripts/push-through-install.ts            # install, disabled
+ *   bun run apps/server/scripts/push-through-install.ts --enable   # install + arm
+ *   bun run apps/server/scripts/push-through-install.ts --force    # replace existing
+ *   bun run apps/server/scripts/push-through-install.ts --uninstall
  *
  * Env honoured:
  *   LUNA_DB_PATH / LUNA_HOME          — same resolution as chat-server.ts

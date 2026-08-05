@@ -10,14 +10,19 @@
  * action. Without it a workspace simply reads as a skip (no error).
  *
  * Usage:
- *   bun run apps/ui-web/scripts/enable-wake.ts --path /root/.luna/workspace/<slug>
- *   bun run apps/ui-web/scripts/enable-wake.ts --db /abs/path/to/workspace.db
+ *   bun run apps/server/scripts/enable-wake.ts --path /root/.luna/workspace/<slug>
+ *   bun run apps/server/scripts/enable-wake.ts --db /abs/path/to/workspace.db
  *
  * After running:
  *   1. Seed at least one row in `goals` (the reasoner needs something to orient
  *      around) — otherwise wake just records `no-op`.
  *   2. Ensure the workspace's `kind:'wake'` job row in luna.db is enabled.
  */
+// TODO(#444): `import ... from "bun:sqlite"` has no type declarations under
+// the root tsconfig; this file is outside apps/*/src/** on purpose so it
+// doesn't regress the tsc gate. Fix by switching to the require("bun:sqlite")
+// pattern used elsewhere in apps/server/src; remove this marker only with
+// that fix.
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import { resolve as resolvePath } from "node:path"

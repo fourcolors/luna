@@ -37,11 +37,11 @@
  * job rows (the legacy cron layers were removed).
  *
  * Usage:
- *   bun run apps/ui-web/scripts/dream-wake-install.ts
- *   bun run apps/ui-web/scripts/dream-wake-install.ts --force        # replace existing rows
- *   bun run apps/ui-web/scripts/dream-wake-install.ts --uninstall    # remove dream + all wake rows
- *   bun run apps/ui-web/scripts/dream-wake-install.ts --dream-only   # skip wake rows
- *   bun run apps/ui-web/scripts/dream-wake-install.ts --wake-only    # skip dream row
+ *   bun run apps/server/scripts/dream-wake-install.ts
+ *   bun run apps/server/scripts/dream-wake-install.ts --force        # replace existing rows
+ *   bun run apps/server/scripts/dream-wake-install.ts --uninstall    # remove dream + all wake rows
+ *   bun run apps/server/scripts/dream-wake-install.ts --dream-only   # skip wake rows
+ *   bun run apps/server/scripts/dream-wake-install.ts --wake-only    # skip dream row
  *
  * Env honoured:
  *   LUNA_DB_PATH / LUNA_HOME    — same resolution as chat-server.ts

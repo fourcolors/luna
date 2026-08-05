@@ -7,7 +7,7 @@ rebuilds and fresh installs.
 ## Installing
 
 ```bash
-bun run apps/ui-web/scripts/install-claude-skills.ts
+bun run apps/server/scripts/install-claude-skills.ts
 ```
 
 The installer mirrors `seeds/skills/` → `~/.claude/skills/` without

@@ -14,7 +14,7 @@
  *   before.json (optional copy), finalize.json
  *
  * Usage:
- *   bun run apps/ui-web/scripts/luna-doctor-workflow.ts diagnose --state-dir /path
+ *   bun run apps/server/scripts/luna-doctor-workflow.ts diagnose --state-dir /path
  */
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { join } from "node:path"

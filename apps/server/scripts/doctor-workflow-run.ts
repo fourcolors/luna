@@ -3,9 +3,9 @@
  * doctor-workflow-run — enqueue a one-shot doctor workflow for a patient.
  *
  * Usage:
- *   bun run apps/ui-web/scripts/doctor-workflow-run.ts --patient job:<id>
- *   bun run apps/ui-web/scripts/doctor-workflow-run.ts --patient job:sched-xxx --attempt 1
- *   bun run apps/ui-web/scripts/doctor-workflow-run.ts --patient job:sched-xxx --summary "max turns"
+ *   bun run apps/server/scripts/doctor-workflow-run.ts --patient job:<id>
+ *   bun run apps/server/scripts/doctor-workflow-run.ts --patient job:sched-xxx --attempt 1
+ *   bun run apps/server/scripts/doctor-workflow-run.ts --patient job:sched-xxx --summary "max turns"
  *
  * Creates a durable one-shot kind=workflow row (empty schedule) due now.
  * The JobTicker will claim it on the next tick. Force with the server running.
