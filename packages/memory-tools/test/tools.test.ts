@@ -45,8 +45,12 @@ const hasBunSqlite = (() => {
 })()
 
 interface ToolCallResult {
-  readonly content?: ReadonlyArray<{ type: string; text: string }>
-  readonly isError?: boolean
+  // `text?:` (not `text:`) because content blocks are a union (text/image/
+  // audio/resource) and only the text variant carries `text` - matches the
+  // real SDK CallToolResult shape closely enough for the `as { text: string }`
+  // cast below to stay valid on the text blocks these tests actually parse.
+  readonly content?: ReadonlyArray<{ type: string; text?: string }>
+  readonly isError?: boolean | undefined
 }
 
 function parseTextResult<T>(r: ToolCallResult): T {
@@ -55,6 +59,23 @@ function parseTextResult<T>(r: ToolCallResult): T {
   expect(first?.type).toBe("text")
   return JSON.parse((first as { text: string }).text) as T
 }
+
+// InferShape marks kind/tags/limit/namespace as required-but-possibly-
+// undefined keys under exactOptionalPropertyTypes, so every handler call
+// must pass them explicitly even when omitted by the caller here.
+const saveArgs = (a: {
+  text: string
+  kind?: string
+  tags?: Array<string>
+  namespace?: string
+}) => ({ text: a.text, kind: a.kind, tags: a.tags, namespace: a.namespace })
+
+const searchArgs = (a: {
+  query: string
+  kind?: string
+  limit?: number
+  namespace?: string
+}) => ({ query: a.query, kind: a.kind, limit: a.limit, namespace: a.namespace })
 
 describe.skipIf(!hasBunSqlite)("memory tools", () => {
   // Build the in-memory sqlite-vector router fresh per test so save/delete
@@ -98,10 +119,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
 
     const saved = parseTextResult<{ id: string }>(
       await saveTool.handler(
-        {
-          text: "Quarterly review happened last Tuesday",
-          kind: "episodic",
-        },
+        saveArgs({ text: "Quarterly review happened last Tuesday", kind: "episodic" }),
         undefined,
       ),
     )
@@ -115,7 +133,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
       }>
     >(
       await searchTool.handler(
-        { query: "quarterly review", kind: "episodic" },
+        searchArgs({ query: "quarterly review", kind: "episodic" }),
         undefined,
       ),
     )
@@ -133,7 +151,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
 
     const saved = parseTextResult<{ id: string }>(
       await saveTool.handler(
-        { text: "Operator likes terse answers" },
+        saveArgs({ text: "Operator likes terse answers" }),
         undefined,
       ),
     )
@@ -142,7 +160,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
       ReadonlyArray<{ id: string; kind: string }>
     >(
       await searchTool.handler(
-        { query: "terse answers" },
+        searchArgs({ query: "terse answers" }),
         undefined,
       ),
     )
@@ -156,7 +174,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
 
     const saved = parseTextResult<{ id: string }>(
       await saveTool.handler(
-        { text: "Operator prefers cats over dogs" },
+        saveArgs({ text: "Operator prefers cats over dogs" }),
         undefined,
       ),
     )
@@ -166,7 +184,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
       ReadonlyArray<{ id: string; text: string; score: number }>
     >(
       await searchTool.handler(
-        { query: "cats" },
+        searchArgs({ query: "cats" }),
         undefined,
       ),
     )
@@ -180,7 +198,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
 
     const saved = parseTextResult<{ id: string }>(
       await saveTool.handler(
-        { text: "ephemeral memory to be deleted" },
+        saveArgs({ text: "ephemeral memory to be deleted" }),
         undefined,
       ),
     )
@@ -193,7 +211,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
     // Search should no longer return the deleted id.
     const hits = parseTextResult<ReadonlyArray<{ id: string }>>(
       await searchTool.handler(
-        { query: "ephemeral memory" },
+        searchArgs({ query: "ephemeral memory" }),
         undefined,
       ),
     )
@@ -247,7 +265,7 @@ describe("memory tools search mode", () => {
       }>
     >(
       await searchTool.handler(
-        { query: "hybrid", limit: 3, namespace: "diagnostics" },
+        searchArgs({ query: "hybrid", limit: 3, namespace: "diagnostics" }),
         undefined,
       ),
     )
@@ -311,7 +329,7 @@ describe("memory tools search mode", () => {
       ReadonlyArray<{ id: string; kind: string }>
     >(
       await searchTool.handler(
-        { query: "anything", limit: 3, kind: "episodic" },
+        searchArgs({ query: "anything", limit: 3, kind: "episodic" }),
         undefined,
       ),
     )
@@ -618,7 +636,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     }
     const [, searchTool] = makeMemoryTools(router, undefined, { reranker })
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
-      await searchTool.handler({ query: "espresso" }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "espresso" }),
+        undefined,
+      ),
     )
     expect(called).toBe(false)
     expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
@@ -634,7 +655,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     const reranker = fakeRerankerOf({ good: 92, junk: 10 })
     const [, searchTool] = makeMemoryTools(router, undefined, { reranker })
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
-      await searchTool.handler({ query: "favorite coffee" }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "favorite coffee" }),
+        undefined,
+      ),
     )
     expect(hits.map((h) => h.id)).toEqual(["good"])
     expect(hits[0]!.llmScore).toBe(92)
@@ -658,7 +682,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     const [, searchTool] = makeMemoryTools(router, undefined, { reranker: spy })
     const hits = parseTextResult<ReadonlyArray<{ id: string }>>(
       // limit 6 > cap 3: the cap must WIN (latency bound), not be raised to limit.
-      await searchTool.handler({ query: "coffee", limit: 6 }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "coffee", limit: 6 }),
+        undefined,
+      ),
     )
     // Exactly the cap reaches the reranker, despite limit=6 and 6 records
     // seeded (so the retrieved pool genuinely exceeded the cap of 3).
@@ -681,7 +708,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     const reranker = fakeRerankerOf({ "scored-low": 5 })
     const [, searchTool] = makeMemoryTools(router, undefined, { reranker })
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
-      await searchTool.handler({ query: "record", limit: 10 }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "record", limit: 10 }),
+        undefined,
+      ),
     )
     expect(hits.map((h) => h.id)).toEqual(["unscored"])
     expect(hits[0]!.llmScore).toBeUndefined()
@@ -695,7 +725,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     process.env["LUNA_MEMORY_RERANK"] = "1"
     const [, searchTool] = makeMemoryTools(router, undefined, { reranker: failingReranker() })
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
-      await searchTool.handler({ query: "espresso" }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "espresso" }),
+        undefined,
+      ),
     )
     // Falls back to plain hybrid search - still returns results, none reranked.
     expect(hits.length).toBeGreaterThan(0)
@@ -713,7 +746,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     }
     const [, searchTool] = makeMemoryTools(router, undefined, { reranker: dyingReranker })
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
-      await searchTool.handler({ query: "espresso" }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "espresso" }),
+        undefined,
+      ),
     )
     // A defect must degrade exactly like a typed RerankError - memory_search
     // never fails because reranking failed.
@@ -726,7 +762,10 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     process.env["LUNA_MEMORY_RERANK"] = "1"
     const [, searchTool] = makeMemoryTools(router) // no options -> no reranker
     const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
-      await searchTool.handler({ query: "espresso" }, undefined),
+      await searchTool.handler(
+        searchArgs({ query: "espresso" }),
+        undefined,
+      ),
     )
     expect(hits.length).toBeGreaterThan(0)
     expect(hits.every((h) => h.llmScore === undefined)).toBe(true)

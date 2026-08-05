@@ -6,16 +6,35 @@ import {
   type RerankScore,
 } from "@luna/core"
 import {
-  InMemoryBackend,
   makeRecord,
   makeRouter,
   OPERATOR_MEMORY_SCOPE,
+  type MemoryVectorBackend,
 } from "@luna/memory"
 import { packRecallContext, recallForTurn } from "../src/turn-memory.js"
 import {
   checkEmbeddingEvalPreflight,
   scoreRetrievalEval,
 } from "../src/eval.js"
+
+const notUsed = (): never => {
+  throw new Error("not used")
+}
+
+// Only `search` is exercised by these fakes; the rest of MemoryBackend is
+// never called.
+const makeFakeVectorBackend = (
+  search: MemoryVectorBackend["search"],
+): MemoryVectorBackend => ({
+  backendName: "fake",
+  put: notUsed,
+  get: notUsed,
+  query: notUsed,
+  delete: notUsed,
+  exportAll: notUsed,
+  importAll: notUsed,
+  search,
+})
 
 describe("turn memory", () => {
   it("packs bounded untrusted context and escapes delimiter injection", () => {
@@ -73,11 +92,9 @@ describe("turn memory", () => {
 
   it("keeps scoped backend over-fetch bounded while retaining pack headroom", async () => {
     let backendTopK: number | undefined
-    const backend = Object.assign(new InMemoryBackend(), {
-      search: (args: { readonly topK?: number }) => {
-        backendTopK = args.topK
-        return Stream.empty
-      },
+    const backend = makeFakeVectorBackend((args) => {
+      backendTopK = args.topK
+      return Stream.empty
     })
     const router = makeRouter([{ pattern: "*", backend }])
 
@@ -104,36 +121,33 @@ describe("turn memory", () => {
       delete process.env["LUNA_RERANK_THRESHOLD"]
     })
 
-    // InMemoryBackend has no real search() implementation (put/get/query
-    // only - see packages/memory/src/backends/in-memory.ts) - same reason
-    // the "keeps scoped backend over-fetch bounded" test above overrides
-    // `search` directly rather than relying on it. Mirror that pattern here
-    // with two fixed records so the FAKE reranker below has something to
-    // reorder/gate.
+    // No shipped backend has a scriptable search() for this scenario, so this
+    // fakes a whole MemoryVectorBackend the same way the "keeps scoped
+    // backend over-fetch bounded" test above does, seeded with two fixed
+    // records so the FAKE reranker below has something to reorder/gate.
     const seededRouter = () => {
-      const backend = Object.assign(new InMemoryBackend(), {
-        search: () =>
-          Stream.fromIterable([
-            {
-              record: makeRecord({
-                id: "good",
-                namespace: "notes",
-                kind: "semantic",
-                content: { text: "operator's favorite coffee is espresso" },
-              }),
-              score: 0.9,
-            },
-            {
-              record: makeRecord({
-                id: "junk",
-                namespace: "notes",
-                kind: "semantic",
-                content: { text: "the weather in Lisbon was sunny yesterday" },
-              }),
-              score: 0.5,
-            },
-          ]),
-      })
+      const backend = makeFakeVectorBackend(() =>
+        Stream.fromIterable([
+          {
+            record: makeRecord({
+              id: "good",
+              namespace: "notes",
+              kind: "semantic",
+              content: { text: "operator's favorite coffee is espresso" },
+            }),
+            score: 0.9,
+          },
+          {
+            record: makeRecord({
+              id: "junk",
+              namespace: "notes",
+              kind: "semantic",
+              content: { text: "the weather in Lisbon was sunny yesterday" },
+            }),
+            score: 0.5,
+          },
+        ]),
+      )
       return makeRouter([{ pattern: "*", backend }])
     }
 

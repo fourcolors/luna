@@ -2,9 +2,10 @@
  * setup-mode-boot.smoke.ts — gate-logic + layer-build verification for Task 3
  * (boot-time credential readiness gate).
  *
- * chat-server.ts has NO tsc gate (root tsconfig excludes apps/ui-web/**;
- * the file is in scripts/, Bun-transpiled), so a broken import or wrong
- * argument shape in the live boot crashes silently. This smoke:
+ * `chat-server.ts` (apps/server/src, S09) has a tsc gate, but tsc cannot see
+ * whether a Layer.provide composition actually resolves at runtime - a broken
+ * import or wrong argument shape in the live boot still crashes silently with
+ * no type error. This smoke:
  *
  *   1. Tests the three decision paths of the credential gate (pure functions,
  *      no network / disk required).
@@ -22,8 +23,8 @@
  * (UI_WS_TOKEN / LUNA_UI_WS_TOKEN must be ≥16 chars — required by startUIWebSocketServer)
  * Exit 0 = PASS, non-zero = FAIL.
  */
-import { decideMode, probeCredentialReadiness } from "../credential-readiness.js"
-import { buildSetupServerLayer } from "../chat-server.js"
+import { decideMode, probeCredentialReadiness } from "../../../server/src/credential-readiness.js"
+import { buildSetupServerLayer } from "../../../server/src/chat-server.js"
 import { Effect, ManagedRuntime } from "effect"
 
 // ── Part 1: credential gate decision paths ────────────────────────────────

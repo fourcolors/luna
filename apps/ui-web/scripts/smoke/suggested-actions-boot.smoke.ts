@@ -1,8 +1,9 @@
 /**
  * suggested-actions-boot.smoke.ts — P9 boot-risk verification.
  *
- * chat-server.ts is EXCLUDED from tsc (no type gate) and wires the Suggested
- * Actions graph by hand: SuggestedActionsStore (SQLite) → SuggestedActions →
+ * chat-server.ts (apps/server/src, S09) now has a tsc gate, but tsc cannot see
+ * whether the Suggested Actions graph it wires by hand actually resolves at
+ * runtime: SuggestedActionsStore (SQLite) → SuggestedActions →
  * AcceptHandler (+ forked completion observer) + SuggestedActionToolsLayer, with
  * the same memoized SuggestedActions instance shared across all three. This
  * smoke builds that exact sub-graph under a real ManagedRuntime (so bun:sqlite +

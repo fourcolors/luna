@@ -1,12 +1,13 @@
 /**
  * survey-boot.smoke.ts — boot-risk verification for D3 (Survey resolution).
  *
- * chat-server.ts has NO tsc gate (root tsconfig excludes apps/ui-web/**;
- * the file is in scripts/, Bun-transpiled), so a missing service in the
- * Survey layer graph crashes the WHOLE boot. This smoke PROVES buildSurveyLayer
- * builds in a ManagedRuntime by importing the REAL exported factory — NOT a
- * hand-copied mirror. A typo / missing-import / mis-named layer in the actual
- * edited code makes THIS smoke FAIL.
+ * `chat-server.ts` (apps/server/src, S09) has a tsc gate, but tsc cannot see
+ * whether a Layer.provide composition actually resolves at runtime - a missing
+ * service in the Survey layer graph still crashes the WHOLE boot with no type
+ * error. This smoke PROVES buildSurveyLayer builds in a ManagedRuntime by
+ * importing the REAL exported factory - NOT a hand-copied mirror. A typo /
+ * missing-import / mis-named layer in the actual edited code makes THIS smoke
+ * FAIL.
  *
  * Node-runnable doubles:
  *   - AlignmentStore.Memory (no bun:sqlite / LunaSqliteBootstrap needed)
@@ -25,7 +26,7 @@ import { AlignmentStore, BeliefWriter, Clock, Survey } from "@luna/core"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { Effect, Layer, ManagedRuntime, Ref, Stream } from "effect"
-import { buildSurveyLayer } from "../chat-server.js"
+import { buildSurveyLayer } from "../../../server/src/chat-server.js"
 
 // ---------------------------------------------------------------------------
 // Node-runnable doubles

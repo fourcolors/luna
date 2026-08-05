@@ -2,9 +2,10 @@
  * job-ticker-boot.smoke.ts — boot-risk verification for the Phase 12b
  * JobTicker layer wiring (DESIGN.md §5.3).
  *
- * `chat-server.ts` has no tsc gate (root tsconfig excludes apps/ui-web/**) so a
- * missing service or wrong Layer.provide composition crashes the whole boot.
- * This smoke proves the JobTicker layer builds with a ManagedRuntime using the
+ * `chat-server.ts` (apps/server/src, S09) has a tsc gate, but tsc cannot see
+ * whether a Layer.provide composition actually resolves at runtime - a missing
+ * service still crashes the whole boot with no type error. This smoke proves
+ * the real ManagedRuntime build succeeds: the JobTicker layer builds using the
  * REAL exported `JobTickerLayer` + a real in-memory `JobsStoreService.Memory` +
  * a real `makeWorkerRegistry({})` — the exact composition shape used by
  * chat-server.ts, where the JobTicker is the only scheduler and is always wired.
