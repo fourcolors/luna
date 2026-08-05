@@ -44,7 +44,12 @@ export const resolveDoctorCliPath = (override?: string): string => {
   // root (mirror + releases/) where no source exists, while the unit's
   // WorkingDirectory is the `current` release tree. State paths anchor to
   // LUNA_REPO_ROOT; code paths anchor to the tree actually running.
-  return join(process.cwd(), "apps/ui-web/scripts/luna-doctor-workflow.ts")
+  // NO dual-path fallback needed here (unlike the shell-side sd-notify/launcher
+  // probes): packages/core ships in the SAME release commit as the daemon it
+  // configures, so an old release always pairs this default with an old
+  // checkout (pre-move path) and a new release always pairs it with a new
+  // checkout (post-move path) - the two can never skew against each other.
+  return join(process.cwd(), "apps/server/scripts/luna-doctor-workflow.ts")
 }
 
 /** True when the doctor CLI entrypoint is on disk (gate before pausing patients). */

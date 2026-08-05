@@ -49,7 +49,7 @@ import {
   readKeychainToken,
   writeKeychainSecret,
 } from "@luna/core"
-import { resolveRuntimePaths } from "./runtime-paths.js"
+import { resolveRuntimePaths } from "../src/runtime-paths.js"
 
 export interface VaultKeychainMigrationPlanInput {
   readonly envNames: ReadonlyArray<string>

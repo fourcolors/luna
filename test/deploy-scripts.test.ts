@@ -1220,11 +1220,43 @@ deploy.autoUpdate    = true
     })
   })
 
-  it("does NOT emit the version-skew warning when the checkout has sd-notify.ts", () => {
+  it("does NOT emit the version-skew warning when the checkout has the pre-move apps/ui-web/scripts/sd-notify.ts", () => {
     const temp = makeTempDir()
     // Provision the S1 marker file so the guard has nothing to warn about.
     mkdirSync(join(temp, "repo", "apps", "ui-web", "scripts"), { recursive: true })
     writeFileSync(join(temp, "repo", "apps", "ui-web", "scripts", "sd-notify.ts"), "// present")
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain("sd-notify.ts")
+  })
+
+  it("does NOT emit the version-skew warning when the checkout has the post-move apps/server/src/sd-notify.ts", () => {
+    const temp = makeTempDir()
+    // Provision the S1 marker file at its POST-S08 location - the guard must
+    // accept this tree shape too, not just the pre-move apps/ui-web/scripts
+    // one, or every post-S08 install would emit a false start-timeout warning.
+    mkdirSync(join(temp, "repo", "apps", "server", "src"), { recursive: true })
+    writeFileSync(join(temp, "repo", "apps", "server", "src", "sd-notify.ts"), "// present")
 
     const result = runScript("scripts/luna-server-install", [
       "--dry-run",

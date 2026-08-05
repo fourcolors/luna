@@ -327,7 +327,7 @@ export interface JobTickerOptions {
     readonly maxHealAttempts?: number
     /**
      * Absolute path to `luna-doctor-workflow.ts`. Defaults to
-     * `join(cwd, 'apps/ui-web/scripts/luna-doctor-workflow.ts')` or
+     * `join(cwd, 'apps/server/scripts/luna-doctor-workflow.ts')` or
      * `LUNA_DOCTOR_CLI`.
      */
     readonly cliPath?: string

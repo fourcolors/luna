@@ -103,9 +103,11 @@ bun run test test/update-server.test.ts test/deploy-scripts.test.ts \
   apps/agent-cli/test/doctor.test.ts apps/agent-cli/test/pair.test.ts packages/ui-ws/
 # → ~168 pass. ui-ws includes frame-set.protocol.test.ts (the version-skew snapshot test).
 
-# Boot smokes (the deploy-risk gate — chat-server has no tsc gate; these prove the real layer graph builds):
-LUNA_UI_WS_TOKEN=smoke-test-token-ok bun run apps/ui-web/scripts/smoke/setup-mode-boot.smoke.ts
-# also: belief-injection-boot, job-ticker-boot, survey-boot  → each prints "PASS" / "OK"
+# Boot smoke: proves @luna/core's JobTicker layer graph builds.
+# It never imports chat-server.ts, so it is not a chat-server deploy gate.
+bun run apps/ui-web/scripts/smoke/job-ticker-boot.smoke.ts
+# The other smokes are retired by the server extraction: chat-server.ts moved
+# to apps/server/src, severing their imports; S09 removes those three files.
 ```
 Version-skew snapshot test — prove it catches a frame rename (the bug that started this):
 temporarily rename a frame `type` literal in `packages/ui-ws/src/protocol.ts` (e.g. `"subscribe"` →

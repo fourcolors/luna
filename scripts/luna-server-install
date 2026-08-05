@@ -238,7 +238,7 @@ render_service() {
   # Liveness ladder (L1+L2), motivated by the Sol autopsy:
   # - Type=notify + WatchdogSec: the app sends READY=1 once the WS server
   #   listens (both normal and setup mode) and health-GATED WATCHDOG=1 beats
-  #   every ~30s (apps/ui-web/scripts/sd-notify.ts). A wedged-but-alive
+  #   every ~30s (apps/server/src/sd-notify.ts). A wedged-but-alive
   #   process stops beating and pid 1 restarts it — the failure class bare
   #   Restart= can never see. NotifyAccess=all because Bun has no
   #   unix-datagram API, so beats arrive from a spawned systemd-notify child.
@@ -336,6 +336,20 @@ write_alert_service() {
   render_alert_service > "$ALERT_SERVICE_FILE"
 }
 
+# TODO(#440): drop this probe once every profile's `previous` release
+# resolves to a post-S08 release (apps/server/scripts/seed-default-account.ts
+# present in BOTH current and previous - same condition
+# scripts/luna-chat-server-entry.ts's probe retires on). Fix or remove:
+# delete the apps/ui-web/scripts fallback below and this comment once the
+# condition holds; S26 carries the removal step.
+seed_default_account_script() {
+  if [[ -f "$REPO_DIR/apps/server/scripts/seed-default-account.ts" ]]; then
+    printf '%s' "apps/server/scripts/seed-default-account.ts"
+  else
+    printf '%s' "apps/ui-web/scripts/seed-default-account.ts"
+  fi
+}
+
 luna_info "Installing Luna server profile: $PROFILE"
 printf 'Repo: %s\n' "$REPO_DIR"
 printf 'State: %s\n' "$LUNA_HOME"
@@ -417,11 +431,12 @@ luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"
 # (which seeds claude-code:login). The token is passed via the subprocess ENV
 # (not argv) and only the POINTER ref is ever written/printed. Non-fatal.
 if [[ -n "$CLAUDE_TOKEN" && "$DRY_RUN" == false ]]; then
+  SEED_DEFAULT_ACCOUNT_SCRIPT="$(seed_default_account_script)"
   if ( cd "$REPO_DIR" && CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" LUNA_DB_PATH="$LUNA_HOME/luna.db" \
-        "$BUN_BIN" run apps/ui-web/scripts/seed-default-account.ts "$LUNA_HOME/luna.db" ); then
+        "$BUN_BIN" run "$SEED_DEFAULT_ACCOUNT_SCRIPT" "$LUNA_HOME/luna.db" ); then
     :
   else
-    luna_warn "default-account seed failed — server may start in setup-mode; re-run apps/ui-web/scripts/seed-default-account.ts after install"
+    luna_warn "default-account seed failed - server may start in setup-mode; re-run $SEED_DEFAULT_ACCOUNT_SCRIPT after install"
   fi
 elif [[ -n "$CLAUDE_TOKEN" ]]; then
   luna_info "[dry-run] would seed default account (secret_ref=env:CLAUDE_CODE_OAUTH_TOKEN)"
@@ -433,8 +448,16 @@ fi
 # (or after a rollback across the S1 boundary) turns the rollback safety net
 # into an unpaged activating→timeout→restart spiral. Warn loudly; the runbook
 # ordering is: deploy + verify the code FIRST, then re-run this installer.
-if [[ ! -f "$REPO_DIR/apps/ui-web/scripts/sd-notify.ts" ]]; then
-  luna_warn "checkout at $REPO_DIR lacks apps/ui-web/scripts/sd-notify.ts — the Type=notify unit will start-timeout against this code; update the checkout BEFORE restarting the service"
+#
+# TODO(#440): drop this probe once every profile's `previous` release
+# resolves to a post-S08 release (apps/server/src/sd-notify.ts present in
+# BOTH current and previous - same condition scripts/luna-chat-server-entry.ts's
+# probe retires on). Until then this guard must accept both tree shapes,
+# because a rollback can flip $REPO_DIR back to a pre-S08 checkout. Fix or
+# remove: delete the apps/ui-web/scripts fallback below and this comment once
+# the condition holds; S26 carries the removal step.
+if [[ ! -f "$REPO_DIR/apps/server/src/sd-notify.ts" && ! -f "$REPO_DIR/apps/ui-web/scripts/sd-notify.ts" ]]; then
+  luna_warn "checkout at $REPO_DIR lacks sd-notify.ts (apps/server/src or apps/ui-web/scripts) - the Type=notify unit will start-timeout against this code; update the checkout BEFORE restarting the service"
 fi
 
 # Same guard, for the OTHER unit-critical file: ExecStart names ONLY the

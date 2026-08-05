@@ -95,7 +95,7 @@
 import { Cron, Effect, Layer, ManagedRuntime } from "effect"
 import { Clock, JobsStoreService } from "@luna/core"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
-import { resolveRuntimePaths } from "./runtime-paths.js"
+import { resolveRuntimePaths } from "../src/runtime-paths.js"
 
 const paths = resolveRuntimePaths()
 console.log("[push-through-install] db paths:", { lunaDbPath: paths.lunaDbPath })

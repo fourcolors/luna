@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
@@ -116,8 +117,13 @@ describe("doctor-enqueue helpers", () => {
       // source exists; a value here must have no effect on code-path lookup.
       process.env["LUNA_REPO_ROOT"] = "/deploy/root"
       expect(resolveDoctorCliPath()).toBe(
-        join(process.cwd(), "apps/ui-web/scripts/luna-doctor-workflow.ts"),
+        join(process.cwd(), "apps/server/scripts/luna-doctor-workflow.ts"),
       )
+      // Guards the S08 incident itself: if a future relocation moves the CLI
+      // without correcting this default, doctorCliReachable() silently
+      // degrades to warn+skip - so the resolved default must actually exist
+      // on disk (run from the repo root, as CI and the unit both do).
+      expect(existsSync(resolveDoctorCliPath())).toBe(true)
     })
   })
 
@@ -204,7 +210,7 @@ describe("doctor-enqueue helpers", () => {
         "worker_failed: boom",
         resolveDoctorEnqueueConfig({
           failStreakThreshold: 5,
-          cliPath: process.cwd() + "/apps/ui-web/scripts/luna-doctor-workflow.ts",
+          cliPath: process.cwd() + "/apps/server/scripts/luna-doctor-workflow.ts",
         }),
         1_700_000_000_000,
       )

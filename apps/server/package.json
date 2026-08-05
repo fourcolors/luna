@@ -1,0 +1,39 @@
+{
+  "name": "@luna/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@luna/adapter-sdk": "workspace:*",
+    "@luna/channels": "workspace:*",
+    "@luna/chat-service": "workspace:*",
+    "@luna/connectors": "workspace:*",
+    "@luna/control-server": "workspace:*",
+    "@luna/core": "workspace:*",
+    "@luna/job-input-tools": "workspace:*",
+    "@luna/local-shell-tools": "workspace:*",
+    "@luna/mcp-servers": "workspace:*",
+    "@luna/memory": "workspace:*",
+    "@luna/memory-tools": "workspace:*",
+    "@luna/oauth": "workspace:*",
+    "@luna/observability-tools": "workspace:*",
+    "@luna/scheduler-tools": "workspace:*",
+    "@luna/secret-tools": "workspace:*",
+    "@luna/skill-tools": "workspace:*",
+    "@luna/suggested-actions-tools": "workspace:*",
+    "@luna/thread-tools": "workspace:*",
+    "@luna/tools": "workspace:*",
+    "@luna/ui-ws": "workspace:*",
+    "@luna/vault": "workspace:*",
+    "@luna/widget-tools": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "effect": "^3.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

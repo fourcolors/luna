@@ -285,7 +285,7 @@ wake is per-workspace there is **ONE `wake` row per wake-enabled workspace**
 (default schedule `*/30 * * * *`).
 
 The `dream` + `wake` rows are seeded by
-`apps/ui-web/scripts/dream-wake-install.ts` (idempotent). These rows are the
+`apps/server/scripts/dream-wake-install.ts` (idempotent). These rows are the
 ONLY driver of the dream / wake cycles — the legacy fiber-per-cron layers were
 removed, so the cycles run exclusively through the JobTicker (DESIGN.md §5.3).
 

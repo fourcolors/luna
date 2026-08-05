@@ -14,6 +14,12 @@ Implementation protocol: Sonnet implements each slice; an Opus auditor, critic, 
 - S25 full-bash-deletion variant APPROVED (2026-08-03): the deploy bash engine is deleted outright once the binary holds; the engine pin is the escape hatch, with both manual recovery procedures documented and exercised.
 - Dream+wake unification remains REJECTED (2026-08-03); no slice re-proposes it.
 - The defineToolPackage factory and all ten tool-package migrations already landed (#417-#423); the chat-service, job-ticker, and main.rs splits already landed (#424-#426).
+- PLAN AMENDMENT (orchestrator, 2026-08-05): S08's pure-rename spec was unimplementable - seven ops CLIs S10 had listed as closure-free actually import runtime-paths.ts/setup-login.ts by relative path, so S08 moved them alongside the daemon instead, and S10 shrank to the remaining six closure-free CLIs.
+  See stack23-plan.json's changelog for the full discovery, including a test-fixture coupling (external-mcp-app-registry.test.ts needs example-mcp-ui-server.ts) that pulled one more file into S08 ahead of S10's original schedule.
+- S08 FOLLOW-UP (implementer, 2026-08-05): moving luna-doctor-workflow.ts broke packages/core/src/doctor/doctor-enqueue.ts's hardcoded default CLI path, discovered only by a full `bun run test` run (a scoped grep during tracing had missed it, since it searched only within apps/).
+  First reverted on scope grounds (packages/core was not among S08's enumerated content-edit categories), then re-applied and folded into S08's FILES IN SCOPE by an explicit orchestrator scope grant (slice S08v2-ext, 2026-08-05).
+  Fixed with four one-line literal corrections in packages/core (doctor-enqueue.ts, its test plus an existsSync assertion on the resolved default, job-ticker.ts's doc comment, job-ticker.test.ts); no probe needed there because packages/core ships inside the same release commit as chat-server.ts, so it never faces the cross-release tree-shape ambiguity the deploy-engine probes exist for.
+  See stack23-plan.json's changelog for detail.
 
 ## Slices
 
@@ -27,9 +33,9 @@ Implementation protocol: Sonnet implements each slice; an Opus auditor, critic, 
 | S06 | Run the luna.db schema-continuity gate before any cutover, and make it blocking | NEXT.md requires the contract established before any daemon cutover; it landed as docs+test but has never been run against real state and its CI gate is advi... |
 | S06a | Retire the completed-rename guard and its README pointer before any path moves | A blocking-gate test pins ~40 literal daemon paths, so S07's ExecStart change and S08's git mv would each turn CI red for reasons unrelated to their own conc... |
 | S07 | One path-independent unit, forever: repo-root TypeScript launcher plus guardian path-drift detection | The supervisor unit is host-persistent state naming a version-dependent path, and nothing re-renders it on rollback, so any later path change breaks rollback... |
-| S08 | Move the daemon to apps/server/src as a pure rename | Relocate the 21-file server-runtime closure with zero deploy-artifact edits and no compatibility stub. |
+| S08 | Move the daemon and its dependent ops CLIs to apps/server | Relocate the 21-file server-runtime closure AND the seven ops CLIs whose relative imports resolve into it, with content edits limited to those forced import paths, one manifest pair, one tsconfig line and four transient dual-path sites. |
 | S09 | Typecheck apps/server and retire the orphaned smoke files | The daemon boot path has never been typechecked; relocating it under apps/*/src makes that possible for the first time. |
-| S10 | Relocate the ops and install CLIs to apps/server/scripts | Twelve deploy-invoked operator CLIs still live under the app about to be deleted. |
+| S10 | Relocate the remaining ops and dev-only CLIs to apps/server/scripts | Six operator/dev CLIs still live under the app about to be deleted, having no relative-import coupling into the daemon closure S08 already relocated. |
 | S11 | Remove the ui-web build and the dist completeness precondition from the deploy path | The deploy engine builds and postcondition-checks a frontend that nothing serves, and gates release completeness on its artifact. |
 | S12 | Delete apps/ui-web, packages/design-system, and the two Stack 1 husks | Remove the retired frontend tree and the packages only it consumed. |
 | S13 | Point install-mac.command at Moon instead of the Vite web UI | macOS onboarding still guards port 5174 and boots a dev server for a frontend that no longer exists. |
@@ -67,9 +73,9 @@ A repo-root launcher that probes for whichever daemon entry exists in the releas
 The launcher is TYPESCRIPT, not bash: measured on this Mac, `bun run` on a bash-shebang file interprets it with bun's own shell and can exit 0 SILENTLY, which under Type=notify is an immediate no-READY exit and a restart spiral with nothing in the exit code to diagnose.
 The TypeScript launcher was measured too - it runs the daemon's exported bootstrap in the SAME PID (required by Type=notify plus WatchdogSec=90) and leaves `import.meta.main` false in the imported module, while a direct `bun run <daemon>` leaves it true, so both invocation paths boot exactly once.
 It is paired with guardian's path-drift check because unit_hardened() inspects only Type and WatchdogUSec and its sole caller is gated on it, so nothing would otherwise adopt a re-render; and the drift check is itself gated on `previous` also carrying the launcher, so the flip can never strand the release do_rollback_releases would select.
-S08 then becomes a pure rename with no unit edit and no shim at all - which also sidesteps the reviewed plan's fatal `import.meta.main` defect, where a side-effect-import shim exits cleanly without booting and every host times out silently.
-With S06a done and tsconfig.judgeprobe.json gone, S08 carries only `git mv` plus the two artifacts CI's `bun install --frozen-lockfile` mechanically requires.
-S09-S10 clean up behind it.
+S08 then becomes a rename with no unit edit and no shim at all - which also sidesteps the reviewed plan's fatal `import.meta.main` defect, where a side-effect-import shim exits cleanly without booting and every host times out silently.
+With S06a done and tsconfig.judgeprobe.json gone, S08 carries `git mv` plus the two manifest artifacts CI's `bun install --frozen-lockfile` mechanically requires, PLUS (per the 2026-08-05 PLAN AMENDMENT) the seven ops CLIs discovered mid-move to import runtime-paths.ts/setup-login.ts by relative path, each rewritten to `../src/<module>.js`, plus four transient dual-path sites in the deploy engine (dream-wake-install, seed-default-account, and the sd-notify version-skew guard, the last two both in scripts/luna-server-install) so those CLIs' invocation sites, the sd-notify guard, and the daemon boot path all survive a rollback to a pre-S08 release.
+S09 typechecks the daemon; S10 shrinks to the six CLIs that were never coupled to the closure and cleans up behind both.
 S11 strictly precedes S12 because `release_artifacts_ok` hard-requires apps/ui-web/dist/index.html, and because the deploying engine is a PINNED copy of an older SHA - a pre-S11 engine cannot materialize a post-S12 release, so the gate is engine-pin advancement per profile, not merely a deploy window.
 Stack 3 starts only after S13.
 Moon (S14-S20) comes before the control-plane fold because it rides the Tauri updater and cannot brick a host, and because chat.html is 12005 lines with an 8930-line inline script - honest sizing is seven slices with explicit split-on-contact triggers, following panel.html's proven incremental pattern where the page stays bootable at every commit.
@@ -117,7 +123,8 @@ S21 writes docs/deploy-binary.md carrying the architectural decision requiring O
 S25 documents THREE things in docs/deploy-binary.md: the retained scripts/luna-recover with its exact three-step capability and its explicit non-capabilities, the copy-pasteable engine-pin rollback command, and the recorded-but-unexecuted full-bash-deletion variant awaiting Operator sign-off.
 S07 is a docs-in-the-PR-body slice rather than a docs-file slice: the .prev unit restore sequence and the per-profile `previous` readlink evidence are recorded in the PR body, because they are operational runbook steps tied to one rollout, not standing documentation.
 S26 is truth-up, not catch-up: NEXT.md Stack 2/3 sections marked against what actually landed, DESIGN.md architecture sections, TESTING.md, and deletion of any live doc describing the ui-web SPA or the vanilla Moon chat.
-The closing grep is scoped to LIVE docs only (README, DESIGN, AGENTS, PROJECT, TESTING, NEXT, docs/HOW_TO_TEST_AND_VERIFY.md, docs/next/).
+The closing grep is scoped to LIVE docs only: README, DESIGN, AGENTS, PROJECT, TESTING, NEXT, SYSTEM.md, and every non-archival file under docs/ (docs/superpowers, docs/briefs, docs/audits, docs/discussions stay exempt as history).
+SYSTEM.md is load-bearing at runtime - it is injected into every chat thread's system prompt - so a stale path there misinforms the agent itself, not just a reader.
 Archival records under docs/superpowers/plans, docs/briefs, docs/audits and docs/discussions are excluded by design - roughly 20 of the ~35 files matching `apps/ui-web` are historical records that correctly describe what was true when written, and rewriting them to satisfy a gate would destroy the record.
 Nothing destined for any PR body names a personal host: fourcolors/luna is public.
 

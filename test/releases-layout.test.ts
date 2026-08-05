@@ -24,7 +24,7 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
 import { releaseManifest } from "./helpers/guardian-harness"
@@ -66,8 +66,16 @@ const LIB_CONTENT = readFileSync(join(repoRoot, "scripts/lib/luna-deploy.sh"), "
  * Releases fixture: upstream bare origin (two commits, same bun.lock), a bare
  * mirror WITH the explicit origin refspec, one built prev release, and
  * current -> releases/<prev> (RELATIVE link).
+ *
+ * `targetExtraFiles` (relative path -> content) lands ONLY in the "target"
+ * commit, after the "prev" commit is already cut - so the materialized prev
+ * release lacks them and the materialized target release has them, modeling
+ * a post-move tree shape appearing for the first time on a fresh deploy.
  */
-const makeReleasesFixture = (root: string) => {
+const makeReleasesFixture = (
+  root: string,
+  opts: { readonly targetExtraFiles?: Readonly<Record<string, string>> } = {},
+) => {
   const origin = join(root, "origin.git")
   mkdirSync(origin, { recursive: true })
   git(origin, "init", "--quiet", "--bare")
@@ -86,6 +94,11 @@ const makeReleasesFixture = (root: string) => {
   git(seed, "commit", "--quiet", "-m", "prev")
   const prevSha = git(seed, "rev-parse", "HEAD")
   writeFileSync(join(seed, "file.txt"), "v2\n")
+  for (const [relPath, content] of Object.entries(opts.targetExtraFiles ?? {})) {
+    const full = join(seed, relPath)
+    mkdirSync(dirname(full), { recursive: true })
+    writeFileSync(full, content)
+  }
   git(seed, "add", "-A")
   git(seed, "commit", "--quiet", "-m", "target")
   const targetSha = git(seed, "rev-parse", "HEAD")
@@ -503,6 +516,25 @@ describe("releases layout — forward deploy", () => {
     // Journal cleared; dream-wake seeded through current.
     expect(existsSync(join(temp, "update-state", "transaction-stable"))).toBe(false)
     expect(readLog(stubs.bunLog)).toContain(`${fx.deploy}/current/apps/ui-web/scripts/dream-wake-install.ts`)
+  })
+
+  it("dream-wake-install probe: a target release carrying apps/server/scripts logs the post-move path, not the ui-web fallback", () => {
+    const temp = makeTempDir()
+    const fx = makeReleasesFixture(temp, {
+      targetExtraFiles: { "apps/server/scripts/dream-wake-install.ts": "// post-move fixture stub\n" },
+    })
+    const stubs = makeReleasesStubBin(temp, fx.deploy, {
+      prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    const r = runReleases(fx, stubs, temp)
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    // The materialized target release carries the post-move file; the prev
+    // release (cut before it was added) does not.
+    expect(existsSync(join(fx.releases, fx.targetSha, "apps", "server", "scripts", "dream-wake-install.ts"))).toBe(true)
+    expect(existsSync(join(fx.releases, fx.prevSha, "apps", "server", "scripts", "dream-wake-install.ts"))).toBe(false)
+    const bunLog = readLog(stubs.bunLog)
+    expect(bunLog).toContain(`${fx.deploy}/current/apps/server/scripts/dream-wake-install.ts`)
+    expect(bunLog).not.toContain(`${fx.deploy}/current/apps/ui-web/scripts/dream-wake-install.ts`)
   })
 
   it("cp -a node_modules seeding fires on an unchanged bun.lock blob, and the frozen install still runs", () => {

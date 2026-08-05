@@ -57,7 +57,7 @@
 import { Effect, Layer, ManagedRuntime } from "effect"
 import { Clock, JobsStoreService } from "@luna/core"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
-import { resolveRuntimePaths } from "./runtime-paths.js"
+import { resolveRuntimePaths } from "../src/runtime-paths.js"
 import {
   applyPlan,
   listActiveWorkspaces,
