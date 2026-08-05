@@ -1263,7 +1263,10 @@ describe("repairSplitFences", () => {
     const chunks = ["intro\n```ts\nconst a = 1", "const b = 2\n```\ndone"]
     const repaired = repairSplitFences(chunks)
     expect(repaired[0]).toBe("intro\n```ts\nconst a = 1\n```")
-    expect(repaired[1]).toBe("```\nconst b = 2\n```\ndone")
+    // Slice 2 (PRE-AUTHORISED EDIT, the ONLY change to a pre-existing assertion
+    // in this slice): this previously asserted a BARE "```" reopen, which froze
+    // Defect 1 into a green test. The continuation must carry the info string.
+    expect(repaired[1]).toBe("```ts\nconst b = 2\n```\ndone")
   })
 
   it("keeps balanced chunks balanced", () => {
@@ -1284,6 +1287,576 @@ describe("repairSplitFences", () => {
     const repaired = repairSplitFences(chunks)
     expect(repaired[0]).toBe("~~~\nshell\n```\nmore\n~~~")
     expect(repaired[1]).toBe("~~~\nend\n~~~")
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /* Slice 2 — fence-repair hardening (D1 info string, D3 info-string closer)  */
+  /*                                                                          */
+  /* SCOPE GUARD for this slice. Implementation is confined to:               */
+  /*     packages/channels/src/delivery.ts                                    */
+  /* Pong MUST NOT touch, in this slice:                                       */
+  /*     packages/channels/src/service.ts                                      */
+  /*     packages/channels/src/adapters/*.ts                                   */
+  /*     packages/channels/src/types.ts                                        */
+  /*     packages/channels/src/index.ts  (both functions are already exported)  */
+  /*     any other package or app in the monorepo                              */
+  /* splitToChunks (delivery.ts:64) must stay FENCE-BLIND: repair happens       */
+  /* afterwards. Making the splitter fence-aware is out of scope and a FAIL.    */
+  /* delivery.ts is SHARED WITH TELEGRAM: telegram-format.test.ts and           */
+  /* telegram-adapter.test.ts must stay green.                                  */
+  /*                                                                          */
+  /* Exactly ONE pre-existing assertion changes in this slice, and it is       */
+  /* pre-authorised: the reopen assertion in "closes an open fence at a chunk  */
+  /* boundary and reopens it in the next" above. Any other edit or deletion    */
+  /* of a pre-existing assertion is spec-tampering.                            */
+  /* ------------------------------------------------------------------------ */
+
+  // Scenario 1 — D1: the language tag survives the boundary.
+  it("reopens a split ```typescript block with its language tag", () => {
+    const chunks = ["intro\n```typescript\nconst a: number = 1", "const b = 2\n```\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n```typescript\nconst a: number = 1\n```")
+    expect(repaired[1]).toBe("```typescript\nconst b = 2\n```\ndone")
+  })
+
+  // Scenario 1 — D1, full info string (not just the first word), and the
+  // INSERTED CLOSER stays BARE: per CommonMark a closing fence may not carry
+  // an info string, so only the REOPEN echoes it.
+  it("carries the full info string on reopen and closes with a bare marker", () => {
+    const chunks = [
+      "intro\n```typescript title=example.ts\nconst a = 1",
+      "const b = 2\n```\ndone",
+    ]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n```typescript title=example.ts\nconst a = 1\n```")
+    expect(repaired[1]).toBe("```typescript title=example.ts\nconst b = 2\n```\ndone")
+    expect(repaired[0]?.endsWith("\n```")).toBe(true)
+  })
+
+  // Scenario 2 — D1 for tilde fences.
+  it("reopens a split ~~~ block with its info string", () => {
+    const chunks = ["intro\n~~~python\nx = 1", "y = 2\n~~~\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n~~~python\nx = 1\n~~~")
+    expect(repaired[1]).toBe("~~~python\ny = 2\n~~~\ndone")
+  })
+
+  // Scenario 4 — D3: same idea as the ~~~/``` isolation test above, for the
+  // info-string case. A ```json line INSIDE an open ``` block is CONTENT (a
+  // closing fence may not carry an info string), so the block is still open at
+  // the end of the chunk and must be closed and reopened.
+  it("treats an info-string fence line inside an open block as content, not a closer", () => {
+    const chunks = ["a\n```ts\nx", "y\n```json\nz"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("a\n```ts\nx\n```")
+    expect(repaired[1]).toBe("```ts\ny\n```json\nz\n```")
+  })
+
+  // Scenario 4 — the other half: a BARE marker does close the block, so a
+  // balanced chunk that merely contains an info-string line stays untouched.
+  it("closes an open block only on a bare marker line", () => {
+    const chunks = ["```ts\na\n```json\nb\n```", "tail"]
+    expect(repairSplitFences(chunks)).toEqual(["```ts\na\n```json\nb\n```", "tail"])
+  })
+
+  // Scenario 6 — boundary lands exactly ON the opening fence line.
+  it("does not corrupt a boundary landing exactly on the opening fence line", () => {
+    const chunks = ["intro\n```ts", "const a = 1\n```\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n```ts\n```")
+    expect(repaired[1]).toBe("```ts\nconst a = 1\n```\ndone")
+  })
+
+  // Scenario 6 — boundary lands exactly ON the closing fence line. The
+  // reopened-then-immediately-closed empty block is ACCEPTABLE output (it
+  // renders as an empty code block, not as corruption). Do NOT special-case
+  // it away; the contract is "every chunk parses as complete markdown".
+  it("does not corrupt a boundary landing exactly on the closing fence line", () => {
+    const chunks = ["intro\n```ts\nconst a = 1", "```\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n```ts\nconst a = 1\n```")
+    expect(repaired[1]).toBe("```ts\n```\ndone")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Slice 2 — fence repair must stay inside the platform's message budget       */
+/*                                                                            */
+/* THE COUPLING TEST. delivery.ts computes the split budget as                 */
+/* `Math.max(1, maxLen - 8)`; that 8 is exactly 4 ("\n```") + 4 ("```\n") for  */
+/* BARE markers. The moment D1 lands and the reopen carries an info string,    */
+/* "```typescript title=…\n" alone is far more than 4 chars, so a repaired     */
+/* chunk overflows maxMessageLength — on Discord (2000) that is a rejected or  */
+/* truncated message. This test therefore goes RED if D1 is fixed and the      */
+/* headroom is not. The headroom must be DERIVED from the longest reopen +     */
+/* close actually needed for the text; a bigger magic constant is a FAIL       */
+/* (the chunk-count bound below is what catches an oversized constant).        */
+/* -------------------------------------------------------------------------- */
+
+describe("delivery — fence repair budget", () => {
+  it("keeps every repaired chunk within maxMessageLength for a long info string", async () => {
+    const MAX = 120
+    const TAG = "typescript title=fence-budget-example.ts"
+    const CODE = [
+      "export const alpha = (n: number): number => n * 2",
+      "export const beta = (n: number): number => n + 41",
+      "export const gamma = (n: number): number => n - 7",
+      "export const delta = (n: number): number => n / 3",
+    ].join("\n")
+    const TEXT = `Here is the code you asked for.\n\`\`\`${TAG}\n${CODE}\n\`\`\`\nThat is all of it.`
+
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fence-budget", "stream-edit", MAX)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: "fence-budget-pm-1" }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, TEXT))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("200 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // The finalized chunks are the non-partial deliveries; live stream edits
+    // are isPartial: true and are not what this test is about.
+    const finals = fakeCtx.deliveries.filter((d) => d.opts.isPartial === false)
+
+    // The repair path is actually exercised (text > maxLen, so it splits).
+    expect(finals.length).toBeGreaterThan(1)
+    // Headroom is DERIVED, not "reserve a huge constant": an oversized reserve
+    // collapses the budget and shatters the answer into many tiny messages.
+    expect(finals.length).toBeLessThanOrEqual(8)
+
+    // D2: nothing may exceed the platform limit, info string included.
+    for (const d of finals) {
+      expect(d.content.length).toBeLessThanOrEqual(MAX)
+    }
+
+    // D1 at the call site: every continuation chunk that reopens the block
+    // carries the FULL info string, not a bare marker.
+    const reopened = finals.slice(1).filter((d) => d.content.startsWith("```"))
+    expect(reopened.length).toBeGreaterThan(0)
+    for (const d of reopened) {
+      expect(d.content.startsWith("```" + TAG + "\n")).toBe(true)
+    }
+
+    expect(finals[finals.length - 1]?.opts.isFinal).toBe(true)
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /* Slice 2b — THE SHATTERING WINDOW (added by pp-ping 2026-08-05)            */
+  /*                                                                          */
+  /* Slice 2 landed the derived reserve plus a degenerate-case guard. The      */
+  /* guard's DOC COMMENT states the right predicate ("when the reserve does    */
+  /* not leave a USABLE BODY, fall back to the bare-marker minimum"); the CODE */
+  /* implements a weaker one (`reserve < maxLen`), i.e. it only falls back     */
+  /* when the reserve exceeds the ENTIRE message budget. Doc and code          */
+  /* disagree, and the code is the wrong one.                                  */
+  /*                                                                          */
+  /* Strictly BELOW that threshold there is a window where the guard stays     */
+  /* inactive and the split limit collapses toward 1. Because splitToChunks is */
+  /* fence-blind, prose that merely MENTIONS ``` mid-sentence inside one very  */
+  /* long line drives the reserve arbitrarily high, so one ordinary answer is  */
+  /* delivered as hundreds of tiny Discord messages. Note the guard, WHEN IT   */
+  /* FIRES, produces the sane result — the bug is only that it fires too late. */
+  /*                                                                          */
+  /* Why the test above cannot see this: in the shattering window NO chunk     */
+  /* exceeds the limit (they are all tiny), and its 40-char tag is nowhere     */
+  /* near the window. Green gate, real defect.                                 */
+  /*                                                                          */
+  /* SCOPE GUARD for Slice 2b. Implementation is confined to:                  */
+  /*     packages/channels/src/delivery.ts                                     */
+  /* Pong MUST NOT touch, in this micro-cycle:                                 */
+  /*     packages/channels/src/service.ts                                      */
+  /*     packages/channels/src/adapters/*.ts                                   */
+  /*     packages/channels/src/types.ts                                        */
+  /*     packages/channels/src/index.ts                                        */
+  /*     any test file (this one included)                                     */
+  /*     any other package or app in the monorepo                              */
+  /* splitToChunks must STILL stay fence-blind. No pre-existing assertion may  */
+  /* be weakened, edited, renamed or deleted — the Slice 2 pre-authorisation   */
+  /* was spent and does not extend to this micro-cycle.                        */
+  /*                                                                          */
+  /* This test pins the OBSERVABLE property (a bounded number of messages),    */
+  /* NOT a formula. Any predicate that treats "the reserve leaves no usable    */
+  /* body" as the fallback condition satisfies it; the fraction is pong's.     */
+  /* ------------------------------------------------------------------------ */
+  it("does not shatter one answer into many tiny messages when prose mentions a fence mid-line", async () => {
+    // Discord's real limit. The defect is only interesting at production scale.
+    const MAX = 2000
+
+    // A single physical line that MENTIONS ``` in passing and then keeps going.
+    // The derived reserve is 3 (marker) + PAD (the rest of the line, which the
+    // reserve treats as a possible info string) + 1 + 1 + 3.
+    //   PAD_LEN = 1980  =>  reserve ~= 1988, which is still < MAX = 2000,
+    // so today's `reserve < maxLen` guard does NOT fire and the split limit
+    // collapses to ~12 characters.
+    const PAD_LEN = 1980
+    const PAD =
+      "which is the shape a long single-line explanation takes when the model never breaks the paragraph, "
+        .repeat(30)
+        .slice(0, PAD_LEN)
+    const CODE = [
+      "export const alpha = (n: number): number => n * 2",
+      "export const beta = (n: number): number => n + 41",
+      "export const gamma = (n: number): number => n - 7",
+      "export const delta = (n: number): number => n / 3",
+      "export const epsilon = (n: number): number => n % 5",
+    ].join("\n")
+    const TEXT = [
+      "Here is how the delivery path behaves end to end.",
+      "",
+      "One caveat before the code: a fenced block opens with ``` " + PAD,
+      "",
+      "```typescript",
+      CODE,
+      "```",
+      "",
+      "That is the whole answer.",
+    ].join("\n")
+
+    // Preconditions, so neither assertion below can pass vacuously.
+    expect(TEXT.length).toBeGreaterThan(MAX)
+    expect(TEXT.includes("```")).toBe(true)
+
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fence-shatter", "stream-edit", MAX)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: "fence-shatter-pm-1" }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, TEXT))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("200 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const finals = fakeCtx.deliveries.filter((d) => d.opts.isPartial === false)
+
+    // The split path is actually exercised (GREEN today and after the fix).
+    expect(finals.length).toBeGreaterThan(1)
+
+    // THE BOUND, from arithmetic — not a round number picked by feel.
+    // Whatever predicate replaces `reserve < maxLen`, a reserve may only be
+    // honoured if it leaves a usable body. Take "usable" at its most permissive
+    // defensible value: HALF the platform budget, i.e. an effective split limit
+    // of at least MAX / 2 = 1000. splitToChunks packs greedily up to the limit,
+    // so the answer needs at least
+    //     ceil(TEXT.length / (MAX / 2)) = ceil(2387 / 1000) = 3
+    // messages, plus 2 of slack, because a chunk ends at the last paragraph /
+    // sentence break inside the window (so it can fall short of the limit) and
+    // because repair may prepend a reopen line. Bound = 5.
+    // Measured with the real splitToChunks + repairSplitFences on this exact
+    // TEXT at MAX = 2000:
+    //     limit 1992 (bare-marker fallback)          ->   3 chunks, 0 over MAX
+    //     limit 1000 (worst still-defensible limit)  ->   4 chunks, 0 over MAX
+    //     limit   12 (today: guard inactive)         -> 269 chunks, min len 3
+    // The observed failure count today is a LOWER BOUND (~218): the delivery
+    // fiber is still draining its 269 sends when this test's sleep expires.
+    // That number is timing-dependent PRE-fix only, and is two orders of
+    // magnitude above the bound. Post-fix it is 3-4 and drains instantly.
+    const MAX_CHUNKS = Math.ceil(TEXT.length / (MAX / 2)) + 2
+    expect(finals.length).toBeLessThanOrEqual(MAX_CHUNKS)
+
+    // Must not regress: sane counts may NOT be bought back with overflow.
+    for (const d of finals) {
+      expect(d.content.length).toBeLessThanOrEqual(MAX)
+    }
+
+    expect(finals[finals.length - 1]?.opts.isFinal).toBe(true)
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /* Slice 2d — THE CLAMPED BAND OVERFLOWS (added by pp-ping 2026-08-05)       */
+  /* NAME: this is 2d, NOT 2c. Task #9 ("2c") is a DIFFERENT and pre-existing  */
+  /* defect: the single-chunk FAST PATH reserves nothing while                 */
+  /* repairSplitFences appends a closer unconditionally. That one is present   */
+  /* at HEAD and is not this slice's invariant to restore. Do not merge them.  */
+  /*                                                                          */
+  /* Slice 2 landed a floor under the split limit:                            */
+  /*     bodyFloor = floor(maxLen * MIN_USABLE_BODY_FRACTION)   (0.5)         */
+  /*     limit     = max(1, maxLen - reserve, bodyFloor)                      */
+  /* Its doc comment calls the residual "a bound, not an observation" and     */
+  /* reports that sweeps found no over-limit chunk. Both halves are false.    */
+  /* The overflow is ANALYTIC, not merely possible:                           */
+  /*                                                                          */
+  /*   every fence-line candidate inside a repaired chunk is at most `limit`, */
+  /*   so a carried info string is at most `limit - 3`, so a REOPENED chunk   */
+  /*   is at most  limit + 1 + limit + 1 + FENCE_MARKER_LEN = 2*limit + 5.    */
+  /*                                                                          */
+  /* Whenever the clamp BINDS, `limit` sits at its floor, and at a floor of   */
+  /* half the budget that bound is maxLen + 5. Measured: exactly 5 over, at   */
+  /* maxLen 500, 1000, 2000 and 4096 alike.                                   */
+  /*                                                                          */
+  /* >>> THE PREFIX IS LOAD-BEARING, FOR **TWO** SEPARATE REASONS.        <<< */
+  /* >>> DO NOT "SIMPLIFY" IT. BOTH PROPERTIES MUST HOLD SIMULTANEOUSLY.  <<< */
+  /*                                                                          */
+  /* (1) IT MUST END A SENTENCE. The Slice 2 sweep that reported "608         */
+  /* configurations, zero overflows" prefixed every fixture with "intro\n" —  */
+  /* SIX characters, which is precisely enough slack to keep the fence line's */
+  /* chunk-portion under the limit and hide the defect completely. Verified:  */
+  /* the SAME fixture with prefix "intro\n" overflows 0 configs; with "" or   */
+  /* "intro. " it overflows 236 of 608. A prefix that ENDS A SENTENCE makes   */
+  /* splitToChunks cut at the sentence boundary (strategy 2), so the next     */
+  /* chunk begins exactly at the fence run and the run gets the FULL window.  */
+  /* That is ordinary model output, not an adversarial construction.          */
+  /*                                                                          */
+  /* (2) IT MUST NOT END IN A NEWLINE. Discovered by the auditor's mutation   */
+  /* battery, 2026-08-05; this is the second property and it is why these two */
+  /* tests are the ONLY coverage of a separately load-bearing decision.       */
+  /* Because "Here is the answer. " ends in a SPACE, the fence marker lands   */
+  /* MID-LINE in the text that fenceRepairReserve scans. That function's      */
+  /* fence regex is deliberately UNANCHORED. Anchoring it (the natural        */
+  /* "tidy-up") then finds no fence at all, computes reserve 0, returns       */
+  /* limit = maxLen, and the repair's insertions land on top of a full-width  */
+  /* chunk: these tests go RED with [2004, 4005, 2032]. That was audit        */
+  /* finding F3 — "the load-bearing unanchored regex has zero tests" — and it */
+  /* is closed HERE, by consequence rather than by construction.              */
+  /* Terminating PREFIX with "\n" puts the fence at line start, an anchored   */
+  /* regex then behaves identically to the unanchored one, and F3's coverage  */
+  /* DIES SILENTLY while both tests stay green. Do not do it.                 */
+  /*                                                                          */
+  /* Net: shortening PREFIX disarms (1); newline-terminating it disarms both  */
+  /* (1) and (2). Neither failure is visible in a green run.                  */
+  /*                                                                          */
+  /* The RUN must also be unbroken (no space, newline, . ! or ?) so           */
+  /* splitToChunks falls through to strategy 4, the hard cut, which pins the  */
+  /* carried info string at exactly `limit - 3` — the worst case, not a       */
+  /* shortened one. The Slice 2 doc comment has this mechanism inverted.      */
+  /*                                                                          */
+  /* WHAT IS ASSERTED: the invariant this whole slice exists to establish —   */
+  /* no delivered chunk exceeds the adapter's maxMessageLength. NOT a chunk   */
+  /* count, NOT a formula, NOT a fraction. Any floor that makes               */
+  /* 2*limit + 5 <= maxLen an identity satisfies this; which one is pong's.   */
+  /* The opposite failure (shattering into tiny legal chunks) is already      */
+  /* railed by the Slice 2b test above, so it is deliberately NOT re-pinned   */
+  /* here — the two tests are a pair and neither may be deleted alone.        */
+  /*                                                                          */
+  /* ...AND, ADDED 2026-08-05, THE SECOND HALF OF THAT INVARIANT: the chunks  */
+  /* must fit the budget WITHOUT LOSING ANYTHING. A length bound alone is     */
+  /* satisfiable by TRUNCATION, and truncation is not a hypothetical wrong    */
+  /* fix — it is what this exact code path USED to do (see the comment        */
+  /* preserved at delivery.ts, "Long answers no longer truncate at            */
+  /* maxMessageLength"). A rail that cannot tell the fix apart from a         */
+  /* regression to the behaviour the feature was built to remove is pinning a */
+  /* number, not an invariant. So each test also asserts CONTENT SURVIVAL and */
+  /* FENCE BALANCE; see the two helpers below for what each one catches and   */
+  /* for the measured reason a character-count sum is NOT used.               */
+  /*                                                                          */
+  /* SCOPE GUARD for Slice 2d. Implementation is confined to:                 */
+  /*     packages/channels/src/delivery.ts                                    */
+  /* Pong MUST NOT touch, in this micro-cycle:                                */
+  /*     packages/channels/src/service.ts                                     */
+  /*     packages/channels/src/adapters/*.ts                                  */
+  /*     packages/channels/src/types.ts                                       */
+  /*     packages/channels/src/index.ts                                       */
+  /*     any test file (this one included)                                    */
+  /*     any other package or app in the monorepo                             */
+  /* splitToChunks must STILL stay fence-blind. No pre-existing assertion may */
+  /* be weakened, edited, renamed or deleted — in particular the Slice 2b     */
+  /* test above must stay byte-identical.                                     */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * One realistic answer whose fence run fills the entire split window.
+   *
+   * Shape: a sentence-ending prose prefix, then a fence marker immediately
+   * followed by a long UNBROKEN token (a base64 blob is the everyday way a
+   * model produces one), then a short tail. See the PREFIX warning above.
+   */
+  const makeUnbrokenFenceRunText = (maxLen: number): string => {
+    const PREFIX = "Here is the answer. "
+    const BLOB = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamts"
+    // Long enough to outlast more than one window at ANY defensible limit.
+    const runLen = 2 * maxLen
+    const run = BLOB.repeat(Math.ceil(runLen / BLOB.length)).slice(0, runLen)
+    return PREFIX + "```" + run + "\nThat is the whole file."
+  }
+
+  /**
+   * CONTENT SURVIVAL. Returns null when every NON-WHITESPACE character of
+   * `text` still appears, IN ORDER, somewhere across the delivered chunks;
+   * otherwise a message naming the first character that was dropped.
+   *
+   * Why a subsequence and not equality: splitToChunks legitimately DROPS
+   * WHITESPACE at a cut (`trimStart()` after a sentence boundary, the space
+   * itself at a word boundary) and fence repair legitimately ADDS characters
+   * (a reopen line carrying the info string, a closer). Both are allowed by a
+   * whitespace-stripped subsequence; deleting any content character is not.
+   * Verified against three non-truncating floors — the shipped one, the old
+   * floor(maxLen*0.5), floor(maxLen/3), and the degenerate bodyFloor=1 — all
+   * pass at maxLen 500/2000/4096, so this does NOT lock pong's technique.
+   *
+   * WHY NOT THE CHARACTER-COUNT SUM. The obvious cheaper form,
+   *   sum(chunk.length) >= text.length
+   * was measured and REJECTED: it is vacuous on this fixture. Fence repair
+   * roughly DOUBLES the payload here (2058/8058/16442 delivered against
+   * 1047/4047/8239 of text, because each reopen line carries a ~maxLen/2 info
+   * string), so the sum keeps a margin of thousands of characters even while
+   * a quarter of the answer is being deleted. Measured against a truncating
+   * implementation (`chunkLimit = maxLen` then `slice(0, maxLen)`): the sum is
+   * 6019 >= 4047 and PASSES, while 15 non-whitespace characters of the user's
+   * answer are gone and this helper reports the gap at index 4023. Do not
+   * "simplify" this back into a sum.
+   */
+  const contentSurvivalGap = (text: string, joined: string): string | null => {
+    const want = text.replace(/\s+/g, "")
+    const got = joined.replace(/\s+/g, "")
+    let i = 0
+    for (let j = 0; j < got.length && i < want.length; j++) {
+      if (got[j] === want[i]) i++
+    }
+    if (i === want.length) return null
+    return (
+      `content dropped: ${i} of ${want.length} non-whitespace chars survived; ` +
+      `first missing at index ${i}: ${JSON.stringify(want.slice(i, i + 24))}`
+    )
+  }
+
+  /**
+   * FENCE BALANCE. Every delivered chunk must carry an EVEN number of fence
+   * markers — repair either leaves a chunk fence-free or gives it both a
+   * reopen and a closer. Shipped: [0,2,2,2,2,2] at all three scales.
+   *
+   * This catches the truncation flavour that content survival alone does not.
+   * A truncating implementation that keeps the reserve and merely clamps the
+   * result eats only the APPENDED CLOSER off the back of each over-limit
+   * chunk: measured [0,2,1,1,1,2], every content character intact, the sum
+   * still passing, and three of six messages rendering as a code block that
+   * never closes. That is the visible half of the bug the closer exists to
+   * prevent, so it gets its own assertion rather than being folded in.
+   */
+  const unbalancedFenceChunks = (
+    chunks: readonly string[],
+  ): Array<{ chunkIndex: number; markers: number }> =>
+    chunks.flatMap((c, chunkIndex) => {
+      const markers = (c.match(/```/g) ?? []).length
+      return markers % 2 === 0 ? [] : [{ chunkIndex, markers }]
+    })
+
+  /** Drive the real stream-edit turn-complete path and return its final chunks. */
+  const deliverFinalChunks = async (
+    text: string,
+    maxLen: number,
+    id: string,
+  ): Promise<DeliveredItem[]> => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean(id, "stream-edit", maxLen)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: `${id}-pm-1` }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, text))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("200 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Finalized chunks only; live stream edits are isPartial: true.
+    return fakeCtx.deliveries.filter((d) => d.opts.isPartial === false)
+  }
+
+  it("keeps every repaired chunk within maxMessageLength when an unbroken fence run fills the split window", async () => {
+    // Discord's real limit (DISCORD_MAX_MESSAGE_LENGTH). No adapter re-clamps
+    // before send, and delivery.ts swallows the send failure, so an over-limit
+    // chunk is a Discord 400 and a SILENTLY LOST message.
+    const MAX = 2000
+    const TEXT = makeUnbrokenFenceRunText(MAX)
+
+    // Preconditions, so nothing below can pass vacuously.
+    expect(TEXT.length).toBeGreaterThan(MAX)
+    expect(TEXT.includes("```")).toBe(true)
+
+    const finals = await deliverFinalChunks(TEXT, MAX, "fence-clamp-discord")
+
+    // The split + repair path really ran; a single chunk could not overflow.
+    expect(finals.length).toBeGreaterThan(1)
+
+    // THE INVARIANT. Listing the offending lengths rather than asserting each
+    // one in turn makes the RED output name the overflow directly.
+    const overLimit = finals.map((d) => d.content.length).filter((n) => n > MAX)
+    expect(overLimit).toEqual([])
+
+    // ...AND IT WAS EARNED BY RESERVING, NOT BY CUTTING. Truncation satisfies
+    // the bound above; it is also the behaviour this path was built to remove.
+    const contents = finals.map((d) => d.content)
+    expect(contentSurvivalGap(TEXT, contents.join(""))).toBe(null)
+    expect(unbalancedFenceChunks(contents)).toEqual([])
+  })
+
+  it("keeps every repaired chunk within maxMessageLength at every adapter scale", async () => {
+    // Scale invariance is the point: the defect is not an artifact of one
+    // magic number. It reproduces at 500, 1000, 2000 and 4096, over by
+    // exactly 5 every time, which is what identifies it as the 2*limit + 5
+    // bound rather than a fixture accident. 2000 is covered by the test
+    // above; these are the small and large ends (4096 is Telegram's).
+    const overflows: Array<{ maxLen: number; chunkLen: number }> = []
+    // Same pairing as the test above: the bound is only meaningful alongside
+    // proof that nothing was truncated to reach it. Collected across scales so
+    // the RED output names every offending adapter size at once.
+    const contentGaps: Array<{ maxLen: number; gap: string }> = []
+    const unbalanced: Array<{ maxLen: number; chunkIndex: number; markers: number }> = []
+
+    for (const MAX of [500, 4096]) {
+      const TEXT = makeUnbrokenFenceRunText(MAX)
+      expect(TEXT.length).toBeGreaterThan(MAX)
+      expect(TEXT.includes("```")).toBe(true)
+
+      const finals = await deliverFinalChunks(TEXT, MAX, `fence-clamp-scale-${MAX}`)
+      expect(finals.length).toBeGreaterThan(1)
+
+      for (const d of finals) {
+        if (d.content.length > MAX) overflows.push({ maxLen: MAX, chunkLen: d.content.length })
+      }
+
+      const contents = finals.map((d) => d.content)
+      const gap = contentSurvivalGap(TEXT, contents.join(""))
+      if (gap !== null) contentGaps.push({ maxLen: MAX, gap })
+      for (const u of unbalancedFenceChunks(contents)) unbalanced.push({ maxLen: MAX, ...u })
+    }
+
+    expect(overflows).toEqual([])
+    expect(contentGaps).toEqual([])
+    expect(unbalanced).toEqual([])
   })
 })
 
