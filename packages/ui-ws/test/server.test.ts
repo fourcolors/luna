@@ -8,7 +8,9 @@
  *   - parametrized round-trip across every member of DEFAULT_UI_KINDS
  *     (locks the layer's kind-shape indifference)
  *   - fan-out: two clients each receive every event independently
- *   - path routing (404 on unknown, 200 on /healthz)
+ *   - path routing (404 on unknown, 404 on /, 200 on /healthz, 426 on
+ *     non-upgrade /ui), including the query-string form of /healthz and /ui,
+ *     which regression-guards the pathname split at server.ts's http handler
  *   - startup validation: refuses short token
  *
  * Slow-consumer drop and scope-leak shutdown are covered indirectly by
@@ -685,9 +687,36 @@ describe("UIWebSocketServer", () => {
     expect(res.status).toBe(404)
   })
 
+  it("GET / returns 404 (no static serving)", async () => {
+    rig = await startRig()
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/"))
+    expect(res.status).toBe(404)
+  })
+
+  it("GET /ui (non-upgrade) returns 426", async () => {
+    rig = await startRig()
+    const res = await fetch(rig.url.replace("ws://", "http://"))
+    expect(res.status).toBe(426)
+  })
+
+  it("GET /ui?foo=bar (non-upgrade) still returns 426 despite the query string", async () => {
+    rig = await startRig()
+    const res = await fetch(`${rig.url.replace("ws://", "http://")}?foo=bar`)
+    expect(res.status).toBe(426)
+  })
+
   it("/healthz returns 200", async () => {
     rig = await startRig()
     const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/healthz"))
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe("ok")
+  })
+
+  it("/healthz?format=json still hits the health endpoint despite the query string", async () => {
+    rig = await startRig()
+    const res = await fetch(
+      rig.url.replace("ws://", "http://").replace("/ui", "/healthz?format=json"),
+    )
     expect(res.status).toBe(200)
     expect(await res.text()).toBe("ok")
   })
