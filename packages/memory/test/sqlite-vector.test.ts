@@ -16,6 +16,7 @@ import {
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
 import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { makeRecord } from "../src/types.js"
+import { BackendUnderTest, runMemoryBackendContract } from "./backend-contract.js"
 
 const hasBunSqlite = (() => {
   return typeof (process.versions as { bun?: string }).bun === "string"
@@ -33,6 +34,15 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
   const run = <A, E>(
     eff: Effect.Effect<A, E, SqliteVectorBackend | EmbedderService>,
   ) => Effect.runPromise(Effect.scoped(eff).pipe(Effect.provide(layer)))
+
+  // Shared MemoryBackend contract (packages/memory/test/backend-contract.ts)
+  // - the same put/get/query/delete/exportAll/importAll + scope assertions
+  // in-memory.test.ts runs against InMemoryBackend, run here against
+  // SqliteVectorBackend. Nested inside this file's `describe.skipIf` so it
+  // inherits the bun:sqlite gate.
+  runMemoryBackendContract("SqliteVectorBackend", () =>
+    Layer.effect(BackendUnderTest, SqliteVectorBackend).pipe(Layer.provide(layer)),
+  )
 
   it("Scenario 1: stub-embedder ranking is monotonic in token overlap", async () => {
     const out = await run(
