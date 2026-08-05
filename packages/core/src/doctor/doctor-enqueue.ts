@@ -39,6 +39,11 @@ export const resolveDoctorCliPath = (override?: string): string => {
   if (override?.trim()) return override.trim()
   const fromEnv = process.env["LUNA_DOCTOR_CLI"]?.trim()
   if (fromEnv) return fromEnv
+  // Deliberately cwd, NOT LUNA_REPO_ROOT: this locates CODE in the running
+  // tree, and on releases-layout hosts .env pins LUNA_REPO_ROOT at the deploy
+  // root (mirror + releases/) where no source exists, while the unit's
+  // WorkingDirectory is the `current` release tree. State paths anchor to
+  // LUNA_REPO_ROOT; code paths anchor to the tree actually running.
   return join(process.cwd(), "apps/ui-web/scripts/luna-doctor-workflow.ts")
 }
 

@@ -213,6 +213,15 @@ write_service() {
     return 0
   fi
   mkdir -p "$SERVICE_DIR"
+  # Unit-render rollback: copy the INSTALLED unit aside as <name>.prev before
+  # overwriting it. systemd never loads a .prev suffix, so the backup is
+  # inert. This runs in the shared write path - a manual install AND the
+  # guardian's --units-only auto-reconcile both get a restore point. If the
+  # freshly rendered unit fails to start, restore it:
+  #   cp -f "$SERVICE_FILE.prev" "$SERVICE_FILE" && systemctl daemon-reload && \
+  #     systemctl reset-failed "$SERVICE_NAME" && systemctl restart "$SERVICE_NAME"
+  # Skipped on a first install - there is no prior unit to preserve.
+  [[ ! -f "$SERVICE_FILE" ]] || cp -f "$SERVICE_FILE" "$SERVICE_FILE.prev"
   render_service "$bun_bin" > "$SERVICE_FILE"
 }
 
@@ -249,6 +258,20 @@ render_service() {
   # - The alert unit is rendered per-profile (concrete name, no %i template):
   #   dev + stable co-installed on one host must not share a template whose
   #   baked-in LUNA_HOME/pager.env would belong to whichever installed last.
+  # - PATH-INDEPENDENCE: WorkingDirectory names REPO_DIR itself (no
+  #   app-specific subpath) and ExecStart names ONLY the path-independent
+  #   launcher (luna_chat_server_launcher_rel, lib/luna-deploy.sh), which
+  #   resolves the daemon's actual file relative to its own import.meta.url.
+  #   A future move of the daemon's source needs no unit re-render - this is
+  #   the one unit shape this host will ever need. luna-guardian's
+  #   unit_paths_current is the OTHER half: it detects when an installed unit
+  #   still names the old app-specific paths and is gated on the rollback
+  #   target also carrying the launcher before reconciling. LUNA_REPO_ROOT is
+  #   also redundantly set here (in addition to .env, below): it shadows the
+  #   daemon's own cwd fallbacks, and the guardian's auto-reconcile writes
+  #   this unit with --units-only, which never touches .env - so a host whose
+  #   .env predates this key would otherwise silently move where the daemon
+  #   resolves its wake workspace and thread default cwd.
   cat <<EOF
 [Unit]
 Description=Luna chat server (${PROFILE})
@@ -263,12 +286,13 @@ Type=notify
 NotifyAccess=all
 WatchdogSec=90
 TimeoutStartSec=60
-WorkingDirectory=${REPO_DIR}/apps/ui-web
+WorkingDirectory=${REPO_DIR}
 Environment=HOME=${HOME}
 Environment=PATH=${bun_dir}:/usr/local/bin:/usr/bin:/bin
 Environment=CLAUDE_CONFIG_DIR=${LUNA_HOME}/claude
+Environment=LUNA_REPO_ROOT=${REPO_DIR}
 EnvironmentFile=-${ENV_FILE}
-ExecStart=${bun_bin} run scripts/chat-server.ts
+ExecStart=${bun_bin} run $(luna_chat_server_launcher_rel)
 Restart=always
 RestartSec=5
 StandardOutput=append:${LUNA_HOME}/logs/${CHAT_SERVER_NAME}.log
@@ -411,6 +435,16 @@ fi
 # ordering is: deploy + verify the code FIRST, then re-run this installer.
 if [[ ! -f "$REPO_DIR/apps/ui-web/scripts/sd-notify.ts" ]]; then
   luna_warn "checkout at $REPO_DIR lacks apps/ui-web/scripts/sd-notify.ts — the Type=notify unit will start-timeout against this code; update the checkout BEFORE restarting the service"
+fi
+
+# Same guard, for the OTHER unit-critical file: ExecStart names ONLY the
+# path-independent launcher (luna_chat_server_launcher_rel, lib/luna-deploy.sh)
+# unconditionally, with no existence check inline. A render against a
+# checkout that lacks it (a rolled-back tree, an older --repo-dir, or the
+# guardian's --units-only reconcile racing a deploy) would otherwise silently
+# produce an unbootable unit with no diagnostic.
+if [[ ! -f "$REPO_DIR/$(luna_chat_server_launcher_rel)" ]]; then
+  luna_warn "checkout at $REPO_DIR lacks $(luna_chat_server_launcher_rel); the rendered ExecStart will not boot against this code; update the checkout BEFORE restarting the service"
 fi
 
 write_service "$BUN_BIN"
