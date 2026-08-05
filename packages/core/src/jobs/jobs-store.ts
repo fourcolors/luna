@@ -570,7 +570,13 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                 nextRunAt = next
                 // Phase B1: each crash pull-forward counts toward doctor
                 // orphan threshold (same job may still be chronically wedged).
-                orphanStreak = job.orphanStreak + 1
+                // S11a: skip the bump when this boot consumed a
+                // clean-shutdown marker - a deliberate restart pulls the job
+                // forward same as a crash, but must not itself walk it
+                // toward the doctor's pause threshold.
+                if (!args.cleanShutdown) {
+                  orphanStreak = job.orphanStreak + 1
+                }
                 changed = true
               }
             }
@@ -1325,8 +1331,13 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                       setNext = 1
                       nextVal = next
                       // Phase B1: crash pull-forward bumps orphan_streak.
-                      setOrphan = 1
-                      orphanVal = job.orphanStreak + 1
+                      // S11a: skip the bump when this boot consumed a
+                      // clean-shutdown marker - see reconcileAfterCrash's
+                      // doc comment in jobs-store-types.ts.
+                      if (!args.cleanShutdown) {
+                        setOrphan = 1
+                        orphanVal = job.orphanStreak + 1
+                      }
                     }
                   }
 

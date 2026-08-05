@@ -7,6 +7,7 @@ export {
   type TickSummary,
   type SchedulerHealthSnapshot,
 } from "./job-ticker.js"
+export { CLEAN_SHUTDOWN_MARKER_NAME } from "./job-ticker-reconcile.js"
 export {
   buildWorker,
   defineWorkerLayer,
