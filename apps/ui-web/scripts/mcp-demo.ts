@@ -280,8 +280,10 @@ const demo = Effect.gen(function* () {
 
   const toolName = `mcp__${DEMO_SLUG}__${DEMO_TOOL}`
   const verdict1 = yield* gate1(toolName, {})
-  if (verdict1.behavior === "deny") {
-    deny(`${toolName} → DENY`)
+  if (verdict1 === "pass") {
+    warn(`unexpected: ${toolName} → PASS (no policy applied)`)
+  } else if (verdict1.behavior === "deny") {
+    deny(`${toolName} → DENY (correct — tool not yet allowed)`)
     info(`reason: ${verdict1.message}`)
   } else {
     warn(`unexpected: ${toolName} → ALLOW (should have been denied)`)
@@ -300,7 +302,9 @@ const demo = Effect.gen(function* () {
 
   // Check allowed tool
   const verdict2 = yield* gate2(toolName, {})
-  if (verdict2.behavior === "allow") {
+  if (verdict2 === "pass") {
+    warn(`unexpected: ${toolName} → PASS (policy should have applied)`)
+  } else if (verdict2.behavior === "allow") {
     ok(`${toolName} → ALLOW`)
   } else {
     deny(`unexpected: ${toolName} → DENY`)
@@ -309,7 +313,9 @@ const demo = Effect.gen(function* () {
   // Check a different tool — should still be denied
   const otherTool = `mcp__${DEMO_SLUG}__other-tool`
   const verdict3 = yield* gate2(otherTool, {})
-  if (verdict3.behavior === "deny") {
+  if (verdict3 === "pass") {
+    warn(`unexpected: ${otherTool} → PASS (policy should have applied)`)
+  } else if (verdict3.behavior === "deny") {
     deny(`${otherTool} → DENY (correct — not opted in)`)
   } else {
     warn(`unexpected: ${otherTool} → ALLOW`)
