@@ -6,7 +6,7 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "build": "bun run --filter '@luna/core' build && bun run --filter '@luna/ui-web' build && bun run --filter '@luna/ui-moon-tauri' build -- --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
+    "build": "bun run --filter '@luna/core' build && bun run --filter '@luna/ui-moon-tauri' build -- --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:bun": "bun test packages/core packages/observability-tools packages/memory packages/memory-tools packages/vault packages/channels/test/dedup-sqlite.test.ts packages/mcp-servers",

@@ -32,7 +32,7 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) => {
 // TWO commits on master. This gives the script a REAL `git fetch origin` +
 // `git reset --hard <ref>` to drive — no faking of git's internal state. Returns
 // the working-clone path plus the two commit SHAs (prev = first, target = HEAD).
-const makeDeployRepo = (root: string) => {
+const makeDeployRepo = (root: string, opts: { lockChanges?: boolean } = {}) => {
   const origin = join(root, "origin.git")
   const work = join(root, "repo")
   mkdirSync(origin, { recursive: true })
@@ -50,7 +50,13 @@ const makeDeployRepo = (root: string) => {
   git(seed, "commit", "--quiet", "-m", "prev")
   const prevSha = git(seed, "rev-parse", "HEAD")
   writeFileSync(join(seed, "file.txt"), "v2\n")
-  // Same lockfile content as prev → "lockfile unchanged" path for the happy test.
+  if (opts.lockChanges) {
+    // Lockfile differs prev<->target so bun install (and its node_modules
+    // postcondition) actually fires, instead of taking the "lockfile
+    // unchanged" reuse path a plain call takes.
+    writeFileSync(join(seed, "bun.lock"), "lock-v2\n")
+  }
+  // Default: same lockfile content as prev -> "lockfile unchanged" path for the happy test.
   git(seed, "add", "-A")
   git(seed, "commit", "--quiet", "-m", "target")
   const targetSha = git(seed, "rev-parse", "HEAD")
@@ -64,14 +70,11 @@ const makeDeployRepo = (root: string) => {
   git(work, "config", "user.name", "Test")
   git(work, "checkout", "--quiet", prevSha)
 
-  // Phase-3 artifact-postcondition fixtures: the engine now verifies that
-  // `bun install` produced node_modules/ and the ui-web build produced a
-  // non-empty dist/index.html. UNTRACKED files survive `git reset --hard` in
-  // both directions, so every happy/rollback path stays green.
+  // Phase-3 artifact-postcondition fixture: the engine now verifies that
+  // `bun install` produced node_modules/. UNTRACKED files survive `git reset
+  // --hard` in both directions, so every happy/rollback path stays green.
   mkdirSync(join(work, "node_modules"), { recursive: true })
   writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-  mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-  writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
   return { origin, work, prevSha, targetSha }
 }
@@ -213,7 +216,7 @@ if [[ "$1" == "exec" ]]; then
   # Hermetic in-container artifact probes (phase 3): never let \`test\` fall
   # through to the passthrough, or it would stat the REAL host /root/luna.
   # \`test -f\` is the unit-existence preflight (always passes, as before);
-  # STUB_INCUS_TEST_RC drives the -d/-s artifact probes.
+  # STUB_INCUS_TEST_RC drives the -d artifact probe.
   if [[ "$1" == "test" ]]; then
     if [[ "$2" == "-f" ]]; then exit 0; fi
     exit "\${STUB_INCUS_TEST_RC:-0}"
@@ -628,11 +631,9 @@ describe("luna-update-server", () => {
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
-    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    // Untracked artifact fixture for the phase-3 postcondition (see makeDeployRepo).
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -695,11 +696,9 @@ describe("luna-update-server", () => {
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
-    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    // Untracked artifact fixture for the phase-3 postcondition (see makeDeployRepo).
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -1917,11 +1916,9 @@ esac
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
-    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    // Untracked artifact fixture for the phase-3 postcondition (see makeDeployRepo).
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     const updateState = join(temp, "update-state")
@@ -2246,31 +2243,9 @@ esac
     // Lockfile differs prev<->target so the install (and its probe) fire; the
     // bun stub creates node_modules ONLY at PREV, so the forward apply fails
     // its artifact postcondition and the rollback succeeds.
-    const origin = join(temp, "origin.git")
-    const seed = join(temp, "seed")
-    const work = join(temp, "repo")
-    mkdirSync(origin, { recursive: true })
-    git(origin, "init", "--quiet", "--bare")
-    mkdirSync(seed, { recursive: true })
-    git(seed, "init", "--quiet")
-    git(seed, "config", "user.email", "t@example.test")
-    git(seed, "config", "user.name", "Test")
-    git(seed, "checkout", "-q", "-B", "master")
-    writeFileSync(join(seed, "bun.lock"), "lock-v1\n")
-    git(seed, "add", "-A")
-    git(seed, "commit", "--quiet", "-m", "prev")
-    const prevSha = git(seed, "rev-parse", "HEAD")
-    writeFileSync(join(seed, "bun.lock"), "lock-v2\n")
-    git(seed, "add", "-A")
-    git(seed, "commit", "--quiet", "-m", "target")
-    const targetSha = git(seed, "rev-parse", "HEAD")
-    git(seed, "remote", "add", "origin", origin)
-    git(seed, "push", "--quiet", "origin", "master")
-    git(temp, "clone", "--quiet", origin, work)
-    git(work, "checkout", "--quiet", prevSha)
-    // dist fixture present (the build probe must pass); node_modules ABSENT.
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
+    const { work, prevSha, targetSha } = makeDeployRepo(temp, { lockChanges: true })
+    // node_modules deliberately ABSENT: the bun stub below creates it only at PREV.
+    rmSync(join(work, "node_modules"), { recursive: true, force: true })
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -2300,50 +2275,19 @@ exit 0
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 
-  it("artifact postcondition: ui-web build exit 0 without dist/index.html rolls back", () => {
-    const temp = makeTempDir()
-    const { work, prevSha, targetSha } = makeDeployRepo(temp)
-    // Remove the fixture: the build probe must fail forward. The bun stub
-    // recreates it ONLY at PREV so the rollback recovers.
-    rmSync(join(work, "apps", "ui-web", "dist"), { recursive: true, force: true })
-    const serviceDir = join(temp, "systemd")
-    writeUnit(serviceDir)
-    const { bin } = makeStubBin(temp, {
-      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
-    })
-    const distFile = join(work, "apps", "ui-web", "dist", "index.html")
-    writeFileSync(
-      join(bin, "bun"),
-      `#!/usr/bin/env bash
-head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
-if [[ "$*" == *"build"* && "$head" == "${prevSha}" ]]; then
-  mkdir -p "$(dirname "${distFile}")"
-  printf '<!doctype html>\\n' > "${distFile}"
-fi
-exit 0
-`,
-    )
-    spawnSync("chmod", ["+x", join(bin, "bun")])
-
-    const r = runUpdate(guardArgs(temp, work, serviceDir), {
-      PATH: `${bin}:/usr/bin:/bin`,
-      LUNA_TEST_BUN_PATH: join(bin, "bun"),
-    })
-
-    expect(r.status, r.stdout + r.stderr).toBe(1)
-    expect(r.stderr).toMatch(/POSTCONDITION.*dist\/index\.html/)
-    expect(r.stderr).toContain("ROLLED BACK")
-    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-  })
-
   it("artifact postcondition (incus arm): the probe runs IN-CONTAINER and a failing probe rolls back", () => {
-    // STUB_INCUS_TEST_RC=1 makes every in-container -d/-s probe fail, proving
+    // STUB_INCUS_TEST_RC=1 makes every in-container -d probe fail, proving
     // (a) the probe is routed through incus exec — never the host FS — and
     // (b) a missing in-container artifact routes into rollback. The rollback's
     // probe fails the same way, so the run ends CRITICAL (exit 2) — the
     // deterministic worst case, loudly reported.
+    //
+    // bun.lock must differ prev<->target (both forward AND back) so the
+    // node_modules postcondition - the only remaining artifact probe - fires
+    // on both the forward apply and the rollback re-apply.
     const temp = makeTempDir()
-    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const { work, prevSha, targetSha } = makeDeployRepo(temp, { lockChanges: true })
+
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir, "luna-dev-chat-server.service")
     const { bin } = makeStubBin(temp, {
@@ -2368,10 +2312,10 @@ exit 0
     })
 
     expect(r.status, r.stdout + r.stderr).toBe(2)
-    expect(r.stderr).toMatch(/POSTCONDITION.*dist\/index\.html/)
+    expect(r.stderr).toMatch(/POSTCONDITION.*node_modules/)
     expect(r.stderr).toContain("CRITICAL")
     // The probe went through incus exec (in-container), not the host.
-    expect(readLog(incusLog)).toContain("exec luna-dev -- test -s /root/luna/apps/ui-web/dist/index.html")
+    expect(readLog(incusLog)).toContain("exec luna-dev -- test -d /root/luna/node_modules")
   })
 
   it("claude re-pin degradation warns loudly but never fails the deploy (bare host)", () => {

@@ -417,12 +417,6 @@ if [[ "$SKIP_DEPS" == false ]]; then
   luna_run "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile
 fi
 
-# Build the web SPA so chat-server serves it on :4753 (reachable via the existing
-# tailnet proxy, no extra infra). Always run — SPA source changes without
-# touching deps — and NOT gated by --skip-deps (that flag is apt/bun-install
-# only). The guarded build refuses to bake VITE_UI_WS_TOKEN, which deploy never sets.
-luna_run "$BUN_BIN" run --cwd "$REPO_DIR" --filter "@luna/ui-web" build
-
 luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"
 
 # Seed the default account so the server boots straight into NORMAL mode rather

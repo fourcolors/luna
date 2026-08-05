@@ -157,7 +157,6 @@ describe("luna-guardian", () => {
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain("Would write")
     expect(result.stdout).not.toContain("UI_WS_TOKEN=")
-    expect(result.stdout).not.toContain("filter @luna/ui-web build")
     expect(result.stdout).not.toContain("systemctl restart")
     expect(existsSync(join(temp, "state"))).toBe(false)
   })
