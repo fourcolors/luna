@@ -30,19 +30,22 @@
     "packages/*/src/**/*.ts",
     "packages/*/src/**/*.tsx",
     "apps/*/src/**/*.ts",
-    "apps/*/src/**/*.tsx"
+    "apps/*/src/**/*.tsx",
+    // scripts/luna-chat-server-entry.ts alone, not "scripts/*.ts": it is the
+    // single load-bearing entrypoint for every supervised host (systemd +
+    // launchd both exec it directly). The other scripts/*.ts files are
+    // dev/release tooling with no deploy-path stakes.
+    "scripts/luna-chat-server-entry.ts"
   ],
   "exclude": [
     "**/dist",
     "**/node_modules",
+    // Project-wide: this root project (incl. apps/server/src, S09) does not
+    // gate test files. A per-package tsconfig (e.g. packages/memory-tools)
+    // may still include its own test/ deliberately, when a compile-time
+    // proof there needs gating (S04's @ts-expect-error).
     "**/*.test.ts",
     "apps/ui-web/**",
-    "apps/agent-cli/**",
-    // TODO(#440): apps/server has no tsconfig.json of its own yet, so the
-    // include glob above would otherwise pull it into THIS project's
-    // compile with no bun types and no per-app overrides. S09 adds
-    // apps/server/tsconfig.json (mirroring apps/ui-web and apps/agent-cli)
-    // and removes this line.
-    "apps/server/**"
+    "apps/agent-cli/**"
   ]
 }

@@ -106,8 +106,27 @@ bun run test test/update-server.test.ts test/deploy-scripts.test.ts \
 # Boot smoke: proves @luna/core's JobTicker layer graph builds.
 # It never imports chat-server.ts, so it is not a chat-server deploy gate.
 bun run apps/ui-web/scripts/smoke/job-ticker-boot.smoke.ts
-# The other smokes are retired by the server extraction: chat-server.ts moved
-# to apps/server/src, severing their imports; S09 removes those three files.
+# setup-mode-boot / survey-boot smokes (S09): the S08 server extraction moved
+# chat-server.ts to apps/server/src, severing their "../chat-server.js" /
+# "../credential-readiness.js" imports. Repointed at
+# "../../../server/src/..." and re-verified green - apps/server/src now has a
+# tsc gate (bun run typecheck), but tsc only catches type errors, so these
+# smokes still carry their own layer-build coverage.
+bun run apps/ui-web/scripts/smoke/setup-mode-boot.smoke.ts
+bun run apps/ui-web/scripts/smoke/survey-boot.smoke.ts
+# belief-injection-boot smoke was deleted (S09), not repointed: unlike the two
+# above, its hand-rolled ThreadToolsProviderLayer stub graph had already
+# drifted from production across several unrelated PRD features added since
+# it was last run (WidgetToolsService, SuggestedActionToolsService,
+# ThreadToolsService, MCPRegistry, McpServerStore, SecretProvider all missing
+# - discovered by actually running it, not by inspection), so it was already
+# failing before S08 touched the import path. Re-deriving all of production's
+# accumulated stub wiring is out of this slice's scope; tsc cannot see this
+# defect class (a Layer.provide dropped from the graph still typechecks), so
+# its runtime layer-build coverage is currently unreplaced.
+# artifact-store / prompt-worker-boot / skill-prefs / suggested-actions-boot
+# / workflow-worker-boot smokes are unaffected and still run standalone: none
+# of them import chat-server.ts.
 ```
 Version-skew snapshot test — prove it catches a frame rename (the bug that started this):
 temporarily rename a frame `type` literal in `packages/ui-ws/src/protocol.ts` (e.g. `"subscribe"` →

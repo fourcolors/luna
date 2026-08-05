@@ -206,6 +206,7 @@ import {
   BeliefWriter,
   BUILTIN_SKILLS,
   Clock,
+  type ConfigError,
   DEFAULT_UI_KINDS,
   DreamStore,
   DreamWorkerLayer,
@@ -237,7 +238,7 @@ import {
   isReservedSecretName,
   type WriteTier,
   type OnePasswordProbe,
-  JobsStoreService,
+  type LunaSqliteBootstrap,
   validateAccountsTableLabels,
   openProviderSettingsStore,
   resolveAll,
@@ -271,6 +272,9 @@ import {
   projectChatMessages,
   type BulletinThreadActivity,
   type ChatMessage,
+  type MemoryBackendError,
+  type EmbedderError,
+  type ValidationError,
 } from "@luna/core"
 import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
@@ -1057,7 +1061,7 @@ export const ThreadToolsProviderLayer = (
                         observerId: OPERATOR_MEMORY_SCOPE.observerId,
                         subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
                       },
-                      reranker: recallReranker,
+                      ...(recallReranker !== undefined ? { reranker: recallReranker } : {}),
                       observability: memObs,
                     }).pipe(Effect.map((packed) => packed?.text ?? null)),
                 }
@@ -1068,7 +1072,10 @@ export const ThreadToolsProviderLayer = (
               secretThreadTools.bindSession(sessionId)
               suggestedActionThreadTools.bindSession(sessionId)
               // Fork-loop guard: threads tagged forked-from-parent cannot re-propose.
-              forkThreadTools.bindSession(sessionId, { tags: opts.tags })
+              forkThreadTools.bindSession(
+                sessionId,
+                opts.tags !== undefined ? { tags: opts.tags } : {},
+              )
               if (sandboxLocalShell.enabled) {
                 const reattach = () =>
                   attachSandboxLocalShell({
@@ -1106,7 +1113,11 @@ export const ThreadToolsProviderLayer = (
     // rerankerLayer: undefined when the caller didn't pass memoryRerankerL -
     // MemoryToolsLayer treats that as "no reranker", byte-identical to
     // before this option existed.
-    Layer.provide(MemoryToolsLayer({ rerankerLayer: memoryRerankerL })),
+    Layer.provide(
+      MemoryToolsLayer(
+        memoryRerankerL !== undefined ? { rerankerLayer: memoryRerankerL } : {},
+      ),
+    ),
     Layer.provide(
       // Surface the system-managed cycles (wake/dream) as read-only entries in
       // schedule_list so the operator sees the whole schedule picture, not just
@@ -1527,6 +1538,19 @@ const registerOpTokenHandler = makeRegisterOpToken({
   log: (msg) => writeSync(1, `${msg}\n`),
 })
 
+/** Minimal bun:sqlite Database shape for the synchronous inline
+ *  `require("bun:sqlite")` opens below - narrow on purpose, matches what
+ *  openProviderSettingsStore / openUiFeedbackStatusStore accept. */
+type BunSqliteDb = new (p: string) => {
+  run(sql: string): void
+  query(sql: string): {
+    get(...args: unknown[]): unknown
+    all(...args: unknown[]): unknown[]
+    run(...args: unknown[]): { changes: number }
+  }
+  close(): void
+}
+
 /**
  * Read the ProviderSettingsStore (if the DB exists and has config) and apply
  * the resolved ProviderEnv + OverflowConfig back into process.env so the
@@ -1545,10 +1569,7 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
     // Synchronous bun:sqlite open — safe at module level under bun.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require("bun:sqlite") as {
-      Database: new (p: string) => {
-        query(sql: string): { get(...args: unknown[]): unknown; run(...args: unknown[]): void }
-        close(): void
-      }
+      Database: BunSqliteDb
     }
     const db = new Database(dbPath)
     try {
@@ -1888,9 +1909,17 @@ const secretRequestBridge = createSecretRequestBridge({
 // proven composable. `as never` on the Memory double sidesteps the param-type
 // narrowing.
 export interface BuildSurveyLayerOpts {
-  readonly alignmentStoreL: Layer.Layer<AlignmentStore, import("effect").ConfigError, Clock | import("@luna/memory").LunaSqliteBootstrap>
-  readonly beliefWriterL: Layer.Layer<BeliefWriter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
-  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly alignmentStoreL: Layer.Layer<AlignmentStore, ConfigError, Clock | LunaSqliteBootstrap>
+  readonly beliefWriterL: Layer.Layer<
+    BeliefWriter,
+    MemoryBackendError | EmbedderError,
+    LunaSqliteBootstrap
+  >
+  readonly memoryRouterL: Layer.Layer<
+    import("@luna/memory").MemoryRouter,
+    MemoryBackendError | EmbedderError,
+    LunaSqliteBootstrap
+  >
   readonly clockL: Layer.Layer<Clock>
 }
 
@@ -1930,23 +1959,51 @@ export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
 export interface BuildWorkerRegistryLayerOpts {
   readonly clockL: Layer.Layer<Clock>
   readonly sdkClientL: Layer.Layer<SDKClient>
-  readonly agentNotesL: Layer.Layer<AgentNotesService>
+  readonly agentNotesL: Layer.Layer<AgentNotesService, ConfigError, LunaSqliteBootstrap>
   /** Optional per-run request_input provider (prompt/workflow serviceOption). */
-  readonly jobInputToolsL?: Layer.Layer<import("@luna/adapter-sdk").JobRunToolsProvider>
+  readonly jobInputToolsL?: Layer.Layer<
+    import("@luna/adapter-sdk").JobRunToolsProvider,
+    ConfigError,
+    LunaSqliteBootstrap
+  >
   /** Optional chat_thread delivery sink (#124) — prompt worker serviceOption. */
-  readonly chatThreadPosterL?: Layer.Layer<import("@luna/adapter-sdk").ChatThreadPoster>
+  readonly chatThreadPosterL?: Layer.Layer<
+    import("@luna/adapter-sdk").ChatThreadPoster,
+    ValidationError | MemoryBackendError | ConfigError | EmbedderError,
+    LunaSqliteBootstrap
+  >
   // dream leaf deps (DreamWorkerLayer R = DreamStore|DreamReasoner|SessionStore|MemoryRouter|Clock)
-  readonly dreamStoreL: Layer.Layer<DreamStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
-  readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
-  readonly sessionStoreL: Layer.Layer<SessionStore, never, import("@luna/memory").LunaSqliteBootstrap>
-  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly dreamStoreL: Layer.Layer<DreamStore, ConfigError, LunaSqliteBootstrap>
+  readonly dreamReasonerL: Layer.Layer<
+    import("@luna/core").DreamReasoner,
+    MemoryBackendError | ConfigError | EmbedderError,
+    LunaSqliteBootstrap
+  >
+  readonly sessionStoreL: Layer.Layer<SessionStore, never, LunaSqliteBootstrap>
+  readonly memoryRouterL: Layer.Layer<
+    import("@luna/memory").MemoryRouter,
+    MemoryBackendError | EmbedderError,
+    LunaSqliteBootstrap
+  >
   /** Optional SuggestedActions (dream skill_improvement chips, serviceOption). */
-  readonly suggestedActionsL?: Layer.Layer<import("@luna/core").SuggestedActions>
+  readonly suggestedActionsL?: Layer.Layer<
+    import("@luna/core").SuggestedActions,
+    ConfigError,
+    LunaSqliteBootstrap
+  >
   /** Optional SkillRegistry (dream skill catalog snapshot, serviceOption). */
-  readonly skillRegistryL?: Layer.Layer<import("@luna/core").SkillRegistry>
+  readonly skillRegistryL?: Layer.Layer<
+    import("@luna/core").SkillRegistry,
+    ValidationError | ConfigError,
+    LunaSqliteBootstrap
+  >
   // wake leaf deps (WakeWorkerLayer R = WakeReasoner|WakeLogStore|AgentNotesService|Clock)
-  readonly wakeReasonerL: Layer.Layer<import("@luna/core").WakeReasoner>
-  readonly wakeLogStoreL: Layer.Layer<WakeLogStore, import("effect").ConfigError>
+  readonly wakeReasonerL: Layer.Layer<
+    import("@luna/core").WakeReasoner,
+    ConfigError,
+    LunaSqliteBootstrap
+  >
+  readonly wakeLogStoreL: Layer.Layer<WakeLogStore, ConfigError>
 }
 
 export const buildWorkerRegistryLayer = (
@@ -2034,7 +2091,12 @@ export const buildBaseLayer = (
   | ChatService
   | ChannelService
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  | any // TelemetryPlatform sinks + NoopTracerLayer + AgentNotesService are side-effect Layers
+  | any, // TelemetryPlatform sinks + NoopTracerLayer + AgentNotesService are side-effect Layers
+  | ValidationError
+  | ConfigError
+  | MemoryBackendError
+  | EmbedderError,
+  LunaSqliteBootstrap
 > => {
   const clockL = Clock.Default
   const paths = resolveRuntimePaths()
@@ -2938,7 +3000,7 @@ export const buildSetupServerLayer = (
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
-        serverVersion: BUILD_VERSION,
+        ...(BUILD_VERSION !== undefined ? { serverVersion: BUILD_VERSION } : {}),
         chatService: null,
         accountBroker: null,
         survey: null,
@@ -3084,6 +3146,7 @@ const buildServerLayer = (
       const jobTicker = yield* JobTicker // /readyz.scheduler health (V2 ticker)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
       const suggestedActionsService = yield* SuggestedActions // suggest_action
+      const mem = yield* MemoryRouterTag // memory-browser mcp-app tools (below)
       // Capture Effect runtime so the HTTP /readyz path can sync-read ticker
       // health without holding an Effect fiber (ui-ws is plain node:http).
       const effectRuntime = yield* Effect.runtime<JobTicker>()
@@ -3589,7 +3652,8 @@ const buildServerLayer = (
       // scope reads to OPERATOR_MEMORY_SCOPE — the same observer/subject the
       // memory_save/memory_search SDK tools already stamp/filter on — so the
       // curated app surface can never see another scope's records. `mem` is
-      // the MemoryRouter resolved above (refreshBeliefs / recallForTurn).
+      // the MemoryRouterTag resolved at the top of buildServerLayer, not the
+      // ThreadToolsProviderLayer binding refreshBeliefs/recallForTurn use.
       const memoryBrowserScope = {
         observerId: OPERATOR_MEMORY_SCOPE.observerId,
         subjectId: OPERATOR_MEMORY_SCOPE.subjectId,
@@ -3723,15 +3787,7 @@ const buildServerLayer = (
           const ufsPaths = resolveRuntimePaths()
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { Database } = require("bun:sqlite") as {
-            Database: new (p: string) => {
-              run(sql: string): void
-              query(sql: string): {
-                get(...args: unknown[]): unknown
-                all(...args: unknown[]): unknown[]
-                run(...args: unknown[]): { changes: number }
-              }
-              close(): void
-            }
+            Database: BunSqliteDb
           }
           const ufsDb = new Database(ufsPaths.lunaDbPath)
           uiFeedbackStatusDbClose = () => ufsDb.close()
@@ -4164,10 +4220,13 @@ const buildServerLayer = (
               childThreadId: child.id,
             }
           }).pipe(
+            // The E channel here is `never` (every yielded effect above is
+            // infallible) - this handler can't actually run, but catchAll
+            // still requires a total callback.
             Effect.catchAll((e) =>
               Effect.succeed({
                 ok: false as const,
-                message: e instanceof Error ? e.message : String(e),
+                message: String(e),
               }),
             ),
           ),
@@ -4360,10 +4419,7 @@ const buildServerLayer = (
           const mrPaths = resolveRuntimePaths()
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { Database } = require("bun:sqlite") as {
-            Database: new (p: string) => {
-              query(sql: string): { get(...args: unknown[]): unknown; run(...args: unknown[]): void }
-              close(): void
-            }
+            Database: BunSqliteDb
           }
           const mrDb = new Database(mrPaths.lunaDbPath)
           mrDbClose = () => mrDb.close()
@@ -4479,7 +4535,7 @@ const buildServerLayer = (
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
-        serverVersion: BUILD_VERSION,
+        ...(BUILD_VERSION !== undefined ? { serverVersion: BUILD_VERSION } : {}),
         // JobTicker health for /readyz.scheduler (additive). Sync read via
         // captured runtime — HTTP handlers are not Effect fibers.
         getSchedulerHealth: () => {
@@ -4570,7 +4626,10 @@ const buildMain = (
     name: string,
   ) => Promise<Redacted.Redacted<string> | undefined>,
   opLabelsRegistered: ReadonlyArray<string>,
-): Effect.Effect<never, Error, AccountBroker | ServerHandle | ChannelService> =>
+  // Every yield in this generator is infallible (failures surface as
+  // console.error side effects, not tracked Effect failures) - E is `never`,
+  // not `Error`.
+): Effect.Effect<never, never, AccountBroker | ServerHandle | ChannelService> =>
   Effect.gen(function* () {
     // Operator-visible boot log: how many accounts hydrated, by kind.
     // Resolves nothing; just inspects the in-memory broker pool.
@@ -4673,7 +4732,7 @@ const buildMain = (
     }
 
     // Park forever so the server scope stays open.
-    yield* Effect.never
+    return yield* Effect.never
   })
 
 // Bootstrap: discover OP tokens (env + keychain) BEFORE building the
@@ -4777,7 +4836,14 @@ export const bootstrap = async (): Promise<void> => {
   })
   const baseLayer = buildBaseLayer(opAccountLayers)
   const serverLayer = buildServerLayer(baseLayer)
-  const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
+  // baseLayer is merged in directly (not just as buildServerLayer's internal
+  // dependency) so its own LunaSqliteBootstrap requirement must be satisfied
+  // here too. Effect memoizes LunaSqliteBootstrapLive by reference, so this
+  // builds it once and shares it with the copy buildServerLayer already
+  // provided.
+  const runtime = ManagedRuntime.make(
+    Layer.mergeAll(serverLayer, baseLayer).pipe(Layer.provide(LunaSqliteBootstrapLive)),
+  )
 
   // Graceful shutdown on BOTH signals. Interactive use sends SIGINT;
   // systemd `stop`/`restart` sends SIGTERM. Both must run runtime.dispose()

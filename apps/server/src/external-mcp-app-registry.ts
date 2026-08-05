@@ -239,7 +239,7 @@ export const connectExternalStdioServer = async (
 
   const transport = new StdioClientTransport({
     command: spec.command,
-    args: spec.args !== undefined ? [...spec.args] : undefined,
+    ...(spec.args !== undefined ? { args: [...spec.args] } : {}),
     ...(spec.env !== undefined ? { env: spec.env } : {}),
   })
   await client.connect(transport)

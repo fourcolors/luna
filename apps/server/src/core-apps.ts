@@ -339,11 +339,15 @@ const asClampedInt = (
  *  the first page" rather than failing closed. */
 export const validateMemoryListArgs = (args: unknown): ValidatedMemoryListArgs => {
   const a = isPlainObject(args) ? args : {}
+  const namespace = asOptionalString(a["namespace"])
+  const kind = asOptionalString(a["kind"])
+  const tag = asOptionalString(a["tag"])
+  const since = asOptionalFiniteNumber(a["since"])
   return {
-    namespace: asOptionalString(a["namespace"]),
-    kind: asOptionalString(a["kind"]),
-    tag: asOptionalString(a["tag"]),
-    since: asOptionalFiniteNumber(a["since"]),
+    ...(namespace !== undefined ? { namespace } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+    ...(tag !== undefined ? { tag } : {}),
+    ...(since !== undefined ? { since } : {}),
     limit: asClampedInt(a["limit"], MEMORY_LIST_DEFAULT_LIMIT, 1, MEMORY_LIST_MAX_LIMIT),
     offset: asClampedInt(a["offset"], 0, 0, MEMORY_LIST_MAX_OFFSET),
   }
@@ -355,10 +359,12 @@ export const validateMemoryListArgs = (args: unknown): ValidatedMemoryListArgs =
 export const validateMemorySearchArgs = (args: unknown): ValidatedMemorySearchArgs => {
   const a = isPlainObject(args) ? args : {}
   const rawQuery = typeof a["query"] === "string" ? a["query"].trim() : ""
+  const namespace = asOptionalString(a["namespace"])
+  const kind = asOptionalString(a["kind"])
   return {
     query: rawQuery.slice(0, MEMORY_SEARCH_QUERY_MAX_LEN),
-    namespace: asOptionalString(a["namespace"]),
-    kind: asOptionalString(a["kind"]),
+    ...(namespace !== undefined ? { namespace } : {}),
+    ...(kind !== undefined ? { kind } : {}),
     topK: asClampedInt(a["topK"], MEMORY_SEARCH_DEFAULT_TOP_K, 1, MEMORY_SEARCH_MAX_TOP_K),
   }
 }
@@ -415,8 +421,9 @@ export interface FeedbackListPage {
  *  than failing closed (mirrors validateMemoryListArgs). */
 export const validateFeedbackListArgs = (args: unknown): ValidatedFeedbackListArgs => {
   const a = isPlainObject(args) ? args : {}
+  const status = asOptionalString(a["status"])?.slice(0, FEEDBACK_STATUS_MAX_LEN)
   return {
-    status: asOptionalString(a["status"])?.slice(0, FEEDBACK_STATUS_MAX_LEN),
+    ...(status !== undefined ? { status } : {}),
     limit: asClampedInt(a["limit"], FEEDBACK_LIST_DEFAULT_LIMIT, 1, FEEDBACK_LIST_MAX_LIMIT),
     offset: asClampedInt(a["offset"], 0, 0, FEEDBACK_LIST_MAX_OFFSET),
   }
