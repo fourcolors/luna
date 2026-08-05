@@ -1,282 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 
-const repoRoot = resolve(__dirname, "../../../..");
-const r = (p: string) => resolve(repoRoot, p);
-const read = (p: string) => readFileSync(r(p), "utf8");
+// A hardcoded depth below this file (e.g. resolve(__dirname, "../../../.."))
+// silently mis-resolves the repo root the moment this file moves - git
+// still exits 0 against the wrong tree. Ask git for the real root instead.
+const repoRoot = (() => {
+  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: __dirname,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) {
+    throw new Error(`git rev-parse --show-toplevel failed: ${r.stderr}`);
+  }
+  return r.stdout.trim();
+})();
 
-describe("rename: dev-server-chat -> chat-server", () => {
-  describe("file renames", () => {
-    it("apps/ui-web/scripts/chat-server.ts exists", () => {
-      expect(existsSync(r("apps/ui-web/scripts/chat-server.ts"))).toBe(true);
-    });
+// Dated planning archives narrate work using whatever names were live when
+// they were written; they are historical records, not current source, so a
+// retired name legitimately still appears inside them. docs/next/ is NOT
+// exempted wholesale (it holds live contract docs) - only the two transient
+// stack-plan artifacts that describe this guard's own slice; drop those two
+// entries when the stack23 artifacts are retired.
+const EXCLUDES = [
+  ":(exclude)docs/briefs",
+  ":(exclude)docs/superpowers",
+  ":(exclude)docs/next/stack23-plan.json",
+  ":(exclude)docs/next/stack23-slices.md",
+  ":(exclude)apps/ui-web/scripts/__tests__/rename-chat-server.test.ts",
+];
 
-    it("apps/ui-web/scripts/dev-server-chat.ts does NOT exist", () => {
-      expect(existsSync(r("apps/ui-web/scripts/dev-server-chat.ts"))).toBe(
-        false,
-      );
-    });
+const NEEDLES = ["dev-server-chat", "dev:server:chat"];
+
+// git grep exits 0 on hits, 1 on none, >1 on error - 1 is the passing case
+// and must not be treated as a failure.
+const gitList = (args: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const r = spawnSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" });
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`git ${args[0]} failed: ${r.stderr}`);
+  }
+  return r.stdout.split("\n").filter(Boolean);
+};
+
+describe("retired rename guard: dev-server-chat -> chat-server (completed 2024)", () => {
+  it("no live tracked file's contents reference a retired name", () => {
+    const flags = NEEDLES.flatMap((n) => ["-e", n]);
+    expect(gitList(["grep", "-l", "-F", ...flags, "--", ...EXCLUDES])).toEqual([]);
   });
 
-  describe("apps/ui-web/package.json", () => {
-    const pkg = () =>
-      JSON.parse(read("apps/ui-web/package.json")) as {
-        scripts: Record<string, string>;
-      };
-
-    it("has script key 'server:chat'", () => {
-      expect(pkg().scripts["server:chat"]).toBeDefined();
-    });
-
-    it("does NOT have script key 'dev:server:chat'", () => {
-      expect(pkg().scripts["dev:server:chat"]).toBeUndefined();
-    });
-
-    it("'server:chat' script points to scripts/chat-server.ts", () => {
-      expect(pkg().scripts["server:chat"]).toBe(
-        "bun run scripts/chat-server.ts",
-      );
-    });
-  });
-
-  describe("scripts/luna-server-install", () => {
-    it("starts the chat server via direct script exec, not the server:chat filter wrapper", () => {
-      expect(read("scripts/luna-server-install")).toContain(
-        "run scripts/chat-server.ts",
-      );
-    });
-
-    it("does NOT use the --filter server:chat wrapper form", () => {
-      expect(read("scripts/luna-server-install")).not.toContain(
-        "--filter @luna/ui-web server:chat",
-      );
-    });
-
-    it("does NOT contain dev:server:chat", () => {
-      expect(read("scripts/luna-server-install")).not.toContain(
-        "dev:server:chat",
-      );
-    });
-  });
-
-  describe("README.md", () => {
-    it("references 'server:chat'", () => {
-      expect(read("README.md")).toContain(
-        "bun run --filter '@luna/ui-web' server:chat",
-      );
-    });
-
-    it("does NOT reference 'dev:server:chat'", () => {
-      expect(read("README.md")).not.toContain("dev:server:chat");
-    });
-  });
-
-  describe("DESIGN.md", () => {
-    it("references '(chat-server) calls it after broker hydration'", () => {
-      expect(read("DESIGN.md")).toContain(
-        "(chat-server) calls it after broker hydration",
-      );
-    });
-
-    it("does NOT reference '(dev-server-chat) calls it after broker hydration'", () => {
-      expect(read("DESIGN.md")).not.toContain(
-        "(dev-server-chat) calls it after broker hydration",
-      );
-    });
-  });
-
-  describe("AGENTS.md (project root)", () => {
-    it("references 'server:chat' when present", () => {
-      if (!existsSync(r("AGENTS.md"))) return;
-      expect(read("AGENTS.md")).toContain(
-        "bun run --filter '@luna/ui-web' server:chat",
-      );
-    });
-
-    it("does NOT reference 'dev:server:chat' when present", () => {
-      if (!existsSync(r("AGENTS.md"))) return;
-      expect(read("AGENTS.md")).not.toContain("dev:server:chat");
-    });
-  });
-
-  describe("apps/agent-cli/test/live-smoke.test.ts", () => {
-    const file = () => read("apps/agent-cli/test/live-smoke.test.ts");
-
-    it("uses 'chat-server boots:'", () => {
-      expect(file()).toContain("chat-server boots:");
-    });
-
-    it("uses 'server:chat' in canonical-verification note", () => {
-      expect(file()).toContain(
-        "server:chat`) is the canonical end-to-end verification.",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-
-    it("does NOT contain 'dev:server:chat'", () => {
-      expect(file()).not.toContain("dev:server:chat");
-    });
-  });
-
-  describe("apps/ui-web/scripts/dna-loader.ts", () => {
-    const file = () => read("apps/ui-web/scripts/dna-loader.ts");
-
-    it("references chat-server.ts dependency tree", () => {
-      expect(file()).toContain(
-        "pulling in the full chat-server.ts dependency tree.",
-      );
-    });
-
-    it("references chat-server.ts as the importer", () => {
-      expect(file()).toContain(
-        "Imported and re-exported by chat-server.ts; consumers that only",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("apps/ui-web/scripts/__tests__/loadDna.test.ts", () => {
-    const file = () => read("apps/ui-web/scripts/__tests__/loadDna.test.ts");
-
-    it("references chat-server.ts in the import-path comment", () => {
-      expect(file()).toContain(
-        "from chat-server.ts so both import paths are valid.",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("apps/ui-web/scripts/chat-server.ts (renamed file, internal refs)", () => {
-    const file = () => read("apps/ui-web/scripts/chat-server.ts");
-
-    it("uses 'server:chat' in usage comment", () => {
-      expect(file()).toContain(
-        "bun run --filter '@luna/ui-web' server:chat",
-      );
-    });
-
-    it("references 'apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.'", () => {
-      expect(file()).toContain(
-        "apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.",
-      );
-    });
-
-    it("uses 'chat-server silently falls back to naive cosine ranking'", () => {
-      expect(file()).toContain(
-        "this, chat-server silently falls back to naive cosine ranking",
-      );
-    });
-
-    it("references 'bun run chat-server.ts' as direct entry point", () => {
-      expect(file()).toContain(
-        "the direct entry point (bun run chat-server.ts).",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-
-    it("does NOT contain 'dev:server:chat'", () => {
-      expect(file()).not.toContain("dev:server:chat");
-    });
-  });
-
-  describe("packages/memory/src/backends/vectorlite-bootstrap.ts", () => {
-    const file = () =>
-      read("packages/memory/src/backends/vectorlite-bootstrap.ts");
-
-    it("references apps/ui-web/scripts/chat-server.ts", () => {
-      expect(file()).toContain(
-        "App entrypoints (`apps/ui-web/scripts/chat-server.ts`) provide",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("packages/memory/test/integration-boot.test.ts", () => {
-    const file = () => read("packages/memory/test/integration-boot.test.ts");
-
-    it("references chat-server boot order (intro)", () => {
-      expect(file()).toContain("Reproduces the chat-server boot order:");
-    });
-
-    it("references chat-server composition", () => {
-      expect(file()).toContain("Mirror the chat-server composition:");
-    });
-
-    it("references chat-server boot order (force)", () => {
-      expect(file()).toContain("Force the chat-server boot order:");
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("packages/memory/test/sqlite-vector.test.ts", () => {
-    const file = () => read("packages/memory/test/sqlite-vector.test.ts");
-
-    it("references chat-server fixture pattern", () => {
-      expect(file()).toContain("(Same fixture pattern chat-server uses.)");
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("packages/core/src/account-broker/account-broker-sql.ts", () => {
-    const file = () =>
-      read("packages/core/src/account-broker/account-broker-sql.ts");
-
-    it("references 'Seed CLI / chat-server wiring (Phase 25b)'", () => {
-      expect(file()).toContain("Seed CLI / chat-server wiring (Phase 25b)");
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("packages/core/src/db/sqlite-bootstrap.ts", () => {
-    const file = () => read("packages/core/src/db/sqlite-bootstrap.ts");
-
-    it("references apps/ui-web/scripts/chat-server.ts", () => {
-      expect(file()).toContain(
-        "App entrypoints (`apps/ui-web/scripts/chat-server.ts`) provide",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
-  describe("docs/visualizer.html", () => {
-    const file = () => read("docs/visualizer.html");
-
-    it("references 'chat-server (WebSocket :4753)'", () => {
-      expect(file()).toContain(
-        "Chat UI on :5173 + chat-server (WebSocket :4753).",
-      );
-    });
-
-    it("does NOT contain 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
+  it("no live tracked file's path carries a retired name", () => {
+    const globs = NEEDLES.map((n) => `*${n}*`);
+    expect(gitList(["ls-files", "--", ...globs, ...EXCLUDES])).toEqual([]);
   });
 });
