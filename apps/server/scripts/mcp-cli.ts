@@ -7,7 +7,7 @@
  * design: a freshly added server is untrusted with no allowed tools until
  * the operator explicitly trusts it and opts in tools.
  *
- * Usage: bun run apps/ui-web/scripts/mcp-cli.ts <command> [args]
+ * Usage: bun run apps/server/scripts/mcp-cli.ts <command> [args]
  *
  * Env vars:
  *   LUNA_DB   Path to luna.db (default: ~/.luna/luna.db)
@@ -74,7 +74,7 @@ ${bold("mcp-cli")} — Luna MCP server registry manager
 ${dim(`DB: ${dbPath}`)}
 
 ${bold("USAGE")}
-  bun run apps/ui-web/scripts/mcp-cli.ts <command> [args]
+  bun run apps/server/scripts/mcp-cli.ts <command> [args]
 
 ${bold("COMMANDS")}
   list

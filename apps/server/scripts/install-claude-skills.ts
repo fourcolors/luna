@@ -22,9 +22,9 @@
  *   ---
  *
  * Usage:
- *   bun run apps/ui-web/scripts/install-claude-skills.ts
- *   bun run apps/ui-web/scripts/install-claude-skills.ts --dry-run
- *   bun run apps/ui-web/scripts/install-claude-skills.ts --force
+ *   bun run apps/server/scripts/install-claude-skills.ts
+ *   bun run apps/server/scripts/install-claude-skills.ts --dry-run
+ *   bun run apps/server/scripts/install-claude-skills.ts --force
  *
  * Behavior:
  *   default   — install skills that aren't already present; skip existing

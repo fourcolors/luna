@@ -33,7 +33,9 @@ Luna uses a single root context with root-level ADRs when they exist. See `docs/
   Degrade requires a known dimension - an unknown dimension still fails boot fatally, since a guessed dimension would corrupt the `float32[dim]` vectorlite table sizing in `packages/memory/src/backends/sqlite-vector.ts`.
   A declared-vs-probed dimension mismatch is a config error and is never retried or degraded at boot; if boot was degraded (probe failed), the first successful real `embed()` re-checks length vs the declared dimension and fails sticky-loud so a wrong env dim is not only seen as a wall of per-write sqlite-vector errors.
   Provisioning: `scripts/luna-server-install` / `scripts/luna-container-create` accept `--ollama-probe-attempts` / `--ollama-probe-backoff-ms` (and related ollama flags) into `.env`.
-- Vault is a metadata registry plus tiered value storage; `vault_items` never contains values. `LUNA_VAULT_STORAGE` defaults to `auto` (Darwin Keychain, encrypted Luna vault elsewhere), while `env` is the explicit plaintext escape hatch. Reads, writes, all-tier deletion, integrity behavior, migration, backup, and verification are documented in `docs/audits/luna-vault-keychain-migration.md`; composition lives in `apps/ui-web/scripts/secret-chain.ts`, routing in `vault-secret-store.ts`, and registry/sync logic in `packages/vault/src/`.
+- Vault is a metadata registry plus tiered value storage; `vault_items` never contains values.
+  `LUNA_VAULT_STORAGE` defaults to `auto` (Darwin Keychain, encrypted Luna vault elsewhere), while `env` is the explicit plaintext escape hatch.
+  Reads, writes, all-tier deletion, integrity behavior, migration, backup, and verification are documented in `docs/audits/luna-vault-keychain-migration.md`; composition lives in `apps/server/src/secret-chain.ts`, routing in `vault-secret-store.ts`, and registry/sync logic in `packages/vault/src/`.
 
 ## Maintaining this file
 

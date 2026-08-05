@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "bun run scripts/dev-server.ts",
+    "dev:server": "bun run ../server/scripts/dev-server.ts",
     "server:chat": "bun run ../server/src/chat-server.ts",
     "dev:preview": "vite build --mode development && vite preview",
     "build": "[ -z \"$VITE_UI_WS_TOKEN\" ] || { echo 'refusing prod build: VITE_UI_WS_TOKEN is set (would bake the shared secret into dist/)'; exit 1; }; vite build",

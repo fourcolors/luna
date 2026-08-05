@@ -12,9 +12,9 @@
  * only scheduler, so the row is picked up automatically once installed.
  *
  * Usage:
- *   bun run apps/ui-web/scripts/daily-brief-install.ts
- *   bun run apps/ui-web/scripts/daily-brief-install.ts --force   # replace existing
- *   bun run apps/ui-web/scripts/daily-brief-install.ts --uninstall
+ *   bun run apps/server/scripts/daily-brief-install.ts
+ *   bun run apps/server/scripts/daily-brief-install.ts --force   # replace existing
+ *   bun run apps/server/scripts/daily-brief-install.ts --uninstall
  *
  * Env vars honoured:
  *   LUNA_DB_PATH / LUNA_HOME     — same resolution as chat-server.ts

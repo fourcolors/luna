@@ -17,12 +17,16 @@
  * pin event); pop them out via the existing widget pop-out button.
  *
  * Usage:
- *   bun apps/ui-web/scripts/seed-probe-widgets.ts --db /path/to/luna.db
+ *   bun apps/server/scripts/seed-probe-widgets.ts --db /path/to/luna.db
  *
  * ⚠️ Writes via bun:sqlite WAL. Safe alongside a running server for these
  * seed-sized writes, but already-connected clients only learn of the new
  * artifacts on their next connect — open the widget windows after seeding.
  */
+// TODO(#444): 26 pre-existing strictNullChecks/noUncheckedIndexedAccess
+// errors, mostly in the markdown->HTML helpers below plus argValue in
+// main() - outside apps/*/src/** on purpose so this doesn't regress the
+// tsc gate. Remove this marker only when the errors are fixed.
 import { readFileSync } from "node:fs"
 import * as path from "node:path"
 import { Effect, Layer } from "effect"
@@ -190,7 +194,7 @@ const main = async () => {
   const dbPath = argValue("--db")
   if (!dbPath) {
     console.error(
-      "Usage: bun apps/ui-web/scripts/seed-probe-widgets.ts --db /path/to/luna.db",
+      "Usage: bun apps/server/scripts/seed-probe-widgets.ts --db /path/to/luna.db",
     )
     process.exit(1)
   }
