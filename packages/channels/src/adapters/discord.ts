@@ -36,7 +36,7 @@
  * downloaded them either); `telegram.ts`'s download/sniff pipeline is the
  * template when that lands.
  */
-import { Duration, Effect, Either, Redacted } from "effect"
+import { Duration, Effect, Either, Fiber, Redacted } from "effect"
 import { Client, Events, GatewayIntentBits, Partials } from "discord.js"
 import type {
   ChannelAdapter,
@@ -65,6 +65,29 @@ const MAX_RETRY_AFTER_MS = 60_000
  *  - "Unknown Message" — the user deleted the placeholder mid-turn.
  */
 const BENIGN_EDIT_ERRORS = ["not modified", "unknown message"] as const
+
+/**
+ * Discord clears "is typing…" ~10s after the last trigger, so a turn that
+ * outlives that window has to re-trigger it. 8s leaves ~2s of slack for a slow
+ * REST round-trip rather than letting the indicator visibly stutter.
+ */
+const TYPING_REFRESH_MS = 8_000
+
+/**
+ * Hard bound on one channel's refresh loop, expressed as a COUNT of refreshes
+ * (~2 minutes of cover). A turn that never delivers is ordinary rather than
+ * exotic — this adapter's gate runs BEFORE the service-level dedup that drops
+ * a gateway-resume redelivery — and nothing else bounds the loop, because the
+ * breaker below only counts FAILURES and those attempts all succeed.
+ */
+const TYPING_MAX_REFRESHES = 15
+
+/**
+ * Consecutive sendTyping failures that open a channel's typing breaker. The
+ * realistic cause is a missing VIEW_CHANNEL/SEND_MESSAGES grant, which Discord
+ * reports as 50001/50013 — channel-scoped, and it does not self-heal.
+ */
+const TYPING_FAILURE_THRESHOLD = 3
 
 /* -------------------------------------------------------------------------- */
 /* 429 parsing (harvested from the May-2026 donor)                             */
@@ -165,6 +188,13 @@ export interface DiscordTransport {
   readonly send: (channelId: string, content: string) => Promise<{ id: string }>
   /** Edit an existing message in place. */
   readonly edit: (channelId: string, messageId: string, content: string) => Promise<void>
+  /**
+   * Show the "is typing…" indicator in a channel. Expires after ~10s, so the
+   * adapter refreshes it. NOTE: deliver() is NOT inbound-gated — it trusts the
+   * service layer — so typing must never be started from the
+   * deliver()/standalone path, only from the post-gate inbound path.
+   */
+  readonly sendTyping: (channelId: string) => Promise<void>
 }
 
 /**
@@ -236,6 +266,21 @@ export const makeRealDiscordTransport = (
       const sent = await (channel as { send: (c: string) => Promise<{ id: string }> }).send(content)
       return { id: sent.id }
     },
+    sendTyping: async (channelId) => {
+      // Same shape guard `send` uses above, for the same reason: `fetch` can
+      // reject and a non-text channel has no sendTyping. Both surface as a
+      // rejection, which is what the caller's per-channel breaker counts —
+      // a channel we cannot see is exactly the case worth giving up on.
+      const channel = await client.channels.fetch(channelId)
+      if (
+        channel === null ||
+        !("sendTyping" in channel) ||
+        typeof channel.sendTyping !== "function"
+      ) {
+        throw new Error(`channel ${channelId} cannot show a typing indicator`)
+      }
+      await (channel as { sendTyping: () => Promise<void> }).sendTyping()
+    },
     edit: async (channelId, messageId, content) => {
       const channel = await client.channels.fetch(channelId)
       if (channel === null || !("messages" in channel)) {
@@ -274,6 +319,14 @@ export interface DiscordAdapterConfig {
   readonly allowedChannels?: Iterable<string>
   /** Inject a fake transport for tests. Takes priority over `token`. */
   readonly transport?: DiscordTransport
+  /**
+   * Override the "is typing…" refresh interval, in ms. A TEST SEAM, for the
+   * same reason `transport` above is one: the refresh CAP is a hard rail, and
+   * at the production 8s cadence observing it would cost ~2 minutes of wall
+   * clock. ONLY the interval is overridable — the cap stays a module constant.
+   * Leave unset in production.
+   */
+  readonly typingRefreshMs?: number
   /** Log "logged in as ..." on ready. Default true. */
   readonly logLogin?: boolean
 }
@@ -308,6 +361,12 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
   const allowedUsers: ReadonlySet<string> = new Set(config.allowedUsers)
   const allowedChannels: ReadonlySet<string> = new Set(config.allowedChannels ?? [])
   const logLogin = config.logLogin ?? true
+  // A non-positive override would busy-loop the refresh fiber, so it falls
+  // back rather than being trusted.
+  const typingRefreshMs =
+    config.typingRefreshMs !== undefined && config.typingRefreshMs > 0
+      ? config.typingRefreshMs
+      : TYPING_REFRESH_MS
 
   // FAIL-CLOSED GATE #1 — construction. Not a warning, not a default: a throw.
   if (allowedUsers.size === 0) {
@@ -328,6 +387,37 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
 
   /** Log the first drop per (channel:user) so a spammer cannot flood the log. */
   const loggedDrops = new Set<string>()
+
+  /**
+   * channelId → its live "is typing…" refresh loop.
+   *
+   * Keyed by CHANNEL, never per turn: service.ts's delivery fiber is per
+   * (threadId, adapterId) and PERSISTS across turns, so a per-turn key would
+   * orphan every follow-up turn's fiber. Discord's threadingKey IS the
+   * channelId (see toChannelMessage), so one channel has at most one loop and
+   * starting is idempotent.
+   */
+  const typingFibers = new Map<string, Fiber.RuntimeFiber<void, never>>()
+
+  /** channelId → consecutive sendTyping failures. 429s are excluded, see below. */
+  const typingFailures = new Map<string, number>()
+
+  /**
+   * Channels whose typing breaker has opened — permanent for the life of the
+   * adapter, and deliberately with no half-open state. Typing is cosmetic, so
+   * a dark indicator costs nothing, while retrying a channel we are probably
+   * not allowed to see costs log spam and rate-limit pressure on every turn.
+   */
+  const typingBreakerOpen = new Set<string>()
+
+  /**
+   * Set by stop(). The service scope closes around the same time stop() runs,
+   * with no ordering guarantee, so a gateway event already in flight could
+   * otherwise call startTyping() AFTER the sweep and leak a refresh loop for
+   * the length of the cap. All three touch points are synchronous JS, so the
+   * flag closes that window.
+   */
+  let typingSwept = false
 
   /* ---------------------------------------------------------------------- */
   /* The gate                                                                */
@@ -381,6 +471,93 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
   })
 
   /* ---------------------------------------------------------------------- */
+  /* Typing indicator                                                        */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * One sendTyping attempt plus the breaker bookkeeping for its outcome.
+   * NEVER fails: the indicator is cosmetic and must not be able to take a turn
+   * down with it.
+   *
+   * A 429 neither increments NOR resets the count. Rate limiting is the one
+   * realistic TRANSIENT here and it self-heals, so the "does not self-heal"
+   * rationale for opening does not apply to it: counting 429s would let three
+   * rate-limited refreshes kill typing permanently, and resetting on them
+   * would stop a rate-limited channel opening at all. It is deliberately NOT
+   * routed through withRateLimitRetry — that parks the fiber for the whole
+   * retry-after and console.errors every failure, which is the wrong trade for
+   * a spinner that the next refresh will retry anyway.
+   */
+  const attemptTyping = (t: DiscordTransport, channelId: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const outcome = yield* Effect.either(
+        Effect.tryPromise({ try: () => t.sendTyping(channelId), catch: (e) => e as unknown }),
+      )
+      if (Either.isRight(outcome)) {
+        typingFailures.delete(channelId)
+        return
+      }
+      const err = outcome.left
+      if (parseDiscord429RetryMs(err) !== null) return
+      const consecutive = (typingFailures.get(channelId) ?? 0) + 1
+      typingFailures.set(channelId, consecutive)
+      if (consecutive < TYPING_FAILURE_THRESHOLD) return
+      typingBreakerOpen.add(channelId)
+      // Exactly one line per channel for the life of the process: the loop
+      // stops attempting, so there is nothing further to report, and a
+      // per-failure log would spam every turn in a channel we cannot see.
+      console.warn(
+        `[discord-adapter] typing indicator disabled for channel=${channelId} — ` +
+          `${TYPING_FAILURE_THRESHOLD} consecutive sendTyping failures ` +
+          `(usually a missing VIEW_CHANNEL/SEND_MESSAGES grant). Replies are ` +
+          `unaffected. Last error: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    })
+
+  /**
+   * Start the indicator for `channelId`, and keep it alive while the turn is.
+   *
+   * SECURITY: only ever call this AFTER `isInboundAllowed` has accepted the
+   * message — see handleInbound for why that ordering is the whole point.
+   *
+   * Idempotent per channel: a second inbound while a loop is live must not
+   * start a second one.
+   */
+  const startTyping = (channelId: string): void => {
+    const t = transport
+    if (t === null || typingSwept) return
+    if (typingBreakerOpen.has(channelId) || typingFibers.has(channelId)) return
+    const loop = Effect.gen(function* () {
+      for (let refresh = 0; refresh <= TYPING_MAX_REFRESHES; refresh++) {
+        yield* attemptTyping(t, channelId)
+        // That attempt opened the breaker: nothing left to refresh.
+        if (typingBreakerOpen.has(channelId)) return
+        if (refresh === TYPING_MAX_REFRESHES) return
+        yield* Effect.sleep(Duration.millis(typingRefreshMs))
+      }
+    })
+    // A runFork ROOT, like telegram.ts's: the handler fiber this is started
+    // alongside finishes when the turn's effect does, so a child fiber would
+    // be interrupted long before the reply that supersedes the indicator.
+    const fiber = Effect.runFork(loop)
+    typingFibers.set(channelId, fiber)
+    fiber.addObserver(() => {
+      // Only ever retire OUR OWN entry — a stop-and-restart in between will
+      // have installed a different fiber under this key.
+      if (typingFibers.get(channelId) === fiber) typingFibers.delete(channelId)
+    })
+  }
+
+  /** Stop the indicator for `channelId` (the first reply supersedes it). */
+  const stopTyping = (channelId: string): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const fiber = typingFibers.get(channelId)
+      if (fiber === undefined) return Effect.void
+      typingFibers.delete(channelId)
+      return Fiber.interrupt(fiber).pipe(Effect.asVoid)
+    })
+
+  /* ---------------------------------------------------------------------- */
   /* Inbound                                                                 */
   /* ---------------------------------------------------------------------- */
 
@@ -395,6 +572,13 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       }
       const handler = messageHandler
       if (handler === null) return
+      // The adapter's FIRST observable side effect, and it is observable by
+      // the SENDER — so it sits below BOTH preconditions. Below the gate,
+      // because a pre-gate indicator is an "is the bot listening to me?"
+      // oracle for a stranger probing the front door of a shell. Below the
+      // handler check, because otherwise the bot claims to be working on a
+      // message that nothing will ever process.
+      startTyping(m.channelId)
       Effect.runFork(handler(toChannelMessage(m)))
     } catch (err) {
       console.error("[discord-adapter] inbound handler error:", err)
@@ -468,6 +652,8 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
 
         if (!started) {
           started = true
+          // A restart after stop() must be able to type again.
+          typingSwept = false
           t.onMessage(handleInbound)
           t.onError((e) => {
             console.error("[discord-adapter] client error:", e.message)
@@ -502,12 +688,22 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
     },
 
     stop() {
-      return Effect.suspend(() => {
+      return Effect.gen(function* () {
+        // The refresh loops are runFork ROOTS, so the service scope closing
+        // does not touch them, and ChannelService calls stop() only AFTER
+        // that scope has closed: this sweep is the only thing that ends them.
+        // Breaker state deliberately survives — it describes a channel grant,
+        // not a connection.
+        typingSwept = true
+        const fibers = Array.from(typingFibers.values())
+        typingFibers.clear()
+        yield* Fiber.interruptAll(fibers)
+
         const t = transport
-        if (t === null) return Effect.void
+        if (t === null) return
         started = false
         sentMessageIds.clear()
-        return Effect.promise(() => t.destroy().catch(() => undefined))
+        yield* Effect.promise(() => t.destroy().catch(() => undefined))
       })
     },
 
@@ -524,6 +720,12 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
 
         const channelId = target.address["channelId"] as string | undefined
         if (channelId === undefined) return
+
+        // Anything we send supersedes the indicator. Placed BELOW the
+        // transport guard — a Telegram-addressed delivery must not clear a
+        // live Discord indicator — and ABOVE the empty-text return, so an
+        // empty first chunk cannot leave it spinning for the rest of the cap.
+        yield* stopTyping(channelId)
 
         const text = stripExpandableQuoteMarker(content)
         if (text.length === 0) return
