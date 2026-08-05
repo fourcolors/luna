@@ -2171,5 +2171,14 @@ describe("transport fan-out", () => {
     // 4. ...addressed to the discord transport, not to a foreign id.
     expect(discordCtx.deliveries[0]?.target.address.transport).toBe("discord")
     expect(discordCtx.deliveries[0]?.target.inReplyTo.transport).toBe("discord")
+
+    // 5. ...and to the ORIGINATING channel. The transport assertions above pin
+    //    "which adapter", but this rail's stated stake is "a foreign channel
+    //    id", and a reply that reaches the right adapter in the WRONG channel is
+    //    a disclosure, not a routing nit: the delivery target is built once from
+    //    the FIRST inbound of a thread (service.ts:236-248) and then reused for
+    //    every later turn, so a mis-built address leaks quietly and forever.
+    expect(discordCtx.deliveries[0]?.target.address.channelId).toBe("guild-chan-1")
+    expect(discordCtx.deliveries[0]?.target.inReplyTo.channelId).toBe("guild-chan-1")
   })
 })
