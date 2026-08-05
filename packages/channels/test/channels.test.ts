@@ -1858,6 +1858,81 @@ describe("delivery — fence repair budget", () => {
     expect(contentGaps).toEqual([])
     expect(unbalanced).toEqual([])
   })
+
+  /* ------------------------------------------------------------------------ */
+  /* Slice 2c — HEADROOM BUDGET (task #9, ported from Sol Agent)               */
+  /*                                                                          */
+  /* The single-chunk fast path (delivery.ts: finalContent.length <= maxLen   */
+  /* => chunkLimit = maxLen) reserves nothing, yet repairSplitFences still    */
+  /* appends a bare closer ("\n" + a 3-char marker, +4) when the content ends */
+  /* inside an open fence. At the old budget of 2000 a 1997..2000-char answer */
+  /* repaired to 2001..2004 chars, Discord rejected it, delivery.ts swallowed */
+  /* the rejection, and the user received NOTHING. Fix: Sol Agent's headroom  */
+  /* posture (lib/discord/markdown.ts, MAX_LEN = 1900) — budget the Discord   */
+  /* adapter at 1900 so repair overhead can never cross the platform limit.   */
+  /* Fast path worst case 1900 + 4 = 1904 <= 2000; split-path chunks are      */
+  /* bounded by maxLen = 1900 <= 2000.                                        */
+  /* ------------------------------------------------------------------------ */
+
+  // The Discord adapter's chunking budget (DISCORD_MAX_MESSAGE_LENGTH in
+  // adapters/discord.ts, not exported; its value is pinned by the
+  // fail-closed-construction test in discord-adapter.test.ts).
+  const DISCORD_BUDGET = 1900
+  // This is Discord's limit, distinct from our budget: the budget sits 100
+  // below it precisely so repaired chunks always fit.
+  const DISCORD_PLATFORM_LIMIT = 2000
+
+  it("delivers the old total-loss window (1997..2000 chars ending inside an open fence) within the platform limit", async () => {
+    for (const total of [1997, 2000]) {
+      const head = "Here is the fix:\n```typescript\n"
+      const TEXT = head + "x".repeat(total - head.length)
+      // Preconditions: exact length, and the text really ends inside an OPEN
+      // fence (odd marker count), so repair has a closer to append.
+      expect(TEXT.length).toBe(total)
+      expect((TEXT.match(/```/g) ?? []).length % 2).toBe(1)
+
+      const finals = await deliverFinalChunks(TEXT, DISCORD_BUDGET, `headroom-old-window-${total}`)
+
+      // The answer is delivered rather than silently lost...
+      expect(finals.length).toBeGreaterThan(0)
+      expect(contentSurvivalGap(TEXT, finals.map((d) => d.content).join(""))).toBe(null)
+      // ...and no emitted chunk can be rejected by the platform.
+      const overLimit = finals.map((d) => d.content.length).filter((n) => n > DISCORD_PLATFORM_LIMIT)
+      expect(overLimit).toEqual([])
+    }
+  })
+
+  it("keeps the residual fast-path window safe: exactly 1900 chars in an open fence repairs to 1904 in one chunk", async () => {
+    const head = "Here is the fix:\n```typescript\n"
+    const TEXT = head + "x".repeat(DISCORD_BUDGET - head.length)
+    expect(TEXT.length).toBe(DISCORD_BUDGET)
+    expect((TEXT.match(/```/g) ?? []).length % 2).toBe(1)
+
+    const finals = await deliverFinalChunks(TEXT, DISCORD_BUDGET, "headroom-fastpath-1900")
+
+    // length <= budget takes the single-chunk fast path...
+    expect(finals.length).toBe(1)
+    // ...where repair appends the bare closer ("\n```"): the +4 worst case.
+    expect(finals[0]?.content.length).toBe(DISCORD_BUDGET + 4)
+    expect(finals[0]?.content.length).toBeLessThanOrEqual(DISCORD_PLATFORM_LIMIT)
+  })
+
+  it("does not shatter a ~4000-char fenced answer under the 1900 budget", async () => {
+    const line = "export const alpha = (n: number): number => n * 2"
+    const TEXT =
+      "Here is the full module.\n```typescript\n" +
+      Array.from({ length: 78 }, () => line).join("\n") +
+      "\n```\nThat is all of it."
+    // Long enough that the split path must run at the 1900 budget.
+    expect(TEXT.length).toBeGreaterThan(2 * DISCORD_BUDGET)
+
+    const finals = await deliverFinalChunks(TEXT, DISCORD_BUDGET, "headroom-no-shatter")
+
+    // The split really happened, and the 100 chars of headroom did not
+    // collapse the budget: a ~4000-char answer stays a handful of messages.
+    expect(finals.length).toBeGreaterThan(1)
+    expect(finals.length).toBeLessThanOrEqual(4)
+  })
 })
 
 /* -------------------------------------------------------------------------- */

@@ -205,7 +205,9 @@ describe("fail-closed construction", () => {
     expect(a.id).toBe("d")
     expect(a.transport).toBe("discord")
     expect(a.capability).toBe("stream-edit")
-    expect(a.maxMessageLength).toBe(2000)
+    // 1900, not 2000: the budget sits below Discord's platform limit so fence
+    // repair overhead can never cross it (Slice 2c, ported from Sol Agent).
+    expect(a.maxMessageLength).toBe(1900)
   })
 })
 

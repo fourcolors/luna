@@ -49,8 +49,15 @@ import type {
 /* Constants                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/** Discord's hard per-message limit. delivery.ts splits to this before deliver(). */
-const DISCORD_MAX_MESSAGE_LENGTH = 2000
+/**
+ * Message budget handed to delivery.ts for chunking: 1900 against Discord's
+ * 2000 platform limit, so fence repair (+4 worst case on the single-chunk fast
+ * path: "\n" + a 3-char closer) and any future marker can never cross the
+ * platform limit. Fast path worst case 1900 + 4 = 1904 <= 2000; split-path
+ * chunks are bounded by maxLen = 1900 <= 2000. Ported from Sol Agent
+ * lib/discord/markdown.ts (MAX_LEN = 1900, "leave room for overhead").
+ */
+const DISCORD_MAX_MESSAGE_LENGTH = 1900
 
 /** Attempts for a rate-limited (429) REST call before giving up. */
 const MAX_RATE_LIMIT_ATTEMPTS = 3
