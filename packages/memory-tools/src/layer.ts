@@ -42,7 +42,8 @@ import {
   MemoryLayer,
   MemoryRouterTag,
   SqliteVectorBackend,
-  type MemoryBackend,
+  type MemoryRouter,
+  type MemoryVectorBackend,
 } from "@luna/memory"
 import { defineToolPackage } from "@luna/tools"
 import type {
@@ -151,14 +152,16 @@ export const buildMemoryMcpServer = (
  * above it. `MemoryRouterLayer` below is the sqlite convenience wrapper most
  * callers want.
  *
- * `BackendApi` only needs to satisfy `MemoryBackend` (put/get/query/delete/
- * exportAll/importAll) - vector search is an optional capability the router
- * detects per-backend via `hasVectorSearch` (`@luna/memory`'s `backend.ts`),
- * not a requirement of this seam.
+ * `BackendApi` must satisfy `MemoryVectorBackend` (put/get/query/delete/
+ * exportAll/importAll plus `search`). This composition always builds a
+ * single-rule `"*"` router, so a search-less backend would make every
+ * `memory_search` call fail with "no vector backend for namespace X" - the
+ * constraint below turns that dead config into a compile error instead of a
+ * runtime surprise.
  */
 export const makeMemoryRouterLayer = <
   BackendId,
-  BackendApi extends MemoryBackend,
+  BackendApi extends MemoryVectorBackend,
   E,
   R,
 >(
@@ -230,6 +233,20 @@ export interface MemoryToolsLayerOptions {
    * adapter-sdk) - the caller builds the SDK-backed layer and passes it in.
    */
   readonly rerankerLayer?: Layer.Layer<MemoryReranker, never, never>
+  /**
+   * Override the MemoryRouter Layer entirely. When provided, `MemoryToolsLayer`
+   * uses it INSTEAD of `MemoryRouterLayer(dbPath)` - this is the seam a
+   * caller swaps a different memory backend through (e.g.
+   * `makeMemoryRouterLayer(otherBackendLayer, otherBackendTag)`) without
+   * editing this file; `dbPath` is ignored when set. DEFAULT undefined:
+   * `MemoryRouterLayer(dbPath)`, today's sqlite-vector-only behavior,
+   * unchanged.
+   */
+  readonly routerLayer?: Layer.Layer<
+    MemoryRouter,
+    MemoryBackendError,
+    EmbedderService | LunaSqliteBootstrap | ObservabilityService | Clock
+  >
 }
 
 /**
@@ -248,7 +265,6 @@ export const MemoryToolsLayer = (
   MemoryBackendError | EmbedderError,
   LunaSqliteBootstrap | ObservabilityService | Clock
 > => {
-  const dbPath = opts?.dbPath ?? resolveDbPath()
   const embedderL = opts?.embedder ?? selectEmbedderLayer()
   const createConfig = (
     router: Parameters<typeof buildMemoryMcpServer>[0],
@@ -280,7 +296,15 @@ export const MemoryToolsLayer = (
         createSessionBinding: () => createConfig(router, reranker, observability),
       }
     }),
-  ).pipe(Layer.provide(MemoryRouterLayer(dbPath)), Layer.provide(embedderL))
+  ).pipe(
+    // `resolveDbPath()` mkdirp's the on-disk db dir as a side effect - only
+    // called when actually needed, so passing `routerLayer` never touches
+    // the filesystem for a path that would end up unused.
+    Layer.provide(
+      opts?.routerLayer ?? MemoryRouterLayer(opts?.dbPath ?? resolveDbPath()),
+    ),
+    Layer.provide(embedderL),
+  )
   return opts?.rerankerLayer !== undefined
     ? base.pipe(Layer.provide(opts.rerankerLayer))
     : base
