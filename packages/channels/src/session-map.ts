@@ -268,6 +268,15 @@ export const lookupOrCreate = (
       .createThread({
         title,
         tags: ["channel", msg.transport],
+        // Eric's call (2026-08-04): channel-originated threads (Discord et
+        // al) previously omitted model/effort entirely, so they rode the
+        // "daily-driver" broker lane (claude-sonnet-5, resolver.ts) instead
+        // of whatever the operator actually wants for chat. Pin explicitly
+        // rather than relying on that lane, which is a dead role-binding
+        // (see packages/adapter-sdk/src/adapter.ts:84 — evaluated once at
+        // import time against a null store, never reads provider_settings).
+        model: "claude-opus-5",
+        effort: "high",
         channelMeta: {
           interface: msg.transport === "telegram" ? "Telegram" : msg.transport,
           chatId: String(msg.channelId),

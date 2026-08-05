@@ -4844,6 +4844,20 @@ const buildMain = (
 // providers up front. Keychain reads are <100ms and one-shot; we accept
 // the synchronous-feeling startup latency.
 const bootstrap = async (): Promise<void> => {
+  // Phase 27a ordering fix (local): `LunaSqliteBootstrapLive` must run before
+  // the process opens its FIRST `new Database()`, because bun:sqlite's
+  // `Database.setCustomSQLite()` is process-global and one-shot. The module
+  // header on vectorlite-bootstrap.ts assumes the app provides this Layer
+  // "before any store opens a Database", but `probeCredentialReadiness()` and
+  // `applyProviderSettingsToEnv()` below both open bun:sqlite OUTSIDE any
+  // Layer, so by the time the real Layer.provide runs it is already too late
+  // and init fails with "SQLite already loaded" -> HNSW silently disabled.
+  // Building the Layer eagerly here lands setCustomSQLite() first.
+  // `initVectorlite()` is idempotent (module-level cache), so the later
+  // Layer.provide returns the same cached result. `Layer.sync` has no
+  // finalizer, so the immediate scope close tears down nothing.
+  Effect.runSync(Effect.scoped(Layer.build(LunaSqliteBootstrapLive)))
+
   // W2 boot integrity gate: refuse to boot on a locked-out Luna vault (store
   // present but the key is missing / wrong / tampered) BEFORE any layer graph
   // or op-token discovery runs. A missing/empty store is fine (fresh install).
