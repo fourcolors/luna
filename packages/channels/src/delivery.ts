@@ -41,7 +41,7 @@
  * This module does NOT create threads or modify ChatService - it is a
  * PURE DOWNSTREAM CONSUMER of chat.subscribe(), exactly as ui-ws is.
  */
-import { Effect, Fiber, Ref, Schedule, Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Ref, Schedule, Scope, Stream } from "effect"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelAdapter, DeliveryTarget } from "./types.js"
 
@@ -483,6 +483,102 @@ const deliverChunks = (
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stream-edit finalize loop (stop at the first failed chunk)                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Wall-clock budget for one turn's finalize loop: chunk 0 (usually the
+ * placeholder edit) plus every follow-up chunk. Ported as-is from Sol Agent
+ * (DELIVERY_DEADLINE_MS, sol flo-local lib/discord/streaming.ts:36): past
+ * two minutes the user has moved on, so remaining chunks are abandoned and
+ * the truncation marker says what arrived. Wired in deliverFinalChunks;
+ * exported for the spec's pin test.
+ */
+export const deliveryDeadlineMs = 120_000
+
+/**
+ * One-line truncation notice (donor: sol flo-local lib/discord/streaming.ts
+ * finalize loop). Pinned by spec: matches /reply truncated/i and /resend/i,
+ * carries "<delivered> of <total>", single line, at most 100 chars, which is
+ * the headroom the 1900 chunk budget leaves against Discord's 2000 hard
+ * limit.
+ */
+const truncationMarker = (delivered: number, total: number): string =>
+  `⚠️ Reply truncated: ${String(delivered)} of ${String(total)} parts delivered. Ask me to resend the rest.`
+
+/**
+ * Finalize-phase chunk loop, stop-at-first-failure (donor: sol flo-local
+ * lib/discord/streaming.ts finalize loop). The failure mode this replaces:
+ * the old per-chunk swallow kept sending AFTER a failed chunk, so the user
+ * got an answer with its middle silently missing that still LOOKED complete,
+ * the donor's measured multi-chunk-loss incident. Rules:
+ *
+ *  - A chunk whose deliver() fails (defect or typed failure) stops the loop.
+ *    Later chunks are never attempted, and the loop never re-sends a chunk:
+ *    a loop-level retry would duplicate an already-delivered message, so all
+ *    retrying lives INSIDE adapter.deliver (the discord classifier's single
+ *    re-attempt). The exported deliveryRetrySchedule stays unwired here.
+ *  - The failure cause is logged. The swallow this replaces was silent.
+ *  - When at least one chunk was delivered, a one-line truncation marker is
+ *    sent as a fresh non-partial message AFTER the failure, so the user
+ *    knows the reply is torn and how to get the rest. When chunk 0 itself
+ *    failed nothing was delivered, so there is no torn reply to explain and
+ *    no marker is sent. The marker gets exactly one attempt; if it fails
+ *    too, the log line above is the record.
+ *  - The whole loop runs under deliveryDeadlineMs of wall clock. Once the
+ *    budget is spent, remaining chunks are abandoned and counted as
+ *    undelivered; same marker rules apply.
+ */
+const deliverFinalChunks = (
+  adapter: ChannelAdapter,
+  target: DeliveryTarget,
+  chunks: string[],
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const total = chunks.length
+    const deadlineAt = Date.now() + deliveryDeadlineMs
+    let delivered = 0
+    let why: string | null = null
+    for (const [idx, chunk] of chunks.entries()) {
+      if (Date.now() >= deadlineAt) {
+        why = `delivery deadline (${String(deliveryDeadlineMs)}ms) exceeded`
+        break
+      }
+      const exit = yield* Effect.exit(
+        adapter.deliver(target, chunk, {
+          isPartial: false,
+          isFinal: idx === total - 1,
+          chunkIndex: idx,
+          totalChunks: total,
+        }),
+      )
+      if (Exit.isFailure(exit)) {
+        why = `chunk ${String(idx + 1)}/${String(total)} failed: ${Cause.pretty(exit.cause)}`
+        break
+      }
+      delivered++
+    }
+    if (why === null) return
+    console.error(
+      `[channels/delivery] TRUNCATED REPLY: delivered ${String(delivered)}/${String(total)} chunks; ${why}`,
+    )
+    if (delivered === 0) return
+    const markerExit = yield* Effect.exit(
+      adapter.deliver(target, truncationMarker(delivered, total), {
+        isPartial: false,
+        isFinal: true,
+        chunkIndex: total,
+        totalChunks: total + 1,
+      }),
+    )
+    if (Exit.isFailure(markerExit)) {
+      console.error(
+        `[channels/delivery] truncation marker failed too: ${Cause.pretty(markerExit.cause)}`,
+      )
+    }
+  })
+
+/* -------------------------------------------------------------------------- */
 /* Public: subscribeAndDeliver                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -732,20 +828,7 @@ export const subscribeAndDeliver = (
                         ? maxLen
                         : fenceRepairChunkLimit(finalContent, maxLen)
                     const chunks = repairSplitFences(splitToChunks(finalContent, chunkLimit))
-                    const total = chunks.length
-                    yield* Effect.forEach(
-                      chunks,
-                      (chunk, idx) =>
-                        adapter
-                          .deliver(target, chunk, {
-                            isPartial: false,
-                            isFinal: idx === total - 1,
-                            chunkIndex: idx,
-                            totalChunks: total,
-                          })
-                          .pipe(Effect.catchAllCause(() => Effect.void)),
-                      { discard: true },
-                    )
+                    yield* deliverFinalChunks(adapter, target, chunks)
                   }
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")

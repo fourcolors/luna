@@ -1168,3 +1168,269 @@ describe("Slice 1 — sendTyping failure breaker (per channel)", () => {
     }
   }, 20_000)
 })
+
+/* ========================================================================== */
+/* SLICE 1b+11 — measured send classifier for FINAL sends (task #7)            */
+/* ========================================================================== */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * GIVEN a FINAL Discord send that rejects,
+ * WHEN the adapter classifies the failure,
+ * THEN it behaves per Sol Agent's MEASURED classifier (1295 production
+ * failures: 571 channel-cache, 415 network, 155 token, 0 rate-limit):
+ *   - "Could not find the channel"  => REFETCH: one immediate re-attempt
+ *     (Luna's transport.send re-fetches the channel internally, so the donor's
+ *     separate REST re-fetch collapses into simply calling send again).
+ *   - "Expected token to be set"    => PERMANENT: abort immediately, no retry.
+ *   - HTTP 4xx (and not 429)        => PERMANENT: abort immediately, no retry.
+ *   - network / abort / 5xx         => RETRY: EXACTLY ONE app-level retry at a
+ *     flat 750ms (donor DELIVERY_RETRY_MS; exported here as
+ *     `discordDeliveryRetryMs`). Not a loop, not exponential.
+ *   - in every non-recovered case the failure SURFACES out of deliver() (an
+ *     Exit failure), so delivery.ts's chunk loop can stop. Defect vs typed
+ *     error is pong's choice: `Effect.die` typechecks under the frozen
+ *     `Effect.Effect<void>` signature in types.ts, which is OUT OF SCOPE.
+ *
+ * NO 429 BRANCH, BY DESIGN (AP4 is binding): Sol measured ZERO 429s at this
+ * seam because @discordjs/rest queues and waits on rate limits internally,
+ * and Luna's client shares those defaults. Do not add a 429 classifier branch
+ * and do not spec one. The existing `withRateLimitRetry` tests above
+ * (:457-547) keep their belt-and-suspenders behaviour AS IS.
+ *
+ * SCOPE CARVE-OUT — FINAL sends only. Three existing rails pin today's
+ * best-effort swallow for the OTHER paths and must stay green UNEDITED:
+ *   - "gives up after the attempt ceiling..." (persistent 429, PARTIAL):
+ *     resolves, exactly 3 transport attempts. Your classifier must NOT add a
+ *     second withRateLimitRetry round on top (3 + 3 = 6 breaks it).
+ *   - "does not retry a non-429 failure" (status-LESS Missing Permissions,
+ *     PARTIAL): resolves, exactly 1 attempt. Partials stay swallowed.
+ *   - "swallows a benign edit failure..." (FINAL via the EDIT path): the
+ *     placeholder-edit path keeps its swallow; this spec covers SENDS.
+ * Stream partials are superseded by the final, so best-effort is correct
+ * there; the chunk loop's finals are exactly where silent loss became the
+ * donor's measured incident.
+ *
+ * OUT OF SCOPE — the implementation for Slice 1b+11 may modify ONLY:
+ *   - packages/channels/src/adapters/discord.ts
+ *   - packages/channels/src/delivery.ts
+ *   - packages/channels/test/discord-adapter.test.ts (additions below existing
+ *     tests only; never edit or weaken an existing test)
+ *   - packages/channels/test/channels.test.ts (same constraint)
+ * It must NOT touch: src/types.ts, src/index.ts, src/service.ts,
+ * src/session-map.ts, src/commands.ts, src/dedup.ts, src/adapters/telegram*,
+ * telegram tests, or any other package. The auditor enforces this from the
+ * diff. (This is why the constant pin below imports from
+ * "../src/adapters/discord.js" directly, not via index.js.)
+ *
+ * Tier B: donor constants are CLOSED (750ms, one retry, 120000ms, 1900).
+ *
+ * TALLY for this file's block: 8 tests, 7 RED on arrival, 1 control
+ * (labelled CONTROL, green on arrival). Timing assertions are lower-bound
+ * only, except the control's generous 700ms ceiling on a pure in-memory path.
+ */
+
+/** Donor-measured error shapes (sol-agent test/discord-multichunk-loss.test.ts). */
+const ERR_CHANNEL_CACHE = () =>
+  new Error("Could not find the channel chan-1 to send the reply to.")
+const ERR_TOKEN = () =>
+  new Error("Expected token to be set for this request, but none was present")
+const ERR_FORBIDDEN = () => Object.assign(new Error("Missing Permissions"), { status: 403 })
+const ERR_5XX = () => Object.assign(new Error("Internal Server Error"), { status: 502 })
+const ERR_NETWORK = () =>
+  Object.assign(new Error("getaddrinfo ENOTFOUND discord.com"), { code: "ENOTFOUND" })
+
+const mkClassifierAdapter = (fake: ReturnType<typeof makeFakeTransport>) =>
+  makeDiscordAdapter({
+    id: "d-classify",
+    transport: fake.transport,
+    logLogin: false,
+    allowedUsers: ["user-allowed"],
+  })
+
+describe("Slice 1b+11 — measured send classifier (FINAL sends)", () => {
+  it("CONTROL (GREEN ON ARRIVAL): a clean FINAL send is exactly ONE attempt with no retry pause", async () => {
+    // Survival rail pairing the attempt bounds below: a bound of "exactly 2"
+    // is satisfiable by always retrying, and a flat-750ms sleep smuggled onto
+    // the happy path would satisfy every RED test too. 700ms is far above an
+    // in-memory transport call, so this ceiling is load-safe.
+    const t0 = Date.now()
+    const fake = makeFakeTransport()
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "clean single send", FINAL))
+    expect(exit._tag).toBe("Success")
+    expect(fake.attempts().send).toBe(1)
+    expect(fake.sent).toHaveLength(1)
+    expect(Date.now() - t0).toBeLessThan(700)
+  })
+
+  it("REFETCH: a channel-cache miss gets one immediate re-attempt and recovers", async () => {
+    // Donor's dominant failure (571 of 1295): the cached channel handle went
+    // stale; fetching again succeeds. Luna's transport.send re-fetches
+    // internally, so "refetch" here means exactly one more send() call.
+    // Immediacy is deliberately UNASSERTED (no timing rail): only the count
+    // and the recovery are the contract.
+    const fake = makeFakeTransport({
+      sendImpl: async (_c, _content, attempt) => {
+        if (attempt === 1) throw ERR_CHANNEL_CACHE()
+        return { id: "msg-refetched" }
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "cache miss then fine", FINAL))
+    expect(fake.attempts().send).toBe(2) // RED today: no re-attempt, stays 1
+    expect(fake.sent).toHaveLength(1)
+    expect(exit._tag).toBe("Success")
+  })
+
+  it("REFETCH: a PERSISTENT channel-cache miss stops after the one re-attempt and surfaces the failure", async () => {
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_CHANNEL_CACHE()
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "channel is gone", FINAL))
+    expect(fake.attempts().send).toBe(2) // exactly one re-attempt, NOT a loop
+    expect(fake.sent).toHaveLength(0)
+    expect(exit._tag).toBe("Failure") // RED today: swallowed into Success
+  })
+
+  it("PERMANENT: a token error aborts immediately, no retry, failure surfaced", async () => {
+    // 155 of 1295 in the donor's measurement: the client lost its token
+    // (restart mid-login, revoked credential). Retrying cannot help and each
+    // retry burns the delivery deadline for the WHOLE turn.
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_TOKEN()
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "who am I", FINAL))
+    expect(exit._tag).toBe("Failure") // RED today: swallowed into Success
+    expect(fake.attempts().send).toBe(1)
+    expect(fake.sent).toHaveLength(0)
+  })
+
+  it("PERMANENT: an HTTP 4xx (not 429) aborts immediately, no retry, failure surfaced", async () => {
+    // status 403 Missing Permissions: the bot cannot post here and a retry
+    // cannot change that. NOTE the deliberate contrast with the status-LESS
+    // "Missing Permissions" rail at the 429 block above: classification keys
+    // on the numeric status, exactly as the donor's classifier does.
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_FORBIDDEN()
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "no entry", FINAL))
+    expect(exit._tag).toBe("Failure") // RED today: swallowed into Success
+    expect(fake.attempts().send).toBe(1)
+    expect(fake.sent).toHaveLength(0)
+  })
+
+  it("RETRY: a transient network failure gets EXACTLY ONE flat-750ms retry and recovers (constant exported)", async () => {
+    const times: number[] = []
+    const fake = makeFakeTransport({
+      sendImpl: async (_c, _content, attempt) => {
+        times.push(Date.now())
+        if (attempt === 1) throw ERR_NETWORK()
+        return { id: "msg-after-net-retry" }
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "flaky network", FINAL))
+    expect(fake.attempts().send).toBe(2) // RED today: no app-level retry, stays 1
+    expect(fake.sent).toHaveLength(1)
+    expect(exit._tag).toBe("Success")
+    // Flat pacing, lower bound only (load-safe): the retry waited ~750ms.
+    expect(times).toHaveLength(2)
+    expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(700)
+    // The donor constant, pinned as an export so the auditor and future
+    // slices can reference it. Dynamic import + cast: a static named import
+    // of a not-yet-existing export would kill this whole FILE at load time,
+    // and this file must keep running its 48 existing tests while RED.
+    const mod = (await import("../src/adapters/discord.js")) as unknown as Record<string, unknown>
+    expect(mod["discordDeliveryRetryMs"]).toBe(750)
+  })
+
+  it("RETRY: a persistent 5xx stops after EXACTLY ONE retry and surfaces the failure", async () => {
+    // The bound AND the survival rail live in different tests: "exactly 2"
+    // here forbids a retry loop; the CONTROL above forbids satisfying this by
+    // retrying everything always.
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_5XX()
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "discord is down", FINAL))
+    expect(fake.attempts().send).toBe(2) // RED today: stays 1
+    expect(fake.sent).toHaveLength(0)
+    expect(exit._tag).toBe("Failure")
+  })
+})
+
+/**
+ * SLICE 1b+11 RIDER — typing stop must be independent of delivery COMPLETION.
+ *
+ * The Slice 1 block already pins the other stop paths (first deliver lands,
+ * EMPTY content, foreign transport, stop() sweep), and the breaker-open log
+ * rider is already pinned by "logs exactly ONE warning when a channel's
+ * breaker opens". Neither is duplicated here. A breaker RECOVERY log is
+ * deliberately NOT specced: the landed Slice 1 breaker is permanent for the
+ * life of the process ("never attempts a 4th"), so there is no recovery
+ * transition to log; flagged to the lead in the task's Ping (spec) section.
+ *
+ * What was NOT covered anywhere: the send FAILING terminally. Today the
+ * swallow hides that case; once failures surface, a restructured deliver()
+ * could early-abort ABOVE the stopTyping call and leave the channel "typing"
+ * for the rest of the refresh cap after a dead turn.
+ */
+describe("Slice 1b+11 rider — typing stops even when the FINAL send fails", () => {
+  it("a terminally failing FINAL send still stops the typing loop, and the failure surfaces", async () => {
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_TOKEN()
+      },
+    })
+    const adapter = makeDiscordAdapter({
+      id: "d-fail-stops-typing",
+      transport: fake.transport,
+      logLogin: false,
+      allowedUsers: ["user-allowed"],
+      typingRefreshMs: 25,
+    })
+    let release: () => void = () => {}
+    const held = new Promise<void>((r) => {
+      release = r
+    })
+    // Hold the turn open so the indicator keeps refreshing until deliver().
+    adapter.setMessageHandler(() => Effect.promise(() => held))
+    try {
+      await withStarted(adapter, async () => {
+        fake.fire(inbound({ id: "460", authorId: "user-allowed", content: "long task" }))
+        await tick(90)
+        // Anti-vacuity: the loop is really running before the failing send.
+        expect(fake.attempts().typing).toBeGreaterThanOrEqual(2)
+
+        const exit = await Effect.runPromiseExit(adapter.deliver(target(), "doomed reply", FINAL))
+        expect(exit._tag).toBe("Failure") // RED today: swallowed into Success
+        expect(fake.attempts().send).toBe(1) // token error is PERMANENT: no retry
+        expect(fake.sent).toHaveLength(0)
+
+        // The freeze half is a GUARD (green today, stopTyping precedes the
+        // send): it must SURVIVE the classifier restructure. Settle one
+        // window, snapshot, then wait five windows: no further refreshes.
+        await tick(40)
+        const frozen = fake.attempts().typing
+        await tick(125)
+        expect(fake.attempts().typing).toBe(frozen)
+      })
+    } finally {
+      release()
+      await Effect.runPromise(adapter.stop())
+    }
+  }, 20_000)
+})

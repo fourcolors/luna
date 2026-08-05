@@ -15,7 +15,7 @@
  *   5. Adapter lifecycle: start/stop are called; setMessageHandler is wired.
  *   6. splitToChunks utility: paragraph > sentence > word > hard-cut priority.
  */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   Effect,
   Fiber,
@@ -2828,5 +2828,273 @@ describe("transport fan-out", () => {
     //    every later turn, so a mis-built address leaks quietly and forever.
     expect(discordCtx.deliveries[0]?.target.address.channelId).toBe("guild-chan-1")
     expect(discordCtx.deliveries[0]?.target.inReplyTo.channelId).toBe("guild-chan-1")
+  })
+})
+
+/* ========================================================================== */
+/* SLICE 1b+11 — stop-at-first-failure delivery loop (task #7)                 */
+/* ========================================================================== */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * GIVEN a stream-edit turn whose final content splits into 6 chunks and an
+ * adapter whose deliver() fails for one scripted chunk,
+ * WHEN the turn-complete finalize loop runs,
+ * THEN the delivered chunks are a CONTIGUOUS PREFIX (nothing after the first
+ * failure is ever attempted), the failure cause is LOGGED, and an explicit
+ * truncation marker reaches the user whenever at least one chunk landed.
+ *
+ * Today the loop (delivery.ts, turn-complete case) pipes EVERY chunk through
+ * `Effect.catchAllCause(() => Effect.void)`: a mid-stream failure yields a
+ * reply with a SILENT HOLE in the middle, the exact defect Sol Agent measured
+ * and fixed (donor: test/discord-multichunk-loss.test.ts, 12 tests).
+ *
+ * CONTRACT DETAILS pong implements against:
+ *   - Stop at the FIRST failure of any kind, not the first PERMANENT one: the
+ *     adapter (Slice 1b classifier, discord-adapter.test.ts) already spent its
+ *     one retry before a failure surfaces here. The loop adds NO retry of its
+ *     own; a retried chunk shows up as a duplicate attempt and fails the
+ *     prefix assertion below. The exported `deliveryRetrySchedule` (:788) is
+ *     dead code at this seam and must NOT be wired into this loop.
+ *   - Truncation marker (wording is ping's choice, canonical form):
+ *       "⚠️ Reply truncated: 2 of 6 parts delivered. Ask me to resend the rest."
+ *     Pinned pieces: /reply truncated/i, the literal "<delivered> of <total>"
+ *     counts, /resend/i, and the marker line stays <= 100 chars so it rides
+ *     inside the 100-char headroom DISCORD_MAX_MESSAGE_LENGTH (1900 vs 2000,
+ *     Slice 2c) reserves, whether pong appends it to the last delivered chunk
+ *     or sends it as its own message. It must arrive through adapter.deliver()
+ *     with isPartial false (the user must SEE it).
+ *   - Marker only when delivered > 0 (donor rule): if the FIRST chunk fails
+ *     there is no evidence the channel can receive anything, so log loudly and
+ *     send nothing further.
+ *   - The failure cause must reach a log line (console.log/warn/error union,
+ *     so Effect's default logger and direct console.* both qualify). WHERE to
+ *     log (per-chunk catch or the fiber's outer catchAllCause) is pong's
+ *     choice; the delivery fiber itself must not die unhandled.
+ *   - Deadline: donor caps a turn's delivery at DELIVERY_DEADLINE_MS=120_000.
+ *     Wall-clock-testing 120s is impractical and TestClock cannot reach this
+ *     fiber (it is forked via Effect.forkIn(serviceScope) onto the default
+ *     runtime), so per the brief the constant's existence and value are pinned
+ *     here and the WIRING (the loop abandons remaining chunks once the
+ *     deadline passes) is verified by the auditor from the diff.
+ *
+ * OUT OF SCOPE — the implementation for Slice 1b+11 may modify ONLY:
+ *   - packages/channels/src/adapters/discord.ts
+ *   - packages/channels/src/delivery.ts
+ *   - packages/channels/test/channels.test.ts (additions below existing tests
+ *     only; never edit or weaken an existing test)
+ *   - packages/channels/test/discord-adapter.test.ts (same constraint)
+ * It must NOT touch: src/types.ts, src/index.ts, src/service.ts,
+ * src/session-map.ts, src/commands.ts, src/dedup.ts, src/adapters/telegram*,
+ * telegram tests, or any other package. The auditor enforces this from the
+ * diff. (This is why the deadline pin imports "../src/delivery.js" directly:
+ * requiring an index.js re-export would drag index.ts into scope.)
+ *
+ * Tier B: donor constants are CLOSED (120000ms, 750ms, one-retry, 1900).
+ *
+ * FIXTURE: six 120-char paragraphs at maxMessageLength 150. One paragraph
+ * fits a chunk (120 <= 150), two never pack together (242 > 150), the text is
+ * fence-free so the fence reserve is 0 and chunkLimit === maxLen. Therefore
+ * chunk i === paragraph i, computed below through the REAL splitToChunks +
+ * repairSplitFences. The CONTROL test asserts the clean run delivers exactly
+ * these chunks, so if chunking internals ever drift, the control fails
+ * LOUDLY instead of the FIXED tests failing cryptically.
+ *
+ * TALLY for this block: 6 tests, 5 RED on arrival, 1 control (labelled
+ * CONTROL, green on arrival).
+ */
+
+const SLICE_1B_PARAS = Array.from({ length: 6 }, (_, i) => {
+  const head = `PARA-${i + 1} `
+  return head + "x".repeat(120 - head.length)
+})
+const SLICE_1B_TEXT = SLICE_1B_PARAS.join("\n\n")
+const SLICE_1B_MAXLEN = 150
+const SLICE_1B_CHUNKS = repairSplitFences(splitToChunks(SLICE_1B_TEXT, SLICE_1B_MAXLEN))
+
+interface ScriptedAttempt {
+  readonly content: string
+  readonly opts: DeliverOptions
+}
+
+/**
+ * A ChannelAdapter whose deliver() fails exactly where the script says, via
+ * Effect.die: a defect typechecks under the frozen `Effect.Effect<void>`
+ * deliver signature (types.ts is out of scope) and is precisely what the
+ * loop's catchAllCause swallows today. Records EVERY attempt, including the
+ * failed one, BEFORE failing, so never-attempted and attempted-but-failed are
+ * distinguishable.
+ */
+const makeScriptedFailureAdapter = (
+  id: string,
+  failWhen: (content: string, opts: DeliverOptions) => boolean,
+) => {
+  const attempts: ScriptedAttempt[] = []
+  const adapter: ChannelAdapter = {
+    id,
+    transport: "fake",
+    capability: "stream-edit",
+    maxMessageLength: SLICE_1B_MAXLEN,
+    setMessageHandler() {},
+    start() {
+      return Effect.void as Effect.Effect<void, never, import("effect").Scope.Scope>
+    },
+    stop() {
+      return Effect.void
+    },
+    deliver(_target, content, opts) {
+      attempts.push({ content, opts })
+      if (failWhen(content, opts)) {
+        return Effect.die(
+          new Error(`INJECTED-DELIVERY-FAILURE: socket hang up for ${content.slice(0, 8)}`),
+        )
+      }
+      return Effect.void
+    },
+  }
+  return { adapter, attempts }
+}
+
+describe("Slice 1b+11 — stop-at-first-failure delivery loop", () => {
+  /** Drive one stream-edit turn over SLICE_1B_TEXT (the 2c drive pattern). */
+  const driveScriptedTurn = async (
+    ctx: ReturnType<typeof makeScriptedFailureAdapter>,
+    pmId: string,
+  ): Promise<void> => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(ctx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: pmId }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, SLICE_1B_TEXT))
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("300 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+  }
+
+  /** Finalize-loop attempts only; live stream edits are isPartial: true. */
+  const finalsOf = (ctx: ReturnType<typeof makeScriptedFailureAdapter>): ScriptedAttempt[] =>
+    ctx.attempts.filter((a) => a.opts.isPartial === false)
+  const chunkFinals = (finals: readonly ScriptedAttempt[]): string[] =>
+    finals.filter((a) => SLICE_1B_CHUNKS.includes(a.content)).map((a) => a.content)
+  const markerFinals = (finals: readonly ScriptedAttempt[]): ScriptedAttempt[] =>
+    finals.filter((a) => /reply truncated/i.test(a.content))
+  const failChunk3 = (c: string, o: DeliverOptions): boolean =>
+    o.isPartial === false && c === SLICE_1B_CHUNKS[2]
+  /** Spy union: Effect's default logger and direct console.* both land here. */
+  const withConsoleCapture = async (body: (logs: string[]) => Promise<void>): Promise<void> => {
+    const logs: string[] = []
+    const spies = (["log", "warn", "error"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+        logs.push(args.map(String).join(" "))
+      }),
+    )
+    try {
+      await body(logs)
+    } finally {
+      for (const s of spies) s.mockRestore()
+    }
+  }
+
+  it("CONTROL (GREEN ON ARRIVAL): a clean 6-chunk turn delivers every chunk in order, no marker, no failure logs", async () => {
+    // Doubles as the fixture calibration: proves paragraph i really becomes
+    // chunk i through the production chunkLimit path, and that the marker and
+    // failure-log rails below cannot pass vacuously against a happy turn.
+    await withConsoleCapture(async (logs) => {
+      const ctx = makeScriptedFailureAdapter("1b-clean", () => false)
+      await driveScriptedTurn(ctx, "1b-clean-pm1")
+      const finals = finalsOf(ctx)
+      expect(SLICE_1B_CHUNKS).toHaveLength(6)
+      expect(finals.map((a) => a.content)).toEqual([...SLICE_1B_CHUNKS])
+      expect(markerFinals(finals)).toHaveLength(0)
+      expect(logs.filter((l) => /truncat|INJECTED-DELIVERY-FAILURE/i.test(l))).toEqual([])
+    })
+  })
+
+  it("stops at the FIRST failed chunk: chunks 1-2 delivered, 3 attempted, 4-6 NEVER attempted", async () => {
+    expect(SLICE_1B_CHUNKS).toHaveLength(6) // fixture precondition
+    const ctx = makeScriptedFailureAdapter("1b-stop", failChunk3)
+    await driveScriptedTurn(ctx, "1b-stop-pm1")
+    // The contiguous prefix, exactly once each: attempts 1, 2 (delivered) and
+    // 3 (failed), then NOTHING. Today this is all six. A loop-level retry of
+    // chunk 3 would also fail here, as a duplicate.
+    expect(chunkFinals(finalsOf(ctx))).toEqual(SLICE_1B_CHUNKS.slice(0, 3))
+  })
+
+  it("appends an explicit truncation marker the user can see: counts, resend hint, <= 100 chars, after the failure", async () => {
+    expect(SLICE_1B_CHUNKS).toHaveLength(6)
+    const ctx = makeScriptedFailureAdapter("1b-marker", failChunk3)
+    await driveScriptedTurn(ctx, "1b-marker-pm1")
+    const markers = markerFinals(finalsOf(ctx))
+    expect(markers).toHaveLength(1) // RED today: no marker exists
+    const text = markers[0]!.content
+    expect(text).toContain("2 of 6") // delivered of total
+    expect(text).toMatch(/resend/i) // the user's recovery path
+    const line = text.match(/[^\n]*reply truncated[^\n]*/i)?.[0] ?? text
+    expect(line.length).toBeLessThanOrEqual(100) // rides inside the 1900 headroom
+    // Reports, not predicts: the marker attempt comes AFTER the failed chunk.
+    const failedAt = ctx.attempts.findIndex(
+      (a) => a.opts.isPartial === false && a.content === SLICE_1B_CHUNKS[2],
+    )
+    const markerAt = ctx.attempts.findIndex((a) => /reply truncated/i.test(a.content))
+    expect(failedAt).toBeGreaterThanOrEqual(0)
+    expect(markerAt).toBeGreaterThan(failedAt)
+  })
+
+  it("LOGS the failure cause: the injected error's message reaches a log line", async () => {
+    await withConsoleCapture(async (logs) => {
+      const ctx = makeScriptedFailureAdapter("1b-log", failChunk3)
+      await driveScriptedTurn(ctx, "1b-log-pm1")
+      // RED today: catchAllCause(() => Effect.void) logs nothing at all.
+      expect(
+        logs.filter((l) => l.includes("INJECTED-DELIVERY-FAILURE")).length,
+      ).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it("a turn whose FIRST chunk fails is observable: logged, NO marker, nothing further attempted", async () => {
+    expect(SLICE_1B_CHUNKS).toHaveLength(6)
+    await withConsoleCapture(async (logs) => {
+      const ctx = makeScriptedFailureAdapter(
+        "1b-first",
+        (c, o) => o.isPartial === false && c === SLICE_1B_CHUNKS[0],
+      )
+      await driveScriptedTurn(ctx, "1b-first-pm1")
+      const finals = finalsOf(ctx)
+      // RED today: the loop marches on and attempts all six.
+      expect(chunkFinals(finals)).toEqual([SLICE_1B_CHUNKS[0]!])
+      // delivered === 0: nothing suggests the channel can receive, so no
+      // marker send is attempted (donor rule). The LOG carries the evidence.
+      expect(markerFinals(finals)).toHaveLength(0)
+      expect(
+        logs.filter((l) => l.includes("INJECTED-DELIVERY-FAILURE")).length,
+      ).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it("pins the delivery deadline: deliveryDeadlineMs === 120_000 (wiring verified by the auditor from the diff)", async () => {
+    // Donor DELIVERY_DEADLINE_MS. Wall-clocking 120s in a unit test is
+    // impractical and TestClock cannot reach the forkIn(serviceScope) fiber,
+    // so the constant's existence and value are the executable pin; the brief
+    // assigns the wiring check (the loop stops once the deadline passes) to
+    // the stash-red audit. Dynamic import + cast: a static named import of a
+    // not-yet-existing export would kill this whole file at load time. Direct
+    // module path, NOT index.js: index.ts is out of scope for this slice.
+    const mod = (await import("../src/delivery.js")) as unknown as Record<string, unknown>
+    expect(mod["deliveryDeadlineMs"]).toBe(120_000) // RED today: export absent
   })
 })

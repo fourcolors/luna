@@ -66,6 +66,16 @@ const MAX_RATE_LIMIT_ATTEMPTS = 3
 const MAX_RETRY_AFTER_MS = 60_000
 
 /**
+ * Flat pause before the single app-level retry of a transient FINAL-send
+ * failure. Ported as-is from Sol Agent (DELIVERY_RETRY_MS, sol flo-local
+ * lib/discord/streaming.ts:37): by the time send() rejects, @discordjs/rest
+ * has already run its own retry curve, so stacking a second curve on top only
+ * burns the delivery deadline. One flat pause, one re-attempt, then the
+ * failure surfaces. Exported for the spec's pin test.
+ */
+export const discordDeliveryRetryMs = 750
+
+/**
  * Edit failures that are expected and MUST stay silent:
  *  - "not modified" — we re-sent identical content (delivery.ts may finalize
  *    with the same text it last streamed).
@@ -133,6 +143,46 @@ const isBenignEditError = (err: unknown): boolean => {
       : String(err)
   const lowered = msg.toLowerCase()
   return BENIGN_EDIT_ERRORS.some((s) => lowered.includes(s))
+}
+
+/* -------------------------------------------------------------------------- */
+/* FINAL-send failure classification (Sol Agent's measured classifier)         */
+/* -------------------------------------------------------------------------- */
+
+type FinalSendClass = "retry" | "refetch" | "permanent"
+
+/**
+ * Classify a rejected FINAL send. Port of Sol Agent's classifySendError
+ * (sol flo-local lib/discord/streaming.ts:155-181), which was written against
+ * measured production failures, not against the API reference. Of the 1,295
+ * send failures Sol logged, exactly ZERO were rate-limit rejections: Luna's
+ * Client shares the @discordjs/rest defaults that queue and honour 429s
+ * inside the library, so a send cannot reject on 429 by construction and
+ * this classifier deliberately has NO 429 branch.
+ *
+ *  - refetch:   discord.js throws "Could not find the channel" when its
+ *               channel handle went stale (the donor's top failure). Luna's
+ *               transport.send re-fetches the channel on every call, so the
+ *               donor's separate REST re-fetch collapses into one IMMEDIATE
+ *               re-attempt of send().
+ *  - permanent: "Expected token to be set" means @discordjs/rest dropped its
+ *               token after an auth failure; every request fails identically
+ *               until re-login, so retrying only burns the delivery deadline.
+ *               Likewise any real DiscordAPIError with a NUMERIC 4xx status
+ *               (other than 429): a 403/404 will not fix itself. Status-less
+ *               errors are never treated as 4xx.
+ *  - retry:     everything else (network, abort, 5xx). The library already
+ *               ran its own retry curve, so this earns exactly ONE app-level
+ *               re-attempt after a flat discordDeliveryRetryMs pause.
+ */
+const classifyFinalSendError = (e: unknown): FinalSendClass => {
+  const err = e as { status?: unknown; message?: unknown }
+  const msg = typeof err?.message === "string" ? err.message : ""
+  if (msg.includes("Could not find the channel")) return "refetch"
+  if (msg.includes("Expected token to be set")) return "permanent"
+  const status = typeof err?.status === "number" ? err.status : null
+  if (status !== null && status >= 400 && status < 500 && status !== 429) return "permanent"
+  return "retry"
 }
 
 /* -------------------------------------------------------------------------- */
@@ -598,8 +648,11 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
 
   /**
    * Run a Discord REST op, honouring 429 retry-after. Returns null when the
-   * op ultimately failed; delivery.ts treats deliver() as best-effort and
-   * swallows failures, so returning null keeps the turn alive.
+   * op ultimately failed. Its remaining callers are the PARTIAL-send,
+   * placeholder-EDIT and standalone paths, which delivery.ts treats as
+   * best-effort (their failures are swallowed upstream), so returning null
+   * keeps the turn alive. FINAL sends go through sendFinalClassified below,
+   * which surfaces terminal failures instead of swallowing them.
    */
   const withRateLimitRetry = <A>(
     op: () => Promise<A>,
@@ -626,6 +679,51 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
         yield* Effect.sleep(Duration.millis(retryMs))
       }
       return null
+    })
+
+  /**
+   * One FINAL send through the measured classifier (donor: sol flo-local
+   * lib/discord/streaming.ts finalize loop). At most TWO transport.send
+   * calls ever happen here:
+   *
+   *   attempt 1 fails -> refetch:   immediate second attempt (transport.send
+   *                                 re-fetches the channel internally).
+   *                      retry:     second attempt after a flat
+   *                                 discordDeliveryRetryMs pause.
+   *                      permanent: no second attempt.
+   *
+   * A terminal failure surfaces as a defect (Effect.die): the deliver()
+   * contract is Effect<void> with no error channel (types.ts is frozen for
+   * this slice), and delivery.ts's finalize loop inspects the Exit, so a
+   * defect is exactly enough for "stop at the first failed chunk". No 429
+   * handling here, see classifyFinalSendError; deliberately NOT stacked on
+   * withRateLimitRetry, which would multiply attempts.
+   */
+  const sendFinalClassified = (
+    t: DiscordTransport,
+    channelId: string,
+    text: string,
+  ): Effect.Effect<{ id: string }> =>
+    Effect.gen(function* () {
+      const first = yield* Effect.either(
+        Effect.tryPromise({ try: () => t.send(channelId, text), catch: (e) => e as unknown }),
+      )
+      if (Either.isRight(first)) return first.right
+      const err = first.left
+      const klass = classifyFinalSendError(err)
+      console.error(`[discord-adapter] send(final) failed (${klass}):`, err)
+      if (klass === "permanent") {
+        return yield* Effect.die(err)
+      }
+      if (klass === "retry") {
+        yield* Effect.sleep(Duration.millis(discordDeliveryRetryMs))
+      }
+      const second = yield* Effect.either(
+        Effect.tryPromise({ try: () => t.send(channelId, text), catch: (e) => e as unknown }),
+      )
+      if (Either.isRight(second)) return second.right
+      console.error(`[discord-adapter] send(final) failed after one ${klass} re-attempt:`, second.left)
+      return yield* Effect.die(second.left)
     })
 
   /* ---------------------------------------------------------------------- */
@@ -754,23 +852,41 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
         if (opts.isFinal) sentMessageIds.delete(turnKey)
 
         // Continuation chunks of a long answer are always their own fresh
-        // messages, never edits of the placeholder.
+        // messages, never edits of the placeholder. Non-partial means the
+        // finalize phase: those sends are classified and their terminal
+        // failures surface, so delivery.ts can stop instead of silently
+        // dropping the middle of the answer.
         if (opts.chunkIndex > 0) {
-          yield* withRateLimitRetry(() => t.send(channelId, text), "send(chunk)", false)
+          if (opts.isPartial) {
+            yield* withRateLimitRetry(() => t.send(channelId, text), "send(chunk)", false)
+          } else {
+            yield* sendFinalClassified(t, channelId, text)
+          }
           return
         }
 
         if (existing === undefined) {
+          if (!opts.isPartial) {
+            // FINAL send with no placeholder to edit: classified, surfacing.
+            // Nothing is recorded: finalize-phase messages never receive
+            // follow-up edits, and any placeholder entry was dropped above.
+            yield* sendFinalClassified(t, channelId, text)
+            return
+          }
           const sent = yield* withRateLimitRetry(
             () => t.send(channelId, text),
             "send",
             false,
           )
-          // Record for follow-up edits — pointless if this already ended the turn.
+          // Record for follow-up edits (partials only ever reach this point
+          // with isFinal false, but keep the guard explicit).
           if (!opts.isFinal && sent !== null) {
             sentMessageIds.set(turnKey, sent.id)
           }
         } else {
+          // Placeholder EDIT path: pinned to today's best-effort behavior
+          // (benign failures stay silent, others log and swallow). The
+          // classifier applies to FINAL SENDS only.
           yield* withRateLimitRetry(
             () => t.edit(channelId, existing, text),
             "edit",
