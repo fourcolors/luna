@@ -75,15 +75,12 @@ were never executed in CI at all (vitest skipped or failed to load them, and
 there was no Bun step), so their coverage was silently dropped — that gap is now
 closed.
 
-Both test steps are currently **non-blocking** (`continue-on-error`). The
-bun:sqlite false failures are gone, but a separate **macOS-only baseline** is
-still red when run on the Linux CI runner:
-
-- `packages/core/src/secret-provider/keychain-helper.test.ts` — macOS Keychain
-- `test/deploy-scripts.test.ts` (launchd-plist case) — `plutil` / launchd
-- `apps/ui-web/scripts/__tests__/ui-models.test.ts`
-
-These genuinely can't run on Linux. Promoting either runner to a hard gate is
-deferred until those suites are guarded for non-Darwin (e.g.
-`describe.skipIf(process.platform !== "darwin")`) — a separate follow-up. On
-macOS, where most development happens, `bun run test:all` is fully green.
+Both primary test steps are now **hard gates** in CI: the vitest suite (gate 6)
+and `bun run test:bun` (gate 7, promoted alongside the luna.db
+schema-continuity contract).
+The darwin-only cases they contain carry `skipIf(process.platform !== "darwin")`
+guards, so the Linux runner skips rather than fails them.
+Still **non-blocking** (`continue-on-error`): the typecheck step (known-red
+baseline) and `test:hostenv` (deploy-script suite; treat red as blocking by
+convention on any deploy-touching change).
+On macOS, where most development happens, `bun run test:all` is fully green.

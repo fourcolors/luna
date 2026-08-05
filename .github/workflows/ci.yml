@@ -25,6 +25,10 @@
 #      vitest.config.ts). Promoted at master 1df40f68, the first time the suite
 #      reached 0 failures. 403 of 406 test files are gated; the 3 carved out
 #      are the ops-script suites that read the host machine.
+#   7. test:bun (bun:sqlite suites)   - the ONLY runner that can load
+#      bun:sqlite, so it is also the sole coverage for
+#      packages/core/test/luna-db-contract.test.ts, the luna.db
+#      schema-continuity contract (see the inline comment on its step).
 #
 # TEST RUNNERS - Luna's suite runs under TWO runners, and CI runs BOTH
 # (see TESTING.md). This split is the fix for the bun:sqlite FALSE failures:
@@ -42,7 +46,6 @@
 #     packages/thread-tools/src/layer.ts). Fixed in #385, so this is GREEN now;
 #     left non-blocking only because nothing has re-verified it across a few
 #     merges yet. Promote it once it has held.
-#   - test:bun - currently green (1797 pass). Next promotion candidate.
 #   - test:hostenv - genuinely host-dependent (incus / tailscale / launchd /
 #     systemd profile state). Giving each a hermetic fixture root is the
 #     follow-up that would let them join gate 6.
@@ -232,9 +235,29 @@ jobs:
         continue-on-error: true
         run: bun run test:hostenv
 
-      # Surfaced, NON-BLOCKING. The bun:sqlite-backed suites' ONLY coverage —
-      # vitest cannot load bun:sqlite. (Whole-package run, so a few macOS-only
-      # tests in these packages are also red on the Linux runner; see TESTING.md.)
-      - name: Test — bun:sqlite suites (non-blocking)
-        continue-on-error: true
+      # HARD GATE 7: the bun:sqlite-backed suites - vitest cannot load
+      # bun:sqlite, so this is their ONLY coverage (whole-package run, so their
+      # runner-agnostic tests get free cross-runner validation too). This
+      # includes packages/core/test/luna-db-contract.test.ts, the luna.db
+      # schema-continuity contract gate (docs/next/luna-db-contract.md) -
+      # promoting THIS step is what makes that contract enforced instead of
+      # merely documented.
+      #
+      # TESTING.md previously deferred this promotion on a macOS-only baseline
+      # (keychain-helper.test.ts, launchd-plist, ui-models). That baseline is
+      # stale: launchd-plist (test/deploy-scripts.test.ts) and ui-models
+      # (apps/ui-web) are not even in test:bun's package list below, and
+      # keychain-helper.test.ts already carries the same `_platform` injection
+      # + `it.skipIf(process.platform !== "darwin")` fix gate 6's own history
+      # note above describes - a Linux runner skips that one case, it does not
+      # fail it. Verified on THIS runner (the evidence that actually justifies
+      # a Linux-runner promotion) at 1766 pass / 3 skip / 0 fail across the two
+      # most recent green runs in this branch's own ancestry - runs 30971646491
+      # (ed538ef6) and 30971649021 (master 2c7b3915); the 2 skips beyond the
+      # local run's 1 are the darwin-gated keychain-helper.test.ts:220 case
+      # this runner does not hit plus the env-gated OnePasswordSecretProvider
+      # live test (OP_SERVICE_ACCOUNT_TOKEN unset). Locally verified at
+      # 1768 pass / 1 skip (bun-only vectorlite variant, not platform-gated)
+      # / 0 fail.
+      - name: Test - bun:sqlite suites (HARD GATE)
         run: bun run test:bun
