@@ -31,10 +31,14 @@ port_guard_is_luna_cmd() {
   # or a different Luna checkout) won't be running out of the user's install path.
   [[ -n "$luna_dir" && "$cmd" == *"$luna_dir"* ]] || return 1
   # …and be one of our two known server entrypoints (see install-mac.command:
-  # `scripts/chat-server.ts` for :4753, `apps/ui-web … dev` for vite on :5174).
-  # The `*\ dev*` glob also matches `dev:preview`, so either UI launch is covered.
+  # the chat-server daemon for :4753 - `*chat-server*` covers both the
+  # path-independent launcher (scripts/luna-chat-server-entry.ts) and the
+  # transitional `scripts/chat-server.ts` direct-run shape, so this predicate
+  # does not go stale the moment the launcher lands - and `apps/ui-web … dev`
+  # for vite on :5174. The `*\ dev*` glob also matches `dev:preview`, so
+  # either UI launch is covered.
   case "$cmd" in
-    *chat-server.ts*) return 0 ;;
+    *chat-server*) return 0 ;;
     *apps/ui-web*\ dev*) return 0 ;;
     *) return 1 ;;
   esac

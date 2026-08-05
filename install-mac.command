@@ -257,6 +257,18 @@ case "$SELECTION" in
     # the plist), so no token is baked into the LaunchAgent.
     BUN_BIN="$(command -v bun)"
     PLIST_FILE="$LUNA_DATA/$LAUNCHD_LABEL.plist"
+    # Plist-render rollback: copy an already-installed plist aside as
+    # com.user.luna-chat-server.plist.prev before overwriting it, mirroring
+    # write_service's unit backup in scripts/luna-server-install. $LUNA_DATA
+    # (~/.luna) is not a launchd scan directory - the plist is only ever
+    # loaded by the explicit `launchctl bootstrap` call below - so the .prev
+    # copy is inert until a manual restore: cp -f "$PLIST_FILE.prev"
+    # "$PLIST_FILE" && launchctl bootstrap ...
+    # Backup must land BEFORE the render truncates the plist: continuing past
+    # a failed cp would leave a stale .prev that the documented restore recipe
+    # would then install. Same hard-fail posture as write_service.
+    [[ ! -f "$PLIST_FILE" ]] || cp -f "$PLIST_FILE" "$PLIST_FILE.prev" \
+      || die "could not back up the existing plist (aborting before overwriting it)"
     render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$LUNA_DATA" > "$PLIST_FILE"
     chmod 644 "$PLIST_FILE"
     # bootout any prior instance, clear a lingering disable, then bootstrap into
@@ -392,6 +404,10 @@ case "$SELECTION" in
     info "Installing a launchd LaunchAgent for the chat server..."
     BUN_BIN="$(command -v bun)"
     PLIST_FILE="$LUNA_DATA/$LAUNCHD_LABEL.plist"
+    # Plist-render rollback (see option 1's com.user.luna-chat-server.plist.prev
+    # backup above for the restore recipe).
+    [[ ! -f "$PLIST_FILE" ]] || cp -f "$PLIST_FILE" "$PLIST_FILE.prev" \
+      || die "could not back up the existing plist (aborting before overwriting it)"
     render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$LUNA_DATA" > "$PLIST_FILE"
     chmod 644 "$PLIST_FILE"
     launchctl bootout  "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true

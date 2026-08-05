@@ -4680,7 +4680,7 @@ const buildMain = (
 // runtime, so the SecretProvider chain is composed with all available
 // providers up front. Keychain reads are <100ms and one-shot; we accept
 // the synchronous-feeling startup latency.
-const bootstrap = async (): Promise<void> => {
+export const bootstrap = async (): Promise<void> => {
   // W2 boot integrity gate: refuse to boot on a locked-out Luna vault (store
   // present but the key is missing / wrong / tampered) BEFORE any layer graph
   // or op-token discovery runs. A missing/empty store is fine (fresh install).

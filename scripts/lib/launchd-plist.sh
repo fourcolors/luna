@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # launchd-plist.sh — render a macOS LaunchAgent plist for the Luna chat server.
 #
-# Sourced by install-mac.command. Defines a function only (no auto-run), so it is
-# safe to `source` into a `set -euo pipefail` script and to exercise in tests.
+# Sourced by install-mac.command. Defines a function only (no auto-run - the
+# nested `source` of luna-deploy.sh below is the same kind of function-only
+# load), so it is safe to `source` into a `set -euo pipefail` script and to
+# exercise in tests.
 #
 # Why this exists (finding #2): the desktop install launched the chat server with
 # an unsupervised `nohup … &`, so it died on reboot/crash AND the in-app Restart
@@ -25,6 +27,15 @@
 # have their own verb (`launchctl bootout`), which removes the job entirely
 # and is unaffected by KeepAlive. `launchctl kickstart -k` force-restarts
 # regardless.
+#
+# PATH-INDEPENDENCE: ProgramArguments names REPO_DIR itself (--cwd, no
+# app-specific subpath) and the path-independent launcher
+# (luna_chat_server_launcher_rel, lib/luna-deploy.sh) - the SAME literal the
+# systemd unit's ExecStart uses (scripts/luna-server-install), so the two
+# renderers can never name a different launcher script.
+LAUNCHD_PLIST_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=luna-deploy.sh
+source "$LAUNCHD_PLIST_LIB_DIR/luna-deploy.sh"
 
 # render_launchd_plist <bun_bin> <luna_dir> <luna_home>
 # Print the LaunchAgent plist XML to stdout.
@@ -42,8 +53,8 @@ render_launchd_plist() {
         <string>$bun_bin</string>
         <string>run</string>
         <string>--cwd</string>
-        <string>$luna_dir/apps/ui-web</string>
-        <string>scripts/chat-server.ts</string>
+        <string>$luna_dir</string>
+        <string>$(luna_chat_server_launcher_rel)</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -57,6 +68,8 @@ render_launchd_plist() {
     <dict>
         <key>LUNA_HOME</key>
         <string>$luna_home</string>
+        <key>LUNA_REPO_ROOT</key>
+        <string>$luna_dir</string>
         <key>CLAUDE_CONFIG_DIR</key>
         <string>$luna_home/claude</string>
         <key>PATH</key>

@@ -426,6 +426,18 @@ luna_atomic_replace() {
   perl -e 'rename($ARGV[0], $ARGV[1]) or do { warn "luna_atomic_replace: $ARGV[0] -> $ARGV[1]: $!\n"; exit 1 }' -- "$1" "$2"
 }
 
+# luna_chat_server_launcher_rel - the daemon launcher entrypoint, relative to
+# REPO_DIR (systemd WorkingDirectory / launchd --cwd). The ONE literal shared
+# between the unit renderers (luna-server-install's render_service and
+# lib/launchd-plist.sh's render_launchd_plist, both of which ExecStart it) and
+# luna-guardian's unit_paths_current (which compares the INSTALLED unit's
+# ExecStart against this same value to detect rollback-unsafe drift). A second
+# copy anywhere would let the drift detector itself drift out of sync with
+# what gets rendered - exactly the failure class this indirection removes.
+luna_chat_server_launcher_rel() {
+  printf 'scripts/luna-chat-server-entry.ts\n'
+}
+
 luna_find_bun() {
   if [[ -n "${LUNA_TEST_BUN_PATH:-}" ]]; then
     printf '%s\n' "$LUNA_TEST_BUN_PATH"

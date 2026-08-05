@@ -1081,6 +1081,11 @@ exit 0
 
   it("SIGNATURE 1: a fully converged tick is silent and writes nothing", async () => {
     const h = makeConvergedHarness("luna-guardian-converged-")
+    // This fixture's P_REPO is a filesystem COPY of this repo's scripts/
+    // (makeHarness), not a rendered unit, so it always carries the launcher
+    // ON DISK - bypass unit_paths_current (mirrors LUNA_TEST_GUARDIAN_UNIT_
+    // HARDENED) so this test's silence assertion tests what it always tested.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
 
     // Tick A establishes convergence (it may log while getting there).
@@ -1125,6 +1130,10 @@ exit 0
 
   it("SIGNATURE 2: one drifted aspect is repaired exactly, loudly, then silence returns", async () => {
     const h = makeConvergedHarness("luna-guardian-drift-")
+    // See SIGNATURE 1's comment: this fixture's P_REPO always carries the
+    // launcher on disk (an incidental artifact of the copied scripts/ dir),
+    // unrelated to the control-plane drift this test exercises.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1409,6 +1418,8 @@ exit 0
 
   it("byte-current units with stale LOADED definitions (NeedDaemonReload) get exactly one retry reload", async () => {
     const h = makeConvergedHarness("luna-guardian-need-reload-")
+    // See SIGNATURE 1's comment: unrelated to the NeedDaemonReload retry path.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1606,20 +1617,23 @@ exec /bin/rm "$@"
   })
 
   it("update-lock acquisition treats an unwitnessable ownership record as contention (rc 10)", () => {
-    // Unit-level: source every function (drop the CLI dispatch), then break the
+    // Unit-level: source the guardian (its own dispatch guard at the bottom
+    // skips the CLI dispatch for us, no sed hack needed), then break the
     // ownership re-verify seam. If the re-verify block regresses away, acquire
-    // returns 0 while holding a lock nobody can witness — the stale-classifier
+    // returns 0 while holding a lock nobody can witness - the stale-classifier
     // would steal it mid-critical-section.
     const h = makeConvergedHarness("luna-guardian-lock-witness-")
-    // $0 is the guardian path so the sourced prefix resolves SCRIPT_DIR (and
-    // its lib/ sourcing) against the harness scripts copy.
+    // $1 (not $0) carries the guardian path: `source "$1"` sets BASH_SOURCE[0]
+    // to that path so the sourced prefix resolves SCRIPT_DIR (and its lib/
+    // sourcing) against the harness scripts copy, while $0 stays the literal
+    // below so BASH_SOURCE[0] != $0 and the dispatch guard skips the tail.
     const result = spawnSync("bash", ["-c", `
-eval "$(sed '/^cmd=/,$d' "$0")"
+source "$1"
 guardian_update_lock_owner_alive() { return 1; }
 rc=0
 acquire_guardian_update_lock stable || rc=$?
 printf 'rc=%s\\n' "$rc"
-`, h.guardian], {
+`, "guardian-lock-witness-test", h.guardian], {
       cwd: root,
       encoding: "utf8",
       env: h.env,
@@ -2185,6 +2199,10 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     // host-binary coupling on the converged tick fails this loudly — the
     // regression class the six formerly-failing tests embodied.
     const h = makeConvergedHarness("luna-guardian-canary-")
+    // See SIGNATURE 1's comment: unrelated to this test's PATH-hermeticity
+    // concern, and the restricted PATH below has no `test`/`systemctl` beyond
+    // the harness stubs, which do not answer luna-chat-server.service queries.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
     await sleep(1100)
@@ -2244,6 +2262,260 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     expect(flip.status, flip.stdout + flip.stderr).toBe(0)
     const resolved = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
     expect(resolved.endsWith(`engine@${realSha}`)).toBe(true)
+  })
+
+  // ── phase 6: unit-path drift (S07 - path-independent launcher) ────────────
+  // unit_hardened() inspects ONLY Type/WatchdogUSec, so a unit rendered with
+  // the OLD app-specific WorkingDirectory/ExecStart reads exactly as
+  // "hardened" as one rendered by this slice. unit_paths_current is the other
+  // half of the reconcile gate. These tests exercise it - and
+  // reconcile_unit_if_idle's use of it - by SOURCING scripts/luna-guardian
+  // (the dispatch guard at the bottom of that file skips the command
+  // dispatch when BASH_SOURCE[0] != $0, i.e. when sourced) and calling the
+  // functions directly against a hand-set profile environment: no registry,
+  // no real systemctl, hermetic and fast.
+
+  type ProfileGlobals = { repo: string; layout: "inplace" | "releases"; deployRoot?: string }
+
+  const profileAssigns = (g: ProfileGlobals) =>
+    `P_REPO=${JSON.stringify(g.repo)}; P_LAYOUT=${JSON.stringify(g.layout)}; P_INCUS=""; `
+    + `P_SERVICE_NAME="luna-chat-server.service"; P_DEPLOY_ROOT=${JSON.stringify(g.deployRoot ?? "")}; P_PORT=4753`
+
+  const writeLauncher = (dir: string) => {
+    mkdirSync(join(dir, "scripts"), { recursive: true })
+    writeFileSync(join(dir, "scripts", "luna-chat-server-entry.ts"), "")
+  }
+
+  const writeServerInstallStub = (dir: string, log: string) => {
+    mkdirSync(join(dir, "scripts"), { recursive: true })
+    writeFileSync(
+      join(dir, "scripts", "luna-server-install"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 0\n`,
+    )
+    spawnSync("chmod", ["+x", join(dir, "scripts", "luna-server-install")])
+  }
+
+  // systemctl's ExecStart --value answer is stubbed to STUB_EXEC_START
+  // (default empty - the shape of an unrendered/old unit); nothing else in
+  // these tests touches systemctl.
+  const callUnitPathsCurrent = (g: ProfileGlobals, execStart = "") =>
+    spawnSync("bash", ["-c",
+      `source "$1"; systemctl() { printf '%s' "$STUB_EXEC_START"; }; ${profileAssigns(g)}; `
+      + `rc=0; unit_paths_current || rc=$?; echo "RC=$rc"`,
+      "_", guardian], { encoding: "utf8", env: { ...process.env, STUB_EXEC_START: execStart } })
+
+  const callReconcile = (
+    g: ProfileGlobals,
+    opts: { hardened: "true" | "false"; wsCount?: string; pendingTransaction?: boolean },
+  ) => {
+    // Isolated, always-empty update-state dir: reconcile_unit_if_idle now
+    // defers while a transaction-stable marker exists there, so these
+    // branch tests must not inherit the real $HOME/.luna/update on the
+    // machine running them.
+    const updateState = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-update-"))
+    trackDir(updateState)
+    if (opts.pendingTransaction) {
+      writeFileSync(join(updateState, "transaction-stable"), "phase=checkout\n")
+    }
+    return spawnSync("bash", ["-c",
+      `source "$1"; systemctl() { printf '%s' ""; }; ${profileAssigns(g)}; `
+      + `rc=0; reconcile_unit_if_idle stable || rc=$?; echo "RC=$rc"`,
+      "_", guardian], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LUNA_TEST_GUARDIAN_UNIT_HARDENED: opts.hardened,
+        LUNA_UPDATE_STATE_DIR: updateState,
+        ...(opts.wsCount !== undefined ? { LUNA_TEST_WS_COUNT: opts.wsCount } : {}),
+      },
+    })
+  }
+
+  describe("unit_paths_current (S07 - rollback-safe unit-shape drift detector)", () => {
+    it("an already-rendered ExecStart reads as current even when previous lacks the launcher", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-rendered-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      writeLauncher(current)
+      const result = callUnitPathsCurrent(
+        { repo: current, layout: "releases", deployRoot: temp },
+        "{ path=/usr/bin/bun ; argv[]=/usr/bin/bun run scripts/luna-chat-server-entry.ts ; }",
+      )
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+    })
+
+    it("releases: current AND previous both carrying the launcher IS drift worth reconciling", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-both-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      const previous = join(temp, "previous")
+      writeLauncher(current)
+      writeLauncher(previous)
+      const result = callUnitPathsCurrent({ repo: current, layout: "releases", deployRoot: temp })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+    })
+
+    it("releases: a previous lacking the launcher is NOT reported as drift (unsafe rollback target)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-prev-missing-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      writeLauncher(current)
+      // `previous` is never created here - the pre-first-rollback shape, and
+      // the shape of any pre-S07 rollback target.
+      const result = callUnitPathsCurrent({ repo: current, layout: "releases", deployRoot: temp })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+    })
+
+    it("releases: a current lacking the launcher is NOT reported as drift (never target a broken tree)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-current-missing-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      const previous = join(temp, "previous")
+      mkdirSync(current, { recursive: true })
+      writeLauncher(previous)
+      const result = callUnitPathsCurrent({ repo: current, layout: "releases", deployRoot: temp })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+    })
+
+    it("inplace: the current checkout carrying the launcher IS drift worth reconciling (no separate previous tree to check)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-inplace-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      writeLauncher(repo)
+      const result = callUnitPathsCurrent({ repo, layout: "inplace" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+    })
+  })
+
+  describe("reconcile_unit_if_idle (S07 acceptance branches)", () => {
+    it("idle (unhardened) reconcile renders exactly one luna-server-install --units-only --no-enable --no-start", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-idle-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      const result = callReconcile({ repo, layout: "inplace" }, { hardened: "false", wsCount: "0" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+      expect(result.stderr).toContain("reconciling supervisor unit before repair restart")
+      expect(existsSync(log)).toBe(true)
+      const lines = readFileSync(log, "utf8").trim().split("\n")
+      expect(lines.length).toBe(1)
+      expect(lines[0]).toBe(`--profile stable --repo-dir ${repo} --units-only --no-enable --no-start`)
+    })
+
+    it("a pending update transaction defers reconcile with a warning and renders nothing", () => {
+      // apply_ref may already have git-reset the checkout to a not-yet-verified
+      // ref by the time this tick runs; rendering here would target a tree
+      // do_rollback could discard moments later. Mirrors install_guardian's
+      // own pending-transaction defer for the engine-pin flip.
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-pending-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      const result = callReconcile(
+        { repo, layout: "inplace" },
+        { hardened: "false", wsCount: "0", pendingTransaction: true },
+      )
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+      expect(result.stderr).toContain("unit drift: update transaction pending for profile 'stable'; deferring reconcile")
+      expect(existsSync(log)).toBe(false)
+    })
+
+    it("active sessions (>0) defer reconcile with a warning and render nothing", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-active-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      const result = callReconcile({ repo, layout: "inplace" }, { hardened: "false", wsCount: "3" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+      expect(result.stderr).toContain("unit drift: 3 active session(s); deferring")
+      expect(existsSync(log)).toBe(false)
+    })
+
+    it("luna_active_ws_count NON-ZERO EXIT defers reconcile with 'session count unknown' and renders nothing", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-unknown-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      // LUNA_TEST_WS_COUNT="unknown" fails luna_active_ws_count's numeric
+      // regex, simulating an unavailable probe (luna-guardian:525-526) -
+      // never read as "zero sessions".
+      const result = callReconcile({ repo, layout: "inplace" }, { hardened: "false", wsCount: "unknown" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+      expect(result.stderr).toContain("unit drift: session count unknown; deferring")
+      expect(existsSync(log)).toBe(false)
+    })
+
+    it("a previous lacking the launcher leaves the old unit installed (hardened=true, unsafe rollback target)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-stale-prev-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      writeLauncher(current)
+      const log = join(temp, "install.log")
+      writeServerInstallStub(current, log)
+      // `previous` is never created - current alone carrying the launcher is
+      // not enough to prove a rollback stays bootable.
+
+      const result = callReconcile(
+        { repo: current, layout: "releases", deployRoot: temp },
+        { hardened: "true", wsCount: "0" },
+      )
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      // unit_hardened && unit_paths_current short-circuits true - reconcile
+      // never reaches the WS-count check or the install call.
+      expect(result.stdout).toContain("RC=0")
+      expect(existsSync(log)).toBe(false)
+    })
+  })
+
+  it("check_profile reconciles unit-path drift through the FULL wiring - both the 524 early-return gate and the 670 caller gate", () => {
+    // Regression guard for exactly the risk the approach called out: editing
+    // ONLY reconcile_unit_if_idle's body (the 524 gate) without ALSO gating
+    // its sole caller in check_profile (670) leaves unit_paths_current
+    // permanently unreachable, because unit_hardened=true alone already
+    // short-circuits the caller. This goes through run_check/check_profile
+    // for real - LUNA_TEST_GUARDIAN_UNIT_HARDENED stays "true" (makeHarness's
+    // default), so ONLY unit_paths_current returning false can explain a
+    // reconcile firing here.
+    const h = makeConvergedHarness("luna-guardian-unit-paths-wiring-", { layout: "releases" })
+    installHarness(h)
+    const deploy = join(h.temp, "deploy")
+    const relSha = readlinkSync(join(deploy, "current")).replace("releases/", "")
+    const releaseDir = join(deploy, "releases", relSha)
+
+    // Current release already carries the launcher (a post-S07 tree would).
+    writeLauncher(releaseDir)
+    // Rollback target ALSO carries it - safe to reconcile.
+    symlinkSync(`releases/${relSha}`, join(deploy, "previous"))
+    // Recording stub at the exact path reconcile_unit_if_idle invokes:
+    // $P_REPO/scripts/luna-server-install (P_REPO resolves through `current`).
+    const log = join(h.temp, "install-invocations.log")
+    writeServerInstallStub(releaseDir, log)
+
+    const tick = runPinnedCheck(h, { LUNA_TEST_WS_COUNT: "0" })
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(existsSync(log)).toBe(true)
+    const invocations = readFileSync(log, "utf8").trim().split("\n")
+    expect(invocations.length).toBe(1)
+    expect(invocations[0]).toBe(
+      `--profile stable --repo-dir ${join(deploy, "current")} --units-only --no-enable --no-start --layout releases`,
+    )
   })
 
 })

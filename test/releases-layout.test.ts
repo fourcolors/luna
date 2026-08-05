@@ -1330,8 +1330,13 @@ describe("luna-server-install — releases layout", () => {
     ])
     expect(r.status, r.stdout + r.stderr).toBe(0)
     const unit = readFileSync(join(unitDir, "luna-chat-server.service"), "utf8")
-    expect(unit).toContain(`WorkingDirectory=${repoDir}/apps/ui-web`)
-    expect(unit).toMatch(/^ExecStart=.*bun run scripts\/chat-server\.ts$/m)
+    // Path-independent launcher (S07): WorkingDirectory names REPO_DIR itself
+    // (no app-specific subpath) and ExecStart names ONLY the launcher, which
+    // resolves the daemon's actual file relative to its own import.meta.url -
+    // migration-window or not, the unit never encodes a version-dependent path.
+    expect(unit).toContain(`WorkingDirectory=${repoDir}`)
+    expect(unit).not.toContain(`WorkingDirectory=${repoDir}/apps/ui-web`)
+    expect(unit).toMatch(/^ExecStart=.*bun run scripts\/luna-chat-server-entry\.ts$/m)
     const alert = readFileSync(join(unitDir, "luna-alert-luna-chat-server.service"), "utf8")
     expect(alert).toContain(`ExecStart=${repoDir}/scripts/luna-pager`)
   })

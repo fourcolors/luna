@@ -989,9 +989,14 @@ deploy.autoUpdate    = true
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
+    // Path-independent launcher (S07): WorkingDirectory names REPO_DIR itself
+    // (no app-specific subpath) and ExecStart names ONLY the launcher, which
+    // resolves the daemon's actual file relative to its own import.meta.url -
+    // a future move of the daemon needs no unit re-render.
+    expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo"))
+    expect(result.stdout).not.toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
     expect(result.stdout).toContain("EnvironmentFile=-" + join(temp, "state", ".env"))
-    expect(result.stdout).toContain("ExecStart=" + bun + " run scripts/chat-server.ts")
+    expect(result.stdout).toContain("ExecStart=" + bun + " run scripts/luna-chat-server-entry.ts")
     // Liveness ladder L1: hang detection. Type=notify holds the unit in
     // `activating` until the app's READY=1; WatchdogSec restarts a
     // wedged-but-alive process; NotifyAccess=all because beats arrive from a
@@ -1080,6 +1085,139 @@ deploy.autoUpdate    = true
     // Version-skew guard: the temp repo has no sd-notify.ts, so the installer
     // must warn that this checkout cannot satisfy the Type=notify unit.
     expect(result.stderr).toContain("sd-notify.ts")
+  })
+
+  // S07: unit-render rollback. A bad render (or a rollback across the
+  // launcher boundary) needs a restore point in the SAME write path the
+  // guardian's --units-only auto-reconcile goes through, not just a manual
+  // render - see luna-guardian's reconcile_unit_if_idle.
+  it("re-rendering the service unit copies the previous version aside as .prev", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const serviceDir = join(temp, "systemd")
+    mkdirSync(join(repo, ".git"), { recursive: true })
+
+    const args = [
+      "--profile", "stable",
+      "--repo-dir", repo,
+      "--luna-home", state,
+      "--service-dir", serviceDir,
+      "--units-only", "--no-enable", "--no-start",
+    ]
+
+    const bin1 = makeBunStub(temp).bin
+    writePermissiveSystemctl(bin1)
+    const first = runScript("scripts/luna-server-install", args, {
+      env: { LUNA_TEST_BUN_PATH: join(bin1, "bun"), PATH: `${bin1}:${process.env.PATH ?? "/usr/bin:/bin"}` },
+    })
+    expect(first.status, first.stdout + first.stderr).toBe(0)
+    const unitPath = join(serviceDir, "luna-chat-server.service")
+    expect(existsSync(unitPath)).toBe(true)
+    // Nothing to back up on a first install - there is no prior unit.
+    expect(existsSync(unitPath + ".prev")).toBe(false)
+    const firstContent = readFileSync(unitPath, "utf8")
+
+    // A DIFFERENT bun stub path makes the second render byte-different from
+    // the first, so the .prev copy can be proven to hold the PRE-render
+    // content rather than a copy of what was just written.
+    const bin2 = join(temp, "stub-bin-2")
+    mkdirSync(bin2, { recursive: true })
+    writeFileSync(join(bin2, "bun"), "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", join(bin2, "bun")])
+    writePermissiveSystemctl(bin2)
+
+    const second = runScript("scripts/luna-server-install", args, {
+      env: { LUNA_TEST_BUN_PATH: join(bin2, "bun"), PATH: `${bin2}:${process.env.PATH ?? "/usr/bin:/bin"}` },
+    })
+    expect(second.status, second.stdout + second.stderr).toBe(0)
+    expect(existsSync(unitPath + ".prev")).toBe(true)
+    expect(readFileSync(unitPath + ".prev", "utf8")).toBe(firstContent)
+    const secondContent = readFileSync(unitPath, "utf8")
+    expect(secondContent).not.toBe(firstContent)
+    expect(secondContent).toContain(join(bin2, "bun"))
+    // Scoped to the service unit only - the pager alert unit's shape did not
+    // change in this slice, so it gets no .prev.
+    expect(existsSync(join(serviceDir, "luna-alert-luna-chat-server.service.prev"))).toBe(false)
+  })
+
+  describe("path-independent launcher - the bun-run-bash-shebang failure mode (S07)", () => {
+    it("the shared launcher literal (luna_chat_server_launcher_rel) names the real, shebang-less .ts file", () => {
+      // Sourcing lib/luna-deploy.sh is the SAME literal luna-server-install's
+      // ExecStart and lib/launchd-plist.sh's ProgramArguments both render -
+      // one source, so the two renderers can never name a different file.
+      const r = spawnSync("bash", ["-c",
+        `source "${join(repoRoot, "scripts/lib/luna-deploy.sh")}"; luna_chat_server_launcher_rel`],
+        { encoding: "utf8" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      const launcherRel = r.stdout.trim()
+      expect(launcherRel).toBe("scripts/luna-chat-server-entry.ts")
+      // Static assertion: ends in .ts, not a shebang script. `bun run
+      // <bash-shebang-file>` does NOT execute the file as a shell script -
+      // see the behavioral tests below for what it does instead.
+      expect(launcherRel.endsWith(".ts")).toBe(true)
+      const launcherPath = join(repoRoot, launcherRel)
+      expect(existsSync(launcherPath)).toBe(true)
+      expect(readFileSync(launcherPath, "utf8").startsWith("#!")).toBe(false)
+    })
+
+    // QUALIFIED empirical claim (measured, Bun 1.3.14): `bun run` on a
+    // bash-shebang file does NOT run it as a real shell script - Bun uses its
+    // OWN limited shell/parser, and the outcome depends on the file's shape,
+    // not just its extension. A MINIMAL file with no parenthesized syntax
+    // anywhere (e.g. just `set -euo pipefail` then a plain command) is
+    // "interpreted": unknown builtins like `set` report "command not found"
+    // WITHOUT aborting, so the file can run its later lines and reach
+    // `exit 0` having done nothing real - an exit-code-only assertion cannot
+    // see this. Extension does not save it: the identical content without a
+    // `.sh` extension is instead parsed as JS/TS and fails the SAME way
+    // (a bare `pipefail` after `set` is not valid JS either), exit 1.
+    it("the minimal shape that measurably exits 0 under bun run is silent - no output resembles a readiness signal", () => {
+      const temp = makeTempDir()
+      const fixture = join(temp, "bad-launcher.sh")
+      writeFileSync(fixture, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+      const r = spawnSync("bun", ["run", fixture], { encoding: "utf8" })
+      // Exit code alone is explicitly insufficient here (this shape exits 0
+      // while doing nothing real): stdout=="" is the second, load-bearing
+      // signal that no readiness output was ever produced. Not pinning the
+      // exact stderr wording Bun emits for the unrecognized `set` builtin -
+      // that string is Bun's internals, not this repo's behavior, and a
+      // reword there would fail this test with no product change.
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toBe("")
+    })
+
+    // What this proves: this repo's ACTUAL launcher content (bash-shebanged,
+    // matching the accident this static+behavioral guard exists to catch)
+    // makes Bun's shell/parser reject the WHOLE FILE (any parenthesized
+    // syntax - Bun.serve, `await import(...)` - forces this) BEFORE A
+    // SINGLE LINE RUNS. Nothing executing is what makes the daemon's port
+    // bind and READY=1 (systemd Type=notify only sends it once the WS
+    // server is actually listening, apps/ui-web/scripts/sd-notify.ts)
+    // provably unreachable code paths for this shape - this test does not
+    // itself probe the port or observe READY; it proves the precondition
+    // (zero lines executed) that makes both impossible.
+    it("this repo's real launcher content, bash-shebanged, fails the whole-file parse before a single line runs", () => {
+      const temp = makeTempDir()
+      const fixture = join(temp, "bad-real-launcher.sh")
+      writeFileSync(
+        fixture,
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+          + readFileSync(join(repoRoot, "scripts/luna-chat-server-entry.ts"), "utf8"),
+      )
+      // spawnSync blocks until the process exits - this IS the whole-file
+      // execution, not just its start, so an empty stdout with no listening
+      // side effect is dispositive: Bun's shell/parser rejected the file
+      // (any parenthesized call anywhere is a WHOLE-FILE parse failure)
+      // before a single line - let alone `await import(...)` - ran.
+      const r = spawnSync("bun", ["run", fixture], { encoding: "utf8" })
+      // Loud (a whole-file parse failure) is the ACTUAL outcome for this
+      // repo's launcher content - still never boots, just not silently. Not
+      // pinning the exact wording of Bun's parse-error message, same reason
+      // as the fixture above: Bun's internals, not this repo's behavior.
+      expect(r.status).not.toBe(0)
+      expect(r.stdout).toBe("")
+    })
   })
 
   it("does NOT emit the version-skew warning when the checkout has sd-notify.ts", () => {
@@ -1374,7 +1512,7 @@ exit 0
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
+    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/luna-chat-server-entry.ts")
   })
 
   it("server install replaces stale Claude Code overrides with the repo-bundled Linux binary", () => {
@@ -1762,10 +1900,25 @@ exit 0
       'command -v port_guard_is_luna_cmd >/dev/null || { echo MISSING; exit 0; }; '
       + 'if port_guard_is_luna_cmd "$CMD" "$DIR"; then echo LUNA; else echo FOREIGN; fi'
 
-    it("recognizes THIS install's chat-server as Luna", () => {
+    it("recognizes THIS install's chat-server as Luna (transitional scripts/chat-server.ts shape)", () => {
       const result = runGuard(verdict, {
         env: {
           CMD: "bun run --cwd /Users/me/luna/apps/ui-web scripts/chat-server.ts",
+          DIR: "/Users/me/luna",
+        },
+      })
+      expect(result.stdout.trim()).toBe("LUNA")
+    })
+
+    // S07: the rendered launchd ProgramArguments' final entry no longer ends in
+    // "chat-server.ts" - it is the path-independent launcher
+    // (scripts/luna-chat-server-entry.ts) - so the `*chat-server.ts*` glob
+    // alone would misclassify Luna's own daemon as foreign and
+    // ensure_port_free would refuse to free the port for its own reinstall.
+    it("recognizes THIS install's chat-server as Luna (path-independent launcher shape)", () => {
+      const result = runGuard(verdict, {
+        env: {
+          CMD: "bun run --cwd /Users/me/luna scripts/luna-chat-server-entry.ts",
           DIR: "/Users/me/luna",
         },
       })
@@ -2173,8 +2326,13 @@ exit 0
     it("launches the chat server via bun with the right cwd", () => {
       const r = render()
       expect(r.stdout).toContain(`<string>${BUN}</string>`)
-      expect(r.stdout).toContain(`<string>${DIR}/apps/ui-web</string>`)
-      expect(r.stdout).toContain("<string>scripts/chat-server.ts</string>")
+      // Path-independent launcher (S07): --cwd names REPO_DIR itself (no
+      // app-specific subpath) and the ProgramArguments' final entry is the
+      // path-independent launcher, the SAME literal the systemd unit's
+      // ExecStart uses (scripts/luna-server-install) - one shared source.
+      expect(r.stdout).toContain(`<string>${DIR}</string>`)
+      expect(r.stdout).not.toContain(`<string>${DIR}/apps/ui-web</string>`)
+      expect(r.stdout).toContain("<string>scripts/luna-chat-server-entry.ts</string>")
     })
 
     it("supervises via KeepAlive=true (always respawn) — NOT systemd's Restart key", () => {
@@ -2192,11 +2350,17 @@ exit 0
       expect(r.stdout).not.toContain("<key>Restart</key>")
     })
 
-    it("routes logs to the luna home and sets LUNA_HOME / CLAUDE_CONFIG_DIR / PATH", () => {
+    it("routes logs to the luna home and sets LUNA_HOME / LUNA_REPO_ROOT / CLAUDE_CONFIG_DIR / PATH", () => {
       const r = render()
       expect(r.stdout).toContain(`<string>${HOME}/logs/server.log</string>`)
       expect(r.stdout).toContain("<key>LUNA_HOME</key>")
       expect(r.stdout).toContain(`<string>${HOME}</string>`)
+      // LUNA_REPO_ROOT (S07): the launchd plist has no WorkingDirectory-style
+      // key, so without this the macOS wake-workspace path would silently
+      // move from <luna_dir>/apps/ui-web to <luna_dir> (chat-server.ts's cwd
+      // fallback) the moment the launcher stops chdir'ing into apps/ui-web.
+      expect(r.stdout).toContain("<key>LUNA_REPO_ROOT</key>")
+      expect(r.stdout).toContain(`<string>${DIR}</string>`)
       expect(r.stdout).toContain("<key>CLAUDE_CONFIG_DIR</key>")
       expect(r.stdout).toContain(`<string>${HOME}/claude</string>`)
       expect(r.stdout).toContain("<key>PATH</key>")
@@ -2229,6 +2393,23 @@ exit 0
       // The old UNSUPERVISED nohup launch of the chat server must be gone (the
       // Vite UI may still use nohup — this only targets the chat-server line).
       expect(script).not.toMatch(/nohup bun run [^\n]*chat-server\.ts/)
+    })
+
+    it("both plist writes back up the existing plist to .prev BEFORE the render truncates it", () => {
+      const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+      const backupRe = /cp -f "\$PLIST_FILE" "\$PLIST_FILE\.prev"/g
+      const renderRe = /render_launchd_plist [^\n]*> "\$PLIST_FILE"/g
+      const backups = [...script.matchAll(backupRe)].map((m) => m.index ?? -1)
+      const renders = [...script.matchAll(renderRe)].map((m) => m.index ?? -1)
+      // One real backup statement per render site - a comment mentioning
+      // .prev must not satisfy this (the regex matches the cp form only).
+      expect(backups).toHaveLength(2)
+      expect(renders).toHaveLength(2)
+      // Ordering is the restore point's whole value: a backup AFTER the
+      // render would snapshot the NEW plist and destroy the rollback copy.
+      expect(backups[0]).toBeLessThan(renders[0])
+      expect(backups[1]).toBeLessThan(renders[1])
+      expect(renders[0]).toBeLessThan(backups[1])
     })
   })
 

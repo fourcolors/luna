@@ -3,7 +3,11 @@
 # timer-driven oneshot owns deep health, evidence capture, repair, and updates.
 set -euo pipefail
 
-SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# BASH_SOURCE[0], not $0: identical when this file is executed directly (the
+# only way it runs in production), but $0 names the CALLER when this file is
+# sourced (the test seam the dispatch guard at the bottom of this file uses),
+# which would resolve SCRIPT_DIR to the wrong directory and fail to find lib/.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SELF")"
 source "$SCRIPT_DIR/lib/luna-deploy.sh"
 source "$SCRIPT_DIR/lib/luna-registry.sh"
@@ -146,6 +150,62 @@ unit_hardened() {
   type="$(run_runtime systemctl show "$P_SERVICE_NAME" -p Type --value 2>/dev/null || true)"
   watchdog="$(run_runtime systemctl show "$P_SERVICE_NAME" -p WatchdogUSec --value 2>/dev/null || true)"
   [[ "$type" == notify && -n "$watchdog" && "$watchdog" != 0 && "$watchdog" != 0us ]]
+}
+
+# unit_paths_current - the other half of the reconcile gate unit_hardened
+# cannot see: unit_hardened inspects ONLY Type/WatchdogUSec, so a unit
+# rendered by a pre-S07 luna-server-install (app-specific WorkingDirectory +
+# ExecStart) reads exactly as "hardened" as one rendered by this slice. This
+# predicate is what lets the guardian tell the two apart, WITHOUT duplicating
+# render_service's template here: it compares the INSTALLED unit's ExecStart
+# against luna_chat_server_launcher_rel, the one literal shared with both
+# renderers (lib/luna-deploy.sh).
+#
+# Returns 1 ("not current" - safe AND needed to reconcile) ONLY when the
+# installed ExecStart does NOT already name the launcher AND BOTH the current
+# release and the rollback target (`previous`, releases layout only) already
+# contain it on disk. Every other case returns 0 ("current" - leave the old
+# unit alone): already rendered with the launcher, OR a `previous` that is
+# absent or still predates the launcher. A good render over a stale rollback
+# target would make a FUTURE rollback (do_rollback_releases flips `current`
+# back to `previous` and restarts the SAME unit, never re-rendering it) boot
+# an ExecStart naming a file that release does not contain - precisely the
+# failure this slice exists to remove, so this predicate must fail closed
+# toward "leave it alone" whenever it cannot prove the rollback target is
+# safe. inplace layout has no separate, possibly-stale `previous` tree - a
+# rollback there is a `git reset --hard` in the SAME checkout, so once the
+# CURRENT tree has the launcher, every rollback target reachable by ordinary
+# forward-only branch tracking also does; only the current-tree check applies.
+#
+# Test seam mirrors unit_hardened's LUNA_TEST_GUARDIAN_UNIT_HARDENED: a
+# fixture whose P_REPO is a filesystem copy of THIS repo's scripts/ (not a
+# rendered unit at all) would otherwise always read the launcher as present
+# on disk and misreport drift for tests that are not exercising this axis.
+unit_paths_current() {
+  local launcher exec_line current_dir previous_dir="" cdr
+  if [[ "${LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT" == "true" ]]
+    return
+  fi
+  launcher="$(luna_chat_server_launcher_rel)"
+  exec_line="$(run_runtime systemctl show "$P_SERVICE_NAME" -p ExecStart --value 2>/dev/null || true)"
+  [[ "$exec_line" == *"run $launcher"* ]] && return 0
+
+  cdr="${LUNA_CONTAINER_DEPLOY_ROOT:-/root/luna}"
+  if [[ -n "$P_INCUS" ]]; then
+    if [[ "$P_LAYOUT" == "releases" ]]; then
+      current_dir="$cdr/current"; previous_dir="$cdr/previous"
+    else
+      current_dir="/root/luna"
+    fi
+  else
+    current_dir="$P_REPO"
+    [[ "$P_LAYOUT" == "releases" ]] && previous_dir="$P_DEPLOY_ROOT/previous"
+  fi
+
+  run_runtime test -f "$current_dir/$launcher" || return 0
+  [[ -z "$previous_dir" ]] || run_runtime test -f "$previous_dir/$launcher" || return 0
+  return 1
 }
 
 host_unit_property() {
@@ -520,8 +580,19 @@ update_then_refresh() {
 }
 
 reconcile_unit_if_idle() {
-  local profile="$1" n
-  unit_hardened && return 0
+  local profile="$1" n pending
+  unit_hardened && unit_paths_current && return 0
+  # Defer while an update-server transaction is in flight for this profile
+  # (same journal install_guardian's engine-pin flip already refuses to run
+  # past). apply_ref may have already git-reset the checkout to a
+  # not-yet-verified ref by the time this tick runs; rendering here would
+  # target a tree do_rollback could discard moments later, leaving an
+  # installed unit whose ExecStart the rolled-back tree does not contain.
+  pending="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}/transaction-$profile"
+  if [[ -f "$pending" ]]; then
+    luna_warn "unit drift: update transaction pending for profile '$profile'; deferring reconcile"
+    return 1
+  fi
   if ! n="$(luna_active_ws_count "$P_PORT" "$P_INCUS")"; then
     luna_warn "unit drift: session count unknown; deferring"; return 1
   fi
@@ -667,9 +738,11 @@ check_profile() {
     fi
   fi
 
-  if ! unit_hardened; then
+  if ! unit_hardened || ! unit_paths_current; then
     # A server with live/unknown sessions stays untouched; the normal updater
-    # below still runs, and its own fail-closed session guard defers.
+    # below still runs, and its own fail-closed session guard defers. Gated
+    # on unit_paths_current too - unit_hardened alone cannot see app-specific
+    # ExecStart/WorkingDirectory drift (see unit_paths_current).
     if reconcile_unit_if_idle "$profile"; then escalate=true; fi
   fi
   if [[ "$escalate" != true ]]; then
@@ -1289,33 +1362,41 @@ uninstall_guardian() {
   systemctl daemon-reload
 }
 
-cmd="${1:-}"; profile="${2:-}"
-[[ -n "$cmd" && -n "$profile" ]] || { echo "usage: luna-guardian check|diagnose|adopt|install|accept|uninstall <profile>" >&2; exit 2; }
-luna_validate_profile "$profile"
-case "$cmd" in
-  check) run_check "$profile" ;;
-  diagnose) diagnose "$profile" ;;
-  adopt) adopt_profile "$profile" ;;
-  install)
-    shift 2; interval=1min
-    while [[ $# -gt 0 ]]; do
-      case "$1" in --interval) interval="${2:?}"; shift 2 ;; *) luna_die "unknown option: $1" ;; esac
-    done
-    [[ "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]] || luna_die "invalid interval: $interval"
-    install_guardian "$profile" "$interval"
-    ;;
-  accept)
-    shift 2; expected=""; min_cycles=2
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --expected-sha) expected="${2:?}"; shift 2 ;;
-        --min-cycles) min_cycles="${2:?}"; shift 2 ;;
-        *) luna_die "unknown option: $1" ;;
-      esac
-    done
-    [[ -n "$expected" ]] || luna_die "accept requires --expected-sha <full-sha>"
-    accept_profile "$profile" "$expected" "$min_cycles"
-    ;;
-  uninstall) uninstall_guardian "$profile" ;;
-  *) luna_die "unknown command: $cmd" ;;
-esac
+# Dispatch runs only when this file is EXECUTED directly, not sourced. Test
+# seam: sourcing this file (with BASH_SOURCE[0] != $0) exercises its
+# functions - e.g. unit_paths_current - against a controlled environment
+# without ever reaching this tail, matching how lib/*.sh files are already
+# exercised. Production only ever executes this file directly, so
+# BASH_SOURCE[0] == $0 always holds there and this guard changes nothing.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  cmd="${1:-}"; profile="${2:-}"
+  [[ -n "$cmd" && -n "$profile" ]] || { echo "usage: luna-guardian check|diagnose|adopt|install|accept|uninstall <profile>" >&2; exit 2; }
+  luna_validate_profile "$profile"
+  case "$cmd" in
+    check) run_check "$profile" ;;
+    diagnose) diagnose "$profile" ;;
+    adopt) adopt_profile "$profile" ;;
+    install)
+      shift 2; interval=1min
+      while [[ $# -gt 0 ]]; do
+        case "$1" in --interval) interval="${2:?}"; shift 2 ;; *) luna_die "unknown option: $1" ;; esac
+      done
+      [[ "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]] || luna_die "invalid interval: $interval"
+      install_guardian "$profile" "$interval"
+      ;;
+    accept)
+      shift 2; expected=""; min_cycles=2
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --expected-sha) expected="${2:?}"; shift 2 ;;
+          --min-cycles) min_cycles="${2:?}"; shift 2 ;;
+          *) luna_die "unknown option: $1" ;;
+        esac
+      done
+      [[ -n "$expected" ]] || luna_die "accept requires --expected-sha <full-sha>"
+      accept_profile "$profile" "$expected" "$min_cycles"
+      ;;
+    uninstall) uninstall_guardian "$profile" ;;
+    *) luna_die "unknown command: $cmd" ;;
+  esac
+fi
