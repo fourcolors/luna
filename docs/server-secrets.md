@@ -85,3 +85,26 @@ CLAUDE_CODE_OAUTH_TOKEN="…" bun run apps/ui-web/scripts/seed-default-account.t
 
 `.env` MUST be mode `600` (owner-only) — it holds the raw token. The installer
 enforces this; if you hand-edit `.env`, re-run `chmod 600 /root/.luna/.env`.
+
+## Remote WS ingress and token transport
+
+The daemon no longer serves a web page; its HTTP surface is `/healthz`, `/readyz`, and the `/ui` WebSocket that Moon and remote Moon connect to.
+Any remote access therefore means proxying the WebSocket, not a site.
+
+Caddy with real TLS (recommended for remote access):
+
+```caddyfile
+your.domain.example {
+    reverse_proxy /ui ws://127.0.0.1:4753
+}
+```
+
+Caddy auto-provisions a Let's Encrypt certificate; use `tls internal` plus `caddy trust` for a LAN host without a public domain.
+Tailscale Serve (`scripts/luna-web-ingress.sh`) remains the simplest personal option: it exposes the daemon port on your tailnet over HTTPS, and Moon connects to `wss://<machine>.<tailnet>.ts.net/ui`.
+Ad-hoc tunnels (ngrok and similar) expose the same endpoint publicly; use only for short-lived testing.
+
+Token transport rules, regardless of ingress:
+
+- Every `ui-ws` connection authenticates with the single bearer token from `LUNA_UI_WS_TOKEN`; there is no separate per-surface token, so do not invent one (the server does not read `LUNA_UI_WS_TOKEN_WEB`).
+- Keep the token inside TLS; never send it over plain HTTP on an untrusted network.
+- Keep it out of access logs: configure the proxy to strip the `Authorization` header from logged requests, and prefer the header over the `?token=` query form, which is harder to scrub from logs.

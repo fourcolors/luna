@@ -2983,40 +2983,6 @@ export const buildSetupServerLayer = (
 // ChatService.CreateThreadOptions) is additive — no other call sites
 // need to change.
 
-// ── SPA static root ───────────────────────────────────────────────────────────
-// Resolve the pre-built web client dist/ directory so the chat-server can serve
-// the SPA single-origin alongside its WebSocket endpoint.
-//
-// Resolution order (first match wins):
-//   1. LUNA_UI_WEB_STATIC_DISABLE=1  → always disabled (useful for debugging).
-//   2. LUNA_UI_WEB_STATIC_ROOT=<path> → explicit override (e.g. custom build dir).
-//   3. dist/ relative to apps/ui-web  → standard Vite output location.
-//
-// If dist/ is absent (e.g. first boot before `bun run build`), degrades
-// gracefully: staticRoot = undefined, static serving is disabled. The luna-
-// update-server upgrade script builds dist/ before restarting the service, so
-// on any fully-upgraded install this directory will be present.
-//
-// Only set in NORMAL mode (see below). Never set in setup-mode.
-const __uiWebDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-// Lazy: only evaluated at the normal-mode call site (buildServerLayer). As a
-// top-level IIFE this would also run — and log "dist/ not built" — in setup-mode,
-// where static serving must stay untouched. The env override is resolved to an
-// absolute path so a relative LUNA_UI_WEB_STATIC_ROOT works from any cwd.
-const computeStaticRoot = (): string | undefined => {
-  if (process.env["LUNA_UI_WEB_STATIC_DISABLE"] === "1") return undefined
-  const override = process.env["LUNA_UI_WEB_STATIC_ROOT"]
-  if (override) {
-    return resolve(override)
-  }
-  const candidate = resolve(__uiWebDir, "dist")
-  if (existsSync(candidate)) return candidate
-  console.log(
-    "[luna/ui] dist/ not built — web client static serving disabled",
-  )
-  return undefined
-}
-
 // PNG signature (8 bytes) — see readPngDimensions below.
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 
@@ -4579,7 +4545,6 @@ const buildServerLayer = (
         mcpAppHost,
         // PR 1: model-routing settings (config surface only; cap enforcement PR 2).
         modelRoutingService,
-        staticRoot: computeStaticRoot(),
       })
     }),
   ).pipe(
