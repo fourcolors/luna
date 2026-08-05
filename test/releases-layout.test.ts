@@ -123,8 +123,6 @@ const makeReleasesFixture = (
   mkdirSync(claudeDir, { recursive: true })
   writeFileSync(join(claudeDir, "claude"), "#!/bin/sh\nexit 0\n")
   spawnSync("chmod", ["+x", join(claudeDir, "claude")])
-  mkdirSync(join(prevRel, "apps", "ui-web", "dist"), { recursive: true })
-  writeFileSync(join(prevRel, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
   writeFileSync(join(prevRel, ".complete"), "")
 
   symlinkSync(`releases/${prevSha}`, join(deploy, "current"))
@@ -136,8 +134,8 @@ const makeReleasesFixture = (
  * Stub bin: systemctl (records stop/start WITH what current resolves to at
  * that instant — the flip-inside-the-window proof), curl (verdict keyed off
  * the release current resolves to), bun (CREATES the release artifacts,
- * mirroring a real install/build), plus a logging passthrough git shim so
- * fetch targets are assertable.
+ * mirroring a real install), plus a logging passthrough git shim so fetch
+ * targets are assertable.
  */
 const makeReleasesStubBin = (
   root: string,
@@ -204,18 +202,11 @@ for a in "$@"; do
 done
 if [[ "$1" == "install" && -n "$cwd" ]]; then
   [[ "\${STUB_BUN_FAIL_INSTALL:-}" == "1" ]] && exit 1
+  [[ -n "\${STUB_BUN_RM:-}" ]] && rm -f "\$STUB_BUN_RM"
   d="$cwd/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64"
   mkdir -p "$d"
   printf '#!/bin/sh\\nexit 0\\n' > "$d/claude"
   chmod +x "$d/claude"
-fi
-if [[ "$1" == "run" && "$*" == *build* ]]; then
-  [[ "\${STUB_BUN_FAIL_BUILD:-}" == "1" ]] && exit 1
-  [[ -n "\${STUB_BUN_RM:-}" ]] && rm -f "\$STUB_BUN_RM"
-  if [[ -n "$cwd" ]]; then
-    mkdir -p "$cwd/apps/ui-web/dist"
-    printf '<!doctype html>\\n' > "$cwd/apps/ui-web/dist/index.html"
-  fi
 fi
 exit 0
 `,
@@ -430,7 +421,7 @@ describe("releases layout — materialize", () => {
     expect(existsSync(join(rel, "canary.txt"))).toBe(false)
   })
 
-  it("reuse gate: a complete release is reused (zero bun calls); a damaged one (deleted dist) is rebuilt", () => {
+  it("reuse gate: a complete release is reused (zero bun calls); a damaged one (deleted node_modules) is rebuilt", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
@@ -439,20 +430,20 @@ describe("releases layout — materialize", () => {
     const r1 = runReleases(fx, stubs, temp, ["--materialize", "--ref", fx.targetSha])
     expect(r1.status, r1.stdout + r1.stderr).toBe(0)
     const bunAfterFirst = readLog(stubs.bunLog).split("\n").filter(Boolean).length
-    expect(bunAfterFirst).toBe(2) // install + build
+    expect(bunAfterFirst).toBe(1) // install only
 
     const r2 = runReleases(fx, stubs, temp, ["--materialize", "--ref", fx.targetSha])
     expect(r2.status, r2.stdout + r2.stderr).toBe(0)
     expect(r2.stdout).toContain("reusing")
     expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(bunAfterFirst) // zero new bun calls
 
-    // Damage the declared artifact: .complete present but dist gone → rebuild.
-    rmSync(join(fx.releases, fx.targetSha, "apps", "ui-web", "dist", "index.html"))
+    // Damage the declared artifact: .complete present but node_modules gone → rebuild.
+    rmSync(join(fx.releases, fx.targetSha, "node_modules"), { recursive: true })
     const r3 = runReleases(fx, stubs, temp, ["--materialize", "--ref", fx.targetSha])
     expect(r3.status, r3.stdout + r3.stderr).toBe(0)
     expect(r3.stderr).toContain("removing stale/incomplete release")
-    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(bunAfterFirst + 2)
-    expect(existsSync(join(fx.releases, fx.targetSha, "apps", "ui-web", "dist", "index.html"))).toBe(true)
+    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(bunAfterFirst + 1)
+    expect(existsSync(join(fx.releases, fx.targetSha, "node_modules"))).toBe(true)
   })
 })
 
@@ -859,8 +850,8 @@ describe("releases layout — rollback", () => {
     // current back at prev; previous names the FAILED release (forensics).
     expect(currentOf(fx.deploy)).toBe(`releases/${fx.prevSha}`)
     expect(previousOf(fx.deploy)).toBe(`releases/${fx.targetSha}`)
-    // ZERO bun installs during rollback: forward materialize's 2 calls only.
-    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(2)
+    // ZERO bun installs during rollback: forward materialize's 1 call only.
+    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(1)
     // ZERO git mutation during rollback: no reset, exactly one fetch (forward).
     // (\bfetch\b as a WORD: the preflight's `config --get remote.origin.fetch`
     // read is not a fetch.)
@@ -891,13 +882,13 @@ describe("releases layout — rollback", () => {
     expect(readFileSync(join(temp, "update-state", "transaction-stable"), "utf8")).toContain("phase=rollback-failed")
   })
 
-  it("(c) pre-flip build failure: current untouched, NO stop issued, exit 1, journal cleared; failed build tree cleaned up", () => {
+  it("(c) pre-flip install failure: current untouched, NO stop issued, exit 1, journal cleared; failed build tree cleaned up", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
-    const r1 = runReleases(fx, stubs, temp, [], { STUB_BUN_FAIL_BUILD: "1" })
+    const r1 = runReleases(fx, stubs, temp, [], { STUB_BUN_FAIL_INSTALL: "1" })
     expect(r1.status, r1.stdout + r1.stderr).toBe(1)
     expect(r1.stderr).toContain("PRE-flip")
     expect(currentOf(fx.deploy)).toBe(`releases/${fx.prevSha}`)
@@ -935,7 +926,7 @@ describe("releases layout — rollback", () => {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: false, readyAtPrev: true,
     })
     // The prev release loses its .complete DURING the run (post-preflight),
-    // via the build stub's rm seam.
+    // via the install stub's rm seam.
     const r = runReleases(fx, stubs, temp, [], {
       STUB_BUN_RM: join(fx.releases, fx.prevSha, ".complete"),
     })
@@ -1418,6 +1409,9 @@ describe("inplace verbatim signature", () => {
     git(work, "checkout", "--quiet", prevSha)
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
+    // The PHASE3_TIP pinned engine (below) still runs the ui-web build and
+    // checks this artifact - S11 only removed it from the LIVE engine, so
+    // the fixture must still satisfy the historical engine's own postcondition.
     mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
     writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
     return { work, prevSha, targetSha }
@@ -1524,9 +1518,23 @@ exit 0
       )
       expect(r.status, `${engine}: ${r.stdout}${r.stderr}`).toBe(0)
       const normalize = (s: string) => s.split(root).join("ROOT")
+      const bunLog = normalize(readLog(stubs.bunLog))
+      const uiWebBuildLine = /^run --cwd \S+ --filter @luna\/ui-web build$/m
+      // S11 intentionally dropped the `@luna/ui-web build` step from the
+      // inplace apply (nothing serves the frontend build anymore) - the ONE
+      // sanctioned divergence from PHASE3_TIP. Strip that single line from
+      // the HISTORICAL stream only, and assert its absence on the LIVE
+      // stream directly, so a regression that re-adds the step to the live
+      // engine fails this test instead of being silently stripped away.
+      const bunLogForCompare = engine === ENGINE
+        ? bunLog
+        : bunLog.split("\n").filter((line) => !uiWebBuildLine.test(line)).join("\n")
+      if (engine === ENGINE) {
+        expect(bunLog).not.toMatch(uiWebBuildLine)
+      }
       streams.push(
         "SYSTEMCTL:\n" + normalize(readLog(stubs.systemctlLog)) +
-        "BUN:\n" + normalize(readLog(stubs.bunLog)) +
+        "BUN:\n" + bunLogForCompare +
         "CURL:\n" + normalize(readLog(stubs.curlLog)),
       )
     }

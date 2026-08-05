@@ -2551,14 +2551,11 @@ exit 0
       const bin = join(temp, "bin")
       mkdirSync(join(repo, ".git"), { recursive: true })
       mkdirSync(bin, { recursive: true })
-      // Phase-3 artifact-postcondition fixtures: the engine now verifies the
-      // ui-web build artifact (and node_modules after a lockfile-changed
-      // install) after every apply; the fake-git live runs here would
-      // otherwise roll back on the dist probe.
+      // Phase-3 artifact-postcondition fixture: the engine now verifies
+      // node_modules (after a lockfile-changed install) after every apply;
+      // the fake-git live runs here would otherwise roll back on the probe.
       mkdirSync(join(repo, "node_modules"), { recursive: true })
       writeFileSync(join(repo, "node_modules", ".keep"), "keep\n")
-      mkdirSync(join(repo, "apps", "ui-web", "dist"), { recursive: true })
-      writeFileSync(join(repo, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
       return { repo, bin }
     }
 

@@ -70,11 +70,11 @@ ROLLBACK=true
 # RESTART_ONLY selects the cheap repair rung: guarded stop-settle-start +
 # readiness, no checkout mutation, no rollback.
 # FORWARD_RESTART_RAN scopes the rollback guard exemption: an apply-phase
-# failure (bun install / SPA build error) rolls back while the OLD server is
-# still running and serving, so that rollback restart must stay guarded — the
-# exemption is earned only once a forward restart has actually interrupted
-# service (or a mid-rollback journal is being recovered, where the interruption
-# already began in a prior run).
+# failure (bun install) rolls back while the OLD server is still running and
+# serving, so that rollback restart must stay guarded — the exemption is
+# earned only once a forward restart has actually interrupted service (or a
+# mid-rollback journal is being recovered, where the interruption already
+# began in a prior run).
 GUARD_SESSIONS=true
 OPERATOR_OVERRIDE_REASON=""
 RESTART_ONLY=false
@@ -548,7 +548,7 @@ lockfile_hash() {
 #   deployed_sha        - resolve current -> releases/<sha>, fail closed
 #   mirror_lock_blob    - bun.lock blob id at a sha, read from the mirror
 #   materialize_release - immutable build: clone --local + detach + install +
-#                         build + .complete LAST (publish_engine idiom)
+#                         .complete LAST (publish_engine idiom)
 #   flip_current        - previous := outgoing current, then staged ln +
 #                         luna_atomic_replace + cd -P re-resolve assert on
 #                         BOTH mount sides
@@ -579,16 +579,16 @@ mirror_lock_blob() {
 }
 
 # release_artifacts_ok <release-dir> — the reuse gate: .complete AND
-# node_modules AND a non-empty SPA entry point. Host-side stats (the host can
-# always stat the bind-mount source).
+# node_modules. Host-side stats (the host can always stat the bind-mount
+# source).
 release_artifacts_ok() {
   local rel="$1"
-  [[ -f "$rel/.complete" && -d "$rel/node_modules" && -s "$rel/apps/ui-web/dist/index.html" ]]
+  [[ -f "$rel/.complete" && -d "$rel/node_modules" ]]
 }
 
 # _build_release_tree <build_dir> <crel> <sha> [prev_lock_blob] — the shared
 # build body: clone --local + detach + HEAD postcondition + seed + install +
-# build + .complete LAST. <build_dir> is the host-side tree being built (either
+# .complete LAST. <build_dir> is the host-side tree being built (either
 # the final releases/<sha> or a staged sibling); <crel> is its in-container
 # spelling. Every step is `|| return 1`; the CALLER owns cleanup of a failed
 # tree (materialize_release removes it — a failed build tree is never the
@@ -627,12 +627,6 @@ _build_release_tree() {
   # POSTCONDITION: the install's declared artifact exists (in-container view).
   if ! run_target test -d "$crel/node_modules"; then
     luna_warn "POSTCONDITION: bun install exited 0 but $crel/node_modules is missing"
-    return 1
-  fi
-  run_target "$BUN_BIN" run --cwd "$crel" --filter "@luna/ui-web" build || return 1
-  # POSTCONDITION: the build's declared artifact exists and is non-empty.
-  if ! run_target test -s "$crel/apps/ui-web/dist/index.html"; then
-    luna_warn "POSTCONDITION: ui-web build exited 0 but $crel/apps/ui-web/dist/index.html is missing or empty"
     return 1
   fi
   # Deliberate SIGKILL seam (tests): a crash BEFORE the marker must leave a
@@ -676,7 +670,6 @@ materialize_release() {
     luna_run git clone --no-checkout --local "$MIRROR_GIT" "$rel"
     luna_run git -C "$rel" checkout --detach "$sha"
     run_target "$BUN_BIN" install --cwd "$crel" --frozen-lockfile
-    run_target "$BUN_BIN" run --cwd "$crel" --filter "@luna/ui-web" build
     luna_run touch "$rel/.complete"
     return 0
   fi
@@ -1222,17 +1215,6 @@ apply_ref_inplace() {
     luna_info "bun.lock unchanged -> skipping bun install"
   fi
 
-  # Build the web SPA on every apply (SPA source changes independent of bun.lock)
-  # so chat-server serves the current UI on :4753. The guarded build refuses to
-  # bake VITE_UI_WS_TOKEN (deploy env never sets it); failure routes to rollback.
-  run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build || return 1
-  # POSTCONDITION: the build's declared artifact (the SPA entry point served on
-  # :4753) must exist and be non-empty.
-  if ! run_target test -s "$CONTAINER_REPO_DIR/apps/ui-web/dist/index.html"; then
-    luna_warn "POSTCONDITION: ui-web build exited 0 but $CONTAINER_REPO_DIR/apps/ui-web/dist/index.html is missing or empty"
-    return 1
-  fi
-
   # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE (no-op in dry-run). Deps can move on
   # `bun install` and the override path goes stale — without re-pinning the
   # server boots but cannot spawn `claude` (a REAL incident this session).
@@ -1587,7 +1569,7 @@ restart_service() {
 }
 
 # --- releases bootstrap: --materialize ----------------------------------------
-# Inert by design (graft 6): materialize + build + create current WITHOUT any
+# Inert by design (graft 6): materialize + create current WITHOUT any
 # restart or unit interaction, so it can run beside the live in-place server
 # during the migration (via the temporary additive device mount — the
 # LUNA_CONTAINER_DEPLOY_ROOT seam). current is created only when absent; an
@@ -1625,7 +1607,7 @@ if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
   printf '1. record PREV = %s (deploy root %s; deployed release resolved via current)\n' "$PREV" "$DEPLOY_ROOT"
   printf '2. mirror fetch: git --git-dir %s fetch origin (the ONLY tree any fetch touches; no reset of any kind)\n' "$MIRROR_GIT"
   printf '3. materialize release: git clone --no-checkout --local %s releases/<sha> + checkout --detach (reused if already .complete)\n' "$MIRROR_GIT"
-  printf '4. build-in-release: %s install --frozen-lockfile + @luna/ui-web build INSIDE releases/<sha> (pre-flip; cp -a node_modules seed when bun.lock blob unchanged)\n' "$BUN_BIN"
+  printf '4. build-in-release: %s install --frozen-lockfile INSIDE releases/<sha> (pre-flip; cp -a node_modules seed when bun.lock blob unchanged)\n' "$BUN_BIN"
   printf '5. re-pin LUNA_CLAUDE_CODE_EXECUTABLE through current (detected in the NEW release, written as the through-current spelling)\n'
   printf '6. session guard: refuse stop if live sessions on :%s (dead-server exception: unit inactive/failed permits)\n' "$READINESS_PORT"
   printf '7. flip-inside-restart: stop %s -> settle %ss -> flip current -> releases/<sha> (previous := outgoing; staged ln + atomic rename + cd -P assert) -> start\n' "$SERVICE_NAME" "$RESTART_SETTLE_SECS"
@@ -1668,7 +1650,6 @@ if [[ "$DRY_RUN" == true ]]; then
   printf '1. record PREV = %s and bun.lock hash (host repo %s)\n' "$PREV" "$HOST_REPO_DIR"
   printf '2. (HOST git) fetch origin + reset --hard to %s\n' "$REF"
   printf '3. if bun.lock changed: %s install --cwd %s --frozen-lockfile (else skip)\n' "$BUN_BIN" "$CONTAINER_REPO_DIR"
-  printf '3b. %s run --cwd %s --filter @luna/ui-web build (always — builds the web SPA served on :4753)\n' "$BUN_BIN" "$CONTAINER_REPO_DIR"
   # In incus mode the re-pin runs INSIDE the container against the container .env
   # (/root/.luna/.env), NOT the host --luna-home .env; print the path that the
   # concrete command below actually touches so the plan does not contradict it.
@@ -1706,7 +1687,6 @@ if [[ "$DRY_RUN" == true ]]; then
   git_target fetch origin
   git_target reset --hard "$REF"
   run_target "$BUN_BIN" install --cwd "$CONTAINER_REPO_DIR" --frozen-lockfile
-  run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build
   if [[ -n "$INCUS_CONTAINER" ]]; then
     run_target bash -lc \
       "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }"
@@ -1819,9 +1799,9 @@ do_rollback() {
   #   - FORWARD_RESTART_RAN=true: the forward restart already interrupted
   #     service, so the guard has nothing left to protect and blocking rollback
   #     would strand a broken build. Exempt (rollback restart cannot return 3).
-  #   - FORWARD_RESTART_RAN=false: an APPLY-phase failure (bun install / SPA
-  #     build error) — the OLD server never stopped and is still serving, and
-  #     sessions may have been established since the pre-mutation guard check.
+  #   - FORWARD_RESTART_RAN=false: an APPLY-phase failure (bun install) — the
+  #     OLD server never stopped and is still serving, and sessions may have
+  #     been established since the pre-mutation guard check.
   #     The guard stays ACTIVE: a defer restores nothing further (apply_ref
   #     below has already reset the checkout to PREV, matching the still-running
   #     build), keeps the journal at phase=rolling-back, and exits 3 so the next
