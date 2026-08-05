@@ -45,13 +45,13 @@ CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-…" scripts/luna-server-install --profile
 
 When a token is supplied the installer writes it to `.env` (mode 600) and seeds
 the default account pointed at `env:CLAUDE_CODE_OAUTH_TOKEN` (via
-`apps/ui-web/scripts/seed-default-account.ts`), so the server boots straight into
+`apps/server/scripts/seed-default-account.ts`), so the server boots straight into
 **normal** mode. Omit the token to fall back to the interactive
 `claude-code:login` setup flow. The seed writes **only the pointer ref** — never
 the token value.
 ```sh
 # seed/repair an existing install (idempotent; no-op if an account already exists)
-CLAUDE_CODE_OAUTH_TOKEN="…" bun run apps/ui-web/scripts/seed-default-account.ts /root/.luna/luna.db
+CLAUDE_CODE_OAUTH_TOKEN="…" bun run apps/server/scripts/seed-default-account.ts /root/.luna/luna.db
 ```
 
 ## Rotating or switching the token
@@ -78,7 +78,7 @@ written to `.env`, the install completes with a warning and the server starts in
 **setup-mode** (safe fallback — it won't use a half-configured account). Recover
 by re-running the seed:
 ```sh
-CLAUDE_CODE_OAUTH_TOKEN="…" bun run apps/ui-web/scripts/seed-default-account.ts /root/.luna/luna.db
+CLAUDE_CODE_OAUTH_TOKEN="…" bun run apps/server/scripts/seed-default-account.ts /root/.luna/luna.db
 ```
 
 ## File permissions

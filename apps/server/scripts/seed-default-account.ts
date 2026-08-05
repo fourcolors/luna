@@ -12,7 +12,7 @@
  *   bun run apps/ui-web/scripts/seed-default-account.ts [dbPath]
  *     dbPath defaults to $LUNA_DB_PATH, then $LUNA_HOME/luna.db.
  */
-import { chooseDefaultSecretRef, seedDefaultAccount } from "./setup-login.js"
+import { chooseDefaultSecretRef, seedDefaultAccount } from "../src/setup-login.js"
 
 const dbPath =
   process.argv[2] ??

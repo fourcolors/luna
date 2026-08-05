@@ -37,6 +37,12 @@
     "**/node_modules",
     "**/*.test.ts",
     "apps/ui-web/**",
-    "apps/agent-cli/**"
+    "apps/agent-cli/**",
+    // TODO(#440): apps/server has no tsconfig.json of its own yet, so the
+    // include glob above would otherwise pull it into THIS project's
+    // compile with no bun types and no per-app overrides. S09 adds
+    // apps/server/tsconfig.json (mirroring apps/ui-web and apps/agent-cli)
+    // and removes this line.
+    "apps/server/**"
   ]
 }

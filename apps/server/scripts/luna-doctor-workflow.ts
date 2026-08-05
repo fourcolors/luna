@@ -28,7 +28,7 @@ import {
   type RemedyClass,
 } from "@luna/core"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
-import { resolveRuntimePaths } from "./runtime-paths.js"
+import { resolveRuntimePaths } from "../src/runtime-paths.js"
 
 const args = process.argv.slice(2)
 const cmd = args[0] ?? ""

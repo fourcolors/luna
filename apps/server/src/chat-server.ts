@@ -828,7 +828,7 @@ export const ThreadToolsProviderLayer = (
       // intentionally NOT cached here; decorate() reloads it per-thread so that
       // updates to ~/.luna/DNA.md take effect on the next new thread without a
       // server restart. Repo layout: this file is at
-      // apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.
+      // apps/server/src/chat-server.ts - DNA.md is 3 levels up.
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
       // loadDnaCached() seeds the cache on first call (throws if neither source
       // exists — loud boot failure). On subsequent calls it returns last-good

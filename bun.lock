@@ -34,6 +34,40 @@
         "vitest": "^2.1.5",
       },
     },
+    "apps/server": {
+      "name": "@luna/server",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/adapter-sdk": "workspace:*",
+        "@luna/channels": "workspace:*",
+        "@luna/chat-service": "workspace:*",
+        "@luna/connectors": "workspace:*",
+        "@luna/control-server": "workspace:*",
+        "@luna/core": "workspace:*",
+        "@luna/job-input-tools": "workspace:*",
+        "@luna/local-shell-tools": "workspace:*",
+        "@luna/mcp-servers": "workspace:*",
+        "@luna/memory": "workspace:*",
+        "@luna/memory-tools": "workspace:*",
+        "@luna/oauth": "workspace:*",
+        "@luna/observability-tools": "workspace:*",
+        "@luna/scheduler-tools": "workspace:*",
+        "@luna/secret-tools": "workspace:*",
+        "@luna/skill-tools": "workspace:*",
+        "@luna/suggested-actions-tools": "workspace:*",
+        "@luna/thread-tools": "workspace:*",
+        "@luna/tools": "workspace:*",
+        "@luna/ui-ws": "workspace:*",
+        "@luna/vault": "workspace:*",
+        "@luna/widget-tools": "workspace:*",
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+      },
+    },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
       "version": "0.0.65",
@@ -798,6 +832,8 @@
 
     "@luna/secret-tools": ["@luna/secret-tools@workspace:packages/secret-tools"],
 
+    "@luna/server": ["@luna/server@workspace:apps/server"],
+
     "@luna/server-registry": ["@luna/server-registry@workspace:packages/server-registry"],
 
     "@luna/skill-tools": ["@luna/skill-tools@workspace:packages/skill-tools"],
@@ -1328,7 +1364,7 @@
 
     "fast-check": ["fast-check@3.23.2", "", { "dependencies": { "pure-rand": "^6.1.0" } }, "sha512-h5+1OzzfCC3Ef7VbtKdcv7zsstUQwUDlYpUTvjeUsJAssPgLn7QzbboPtL5ro04Mq0rPOsMzl7q5hIbRs2wD1A=="],
 
-    "fast-deep-equal": ["fast-deep-equal@2.0.1", "", {}, "sha512-bCK/2Z4zLidyB4ReuIsvALH6w31YfAQDmXMqMx6FyfHqvBxtjC0eRumeSu4Bs3XtXwpyIywtSTrVT99BxY1f9w=="],
+    "fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
 
     "fast-fifo": ["fast-fifo@1.3.2", "", {}, "sha512-/d9sfos4yxzpwkDkuN7k2SqFKtYNmCTzgfEpz82x34IM9/zc8KGxQoXg1liNC/izpRM/MBdt44Nmx41ZWqk+FQ=="],
 
@@ -2078,8 +2114,6 @@
 
     "@wdio/types/@types/node": ["@types/node@20.19.43", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA=="],
 
-    "ajv/fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
-
     "anymatch/picomatch": ["picomatch@2.3.2", "", {}, "sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA=="],
 
     "archiver-utils/glob": ["glob@10.5.0", "", { "dependencies": { "foreground-child": "^3.1.0", "jackspeak": "^3.1.2", "minimatch": "^9.0.4", "minipass": "^7.1.2", "package-json-from-dist": "^1.0.0", "path-scurry": "^1.11.1" }, "bin": { "glob": "dist/esm/bin.mjs" } }, "sha512-DfXN8DfhJ7NH3Oe7cFmu3NCu1wKbkReJ8TorzSAFbSKrlNaQSKfIzqYqVY8zlbs2NLBbWpRiU52GX2PbaBVNkg=="],
@@ -2191,6 +2225,8 @@
     "read-pkg/normalize-package-data": ["normalize-package-data@6.0.2", "", { "dependencies": { "hosted-git-info": "^7.0.0", "semver": "^7.3.5", "validate-npm-package-license": "^3.0.4" } }, "sha512-V6gygoYb/5EmNI+MEGrWkC+e6+Rr7mTmfHrxDbLzxQogBkgzo76rkok0Am6thgSF7Mv2nLOajAJj5vDJZEFn7g=="],
 
     "recursive-readdir/minimatch": ["minimatch@3.1.5", "", { "dependencies": { "brace-expansion": "^1.1.7" } }, "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w=="],
+
+    "resq/fast-deep-equal": ["fast-deep-equal@2.0.1", "", {}, "sha512-bCK/2Z4zLidyB4ReuIsvALH6w31YfAQDmXMqMx6FyfHqvBxtjC0eRumeSu4Bs3XtXwpyIywtSTrVT99BxY1f9w=="],
 
     "stack-utils/escape-string-regexp": ["escape-string-regexp@2.0.0", "", {}, "sha512-UpzcLCXolUWcNu5HtVMHYdXJjArjsF9C0aNnquZYY4uW/Vu0miy5YoWvbV345HauVvcAUnpRuhMMcqTcGOY2+w=="],
 

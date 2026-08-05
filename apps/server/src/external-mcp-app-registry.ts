@@ -3,7 +3,7 @@
  * Luna panels. This is the `McpAppHostDeps` provider the widget-system.md Phase 7
  * follow-up always named ("external MCP servers plug in behind the same seam").
  *
- * It composes into `composeAppRegistries(...)` (apps/ui-web/scripts/chat-server.ts)
+ * It composes into `composeAppRegistries(...)` (apps/server/src/chat-server.ts)
  * AFTER the core + store providers, so:
  *   - `ui://luna/*`      → core provider
  *   - `ui://luna/app/*`  → store provider

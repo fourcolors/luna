@@ -397,6 +397,27 @@ git_target_capture() {
   fi
 }
 
+# TODO(#440): drop this probe once every profile's `previous` release
+# resolves to a post-S08 release (apps/server/scripts/dream-wake-install.ts
+# present in BOTH current and previous - checked via `readlink previous` on
+# each host; same condition scripts/luna-chat-server-entry.ts's probe
+# retires on). Until then this script must seed dream/wake jobs from
+# whichever tree shape the running release actually has, because a rollback
+# can flip `current` back to a pre-S08 release with no re-render. Fix or
+# remove: delete the apps/ui-web/scripts fallback below and this comment
+# once the condition holds; S26 carries the removal step. HOST_REPO_DIR is
+# always host-accessible (bind-mount source in incus mode too), so the
+# existence check itself never needs run_target/incus exec; only the
+# printed path is CONTAINER_REPO_DIR-relative, matching every other
+# in-container invocation in this script.
+dream_wake_install_script() {
+  if [[ -f "$HOST_REPO_DIR/apps/server/scripts/dream-wake-install.ts" ]]; then
+    printf '%s' "$CONTAINER_REPO_DIR/apps/server/scripts/dream-wake-install.ts"
+  else
+    printf '%s' "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  fi
+}
+
 # --- preflight ----------------------------------------------------------------
 
 luna_info "Updating Luna server profile: $PROFILE"
@@ -1629,7 +1650,7 @@ if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
   materialize_release "$DRY_SHA"
   RESTART_PRESTART_HOOK=(flip_current "$DRY_SHA")
   restart_service
-  run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  run_target "$BUN_BIN" run "$(dream_wake_install_script)"
   luna_info "Dry run complete; no changes made."
   exit 0
 fi
@@ -1691,7 +1712,7 @@ if [[ "$DRY_RUN" == true ]]; then
       "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }"
   fi
   restart_service
-  run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  run_target "$BUN_BIN" run "$(dream_wake_install_script)"
   luna_info "Dry run complete; no changes made."
   exit 0
 fi
@@ -1713,7 +1734,7 @@ fi
 # seed failure must only WARN, never fail the deploy or trip rollback. Always
 # returns 0 (callers also guard with `|| true`).
 seed_dream_wake_jobs() {
-  local script="$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  local script; script="$(dream_wake_install_script)"
   luna_info "post-deploy: seeding V2 dream/wake job rows (idempotent)"
   if run_target "$BUN_BIN" run "$script"; then
     luna_info "post-deploy: dream/wake job rows ensured"
