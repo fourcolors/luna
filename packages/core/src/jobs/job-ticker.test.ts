@@ -2,12 +2,22 @@
  * JobTicker tests — deterministic via TestClock + Memory JobsStore + stub
  * WorkerRegistry. No SQLite, no real sleep, no real model calls.
  */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, afterEach } from "vitest"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Context, Deferred, Effect, Layer, Duration } from "effect"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "./jobs-store.js"
 import { JobsStoreError, type JobsStoreApi } from "./jobs-store-types.js"
 import { JobTicker, JobTickerLayer } from "./job-ticker.js"
+import { CLEAN_SHUTDOWN_MARKER_NAME } from "./job-ticker-reconcile.js"
 import {
   WorkerRegistry,
   WorkerError,
@@ -313,6 +323,212 @@ describe("JobTicker", () => {
         ),
       ),
     )
+  })
+
+  // S11a-wire: JobTickerLayer's boot reconcile now consumes the clean-shutdown
+  // marker chat-server.ts writes on a deliberate stop, before wiring
+  // cleanShutdown into store.reconcileAfterCrash. See job-ticker-reconcile.ts
+  // for the consume-once contract and jobs-store.test.ts for the store-level
+  // exemption behavior these tests build on top of.
+  describe("boot reconcile: S11a clean-shutdown marker", () => {
+    let lunaHome: string | undefined
+    afterEach(() => {
+      if (lunaHome) rmSync(lunaHome, { recursive: true, force: true })
+    })
+
+    const noopWorker: Worker = () => Effect.succeed({ outputText: null })
+
+    const seedRunningOrphan = (
+      store: JobsStoreApi,
+      id: string,
+      fixedNow: number,
+      farFuture: number,
+    ) =>
+      Effect.gen(function* () {
+        yield* store.record({
+          id,
+          kind: "wake",
+          spec: "*/15 * * * *",
+          payload: { label: id },
+        })
+        yield* store.setV2Fields(id, {
+          schedule: "*/15 * * * *",
+          enabled: true,
+          nextRunAt: farFuture,
+        })
+        yield* store.touch(id, {
+          lastStatus: "running",
+          lastRun: fixedNow - 60_000,
+        })
+        yield* store.recordRunStart({ jobId: id, startedAt: fixedNow - 60_000 })
+      })
+
+    // Boots a JobTicker against an existing store + clock and runs its S11a
+    // boot reconcile, then tears it down (autoStart:false, so this is a
+    // single boot-reconcile pass, never a drain loop). Unlike `buildStack`
+    // above, callers here need to seed the SAME store before the boot and
+    // control each boot's `finishedAt` via `clockLayer`.
+    const bootTicker = (
+      store: JobsStoreApi,
+      clockLayer: Layer.Layer<Clock>,
+      home: string,
+    ): Effect.Effect<void> =>
+      Effect.scoped(
+        Layer.build(
+          JobTickerLayer({ autoStart: false, lunaHome: home }).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(JobsStoreService, store),
+                makeWorkerRegistry({ wake: noopWorker }),
+                clockLayer,
+              ),
+            ),
+          ),
+        ),
+      ).pipe(Effect.asVoid)
+
+    it("marker present: consumed (file removed) and the boot is exempted (orphanStreak stays 0) while next_run_at still pulls forward", async () => {
+      lunaHome = mkdtempSync(join(tmpdir(), "luna-clean-shutdown-"))
+      const markerPath = join(lunaHome, CLEAN_SHUTDOWN_MARKER_NAME)
+      writeFileSync(markerPath, "")
+      const fixedNow = 1_700_000_000_000
+      const farFuture = fixedNow + 86_400_000 * 30
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const clock = yield* Clock
+        yield* seedRunningOrphan(store, "marker-present", fixedNow, farFuture)
+        yield* bootTicker(store, Layer.succeed(Clock, clock), lunaHome!)
+
+        expect(existsSync(markerPath)).toBe(false)
+        const job = yield* store.getById("marker-present")
+        expect(job?.lastStatus).toBe("errored")
+        expect(job?.nextRunAt!).toBeGreaterThanOrEqual(fixedNow)
+        expect(job?.nextRunAt!).toBeLessThan(farFuture)
+        expect(job?.orphanStreak).toBe(0)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+              Clock.Test(fixedNow),
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("no marker: reconcile falls back to crash-counting and bumps orphanStreak (the pre-S11a default)", async () => {
+      lunaHome = mkdtempSync(join(tmpdir(), "luna-clean-shutdown-"))
+      const fixedNow = 1_700_000_000_000
+      const farFuture = fixedNow + 86_400_000 * 30
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const clock = yield* Clock
+        yield* seedRunningOrphan(store, "no-marker", fixedNow, farFuture)
+        yield* bootTicker(store, Layer.succeed(Clock, clock), lunaHome!)
+
+        const job = yield* store.getById("no-marker")
+        expect(job?.orphanStreak).toBe(1)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+              Clock.Test(fixedNow),
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("consume-once: a marker exempts exactly the boot that finds it; a later boot with no marker counts again", async () => {
+      lunaHome = mkdtempSync(join(tmpdir(), "luna-clean-shutdown-"))
+      const markerPath = join(lunaHome, CLEAN_SHUTDOWN_MARKER_NAME)
+      writeFileSync(markerPath, "")
+      // Two distinct boot clocks, provided directly to `bootTicker` (not via
+      // the ambient-fetch pattern used above) since this test needs two
+      // different `finishedAt` values across two sequential ticker boots
+      // against the SAME store.
+      const firstBoot = 1_700_000_000_000
+      const secondBoot = 1_800_000_000_000
+      const farFuture1 = firstBoot + 86_400_000 * 30
+      const farFuture2 = secondBoot + 86_400_000 * 30
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        yield* seedRunningOrphan(store, "consume-once", firstBoot, farFuture1)
+
+        yield* bootTicker(store, Clock.Test(firstBoot), lunaHome!)
+        expect(existsSync(markerPath)).toBe(false)
+        const afterFirst = yield* store.getById("consume-once")
+        expect(afterFirst?.orphanStreak).toBe(0)
+
+        // The job fires normally and is rescheduled far out again, then a
+        // SECOND, genuine crash happens with no marker present (the first
+        // boot already consumed it) - this reconcile must count.
+        yield* store.setV2Fields("consume-once", { nextRunAt: farFuture2 })
+        yield* store.touch("consume-once", {
+          lastStatus: "running",
+          lastRun: secondBoot - 60_000,
+        })
+        yield* store.recordRunStart({
+          jobId: "consume-once",
+          startedAt: secondBoot - 60_000,
+        })
+
+        yield* bootTicker(store, Clock.Test(secondBoot), lunaHome!)
+        const afterSecond = yield* store.getById("consume-once")
+        expect(afterSecond?.orphanStreak).toBe(1)
+        expect(afterSecond?.nextRunAt!).toBeLessThan(farFuture2)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              JobsStoreService.Memory.pipe(Layer.provide(Clock.Default)),
+              Clock.Default,
+            ),
+          ),
+        ),
+      )
+    })
+
+    it("unlink failure degrades to crash-counting (fails toward the doctor, never away from it)", async () => {
+      lunaHome = mkdtempSync(join(tmpdir(), "luna-clean-shutdown-"))
+      const markerPath = join(lunaHome, CLEAN_SHUTDOWN_MARKER_NAME)
+      // A directory at the marker path makes unlinkSync fail deterministically
+      // on Linux (EISDIR, for any caller). On macOS/BSD this is EPERM for a
+      // non-root caller only - `man 2 unlink` documents the superuser as
+      // exempt from that check, so this trick is not root-safe on macOS; CI
+      // and local dev here never run tests as root.
+      mkdirSync(markerPath)
+      const fixedNow = 1_700_000_000_000
+      const farFuture = fixedNow + 86_400_000 * 30
+      const prog = Effect.gen(function* () {
+        const store = yield* JobsStoreService
+        const clock = yield* Clock
+        yield* seedRunningOrphan(store, "unlink-fails", fixedNow, farFuture)
+        yield* bootTicker(store, Layer.succeed(Clock, clock), lunaHome!)
+
+        // Proves the code actually tried and failed to unlink, not that it
+        // never looked (which would also leave orphanStreak at its
+        // pre-wiring default of 1).
+        expect(existsSync(markerPath)).toBe(true)
+        const job = yield* store.getById("unlink-fails")
+        expect(job?.orphanStreak).toBe(1)
+      })
+      await Effect.runPromise(
+        prog.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(fixedNow))),
+              Clock.Test(fixedNow),
+            ),
+          ),
+        ),
+      )
+    })
   })
 
   it("drain picks up a due row, dispatches the worker, writes job_runs", async () => {

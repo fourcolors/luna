@@ -84,6 +84,8 @@ Crash-reconciliation invariants a cutover must not break (see `reconcileAfterCra
 - Enabled recurring jobs that had a running orphan (or a sticky-running repair) get `next_run_at` pulled forward to `min(next_run_at ?? Infinity, finishedAt + jitter)`, where jitter is the deterministic `hash(jobId) % (rescheduleJitterMs + 1)`.
 - Waiting-only orphans never pull `next_run_at` forward.
 - Disabled jobs are never re-enabled by reconciliation.
+- S11a: when the boot-reconcile call site passes `cleanShutdown: true` (a clean-shutdown marker was found and consumed, meaning this boot follows a deliberate stop such as a deploy or a manual `systemctl stop`/`restart` rather than a genuine crash), every invariant above still applies except the `orphan_streak` bump on pull-forward, which is skipped so a deploy cadence can never by itself walk a healthy job to the doctor's pause threshold.
+- S11a operational note: the marker is the file `$LUNA_HOME/.luna-clean-shutdown` (`CLEAN_SHUTDOWN_MARKER_NAME` in `packages/core/src/jobs/job-ticker-reconcile.ts`), written by chat-server.ts's shutdown handlers and unlinked once by boot reconcile - deploy and provisioning scripts must never pre-create or delete this file, since doing so silently changes orphan-streak accounting with no other visible signal.
 
 A new daemon that skips `reconcileAfterCrash` on boot, or runs it against the wrong `jobs`/`job_runs` shape, will either double-fire jobs or leave sticky `running` rows stuck forever - this is precisely the failure class the job-reconciliation smoke test in the cutover gate below exists to catch.
 

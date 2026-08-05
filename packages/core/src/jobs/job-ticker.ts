@@ -334,6 +334,16 @@ export interface JobTickerOptions {
     readonly bunBin?: string
     readonly lunaHome?: string
   }
+
+  /**
+   * S11a - explicit `$LUNA_HOME` for the boot-reconcile clean-shutdown
+   * marker (see job-ticker-reconcile.ts for the consume-once contract).
+   * No default: omitted means no marker is ever consumed. Production
+   * wiring passes chat-server.ts's own resolved `LUNA_HOME` constant here,
+   * the same value its shutdown handlers write the marker to. Unrelated to
+   * `doctor.lunaHome`, which only scopes the doctor CLI's own state dir.
+   */
+  readonly lunaHome?: string
 }
 
 // ── Layer ───────────────────────────────────────────────────────────────────
@@ -454,8 +464,9 @@ export const JobTickerLayer = (
       }
 
       // Boot reconcile + quarantine (runs ONCE, before the loop forks) — see
-      // job-ticker-reconcile.ts for the crash-safety rationale.
-      yield* runBootReconcile(store, clock)
+      // job-ticker-reconcile.ts for the crash-safety rationale, including
+      // the S11a clean-shutdown marker consume-once read.
+      yield* runBootReconcile(store, clock, { lunaHome: options?.lunaHome })
 
       // In-memory at-most-once guard for one-shot jobs. The durable disable
       // (setV2Fields enabled=false) can fail under a storage outage, which

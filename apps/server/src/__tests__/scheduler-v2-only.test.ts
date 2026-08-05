@@ -39,10 +39,24 @@ describe("scheduler is V2-only (flag + legacy cron path removed)", () => {
     expect(chatServerSrc).not.toMatch(/buildWakeCronLayer\(/)
   })
 
-  it("wires the V2 JobTicker unconditionally", () => {
-    expect(chatServerSrc).toContain("JobTickerLayer()")
+  it("wires the V2 JobTicker unconditionally, with the S11a lunaHome marker seam", () => {
+    // The lunaHome argument is load-bearing: without it runBootReconcile
+    // never sees the clean-shutdown marker and the restart exemption is
+    // silently dead forever - pin the argument, not just the call.
+    expect(chatServerSrc).toMatch(/const jobTickerL = JobTickerLayer\(\{[^)]*lunaHome/)
     // The ticker layer must not be guarded behind a nullable ternary anymore.
     expect(chatServerSrc).not.toMatch(/jobTickerL\s*\?\?\s*Layer\.empty/)
+  })
+
+  it("gates the clean-shutdown marker write on a boot that ran reconcile", () => {
+    // Un-gated, a setup-mode restart or a SIGTERM during the lazy layer
+    // build writes a marker that launders a PRECEDING genuine crash's
+    // orphans into an exempted boot (fail-open). The write must sit behind
+    // the arming flag, and only buildMain (post-ServerHandle) may arm it.
+    expect(chatServerSrc).toMatch(/if \(cleanShutdownMarkerArmed\) \{/)
+    expect(chatServerSrc).toMatch(/cleanShutdownMarkerArmed = true/)
+    const armCount = chatServerSrc.match(/cleanShutdownMarkerArmed = true/g)
+    expect(armCount).toHaveLength(1)
   })
 
   it("always wires the AcceptHandler (no flag gate)", () => {

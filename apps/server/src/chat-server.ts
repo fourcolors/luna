@@ -194,6 +194,7 @@ import {
   AccountBrokerLayer,
   AgentNotesService,
   ArtifactStore,
+  CLEAN_SHUTDOWN_MARKER_NAME,
   JobsStoreService,
   JobTicker,
   JobTickerLayer,
@@ -2827,7 +2828,11 @@ export const buildBaseLayer = (
     wakeReasonerL: wakeWorkerReasonerL,
     wakeLogStoreL: wakeWorkerLogStoreL,
   })
-  const jobTickerL = JobTickerLayer().pipe(
+  // S11a: `lunaHome: LUNA_HOME` passes the SAME already-resolved constant
+  // (module scope, above) that the shutdown handlers write the
+  // clean-shutdown marker to - writer and reader read one variable, not two
+  // independent env-var resolutions, so they can never disagree.
+  const jobTickerL = JobTickerLayer({ lunaHome: LUNA_HOME }).pipe(
     Layer.provide(Layer.mergeAll(jobsStoreL, workerRegistryL, clockL)),
   )
 
@@ -2898,11 +2903,38 @@ class ServerHandle extends Effect.Tag("dev/ChatServerHandle")<
 // Factored out so both normal-mode and setup-mode boots share the same
 // SIGINT/SIGTERM wiring without code duplication. The `rt` arg is any
 // object with a `dispose()` method — works for ManagedRuntime.
+//
+// The clean-shutdown marker may only be written by a boot that actually RAN
+// crash-reconcile (armed in buildMain after ServerHandle builds). Setup-mode
+// boots and SIGTERMs during the lazy layer build never reconcile, so a marker
+// from them would launder a PRECEDING genuine crash's orphans into an
+// exempted boot - the fail-open the S11a invariant forbids.
+let cleanShutdownMarkerArmed = false
 const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
   let shuttingDown = false
   const shutdown = (signal: NodeJS.Signals): void => {
     if (shuttingDown) return
     shuttingDown = true
+    // Restart-aware orphan accounting (S11a): a plain sidecar marker,
+    // written SYNCHRONOUSLY at handler entry - before dispose starts and
+    // while the DB is still open - so a fast exit can't lose it and dispose
+    // ordering can't race it. Its presence at next boot tells crash-reconcile
+    // this was a deliberate shutdown (deploy, manual stop/restart), not a
+    // genuine crash (watchdog kill, OOM, power loss); only the latter should
+    // advance orphanStreak toward the doctor's pause threshold. The store
+    // layer never touches the filesystem - the boot-reconcile call site
+    // (job-ticker-reconcile.ts, wired via JobTickerLayer's `lunaHome`
+    // option below) unlinks this marker exactly once. Best-effort: a
+    // write failure fails TOWARD the doctor (no marker left -> next boot
+    // counts as a crash), never away from the crash-reconcile repair that
+    // always runs regardless of this marker.
+    if (cleanShutdownMarkerArmed) {
+      try {
+        writeFileSync(join(LUNA_HOME, CLEAN_SHUTDOWN_MARKER_NAME), "")
+      } catch {
+        /* best-effort - see comment above */
+      }
+    }
     // Synchronous write to stdout fd — `console.log` to a PIPE (systemd
     // captures stdout via a pipe, not a TTY) is async, so the buffered
     // line is lost when `process.exit(0)` truncates it below. writeSync
@@ -4662,6 +4694,9 @@ const buildMain = (
     }
 
     const handle = yield* ServerHandle
+    // ServerHandle building transitively means JobTickerLayer's boot
+    // reconcile ran - only now may a clean shutdown claim its exemption.
+    cleanShutdownMarkerArmed = true
     // Liveness ladder L1: tell systemd we're READY (Type=notify holds the
     // unit in `activating` until this arrives) and start the gated
     // WATCHDOG=1 heartbeat. Inert no-op outside systemd (no NOTIFY_SOCKET).
