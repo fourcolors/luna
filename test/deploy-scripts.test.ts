@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
-import { makeRestrictedBin } from "./helpers/guardian-harness"
+import { makeRestrictedBin, writeBunBuildStub } from "./helpers/guardian-harness"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const tempDirs: string[] = []
@@ -44,15 +44,19 @@ const runScript = (
 // Hermetic bun seam (the HOST_ENV_TESTS follow-up in vitest.config.ts): an
 // executable stub for LUNA_TEST_BUN_PATH, so rendered plans/units derive from
 // the fixture instead of naming a path only some hosts have (/root/.bun on
-// Linux roots, /opt/homebrew on Macs). The dry-run installers skip the -x
-// check today, but the stub is real so that can change without breaking tests.
+// Linux roots, /opt/homebrew on Macs). Most callers only need the -x/presence
+// check to pass, so a bare invocation exits 0; publish_engine's real `bun
+// build --compile --outfile=<x>` (scripts/luna-guardian, S21) additionally
+// needs an --outfile to land or its retrieval postcondition dies on an empty
+// artifact, so a `build --outfile=X` invocation writes a placeholder
+// executable there instead. Lenient (writeBunBuildStub's strict:false
+// default): an invocation this stub does not recognize exits 0 rather than
+// failing, since most callers here only care about the -x/presence check.
 const makeBunStub = (temp: string) => {
   const bin = join(temp, "stub-bin")
   mkdirSync(bin, { recursive: true })
-  const bun = join(bin, "bun")
-  writeFileSync(bun, "#!/usr/bin/env bash\nexit 0\n")
-  expect(spawnSync("chmod", ["+x", bun]).status).toBe(0)
-  return { bin, bun }
+  writeBunBuildStub(bin)
+  return { bin, bun: join(bin, "bun") }
 }
 
 const writePermissiveSystemctl = (bin: string) => {
@@ -86,6 +90,16 @@ const writePermissiveSystemctl = (bin: string) => {
 // container orchestration succeeds (info no-arg = daemon reachable; info
 // <instance> = new; config set drains the cloud-init heredoc off stdin; every
 // exec/probe returns 0) so the script reaches the host-side timer install.
+// `exec` is SELECTIVE, not a blanket passthrough: publish_engine's in-
+// container `bun build --compile`, its retrieval `cat`, and its cleanup `rm`
+// (S21, scripts/luna-guardian) re-execute their argv LOCALLY (mirroring
+// test/guardian.test.ts's writeIncusPassthroughStub), so the compile
+// actually runs under test and `run_runtime rm -f "$container_out"` actually
+// executes instead of leaking the compiled stub into the host's real /tmp.
+// Every OTHER exec'd command this script runs against a "new" instance -
+// `cloud-init status --wait`, `test -f /etc/systemd/...`, `test -w
+// /root/luna`, `systemctl status` - stays on the blind `exit 0` path: those
+// name real host paths and real tools (cloud-init) this test has neither.
 const writePermissiveIncus = (bin: string) => {
   writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
 set -uo pipefail
@@ -109,6 +123,14 @@ case "$cmd" in
   config)
     [[ "\${1:-}" == "set" ]] && cat >/dev/null
     exit 0
+    ;;
+  exec)
+    shift
+    [[ "\${1:-}" == -- ]] && shift
+    case "$*" in
+      *"/tmp/deploy-cli."*) exec "$@" ;;
+      *) exit 0 ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -695,46 +717,18 @@ esac
     const token = "test-container-token-sentinel-88888888"
     mkdirSync(bin, { recursive: true })
     mkdirSync(join(repo, ".git"), { recursive: true })
-    // Fully permissive fake incus: the entire non-dry-run orchestration succeeds
-    // (info no-arg = daemon reachable; info <instance> = new; config set drains
-    // the cloud-init heredoc off stdin; every exec/probe — including the post-
-    // cloud-init `test -f /etc/systemd/system/<service>` install-success check —
-    // returns 0) so the script reaches the real token-write codepath and exits 0.
-    writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
-set -uo pipefail
-cmd="\${1:-}"
-if [[ "$#" -gt 0 ]]; then shift; fi
-case "$cmd" in
-  info)
-    [[ "$#" -eq 0 ]] && exit 0
-    exit 1
-    ;;
-  storage) exit 0 ;;
-  network) exit 0 ;;
-  profile)
-    case "$*" in
-      "device get default root pool") printf 'default\\n'; exit 0 ;;
-      "device get default root path") printf '/\\n'; exit 0 ;;
-      "device get default eth0 network") printf 'incusbr0\\n'; exit 0 ;;
-    esac
-    exit 0
-    ;;
-  config)
-    [[ "\${1:-}" == "set" ]] && cat >/dev/null
-    exit 0
-    ;;
-  *) exit 0 ;;
-esac
-`)
-    const chmod = spawnSync("chmod", ["+x", join(bin, "incus")])
-    expect(chmod.status).toBe(0)
+    writePermissiveIncus(bin)
 
     // Hermetic auto-update seams: the post-create timer install must never
     // touch the real /etc/luna or /etc/systemd/system, even when the suite
     // runs as root on a Linux box.
     const unitDir = join(temp, "units")
     mkdirSync(unitDir)
-    writePermissiveSystemctl(bin)
+    // The dev stanza this seeds is incus-backed, so the guardian install
+    // below reaches publish_engine's in-container compile - it needs a real
+    // (stub) bun at the path runtime_bun_bin resolves, or the un-blinded
+    // `incus exec` passthrough has nothing to run.
+    const { bun } = makeBunStub(temp)
 
     const result = runScript("scripts/luna-container-create", [
       "--profile",
@@ -757,6 +751,7 @@ esac
         LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
         LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: bun,
       },
     })
 
@@ -794,6 +789,11 @@ esac
     mkdirSync(bin, { recursive: true })
     mkdirSync(join(repo, ".git"), { recursive: true })
     writePermissiveIncus(bin)
+    // The dev stanza below is incus-backed, so the guardian install reaches
+    // publish_engine's in-container compile - it needs a real (stub) bun at
+    // the path runtime_bun_bin resolves, or the un-blinded `incus exec`
+    // passthrough has nothing to run.
+    const { bun } = makeBunStub(temp)
 
     const unitDir = join(temp, "units")
     mkdirSync(unitDir)
@@ -835,6 +835,7 @@ deploy.autoUpdate    = true
         LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
         LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: bun,
       },
     })
 
