@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 //
-// Behavioral tests for the SlashMenu engine in chat.html — the UI-owned slash
-// command menu driven by window.LunaCapabilities (the bundled @luna/capabilities).
+// Behavioral tests for the SlashMenu engine in src/chat/SlashMenu.tsx - the
+// UI-owned slash command menu driven by window.LunaCapabilities (the bundled
+// @luna/capabilities). Mounted into chat.html via chat-harness.ts.
 // Uses the same __MoonInternals harness as composer-config.test.ts.
 //
 // Coverage: open/filter on '/', kind-exclusion, arrow-nav highlight, Tab complete,
@@ -16,7 +17,7 @@ import {
   readChatHtml,
 } from './helpers/chat-harness'
 
-describe('SlashMenu (chat.html)', () => {
+describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
   let mockMe: any
 
   beforeEach(() => {
@@ -56,6 +57,7 @@ describe('SlashMenu (chat.html)', () => {
     document.body.innerHTML = ''
     delete (window as any).__TAURI__
     delete (window as any).__MoonInternals
+    delete (window as any).LunaChatHost
     delete (window as any).LunaProtocol
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
@@ -322,6 +324,64 @@ describe('SlashMenu (chat.html)', () => {
     expect(append.mock.calls.some((c: any[]) => /multiple models/.test(String(c[1])))).toBe(true)
   })
 
+  // ── no-arg pickers: hand off to the REAL ComposerConfig bridge ──
+  // dispatchModel/dispatchEffort's no-arg branch (SlashMenu.tsx:489-508)
+  // reaches into the SAME #model-cfg-menu/#effort-cfg-menu nodes
+  // ComposerConfig.tsx owns roots on, deferred one tick via setTimeout(0) so
+  // the mouse-accept path's trailing document 'click' closer runs first -
+  // driven here through the real bridge, not a stub, per this slice's NOTE.
+  it('bare "/model" opens the picker via the REAL ComposerConfig bridge after setTimeout(0)', () => {
+    seedModels([{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }])
+    const rebuild = vi.spyOn(internals().ComposerConfig, '_rebuildModelMenu')
+    const modelMenu = document.getElementById('model-cfg-menu') as HTMLElement
+    const modelBtn = document.getElementById('model-cfg-btn') as HTMLElement
+    input().value = '/model'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(modelMenu.classList.contains('open')).toBe(false) // deferred, not yet
+    vi.advanceTimersByTime(0)
+    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(modelMenu.classList.contains('open')).toBe(true)
+    expect(modelMenu.getAttribute('aria-hidden')).toBe('false')
+    expect(modelBtn.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('bare "/effort" opens the picker via the REAL ComposerConfig bridge when available', () => {
+    const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }]
+    seedModels(models)
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    internals().ComposerConfig.applyModels(models)
+    internals().ComposerConfig.applyCapability(true) // re-gates effortCfgBtn.hidden, mirrors composer-config.test.ts
+    expect((document.getElementById('effort-cfg-btn') as HTMLButtonElement).hidden).toBe(false) // precondition
+    const rebuild = vi.spyOn(internals().ComposerConfig, '_rebuildEffortMenu')
+    const effortMenu = document.getElementById('effort-cfg-menu') as HTMLElement
+    const effortBtn = document.getElementById('effort-cfg-btn') as HTMLElement
+    input().value = '/effort'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(effortMenu.classList.contains('open')).toBe(false) // deferred, not yet
+    vi.advanceTimersByTime(0)
+    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(effortMenu.classList.contains('open')).toBe(true)
+    expect(effortMenu.getAttribute('aria-hidden')).toBe('false')
+    expect(effortBtn.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('bare "/effort" warns instead of opening when effortCfgBtn.hidden is true (dom.effortBtn.hidden read as truth)', () => {
+    const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }]
+    seedModels(models, false) // effortSelection:false
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    internals().ComposerConfig.applyModels(models)
+    internals().ComposerConfig.applyCapability(false)
+    expect((document.getElementById('effort-cfg-btn') as HTMLButtonElement).hidden).toBe(true) // precondition
+    const rebuild = vi.spyOn(internals().ComposerConfig, '_rebuildEffortMenu')
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    input().value = '/effort'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    vi.advanceTimersByTime(0)
+    expect(rebuild).not.toHaveBeenCalled()
+    expect(document.getElementById('effort-cfg-menu')!.classList.contains('open')).toBe(false)
+    expect(append.mock.calls.some((c: any[]) => /not available for the current model/.test(String(c[1])))).toBe(true)
+  })
+
   // ── a11y + focus ──
   it('aria-expanded + aria-activedescendant live on the textarea, not the listbox', () => {
     typeInComposer('/')
@@ -484,5 +544,51 @@ describe('SlashMenu (chat.html)', () => {
     internals().handleFrame({ type: 'hello', protocolVersion: 2, capabilities: { commands: true }, availableModels: [] })
     typeInComposer('/')
     expect(items().map((el) => el.getAttribute('data-command'))).not.toContain('interrupt')
+  })
+
+  // ── RULING R3 regression: the /help line is ORACLE-PINNED product copy ──
+  it('the /help output line for a known command is em-dash separated (ORACLE-PINNED, RULING R3)', () => {
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    input().value = '/help'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    const helpMsg = append.mock.calls.map((c: any[]) => String(c[1])).find((m) => /Available commands/.test(m))
+    expect(helpMsg).toContain('/clear — Start a new conversation')
+  })
+
+  // ── Seam pins: window.LunaChatHost (stack23 S16c-host) degrades, never throws ──
+  //
+  // Object.freeze forbids deleting a single member off the live host, so both
+  // pins below swap the WHOLE window.LunaChatHost global instead of poking one
+  // accessor - see chat-host.ts's HOST_ABSENT fallback and the standing
+  // late-bound-read rule (chat.html's own construction-site comment).
+  it('with window.LunaChatHost absent, the menu builds only local commands without throwing', () => {
+    sendCapCatalog([interruptCap]) // populates chat.html's private _backendCatalog
+    delete (window as any).LunaChatHost
+    expect(() => typeInComposer('/')).not.toThrow()
+    expect(items().map((el) => el.getAttribute('data-command'))).toEqual(['clear', 'new', 'help'])
+  })
+
+  it('with executeCapability unavailable, a backend-command dispatch surfaces the host-unavailable warning instead of throwing (RULING 3a: executeCapability is total)', async () => {
+    sendCapCatalog([interruptCap])
+    internals().State.activeThreadId = 'thread-abc'
+    // Swap in a host whose executeCapability resolves the same {ok:false}
+    // shape chat-host.ts's HOST_ABSENT fallback does - backendCapabilities()
+    // stays real so '/interrupt' is still found and routed as executor:'server'.
+    const real = (window as any).LunaChatHost
+    ;(window as any).LunaChatHost = {
+      ...real,
+      executeCapability: () => Promise.resolve({ ok: false, error: 'chat host unavailable', reason: 'unavailable' }),
+    }
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+    typeInComposer('/interrupt')
+    expect(() => keyInComposer('Enter')).not.toThrow()
+    await Promise.resolve()
+    await Promise.resolve()
+    // The ONE declared test-visible delta from totalizing executeCapability:
+    // an unavailable result now surfaces the warning line rather than
+    // silently doing nothing.
+    expect(append.mock.calls.some((c: any[]) => /⚠️ chat host unavailable/.test(String(c[1])))).toBe(true)
   })
 })

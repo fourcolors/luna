@@ -72,7 +72,12 @@ function setup(grouped = true) {
   document.body.appendChild(container)
   store = createChatModelStore()
   onOpenAgentsPanel = vi.fn()
-  ;(window as unknown as { __MoonInternals: { buildMessageMeta: typeof stubBuildMessageMeta } }).__MoonInternals = {
+  // Stubs window.LunaChatHost (stack23 S16c-host) rather than __MoonInternals -
+  // getBuildMessageMeta() reads through getChatHost()?.buildMessageMeta now.
+  // A partial object is fine here: this suite never calls any OTHER host
+  // member, and this file doesn't go through chat.html's classic script (no
+  // Object.freeze), so a plain assignment is enough.
+  ;(window as unknown as { LunaChatHost: { buildMessageMeta: typeof stubBuildMessageMeta } }).LunaChatHost = {
     buildMessageMeta: stubBuildMessageMeta,
   }
   act(() => {
@@ -93,7 +98,7 @@ afterEach(() => {
   container = null
   mount = null
   document.body.innerHTML = ""
-  delete (window as unknown as { __MoonInternals?: unknown }).__MoonInternals
+  delete (window as unknown as { LunaChatHost?: unknown }).LunaChatHost
   vi.restoreAllMocks()
 })
 
@@ -172,7 +177,7 @@ describe("ChatState/ChatLoop bridge - streaming render", () => {
       mount?.ChatLoop.flush()
     })
     // Settled text gets the meta row (copy button + time) appended via the
-    // window.__MoonInternals.buildMessageMeta bridge.
+    // window.LunaChatHost.buildMessageMeta bridge.
     expect(container?.querySelector(".msg-copy")).toBeTruthy()
   })
 
