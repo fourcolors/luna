@@ -385,13 +385,15 @@ function WizardCardShell({
           <p className="wizard-sub">{wizard.doneSummary}</p>
           {wizard.doneSetupVisible && (
             <p className="wizard-sub wizard-setup-note">
-              Luna is awake, but she hasn’t met Claude yet. In the Terminal app run{" "}
-              <code>claude setup-token</code>, copy the token it prints, and add this line to{" "}
-              <code>~/.luna/.env</code> on Luna’s machine:
+              Luna is awake, but she hasn’t met Claude yet. On Luna’s machine, in a terminal:
               <br />
-              <code>CLAUDE_CODE_OAUTH_TOKEN=…the token…</code>
+              1. <code>CLAUDE_CONFIG_DIR=~/.luna/claude claude setup-token</code>
               <br />
-              Then restart Luna (re-run this wizard and pick “This Mac” → Update) and she’s ready to chat.
+              2. <code>luna account add --id default --label Default --kind anthropic --secret-ref claude-code:login</code>{" "}
+              (already registered? the command says so - skip ahead)
+              <br />
+              3. Restart the Luna server: <code>launchctl kickstart -k gui/$(id -u)/com.user.luna-chat-server</code> on a
+              Mac, or <code>systemctl restart luna-chat-server-&lt;profile&gt;</code> on Linux - and she’s ready to chat.
             </p>
           )}
           <p className="wizard-sub" style={{ fontSize: "0.74rem" }}>
