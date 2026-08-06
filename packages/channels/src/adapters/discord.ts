@@ -37,7 +37,7 @@
  * template when that lands.
  */
 import { Duration, Effect, Either, Fiber, Redacted } from "effect"
-import { Client, Events, GatewayIntentBits, Partials } from "discord.js"
+import { Client, Events, GatewayIntentBits, Partials, Routes } from "discord.js"
 import type {
   ChannelAdapter,
   ChannelMessage,
@@ -229,6 +229,112 @@ export interface InboundDiscordMessage {
 }
 
 /**
+ * A chat-input slash-command interaction, normalized to what this adapter
+ * needs. Mirror of `InboundDiscordMessage` for the SECOND gated inbound path
+ * (Slice 3a).
+ *
+ * TOKEN HYGIENE: `token` is the interaction callback token, a ~15-minute
+ * capability to post AS THE BOT. It exists on this shape ONLY so the ack can
+ * be sent, and it is read at exactly one site (the ack call in
+ * `handleInteraction`). It must never enter the synthesized ChannelMessage,
+ * its metadata (service.ts spreads metadata into the delivery address, so it
+ * would ride the delivery layer, hazard H4's mechanism with a worse payload),
+ * or any log line.
+ */
+export interface InboundDiscordInteraction {
+  /** Interaction snowflake. Stable across gateway resume replay, the dedup key. */
+  readonly id: string
+  readonly channelId: string
+  readonly authorId: string
+  /** The slash-command verb, without the leading "/". */
+  readonly commandName: string
+  /** Interaction callback token. Read at exactly one site: the ack call. */
+  readonly token: string
+  readonly guildId?: string | undefined
+  readonly isThread: boolean
+  /** Parent channel id when `isThread`, so a thread inherits its parent's grant. */
+  readonly parentId?: string | undefined
+  readonly isDM: boolean
+  /** ISO-8601. */
+  readonly createdAt: string
+}
+
+/**
+ * Normalize a raw discord.js interaction into the adapter's inbound shape.
+ *
+ * THE WRAPPER'S FILTER, advisor ruling 9: ONLY chat-input application
+ * commands normalize. Autocomplete, components, modals, malformed shapes and
+ * hostile probes all return null, never throw, mirroring the try/catch in
+ * makeRealDiscordTransport's onMessage listener. Acking an autocomplete with a message
+ * callback is an API error, and components/modals would synthesize garbage,
+ * so the filter lives at the transport seam rather than depending on what we
+ * remember to register.
+ *
+ * THREAD PARENTAGE FAILS CLOSED: `interaction.channel` is nullable. A null
+ * channel cannot prove parentage, so the result says "not a thread" and a
+ * channel-allowlisted deploy DROPS the invocation instead of guessing. When
+ * the channel is present, `isThread`/`parentId` are populated so the gate's
+ * thread-inherits-parent grant behaves identically to the message path.
+ */
+export const normalizeDiscordInteraction = (
+  raw: unknown,
+): InboundDiscordInteraction | null => {
+  try {
+    const i = raw as {
+      readonly id?: unknown
+      readonly token?: unknown
+      readonly channelId?: unknown
+      readonly user?: { readonly id?: unknown } | null
+      readonly commandName?: unknown
+      readonly guildId?: unknown
+      readonly channel?: {
+        readonly isThread?: () => boolean
+        readonly parentId?: unknown
+        readonly isDMBased?: () => boolean
+      } | null
+      readonly createdTimestamp?: unknown
+      readonly isChatInputCommand?: () => boolean
+    }
+    if (typeof i.isChatInputCommand !== "function" || i.isChatInputCommand() !== true) {
+      return null
+    }
+    const id = i.id
+    const token = i.token
+    const channelId = i.channelId
+    const commandName = i.commandName
+    const authorId = i.user?.id
+    if (
+      typeof id !== "string" ||
+      typeof token !== "string" ||
+      typeof channelId !== "string" ||
+      typeof commandName !== "string" ||
+      typeof authorId !== "string" ||
+      typeof i.createdTimestamp !== "number"
+    ) {
+      return null
+    }
+    const channel = i.channel ?? null
+    const isThread =
+      channel !== null && typeof channel.isThread === "function" && channel.isThread() === true
+    return {
+      id,
+      channelId,
+      authorId,
+      commandName,
+      token,
+      guildId: typeof i.guildId === "string" ? i.guildId : undefined,
+      isThread,
+      parentId: isThread && typeof channel?.parentId === "string" ? channel.parentId : undefined,
+      isDM:
+        channel !== null && typeof channel.isDMBased === "function" && channel.isDMBased() === true,
+      createdAt: new Date(i.createdTimestamp).toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * The minimal Discord surface the adapter uses. The real implementation wraps
  * discord.js; tests inject a fake that emits messages synchronously.
  *
@@ -237,6 +343,13 @@ export interface InboundDiscordMessage {
  */
 export interface DiscordTransport {
   readonly onMessage: (cb: (m: InboundDiscordMessage) => void) => void
+  /**
+   * Deliver a normalized chat-input command interaction. The real transport
+   * runs every InteractionCreate through `normalizeDiscordInteraction` and
+   * stays silent on null, so this callback fires ONLY for chat-input
+   * application commands, never for autocomplete/component/modal events.
+   */
+  readonly onInteraction: (cb: (i: InboundDiscordInteraction) => void) => void
   readonly onReady: (cb: (botTag: string) => void) => void
   readonly onError: (cb: (e: Error) => void) => void
   readonly login: () => Promise<void>
@@ -252,6 +365,18 @@ export interface DiscordTransport {
    * deliver()/standalone path, only from the post-gate inbound path.
    */
   readonly sendTyping: (channelId: string) => Promise<void>
+  /**
+   * Post the interaction callback: an ephemeral acknowledgment visible only
+   * to the invoker. The real implementation posts callback type 4 with
+   * content and the ephemeral flag 64, NEVER a deferred callback: replies go
+   * out-of-band via `send`, so a deferred ack with no webhook follow-up
+   * would strand every interaction in "thinking...".
+   */
+  readonly ackInteractionEphemeral: (
+    interactionId: string,
+    token: string,
+    content: string,
+  ) => Promise<void>
 }
 
 /**
@@ -302,6 +427,15 @@ export const makeRealDiscordTransport = (
         }
       })
     },
+    onInteraction: (cb) => {
+      client.on(Events.InteractionCreate, (i) => {
+        // The wrapper's filter, advisor ruling 9: only chat-input commands
+        // normalize; null is silent. No synthesis, no callback, no error.
+        const normalized = normalizeDiscordInteraction(i)
+        if (normalized === null) return
+        cb(normalized)
+      })
+    },
     onReady: (cb) => {
       client.on(Events.ClientReady, (c) => cb(c.user.tag))
     },
@@ -347,8 +481,79 @@ export const makeRealDiscordTransport = (
       const target = await msgs.fetch(messageId)
       await target.edit(content)
     },
+    ackInteractionEphemeral: async (interactionId, token, content) => {
+      // Interaction callback: respond-with-message, ephemeral (visible only
+      // to the invoker). The route is addressed by the interaction's own id
+      // and token, so this call is the ONLY site that reads the token, and
+      // `auth: false` matches discord.js's own interaction replies: the
+      // callback endpoint authenticates via the token in the URL, not the
+      // bot token.
+      await client.rest.post(Routes.interactionCallback(interactionId, token), {
+        auth: false,
+        body: { type: 4, data: { content, flags: 64 } },
+      })
+    },
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Slash-command registration manifest (DATA; Slice 3b wires it to Discord)    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The commands this bot registers, as registration payload DATA. Nothing in
+ * this file calls Discord with it; Slice 3b performs the actual guild-scoped
+ * registration.
+ *
+ * ZERO-OPTION COMMANDS ONLY, advisor ruling 4: the synthesized text is
+ * "/" + commandName, which drops interaction options, and an option-stripped
+ * "/deploy target" in front of an agent that guesses is the dangerous state.
+ * Option serialization is deliberately deferred, so no manifest entry may
+ * declare an `options` key at all.
+ *
+ * Scoping fields, advisor D1 complement: `default_member_permissions: "0"`
+ * hides the commands from non-admin members, `contexts: [0]` is
+ * guild-context only (no DMs), `integration_types: [0]` is guild-install
+ * only (no user-install). These keep the no-ack stranger-drop path RARE by
+ * making the commands invisible to strangers in the client UI. Command
+ * permissions are guild-admin-overridable, so this scoping is NOISE
+ * REDUCTION, NEVER AN AUTH LAYER: `isInboundAllowed` remains the only
+ * boundary.
+ */
+export const discordCommandManifest: ReadonlyArray<{
+  readonly name: string
+  readonly description: string
+  /** 1 = CHAT_INPUT. */
+  readonly type: number
+  readonly default_member_permissions: string
+  readonly contexts: ReadonlyArray<number>
+  readonly integration_types: ReadonlyArray<number>
+}> = [
+  {
+    name: "help",
+    description: "What Luna can do here",
+    type: 1,
+    default_member_permissions: "0",
+    contexts: [0],
+    integration_types: [0],
+  },
+  {
+    name: "new",
+    description: "Start a fresh conversation",
+    type: 1,
+    default_member_permissions: "0",
+    contexts: [0],
+    integration_types: [0],
+  },
+  {
+    name: "stop",
+    description: "Stop the current response",
+    type: 1,
+    default_member_permissions: "0",
+    contexts: [0],
+    integration_types: [0],
+  },
+]
 
 /* -------------------------------------------------------------------------- */
 /* Config                                                                      */
@@ -442,8 +647,25 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
   /** Turn key → the message id we are stream-editing for that turn. */
   const sentMessageIds = new Map<string, string>()
 
-  /** Log the first drop per (channel:user) so a spammer cannot flood the log. */
+  /**
+   * Log the first drop per (channel:author:kind) so a spammer cannot flood
+   * the log. The KIND is part of the key on purpose, advisor D1 adoption: a
+   * stranger who messaged once and then starts probing slash commands has
+   * changed vector, and at a shell boundary the vector change is the thing
+   * you most want to see, so it earns a new line.
+   */
   const loggedDrops = new Set<string>()
+
+  /**
+   * Interaction ids already accepted. Gateway session resume can REPLAY
+   * INTERACTION_CREATE, and a replayed command would re-ack an
+   * already-consumed callback and RE-EXECUTE against the shell, so the
+   * adapter dedups at this seam on the interaction snowflake (advisor
+   * ruling 10). The service-level (transport, platformMessageId) dedup
+   * would also drop the replayed dispatch, but only AFTER a second ack had
+   * gone out, so it is not a substitute.
+   */
+  const seenInteractionIds = new Set<string>()
 
   /**
    * channelId → its live "is typing…" refresh loop.
@@ -498,13 +720,13 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
   const isInboundAllowed = (m: InboundDiscordMessage): boolean =>
     allowedUsers.has(m.authorId) && isAllowedChannel(m)
 
-  const noteDrop = (m: InboundDiscordMessage): void => {
-    const key = `${m.channelId}:${m.authorId}`
+  const noteDrop = (m: InboundDiscordMessage, kind: "message" | "interaction"): void => {
+    const key = `${m.channelId}:${m.authorId}:${kind}`
     if (loggedDrops.has(key)) return
     loggedDrops.add(key)
     console.warn(
-      `[discord-adapter] dropped inbound from user=${m.authorId} ` +
-        `channel=${m.channelId} — not on the allowlist (logged once per pair)`,
+      `[discord-adapter] dropped inbound ${kind} from user=${m.authorId} ` +
+        `channel=${m.channelId}, not on the allowlist (logged once per channel:author:kind)`,
     )
   }
 
@@ -624,7 +846,7 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       if (m.authorBot || m.system) return
       // GATE: before dispatch, before commands, before any session exists.
       if (!isInboundAllowed(m)) {
-        noteDrop(m)
+        noteDrop(m, "message")
         return
       }
       const handler = messageHandler
@@ -639,6 +861,90 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       Effect.runFork(handler(toChannelMessage(m)))
     } catch (err) {
       console.error("[discord-adapter] inbound handler error:", err)
+    }
+  }
+
+  /**
+   * Project an interaction onto the inbound-message shape so the SAME gate
+   * and the SAME `toChannelMessage` builder serve both inbound paths. A
+   * hand-built ChannelMessage would mis-stamp `transport` (hazard H1) and
+   * every reply then dies silently at three sites: the service fan-out, the
+   * service command replies, and this adapter's own foreign-transport guard
+   * in deliver().
+   *
+   * The interaction TOKEN is deliberately absent from this shape; see the
+   * hygiene note on `InboundDiscordInteraction`.
+   */
+  const interactionAsInbound = (i: InboundDiscordInteraction): InboundDiscordMessage => ({
+    id: i.id,
+    channelId: i.channelId,
+    authorId: i.authorId,
+    // Interactions cannot be authored by bots or the system.
+    authorBot: false,
+    system: false,
+    // Zero-option commands only (see discordCommandManifest), so the verb
+    // IS the whole text.
+    content: `/${i.commandName}`,
+    guildId: i.guildId,
+    isThread: i.isThread,
+    parentId: i.parentId,
+    isDM: i.isDM,
+    createdAt: i.createdAt,
+  })
+
+  /**
+   * The SECOND gated inbound path (Slice 3a): gate, then dedup, then ack,
+   * then dispatch, in that order. Async so the ack can be AWAITED before the
+   * dispatch fork; the body never rejects (everything is inside the
+   * try/catch), so the floating promise the gateway listener holds is safe.
+   */
+  const handleInteraction = async (i: InboundDiscordInteraction): Promise<void> => {
+    try {
+      const m = interactionAsInbound(i)
+      // GATE: before the ack, before dispatch, before any session exists.
+      // A stranger's invocation is a SILENT drop, ruling R1/D1: the ack is
+      // invoker-observable state, so acking (or rejecting) a stranger is an
+      // "is something listening" oracle at the front door of a shell.
+      if (!isInboundAllowed(m)) {
+        noteDrop(m, "interaction")
+        return
+      }
+      const handler = messageHandler
+      const t = transport
+      if (handler === null || t === null) return
+      // Dedup on the interaction snowflake: a gateway-resume replay must
+      // neither re-ack an already-consumed callback nor re-execute against
+      // the shell.
+      if (seenInteractionIds.has(i.id)) return
+      seenInteractionIds.add(i.id)
+      // AWAIT the ack, THEN fork the dispatch: the callback's 3s deadline
+      // must front-run event-loop contention from the forked turn. The
+      // .catch is load-bearing: an un-caught expired-token rejection is an
+      // unhandledRejection, which by Node default kills the process, and an
+      // allowed user's stale interaction taking the bot down is a self-DoS.
+      // A dead ack must not eat the turn either: the reply path is t.send,
+      // out-of-band, so the dispatch below proceeds after one log line.
+      //
+      // RESIDUAL GAP, advisor item 2, documented rather than closed: slash
+      // availability follows the INVOKER's permissions, and the interaction
+      // callback endpoint bypasses channel permissions, but t.send does
+      // not. An allowed user invoking in a channel the bot cannot post to
+      // therefore gets this ack and then silence, with the turn's side
+      // effects already committed. The message path cannot reach that
+      // state, because a visible message proves the bot can see the
+      // channel. Slice 3b's guild-scoped registration makes this rare; it
+      // does NOT make it impossible.
+      await t.ackInteractionEphemeral(i.id, i.token, "On it.").catch((err) => {
+        console.error(
+          "[discord-adapter] interaction ack failed (turn continues):",
+          // message ONLY, never the raw object: @discordjs/rest errors carry
+          // an enumerable .url with the live interaction token in the path.
+          err instanceof Error ? err.message : String(err),
+        )
+      })
+      Effect.runFork(handler(toChannelMessage(m)))
+    } catch (err) {
+      console.error("[discord-adapter] inbound interaction handler error:", err)
     }
   }
 
@@ -760,6 +1066,7 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
           // A restart after stop() must be able to type again.
           typingSwept = false
           t.onMessage(handleInbound)
+          t.onInteraction(handleInteraction)
           t.onError((e) => {
             console.error("[discord-adapter] client error:", e.message)
           })

@@ -37,6 +37,66 @@ interface TypingRecord {
   readonly channelId: string
 }
 
+/**
+ * SLICE 3a — the inbound interaction the transport seam delivers, already
+ * normalized by the wrapper (mirror of `InboundDiscordMessage`). This
+ * test-local interface IS the contract for the `InboundDiscordInteraction`
+ * type the implementation must export from discord.ts: same member names,
+ * same types (`| undefined` explicit — exactOptionalPropertyTypes).
+ */
+interface FakeInboundInteraction {
+  /** Interaction snowflake. Stable across gateway resume replay → dedup key. */
+  readonly id: string
+  readonly channelId: string
+  readonly authorId: string
+  /** The slash-command verb, without the leading "/". */
+  readonly commandName: string
+  /**
+   * The interaction callback token — a ~15-minute capability to post AS THE
+   * BOT. It exists here ONLY so the ack can be sent. It must never enter the
+   * synthesized ChannelMessage, its metadata, or any log line.
+   */
+  readonly token: string
+  readonly guildId?: string | undefined
+  readonly isThread: boolean
+  readonly parentId?: string | undefined
+  readonly isDM: boolean
+  /** ISO-8601. */
+  readonly createdAt: string
+}
+
+/**
+ * SLICE 3a — one entry per transport-method invocation, in call order.
+ * The tests' handler also pushes a `"__dispatch__"` marker into the SAME
+ * array, so gate/ack/dispatch ordering is a single-timeline assertion.
+ */
+interface TransportCallRecord {
+  readonly member: string
+  readonly args: ReadonlyArray<unknown>
+}
+
+/**
+ * SLICE 3a — Proxy retrofit (advisor ruling 6). The previous fake
+ * hand-instrumented each transport method, so any FUTURE transport member
+ * (e.g. the interaction ack) would be silently EXCLUDED from every existing
+ * "stranger => zero calls" security rail until someone remembered to
+ * instrument it. This wrapper records EVERY method call into ONE ordered log
+ * BY CONSTRUCTION — a member added tomorrow is watched the day it lands.
+ */
+const wrapWithCallLog = <T extends object>(obj: T, log: TransportCallRecord[]): T =>
+  new Proxy(obj, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value === "function") {
+        return (...args: unknown[]) => {
+          log.push({ member: String(prop), args })
+          return (value as (...a: unknown[]) => unknown)(...args)
+        }
+      }
+      return value
+    },
+  })
+
 /** A fake DiscordTransport that records outbound calls and can fire inbound. */
 const makeFakeTransport = (opts?: {
   readonly sendImpl?: (channelId: string, content: string, attempt: number) => Promise<{ id: string }>
@@ -52,26 +112,41 @@ const makeFakeTransport = (opts?: {
     attempt: number,
     attemptForChannel: number,
   ) => Promise<void>
+  /** Slice 3a. Invoked for every interaction ack; reject to make it fail. */
+  readonly ackImpl?: (interactionId: string, token: string, content: string) => Promise<void>
 }) => {
   let msgCb: ((m: InboundDiscordMessage) => void) | null = null
+  let interactionCb: ((i: FakeInboundInteraction) => void) | null = null
   const sent: SendRecord[] = []
   const edits: EditRecord[] = []
   const typingCalls: TypingRecord[] = []
+  const log: TransportCallRecord[] = []
   let idCounter = 0
   let sendAttempts = 0
   let editAttempts = 0
   let typingAttempts = 0
   const typingAttemptsByChannel = new Map<string, number>()
 
-  const transport: DiscordTransport = {
-    onMessage: (cb) => {
+  // NOTE: deliberately NOT annotated `: DiscordTransport`. The literal carries
+  // two members the interface does not declare yet (`onInteraction`,
+  // `ackInteractionEphemeral` — Slice 3a's seam), and an annotation would
+  // TS2353 until they land. The cast below keeps the package tsc gate green
+  // both before and after; the CONTRACT on their signatures is enforced
+  // behaviorally by the Slice 3a tests (the ack-payload rail pins the exact
+  // argument order (interactionId, token, content)).
+  const underlying = {
+    onMessage: (cb: (m: InboundDiscordMessage) => void) => {
       msgCb = cb
+    },
+    // SLICE 3a — RED BY DESIGN until the adapter registers it in start().
+    onInteraction: (cb: (i: FakeInboundInteraction) => void) => {
+      interactionCb = cb
     },
     onReady: () => {},
     onError: () => {},
     login: async () => {},
     destroy: async () => {},
-    send: async (channelId, content) => {
+    send: async (channelId: string, content: string) => {
       sendAttempts++
       if (opts?.sendImpl !== undefined) {
         const r = await opts.sendImpl(channelId, content, sendAttempts)
@@ -82,18 +157,13 @@ const makeFakeTransport = (opts?: {
       idCounter++
       return { id: `msg-${idCounter}` }
     },
-    edit: async (channelId, messageId, content) => {
+    edit: async (channelId: string, messageId: string, content: string) => {
       editAttempts++
       if (opts?.editImpl !== undefined) {
         await opts.editImpl(channelId, messageId, content, editAttempts)
       }
       edits.push({ channelId, messageId, content })
     },
-    // SLICE 1 — RED BY DESIGN. `DiscordTransport` does not declare `sendTyping`
-    // yet, so `bun run typecheck` reports this as an excess property. That
-    // compile error IS part of the spec: it is the proof that the 8th member is
-    // missing, and it disappears the moment the member is added. See the
-    // "SLICE 1" block at the bottom of this file.
     sendTyping: async (channelId: string) => {
       typingAttempts++
       const n = (typingAttemptsByChannel.get(channelId) ?? 0) + 1
@@ -106,12 +176,28 @@ const makeFakeTransport = (opts?: {
         await opts.typingImpl(channelId, typingAttempts, n)
       }
     },
+    /**
+     * SLICE 3a — the ephemeral type-4 ack. The REAL implementation posts the
+     * interaction callback (type 4, content, flags 64); the fake only records
+     * the call (via the Proxy log) and honours an injected failure.
+     */
+    ackInteractionEphemeral: async (interactionId: string, token: string, content: string) => {
+      if (opts?.ackImpl !== undefined) {
+        await opts.ackImpl(interactionId, token, content)
+      }
+    },
   }
+
+  const transport = wrapWithCallLog(underlying, log) as unknown as DiscordTransport
 
   return {
     transport,
     fire: (m: InboundDiscordMessage) => msgCb?.(m),
     isWired: () => msgCb !== null,
+    fireInteraction: (i: FakeInboundInteraction) => interactionCb?.(i),
+    isInteractionWired: () => interactionCb !== null,
+    /** The ONE ordered call log. Tests may push "__dispatch__" markers into it. */
+    log,
     sent,
     edits,
     typingCalls,
@@ -1433,4 +1519,533 @@ describe("Slice 1b+11 rider — typing stops even when the FINAL send fails", ()
       await Effect.runPromise(adapter.stop())
     }
   }, 20_000)
+})
+
+/* ========================================================================== */
+/* SLICE 3a — InteractionCreate routing (EXECUTABLE SPEC, RED ON ARRIVAL)      */
+/* ========================================================================== */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * Feature: native slash commands become a SECOND gated inbound path into an
+ * agent fronting an unrestricted local shell. The adapter must synthesize an
+ * inbound message from a chat-input application command and route it through
+ * the SINGLE existing gate and builder.
+ *
+ * THE INVARIANT (settled, not an open question — lead ruling R1):
+ *   gate -> ack -> dispatch.
+ * `isInboundAllowed` precedes the FIRST side effect on EVERY inbound path.
+ * An ack is a side effect: acking a sender the gate has not cleared is a
+ * pre-gate side effect and an automatic audit FAIL. No ack for strangers —
+ * the client-rendered "did not respond" artifact is accepted (leaks nothing:
+ * dead bot, offline bot and gating bot are indistinguishable). Do NOT
+ * "improve" the drop into an ephemeral rejection.
+ *
+ * OUT OF SCOPE — the implementation for this scenario must NOT modify:
+ *   - packages/channels/src/service.ts        (R3 reorder rides with 3b, NOT 3a)
+ *   - packages/channels/src/delivery.ts
+ *   - packages/channels/src/types.ts
+ *   - packages/channels/src/dedup.ts
+ *   - packages/channels/src/commands.ts       (catalog may be IMPORTED, not edited)
+ *   - packages/channels/src/index.ts
+ *   - packages/channels/src/adapters/telegram.ts and every telegram test
+ *   - packages/channels/test/channels.test.ts
+ *   - this file and discord-inbound-invariant.test.ts (specs are frozen)
+ *   - registration wiring to Discord (rest.put, env, ops script — Slice 3b)
+ * The ONLY production file this scenario may touch is
+ * packages/channels/src/adapters/discord.ts.
+ *
+ * NEW SEAMS THIS BLOCK REQUIRES (all in discord.ts):
+ *   1. `DiscordTransport.onInteraction(cb: (i: InboundDiscordInteraction) => void)`
+ *      — the payload type MUST be `Inbound`-prefixed (the invariant test's
+ *      bidirectional payload check enforces the convention). Shape: the
+ *      test-local `FakeInboundInteraction` at the top of this file, verbatim.
+ *   2. `DiscordTransport.ackInteractionEphemeral(interactionId, token, content)`
+ *      — real impl posts interaction callback type 4 { content, flags: 64 }.
+ *      NEVER type 5 / deferReply: replies go out-of-band via t.send, so a
+ *      deferred ack strands every interaction in "thinking…".
+ *   3. exported `normalizeDiscordInteraction(raw: unknown): InboundDiscordInteraction | null`
+ *      — the wrapper's filter (advisor ruling 9): ONLY chat-input application
+ *      commands normalize; autocomplete/component/modal/malformed => null,
+ *      never a throw (mirrors the onMessage normalization try/catch). The
+ *      real transport's InteractionCreate listener must call it and stay
+ *      silent on null (no synthesis, no ack, no error).
+ *   4. exported `discordCommandManifest` — registration DATA (3b wires it).
+ *      Zero-option commands only (advisor ruling 4: an option-stripped
+ *      "/deploy target" in front of a guessing agent is the dangerous state).
+ *   5. Interaction handler must be a file-level NAMED function registered as
+ *      `t.onInteraction(<name>)` — the invariant test's ordering scan resolves
+ *      it by name.
+ * Implementation notes bound by the advisor rulings (audit checks these):
+ *   - AWAIT the ack (with catch), THEN runFork the dispatch. An un-caught
+ *     expired-token rejection is an unhandledRejection => process death.
+ *   - Route the synthesized message through toChannelMessage — hand-building
+ *     mis-stamps `transport` and service.ts:233 then drops every reply
+ *     silently (hazard H1).
+ *   - Dedup on interaction.id at this seam: gateway session resume can REPLAY
+ *     INTERACTION_CREATE, and a replayed command re-executes against the shell.
+ *   - Key the drop log on channel:author:KIND (advisor D1 adoption): a
+ *     stranger switching from message-probing to slash-probing must produce a
+ *     NEW line — at a shell boundary the vector change is the signal.
+ *   - Document AT THE ACK SITE the residual reply-permission asymmetry
+ *     (advisor item 2): slash availability follows the INVOKER's perms and the
+ *     callback endpoint bypasses channel perms, but t.send does not — an
+ *     allowed user invoking in a no-send channel gets "On it." then silence
+ *     with side effects committed. 3b's guild-scoped registration makes this
+ *     rare; it is NOT closed here. Documentation, not a test.
+ *
+ * CAPACITY PRE-FLIGHT: none required — every transport is an in-memory fake;
+ * no rate-limited vendor, no network, no LLM seam (deterministic => no N>=5
+ * multi-trial parametrization applies).
+ *
+ * RED/GREEN inventory at handoff: 15 tests in this block are RED (the feature
+ * is absent: onInteraction never registered, exports missing, zero dispatch).
+ * Exactly 2 are GREEN-ON-ARRIVAL BY DESIGN and labelled CONTROL inline — both
+ * exercise the Proxy-log retrofit this spec ships in makeFakeTransport, and
+ * both are the survival rails the empty-delta assertions lean on.
+ */
+
+/** Everything Slice 3a imports is dynamic: exports do not exist yet. */
+const discordModule = async (): Promise<Record<string, unknown>> =>
+  (await import("../src/adapters/discord.js")) as unknown as Record<string, unknown>
+
+const discordSourceText = async (): Promise<string> => {
+  const { readFileSync } = await import("node:fs")
+  const { fileURLToPath } = await import("node:url")
+  const path = await import("node:path")
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  return readFileSync(path.join(here, "../src/adapters/discord.ts"), "utf8")
+}
+
+const interactionFixture = (o: Partial<FakeInboundInteraction> = {}): FakeInboundInteraction => ({
+  id: "i-900",
+  channelId: "chan-1",
+  authorId: "user-allowed",
+  commandName: "help",
+  token: "itok-SECRET-901",
+  guildId: "guild-1",
+  isThread: false,
+  isDM: false,
+  createdAt: "2026-08-05T00:00:00.000Z",
+  ...o,
+})
+
+const setup3a = (cfg?: {
+  readonly allowedUsers?: string[]
+  readonly allowedChannels?: string[]
+  readonly ackImpl?: (interactionId: string, token: string, content: string) => Promise<void>
+}) => {
+  const fake = makeFakeTransport(cfg?.ackImpl !== undefined ? { ackImpl: cfg.ackImpl } : {})
+  const received: ChannelMessage[] = []
+  const adapter = makeDiscordAdapter({
+    id: "d-3a",
+    transport: fake.transport,
+    logLogin: false,
+    allowedUsers: cfg?.allowedUsers ?? ["user-allowed"],
+    ...(cfg?.allowedChannels !== undefined ? { allowedChannels: cfg.allowedChannels } : {}),
+  })
+  adapter.setMessageHandler((m) =>
+    Effect.sync(() => {
+      // The dispatch marker rides the SAME ordered log as the transport calls,
+      // so "ack strictly precedes dispatch" is one-timeline arithmetic.
+      fake.log.push({ member: "__dispatch__", args: [m] })
+      received.push(m)
+    }),
+  )
+  return { fake, adapter, received }
+}
+
+const dispatchCount = (s: { fake: { log: TransportCallRecord[] } }): number =>
+  s.fake.log.filter((e) => e.member === "__dispatch__").length
+
+describe("Slice 3a — Proxy call log (retrofit controls)", () => {
+  it("CONTROL: the ordered log records every transport method by construction", async () => {
+    const { fake, adapter } = setup3a()
+    await withStarted(adapter, async () => {
+      await Effect.runPromise(adapter.deliver(target(), "one reply", FINAL))
+    })
+    const members = fake.log.map((e) => e.member)
+    // start() wiring and login are all watched — no hand instrumentation left.
+    for (const m of ["onMessage", "onError", "onReady", "login", "send"]) {
+      expect(members, `log must contain ${m}`).toContain(m)
+    }
+    // The recorded args are the real args, not a summary.
+    const send = fake.log.find((e) => e.member === "send")
+    expect(send?.args[0]).toBe("chan-1")
+    expect(send?.args[1]).toBe("one reply")
+    // And the log agrees with the legacy per-method records it supersedes.
+    expect(fake.sent).toHaveLength(1)
+  })
+
+  it("CONTROL: a stranger MESSAGE produces an EMPTY post-start log delta (all members, present and future)", async () => {
+    const { fake, adapter, received } = setup3a()
+    await withStarted(adapter, async () => {
+      const mark = fake.log.length
+      fake.fire(inbound({ authorId: "attacker", content: "sudo make me a sandwich" }))
+      await tick(60)
+      expect(fake.log.slice(mark)).toEqual([])
+    })
+    expect(received).toHaveLength(0)
+  })
+})
+
+describe("Slice 3a — InteractionCreate: wrapper filter (normalizeDiscordInteraction)", () => {
+  it("normalizes a chat-input application command (and ONLY then)", async () => {
+    const mod = await discordModule()
+    const norm = mod["normalizeDiscordInteraction"] as
+      | ((raw: unknown) => FakeInboundInteraction | null)
+      | undefined
+    expect(typeof norm, "normalizeDiscordInteraction must be exported").toBe("function")
+    const out = norm!({
+      id: "i-1",
+      token: "itok-raw-1",
+      channelId: "chan-1",
+      user: { id: "user-allowed" },
+      commandName: "help",
+      guildId: "guild-1",
+      channel: null,
+      createdTimestamp: 1754350000000,
+      isChatInputCommand: () => true,
+    })
+    expect(out).not.toBeNull()
+    expect(out).toMatchObject({
+      id: "i-1",
+      token: "itok-raw-1",
+      channelId: "chan-1",
+      authorId: "user-allowed",
+      commandName: "help",
+      isThread: false,
+      isDM: false,
+    })
+    expect(out?.createdAt).toBe(new Date(1754350000000).toISOString())
+  })
+
+  it("returns null (never throws, never synthesizes) for every non-chat-input interaction", async () => {
+    const mod = await discordModule()
+    const norm = mod["normalizeDiscordInteraction"] as
+      | ((raw: unknown) => unknown)
+      | undefined
+    expect(typeof norm, "normalizeDiscordInteraction must be exported").toBe("function")
+    const core = {
+      id: "i-2",
+      token: "itok-raw-2",
+      channelId: "chan-1",
+      user: { id: "user-allowed" },
+      channel: null,
+      createdTimestamp: 1754350000000,
+    }
+    // Autocomplete acked with a message callback is an API error; components
+    // and modals synthesize garbage. The WRAPPER ignores them all — this rail
+    // must not depend on what we remember to register (advisor ruling 9).
+    const rejects: ReadonlyArray<[string, unknown]> = [
+      ["autocomplete", { ...core, isChatInputCommand: () => false, isAutocomplete: () => true }],
+      ["component", { ...core, isChatInputCommand: () => false, isButton: () => true }],
+      ["modal", { ...core, isChatInputCommand: () => false, isModalSubmit: () => true }],
+      ["malformed (no type probe at all)", { ...core }],
+      ["hostile (type probe throws)", { ...core, isChatInputCommand: () => { throw new Error("boom") } }],
+    ]
+    for (const [label, raw] of rejects) {
+      expect(norm!(raw), `${label} must normalize to null`).toBeNull()
+    }
+  })
+
+  it("thread parentage: nullable interaction.channel FAILS CLOSED to not-a-thread", async () => {
+    const mod = await discordModule()
+    const norm = mod["normalizeDiscordInteraction"] as
+      | ((raw: unknown) => FakeInboundInteraction | null)
+      | undefined
+    expect(typeof norm, "normalizeDiscordInteraction must be exported").toBe("function")
+    const base = {
+      id: "i-3",
+      token: "itok-raw-3",
+      channelId: "thread-9",
+      user: { id: "user-allowed" },
+      commandName: "help",
+      createdTimestamp: 1754350000000,
+      isChatInputCommand: () => true,
+    }
+    // channel null => cannot prove parentage => NOT a thread (fail closed).
+    const nullChannel = norm!({ ...base, channel: null })
+    expect(nullChannel?.isThread).toBe(false)
+    expect(nullChannel?.parentId).toBeUndefined()
+    // channel present and a thread => parentage carried, so isAllowedChannel's
+    // thread-inherits-parent grant works identically to the message path.
+    const inThread = norm!({
+      ...base,
+      channel: { isThread: () => true, parentId: "parent-1" },
+    })
+    expect(inThread?.isThread).toBe(true)
+    expect(inThread?.parentId).toBe("parent-1")
+    // channel present, not a thread => plain channel.
+    const plain = norm!({ ...base, channel: { isThread: () => false } })
+    expect(plain?.isThread).toBe(false)
+    expect(plain?.parentId).toBeUndefined()
+  })
+})
+
+describe("Slice 3a — InteractionCreate: the gate (no ack for strangers)", () => {
+  it("registers onInteraction on start()", async () => {
+    const { fake, adapter } = setup3a()
+    await withStarted(adapter, () => {})
+    expect(
+      fake.log.some((e) => e.member === "onInteraction"),
+      "start() must register the interaction handler on the transport",
+    ).toBe(true)
+    expect(fake.isInteractionWired()).toBe(true)
+  })
+
+  it("SECURITY: a stranger's slash command is a SILENT drop — empty log delta, no dispatch, ONE drop line", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const { fake, adapter, received } = setup3a()
+      await withStarted(adapter, async () => {
+        const mark = fake.log.length
+        fake.fireInteraction(interactionFixture({ authorId: "attacker", token: "itok-SECRET-A" }))
+        await tick(60)
+        // NO ack, NO typing, NO send, NO dispatch: an ack here is a pre-gate
+        // side effect and an "is something listening" oracle (ruling R1/D1).
+        expect(fake.log.slice(mark)).toEqual([])
+      })
+      expect(received).toHaveLength(0)
+      const dropLines = warn.mock.calls.filter((c) => /dropped inbound/.test(c.join(" ")))
+      expect(dropLines, "exactly one drop line for the slash probe").toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("drop log is keyed per VECTOR: message-probing then slash-probing is TWO lines, repeat slash adds none", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const { fake, adapter } = setup3a()
+      await withStarted(adapter, async () => {
+        fake.fire(inbound({ id: "500", authorId: "attacker", channelId: "chan-1" }))
+        await tick(30)
+        fake.fireInteraction(
+          interactionFixture({ id: "i-501", authorId: "attacker", channelId: "chan-1" }),
+        )
+        await tick(30)
+        fake.fireInteraction(
+          interactionFixture({ id: "i-502", authorId: "attacker", channelId: "chan-1" }),
+        )
+        await tick(30)
+      })
+      const dropLines = warn.mock.calls.filter((c) => /dropped inbound/.test(c.join(" ")))
+      // Today's channel:author key logs the vector CHANGE zero times. At a
+      // shell boundary the vector change is the thing you most want to see.
+      expect(dropLines, "message drop + FIRST slash drop = two lines").toHaveLength(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe("Slice 3a — InteractionCreate: ack mechanics (gate -> ack -> dispatch)", () => {
+  it("AWAITS the ack, THEN forks the dispatch — ack strictly precedes dispatch in the ONE ordered log", async () => {
+    let release: () => void = () => {}
+    const held = new Promise<void>((r) => {
+      release = r
+    })
+    const s = setup3a({ ackImpl: () => held })
+    try {
+      await withStarted(s.adapter, async () => {
+        s.fake.fireInteraction(interactionFixture())
+        await tick(50)
+        const ackIdx = s.fake.log.findIndex((e) => e.member === "ackInteractionEphemeral")
+        expect(ackIdx, "the ack must have been attempted").toBeGreaterThanOrEqual(0)
+        // While the ack is in flight the dispatch must NOT have been forked:
+        // the ack has a 3s deadline and must front-run event-loop contention
+        // from the turn (advisor ruling 8).
+        expect(dispatchCount(s)).toBe(0)
+        release()
+        await tick(50)
+        const dispatchIdx = s.fake.log.findIndex((e) => e.member === "__dispatch__")
+        expect(dispatchIdx, "dispatch must proceed once the ack settles").toBeGreaterThan(ackIdx)
+      })
+    } finally {
+      release()
+    }
+  })
+
+  it("acks ephemerally with the interaction's own credentials: args are (id, token, \"On it.\")", async () => {
+    const s = setup3a()
+    const i = interactionFixture({ id: "i-600", token: "itok-SECRET-600" })
+    await withStarted(s.adapter, async () => {
+      s.fake.fireInteraction(i)
+      await tick(50)
+    })
+    const ack = s.fake.log.find((e) => e.member === "ackInteractionEphemeral")
+    expect(ack, "allowed invoker must be acked").toBeDefined()
+    expect(ack?.args).toEqual(["i-600", "itok-SECRET-600", "On it."])
+  })
+
+  it("an ack REJECTION (expired token) is survivable: dispatch proceeds, no unhandledRejection, one log line", async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on("unhandledRejection", onUnhandled)
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const s = setup3a({
+        ackImpl: async () => {
+          throw new Error("10062: Unknown interaction (token expired)")
+        },
+      })
+      await withStarted(s.adapter, async () => {
+        s.fake.fireInteraction(interactionFixture({ id: "i-700" }))
+        await tick(80)
+      })
+      // The reply path is t.send, not the callback — a dead ack must not eat
+      // the turn (ruling 8), and an un-caught rejection kills the process.
+      expect(s.received).toHaveLength(1)
+      expect(unhandled).toEqual([])
+      const ackLines = [...errSpy.mock.calls, ...warnSpy.mock.calls].filter((c) =>
+        /ack/i.test(c.join(" ")),
+      )
+      expect(ackLines, "exactly one log line for the failed ack").toHaveLength(1)
+    } finally {
+      errSpy.mockRestore()
+      warnSpy.mockRestore()
+      process.off("unhandledRejection", onUnhandled)
+    }
+  })
+})
+
+describe("Slice 3a — InteractionCreate: dedup, synthesis and hygiene", () => {
+  it("dedups on interaction.id: gateway-resume replay of the SAME interaction dispatches ONCE", async () => {
+    const s = setup3a()
+    await withStarted(s.adapter, async () => {
+      const replayed = interactionFixture({ id: "i-800" })
+      s.fake.fireInteraction(replayed)
+      await tick(40)
+      s.fake.fireInteraction(replayed) // resume replay re-executes against the shell
+      await tick(40)
+      expect(s.received, "one dispatch for one interaction").toHaveLength(1)
+      // Anti-vacuity partner: dedup keys on the ID, it is not a global latch.
+      s.fake.fireInteraction(interactionFixture({ id: "i-801" }))
+      await tick(40)
+      expect(s.received).toHaveLength(2)
+    })
+  })
+
+  it("synthesizes through toChannelMessage: correct transport stamp, address fields and '/verb' text", async () => {
+    const s = setup3a()
+    await withStarted(s.adapter, async () => {
+      s.fake.fireInteraction(interactionFixture())
+      await tick(50)
+    })
+    expect(s.received).toHaveLength(1)
+    const m = s.received[0]!
+    // H1: a mis-stamped transport makes service.ts:233 silently drop every
+    // reply, forever, with the Slice 0 rail green the whole time.
+    expect(m.transport).toBe("discord")
+    expect(m.transport).toBe(s.adapter.transport)
+    expect(m.channelId).toBe("chan-1")
+    expect(m.senderId).toBe("user-allowed")
+    expect(m.threadingKey).toBe("chan-1")
+    expect(m.text).toBe("/help")
+    // H1 second order: an undefined platformMessageId poisons the dedup store.
+    expect(m.platformMessageId).toBe("i-900")
+    expect(m.ts).toBe("2026-08-05T00:00:00.000Z")
+    expect(m.metadata?.["messageId"]).toBe("i-900")
+  })
+
+  it("TOKEN HYGIENE: the interaction token appears NOWHERE in the synthesized message", async () => {
+    const s = setup3a()
+    await withStarted(s.adapter, async () => {
+      s.fake.fireInteraction(interactionFixture({ token: "itok-SECRET-901" }))
+      await tick(50)
+    })
+    expect(s.received).toHaveLength(1)
+    const m = s.received[0]!
+    // service.ts:111 spreads metadata into the delivery address, so a token in
+    // metadata rides the delivery layer — a 15-minute post-as-the-bot
+    // capability in an untyped bag (H4's mechanism, worse payload).
+    expect(JSON.stringify(m)).not.toContain("itok-SECRET-901")
+    const metaKeys = Object.keys(m.metadata ?? {})
+    expect(metaKeys).not.toContain("token")
+    expect(metaKeys).not.toContain("interactionToken")
+    // And no metadata key may shadow a reserved address key (H4).
+    for (const reserved of ["transport", "channelId", "senderId", "threadingKey"]) {
+      expect(metaKeys, `metadata must not shadow address.${reserved}`).not.toContain(reserved)
+    }
+  })
+
+  it("thread parentage feeds the gate: a thread inherits its parent's grant; unprovable parentage fails closed", async () => {
+    const s = setup3a({ allowedChannels: ["parent-1"] })
+    await withStarted(s.adapter, async () => {
+      // Thread under an allowlisted parent: allowed, and the synthesized
+      // message carries the parentage so the MESSAGE path in the same thread
+      // agrees (no silent asymmetry between the two paths).
+      s.fake.fireInteraction(
+        interactionFixture({
+          id: "i-810",
+          channelId: "thread-77",
+          isThread: true,
+          parentId: "parent-1",
+        }),
+      )
+      await tick(40)
+      expect(s.received).toHaveLength(1)
+      expect(s.received[0]?.metadata?.["isThread"]).toBe(true)
+      expect(s.received[0]?.metadata?.["parentId"]).toBe("parent-1")
+      // Same physical thread but the channel was null at normalization time:
+      // not provably a thread => fail closed => dropped under the allowlist.
+      s.fake.fireInteraction(
+        interactionFixture({ id: "i-811", channelId: "thread-88", isThread: false }),
+      )
+      await tick(40)
+      expect(s.received).toHaveLength(1)
+    })
+  })
+})
+
+describe("Slice 3a — registration manifest as data (wired to Discord by 3b)", () => {
+  it("pins the manifest: exactly help/new/stop, ZERO options, guild-install + guild-context only, member perms '0'", async () => {
+    const mod = await discordModule()
+    const manifest = mod["discordCommandManifest"] as
+      | ReadonlyArray<Record<string, unknown>>
+      | undefined
+    expect(Array.isArray(manifest), "discordCommandManifest must be exported").toBe(true)
+    const names = manifest!.map((c) => c["name"]).sort()
+    expect(names).toEqual(["help", "new", "stop"])
+    for (const cmd of manifest!) {
+      // EXACT shape: no options key AT ALL is the zero-option pin (advisor
+      // ruling 4 — option serialization is deliberately deferred).
+      expect(Object.keys(cmd).sort()).toEqual([
+        "contexts",
+        "default_member_permissions",
+        "description",
+        "integration_types",
+        "name",
+        "type",
+      ])
+      expect(cmd["type"], "CHAT_INPUT").toBe(1)
+      // D1 complement: scoping is NOISE REDUCTION, never an auth layer —
+      // isInboundAllowed remains the only boundary. These fields keep the
+      // no-ack path RARE (strangers stop seeing the commands at all).
+      expect(cmd["default_member_permissions"]).toBe("0")
+      expect(cmd["contexts"], "guild context only, no DMs").toEqual([0])
+      expect(cmd["integration_types"], "guild install only, no user-install").toEqual([0])
+      const desc = cmd["description"]
+      expect(typeof desc).toBe("string")
+      expect((desc as string).length).toBeGreaterThan(0)
+      expect((desc as string).length).toBeLessThanOrEqual(100)
+    }
+  })
+
+  it("ack mechanics are type 4 ephemeral, never deferred: source pin", async () => {
+    const src = await discordSourceText()
+    // The real transport's ack posts interaction callback type 4 with content
+    // and flags 64 (donor: every Sol ack is type 4; deferReply appears nowhere
+    // in that repo). Type 5 with no webhook follow-up strands every
+    // interaction in "thinking…" — our replies go out-of-band via t.send.
+    expect(/\btype:\s*4\b/.test(src), "callback type 4 present").toBe(true)
+    expect(/\bflags:\s*64\b/.test(src), "EPHEMERAL flag 64 present").toBe(true)
+    expect(/\btype:\s*5\b/.test(src), "no deferred callback (type 5)").toBe(false)
+    expect(/deferReply/.test(src), "deferReply must not appear (even in comments)").toBe(false)
+  })
 })
