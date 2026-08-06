@@ -35,7 +35,11 @@
     // single load-bearing entrypoint for every supervised host (systemd +
     // launchd both exec it directly). The other scripts/*.ts files are
     // dev/release tooling with no deploy-path stakes.
-    "scripts/luna-chat-server-entry.ts"
+    "scripts/luna-chat-server-entry.ts",
+    // mcp-demo's verdict reads were fixed in S11b; gate them so the union
+    // narrowing cannot silently regress (the rest of apps/server/scripts
+    // stays out per issue #444).
+    "apps/server/scripts/mcp-demo.ts"
   ],
   "exclude": [
     "**/dist",

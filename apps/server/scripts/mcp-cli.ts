@@ -22,12 +22,12 @@ import {
   LunaSqliteBootstrap,
   MCPRegistry,
 } from "@luna/core"
-import {
+import { RESERVED_SLUGS,
   McpServerStore,
   syncMcpMounts,
   type SyncMcpMountsResult,
 } from "@luna/mcp-servers"
-import { mcpToolGate } from "@luna/tools"
+import { buildMcpGateEntries, summarizeMountFailure } from "@luna/tools"
 
 // ---------------------------------------------------------------------------
 // DB path resolution
@@ -374,30 +374,27 @@ async function cmdPreview() {
         ),
       )
 
-      // Show gate policy summary
-      if (result.registered.length > 0) {
+      // Show gate policy summary through the SAME fold production uses
+      // (buildMcpGateEntries), so this preview can never disagree with the
+      // runtime - including the fail-closed DENY for unmountable slugs.
+      const gateEntries = buildMcpGateEntries(result, RESERVED_SLUGS)
+      if (gateEntries.size > 0) {
         console.log()
         console.log(bold("GATE POLICY SUMMARY:"))
-        const policyMap = new Map(
-          Object.entries(result.policy).map(([slug, p]) => [
-            slug,
-            { allowAll: p.allowAll, allowedTools: new Set(p.allowedTools) },
-          ]),
-        )
-        const gate = mcpToolGate((s) => policyMap.get(s))
-        for (const slug of result.registered) {
-          const p = result.policy[slug]
-          if (p === undefined) continue
-          const verdict = p.allowAll
+        for (const [slug, entry] of gateEntries) {
+          if ("unmountable" in entry) {
+            console.log(
+              `  ${slug}: ${red(`DENY-ALL - failed to mount (${summarizeMountFailure(entry.reason)})`)}`,
+            )
+            continue
+          }
+          const verdict = entry.allowAll
             ? green("allow-all")
-            : p.allowedTools.length > 0
-              ? green(`${p.allowedTools.length} tool(s) allowed`)
+            : entry.allowedTools.size > 0
+              ? green(`${entry.allowedTools.size} tool(s) allowed`)
               : red("deny-all (no tools opted in)")
           console.log(`  ${slug}: ${verdict}`)
         }
-        // suppress unused-variable warning on gate — it's instantiated above
-        // to verify the gate builds without errors
-        void gate
       }
     }).pipe(Effect.provide(previewLayer)),
     "preview",

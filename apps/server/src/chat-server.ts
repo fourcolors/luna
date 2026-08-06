@@ -277,7 +277,7 @@ import {
   type EmbedderError,
   type ValidationError,
 } from "@luna/core"
-import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
+import { McpServerStore, syncMcpMounts, RESERVED_SLUGS } from "@luna/mcp-servers"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
 import { loadWorkspaces } from "./workspaces-loader.js"
@@ -336,11 +336,14 @@ import {
   composeInterceptors,
   defaultSafetyInterceptors,
   mcpToolGate,
+  buildMcpGateEntries,
+  clearStaleUnmountableForLiveConnector,
+  summarizeMountFailure,
   egressAllowlist,
   makeEgressPreToolUseHook,
   parseEgressAllowedHosts,
   type EgressDecision,
-  type McpServerPolicy,
+  type McpGateEntry,
 } from "@luna/tools"
 import {
   ChannelService,
@@ -698,22 +701,37 @@ let notifyThreadsArchived: ((threadIds: ReadonlyArray<string>) => void) | null =
 // list to every client. Null until a WS server registers.
 let notifyVaultListChanged: (() => void) | null = null
 
-// Slice C — MCP tool gate policy holder.
-// Populated at boot (and on re-sync) from syncMcpMounts().policy.
-// mcpToolGate reads it on EVERY tool call so allowTool / allowAllTools changes
-// take effect without recomposing the boot-global permission callback.
-const mcpToolPolicyHolder = new Map<string, McpServerPolicy>()
-const replaceMcpToolPolicy = (
-  p: Record<string, { allowAll: boolean; allowedTools: string[] }>,
-): void => {
+// Slice C - MCP tool gate policy holder.
+// Slice S11b (issue #445): a registered server that FAILS TO MOUNT (e.g. an
+// unresolved secret-ref) must fail CLOSED at the gate, not defer. Populated
+// once at boot from a single syncMcpMounts() report, folded through
+// buildMcpGateEntries (packages/tools/src/interception.ts) - the ONE place
+// a report becomes gate policy, shared with mcp-demo.ts. See
+// McpServerUnmountable for the full fail-closed rationale. v1 does not
+// re-sync live (see the boot comment in ThreadToolsProviderLayer below).
+// mcpToolGate reads this map on EVERY tool call so allowTool / allowAllTools
+// changes take effect without recomposing the boot-global permission
+// callback.
+const mcpToolPolicyHolder = new Map<string, McpGateEntry>()
+const replaceMcpToolPolicy = (entries: ReadonlyMap<string, McpGateEntry>): void => {
   mcpToolPolicyHolder.clear()
-  for (const [slug, v] of Object.entries(p)) {
-    mcpToolPolicyHolder.set(slug, {
-      allowAll: v.allowAll,
-      allowedTools: new Set(v.allowedTools),
-    })
-  }
+  for (const [slug, entry] of entries) mcpToolPolicyHolder.set(slug, entry)
 }
+
+// Live check for whether a slug is currently mounted by a connector. Set
+// once ThreadToolsProviderLayer's boot Effect.gen has run (below) and read
+// on every gate call. A connector can mount AFTER boot (OAuth connect, or a
+// reconnect following token rotation that excluded it from the boot mount
+// snapshot) while mcpToolPolicyHolder is only ever rebuilt from the
+// boot-time syncMcpMounts() report; consulting this LIVE view at
+// gate-check time - rather than relying solely on the boot-time exclusion
+// set baked into mcpToolPolicyHolder - keeps a since-mounted connector's
+// tools from being denied by a stale `unmountable` marker left over from
+// before it connected. Consulted only through
+// clearStaleUnmountableForLiveConnector (packages/tools), which clears the
+// marker case alone; a mounted server's own policy is never touched by
+// connector liveness.
+let isLiveConnectorMount: ((slug: string) => boolean) | null = null
 const reattachSandbox = (threadId: string): void => {
   const reattach = sandboxReattachers.get(threadId)
   if (reattach !== undefined) reattach()
@@ -780,6 +798,10 @@ export const ThreadToolsProviderLayer = (
       // sync-snapshot discipline — refreshMounts() rebuilds on connect/
       // disconnect (and on M2 token rotation); decorate() just spreads it.
       const connectorService = yield* ConnectorService
+      // Live-read at gate-check time (see isLiveConnectorMount above) so a
+      // connector that mounts AFTER this boot sync still defers correctly.
+      isLiveConnectorMount = (slug) =>
+        Object.hasOwn(connectorService.mountSnapshotSync(), slug)
       const bootMounts = Object.keys(connectorService.mountSnapshotSync())
       if (bootMounts.length > 0) {
         console.log("[luna/boot] connector mounts:", bootMounts.join(", "))
@@ -787,17 +809,20 @@ export const ThreadToolsProviderLayer = (
       // Official MCP support: capture the runtime registry, then sync it ONCE at
       // boot from the durable store's enabled+trusted rows (resolving header
       // secret-refs; fail-closed skip on any unresolved ref). decorate() reads
-      // mcpRegistry.snapshotSync() synchronously below — same instance, so the
+      // mcpRegistry.snapshotSync() synchronously below - same instance, so the
       // boot-sync's registrations are visible to every thread. (Hot re-sync of
       // added-after-boot servers is a follow-up; v1 syncs at boot.)
       const mcpRegistry = yield* MCPRegistry
       // v1: operator MCP servers are synced ONCE at boot (boot-sync only).
-      // Disable/remove revocations take effect at next boot — not live.
+      // Disable/remove revocations take effect at next boot - not live.
       // Pass the live connector mount keys as reserved so an operator row
       // with a colliding slug (e.g. "github") is skipped rather than
       // shadowing the connector or mis-routing gate policy.
+      const mcpReservedSlugs = new Set(
+        Object.keys(connectorService.mountSnapshotSync()),
+      )
       const mcpMountReport = yield* syncMcpMounts({
-        reservedSlugs: new Set(Object.keys(connectorService.mountSnapshotSync())),
+        reservedSlugs: mcpReservedSlugs,
       })
       if (mcpMountReport.registered.length > 0 || mcpMountReport.skipped.length > 0) {
         console.log(
@@ -808,8 +833,32 @@ export const ThreadToolsProviderLayer = (
             : "",
         )
       }
-      // Slice C — seed the fail-closed MCP tool gate with boot-time policy.
-      replaceMcpToolPolicy(mcpMountReport.policy)
+      // Operator decision (issue #445): a registered server that fails to
+      // mount must fail CLOSED at the tool gate, not defer. buildMcpGateEntries
+      // (packages/tools) is the ONE fold from report to gate policy, shared
+      // with mcp-demo.ts, so the boot warning below and the gate's policy
+      // map always agree on "which skip counts as a failure". excludedSlugs
+      // = live connector mount keys (that namespace is actively served
+      // elsewhere, already logged above) union RESERVED_SLUGS (those rows
+      // are rejected before any mount attempt, never a genuine failure -
+      // see buildMcpGateEntries).
+      const mcpGateExcludedSlugs = new Set<string>([
+        ...mcpReservedSlugs,
+        ...RESERVED_SLUGS,
+      ])
+      const mcpGateEntries = buildMcpGateEntries(mcpMountReport, mcpGateExcludedSlugs)
+      for (const [slug, entry] of mcpGateEntries) {
+        if (!("unmountable" in entry)) continue
+        // entry.reason may embed an operator-supplied raw header value
+        // (mount-loader.ts's backward-compat branch); summarizeMountFailure
+        // is the only safe-to-log form - never interpolate entry.reason here.
+        console.warn(
+          `[luna/thread] MCP server "${slug}" is registered but FAILED TO MOUNT - ` +
+            `any of its tools the gate can address (mcp__${slug}__*) are now ` +
+            `DENIED (fail-closed) until this is fixed. Reason: ${summarizeMountFailure(entry.reason)}`,
+        )
+      }
+      replaceMcpToolPolicy(mcpGateEntries)
 
       const bootSkills = yield* skillRegistry.catalog()
       console.log(
@@ -4946,7 +4995,12 @@ export const bootstrap = async (): Promise<void> => {
             // First-wins: egress deny must beat any later allow.
             egressAllowlist(egressOpts),
             ...defaultSafetyInterceptors(),
-            mcpToolGate((slug) => mcpToolPolicyHolder.get(slug)),
+            mcpToolGate((slug) =>
+              clearStaleUnmountableForLiveConnector(
+                mcpToolPolicyHolder.get(slug),
+                isLiveConnectorMount?.(slug) === true,
+              ),
+            ),
           ]),
         )
         // PreToolUse covers tools that never hit canUseTool (auto-approved
