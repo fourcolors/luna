@@ -1,4 +1,4 @@
-# Stack 2+3 completion plan - 27 slices
+# Stack 2+3 completion plan - 29 slices
 
 This is the validated execution plan that completes NEXT.md Stack 2 (remainder) and Stack 3.
 The canonical machine-readable spec is [stack23-plan.json](stack23-plan.json); this page is the human summary.
@@ -20,6 +20,11 @@ Implementation protocol: Sonnet implements each slice; an Opus auditor, critic, 
   First reverted on scope grounds (packages/core was not among S08's enumerated content-edit categories), then re-applied and folded into S08's FILES IN SCOPE by an explicit orchestrator scope grant (slice S08v2-ext, 2026-08-05).
   Fixed with four one-line literal corrections in packages/core (doctor-enqueue.ts, its test plus an existsSync assertion on the resolved default, job-ticker.ts's doc comment, job-ticker.test.ts); no probe needed there because packages/core ships inside the same release commit as chat-server.ts, so it never faces the cross-release tree-shape ambiguity the deploy-engine probes exist for.
   See stack23-plan.json's changelog for detail.
+- S16 SPLIT (implementer, 2026-08-06): a prior S16 attempt had already carried Attachments.tsx to a tested, ready-to-wire state, and it proved empirically that mounting a converted component via a second inline `<script type=module>` in chat.html loads a second copy of react/react-dom under the dev server and throws "Invalid hook call" - every converted component must mount inside main-chat.tsx's single bundled module graph instead.
+  A separate "Invalid hook call" occurrence was observed during a long-lived dev session, A/B-stashed to the pre-S16a S15 baseline at the time, with zero Attachments code present; it is NOT reproducible on a cold dev server, so any recurrence an S16b/S16c implementer hits while screenshot-verifying their own mount through main-chat.tsx must be treated as a real signal and re-diagnosed, not dismissed as known noise.
+  With Attachments already built, wiring it in and deleting the vanilla block is a small, mechanical, low-risk concern on its own (S16a), materially different from ComposerConfig, which is entangled with the WS thread-config optimistic-revert protocol across roughly 8 frame-handler call sites and needs its protocol behavior pinned by tests before conversion (S16b, HIGH RISK).
+  SlashMenu and SmartBarEngine remain the last inline composer subsystems and may fold into S16b if it lands small (S16c).
+  S16 is retired in favor of S16a/S16b/S16c; see stack23-plan.json's changelog for detail.
 
 ## Slices
 
@@ -41,7 +46,9 @@ Implementation protocol: Sonnet implements each slice; an Opus auditor, critic, 
 | S13 | Point install-mac.command at Moon instead of the Vite web UI | macOS onboarding still guards port 5174 and boots a dev server for a frontend that no longer exists. |
 | S14 | Moon chat: ChatCtx seam plus a frozen typed declaration for the sanitizer | Establish the typed contract the chat rebuild mounts onto, with zero change to chat.html. |
 | S15 | Moon chat: React message list and streaming render | Replace the hand-written DOM renderer and its rAF loop with React, calling the audited sanitizer unchanged. |
-| S16 | Moon chat: composer, attachments and slash menu to React | The input surface is still inline DOM bindings. |
+| S16a | Moon chat: wire React Attachments into the live page and delete the vanilla block | Attachments.tsx was tested and ready but not part of the shipped page; the vanilla Attachments block still owned the DOM. |
+| S16b | Moon chat: ComposerConfig (model/effort switcher) to React | ComposerConfig is entangled with the WS thread-config optimistic-revert protocol state across roughly 8 frame-handler call sites; converting it blind risks silently changing reconciliation behavior no screenshot would catch. |
+| S16c | Moon chat: SlashMenu and SmartBarEngine to React | The slash-command popover and the context-aware info-pill bar are the last inline-DOM composer subsystems; SlashMenu also consumes the generated window.LunaCapabilities global and must keep doing so unchanged. |
 | S17 | Moon chat: thread drawer to React, wrapping the drag state machine unchanged | The thread drawer is the largest single inline subsystem and contains the most feel-critical interaction in Moon. |
 | S18 | Moon chat: connection lifecycle onto ESM transport, retiring the vendored bundle | Chat's WebSocketEngine and PoolEngine still run on a generated vendor global, and the protocol version is triplicated. |
 | S19 | Moon chat: remaining engines to React | Convert the last vanilla engines so the inline script can be deleted. |
@@ -78,8 +85,9 @@ With S06a done and tsconfig.judgeprobe.json gone, S08 carries `git mv` plus the 
 S09 typechecks the daemon; S10 shrinks to the six CLIs that were never coupled to the closure and cleans up behind both.
 S11 strictly precedes S12 because `release_artifacts_ok` hard-requires apps/ui-web/dist/index.html, and because the deploying engine is a PINNED copy of an older SHA - a pre-S11 engine cannot materialize a post-S12 release, so the gate is engine-pin advancement per profile, not merely a deploy window.
 Stack 3 starts only after S13.
-Moon (S14-S20) comes before the control-plane fold because it rides the Tauri updater and cannot brick a host, and because chat.html is 12005 lines with an 8930-line inline script - honest sizing is seven slices with explicit split-on-contact triggers, following panel.html's proven incremental pattern where the page stays bootable at every commit.
+Moon (S14-S20) comes before the control-plane fold because it rides the Tauri updater and cannot brick a host, and because chat.html is 12005 lines with an 8930-line inline script - honest sizing was seven slices with explicit split-on-contact triggers, following panel.html's proven incremental pattern where the page stays bootable at every commit; S16's own split-on-contact trigger fired (see the S16 SPLIT adjudication above), so the sequence is now nine slices.
 S15 now carries a measured re-estimation checkpoint because the coupled Moon test surface is 15,602 lines across 39 files, 28 of them tied to the pages S20 deletes.
+S16a/S16b/S16c replace S16: S16a wires the already-built Attachments.tsx into the live page (small, mechanical); S16b ports ComposerConfig only, after pinning the WS thread-config optimistic-revert protocol with tests, because that entanglement makes blind conversion risky in a way no screenshot catches; S16c ports SlashMenu and SmartBarEngine and may fold into S16b if S16b lands small.
 The fold (S21-S25) is last and most gated: S21 must ship as bash first because publish_engine copies six named bash files and runs `bash -n` over the `luna-*` glob, so the publisher must learn about binaries before any binary can be current.
 S25 exists because a fold that never deletes is a fork - it collects the deletion payoff while keeping the charter's promised bash escape hatch in its smallest honest form, and names the engine pin, already holding five prior working engines on every host, as the second hatch that works when the new artifact is the broken thing.
 S26 closes the loop by retiring S07's transient entry probe once every profile's `previous` is post-S08, so the migration leaves no permanent branching behind.

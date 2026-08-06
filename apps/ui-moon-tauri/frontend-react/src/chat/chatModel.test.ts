@@ -190,6 +190,41 @@ describe("chatModelReducer - turn lifecycle", () => {
     expect(s.turns.find((t) => t.role === "user")?._settled).toBeUndefined()
   })
 
+  it("markRunSettled on an already-settled trailing run returns the SAME state by reference (memoize-by-reference contract)", () => {
+    let s = createInitialChatModelState()
+    s = chatModelReducer(s, { type: "append-user", text: "q1", ts: 1 })
+    s = chatModelReducer(s, { type: "apply-delta", turnId: "a1", text: "r1" })
+    s = chatModelReducer(s, { type: "finish-turn", turnId: "a1", ts: 2 })
+    s = chatModelReducer(s, { type: "mark-run-settled" })
+    const settledTurns = s.turns
+    const settledAssistant = s.turns.find((t) => t.turnId === "a1")
+    // A repeated dispatch on state that's already fully settled must be a
+    // true no-op: same `turns` array reference, same turn object reference -
+    // not just equal by value. A regression here (unconditionally spreading
+    // every qualifying turn) would churn both references on every duplicate
+    // 'turn-complete' delivery.
+    const s2 = chatModelReducer(s, { type: "mark-run-settled" })
+    expect(s2).toBe(s)
+    expect(s2.turns).toBe(settledTurns)
+    expect(s2.turns.find((t) => t.turnId === "a1")).toBe(settledAssistant)
+  })
+
+  it("markRunSettled with a mixed trailing run only reassigns the turns that actually lack _settled", () => {
+    let s = createInitialChatModelState()
+    s = chatModelReducer(s, { type: "append-user", text: "q1", ts: 1 })
+    s = chatModelReducer(s, { type: "apply-delta", turnId: "a1", text: "r1" })
+    s = chatModelReducer(s, { type: "finish-turn", turnId: "a1", ts: 2 })
+    s = chatModelReducer(s, { type: "mark-run-settled" }) // a1 settles here
+    const settledA1 = s.turns.find((t) => t.turnId === "a1")
+    s = chatModelReducer(s, { type: "apply-delta", turnId: "a2", text: "r2" })
+    s = chatModelReducer(s, { type: "finish-turn", turnId: "a2", ts: 3 }) // a2 joins the trailing run, unsettled
+    const s2 = chatModelReducer(s, { type: "mark-run-settled" })
+    expect(s2).not.toBe(s) // a2 actually changed, so this dispatch is NOT a no-op
+    expect(s2.turns.find((t) => t.turnId === "a2")?._settled).toBe(true)
+    // a1 was already settled - its object identity must survive untouched.
+    expect(s2.turns.find((t) => t.turnId === "a1")).toBe(settledA1)
+  })
+
   it("appendDelivered pushes a settled, done turn carrying the delivery marker; blank text is dropped", () => {
     const s1 = chatModelReducer(createInitialChatModelState(), {
       type: "append-delivered",
