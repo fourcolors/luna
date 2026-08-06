@@ -4804,6 +4804,10 @@ const buildMain = (
       .split(",")
       .map((v) => v.trim())
       .filter((v) => v.length > 0)
+    // Home guild for slash-command registration (Slice 3b). Missing/empty =>
+    // the adapter logs a skip line and registers nothing; scoping is noise
+    // reduction, never auth — the allowlist above remains the only boundary.
+    const dcGuildId = (process.env["LUNA_DISCORD_GUILD_ID"] ?? "").trim()
     if (dcToken !== undefined && dcToken.length > 0) {
       if (dcAllowedUsers.length === 0) {
         console.error(
@@ -4821,6 +4825,7 @@ const buildMain = (
             ...(dcAllowedChannels.length > 0
               ? { allowedChannels: dcAllowedChannels }
               : {}),
+            ...(dcGuildId.length > 0 ? { guildId: dcGuildId } : {}),
           }),
         )
         yield* channels.startAdapters().pipe(Effect.scoped)
