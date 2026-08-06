@@ -23,19 +23,21 @@
  *
  * Live proof (step 8) requires MCP_DEMO_TOKEN_ENV to name an env var that
  * is non-empty. Without it step 8 is skipped gracefully.
+ *
+ * Self-checks (steps 6/7): each gate verdict is checked against what the
+ * CURRENT mount state (registered vs. unmountable) makes correct, and every
+ * mismatch is counted. The process exits non-zero if any self-check failed
+ * - see `selfCheckFailures` below. Running with MCP_DEMO_TOKEN unset (or
+ * empty) is a deliberate, successful demonstration of the fail-closed path
+ * (issue #445), not a failure by itself: the exit code only goes non-zero
+ * when a verdict does not match what that mount state implies.
  */
-// TODO(#444): 4 pre-existing type errors (unnarrowed InterceptorVerdict
-// union access below) - outside apps/*/src/** on purpose so this doesn't
-// regress the tsc gate. NOT cosmetic: the unhandled "pass" arm makes
-// `verdict.behavior` undefined at runtime, so the demo misreports every
-// gate verdict today. Fix by narrowing the union at each access site;
-// remove this marker only with that fix.
 import { Effect, Layer, Redacted } from "effect"
 import { tmpdir } from "node:os"
 import { existsSync, unlinkSync } from "node:fs"
 import { Clock, ConfigError, LunaSqliteBootstrap, MCPRegistry, SecretProvider } from "@luna/core"
-import { McpServerStore, syncMcpMounts } from "@luna/mcp-servers"
-import { mcpToolGate } from "@luna/tools"
+import { McpServerStore, syncMcpMounts, RESERVED_SLUGS } from "@luna/mcp-servers"
+import { mcpToolGate, buildMcpGateEntries, type InterceptorVerdict } from "@luna/tools"
 
 // ---------------------------------------------------------------------------
 // Config from env
@@ -88,6 +90,45 @@ function warn(msg: string) {
 
 function deny(msg: string) {
   console.log(`    ${red("✗")} ${msg}`)
+}
+
+// ---------------------------------------------------------------------------
+// Verdict self-checks narrow InterceptorVerdict ("pass" | PermissionResult)
+// at every access site - reading `.behavior`/`.message` off the raw union
+// silently reads "pass" as `undefined` (issue #444). Each mismatch
+// increments `selfCheckFailures`, which the run() footer turns into a
+// non-zero exit.
+// ---------------------------------------------------------------------------
+
+let selfCheckFailures = 0
+
+function expectDeny(label: string, verdict: InterceptorVerdict): void {
+  if (verdict === "pass") {
+    selfCheckFailures++
+    warn(`${label} → PASS (expected DENY - the gate deferred instead of denying)`)
+    return
+  }
+  if (verdict.behavior === "deny") {
+    deny(`${label} → DENY`)
+    info(`reason: ${verdict.message}`)
+    return
+  }
+  selfCheckFailures++
+  warn(`${label} → ALLOW (expected DENY)`)
+}
+
+function expectAllow(label: string, verdict: InterceptorVerdict): void {
+  if (verdict === "pass") {
+    selfCheckFailures++
+    warn(`${label} → PASS (expected ALLOW - the gate deferred instead of allowing)`)
+    return
+  }
+  if (verdict.behavior === "allow") {
+    ok(`${label} → ALLOW`)
+    return
+  }
+  selfCheckFailures++
+  deny(`${label} → DENY (expected ALLOW): ${verdict.message}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -147,22 +188,6 @@ const demoLayer = Layer.mergeAll(
   MCPRegistry.Default,
   InlineEnvSecretProvider,
 )
-
-// ---------------------------------------------------------------------------
-// Policy map helper — rebuilt after each sync to reflect current policy
-// ---------------------------------------------------------------------------
-
-type PolicyMap = Map<string, { allowAll: boolean; allowedTools: Set<string> }>
-
-function buildPolicyMap(
-  policy: Record<string, { allowAll: boolean; allowedTools: string[] }>,
-): PolicyMap {
-  const map: PolicyMap = new Map()
-  for (const [slug, p] of Object.entries(policy)) {
-    map.set(slug, { allowAll: p.allowAll, allowedTools: new Set(p.allowedTools) })
-  }
-  return map
-}
 
 // ---------------------------------------------------------------------------
 // Main demo program
@@ -255,6 +280,9 @@ const demo = Effect.gen(function* () {
     // Secret ref may be unresolvable if token not set — show skip reason
     const skip = result2.skipped.find((s) => s.slug === DEMO_SLUG)
     if (skip !== undefined) {
+      // Raw reason is intentional HERE ONLY: operator-local stdout for
+      // debugging your own config; every model/transcript-facing surface
+      // routes through summarizeMountFailure instead.
       warn(`skipped: ${skip.reason}`)
       info("(this is expected if the token env var is not set)")
     } else {
@@ -278,47 +306,52 @@ const demo = Effect.gen(function* () {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 6: Gate DENY — tool not yet allowed
+  // STEP 6: Gate DENY - either "tool not yet allowlisted" (server mounted)
+  // or "server registered but unmountable" (issue #445 fail-closed path,
+  // e.g. token env var unset/empty). Both states must DENY.
   // ─────────────────────────────────────────────────────────────────────────
-  step("mcpToolGate — DENY (tool not yet in allowlist)")
-  const policyMap1 = buildPolicyMap(result2.policy)
+  step("mcpToolGate - DENY (tool not yet in allowlist, or server unmountable)")
+  const policyMap1 = buildMcpGateEntries(result2, RESERVED_SLUGS)
   const gate1 = mcpToolGate((s) => policyMap1.get(s))
 
   const toolName = `mcp__${DEMO_SLUG}__${DEMO_TOOL}`
   const verdict1 = yield* gate1(toolName, {})
-  if (verdict1.behavior === "deny") {
-    deny(`${toolName} → DENY`)
-    info(`reason: ${verdict1.message}`)
-  } else {
-    warn(`unexpected: ${toolName} → ALLOW (should have been denied)`)
-  }
+  expectDeny(toolName, verdict1)
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 7: allowTool → re-sync → gate ALLOW + DENY different tool
+  // STEP 7: allowTool → re-sync → gate check.
+  // If the server mounted, the grant takes effect: ALLOW the granted tool,
+  // DENY a different one. If the server never mounted (unresolved secret),
+  // the grant is real in the DB but inert - fail-closed means EVERYTHING on
+  // this namespace stays DENIED until the mount succeeds.
   // ─────────────────────────────────────────────────────────────────────────
   step(`store.allowTool("${DEMO_SLUG}", "${DEMO_TOOL}") + gate check`)
   yield* store.allowTool(DEMO_SLUG, DEMO_TOOL)
   ok(`tool "${DEMO_TOOL}" added to allowlist`)
 
   const result3 = yield* syncMcpMounts()
-  const policyMap2 = buildPolicyMap(result3.policy)
+  const policyMap2 = buildMcpGateEntries(result3, RESERVED_SLUGS)
   const gate2 = mcpToolGate((s) => policyMap2.get(s))
-
-  // Check allowed tool
-  const verdict2 = yield* gate2(toolName, {})
-  if (verdict2.behavior === "allow") {
-    ok(`${toolName} → ALLOW`)
-  } else {
-    deny(`unexpected: ${toolName} → DENY`)
-  }
-
-  // Check a different tool — should still be denied
   const otherTool = `mcp__${DEMO_SLUG}__other-tool`
-  const verdict3 = yield* gate2(otherTool, {})
-  if (verdict3.behavior === "deny") {
-    deny(`${otherTool} → DENY (correct — not opted in)`)
+
+  if (result3.registered.includes(DEMO_SLUG)) {
+    // Mounted - the allowlist grant takes effect immediately.
+    const verdict2 = yield* gate2(toolName, {})
+    expectAllow(toolName, verdict2)
+
+    // A different, non-granted tool must remain denied.
+    const verdict3 = yield* gate2(otherTool, {})
+    expectDeny(otherTool, verdict3)
   } else {
-    warn(`unexpected: ${otherTool} → ALLOW`)
+    warn(
+      `${DEMO_SLUG} is still unmounted - the allowlist grant has no effect ` +
+        "until the mount succeeds; fail-closed means the gate keeps denying.",
+    )
+    const verdict2 = yield* gate2(toolName, {})
+    expectDeny(toolName, verdict2)
+
+    const verdict3 = yield* gate2(otherTool, {})
+    expectDeny(otherTool, verdict3)
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -535,6 +568,20 @@ Effect.runPromise(
     ),
   ),
 )
+  .then(() => {
+    // A wrong verdict must fail the run, not just print a warning (issue #444).
+    if (selfCheckFailures > 0) {
+      console.error()
+      console.error(
+        bold(
+          red(
+            `✗ ${selfCheckFailures} self-check(s) failed - a gate verdict did not match what the mount state implies.`,
+          ),
+        ),
+      )
+      process.exitCode = 1
+    }
+  })
   .catch(() => {
     process.exit(1)
   })

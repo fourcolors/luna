@@ -241,20 +241,22 @@ export const defaultSafetyInterceptors = (): ReadonlyArray<ToolInterceptor> => [
 ]
 
 // ---------------------------------------------------------------------------
-// MCP server tool gate (Slice C)
+// MCP server tool gate (Slice C; unmountable-slug fail-closed fix Slice S11b)
 //
 // Operator-registered MCP servers (tool prefix `mcp__<slug>__`) are
 // DENY-BY-DEFAULT.  A tool call is allowed only when the server's durable
-// policy says so — either `allowAll: true` OR the exact tool name appears in
+// policy says so - either `allowAll: true` OR the exact tool name appears in
 // `allowedTools`.
 //
-// Built-in servers (memory, local_shell, …) and OAuth connector servers are
-// UNAFFECTED: the gate defers ("pass") whenever `policyLookup` returns
-// `undefined` for a slug, which only registered operator servers have.
+// Built-in servers (memory, local_shell, ...) and OAuth connector servers
+// are UNAFFECTED: the gate defers ("pass") whenever `policyLookup` returns
+// `undefined` for a slug, which only registered operator servers have. See
+// {@link McpServerUnmountable} for the registered-but-broken case.
 //
-// `policyLookup` is read on EVERY call — the caller is expected to back it
-// with a mutable Map so that policy changes (allowTool, allowAllTools) take
-// effect without recomposing the boot-global permission callback.
+// `policyLookup` is read on EVERY call - the caller is expected to back it
+// with a mutable Map so that policy changes (allowTool, allowAllTools,
+// mount success/failure) take effect without recomposing the boot-global
+// permission callback.
 // ---------------------------------------------------------------------------
 
 export interface McpServerPolicy {
@@ -263,14 +265,73 @@ export interface McpServerPolicy {
 }
 
 /**
+ * Registered-but-unmountable marker: the operator enabled+trusted this slug
+ * in the durable MCP server store, but the boot-time mount attempt failed
+ * (e.g. an unresolved secret-ref), so the server was never registered in
+ * the runtime MCPRegistry and has NO tools. The operator's intent for it to
+ * run is durable, so an `undefined` policyLookup result (-> "pass", defer)
+ * would be the wrong polarity for a security gate: it would let a caller
+ * address the broken server's namespace with no opinion from the gate at
+ * all (issue #445: unknown-because-broken means DENY, not defer).
+ *
+ * `reason` is the raw mount-failure detail and is for BOOT LOGGING only -
+ * it may echo operator-supplied config text (mount-loader.ts's
+ * backward-compat header handling embeds the header's configured value
+ * when that value fails to resolve as a secret-ref), which is not safe to
+ * put in front of the model or a persisted transcript. The gate's deny
+ * message never echoes `reason` verbatim; see `summarizeMountFailure`.
+ */
+export interface McpServerUnmountable {
+  readonly unmountable: true
+  readonly reason: string
+}
+
+/** One entry {@link mcpToolGate} consults per registered server slug. */
+export type McpGateEntry = McpServerPolicy | McpServerUnmountable
+
+/**
+ * Bound what a mount-failure reason exposes in a DENY message a model can
+ * read (and a transcript can persist): a short classification, plus - only
+ * where the source string format guarantees it is a NAME and not a value
+ * (a header name, a ref name) - that name. Never a raw header/config value.
+ * An unrecognized reason shape falls back to a generic classification
+ * rather than being echoed verbatim, since the mount loader may add reason
+ * shapes this function does not know about. Exported so every surface that
+ * renders a mount-failure reason - the gate's DENY message and the boot
+ * warning in chat-server.ts - shares this one redaction, never the raw
+ * `reason` string.
+ */
+export const summarizeMountFailure = (reason: string): string => {
+  const header = /^unresolved secret-ref for header '([^']+)'/.exec(reason)
+  if (header !== null) return `unresolved secret reference for header '${header[1]}'`
+  const template = /^malformed secret-ref template in header '([^']+)'/.exec(reason)
+  if (template !== null) {
+    return `malformed secret-ref template in header '${template[1]}'`
+  }
+  const embedded =
+    /^unresolved embedded secret-ref '(?:[^']+)' in header '([^']+)'/.exec(reason)
+  if (embedded !== null) {
+    // The ref text is lifted from the header VALUE - an operator who wrapped
+    // a literal credential in ${...} would otherwise see it echoed into the
+    // DENY message the model reads. Only the header NAME is safe to surface.
+    return `unresolved embedded secret reference in header '${embedded[1]}'`
+  }
+  if (reason.startsWith("invalid slug")) return "registration rejected (invalid slug)"
+  if (reason.startsWith("registry.register() failed")) return "server registration failed"
+  return "mount failed (see server boot logs for detail)"
+}
+
+/**
  * Fail-closed gate for operator-registered MCP servers. `policyLookup`
- * returns the live policy for a server slug, or undefined if the slug is
- * NOT an operator-registered MCP server (built-ins / connectors → defer).
- * Reading the lookup per-call is what makes opt-ins take effect without
- * recomposing the boot-global permission callback.
+ * returns the live entry for a server slug: an allow/deny `McpServerPolicy`
+ * for a mounted server, an `McpServerUnmountable` marker for a registered
+ * server that failed to mount, or undefined if the slug is NOT an operator-
+ * registered MCP server at all (built-ins / connectors -> defer). Reading
+ * the lookup per-call is what makes opt-ins (and mount-status changes) take
+ * effect without recomposing the boot-global permission callback.
  */
 export const mcpToolGate = (
-  policyLookup: (slug: string) => McpServerPolicy | undefined,
+  policyLookup: (slug: string) => McpGateEntry | undefined,
 ): ToolInterceptor =>
   (toolName, input) =>
     Effect.sync<InterceptorVerdict>(() => {
@@ -283,9 +344,18 @@ export const mcpToolGate = (
       // Both capture groups are guaranteed present when the match succeeds;
       // this guard satisfies noUncheckedIndexedAccess without a non-null assertion.
       if (slug === undefined || tool === undefined) return "pass"
-      const policy = policyLookup(slug)
-      if (policy === undefined) return "pass" // not an operator MCP server
-      const allowed = policy.allowAll || policy.allowedTools.has(tool)
+      const entry = policyLookup(slug)
+      if (entry === undefined) return "pass" // not an operator MCP server
+      if ("unmountable" in entry) {
+        return {
+          behavior: "deny" as const,
+          message:
+            `MCP server "${slug}" is registered but failed to mount, so ` +
+            `tool "${tool}" is denied (fail-closed) until the mount issue ` +
+            `is resolved. Reason: ${summarizeMountFailure(entry.reason)}`,
+        }
+      }
+      const allowed = entry.allowAll || entry.allowedTools.has(tool)
       return allowed
         ? { behavior: "allow" as const, updatedInput: input }
         : {
@@ -296,3 +366,88 @@ export const mcpToolGate = (
               `Grant it with: luna mcp allow ${slug} ${tool}`,
           }
     })
+
+// ---------------------------------------------------------------------------
+// syncMcpMounts() report -> gate entries (Slice S11b)
+//
+// ONE fold, shared by chat-server.ts (production boot) and mcp-demo.ts (the
+// end-to-end demo self-checks), so the two call sites cannot hand-copy this
+// logic out of sync with each other. Structural input type only - no
+// dependency on @luna/mcp-servers - so it is unit-testable here with a
+// plain object literal instead of a stub of the real service.
+// ---------------------------------------------------------------------------
+
+/** Structural shape of a `syncMcpMounts()` report (see `@luna/mcp-servers`). */
+export interface McpMountReportLike {
+  readonly policy: Record<
+    string,
+    { allowAll: boolean; allowedTools: ReadonlyArray<string> }
+  >
+  readonly skipped: ReadonlyArray<{ slug: string; reason: string }>
+}
+
+/**
+ * Fold a `syncMcpMounts()` report into the map {@link mcpToolGate} consults:
+ * one `McpServerPolicy` per mounted slug, one `McpServerUnmountable` deny
+ * marker per genuinely-unmountable slug.
+ *
+ * `excludedSlugs` names every slug that must NEVER become a deny marker
+ * even though it appears in `skipped`, because the skip does not mean
+ * "this server tried and failed to mount":
+ *   - a slug colliding with a live connector mount key - that namespace is
+ *     not broken, it is actively mounted and served by the connector under
+ *     its own path;
+ *   - a built-in reserved slug (memory, scheduler, ...) - `syncMcpMounts`
+ *     rejects those rows before any mount attempt is made (they can never
+ *     be a legitimate operator server), so a "skip" for one is a REJECTED
+ *     row, not a failed mount, and denying it would shadow the built-in
+ *     server of the same name.
+ * Callers build this set from the live connector mount snapshot plus
+ * `RESERVED_SLUGS` (both exported by `@luna/mcp-servers`).
+ *
+ * A skip whose slug fails {@link mcpToolGate}'s own `[a-z0-9-]+` charset
+ * (e.g. a hand-edited row with slug "GitHub") still gets a marker here -
+ * this fold does not re-validate slug format - but that marker is inert:
+ * the gate can never construct a tool name that parses to that slug, so it
+ * denies nothing and is not reachable. Every slug the gate CAN address is
+ * DENIED when unmountable and not excluded.
+ */
+export const buildMcpGateEntries = (
+  report: McpMountReportLike,
+  excludedSlugs: ReadonlySet<string>,
+): Map<string, McpGateEntry> => {
+  const entries = new Map<string, McpGateEntry>()
+  for (const [slug, p] of Object.entries(report.policy)) {
+    entries.set(slug, { allowAll: p.allowAll, allowedTools: new Set(p.allowedTools) })
+  }
+  for (const { slug, reason } of report.skipped) {
+    if (excludedSlugs.has(slug)) continue
+    entries.set(slug, { unmountable: true, reason })
+  }
+  return entries
+}
+
+// ---------------------------------------------------------------------------
+// Live-connector staleness bypass (Slice S11b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Clear a stale `unmountable` marker for a slug now served by a live
+ * connector mount - the marker predates the connector connecting, since
+ * `mcpToolPolicyHolder` is only ever rebuilt from the boot-time
+ * `syncMcpMounts()` report while a connector can connect after boot. Any
+ * other entry - a real `McpServerPolicy` for a server that mounted
+ * successfully, or `undefined` for a slug with no entry at all - is
+ * returned unchanged: connector liveness must never widen a mounted
+ * server's own deny-by-default policy, only defer a marker that no longer
+ * reflects reality.
+ */
+export const clearStaleUnmountableForLiveConnector = (
+  entry: McpGateEntry | undefined,
+  isLiveConnectorMount: boolean,
+): McpGateEntry | undefined => {
+  if (entry !== undefined && "unmountable" in entry && isLiveConnectorMount) {
+    return undefined
+  }
+  return entry
+}
