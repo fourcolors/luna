@@ -420,8 +420,14 @@ export function chatModelReducer(state: ChatModelState, action: ChatModelAction)
       for (let i = turns.length - 1; i >= 0; i--) {
         const t = turns[i]
         if (!t || t.role !== "assistant" || t.status === "banner" || t.status === "error") break
-        turns[i] = { ...t, _settled: true }
-        changed = true
+        // Skip turns already settled - a repeated dispatch on unchanged state
+        // must return `state` by reference (this module's memoize-by-reference
+        // contract, see the module doc), not churn every trailing turn's
+        // identity for a no-op flag write.
+        if (!t._settled) {
+          turns[i] = { ...t, _settled: true }
+          changed = true
+        }
       }
       return changed ? { turns } : state
     }

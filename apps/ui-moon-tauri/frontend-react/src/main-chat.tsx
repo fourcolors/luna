@@ -2,18 +2,47 @@
 //
 // Mounts the invisible boot probe (see boot.tsx), the React-owned title-bar
 // chrome shared with widget.html (chat/chat-chrome-mount.tsx: `.bar-title` +
-// `.collapse-moon-btn`), and - as of stack23 S15 - the chat transcript
-// itself (chat/MessageList.tsx) into `#chat-messages`. chat.html's
-// WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire pipeline and
-// every other title-bar control (new-thread-btn, redock-btn) keep running
-// completely unchanged in chat.html's own inline <script> - see
-// chat-chrome-mount.tsx's module doc for the chrome scope rationale and
-// MessageList.tsx's module doc for the transcript-conversion seam (the
-// `window.ChatState` / `window.ChatLoop` bridge this file assigns below).
+// `.collapse-moon-btn`), the chat transcript (chat/MessageList.tsx, stack23
+// S15) into `#chat-messages`, and - as of stack23 S16a - the composer's
+// staged-attachment tray (chat/Attachments.tsx) into `#attachments-strip` /
+// `#attach-error`. chat.html's WebSocketEngine/PoolEngine/ThreadDrawerEngine
+// -driven wire pipeline and every other title-bar control (new-thread-btn,
+// redock-btn) keep running completely unchanged in chat.html's own inline
+// <script> - see chat-chrome-mount.tsx's module doc for the chrome scope
+// rationale, MessageList.tsx's module doc for the transcript-conversion seam
+// (the `window.ChatState` / `window.ChatLoop` bridge this file assigns
+// below), and Attachments.tsx's module doc for the `window.Attachments`
+// bridge assigned the same way.
 import "./chat/message-list.css"
 import { mountMoonReactRoot } from "./boot"
+import { mountAttachments } from "./chat/Attachments"
 import { mountChatChrome } from "./chat/chat-chrome-mount"
 import { mountMessageList, WELCOME_ITEM } from "./chat/MessageList"
+
+// ── Attachments (composer's staged-file tray) ───────────────────────────
+//
+// Mirrors the ChatState/ChatLoop bridge below exactly: chat.html forward-
+// declares `var Attachments` (== window.Attachments for a classic script)
+// and every call site (submit/addFiles/paste/drop/clear, all inside async
+// event handlers) calls that bare identifier - see Attachments.tsx's module
+// doc for the mount itself and chat.html's own comment on the `var Attachments`
+// declaration for why the assignment is safe here, not in chat.html's own
+// end-of-script __MoonInternals block.
+const attachmentsMount = mountAttachments({
+  strip: document.getElementById("attachments-strip"),
+  error: document.getElementById("attach-error"),
+})
+
+if (attachmentsMount) {
+  const w = window as unknown as {
+    Attachments?: unknown
+    __MoonInternals?: { Attachments?: unknown }
+  }
+  w.Attachments = attachmentsMount.Attachments
+  if (w.__MoonInternals) {
+    w.__MoonInternals.Attachments = attachmentsMount.Attachments
+  }
+}
 
 mountMoonReactRoot("chat")
 

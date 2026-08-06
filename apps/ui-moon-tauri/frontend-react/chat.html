@@ -2618,8 +2618,6 @@
       chatMessages: document.getElementById('chat-messages'),
       fileInput: document.getElementById('file-input'),
       attachBtn: document.getElementById('attach-btn'),
-      attachmentsStrip: document.getElementById('attachments-strip'),
-      attachError: document.getElementById('attach-error'),
       toggleSettings: document.getElementById('toggle-settings'),
       connectionStatus: document.getElementById('connection-status'),
       buildSha: document.getElementById('build-sha'),
@@ -8646,331 +8644,23 @@
     MoonBar.init();
 
     /**
-     * File / image attachment composer state.
+     * File / image attachment composer state - converted to a typed React
+     * module (stack23 S16a). The decode/classify/downscale pipeline and the
+     * exact legacy method surface (addFiles/remove/clear/hasAny/
+     * wireAttachments/textBlock/previews/setError/classify/IMAGE_TYPES, plus
+     * a plain items get/set) now live in src/chat/Attachments.tsx, which
+     * paints #attachments-strip / #attach-error directly via React - the
+     * manual per-chip document.createElement render() is gone.
      *
-     * Phase 1: images become Anthropic image content-blocks (the server
-     * already accepts these on the user-message frame); text/code files are
-     * folded into the outgoing message text. PDFs and arbitrary binaries are
-     * politely declined until the server document path / blob store land
-     * (see docs/moon-uploads-design.md).
+     * `Attachments` is a forward-declared `var` - for a classic (non-module)
+     * script this IS `window.Attachments`, so every call site below (submit/
+     * addFiles/paste/drop/clear) keeps calling the same bare identifier. Safe
+     * for the same reason the ChatState/ChatLoop `var`s further down are (see
+     * that comment): main-chat.tsx's module script always finishes running
+     * after this classic script, and every call site below runs from inside
+     * an async event handler, never synchronously before that mount.
      */
-    const Attachments = {
-      // Mirror server-side validateAttachments (packages/ui-ws/src/server.ts).
-      IMAGE_TYPES: new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
-      MAX_IMAGE_BYTES: 4 * 1024 * 1024,   // 4 MB — matches server MAX_ATTACH_RAW_BYTES
-      MAX_TEXT_BYTES: 256 * 1024,         // fold-as-text guard (keeps prompts sane)
-      MAX_PER_TURN: 8,                    // matches MAX_ATTACHMENTS_PER_TURN
-      // Downscale every non-GIF image so its long edge ≤ this before sending.
-      // 1568px is the universal model-native resolution (Luna pools models, so
-      // we take the safe lower bound, not Opus's 2576) — larger is wasted bytes +
-      // tokens. Downscaling keeps images under MAX_IMAGE_BYTES, so the server
-      // contract (4 MB cap, 8 MB WS frame) needs NO change for the image path.
-      MAX_EDGE: 1568,
-      // Reject absurd originals before trying to decode them into a canvas.
-      HARD_INPUT_BYTES: 40 * 1024 * 1024,
-      TEXT_EXTS: new Set([
-        'txt','md','markdown','csv','tsv','json','yaml','yml','xml','html','htm',
-        'css','js','mjs','cjs','ts','tsx','jsx','py','rb','go','rs','java','kt',
-        'c','h','cc','cpp','hpp','cs','php','swift','sh','bash','zsh','sql','toml',
-        'ini','cfg','conf','env','log','tex','r','lua','pl','dart','vue','svelte'
-      ]),
-      // Server accepts application/pdf document blocks as of the PDF slice
-      // (protocol.ts + server.ts + buildUserMessage; SDK passthrough spiked).
-      PDF_ENABLED: true,
-      MAX_PDF_BYTES: 20 * 1024 * 1024,    // matches server MAX_PDF_RAW_BYTES
-      // Decoded-bytes budget for one turn. Mirrors server MAX_TURN_RAW_BYTES.
-      // MUST be enforced client-side: a turn whose base64 exceeds the 32MB WS
-      // maxPayload is dropped with code 1009 BEFORE validateAttachments runs, so
-      // the server can't return a friendly error — only this guard can.
-      MAX_TURN_BYTES: 20 * 1024 * 1024,
-
-      items: [],
-
-      newId() {
-        return `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-      },
-
-      classify(file) {
-        if (this.IMAGE_TYPES.has(file.type)) return 'image';
-        if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) return 'pdf';
-        const ext = (file.name.split('.').pop() || '').toLowerCase();
-        if ((file.type && file.type.startsWith('text/')) || this.TEXT_EXTS.has(ext)) return 'text';
-        return 'binary';
-      },
-
-      readBase64(file) {
-        return new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result).split(',')[1] || '');
-          r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-          r.readAsDataURL(file);
-        });
-      },
-
-      readText(file) {
-        return new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result));
-          r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-          r.readAsText(file);
-        });
-      },
-
-      readDataUrl(file) {
-        return new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result));
-          r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-          r.readAsDataURL(file);
-        });
-      },
-
-      loadImage(src) {
-        return new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = () => reject(new Error('Could not decode image'));
-          img.src = src;
-        });
-      },
-
-      b64Bytes(b64) {
-        return Math.floor((b64.length * 3) / 4);
-      },
-
-      // Reject before a turn's total base64 would exceed the WS frame ceiling
-      // (which drops the socket with 1009 before the server can respond).
-      guardTurnTotal(b64) {
-        const used = this.items.reduce((n, a) => n + (a.data ? this.b64Bytes(a.data) : 0), 0);
-        if (used + this.b64Bytes(b64) > this.MAX_TURN_BYTES) {
-          throw new Error('Attachments too large for one message (max ~20 MB total).');
-        }
-      },
-
-      /**
-       * Downscale an image to MAX_EDGE on its long side and return base64,
-       * preserving png/jpeg/webp type. GUARANTEES the result is ≤ MAX_IMAGE_BYTES
-       * (falls back to JPEG / steps quality down if a re-encoded PNG is still
-       * heavy), so the image path never needs a server-side cap change.
-       * Canvas isn't tainted here because the source is a same-origin data: URL.
-       */
-      async processImage(file) {
-        const dataUrl = await this.readDataUrl(file);
-        const img = await this.loadImage(dataUrl);
-        const longEdge = Math.max(img.naturalWidth, img.naturalHeight);
-        const original = dataUrl.split(',')[1] || '';
-
-        // Already within budget — send the bytes untouched.
-        if (longEdge <= this.MAX_EDGE && this.b64Bytes(original) <= this.MAX_IMAGE_BYTES) {
-          return { mediaType: file.type, data: original };
-        }
-
-        const scale = Math.min(1, this.MAX_EDGE / longEdge);
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-
-        // Re-encode, preserving type where the canvas supports it.
-        let outType = (file.type === 'image/png' || file.type === 'image/webp') ? file.type : 'image/jpeg';
-        let quality = 0.92;
-        let data = canvas.toDataURL(outType, quality).split(',')[1] || '';
-
-        // PNG ignores quality; if still heavy, fall back to JPEG.
-        if (outType === 'image/png' && this.b64Bytes(data) > this.MAX_IMAGE_BYTES) {
-          outType = 'image/jpeg';
-          data = canvas.toDataURL(outType, quality).split(',')[1] || '';
-        }
-        // JPEG/WebP honour quality — step down until under the cap.
-        while (this.b64Bytes(data) > this.MAX_IMAGE_BYTES && quality > 0.4) {
-          quality -= 0.15;
-          data = canvas.toDataURL(outType, quality).split(',')[1] || '';
-        }
-        return { mediaType: outType, data };
-      },
-
-      async addFiles(fileList) {
-        const files = Array.from(fileList || []);
-        if (files.length === 0) return;
-        const errors = [];
-        for (const file of files) {
-          if (this.items.length >= this.MAX_PER_TURN) {
-            errors.push(`Max ${this.MAX_PER_TURN} attachments per message.`);
-            break;
-          }
-          try {
-            await this.addOne(file);
-          } catch (e) {
-            errors.push(e && e.message ? e.message : String(e));
-          }
-        }
-        this.setError(errors.length ? errors.join(' · ') : null);
-        this.render();
-      },
-
-      async addOne(file) {
-        const kind = this.classify(file);
-        if (kind === 'image') {
-          if (file.size > this.HARD_INPUT_BYTES) {
-            throw new Error(`Image too large to process: ${file.name}`);
-          }
-          if (file.type === 'image/gif') {
-            // Animated GIFs can't be canvas-downscaled (frames flatten) —
-            // size-check against the cap instead.
-            if (file.size > this.MAX_IMAGE_BYTES) {
-              throw new Error(`GIF too large (max 4 MB): ${file.name}`);
-            }
-            const data = await this.readBase64(file);
-            this.guardTurnTotal(data);
-            this.items.push({ id: this.newId(), kind, name: file.name, mediaType: file.type, data });
-          } else {
-            // Downscale to model-native resolution; guaranteed ≤ MAX_IMAGE_BYTES.
-            const out = await this.processImage(file);
-            this.guardTurnTotal(out.data);
-            this.items.push({ id: this.newId(), kind, name: file.name, mediaType: out.mediaType, data: out.data });
-          }
-        } else if (kind === 'text') {
-          if (file.size > this.MAX_TEXT_BYTES) {
-            throw new Error(`Text file too large (max 256 KB): ${file.name}`);
-          }
-          const text = await this.readText(file);
-          this.items.push({ id: this.newId(), kind, name: file.name, text });
-        } else if (kind === 'pdf') {
-          // Phase-1b: flip PDF_ENABLED once the server accepts document blocks
-          // (protocol.ts + validateAttachments + buildUserMessage). Until then,
-          // decline politely rather than send a frame the server will reject.
-          if (!this.PDF_ENABLED) {
-            throw new Error(`PDF support is coming in the next update: ${file.name}`);
-          }
-          if (file.size > this.MAX_PDF_BYTES) {
-            throw new Error(`PDF too large (max 20 MB): ${file.name}`);
-          }
-          const data = await this.readBase64(file);
-          this.guardTurnTotal(data);
-          this.items.push({ id: this.newId(), kind, name: file.name, mediaType: 'application/pdf', data });
-        } else {
-          // Phase 2: needs a blob store before Luna can hold a binary.
-          throw new Error(`Luna can't read ${file.name} yet — file storage is coming.`);
-        }
-      },
-
-      remove(id) {
-        this.items = this.items.filter((a) => a.id !== id);
-        this.setError(null);
-        this.render();
-      },
-
-      clear() {
-        this.items = [];
-        this.setError(null);
-        this.render();
-      },
-
-      hasAny() {
-        return this.items.length > 0;
-      },
-
-      /**
-       * Base64 attachments for the user-message frame's `attachments` field.
-       * Images today; PDFs join once PDF_ENABLED + the server document path land.
-       */
-      wireAttachments() {
-        const atts = this.items
-          .filter((a) => a.kind === 'image' || a.kind === 'pdf')
-          .map((a) => ({ mediaType: a.mediaType, data: a.data }));
-        return atts.length ? atts : undefined;
-      },
-
-      /** Text/code files, folded into one string appended to the message text. */
-      textBlock() {
-        const texts = this.items.filter((a) => a.kind === 'text');
-        if (texts.length === 0) return '';
-        return texts.map((a) => formatTextAttachment(a.name, a.text)).join('\n\n');
-      },
-
-      /** Lightweight descriptors for rendering the sent user bubble. */
-      previews() {
-        return this.items.map((a) => ({
-          kind: a.kind,
-          name: a.name,
-          src: a.kind === 'image' ? `data:${a.mediaType};base64,${a.data}` : null
-        }));
-      },
-
-      setError(msg) {
-        if (!msg) {
-          DOM.attachError.hidden = true;
-          DOM.attachError.textContent = '';
-        } else {
-          DOM.attachError.textContent = msg;
-          DOM.attachError.hidden = false;
-        }
-      },
-
-      render() {
-        const strip = DOM.attachmentsStrip;
-        strip.innerHTML = '';
-        if (this.items.length === 0) {
-          strip.hidden = true;
-          return;
-        }
-        strip.hidden = false;
-        for (const a of this.items) {
-          const chip = document.createElement('div');
-          chip.className = 'attachment-chip';
-
-          if (a.kind === 'image') {
-            const img = document.createElement('img');
-            img.className = 'att-thumb';
-            img.src = `data:${a.mediaType};base64,${a.data}`;
-            img.alt = a.name;
-            chip.appendChild(img);
-          } else {
-            const icon = document.createElement('span');
-            icon.className = 'att-icon';
-            icon.textContent = (a.name.split('.').pop() || 'file').slice(0, 4);
-            chip.appendChild(icon);
-          }
-
-          const name = document.createElement('span');
-          name.className = 'att-name';
-          name.textContent = a.name;
-          chip.appendChild(name);
-
-          const remove = document.createElement('button');
-          remove.type = 'button';
-          remove.className = 'att-remove';
-          remove.setAttribute('aria-label', `Remove ${a.name}`);
-          remove.textContent = '×';
-          remove.addEventListener('click', () => this.remove(a.id));
-          chip.appendChild(remove);
-
-          strip.appendChild(chip);
-        }
-      }
-    };
-
-    /**
-     * Render an attached text/code file into the outgoing message text.
-     *
-     * ── DESIGN DECISION ────────────────────────────────────────────────────
-     * When a user attaches `report.csv` or `main.py`, its contents get folded
-     * into the prompt text we send to Claude. HOW we wrap it materially
-     * changes how reliably the model treats it as a discrete file vs. blurs it
-     * into your instructions. Options worth weighing:
-     *   • XML-style tags  <file name="x">…</file>  — Claude is trained to
-     *     respect these as hard delimiters; robust against prompt-bleed.
-     *   • Fenced code block  ```name … ```          — familiar, but breaks if
-     *     the file itself contains a ``` fence.
-     *   • Plain header + body                        — simplest, weakest
-     *     boundary.
-     * Default below uses XML-style tags. This is the lever on how Claude
-     * perceives attached files — tune to taste.
-     * ──────────────────────────────────────────────────────────────────────
-     */
-    function formatTextAttachment(name, content) {
-      return `<attached-file name="${name}">\n${content}\n</attached-file>`;
-    }
+    var Attachments;
 
     /**
      * Chat Messaging & WebSocket submission engine.
@@ -10498,17 +10188,18 @@
       window.__MoonInternals.PoolEngine = PoolEngine;
       window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
       window.__MoonInternals.State = State;
-      // ChatState / ChatLoop: NOT assigned here - at this point in the
-      // classic script's own synchronous run they're still the unset `var`
-      // forward-declarations (see the CHAT MODEL / RENDERER / LOOP comment
-      // above). main-chat.tsx (the module script, always running after this
-      // one) patches window.__MoonInternals.ChatState/.ChatLoop itself once
-      // MessageList.tsx actually mounts the real bridge. ChatRenderer has no
-      // replacement - it was the DOM-diff half this slice deleted outright.
+      // ChatState / ChatLoop / Attachments: NOT assigned here - at this
+      // point in the classic script's own synchronous run they're still the
+      // unset `var` forward-declarations (see the CHAT MODEL / RENDERER /
+      // LOOP comment above and the Attachments comment near the old
+      // composer-state block). main-chat.tsx (the module script, always
+      // running after this one) patches window.__MoonInternals.ChatState/
+      // .ChatLoop/.Attachments itself once MessageList.tsx / Attachments.tsx
+      // actually mount their real bridges. ChatRenderer has no replacement -
+      // it was the DOM-diff half S15 deleted outright.
       window.__MoonInternals.ChatEngine = ChatEngine;
       window.__MoonInternals.VoiceEngine = VoiceEngine;
       window.__MoonInternals.LocalShell = LocalShell;
-      window.__MoonInternals.Attachments = Attachments;
       window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
       window.__MoonInternals.toSpeakable = toSpeakable;
       window.__MoonInternals.SlashMenu = SlashMenu;
