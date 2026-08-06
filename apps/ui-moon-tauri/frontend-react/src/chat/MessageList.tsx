@@ -51,31 +51,22 @@ import {
   type ToolSegment,
   type Turn,
 } from "./chatModel"
+import { getChatHost } from "./chat-host"
+import type { LunaChatHostApi } from "./luna-chat-host"
 
 // ============================================================================
-// window.__MoonInternals.buildMessageMeta bridge
+// window.LunaChatHost.buildMessageMeta bridge
 //
 // buildMessageMeta/buildMessageCopyButton/formatRelTime stay vanilla DOM
 // builders in chat.html (defined well before the CHAT MODEL block this slice
 // converts - see chat.html's own comment there), carrying real behavior this
 // slice must not fork (clipboard write + a timed "copied" state). Reused
-// here via the same window.__MoonInternals seam every other test-hook /
-// cross-boundary reference in chat.html already goes through.
-//
-// NOT declared as a `declare global` Window augmentation: index.html's hub
-// (MoonHubApp.tsx) already claims window.__MoonInternals with its own,
-// unrelated shape for that page - the two documents are different Tauri
-// webview realms (see MEMORY.md) that happen to share a TS project, and
-// `declare global` merging requires every declaration of the same property
-// to agree on one type. A local, narrowly-typed read avoids that clash.
+// here via chat-host.ts's `getChatHost()` - see luna-chat-host.d.ts for the
+// full seam.
 // ============================================================================
 
-type BuildMessageMeta = (text: string, ts: number | undefined, delivery: Delivery | null) => HTMLElement
-
-function getBuildMessageMeta(): BuildMessageMeta | null {
-  const internals = (window as unknown as { __MoonInternals?: { buildMessageMeta?: BuildMessageMeta } })
-    .__MoonInternals
-  const fn = internals?.buildMessageMeta
+function getBuildMessageMeta(): LunaChatHostApi["buildMessageMeta"] | null {
+  const fn = getChatHost()?.buildMessageMeta
   return typeof fn === "function" ? fn : null
 }
 

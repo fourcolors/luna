@@ -2416,10 +2416,11 @@
       <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
       <!-- Slash-command popover — anchored to .chat-input-area (position:relative),
            opens upward-LEFT above the composer. Kept in the pre-rows block so its
-           equal z-index ties on DOM source order in WKWebView. Rows injected by JS. -->
-      <div id="slash-menu" class="slash-menu" role="listbox" aria-label="Slash commands" aria-hidden="true">
-        <div class="slash-menu-hint" id="slash-menu-hint">Commands</div>
-      </div>
+           equal z-index ties on DOM source order in WKWebView.
+           Empty: React-owned (SlashMenu.tsx renders the hint line + row list;
+           createRoot(host).render() would wipe any static children here anyway
+           - see that module's doc). -->
+      <div id="slash-menu" class="slash-menu" role="listbox" aria-label="Slash commands" aria-hidden="true"></div>
       <input type="file" id="file-input" multiple hidden>
 
       <!-- Tier 1 — the input shell: a full-width textarea with the small
@@ -2699,14 +2700,15 @@
       // `#effort-cfg-sep`, and `#cfg-deferred-hint` are React-owned now
       // (ComposerConfig.tsx, mounted from main-chat.tsx via
       // document.getElementById directly) - the rest stay here because
-      // SlashMenu's /model and /effort no-arg pickers (vanilla, stays
-      // vanilla - S16c's concern) and the Escape handler still reach into
-      // them directly.
+      // SlashMenu.tsx's /model and /effort no-arg pickers (a separate React
+      // module, stack23 S16c) and the Escape handler still reach into them
+      // directly. `#slash-menu` itself has no DOM cache entry - SlashMenu.tsx
+      // owns that node via its own `document.getElementById` in
+      // main-chat.tsx's mount call, not through this cache.
       modelCfgBtn:       document.getElementById('model-cfg-btn'),
       modelCfgMenu:      document.getElementById('model-cfg-menu'),
       effortCfgBtn:      document.getElementById('effort-cfg-btn'),
       effortCfgMenu:     document.getElementById('effort-cfg-menu'),
-      slashMenu:         document.getElementById('slash-menu'),
     };
 
     /**
@@ -8959,264 +8961,28 @@
     });
 
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
-    // ── Slash-command menu (UI-owned client commands) ─────────────────────
-    // Drives the /command popover above the composer. All state lives here; the
-    // touch-points (keydown, input, global Esc, handleSubmit) call into this
-    // object. Command parsing/filtering/completion come from window.LunaCapabilities
-    // (the bundled @luna/capabilities). Command ids carry NO leading '/'.
-    const SlashMenu = (() => {
-      function buildCommands() {
-        const models = ComposerConfig._models || [];
-        const entry = ComposerConfig._currentModelEntry ? ComposerConfig._currentModelEntry() : null;
-        const efforts = entry && entry.efforts ? entry.efforts : [];
-        // UI-owned commands as capability descriptors (executor:'client').
-        const ui = [
-          { kind: 'command', id: 'clear', title: 'Clear', description: 'Start a new conversation', executor: 'client', schemaVersion: 1 },
-          { kind: 'command', id: 'new',   title: 'New',   description: 'Start a new conversation', executor: 'client', schemaVersion: 1 },
-        ];
-        // Suppress /model & /effort until the hello frame populates _models, so
-        // they can never dead-end on the no-match path.
-        if (models.length > 0) {
-          ui.push({ kind: 'command', id: 'model', title: 'Model', argHint: '[name]', description: 'Switch the model (no arg opens picker)', executor: 'client', schemaVersion: 1 });
-          if (efforts.length > 0) {
-            ui.push({ kind: 'command', id: 'effort', title: 'Effort', argHint: '[level]', description: 'Set effort level (no arg opens picker)', executor: 'client', schemaVersion: 1 });
-          }
-        }
-        // Gated on the hello `workflows` capability — servers without the
-        // gallery never advertise a command that would open an empty panel.
-        if (State.serverSupportsWorkflows) {
-          ui.push({ kind: 'command', id: 'workflows', title: 'Workflows', description: 'Open the workflows panel', executor: 'client', schemaVersion: 1 });
-        }
-        ui.push({ kind: 'command', id: 'help', title: 'Help', description: 'Show available commands', executor: 'client', schemaVersion: 1 });
-
-        const toItem = (cap, source) => ({ kind: 'command', id: cap.id, arghint: cap.argHint || '', desc: cap.description || '', executor: cap.executor || 'client', source });
-        const LC = window.LunaCapabilities;
-        const backend = (_backendCatalog && _backendCatalog.capabilities) || [];
-        // Fast path / fallback: no backend catalog -> the UI list in curated order.
-        if (!LC || !LC.mergeCapabilities || backend.length === 0) {
-          return ui.map((c) => toItem(c, 'ui'));
-        }
-        // Merge UI-owned + backend-advertised (UI wins (kind,id) collisions; each item
-        // carries its source for the chip). mergeCapabilities sorts by (kind,id), so we
-        // re-impose the curated UI order then append backend commands.
-        const merged = LC.mergeCapabilities([
-          { source: 'ui', precedence: 100, capabilities: ui },
-          { source: 'luna', precedence: 10, capabilities: backend },
-        ]).merged.filter((m) => m.capability.kind === 'command');
-        const byId = new Map(merged.map((m) => [m.capability.id, m]));
-        const order = ui.map((c) => c.id);
-        const uiOrdered = order.map((id) => byId.get(id)).filter(Boolean).map((m) => toItem(m.capability, m.source));
-        const backendOrdered = merged.filter((m) => m.source !== 'ui' && !order.includes(m.capability.id)).map((m) => toItem(m.capability, m.source));
-        return [...uiOrdered, ...backendOrdered];
-      }
-
-      function helpText() {
-        // Derive from the live merged command list so backend-advertised commands
-        // (and their source) appear in /help too, not just a hardcoded UI list.
-        const models = ComposerConfig._models || [];
-        const entry = ComposerConfig._currentModelEntry ? ComposerConfig._currentModelEntry() : null;
-        const efforts = entry && Array.isArray(entry.efforts) ? entry.efforts : [];
-        const argFor = (c) => {
-          if (c.id === 'model' && models.length > 0) return '[' + models.map((m) => m.id).join('|') + ']';
-          if (c.id === 'effort' && efforts.length > 0) return '[' + ['default', ...efforts].join('|') + ']';
-          return c.arghint || '';
-        };
-        const lines = ['Available commands:'];
-        for (const c of buildCommands()) {
-          const arghint = argFor(c);
-          const arg = arghint ? ' ' + arghint : '';
-          const src = c.source && c.source !== 'ui' ? ` (${c.source})` : '';
-          lines.push('  /' + c.id + arg + ' — ' + (c.desc || '') + src);
-        }
-        return lines.join('\n');
-      }
-
-      let _open = false, _items = [], _active = 0, _el = null;
-      function _menu() { if (!_el) _el = DOM.slashMenu || document.getElementById('slash-menu'); return _el; }
-
-      function _render() {
-        const menu = _menu(); if (!menu) return;
-        while (menu.children.length > 1) menu.removeChild(menu.lastChild); // keep the hint row
-        _items.forEach((cmd, i) => {
-          const row = document.createElement('div');
-          row.className = 'slash-menu-item' + (i === _active ? ' active' : '');
-          row.setAttribute('role', 'option');
-          row.setAttribute('aria-selected', String(i === _active));
-          row.id = 'slash-opt-' + cmd.id;
-          row.dataset.command = cmd.id;
-          const c = document.createElement('span'); c.className = 'cmd'; c.textContent = '/' + cmd.id;
-          const a = document.createElement('span'); a.className = 'arghint'; a.textContent = cmd.arghint || '';
-          const d = document.createElement('span'); d.className = 'desc'; d.textContent = cmd.desc || '';
-          row.append(c, a, d);
-          if (cmd.source && cmd.source !== 'ui') {
-            const chip = document.createElement('span'); chip.className = 'source-chip'; chip.textContent = cmd.source; row.append(chip);
-          }
-          row.addEventListener('mousedown', (e) => { e.preventDefault(); _active = i; accept(); });
-          menu.appendChild(row);
-        });
-        const visible = _open && _items.length > 0;
-        menu.classList.toggle('open', visible);
-        menu.setAttribute('aria-hidden', String(!visible));
-        // aria-activedescendant + aria-expanded belong on the FOCUSED control (the
-        // textarea), not the listbox, so a screen reader resolves the active option.
-        const ti = DOM.messageInput;
-        if (ti) {
-          ti.setAttribute('aria-expanded', String(visible));
-          if (visible && _items[_active]) ti.setAttribute('aria-activedescendant', 'slash-opt-' + _items[_active].id);
-          else ti.removeAttribute('aria-activedescendant');
-        }
-      }
-
-      function open(items) {
-        // Mutually exclude the other composer popovers. The machine-access
-        // scope-menu shares this exact left/bottom anchor, so it must be closed or
-        // it paints underneath the slash menu; the model/effort pickers are closed
-        // for tidiness.
-        if (typeof LocalShell !== 'undefined' && LocalShell && LocalShell.openMenu) LocalShell.openMenu(false);
-        if (typeof ComposerConfig !== 'undefined' && ComposerConfig && ComposerConfig.closeAllMenus) ComposerConfig.closeAllMenus();
-        _items = Array.from(items || buildCommands()); // copy (filterCommands returns a frozen array)
-        _active = 0; _open = true; _render();
-      }
-      function close() { _open = false; _items = []; _active = 0; _render(); }
-      function isOpen() { return _open; }
-      function move(delta) {
-        if (!_open || _items.length === 0) return;
-        _active = (_active + delta + _items.length) % _items.length; _render();
-      }
-
-      // Re-filter on each keystroke — only while the command word has no space yet.
-      function onInput() {
-        const val = DOM.messageInput.value;
-        if (!val.startsWith('/') || val.includes(' ')) { close(); return; }
-        const LC = window.LunaCapabilities; if (!LC) { close(); return; }
-        const matches = LC.filterCommands(val, buildCommands());
-        if (!matches.length) { close(); return; }
-        open(matches);
-      }
-
-      // Tab: shell-style complete (single -> "/id ", multi -> longest-common-prefix, else null).
-      function complete() {
-        const LC = window.LunaCapabilities; if (!LC) return false;
-        const res = LC.completeCommand(DOM.messageInput.value, buildCommands());
-        if (typeof res === 'string') {
-          DOM.messageInput.value = res;
-          ChatEngine.autoGrowMessageInput();
-          onInput(); // single-match trailing space closes; otherwise re-filter
-          return true;
-        }
-        return false; // nothing to complete -> let Tab do its native thing
-      }
-
-      // Accept the highlighted row; args come from whatever is typed after the verb.
-      function accept() {
-        if (!_open || _items.length === 0) return;
-        const cmd = _items[_active] || _items[0];
-        const LC = window.LunaCapabilities;
-        const parsed = LC ? LC.parseCommandLine(DOM.messageInput.value) : null;
-        const args = parsed && parsed.name === cmd.id ? parsed.args : '';
-        close();
-        dispatch(cmd.id, args);
-      }
-
-      // Single source of truth for execution (called by accept + the handleSubmit intercept).
-      function dispatch(id, args) {
-        DOM.messageInput.value = '';
-        ChatEngine.autoGrowMessageInput();
-        // Backend-advertised (executor:'server') commands route to the backend via the
-        // capability provider; the switch below handles only UI-owned client commands.
-        const item = buildCommands().find((c) => c.id === id);
-        if (item && item.executor === 'server') {
-          if (!State.activeThreadId) { ChatEngine.appendMessage('assistant', 'No active conversation to act on.'); return; }
-          if (_capProvider) {
-            _capProvider.execute({ kind: item.kind, id, args: args || '' }).then((r) => {
-              // 'unknown' = not in the current catalog (silently ignore); surface real failures.
-              if (!r.ok && r.reason !== 'unknown') ChatEngine.appendMessage('assistant', '⚠️ ' + (r.error || 'command failed'));
-            });
-          }
-          return;
-        }
-        switch (id) {
-          case 'clear':
-          case 'new':
-            Attachments.clear();
-            ChatEngine.newConversation();
-            break;
-          case 'model':  _dispatchModel((args || '').trim()); break;
-          case 'effort': _dispatchEffort((args || '').trim()); break;
-          case 'workflows':
-            // The gallery is its own system panel window (singleton — Rust
-            // focuses it if already open). Off-Tauri (browser dev / jsdom)
-            // the invoke is absent or rejects; stay silent like other openers.
-            if (window.__TAURI__ && window.__TAURI__.core) {
-              window.__TAURI__.core.invoke('open_widget', { kind: 'workflows' })
-                .catch((e) => Logger.warn('open workflows panel failed:', e));
-            }
-            break;
-          case 'help':   ChatEngine.appendMessage('assistant', helpText()); break;
-        }
-      }
-
-      // /model and /effort with no arg hand off to the existing native pickers
-      // (one validated pick path). setTimeout(0), NOT queueMicrotask: on the mouse
-      // path the open must run AFTER the trailing document 'click' closer, otherwise
-      // the picker opens then immediately closes. (Keyboard path has no trailing click.)
-      function _openModelPicker() {
-        setTimeout(() => {
-          ComposerConfig.closeAllMenus();
-          ComposerConfig._rebuildModelMenu();
-          if (DOM.modelCfgMenu) { DOM.modelCfgMenu.classList.add('open'); DOM.modelCfgMenu.setAttribute('aria-hidden', 'false'); }
-          if (DOM.modelCfgBtn) DOM.modelCfgBtn.setAttribute('aria-expanded', 'true');
-        }, 0);
-      }
-      function _openEffortPicker() {
-        setTimeout(() => {
-          ComposerConfig.closeAllMenus();
-          ComposerConfig._rebuildEffortMenu();
-          if (DOM.effortCfgMenu) { DOM.effortCfgMenu.classList.add('open'); DOM.effortCfgMenu.setAttribute('aria-hidden', 'false'); }
-          if (DOM.effortCfgBtn) DOM.effortCfgBtn.setAttribute('aria-expanded', 'true');
-        }, 0);
-      }
-
-      function _dispatchModel(arg) {
-        if (!arg) { _openModelPicker(); return; }
-        const models = ComposerConfig._models || [];
-        const a = arg.toLowerCase();
-        const exact = models.find((m) => m.id.toLowerCase() === a || (m.label || '').toLowerCase() === a);
-        const subs = models.filter((m) => m.id.toLowerCase().includes(a) || (m.label || '').toLowerCase().includes(a));
-        const match = exact || (subs.length === 1 ? subs[0] : null);
-        if (!match) {
-          // Ambiguous (>1) or no match: surface it rather than silently picking one.
-          const msg = subs.length > 1
-            ? `⚠️ "${arg}" matches multiple models: ${subs.map((m) => m.id).join(', ')}. Be more specific.`
-            : `⚠️ Unknown model "${arg}". Available: ${models.map((m) => m.id).join(', ') || '(none yet)'}`;
-          ChatEngine.appendMessage('assistant', msg);
-          return;
-        }
-        ComposerConfig._selectModel(match.id);
-      }
-      function _dispatchEffort(arg) {
-        if (!arg) {
-          if (DOM.effortCfgBtn && DOM.effortCfgBtn.hidden) {
-            ChatEngine.appendMessage('assistant', '⚠️ Effort selection is not available for the current model.');
-            return;
-          }
-          _openEffortPicker(); return;
-        }
-        const normalized = arg.toLowerCase() === 'default' ? '' : arg.toLowerCase();
-        if (normalized !== '') {
-          const entry = ComposerConfig._currentModelEntry();
-          const valid = entry && Array.isArray(entry.efforts) && entry.efforts.includes(normalized);
-          if (!valid) {
-            const avail = entry && entry.efforts && entry.efforts.length ? entry.efforts.join(', ') : 'none for this model';
-            ChatEngine.appendMessage('assistant', `⚠️ Unknown effort "${arg}". Available: ${avail}`);
-            return;
-          }
-        }
-        ComposerConfig._selectEffort(normalized);
-      }
-
-      return { isOpen, open, close, move, accept, complete, onInput, dispatch, buildCommands };
-    })();
+    /**
+     * Slash-command menu (UI-owned client commands) - drives the /command
+     * popover above the composer. Converted to a typed React module (stack23
+     * S16c): the open/filter/arrow-nav/Tab-complete/Enter-accept/mousedown-
+     * accept state and the backend-advertised-command merge now live in
+     * src/chat/SlashMenu.tsx, which paints `#slash-menu` directly via React -
+     * the manual per-row `document.createElement` building is gone. Command
+     * parsing/filtering/completion still come from window.LunaCapabilities
+     * (the bundled @luna/capabilities) - untouched. Command ids carry NO
+     * leading '/'.
+     *
+     * `SlashMenu` is a forward-declared `var` - for a classic (non-module)
+     * script this IS `window.SlashMenu`, so every call site below (keydown,
+     * input, blur, the global Esc handler, ChatEngine.handleSubmit's typed
+     * "/cmd args" intercept) keeps calling the same bare identifier. Safe for
+     * the same reason the ChatState/ChatLoop/Attachments/ComposerConfig
+     * `var`s are (see those comments): main-chat.tsx's module script always
+     * finishes running after this classic script, and every call site below
+     * runs from inside an async event handler, never synchronously before
+     * that mount.
+     */
+    var SlashMenu;
 
     // Textarea: Enter sends, Shift+Enter inserts a newline. When the slash menu is
     // open, Arrow/Tab/Enter/Esc drive the menu instead (and never send/newline).
@@ -9672,6 +9438,57 @@
     }
     loadConnectionAndConnect().catch((e) => Logger.error('Connection boot failed:', e));
 
+    // ── LunaChatHost: the production classic-script -> ES-module contract ─────
+    // chat.html's React modules (src/chat/*.tsx, src/main-chat.tsx) cannot reach
+    // `const State`, `const ChatEngine`, `const LocalShell`, `const WebSocketEngine`,
+    // `buildMessageMeta`, or the block-scoped `_capProvider`/`_backendCatalog`. This
+    // object is the ONLY channel, and it is deliberately ONE-DIRECTIONAL: host ->
+    // module. The reverse direction already has its own convention (the
+    // forward-declared `var ComposerConfig` / `var SlashMenu` bridges main-chat.tsx
+    // assigns).
+    //
+    // NOT folded into __MoonInternals below, and not for tidiness: index.html's hub
+    // (hub/MoonHubApp.tsx) owns a real `declare global` for Window.__MoonInternals with
+    // an unrelated shape, and `declare global` merging requires one agreed type per
+    // property. Chat therefore CANNOT give __MoonInternals members an honest ambient
+    // type - see luna-chat-host.d.ts's own note.
+    //
+    // `send` and every WebSocketEngine member here MUST stay a LATE-BOUND property
+    // read, never a captured or bound reference: the PoolEngine dark flag REPLACES
+    // these methods (see the USE_POOL_ENGINE block above), and the test suite spies
+    // on them after this object is built.
+    //
+    // Typed in src/chat/luna-chat-host.d.ts; membership pinned by
+    // test/luna-chat-host.parity.test.ts. Not a test hook: do not gate this behind a
+    // test flag or strip it at build time.
+    //
+    // S18 deletes Group A (`send`, `executeCapability`) as a unit and moves the
+    // provider module-side. When it does, the `_backendCatalog = null` clear on
+    // EVERY hello (above, server-swap safety) must move with it, or the
+    // server-swap-safety pin in slash-menu.test.ts goes red.
+    window.LunaChatHost = Object.freeze({
+      // Group B
+      state: () => State,
+      backendCapabilities: () => (_backendCatalog && _backendCatalog.capabilities) || [],
+      // Group A
+      send: (frame) => WebSocketEngine.send(frame),
+      executeCapability: (req) => (
+        _capProvider
+          ? _capProvider.execute(req)
+          // Capability layer absent (no window.LunaCapabilities). The CapabilityProvider
+          // port is async-total, so speak its vocabulary rather than leak this conditional
+          // to callers as a null. Unreachable in practice: only _capProvider.subscribe ever
+          // populates _backendCatalog, so no provider means no executor:'server' item exists.
+          : Promise.resolve({ ok: false, error: 'capability layer unavailable', reason: 'unavailable' })
+      ),
+      // Group C
+      appendMessage: (role, text) => ChatEngine.appendMessage(role, text),
+      newConversation: () => ChatEngine.newConversation(),
+      autoGrowMessageInput: () => ChatEngine.autoGrowMessageInput(),
+      closeLocalShellMenu: () => LocalShell.openMenu(false),
+      buildMessageMeta: (text, ts, delivery) => buildMessageMeta(text, ts, delivery),
+    });
+
     // ── Test hooks ──────────────────────────────────────────────────────────
     // The same __MoonInternals namespace the hub exposes, restricted to the
     // chat set. Everything is defined by this point, so direct references
@@ -9716,22 +9533,22 @@
       window.__MoonInternals.PoolEngine = PoolEngine;
       window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
       window.__MoonInternals.State = State;
-      // ChatState / ChatLoop / Attachments / ComposerConfig: NOT assigned
-      // here - at this point in the classic script's own synchronous run
-      // they're still the unset `var` forward-declarations (see the CHAT
-      // MODEL / RENDERER / LOOP comment above and the Attachments/
-      // ComposerConfig comments near their own `var` declarations).
-      // main-chat.tsx (the module script, always running after this one)
-      // patches window.__MoonInternals.ChatState/.ChatLoop/.Attachments/
-      // .ComposerConfig itself once MessageList.tsx / Attachments.tsx /
-      // ComposerConfig.tsx actually mount their real bridges. ChatRenderer
-      // has no replacement - it was the DOM-diff half S15 deleted outright.
+      // ChatState / ChatLoop / Attachments / ComposerConfig / SlashMenu: NOT
+      // assigned here - at this point in the classic script's own
+      // synchronous run they're still the unset `var` forward-declarations
+      // (see the CHAT MODEL / RENDERER / LOOP comment above and the
+      // Attachments/ComposerConfig/SlashMenu comments near their own `var`
+      // declarations). main-chat.tsx (the module script, always running
+      // after this one) patches window.__MoonInternals.ChatState/.ChatLoop/
+      // .Attachments/.ComposerConfig/.SlashMenu itself once MessageList.tsx /
+      // Attachments.tsx / ComposerConfig.tsx / SlashMenu.tsx actually mount
+      // their real bridges. ChatRenderer has no replacement - it was the
+      // DOM-diff half S15 deleted outright.
       window.__MoonInternals.ChatEngine = ChatEngine;
       window.__MoonInternals.VoiceEngine = VoiceEngine;
       window.__MoonInternals.LocalShell = LocalShell;
       window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
       window.__MoonInternals.toSpeakable = toSpeakable;
-      window.__MoonInternals.SlashMenu = SlashMenu;
     }
   </script>
   <!-- React 19 + Astryx 0.1.8 boot layer (scaffold phase) - mounts an invisible

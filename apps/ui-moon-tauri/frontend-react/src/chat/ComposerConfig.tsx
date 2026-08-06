@@ -35,23 +35,23 @@
  * imperatively from the store on every notify instead - ONE function, ONE
  * write site per field, mirroring vanilla's `_refreshEffortVisibility`
  * setting both `DOM.effortCfgBtn.hidden` and `DOM.effortCfgSep.hidden`
- * unconditionally from a single call site (SlashMenu reads
- * `effortCfgBtn.hidden` as truth - chat.html's `_dispatchEffort`).
+ * unconditionally from a single call site (SlashMenu.tsx reads
+ * `effortCfgBtn.hidden` as truth - its own `dispatchEffort`).
  *
  * MENU OPEN/CLOSE STAYS PLAIN DOM, ON PURPOSE: `#model-cfg-menu` /
  * `#effort-cfg-menu`'s own `open` class (and the buttons' `aria-expanded`)
  * is not a store-derived value - it is the pre-conversion PROTOCOL for this
- * popover, and `SlashMenu`'s `/model`/`/effort` no-arg pickers (chat.html,
- * stays vanilla - S16c's concern) reach into these SAME DOM nodes directly
- * (`ComposerConfig.closeAllMenus()`, then `DOM.modelCfgMenu.classList.add
- * ('open')` itself) to open them, bypassing this module's own click handler
- * entirely. If "open" became React state here, SlashMenu's direct classList
- * write would silently desync from it - the next unrelated store notify
- * would re-render the menu from a STALE `open: false` and yank it shut out
- * from under the user. Keeping open/close as plain DOM writes (both here
- * AND in SlashMenu) preserves DOM-classList-as-truth exactly as the vanilla
- * object had it (`anyMenuOpen()` always read the classList live, tracking
- * no "which menu is open" field of its own either).
+ * popover, and SlashMenu.tsx's `/model`/`/effort` no-arg pickers (a separate
+ * React module, converted in stack23 S16c) reach into these SAME DOM nodes
+ * directly (`ComposerConfig.closeAllMenus()`, then `DOM.modelCfgMenu.
+ * classList.add('open')` itself) to open them, bypassing this module's own
+ * click handler entirely. If "open" became React state here, SlashMenu's
+ * direct classList write would silently desync from it - the next unrelated
+ * store notify would re-render the menu from a STALE `open: false` and yank
+ * it shut out from under the user. Keeping open/close as plain DOM writes
+ * (both here AND in SlashMenu.tsx) preserves DOM-classList-as-truth exactly
+ * as the vanilla object had it (`anyMenuOpen()` always read the classList
+ * live, tracking no "which menu is open" field of its own either).
  *
  * REPAINT GATE (`reconcileThreadConfig`): mirrors vanilla's own
  * `if (reverted || changed)` gate around `_rebuildModelMenu`/
@@ -67,32 +67,24 @@
  * callback, which touched nothing but `DOM.cfgDeferredHint.classList`
  * directly.
  *
- * PER-MENU, MENU-ITEMS-ONLY REPUBLISH (menu open, `applyModels`): the model
- * button click, the effort button click, and the `_rebuildModelMenu`/
- * `_rebuildEffortMenu` bridge methods each touch ONLY their own menu's items
- * via `publishModelMenuItems()`/`publishEffortMenuItems()`, never the full
- * `publish()` and never each other's field - see those functions' own
- * comments for the constraint and why (mirrors vanilla's `_rebuildModelMenu`/
- * `_rebuildEffortMenu`, two genuinely separate methods, neither of which
- * ever touched the other's menu or `_refreshLabels`). `applyModels` (every
- * `hello` frame, including reconnects) is the same class of narrow write -
- * it patches `modelMenuItems`/both labels/`composerVisible`, matching
- * vanilla's `applyModels`, but never `effortMenuItems`, so a reconnect can't
- * repaint an open effort popover out from under the user.
+ * The PER-MENU, MENU-ITEMS-ONLY REPUBLISH constraint (menu open,
+ * `applyModels`) and the cached `effortVisible` gate's narrow call-site list
+ * are documented at their own implementation sites, not repeated here - see
+ * `publishModelMenuItems`/`publishEffortMenuItems`'s own comments and
+ * `refreshEffortVisibility`'s own comment, respectively.
  *
- * `effortVisible` is cached on the engine closure, NOT part of any full
- * recompute, and every write to it goes through `patchSnapshot` rather than
- * `publish()` - see `refreshEffortVisibility`'s own comment for the exact
- * call-site list this mirrors from vanilla's `_refreshEffortVisibility`.
- *
- * `_models`/`_currentModelEntry()` on the returned bridge return DEFENSIVE
- * COPIES (never the live array/entry) so an external mutation (SlashMenu
- * just reads them today, but nothing enforces that) can't corrupt this
- * module's own state.
+ * `_models`/`_currentModelEntry()` on the returned bridge return the LIVE
+ * array/entry, matching what the vanilla object itself returned - see
+ * `createComposerConfigBridge`'s own comment.
  */
 import { useLayoutEffect, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from "react"
 import { createRoot } from "react-dom/client"
 import { flushSync } from "react-dom"
+// @luna/ui-ws publishes only the "." export, which re-exports server.js plus
+// every node-side bridge module alongside protocol.js - `import type` erases
+// before bundling, so this is safe ONLY as long as it stays type-only (same
+// warning, verbatim, as src/chat/chat-ctx.ts's own note on this import).
+import type { ClientFrame } from "@luna/ui-ws"
 
 // ============================================================================
 // Types
@@ -122,41 +114,22 @@ export interface ComposerStateSlice {
   selectedEffort: string | null
 }
 
-export interface SetThreadConfigFrame {
-  readonly type: "set-thread-config"
-  readonly threadId: string
-  readonly model?: string
-  readonly effort?: string
-}
-
 export interface ComposerConfigCtx {
   /** Returns the live State object, or null if it isn't wired up yet (a
    * defensive case that only arises in a harness that mounts before the
    * classic script has run - see mountComposerConfig's own note). */
   getState: () => ComposerStateSlice | null
-  /** Sends a client frame over the live WS connection (WebSocketEngine.send). */
-  send: (frame: SetThreadConfigFrame) => void
+  /** Sends a client frame over the live WS connection (WebSocketEngine.send),
+   * typed against the canonical wire contract - see chat-host.ts's
+   * `chatHostComposerCtx`, the sole builder of this ctx in production. */
+  send: (frame: ClientFrame) => void
 }
 
-/** Builds the `ComposerConfigCtx` both main-chat.tsx and chat-harness.ts
- * mount with - reads/sends through chat.html's live `window.__MoonInternals`
- * the same way `getChatGlobalState()` reads `State` for the transcript. One
- * copy of the two `__MoonInternals` cast chains instead of one per caller.
- * Safe to call before `window.__MoonInternals` exists: neither closure
- * touches it until actually INVOKED, by which point chat.html's classic
- * script (which populates it) has always already run. */
-export function moonInternalsComposerCtx(): ComposerConfigCtx {
-  return {
-    getState: () =>
-      (window as unknown as { __MoonInternals?: { State?: ComposerStateSlice } }).__MoonInternals?.State ?? null,
-    send: (frame) => {
-      const w = window as unknown as {
-        __MoonInternals?: { WebSocketEngine?: { send?: (frame: unknown) => void } }
-      }
-      w.__MoonInternals?.WebSocketEngine?.send?.(frame)
-    },
-  }
-}
+// ComposerConfig.tsx - the ONE wire-boundary construction site that needs
+// this: `selectEffort` below is the only production caller narrowing a plain
+// string onto the canonical frame's closed effort union - see that
+// function's own TODO(#462) for why.
+type Effort = NonNullable<Extract<ClientFrame, { type: "set-thread-config" }>["effort"]>
 
 interface RejectedField {
   readonly field?: unknown
@@ -226,14 +199,6 @@ function normalizeModelEntry(entry: unknown): ModelEntry | null {
     }
   }
   return null
-}
-
-function cloneModelEntry(entry: ModelEntry): ModelEntry {
-  return { id: entry.id, label: entry.label, efforts: [...entry.efforts] }
-}
-
-function cloneModels(list: readonly ModelEntry[]): ModelEntry[] {
-  return list.map(cloneModelEntry)
 }
 
 /** ultracode surfaces at the TOP of the effort menu (the headline mode);
@@ -522,7 +487,14 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
         ? (state.threadEfforts[tid] ?? null)
         : null
       state.threadEfforts[tid] = effort // optimistic - ack reconciles
-      ctx.send({ type: "set-thread-config", threadId: tid, effort })
+      // TODO(#462): fix-or-remove - `ModelEntry.efforts` is whatever the server
+      // advertised in `hello` (readonly string[]), while the canonical frame
+      // narrows to a closed union. Narrowing selectEffort's own parameter would
+      // be a BEHAVIOR change (the menu passes item.id unvalidated, exactly as
+      // vanilla did), so the skew is asserted here, once, at the ONE
+      // wire-boundary construction site. The real fix is to narrow
+      // ModelEntry.efforts at the hello boundary.
+      ctx.send({ type: "set-thread-config", threadId: tid, effort: effort as Effort })
     }
     publish()
   }
@@ -650,13 +622,13 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
       }
     }
 
-    if (reverted || changed) refreshEffortVisibility()
     // Mirrors vanilla's own `if (reverted || changed)` repaint gate exactly
     // - a settled ack with nothing applied/deferred/rejected must not force
     // a recompute from whatever State/localStorage look like NOW, which can
     // have diverged (a drawer thread switch) from what this ack is even
     // about.
     if (reverted || changed) {
+      refreshEffortVisibility()
       publish()
     } else if (deferred.length > 0) {
       // A deferred-only ack still needs the hint to show, but must not
@@ -796,16 +768,14 @@ function DeferredHintView({ store, container }: { store: ComposerConfigStore; co
 // ============================================================================
 // Legacy bridge - the exact external method surface chat.html's inline
 // script (WebSocketEngine.sendNewThread, the hello/thread-config/thread-list/
-// thread-created/smart-bar frame handlers) and SlashMenu (stays vanilla -
-// S16c's concern) already call, plus the test suite (composer-config.test.ts,
+// thread-created/smart-bar frame handlers) and SlashMenu.tsx (converted in
+// stack23 S16c) already call, plus the test suite (composer-config.test.ts,
 // slash-menu.test.ts).
 // ============================================================================
 
 export interface ComposerConfigBridge {
-  /** Defensive copy - never the live array (see this module's doc). */
   readonly _models: readonly ModelEntry[]
   _normalizeEntry: (entry: unknown) => ModelEntry | null
-  /** Defensive copy - never the live entry. */
   _currentModelEntry: () => ModelEntry | null
   _rebuildModelMenu: () => void
   _rebuildEffortMenu: () => void
@@ -826,14 +796,13 @@ function createComposerConfigBridge(
   dom: { closeAllMenus: () => void; anyMenuOpen: () => boolean },
 ): ComposerConfigBridge {
   return {
+    // `_models`/`_currentModelEntry()` hand back the engine's LIVE
+    // array/entry, not a defensive copy - callers must not mutate them.
     get _models() {
-      return cloneModels(engine.getModels())
+      return engine.getModels()
     },
     _normalizeEntry: engine.normalizeEntry,
-    _currentModelEntry: () => {
-      const entry = engine.currentModelEntry()
-      return entry ? cloneModelEntry(entry) : null
-    },
+    _currentModelEntry: engine.currentModelEntry,
     _rebuildModelMenu: () => engine.publishModelMenuItems(),
     _rebuildEffortMenu: () => engine.publishEffortMenuItems(),
     _selectModel: engine.selectModel,
@@ -880,14 +849,10 @@ export function mountComposerConfig(
   const { cluster, modelBtn, modelMenu, effortBtn, effortMenu, effortSep, deferredHint } = containers
   if (!cluster || !modelBtn || !modelMenu || !effortBtn || !effortMenu || !effortSep || !deferredHint) return null
 
-  // ── Menu open/close: plain DOM, shared with SlashMenu - see this
-  // module's doc for why this never becomes React state. `const` arrows,
-  // not `function` declarations: TS's null-narrowing of the guard above
-  // does not propagate into a `function` declaration's body (the hoisting
-  // quirk that let it be called before the guard in theory), but DOES
-  // propagate into an arrow closing over the same destructured `const`s -
-  // so defining these first, as arrows, needs no `HTMLElement` rebinding for
-  // any reference below, in this function or in any closure. ─────────────
+  // ── Menu open/close: plain DOM, shared with SlashMenu.tsx - see this
+  // module's doc for why this never becomes React state. Arrows, not
+  // function declarations - the guard's narrowing does not reach a hoisted
+  // function body. ──────────────────────────────────────────────────────
   const closeAllMenus = (): void => {
     modelMenu.classList.remove("open")
     modelMenu.setAttribute("aria-hidden", "true")

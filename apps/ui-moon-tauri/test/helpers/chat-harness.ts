@@ -1,22 +1,23 @@
 /**
  * chat-harness.ts - the shared jsdom loader for frontend-react/chat.html's
  * classic inline script AND its React module graph (stack23 S15's chat
- * transcript conversion, S16a's attachments-tray conversion, and S16b's
- * composer model/effort switcher conversion). Used by chat-window.test.ts,
- * ws-contract.test.ts, slash-menu.test.ts and composer-config.test.ts so a
- * future conversion slice (more of chat.html's inline script moving into
- * src/chat/*.tsx) only ever has to update THIS file, not each test file's
- * own beforeEach.
+ * transcript conversion, S16a's attachments-tray conversion, S16b's composer
+ * model/effort switcher conversion, and S16c's SlashMenu conversion). Used
+ * by chat-window.test.ts, ws-contract.test.ts, slash-menu.test.ts and
+ * composer-config.test.ts so a future conversion slice (more of chat.html's
+ * inline script moving into src/chat/*.tsx) only ever has to update THIS
+ * file, not each test file's own beforeEach.
  *
  * THE WALL this works around: chat.html's inline <script> is a classic
  * (non-module) script. In the real page it runs at true top level, so its
  * `var ChatState;` / `var ChatLoop;` / `var Attachments;` / `var
- * ComposerConfig;` forward-declarations (see chat.html's "CHAT MODEL /
- * RENDERER / LOOP" comment and its Attachments/ComposerConfig comments) ARE
- * `window.ChatState` / `window.ChatLoop` / `window.Attachments` /
- * `window.ComposerConfig` - every bare reference anywhere on the page,
- * including from main-chat.tsx's `type="module"` script that runs after it,
- * resolves to the SAME global binding.
+ * ComposerConfig;` / `var SlashMenu;` forward-declarations (see chat.html's
+ * "CHAT MODEL / RENDERER / LOOP" comment and its Attachments/ComposerConfig/
+ * SlashMenu comments) ARE `window.ChatState` / `window.ChatLoop` /
+ * `window.Attachments` / `window.ComposerConfig` / `window.SlashMenu` -
+ * every bare reference anywhere on the page, including from main-chat.tsx's
+ * `type="module"` script that runs after it, resolves to the SAME global
+ * binding.
  *
  * `new Function(src)()` does not have that property: it hands the script a
  * fresh function-call scope, so `var ChatState` is LOCAL to that one
@@ -26,10 +27,10 @@
  * classic script itself defined (ChatEngine.appendToolCallCard, the
  * WebSocketEngine frame handlers, …) would keep reading their own local
  * `undefined` forever. `evalChatInlineScriptWithBridge` fixes this by
- * appending the bridge assignment (ChatState/ChatLoop/Attachments AND
- * ComposerConfig) as literal source text onto the SAME `new Function(...)`
- * body, so it runs in the SAME scope as the `var` declarations and can
- * actually reassign them.
+ * appending the bridge assignment (ChatState/ChatLoop/Attachments/
+ * ComposerConfig/SlashMenu) as literal source text onto the SAME
+ * `new Function(...)` body, so it runs in the SAME scope as the `var`
+ * declarations and can actually reassign them.
  *
  * jsdom vs happy-dom: not a concern here - apps/ui-moon-tauri has exactly
  * one environment (`@vitest-environment jsdom` on every suite, incl. this
@@ -54,12 +55,10 @@ import * as path from 'node:path'
 import { expect } from 'vitest'
 import { flushSync } from 'react-dom'
 import { mountAttachments, type AttachmentsMount } from '../../frontend-react/src/chat/Attachments'
-import {
-  mountComposerConfig,
-  moonInternalsComposerCtx,
-  type ComposerConfigMount,
-} from '../../frontend-react/src/chat/ComposerConfig'
+import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from '../../frontend-react/src/chat/chat-host'
+import { mountComposerConfig, type ComposerConfigMount } from '../../frontend-react/src/chat/ComposerConfig'
 import { mountMessageList, type ChatMessageListMount } from '../../frontend-react/src/chat/MessageList'
+import { mountSlashMenu, type SlashMenuMount } from '../../frontend-react/src/chat/SlashMenu'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -91,20 +90,10 @@ export function loadVendorInto(target: Window & typeof globalThis, file: string)
 
 // ── React module graph: src/chat/MessageList.tsx's mountMessageList ────────
 //
-// Mirrors main-chat.tsx's own getChatGlobalState/openAgentsPanelForCurrentThread
+// Mirrors main-chat.tsx's own getChatHost/openAgentsPanelForCurrentThread
 // wiring exactly (see that file's module doc) so the "view ↗" agent-panel
 // link and the grouped/ungrouped timeline planning behave identically to the
 // shipped boot path, not a test-only stand-in.
-
-interface ChatGlobalState {
-  serverSupportsTurnComplete?: boolean
-  activeThreadId?: string | null
-  pinnedThread?: string | null
-}
-
-function getChatGlobalState(): ChatGlobalState | null {
-  return (window as unknown as { __MoonInternals?: { State?: ChatGlobalState } }).__MoonInternals?.State ?? null
-}
 
 function invokeTauriFromHarness(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
   const w = window as unknown as {
@@ -116,7 +105,7 @@ function invokeTauriFromHarness(cmd: string, args?: Record<string, unknown>): Pr
 }
 
 function openAgentsPanelForCurrentThread(): void {
-  const state = getChatGlobalState()
+  const state = getChatHost()?.state()
   const thread = state?.activeThreadId || state?.pinnedThread || null
   if (!thread) return
   invokeTauriFromHarness('open_widget', { kind: 'agents', params: { thread } }).catch((err: unknown) => {
@@ -136,7 +125,7 @@ export function mountChatMessageListBridge(container: HTMLElement | null): ChatM
   let mount: ChatMessageListMount | null = null
   flushSync(() => {
     mount = mountMessageList(container, {
-      getGrouped: () => getChatGlobalState()?.serverSupportsTurnComplete !== false,
+      getGrouped: () => getChatHost()?.state().serverSupportsTurnComplete !== false,
       onOpenAgentsPanel: openAgentsPanelForCurrentThread,
     })
   })
@@ -168,25 +157,35 @@ export function installSyncRequestAnimationFrame(target: Window & typeof globalT
  * Evaluates chat.html's single classic <script> (selected by CONTENT, not
  * position - an added config stub must fail loudly here, not silently run
  * the wrong script) and, in the SAME function scope, patches its `ChatState`
- * / `ChatLoop` / `Attachments` / `ComposerConfig` forward-declarations to the
- * real bridges - see this file's module doc for why that patch has to live
- * inside the same `new Function(...)` body instead of being a separate
- * `window.ChatState = …` assignment from outside.
+ * / `ChatLoop` / `Attachments` / `ComposerConfig` / `SlashMenu` forward-
+ * declarations to the real bridges - see this file's module doc for why
+ * that patch has to live inside the same `new Function(...)` body instead
+ * of being a separate `window.ChatState = …` assignment from outside.
  *
- * `Attachments.tsx` and `ComposerConfig.tsx` mount into their respective DOM
- * anchors here exactly the way main-chat.tsx mounts them in the shipped page
- * (all already present in the live document via `mountChatDomFromHtml`,
- * called before this function in every suite) - throws rather than
- * degrading to a no-op for the same reason `mountChatMessageListBridge` does.
+ * `Attachments.tsx`, `ComposerConfig.tsx` and `SlashMenu.tsx` mount into
+ * their respective DOM anchors here exactly the way main-chat.tsx mounts
+ * them in the shipped page (all already present in the live document via
+ * `mountChatDomFromHtml`, called before this function in every suite) -
+ * throws rather than degrading to a no-op for the same reason
+ * `mountChatMessageListBridge` does.
  *
  * Also mirrors main-chat.tsx's own post-mount step of refreshing
- * `window.__MoonInternals.ChatState/.ChatLoop/.Attachments/.ComposerConfig`
- * (captured `undefined`/never-set by the script's own end-of-script
- * assignment, which runs before this bridge patch - see chat.html's
- * "ChatState / ChatLoop / Attachments / ComposerConfig: NOT assigned here"
- * note).
+ * `window.__MoonInternals.ChatState/.ChatLoop/.Attachments/.ComposerConfig/
+ * .SlashMenu` (captured `undefined`/never-set by the script's own
+ * end-of-script assignment, which runs before this bridge patch - see
+ * chat.html's "ChatState / ChatLoop / Attachments / ComposerConfig /
+ * SlashMenu: NOT assigned here" note).
+ *
+ * Deletes any prior boot's `window.LunaChatHost` before mounting: the mounts
+ * below run BEFORE the classic script's own `window.LunaChatHost =
+ * Object.freeze(...)` (only published at the end of the `bridged` source
+ * text below), so chat-host.ts's late-bound `getChatHost()` reads would
+ * otherwise resolve a PREVIOUS test's frozen host instead of degrading to
+ * null, the same cross-test bleed `window.__MoonInternals` deletion in each
+ * suite's own `afterEach` already guards against.
  */
 export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatMessageListMount): void {
+  delete window.LunaChatHost
   const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
     .map((m) => m[1])
     .filter((s): s is string => typeof s === 'string' && s.includes('WebSocketEngine'))
@@ -212,11 +211,31 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
       effortSep: document.getElementById('effort-cfg-sep'),
       deferredHint: document.getElementById('cfg-deferred-hint'),
     },
-    moonInternalsComposerCtx(),
+    chatHostComposerCtx(),
   )
   if (!composerConfigMount) {
     throw new Error(
       'chat-harness: mountComposerConfig degraded to null - is the composer-config cluster missing from the loaded body?',
+    )
+  }
+
+  const slashMenuMount: SlashMenuMount | null = mountSlashMenu(
+    {
+      menu: document.getElementById('slash-menu'),
+      messageInput: document.getElementById('message-input') as HTMLTextAreaElement | null,
+      modelMenu: document.getElementById('model-cfg-menu'),
+      modelBtn: document.getElementById('model-cfg-btn'),
+      effortMenu: document.getElementById('effort-cfg-menu'),
+      effortBtn: document.getElementById('effort-cfg-btn'),
+    },
+    chatHostSlashMenuCtx({
+      getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
+      clearAttachments: () => attachmentsMount.Attachments.clear(),
+    }),
+  )
+  if (!slashMenuMount) {
+    throw new Error(
+      'chat-harness: mountSlashMenu degraded to null - is #slash-menu/#message-input missing from the loaded body?',
     )
   }
 
@@ -225,22 +244,27 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
 ChatLoop = __mount.ChatLoop;
 Attachments = __attachmentsMount.Attachments;
 ComposerConfig = __composerConfigMount.ComposerConfig;
+SlashMenu = __slashMenuMount.SlashMenu;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
 window.ComposerConfig = ComposerConfig;
+window.SlashMenu = SlashMenu;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
   window.__MoonInternals.Attachments = Attachments;
   window.__MoonInternals.ComposerConfig = ComposerConfig;
+  window.__MoonInternals.SlashMenu = SlashMenu;
 }
 `
-  new Function('__mount', '__attachmentsMount', '__composerConfigMount', bridged)(
-    mount,
-    attachmentsMount,
-    composerConfigMount,
-  )
+  new Function(
+    '__mount',
+    '__attachmentsMount',
+    '__composerConfigMount',
+    '__slashMenuMount',
+    bridged,
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount)
 }
 
-export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount }
+export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount }

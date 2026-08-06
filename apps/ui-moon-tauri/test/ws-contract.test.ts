@@ -96,6 +96,7 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
+    delete (window as any).LunaChatHost
     delete (window as any).ChatState
     delete (window as any).ChatLoop
     vi.restoreAllMocks()

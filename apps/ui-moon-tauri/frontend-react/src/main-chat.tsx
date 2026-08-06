@@ -5,58 +5,69 @@
 // `.collapse-moon-btn`), the chat transcript (chat/MessageList.tsx, stack23
 // S15) into `#chat-messages`, the composer's staged-attachment tray
 // (chat/Attachments.tsx, stack23 S16a) into `#attachments-strip` /
-// `#attach-error`, and - as of stack23 S16b - the composer's model + effort
-// switcher (chat/ComposerConfig.tsx) into the composer-config cluster.
-// chat.html's WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire
-// pipeline and every other title-bar control (new-thread-btn, redock-btn)
-// keep running completely unchanged in chat.html's own inline <script> -
-// see chat-chrome-mount.tsx's module doc for the chrome scope rationale,
+// `#attach-error`, the composer's model + effort switcher
+// (chat/ComposerConfig.tsx, stack23 S16b) into the composer-config cluster,
+// and - as of stack23 S16c - the "/command" popover (chat/SlashMenu.tsx)
+// into `#slash-menu`. The context-pill Smart Bar (chat.html's own
+// `SmartBarEngine`) is deferred past S16c's ~800-line budget (see that
+// slice's abandon condition) and stays vanilla for now. chat.html's
+// WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire pipeline and
+// every other title-bar control (new-thread-btn, redock-btn) keep running
+// completely unchanged in chat.html's own inline <script> - see
+// chat-chrome-mount.tsx's module doc for the chrome scope rationale,
 // MessageList.tsx's module doc for the transcript-conversion seam (the
 // `window.ChatState` / `window.ChatLoop` bridge this file assigns below),
-// and Attachments.tsx's / ComposerConfig.tsx's module docs for the
-// `window.Attachments` / `window.ComposerConfig` bridges assigned the same
-// way.
+// Attachments.tsx's / ComposerConfig.tsx's / SlashMenu.tsx's module docs for
+// the `window.Attachments` / `window.ComposerConfig` / `window.SlashMenu`
+// bridges assigned the same way (module -> classic-script, the reverse
+// direction), and chat-host.ts's module doc for the classic-script ->
+// module direction this file reads FROM (`window.LunaChatHost`, stack23
+// S16c-host).
 import "./chat/message-list.css"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
+import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
 import { mountChatChrome } from "./chat/chat-chrome-mount"
-import { mountComposerConfig, moonInternalsComposerCtx } from "./chat/ComposerConfig"
+import { mountComposerConfig } from "./chat/ComposerConfig"
 import { mountMessageList, WELCOME_ITEM } from "./chat/MessageList"
+import { mountSlashMenu } from "./chat/SlashMenu"
+
+/** Patches chat.html's forward-declared `var <name>` (== `window.<name>` for
+ * a classic script) AND, when present, the `window.__MoonInternals.<name>`
+ * copy chat.html's own end-of-script block captured before this module ever
+ * mounted anything (see chat.html's "ChatState / ChatLoop / Attachments /
+ * ComposerConfig / SlashMenu: NOT assigned here" comment) - one write site
+ * for the pattern every mount* call below repeats. This is the
+ * module-to-classic-script direction; `window.LunaChatHost` (chat-host.ts)
+ * is the opposite direction and is never touched here. */
+function assignBridge(name: "Attachments" | "ComposerConfig" | "SlashMenu" | "ChatState" | "ChatLoop", value: unknown): void {
+  const w = window as unknown as Record<string, unknown> & { __MoonInternals?: Record<string, unknown> }
+  w[name] = value
+  if (w.__MoonInternals) {
+    w.__MoonInternals[name] = value
+  }
+}
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
-// Mirrors the ChatState/ChatLoop bridge below exactly: chat.html forward-
-// declares `var Attachments` (== window.Attachments for a classic script)
-// and every call site (submit/addFiles/paste/drop/clear, all inside async
-// event handlers) calls that bare identifier - see Attachments.tsx's module
-// doc for the mount itself and chat.html's own comment on the `var Attachments`
-// declaration for why the assignment is safe here, not in chat.html's own
-// end-of-script __MoonInternals block.
+// See Attachments.tsx's module doc for the mount itself and chat.html's own
+// comment on the `var Attachments` declaration for why every call site
+// (submit/addFiles/paste/drop/clear, all inside async event handlers) can
+// keep calling that same bare identifier.
 const attachmentsMount = mountAttachments({
   strip: document.getElementById("attachments-strip"),
   error: document.getElementById("attach-error"),
 })
 
-if (attachmentsMount) {
-  const w = window as unknown as {
-    Attachments?: unknown
-    __MoonInternals?: { Attachments?: unknown }
-  }
-  w.Attachments = attachmentsMount.Attachments
-  if (w.__MoonInternals) {
-    w.__MoonInternals.Attachments = attachmentsMount.Attachments
-  }
-}
+if (attachmentsMount) assignBridge("Attachments", attachmentsMount.Attachments)
 
 // ── ComposerConfig (model + effort switcher) ────────────────────────────
 //
-// Same `var ComposerConfig` forward-declaration + bridge-assignment pattern
-// as Attachments above - see ComposerConfig.tsx's module doc for the mount
-// itself and chat.html's own comment on the `var ComposerConfig` declaration.
-// `moonInternalsComposerCtx()` reads/writes chat.html's live `State` object
-// (threadModels/threadEfforts/serverSupportsEffort/selectedEffort) and sends
-// over the live WS connection through window.__MoonInternals, exactly like
-// getChatGlobalState() below reads State for the transcript - both are
+// See ComposerConfig.tsx's module doc for the mount itself and chat.html's
+// own comment on the `var ComposerConfig` declaration. `chatHostComposerCtx()`
+// reads chat.html's live `State` object and sends over the live WS
+// connection through `window.LunaChatHost` (chat-host.ts), exactly like
+// `getChatHost()` below reads `State` for the transcript - both are
 // populated by chat.html's classic script before this module ever runs.
 const composerConfigMount = mountComposerConfig(
   {
@@ -68,19 +79,38 @@ const composerConfigMount = mountComposerConfig(
     effortSep: document.getElementById("effort-cfg-sep"),
     deferredHint: document.getElementById("cfg-deferred-hint"),
   },
-  moonInternalsComposerCtx(),
+  chatHostComposerCtx(),
 )
 
-if (composerConfigMount) {
-  const w = window as unknown as {
-    ComposerConfig?: unknown
-    __MoonInternals?: { ComposerConfig?: unknown }
-  }
-  w.ComposerConfig = composerConfigMount.ComposerConfig
-  if (w.__MoonInternals) {
-    w.__MoonInternals.ComposerConfig = composerConfigMount.ComposerConfig
-  }
-}
+if (composerConfigMount) assignBridge("ComposerConfig", composerConfigMount.ComposerConfig)
+
+// ── SlashMenu ("/command" popover) ──────────────────────────────────────
+//
+// See SlashMenu.tsx's module doc for the mount itself and chat.html's own
+// comment on the `var SlashMenu` declaration. `chatHostSlashMenuCtx()`'s two
+// peers (`getComposerConfig`/`clearAttachments`) are React-module-to-React-
+// module dependencies, DIRECT-passed here rather than laundered through a
+// global - see chat-host.ts's module doc. Mounted AFTER ComposerConfig so
+// `getComposerConfig()` has a real bridge to read the instant a user first
+// types "/" - not required for correctness (every SlashMenu ctx call is
+// lazy, read at interaction time, never at mount time), just keeps the
+// mount order matching this module's own dependency order.
+const slashMenuMount = mountSlashMenu(
+  {
+    menu: document.getElementById("slash-menu"),
+    messageInput: document.getElementById("message-input") as HTMLTextAreaElement | null,
+    modelMenu: document.getElementById("model-cfg-menu"),
+    modelBtn: document.getElementById("model-cfg-btn"),
+    effortMenu: document.getElementById("effort-cfg-menu"),
+    effortBtn: document.getElementById("effort-cfg-btn"),
+  },
+  chatHostSlashMenuCtx({
+    getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
+    clearAttachments: () => attachmentsMount?.Attachments.clear(),
+  }),
+)
+
+if (slashMenuMount) assignBridge("SlashMenu", slashMenuMount.SlashMenu)
 
 mountMoonReactRoot("chat")
 
@@ -105,27 +135,16 @@ mountChatChrome({ invoke: invokeTauri })
 // script) and every frame handler calls those bare identifiers. This module
 // script always runs after that classic script finishes (deferred
 // type="module" load - see boot.tsx's header comment), so by the time
-// mountMessageList runs, chat.html has already populated
-// window.__MoonInternals.State (the live `State` object every frame handler
-// mutates) - read through it here rather than declaring a competing
-// `Window.__MoonInternals` augmentation (index.html's hub already claims
-// that slot with an unrelated shape - see MessageList.tsx's own note).
-interface ChatGlobalState {
-  serverSupportsTurnComplete?: boolean
-  activeThreadId?: string | null
-  pinnedThread?: string | null
-}
-
-function getChatGlobalState(): ChatGlobalState | null {
-  return (window as unknown as { __MoonInternals?: { State?: ChatGlobalState } }).__MoonInternals?.State ?? null
-}
+// mountMessageList runs, chat.html has already published
+// `window.LunaChatHost` (chat-host.ts) - read through `getChatHost()` here,
+// the same seam SlashMenu.tsx/ComposerConfig.tsx read `State` through.
 
 // The tool-card "view ↗" affordance (S4: open the live Agents panel for a
 // top-level Agent/Task delegation) - reads State.activeThreadId /
 // State.pinnedThread live, at click time, exactly like the vanilla
 // buildToolStep's inline listener used to.
 function openAgentsPanelForCurrentThread(): void {
-  const state = getChatGlobalState()
+  const state = getChatHost()?.state()
   const thread = state?.activeThreadId || state?.pinnedThread || null
   if (!thread) return
   invokeTauri("open_widget", { kind: "agents", params: { thread } }).catch((err: unknown) => {
@@ -134,7 +153,7 @@ function openAgentsPanelForCurrentThread(): void {
 }
 
 const messageListMount = mountMessageList(document.getElementById("chat-messages"), {
-  getGrouped: () => getChatGlobalState()?.serverSupportsTurnComplete !== false,
+  getGrouped: () => getChatHost()?.state().serverSupportsTurnComplete !== false,
   onOpenAgentsPanel: openAgentsPanelForCurrentThread,
   // Shows the shipped welcome greeting until the first real turn lands (or
   // forever if the server never connects) - see chat.html's now-empty
@@ -144,18 +163,9 @@ const messageListMount = mountMessageList(document.getElementById("chat-messages
 })
 
 if (messageListMount) {
-  const w = window as unknown as {
-    ChatState?: unknown
-    ChatLoop?: unknown
-    __MoonInternals?: { ChatState?: unknown; ChatLoop?: unknown }
-  }
-  w.ChatState = messageListMount.ChatState
-  w.ChatLoop = messageListMount.ChatLoop
-  // Refresh the __MoonInternals copy too - chat.html's own end-of-script
+  // Refreshes the __MoonInternals copy too - chat.html's own end-of-script
   // assignment ran before this mount and captured the pre-mount `undefined`
   // placeholders (see the CHAT MODEL / RENDERER / LOOP comment there).
-  if (w.__MoonInternals) {
-    w.__MoonInternals.ChatState = messageListMount.ChatState
-    w.__MoonInternals.ChatLoop = messageListMount.ChatLoop
-  }
+  assignBridge("ChatState", messageListMount.ChatState)
+  assignBridge("ChatLoop", messageListMount.ChatLoop)
 }
