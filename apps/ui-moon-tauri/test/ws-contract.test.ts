@@ -20,14 +20,14 @@
 // for the "inert" WebSocket stub, so this suite can actually script opens,
 // drops, flaps and message delivery instead of leaving the socket dead.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import { FakeWebSocket } from './helpers/FakeWebSocket'
-
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
+import {
+  evalChatInlineScriptWithBridge,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  mountChatMessageListBridge,
+  readChatHtml,
+} from './helpers/chat-harness'
 
 describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', () => {
   let htmlContent: string
@@ -38,15 +38,8 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     // frontend-react/chat.html is what actually ships (src-tauri/tauri.conf.json's
     // `frontendDist`); the superseded frontend/chat.html copy was deleted by the
     // React + Astryx conversion. Same source chat-window.test.ts reads.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    // `<body[^>]*>`, NOT `<body>`: the shipped tag carries a class
-    // (`<body class="moon-astryx-root">`), and - more dangerously - the first
-    // LITERAL `<body>` in this file now sits inside a JS comment far down the
-    // inline script. A `<body>` regex silently matches THAT and yields a
-    // truncated, mid-script DOM instead of failing, so keep this in lockstep
-    // with chat-window.test.ts.
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
     // Fail loudly rather than running every scenario against an empty DOM if
     // the shell is ever restructured again.
     expect(document.body.innerHTML.length).toBeGreaterThan(0)
@@ -84,15 +77,15 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.useFakeTimers()
 
-    // Same "select the inline script by content, not position" guard as
-    // chat-window.test.ts — fails loudly if a future edit adds a second
-    // <script> block containing 'WebSocketEngine' instead of silently
-    // running the wrong one.
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    // Mount the React transcript (src/chat/MessageList.tsx) into
+    // #chat-messages, then evaluate the inline page script (selected by
+    // CONTENT, not position - same guard as chat-window.test.ts, fails
+    // loudly if a future edit adds a second <script> block containing
+    // 'WebSocketEngine' instead of silently running the wrong one) and
+    // patch its ChatState/ChatLoop forward-declarations to the real bridge
+    // in the SAME scope (see helpers/chat-harness.ts's module doc).
+    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+    evalChatInlineScriptWithBridge(htmlContent, mount)
   })
 
   afterEach(() => {
@@ -103,6 +96,8 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()

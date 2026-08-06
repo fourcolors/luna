@@ -8,21 +8,20 @@
 // Enter accept + dispatch, Esc (does not reach voice), mousedown accept, and the
 // handleSubmit intercept for typed "/cmd args".
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
+import {
+  evalChatInlineScriptWithBridge,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  mountChatMessageListBridge,
+  readChatHtml,
+} from './helpers/chat-harness'
 
 describe('SlashMenu (chat.html)', () => {
   let mockMe: any
 
   beforeEach(() => {
-    const htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    const htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
 
     mockMe = {
       label: 'chat-test',
@@ -47,11 +46,8 @@ describe('SlashMenu (chat.html)', () => {
 
     localStorage.clear()
 
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+    evalChatInlineScriptWithBridge(htmlContent, mount)
 
     vi.useFakeTimers()
   })
@@ -65,6 +61,8 @@ describe('SlashMenu (chat.html)', () => {
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
     delete (window as any).LunaCapabilities
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
     vi.restoreAllMocks()
     vi.useRealTimers()
   })

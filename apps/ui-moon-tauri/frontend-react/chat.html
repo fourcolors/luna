@@ -543,215 +543,32 @@
     #title-bar .newthread-btn[hidden] { display: none !important; }
 
     /* Watercolor scrollbar styling — applied to every scrolling container in
-       the moon. `width` covers vertical, `height` covers horizontal (assistant
-       `<pre>` blocks scroll horizontally). Thumbs use the ink-faint token so
-       they work on both paper and dark-paper backgrounds. */
-    .chat-messages::-webkit-scrollbar,
-    .chat-input::-webkit-scrollbar,
-    .msg.assistant pre::-webkit-scrollbar,
-    .tool-card-input::-webkit-scrollbar,
-    .tool-card-output::-webkit-scrollbar {
+       the moon. `width` covers vertical, `height` covers horizontal. The
+       chat-messages / tool-card / assistant-pre siblings of this rule moved
+       to src/chat/message-list.css (stack23 S15) - this composer-only copy
+       keeps identical declarations so both look the same. */
+    .chat-input::-webkit-scrollbar {
       width: 6px;
       height: 6px;
     }
-    .chat-messages::-webkit-scrollbar-track,
-    .chat-input::-webkit-scrollbar-track,
-    .msg.assistant pre::-webkit-scrollbar-track,
-    .tool-card-input::-webkit-scrollbar-track,
-    .tool-card-output::-webkit-scrollbar-track {
+    .chat-input::-webkit-scrollbar-track {
       background: transparent;
     }
-    .chat-messages::-webkit-scrollbar-thumb,
-    .chat-input::-webkit-scrollbar-thumb,
-    .msg.assistant pre::-webkit-scrollbar-thumb,
-    .tool-card-input::-webkit-scrollbar-thumb,
-    .tool-card-output::-webkit-scrollbar-thumb {
+    .chat-input::-webkit-scrollbar-thumb {
       background: var(--ink-faint);
       border-radius: 3px;
     }
-    .chat-messages::-webkit-scrollbar-thumb:hover,
-    .chat-input::-webkit-scrollbar-thumb:hover,
-    .msg.assistant pre::-webkit-scrollbar-thumb:hover,
-    .tool-card-input::-webkit-scrollbar-thumb:hover,
-    .tool-card-output::-webkit-scrollbar-thumb:hover {
+    .chat-input::-webkit-scrollbar-thumb:hover {
       background: var(--ink-soft);
-    }
-
-    /* Messages Stream */
-    .chat-messages {
-      flex: 1;
-      padding: 16px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
     }
 
     /* (Mouse/scroll focus-ring suppression now lives in vendor/moon-theme.css:
        the global `:focus:not(:focus-visible)` rule kills the UA ring on these
        overflow:auto containers everywhere, so the old per-class allow-list here
-       — .chat-messages / .artifacts-* — is no longer needed.) */
-
-    /* Every message / timeline is a flex item in this column. Default
-       flex-shrink is 1, so when the combined content is taller than the panel,
-       flexbox COMPRESSES the items to fit instead of letting the container
-       scroll. A `.timeline` sets `overflow:hidden`, which (per the flexbox
-       automatic-minimum-size rule, CSS Flexbox §4.5) lets it be shrunk all the
-       way down to its one-line summary — clipping every tool step inside it AND
-       making scrollHeight == clientHeight, so .chat-messages can't scroll at
-       all. That is the "long task → 'Working on it…' gets cut off and scroll is
-       dead" bug. Pinning flex-shrink:0 keeps each child at its natural height;
-       the overflow then spills into .chat-messages' overflow-y:auto and scrolls
-       normally. (Reproduces identically in Blink and WebKit — it's flex layout,
-       not an engine quirk.)
-       The universal `> *` is intentional: the invariant is that EVERY direct
-       child of the scroll region must keep its natural height so the list
-       scrolls rather than compressing. Scoping this to specific classes (.msg,
-       .timeline, …) would silently re-break the moment a new message/card kind
-       is added under .chat-messages. */
-    .chat-messages > * { flex-shrink: 0; }
-
-    /* .msg is a TRANSPARENT layout column, not the bubble itself: it stacks the
-       painted bubble (.msg-body) and its action row (.msg-meta) so the row sits
-       OUTSIDE the bubble's background/border. align-items puts both flush to the
-       bubble's side (right for user, left for assistant). The bubble chrome
-       (padding, wash, border, radius) lives on .msg-body below. */
-    .msg {
-      max-width: 82%;
-      display: flex;
-      flex-direction: column;
-      /* Chat typeface + size knobs (data-font / data-fontsize). Code/tables
-         inside keep their own --font-mono / fixed sizes via child rules. */
-      font-family: var(--font-chat);
-      font-size: calc(0.84rem * var(--font-scale));
-      line-height: 1.45;
-      animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
-      transform-origin: bottom left;
-    }
-    .msg.user { align-self: flex-end; align-items: flex-end; transform-origin: bottom right; }
-    .msg.assistant { align-self: flex-start; align-items: flex-start; }
-
-    @keyframes msgAppear {
-      from { opacity: 0; transform: scale(0.92) translateY(8px); }
-      to { opacity: 1; transform: scale(1) translateY(0); }
-    }
-
-    /* The painted bubble. Every .msg kind (user/assistant/banner/error/typing)
-       wraps its content in .msg-body, so the bubble chrome is uniform and the
-       optional .msg-meta footer always paints on the page, not the bubble. */
-    .msg-body { padding: 9px 13px; border-radius: 14px; max-width: 100%; }
-
-    /* Watercolor message bubbles. User = paper envelope with ink border;
-       assistant = soft panel-tint wash (hand-painted look). */
-    .msg.user .msg-body {
-      background: var(--paper);
-      border: 1.3px solid var(--ink-faint);
-      border-radius: 14px 4px 14px 14px;
-      color: var(--ink);
-    }
-
-    .msg.assistant .msg-body {
-      /* Wash painted on the ::before layer below (wc-wobble hand-painted
-         edge, design fidelity) — text above stays crisp. */
-      background: transparent;
-      border: none;
-      border-radius: 4px 14px 14px 14px;
-      color: var(--ink);
-      position: relative;
-      isolation: isolate;
-    }
-    .msg.assistant .msg-body::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      border-radius: inherit;
-      background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
-      filter: url(#wc-wobble);
-      z-index: -1;
-    }
-
-    /* Per-message action row: an always-visible footer that sits BELOW and
-       OUTSIDE the bubble (a sibling of .msg-body) holding the copy button +
-       the relative send-time. Side alignment is inherited from .msg's
-       align-items (user flush-right, assistant flush-left). The row is an
-       extensible flex container (future home for undo / branch). */
-    .msg-meta {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 3px;
-      padding: 0 2px;
-    }
-    .msg-time {
-      font-size: 0.7rem;
-      color: var(--ink-soft);
-      -webkit-user-select: none;
-      user-select: none;
-    }
-    /* Light ghost icon button — no chip border/fill now that it lives on the
-       page rather than inside the bubble; subtle at rest, lifts on hover. */
-    .msg-copy {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 20px;
-      height: 20px;
-      padding: 0;
-      border: none;
-      border-radius: 5px;
-      background: transparent;
-      color: var(--ink-soft);
-      opacity: 0.6;
-      cursor: pointer;
-      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
-      -webkit-user-select: none;
-      user-select: none;
-    }
-    .msg-copy:hover {
-      opacity: 1;
-      background: color-mix(in oklab, var(--ink) 8%, transparent);
-      color: var(--ink);
-    }
-    .msg-copy:focus-visible {
-      opacity: 1;
-      outline: 1px solid var(--ink-faint);
-      outline-offset: 1px;
-    }
-    /* Brief confirmation state after a successful copy (mint, like the
-       code-block copy's done state). */
-    .msg-copy[data-copied="1"] {
-      opacity: 1;
-      color: #6ee7b7;
-      background: rgba(110, 231, 183, 0.12);
-    }
-    .msg-copy svg { width: 12px; height: 12px; display: block; }
-
-    /* #124 "from a background task" chip — marks an assistant turn that was
-       DELIVERED by a finished background/scheduled job (not a live reply). Lives
-       in the always-visible meta row, before the copy button. A faint accent
-       pill so it reads as a quiet provenance note, not a loud badge. */
-    .msg-delivery {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 0.68rem;
-      line-height: 1;
-      padding: 2px 7px 2px 6px;
-      border-radius: 999px;
-      color: color-mix(in oklab, var(--accent) 72%, var(--ink));
-      background: color-mix(in oklab, var(--accent) 12%, transparent);
-      border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
-      -webkit-user-select: none;
-      user-select: none;
-      max-width: 220px;
-    }
-    .msg-delivery .glyph { font-size: 0.72rem; opacity: 0.85; }
-    .msg-delivery .label {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-style: italic;
-    }
+       - .chat-messages / .artifacts-* - is no longer needed.)
+       #chat-messages layout + every .msg/.timeline/.tool-card rule moved to
+       src/chat/message-list.css alongside the ChatRenderer -> React
+       conversion (stack23 S15) - unchanged, just relocated. */
 
     /* #124 background-result toast — a transient "Luna finished X" notification
        broadcast to every window, so a result surfaces even when its thread is
@@ -916,197 +733,8 @@
       to   { opacity: 0; transform: translateY(6px) scale(0.99); }
     }
 
-    /* Markdown tables (GFM). Dark-glass: thin separators, transparent
-       background, tight cell padding so the table fits in the 560px-wide
-       panel without forcing a horizontal scrollbar on short rows. */
-    .msg.assistant table {
-      border-collapse: collapse;
-      margin: 6px 0;
-      font-size: 0.88rem;
-      max-width: 100%;
-      display: block;
-      overflow-x: auto;
-    }
-    .msg.assistant table th,
-    .msg.assistant table td {
-      padding: 4px 8px;
-      border: 1px solid var(--ink-faint);
-      text-align: left;
-      vertical-align: top;
-    }
-    .msg.assistant table th {
-      background: color-mix(in oklab, var(--ink) 5%, transparent);
-      font-weight: 600;
-    }
-    .msg.assistant table tr:nth-child(even) td {
-      background: color-mix(in oklab, var(--ink) 3%, transparent);
-    }
-
-    /* Activity timeline — Gemini-style collapsible progress for a tool-using
-       turn. While streaming the steps (interim text + tool calls) show on a
-       vertical connector line; on finish the timeline auto-collapses to a
-       one-line summary pill and the final answer renders as a normal bubble
-       below it. Collapse state lives on the turn (ChatState), NOT the DOM, so
-       it survives the per-frame re-render. */
-    .timeline {
-      align-self: flex-start;
-      width: 92%;
-      max-width: 92%;
-      background: color-mix(in oklab, var(--ink) 4%, transparent);
-      border: 1px solid var(--ink-faint);
-      border-radius: 12px;
-      overflow: hidden;
-      animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
-      transform-origin: bottom left;
-    }
-    .timeline-summary {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      cursor: pointer;
-      user-select: none;
-      color: var(--ink-soft);
-      font-size: 0.82rem;
-      font-weight: 500;
-    }
-    .timeline-summary:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
-    .timeline-chevron {
-      display: inline-block;
-      transition: transform 160ms ease;
-      width: 12px;
-      text-align: center;
-      color: var(--ink-soft);
-      font-size: 0.78rem;
-    }
-    .timeline:not(.collapsed) .timeline-chevron { transform: rotate(90deg); }
-    .timeline-summary-label { flex: 1; min-width: 0; }
-    .timeline-summary .typing-dots { padding: 0; }
-    .timeline-body {
-      position: relative;
-      padding: 6px 12px 12px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    /* the vertical connector line behind the step icons */
-    .timeline-body::before {
-      content: '';
-      position: absolute;
-      left: 21px;
-      top: 2px;
-      bottom: 14px;
-      width: 1px;
-      background: var(--ink-faint);
-    }
-    .timeline-step {
-      position: relative;
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-    }
-    .timeline-step-icon {
-      position: relative;
-      z-index: 1;
-      flex: 0 0 18px;
-      width: 18px;
-      height: 18px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.7rem;
-      border-radius: 50%;
-      background: var(--paper); /* occlude the vertical connector line */
-    }
-    .timeline-step-icon .tl-dot { width: 8px; height: 8px; border-radius: 50%; }
-    .timeline-step-icon .tl-dot.pending { background: #fcd34d; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
-    .timeline-step-icon .tl-dot.ok { background: #6ee7b7; }
-    .timeline-step-icon .tl-dot.error { background: #fda4af; }
-    .timeline-step-content { flex: 1; min-width: 0; padding-top: 1px; }
-    .timeline-step-text { color: var(--ink-soft); font-size: 0.82rem; line-height: 1.45; }
-
-    /* Tool-call cards — one per tool invocation, rendered as a timeline step
-       (and reused by the legacy appendToolCallCard/attachToolResult adapters).
-       Native <details>/<summary> gives free keyboard a11y + open-state. */
-    .tool-call-card {
-      padding: 0;
-      background: color-mix(in oklab, var(--ink) 4%, transparent);
-      border: 1px solid var(--ink-faint);
-      border-radius: 10px;
-      overflow: hidden;
-      font-size: 0.82rem;
-    }
-    .tool-call-card details > summary {
-      list-style: none;
-      cursor: pointer;
-      padding: 6px 10px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      user-select: none;
-      color: var(--ink-soft);
-      font-weight: 500;
-    }
-    .tool-call-card details > summary::-webkit-details-marker { display: none; }
-    .tool-call-card .tool-card-chevron {
-      display: inline-block;
-      transition: transform 120ms ease;
-      width: 10px;
-      text-align: center;
-      color: var(--ink-soft);
-      font-size: 0.75rem;
-    }
-    .tool-call-card details[open] .tool-card-chevron { transform: rotate(90deg); }
-    .tool-call-card .tool-card-name {
-      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-      font-size: 0.80rem;
-      color: var(--ink);
-    }
-    .tool-call-card .tool-card-status {
-      margin-left: auto;
-      font-size: 0.72rem;
-      padding: 1px 6px;
-      border-radius: 8px;
-      letter-spacing: 0.02em;
-    }
-    .tool-call-card .tool-card-status-ok    { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
-    .tool-call-card .tool-card-status-error { background: rgba(248, 113, 113, 0.18); color: #fda4af; }
-    .tool-call-card .tool-card-status-pending { background: rgba(251, 191, 36, 0.16); color: #fcd34d; }
-    .tool-call-card .tool-card-body {
-      padding: 4px 10px 10px 10px;
-      border-top: 1px solid var(--ink-faint);
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .tool-call-card .tool-card-section-label {
-      font-size: 0.70rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--ink-soft);
-      opacity: 0.85;
-    }
-    .tool-call-card .tool-card-input,
-    .tool-call-card .tool-card-output {
-      margin: 0;
-      padding: 6px 8px;
-      background: color-mix(in oklab, var(--ink) 5%, transparent);
-      border-radius: 6px;
-      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-      font-size: 0.74rem;
-      line-height: 1.4;
-      color: var(--ink);
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-height: 200px;
-      overflow: auto;
-    }
-    .tool-call-card .tool-card-truncated {
-      font-size: 0.68rem;
-      color: var(--ink-soft);
-      opacity: 0.7;
-      margin-top: -4px;
-    }
+    /* .msg.assistant table / .timeline* / .tool-call-card* moved to
+       src/chat/message-list.css (stack23 S15) - unchanged, just relocated. */
 
     /* ── User-Ask / Survey panel (alignment check-in) ─────────────────────
        Rendered as a docked banner inside .chat-panel (sibling of
@@ -1874,206 +1502,9 @@
        system panel window: panel.html?type=workflows, panels/workflows.js.
        The /workflows slash command and the settings launcher open it.) */
 
-    /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
-    .msg.assistant .msg-body > :first-child { margin-top: 0; }
-    .msg.assistant .msg-body > :last-child { margin-bottom: 0; }
-    .msg.assistant p { margin: 0.5em 0; white-space: pre-wrap; } /* keep single newlines */
-    .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {
-      margin: 0.6em 0 0.3em;
-      line-height: 1.25;
-      font-weight: 700;
-    }
-    .msg.assistant h1 { font-size: 1.2em; }
-    .msg.assistant h2 { font-size: 1.12em; }
-    .msg.assistant h3 { font-size: 1.05em; }
-    .msg.assistant ul, .msg.assistant ol { margin: 0.4em 0; padding-left: 1.3em; }
-    .msg.assistant li { margin: 0.15em 0; }
-    .msg.assistant a { color: var(--accent); text-decoration: none; }
-    .msg.assistant a:hover { text-decoration: underline; }
-    .msg.assistant strong { font-weight: 700; }
-    .msg.assistant em { font-style: italic; }
-    .msg.assistant code {
-      background: color-mix(in oklab, var(--ink) 9%, transparent);
-      padding: 0.1em 0.35em;
-      border-radius: 4px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.86em;
-    }
-    /* Editor-feel fenced code blocks. Each ```fence is wrapped in a
-       .code-block container that hosts a header (language chip + copy
-       button) + the <pre><code> body. Tokens are coloured by highlight.js
-       at render-time; see enhanceCodeBlocks() in the script section.       */
-    .msg.assistant .code-block {
-      margin: 0.6em 0;
-      border-radius: 10px;
-      background: color-mix(in oklab, var(--ink) 7%, transparent);
-      border: 1px solid color-mix(in oklab, var(--accent) 16%, transparent);
-      overflow: hidden;
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
-    }
-    .msg.assistant .code-block-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 4px 8px 4px 12px;
-      background: color-mix(in oklab, var(--ink) 5%, transparent);
-      border-bottom: 1px solid var(--ink-faint);
-      min-height: 26px;
-    }
-    .msg.assistant .code-block-lang {
-      font-family: var(--font-body);
-      font-size: 0.66rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: var(--accent);
-      opacity: 0.9;
-    }
-    .msg.assistant .code-block-lang:empty { display: none; }
-    .msg.assistant .code-block-copy {
-      background: transparent;
-      border: 1px solid var(--ink-faint);
-      color: var(--ink-soft);
-      font-family: var(--font-body);
-      font-size: 0.68rem;
-      font-weight: 500;
-      letter-spacing: 0.02em;
-      padding: 2px 9px;
-      border-radius: 5px;
-      cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-      user-select: none;
-    }
-    .msg.assistant .code-block-copy:hover {
-      background: color-mix(in oklab, var(--ink) 7%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 45%, transparent);
-      color: var(--ink);
-    }
-    .msg.assistant .code-block-copy[data-copy-state="done"] {
-      color: #6ee7b7;
-      border-color: rgba(110, 231, 183, 0.4);
-      background: rgba(110, 231, 183, 0.08);
-    }
-    .msg.assistant .code-block > pre {
-      margin: 0;
-      background: transparent;
-      border: 0;
-      border-radius: 0;
-      padding: 10px 14px 11px;
-      overflow-x: auto;     /* long lines scroll the body, never the bubble */
-    }
-    .msg.assistant .code-block > pre > code {
-      background: none;
-      padding: 0;
-      font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
-                   "Cascadia Code", Consolas, monospace;
-      font-size: 0.76rem;
-      line-height: 1.55;
-      font-variant-ligatures: contextual;
-      tab-size: 2;
-      -moz-tab-size: 2;
-      white-space: pre;     /* hard-wrap off; horizontal scroll instead */
-      color: var(--ink);
-      display: block;
-    }
-
-    /* Bare <pre><code> that escapes the .code-block wrapper (defensive: if a
-       future code-path emits plain <pre>, we still want it to look right). */
-    .msg.assistant .msg-body > pre,
-    .msg.assistant li > pre {
-      background: color-mix(in oklab, var(--ink) 7%, transparent);
-      border: 1px solid color-mix(in oklab, var(--accent) 16%, transparent);
-      padding: 10px 14px;
-      border-radius: 8px;
-      overflow-x: auto;
-      margin: 0.5em 0;
-    }
-    .msg.assistant .msg-body > pre > code,
-    .msg.assistant li > pre > code {
-      background: none;
-      padding: 0;
-      font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
-                   "Cascadia Code", Consolas, monospace;
-      font-size: 0.76rem;
-      line-height: 1.55;
-    }
-
-    /* highlight.js token theme. The Palenight-leaning colors below are pale
-       pigments mixed for NIGHT paper, so the token block is gated on
-       html[data-theme='dark'] — otherwise its .msg.assistant scoping
-       (higher specificity) would also beat the shared moon-theme.css light
-       ink palette and leave pale-on-paper code in light mode. Scoped under
-       .msg.assistant so it never leaks into surrounding chrome. */
-    .msg.assistant .hljs                                { color: var(--ink); background: transparent; }
-    .msg.assistant .hljs-emphasis                       { font-style: italic; }
-    .msg.assistant .hljs-strong                         { font-weight: 700; }
-    html[data-theme='dark'] .msg.assistant .hljs-comment,
-    html[data-theme='dark'] .msg.assistant .hljs-quote                          { color: #6b7896; font-style: italic; }
-    html[data-theme='dark'] .msg.assistant .hljs-keyword,
-    html[data-theme='dark'] .msg.assistant .hljs-selector-tag,
-    html[data-theme='dark'] .msg.assistant .hljs-literal,
-    html[data-theme='dark'] .msg.assistant .hljs-section,
-    html[data-theme='dark'] .msg.assistant .hljs-doctag                         { color: #c792ea; }
-    html[data-theme='dark'] .msg.assistant .hljs-built_in,
-    html[data-theme='dark'] .msg.assistant .hljs-type,
-    html[data-theme='dark'] .msg.assistant .hljs-class .hljs-title              { color: #ffcb6b; }
-    html[data-theme='dark'] .msg.assistant .hljs-string,
-    html[data-theme='dark'] .msg.assistant .hljs-attr,
-    html[data-theme='dark'] .msg.assistant .hljs-template-tag,
-    html[data-theme='dark'] .msg.assistant .hljs-addition                       { color: #c3e88d; }
-    html[data-theme='dark'] .msg.assistant .hljs-number,
-    html[data-theme='dark'] .msg.assistant .hljs-meta,
-    html[data-theme='dark'] .msg.assistant .hljs-meta .hljs-string              { color: #f78c6c; }
-    html[data-theme='dark'] .msg.assistant .hljs-name,
-    html[data-theme='dark'] .msg.assistant .hljs-tag                            { color: var(--accent); }
-    html[data-theme='dark'] .msg.assistant .hljs-title,
-    html[data-theme='dark'] .msg.assistant .hljs-variable,
-    html[data-theme='dark'] .msg.assistant .hljs-template-variable,
-    html[data-theme='dark'] .msg.assistant .hljs-property,
-    html[data-theme='dark'] .msg.assistant .hljs-function .hljs-title           { color: #82aaff; }
-    html[data-theme='dark'] .msg.assistant .hljs-symbol,
-    html[data-theme='dark'] .msg.assistant .hljs-bullet,
-    html[data-theme='dark'] .msg.assistant .hljs-link,
-    html[data-theme='dark'] .msg.assistant .hljs-selector-class,
-    html[data-theme='dark'] .msg.assistant .hljs-selector-id                    { color: #89ddff; }
-    html[data-theme='dark'] .msg.assistant .hljs-deletion,
-    html[data-theme='dark'] .msg.assistant .hljs-regexp                         { color: #ff5370; }
-    html[data-theme='dark'] .msg.assistant .hljs-params                         { color: #ffcb6b; }
-    html[data-theme='dark'] .msg.assistant .hljs-punctuation,
-    html[data-theme='dark'] .msg.assistant .hljs-operator                       { color: #cbd5e1; }
-
-    /* Horizontal rule from a markdown --- / *** / ___ line. */
-    .msg.assistant hr {
-      border: 0;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--ink-faint), transparent);
-      margin: 0.8em 0;
-    }
-    
-    /* Typing indicator dots */
-    .typing-dots {
-      display: flex;
-      gap: 4px;
-      align-items: center;
-      padding: 3px 0;
-    }
-    
-    /* Watercolor: typing dots use ink-soft token for both themes. */
-    .dot {
-      width: 5px;
-      height: 5px;
-      background: var(--ink-soft);
-      border-radius: 50%;
-      animation: dotPulse 1.4s infinite ease-in-out;
-    }
-    .dot:nth-child(2) { animation-delay: 0.2s; }
-    .dot:nth-child(3) { animation-delay: 0.4s; }
-    
-    @keyframes dotPulse {
-      0%, 100% { transform: scale(0.6); opacity: 0.4; }
-      50% { transform: scale(1.2); opacity: 1; }
-    }
+    /* Assistant-bubble markdown/code-block/hljs rules + .typing-dots/.dot
+       moved to src/chat/message-list.css (stack23 S15) - unchanged, just
+       relocated. */
 
     /* Input Area */
     .chat-input-area {
@@ -2793,12 +2224,12 @@
     </div>
     
     
-    <div class="chat-messages" id="chat-messages">
-      <div class="msg assistant">
-        <div class="msg-body">Hey there! I am your native macOS Luna companion. Drag me anywhere on your screens, or click me to toggle this chat widget!</div>
-      </div>
-    </div>
-    
+    <!-- Owned entirely by src/chat/MessageList.tsx's React root (mounted by
+         main-chat.tsx) - createRoot() clears any static markup on its first
+         commit, so the pre-mount "Hey there!" greeting lives as
+         MessageList.tsx's WELCOME_ITEM, not literal HTML here. -->
+    <div class="chat-messages" id="chat-messages"></div>
+
     <!-- Thread sidebar — a resizable split-pane thread switcher inside #chat-panel.
          Populated by ThreadDrawerEngine from the thread-list frame; click a row to
          open that thread in place. Hidden in ?thread=<id> pinned windows. -->
@@ -5997,8 +5428,10 @@
         // switch (and used to stay empty on A→B→A due to subscribe no-op).
         const painted = ThreadCache.paint(id);
         if (!painted) {
-          try { ChatState.reset(); } catch (_) {}
-          if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';
+          // Force an immediate blank render (not just a state reset) so the
+          // old thread's transcript doesn't linger on screen until whatever
+          // async path (the snapshot re-subscribe below) next flushes.
+          try { ChatState.reset(); ChatLoop.flush(); } catch (_) {}
         }
         // Face follows the viewed thread only; background busy shows on the
         // sidebar row, not the moon face.
@@ -6442,11 +5875,13 @@
           }
           if (State.activeTurnId) {                        // only decorate an actually in-flight turn
             State.activeTurnId = null;
-            const last = DOM.chatMessages.lastElementChild;
-            if (last && last.querySelector('.typing-dots')) {
-              last.remove();
+            // State-driven equivalent of "the last rendered bubble is the
+            // typing-dots placeholder" - drop the stale placeholder from
+            // ChatState (not just the DOM node) so a still-pending assistant
+            // turn doesn't get silently resurrected by the next render.
+            if (ChatState.hasVisibleStreamingPlaceholder()) {
+              ChatState.dropPendingAssistant();
               ChatEngine.appendMessage('assistant', '⚠️ Connection lost — try again.');
-              DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             }
           }
           if (!State.isManuallyClosing) {
@@ -6557,28 +5992,22 @@
         // Persistent, hard-to-miss dot. Survives transcript wipes (snapshot/new-chat).
         this.updateStatus('version-warning', `Connected (protocol v${serverVersion} ≠ v${MOON_EXPECTED_PROTOCOL_VERSION})`);
 
-        // Idempotent banner: skip if already shown this connection-run AND the
-        // node still exists, so reconnect/hello replay never stacks duplicates.
-        const bannerId = 'protocol-mismatch-banner';
-        if (State.protocolNoticeShown && document.getElementById(bannerId)) {
-          return;
-        }
-        State.protocolNoticeShown = true;
-        const banner = document.createElement('div');
-        banner.id = bannerId;
-        banner.className = 'msg assistant';
-        // Content wraps in .msg-body (the painted bubble) like every .msg kind —
-        // the bubble chrome lives on .msg-body, not .msg, so an unwrapped banner
-        // would render with no padding/wash.
-        const body = document.createElement('div');
-        body.className = 'msg-body';
-        body.textContent =
+        // Idempotent banner: skip if already shown this connection-run AND
+        // it's still present in the transcript, so reconnect/hello replay
+        // never stacks duplicates - but DOES reappear if the transcript was
+        // wiped meanwhile (thread switch / new-chat), same as before.
+        const bannerText =
           `⚠️ Version mismatch: this app expects protocol v${MOON_EXPECTED_PROTOCOL_VERSION} ` +
           `but the server speaks v${serverVersion}. Update Luna Moon (or the server). ` +
           `Some features may not work.`;
-        banner.appendChild(body);
-        DOM.chatMessages.appendChild(banner);
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        const stillShown = ChatState.turns.some((t) =>
+          t.status === 'banner' && t.segments.some((s) => s.kind === 'text' && s.raw === bannerText)
+        );
+        if (State.protocolNoticeShown && stillShown) {
+          return;
+        }
+        State.protocolNoticeShown = true;
+        ChatEngine.appendMessage('assistant', bannerText);
       },
 
       /**
@@ -7182,11 +6611,13 @@
         }
         if (State.activeTurnId) {
           State.activeTurnId = null;
-          const last = DOM.chatMessages.lastElementChild;
-          if (last && last.querySelector('.typing-dots')) {
-            last.remove();
+          // State-driven equivalent of "the last rendered bubble is the
+          // typing-dots placeholder" - drop the stale placeholder from
+          // ChatState (not just the DOM node) so a still-pending assistant
+          // turn doesn't get silently resurrected by the next render.
+          if (ChatState.hasVisibleStreamingPlaceholder()) {
+            ChatState.dropPendingAssistant();
             ChatEngine.appendMessage('assistant', '⚠️ Connection lost — try again.');
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
           }
         }
       },
@@ -8419,9 +7850,9 @@
       // connection can deliver to `frame.threadId` -- retry any stashed
       // message now instead of relying on a timer.
       flushPendingUserMessage(frame.threadId);
-      // Whole-history replay from the server. Build state from scratch
-      // and flush a single render — ChatRenderer reconciles the entire
-      // chat-messages container against ChatState in one pass.
+      // Whole-history replay from the server. Build state from scratch and
+      // flush a single render - MessageList.tsx reconciles the entire
+      // chat-messages container against the chat model in one pass.
       WebSocketEngine.clearSubscribeTimeout();        // reattach SUCCEEDED — we're back on a thread
       ChatState.reset();
       ChatState.loadHistory(frame.messages || []);
@@ -9546,35 +8977,26 @@
      */
 
     // ========================================================================
-    // CHAT MODEL  ─  source-of-truth turn/segment data structure.
+    // CHAT MODEL / RENDERER / LOOP - converted to a pure typed reducer + a
+    // React reconciler (stack23 S15). The turn/segment data structure, the
+    // wire-frame vocabulary (applyDelta/applyToolCall/finishTurn/...), and
+    // the run-grouping/timeline planning all now live in
+    // src/chat/chatModel.ts (pure, no DOM access); the DOM diff + rAF-loop
+    // are gone, replaced by src/chat/MessageList.tsx mounted straight into
+    // #chat-messages.
     //
-    // Before the moon-thread-state refactor, the renderer used the DOM itself
-    // as the source-of-truth (data-stream-raw on bubbles, tail-walking to find
-    // the "last assistant text bubble that isn't a tool-card", three different
-    // paths inside assistant-done to reconstruct final text). That worked but
-    // every new turn shape needed a new branch, and racy paths re-emerged
-    // each time the wire protocol gained a frame variant.
-    //
-    // The new design splits concerns:
-    //
-    //   wire frames -> ChatState (pure reducer) -> ChatRenderer (pure DOM diff)
-    //
-    // ChatState owns Turn[] (user + assistant + system banner). It exposes
-    // small methods for each kind of update (applyDelta, applyToolCall,
-    // applyToolResult, finishTurn, failTurn, appendUser, appendBanner,
-    // beginPendingAssistant). It never touches the DOM.
-    //
-    // ChatRenderer reads ChatState.turns and reconciles them against the
-    // chat-messages container. It's the ONLY code that writes to that
-    // container. Each turn carries a stable `key`; the renderer matches
-    // existing DOM children by `data-turn-key`, removes orphans, and updates
-    // the rest in place.
-    //
-    // ChatLoop coalesces multiple state updates into one rAF-deferred render.
-    // assistant-delta calls schedule(); assistant-done calls flush() so a
-    // pending frame can't overwrite the final canonical state.
+    // `ChatState` / `ChatLoop` are forward-declared `var` bindings - for a
+    // classic (non-module) script these ARE `window.ChatState` /
+    // `window.ChatLoop`, so every frame handler below keeps calling the
+    // exact same bare identifiers. main-chat.tsx (a `type="module"` script,
+    // which always runs after every classic script on the page - see
+    // boot.tsx's header comment) assigns the real bridge once React mounts.
+    // No code path here calls either SYNCHRONOUSLY before that mount - every
+    // call site is inside an async WS/event handler - so there is no
+    // TDZ/race (same reasoning chat-chrome-mount.tsx's module-mounted title
+    // bar already relies on, just consumer- instead of producer-side there).
     // ========================================================================
-    // Minimal CSS attribute-value escaper for selectors built from
+    // Attribute-selector escaping for tool-call-card lookups keyed by
     // server-provided ids. ".tool-call-card[data-tool-call-id="${esc(id)}"]" is
     // safe against quote / backslash injection. We avoid window.CSS.escape
     // because tauri's older WebKit on some macOS versions doesn't expose it.
@@ -9583,917 +9005,8 @@
       // inside [data-attr="..."] attribute selectors.
       return String(s).replace(/["\\]/g, '\\$&');
     }
-
-    const ChatState = {
-      turns: [],
-      // Turn shape:
-      //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
-      //     segments: Segment[], previews?, turnId?, errorText?,
-      //     ts? (ms-epoch send-time: server stamp for history/assistant-done,
-      //          client Date.now() for user — drives the meta-row "9m ago"),
-      //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle),
-      //     _settled? (agentic turn fully ended — set on `turn-complete`) }
-      //
-      // GROUPING: one user message drives an "agentic turn" = N SDK assistant
-      // messages, each with its OWN wire turnId → N assistant turns here. The
-      // renderer (_plan) groups the maximal RUN of consecutive assistant turns
-      // into ONE collapsible activity timeline; `turn-complete` (the SDK
-      // `result`, fired once at the true end) flips `_settled` so the run
-      // collapses to its summary pill. Per-message `assistant-done` cannot tell
-      // an intermediate step from the final answer, so it never collapses.
-      // Segment shape:
-      //   { kind: 'text', raw: string, done: boolean }
-      //   { kind: 'tool', id: string, name: string, input: any, result?: {ok,output,truncated} | null }
-
-      reset() {
-        this.turns = [];
-      },
-
-      loadHistory(messages) {
-        this.turns = [];
-        if (!Array.isArray(messages)) return;
-        let i = 0;
-        for (const msg of messages) {
-          // Skip empty/whitespace-only messages — server-side history can
-          // include tool-only assistant turns with no visible text.
-          if (!msg || !msg.text || !String(msg.text).trim()) continue;
-          this.turns.push({
-            key: 'h-' + (i++),
-            role: msg.role === 'user' ? 'user' : 'assistant',
-            status: 'done',
-            segments: [{ kind: 'text', raw: String(msg.text), done: true }],
-            previews: null,
-            // Server send-time (ms epoch) — drives the "9m ago" meta stamp.
-            // Undefined for pre-`ts` servers; the renderer omits the time then.
-            ts: Number.isFinite(msg.ts) ? msg.ts : undefined,
-            // #124: provenance for a background-delivered result so the chip
-            // re-renders on replay/reopen. Absent for ordinary turns.
-            delivery: (msg.delivery && typeof msg.delivery === 'object') ? msg.delivery : null,
-          });
-        }
-      },
-
-      appendUser(text, previews, ts) {
-        const t = String(text ?? '');
-        // Client send-time — the user turn never round-trips the server, so we
-        // stamp it locally. Optional `ts` keeps tests deterministic; the live
-        // submit path omits it and gets Date.now(). Shared with the key.
-        const stamp = Number.isFinite(ts) ? ts : Date.now();
-        this.turns.push({
-          key: 'u-' + stamp + '-' + this.turns.length,
-          role: 'user',
-          status: 'done',
-          segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
-          previews: previews || null,
-          ts: stamp,
-        });
-      },
-
-      appendBanner(text) {
-        const t = String(text ?? '');
-        this.turns.push({
-          key: 'b-' + Date.now() + '-' + this.turns.length,
-          role: 'assistant',
-          status: 'banner',
-          segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
-          previews: null,
-        });
-      },
-
-      // #124: a finished background/job result, delivered into this thread as a
-      // complete (non-streaming) assistant turn. Unlike the live reply path it
-      // has no deltas — so it can't ride finishTurn (which needs an in-flight
-      // turn). Pushed as a done assistant turn carrying the delivery marker so
-      // the renderer paints the "from a background task" chip. Rendered through
-      // the normal text path (status 'done', a single done text segment).
-      appendDelivered(message) {
-        const t = String((message && message.text) || '');
-        if (!t.trim()) return;
-        this.turns.push({
-          key: 'd-' + Date.now() + '-' + this.turns.length,
-          role: 'assistant',
-          status: 'done',
-          segments: [{ kind: 'text', raw: t, done: true }],
-          previews: null,
-          ts: Number.isFinite(message && message.ts) ? message.ts : Date.now(),
-          delivery: (message && message.delivery && typeof message.delivery === 'object')
-            ? message.delivery : { source: 'background-job' },
-          _settled: true,
-        });
-      },
-
-      // Insert a pending streaming-turn placeholder. Renderer shows typing
-      // dots when the tail is a streaming turn with zero text content. On the
-      // first assistant-delta with a real turnId, beginAssistantTurn() upgrades
-      // the placeholder by writing its real key.
-      beginPendingAssistant() {
-        const tail = this.turns[this.turns.length - 1];
-        if (tail && tail.key === 'pending-assistant') return tail;
-        const t = {
-          key: 'pending-assistant',
-          role: 'assistant',
-          status: 'streaming',
-          segments: [],
-          turnId: '',
-          previews: null,
-        };
-        this.turns.push(t);
-        return t;
-      },
-
-      beginAssistantTurn(turnId) {
-        // If there's a pending placeholder, claim it.
-        if (turnId) {
-          const tail = this.turns[this.turns.length - 1];
-          if (tail && tail.key === 'pending-assistant') {
-            tail.key = 't-' + turnId;
-            tail.turnId = String(turnId);
-            return tail;
-          }
-        }
-        // Otherwise find an existing matching turn.
-        const existing = this._findTurn(turnId);
-        if (existing) return existing;
-        // Or create a new one.
-        const t = {
-          key: turnId ? 't-' + turnId : 'pending-assistant',
-          role: 'assistant',
-          status: 'streaming',
-          segments: [],
-          turnId: String(turnId || ''),
-          previews: null,
-        };
-        this.turns.push(t);
-        return t;
-      },
-
-      applyDelta(turnId, text) {
-        if (!text) return;
-        const turn = this.beginAssistantTurn(turnId);
-        // Wire contract (chat-service.ts:604): `text` is the CUMULATIVE
-        // assistant text for the entire turn so far — NOT just the new
-        // chunk. ui-shared/reducer.ts mirrors this by replacing inFlight.text
-        // on every delta. Naive `last.raw += text` produces classic
-        // exponential duplication: e.g. delta 1 = "Hey", delta 2 = "Hey
-        // Alex — what's up?", appended yields "HeyHey Alex — what's
-        // up?". To stay segment-aware AND avoid duplication, we keep the
-        // last-seen cumulative on the turn and append only the incremental
-        // suffix to the live text segment. Post-tool fresh segments get
-        // their own suffix too — the pre-tool prefix is never re-rendered.
-        const prevCum = typeof turn._cumText === 'string' ? turn._cumText : '';
-        let incremental;
-        if (text.length >= prevCum.length && text.startsWith(prevCum)) {
-          incremental = text.slice(prevCum.length);
-        } else {
-          // Server reset or non-monotonic — fall back to the whole text.
-          // Better to over-render than to drop content.
-          incremental = text;
-        }
-        turn._cumText = text;
-        if (!incremental) return;
-        const last = turn.segments[turn.segments.length - 1];
-        if (last && last.kind === 'text' && !last.done) {
-          last.raw += incremental;
-        } else {
-          turn.segments.push({ kind: 'text', raw: incremental, done: false });
-        }
-      },
-
-      applyToolCall(turnId, toolCallId, name, input, parentToolUseId) {
-        const turn = this.beginAssistantTurn(turnId);
-        // Close any open text segment so subsequent deltas start a fresh one.
-        for (const s of turn.segments) if (s.kind === 'text') s.done = true;
-        const seg = {
-          kind: 'tool',
-          id: String(toolCallId || ''),
-          name: String(name || 'tool'),
-          input: input,
-          result: null,
-        };
-        // Preserve parentToolUseId (present when activity is inside a subagent).
-        if (parentToolUseId) seg.parentToolUseId = String(parentToolUseId);
-        turn.segments.push(seg);
-      },
-
-      applyToolResult(toolCallId, ok, output, truncated) {
-        const id = String(toolCallId || '');
-        if (!id) return;
-        for (const turn of this.turns) {
-          for (const seg of turn.segments) {
-            if (seg.kind === 'tool' && seg.id === id) {
-              seg.result = {
-                ok: !!ok,
-                output: String(output ?? ''),
-                truncated: !!truncated,
-              };
-              return;
-            }
-          }
-        }
-      },
-
-      finishTurn(turnId, fullText, ts) {
-        const turn = this._findTurn(turnId) || this._findPending();
-        if (!turn) return;
-        // Close all open text segments.
-        for (const s of turn.segments) if (s.kind === 'text') s.done = true;
-        // Drop the turn entirely if it has no visible content (zero text + zero tools).
-        // This replaces sweepTrailingEmptyAssistantBubbles.
-        if (turn.segments.length === 0) {
-          const idx = this.turns.indexOf(turn);
-          if (idx >= 0) this.turns.splice(idx, 1);
-          return;
-        }
-        turn.status = 'done';
-        // Stamp the server send-time (from assistant-done's message.ts) for the
-        // meta-row time. (fullText is unused — the renderer rebuilds from segments.)
-        if (Number.isFinite(ts)) turn.ts = ts;
-      },
-
-      failTurn(turnId, errorText) {
-        let turn = this._findTurn(turnId) || this._findPending();
-        if (!turn) {
-          // No active turn — push a fresh error turn so the operator sees it.
-          turn = {
-            key: 'err-' + Date.now() + '-' + this.turns.length,
-            role: 'assistant',
-            status: 'error',
-            segments: [],
-            turnId: '',
-            previews: null,
-          };
-          this.turns.push(turn);
-        }
-        for (const s of turn.segments) if (s.kind === 'text') s.done = true;
-        turn.status = 'error';
-        turn.errorText = String(errorText || 'Unknown error');
-      },
-
-      // Mark the trailing RUN of consecutive assistant turns as settled — the
-      // agentic turn just ended (server `turn-complete`, i.e. the SDK `result`
-      // that fires once after every intermediate tool step). The grouped
-      // activity timeline reads `_settled` to collapse to its summary pill.
-      // Scans from the tail and stops at the first user / banner / error turn,
-      // so prior agentic turns (already settled) and the run boundary are
-      // untouched.
-      markRunSettled() {
-        for (let i = this.turns.length - 1; i >= 0; i--) {
-          const t = this.turns[i];
-          if (t.role !== 'assistant' || t.status === 'banner' || t.status === 'error') break;
-          t._settled = true;
-        }
-      },
-
-      // Remove a pending-assistant placeholder if present. Used by the
-      // turn-timeout watchdog to clear stuck "luna is thinking" dots before
-      // appending its "no response" banner.
-      dropPendingAssistant() {
-        const tail = this.turns[this.turns.length - 1];
-        if (tail && tail.key === 'pending-assistant') {
-          this.turns.pop();
-          return true;
-        }
-        return false;
-      },
-
-      _findTurn(turnId) {
-        if (!turnId) return null;
-        const key = 't-' + turnId;
-        for (let i = this.turns.length - 1; i >= 0; i--) {
-          if (this.turns[i].key === key) return this.turns[i];
-        }
-        return null;
-      },
-
-      _findPending() {
-        const tail = this.turns[this.turns.length - 1];
-        if (tail && tail.key === 'pending-assistant') return tail;
-        return null;
-      },
-    };
-
-    // ========================================================================
-    // CHAT RENDERER  ─  pure DOM diff from ChatState. The ONLY writer to
-    // #chat-messages. Idempotent: render(root) twice in a row is a no-op.
-    // ========================================================================
-    // ========================================================================
-    // CHAT RENDERER  ─  pure DOM diff from ChatState. The ONLY writer to
-    // #chat-messages. Idempotent: render(root) twice in a row is a no-op.
-    //
-    // Each item in ChatState produces ONE OR MORE sibling children under the
-    // chat-messages container, keyed by `data-msg-key`:
-    //
-    //   * user turn         -> 1 child  (.msg.user)
-    //   * banner            -> 1 child  (.msg.assistant)
-    //   * error             -> 1 child  (.msg.assistant)
-    //   * streaming/empty   -> 1 child  (typing dots, .msg.assistant)
-    //   * text segment      -> 1 child  (.msg.assistant, markdown body)
-    //   * tool segment      -> 1 child  (.msg.assistant.tool-call-card)
-    //
-    // The renderer matches existing DOM children by `data-msg-key` and reuses
-    // them when present, so the typing-dots->first-text transition happens
-    // in place (no flicker) and tool cards keep their <details> open state
-    // across re-renders.
-    // ========================================================================
-    const ChatRenderer = {
-      render(root) {
-        const wanted = this._plan();
-        const wantedKeys = new Set();
-        for (const w of wanted) wantedKeys.add(w.key);
-
-        // 1. Drop orphan children.
-        for (let i = root.children.length - 1; i >= 0; i--) {
-          const child = root.children[i];
-          const key = child.dataset ? child.dataset.msgKey : null;
-          if (!key || !wantedKeys.has(key)) child.remove();
-        }
-
-        // 2. Reconcile in order. Reuse a node if its key matches; else
-        //    look ahead for a matching node and move it; else create one.
-        for (let i = 0; i < wanted.length; i++) {
-          const w = wanted[i];
-          let node = root.children[i];
-          if (!node || node.dataset.msgKey !== w.key) {
-            // Look ahead — maybe the right node is further down (insertion
-            // case). If found, move it. Else create.
-            let found = null;
-            for (let j = i + 1; j < root.children.length; j++) {
-              if (root.children[j].dataset && root.children[j].dataset.msgKey === w.key) {
-                found = root.children[j];
-                break;
-              }
-            }
-            if (found) {
-              root.insertBefore(found, root.children[i] || null);
-              node = found;
-            } else {
-              node = document.createElement('div');
-              node.dataset.msgKey = w.key;
-              if (i >= root.children.length) root.appendChild(node);
-              else root.insertBefore(node, root.children[i]);
-            }
-          }
-          this._paint(w, node);
-        }
-      },
-
-      // Build the desired-children intent list from ChatState.turns.
-      //
-      // Assistant turns are GROUPED: an agentic turn (one user message) is N SDK
-      // assistant messages, each with its own wire turnId → N ChatState turns.
-      // We collapse the maximal RUN of consecutive assistant turns (broken by a
-      // user turn, banner, or error) into ONE timeline so a multi-step turn
-      // renders as a single collapsible activity, not N stacked timelines.
-      _plan() {
-        const out = [];
-        const turns = ChatState.turns;
-        let i = 0;
-        while (i < turns.length) {
-          const turn = turns[i];
-          if (turn.role === 'user') {
-            out.push({ key: turn.key + '|u', kind: 'user', turn: turn, seg: null });
-            i++; continue;
-          }
-          if (turn.status === 'banner') {
-            out.push({ key: turn.key + '|b', kind: 'banner', turn: turn, seg: null });
-            i++; continue;
-          }
-          if (turn.status === 'error') {
-            out.push({ key: turn.key + '|e', kind: 'error', turn: turn, seg: null });
-            i++; continue;
-          }
-          // #124: a background-DELIVERED result is a standalone answer, never
-          // part of an agentic run. If it were merged into a run that later
-          // gains a tool, its text would be absorbed into the collapsed
-          // timeline "work" section and its "from a background task" chip
-          // lost. Render it as its own single-turn run so the answer bubble
-          // (with the chip) always shows.
-          if (turn.delivery) {
-            this._planRun([turn], out, false);
-            i++; continue;
-          }
-          // Collect the run. With a turn-complete-capable server, group the
-          // maximal run of consecutive assistant turns into one timeline. With
-          // an OLDER server (no turn-complete capability), DON'T group — each
-          // assistant turn is its own timeline that settles on its own done, so
-          // nothing waits on a turn-complete that will never arrive.
-          const grouped = State.serverSupportsTurnComplete !== false;
-          const run = [];
-          if (grouped) {
-            // Stop at a delivered turn too — it's handled standalone above, so
-            // a normal run must not swallow a following delivery.
-            while (i < turns.length
-                && turns[i].role === 'assistant'
-                && turns[i].status !== 'banner'
-                && turns[i].status !== 'error'
-                && !turns[i].delivery) {
-              run.push(turns[i]);
-              i++;
-            }
-          } else {
-            run.push(turns[i]);
-            i++;
-          }
-          this._planRun(run, out, grouped);
-        }
-        return out;
-      },
-
-      // Plan ONE run of consecutive assistant turns. The run's segments are
-      // flattened (tagged with their source turn so a tool step can resolve its
-      // own turnId). A run with ANY tool renders its "work" (everything up to &
-      // including the LAST tool — interim text + tool calls) as ONE collapsible
-      // timeline; text AFTER the last tool is the "answer", rendered as normal
-      // bubbles below. A run with no tools is plain text bubble(s), unchanged.
-      _planRun(run, out, grouped) {
-        const anchor = run[0];
-        // Flatten: [{ seg, turn }] across the whole run.
-        const merged = [];
-        for (const t of run) {
-          for (const s of t.segments) merged.push({ seg: s, turn: t });
-        }
-        if (merged.length === 0) {
-          // Streaming placeholder with nothing yet -> typing dots.
-          out.push({ key: anchor.key + '|typing', kind: 'typing', turn: anchor, seg: null });
-          return;
-        }
-        // When grouped (turn-complete server): settled = the SDK `result`
-        // arrived (turn-complete → markRunSettled). Keyed on the LAST turn (not
-        // `.some`): identical for a normal turn (turn-complete marks the whole
-        // trailing run), but if two agentic turns merge into one run with no
-        // user turn between them (cross-client / proactive — the moon only makes
-        // user turns for its OWN sends), keying on the tail keeps the timeline
-        // EXPANDED while the newest turn streams instead of collapsing on the
-        // earlier turn's settle. (Properly splitting that merge needs a user
-        // turn on `user-accepted` — separate.)
-        // When NOT grouped (older server): the run is a single turn; settle on
-        // its own `assistant-done` (status), the pre-grouping behavior.
-        const last = run[run.length - 1];
-        const settled = grouped
-          ? (last._settled === true)
-          : (last.status === 'done' || last.status === 'error');
-        let lastToolIndex = -1;
-        for (let k = 0; k < merged.length; k++) {
-          if (merged[k].seg.kind === 'tool') lastToolIndex = k;
-        }
-        if (lastToolIndex === -1) {
-          for (let k = 0; k < merged.length; k++) {
-            out.push({ key: anchor.key + '|t' + k, kind: 'text', turn: merged[k].turn, seg: merged[k].seg });
-          }
-          return;
-        }
-        out.push({
-          key: anchor.key + '|tl', kind: 'timeline', turn: anchor, seg: null,
-          merged: merged, lastToolIndex: lastToolIndex, settled: settled,
-        });
-        // Answer = text after the last tool across the run. Key by ABSOLUTE
-        // merged index so a surviving answer window stays stable if a later
-        // tool reflows the split.
-        for (let k = lastToolIndex + 1; k < merged.length; k++) {
-          const m = merged[k];
-          if (m.seg.kind === 'text') {
-            out.push({ key: anchor.key + '|t' + k, kind: 'text', turn: m.turn, seg: m.seg });
-          }
-        }
-      },
-
-      _paint(w, node) {
-        // Compute desired className. For a timeline the COLLAPSED state is part
-        // of the class so the className reset below preserves it on a sig-skip
-        // re-paint — otherwise re-rendering a settled (collapsed) timeline when
-        // a LATER turn arrives would wipe `collapsed` (it's only re-applied
-        // inside _paintTimeline, which the sig-skip early-return skips).
-        let cls;
-        switch (w.kind) {
-          case 'user':    cls = 'msg user'; break;
-          case 'banner':  cls = 'msg assistant'; break;
-          case 'error':   cls = 'msg assistant error'; break;
-          case 'typing':  cls = 'msg assistant'; break;
-          case 'text':    cls = 'msg assistant'; break;
-          case 'timeline': {
-            const collapsed = (w.turn._timelineCollapsed !== undefined)
-              ? w.turn._timelineCollapsed : w.settled;
-            cls = collapsed ? 'timeline collapsed' : 'timeline';
-            break;
-          }
-        }
-        if (node.className !== cls) node.className = cls;
-
-        // Carry turn-id and turn-key on the node so legacy DOM consumers
-        // (and tests) can correlate sibling children back to their turn.
-        const turnId = w.turn && w.turn.turnId ? String(w.turn.turnId) : '';
-        if (turnId && node.dataset.turnId !== turnId) node.dataset.turnId = turnId;
-
-        // Signature check — skip work if visible content is unchanged.
-        const sig = this._sigOf(w);
-        if (node.dataset.sig === sig) return;
-        node.dataset.sig = sig;
-
-        switch (w.kind) {
-          case 'user':    return this._paintUser(w, node);
-          case 'banner':  return this._paintBanner(w, node);
-          case 'error':   return this._paintError(w, node);
-          case 'typing':  return this._paintTyping(node);
-          case 'text':    return this._paintText(w, node);
-          case 'timeline': return this._paintTimeline(w, node);
-        }
-      },
-
-      _sigOf(w) {
-        const t = w.turn;
-        if (w.kind === 'user') {
-          let text = '';
-          for (const s of t.segments) if (s.kind === 'text') text += s.raw;
-          return 'U|' + text + '|' + (t.previews ? t.previews.length : 0);
-        }
-        if (w.kind === 'banner') {
-          let text = '';
-          for (const s of t.segments) if (s.kind === 'text') text += s.raw;
-          return 'B|' + text;
-        }
-        if (w.kind === 'error') return 'E|' + (t.errorText || '');
-        if (w.kind === 'typing') return 'TYP';
-        if (w.kind === 'text') return 'T|' + (w.seg.done ? '1' : '0') + '|' + w.seg.raw;
-        if (w.kind === 'timeline') {
-          // Hash the COMPUTED collapsed value (+ settled) so the auto-collapse
-          // on `turn-complete` repaints even while turn._timelineCollapsed is
-          // still undefined; plus every work step's content/status across the
-          // merged run. Pure fn of state. (`t` is the run's anchor turn.)
-          const collapsed = (t._timelineCollapsed !== undefined)
-            ? t._timelineCollapsed : w.settled;
-          let sig = 'TL|' + (w.settled ? 'S' : 's') + '|' + (collapsed ? 'c' : 'o') + '|' + w.lastToolIndex;
-          for (let i = 0; i <= w.lastToolIndex; i++) {
-            const m = w.merged[i];
-            if (!m) continue;
-            const s = m.seg;
-            if (s.kind === 'text') {
-              sig += '|t' + (s.done ? '1' : '0') + ':' + s.raw;
-            } else {
-              let inputSig;
-              try { inputSig = JSON.stringify(s.input); } catch (_) { inputSig = String(s.input); }
-              sig += '|k' + s.id + ':' + s.name + ':' + inputSig
-                + (s.result ? (':R' + (s.result.ok ? '1' : '0') + ':' + s.result.output
-                  + ':' + (s.result.truncated ? '1' : '0')) : ':P');
-            }
-          }
-          return sig;
-        }
-        return 'X|' + w.kind;
-      },
-
-      _paintUser(w, node) {
-        node.textContent = '';
-        let text = '';
-        for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
-        // Message content lives in .msg-body so the meta footer's time text
-        // doesn't bleed into the bubble's textContent.
-        const body = document.createElement('div');
-        body.className = 'msg-body';
-        if (text) body.appendChild(document.createTextNode(text));
-        if (w.turn.previews && w.turn.previews.length) {
-          body.appendChild(this._buildPreviewTray(w.turn.previews, !!text));
-        }
-        node.appendChild(body);
-        // Always-visible action row: copy + relative send-time (skip image-only).
-        // NOTE: meta rows attach ONLY here and in _paintText — keep the two in
-        // sync (banners/errors/typing/timelines intentionally have none).
-        if (text) node.appendChild(buildMessageMeta(text, w.turn.ts));
-      },
-
-      _paintBanner(w, node) {
-        // Banner text is plain — no markdown — so the operator can read e.g.
-        // "Connection lost — try again." literally. Content wraps in .msg-body
-        // (the painted bubble) like every other .msg kind.
-        node.textContent = '';
-        let text = '';
-        for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
-        const body = document.createElement('div');
-        body.className = 'msg-body';
-        if (text) body.appendChild(document.createTextNode(text));
-        node.appendChild(body);
-      },
-
-      _paintError(w, node) {
-        node.textContent = '';
-        const body = document.createElement('div');
-        body.className = 'msg-body';
-        body.textContent = '⚠️ Error: ' + (w.turn.errorText || '');
-        node.appendChild(body);
-      },
-
-      _paintTyping(node) {
-        node.innerHTML = '<div class="msg-body"><div class="typing-dots">'
-          + '<div class="dot"></div>'
-          + '<div class="dot"></div>'
-          + '<div class="dot"></div>'
-          + '</div></div>';
-      },
-
-      _paintText(w, node) {
-        const seg = w.seg;
-        const fn = seg.done ? renderMarkdown : renderMarkdownStreaming;
-        // Rendered markdown lives in .msg-body so the meta footer's time text
-        // stays out of the bubble's textContent.
-        node.textContent = '';
-        const body = document.createElement('div');
-        body.className = 'msg-body';
-        body.innerHTML = fn(seg.raw);
-        node.appendChild(body);
-        // Editor-feel: syntax-highlight + wire copy buttons on every code
-        // block in the freshly-painted subtree. Cheap, idempotent, and the
-        // streaming path is already rAF-coalesced upstream.
-        enhanceCodeBlocks(node);
-        // Legacy hook: mirror the raw stream text to a dataset attribute so
-        // anything (tests, the old protocol's `data-stream-raw` snoops) can
-        // still read it. Authoritative source is ChatState.
-        node.dataset.streamRaw = seg.raw;
-        // Settled answers get the action row (copy + send-time). Gated on
-        // `done` so a still-streaming bubble doesn't sprout (and re-sprout,
-        // every coalesced frame) the row — it appears when the text is final.
-        // The other (and only other) meta-row attach point is _paintUser.
-        // #124: pass the turn's delivery marker so a background-delivered
-        // result shows the "from a background task" chip.
-        if (seg.done && seg.raw) node.appendChild(buildMessageMeta(seg.raw, w.turn.ts, w.turn.delivery));
-      },
-
-      // Build one tool card as a self-contained `.tool-call-card` (a <div>
-      // wrapping a native <details>): summary (chevron + name + status pill) +
-      // body (input + result). Carries data-tool-call-id + data-turn-id so the
-      // timeline, the legacy appendToolCallCard/attachToolResult adapters, and
-      // the tests can all find it. Rebuilt fresh each paint (the inner <details>
-      // open-state resets on result arrival — the interesting moment).
-      buildToolStep(seg, turnId) {
-        const card = document.createElement('div');
-        card.className = 'tool-call-card';
-        if (seg.id) card.dataset.toolCallId = String(seg.id);
-        if (turnId) card.dataset.turnId = String(turnId);
-
-        const details = document.createElement('details');
-        const summary = document.createElement('summary');
-
-        const chev = document.createElement('span');
-        chev.className = 'tool-card-chevron';
-        chev.textContent = '▸';
-        summary.appendChild(chev);
-
-        const nameEl = document.createElement('span');
-        nameEl.className = 'tool-card-name';
-        // Agent/Task tool: show "↳ Agent — <description>" with optional subagent_type.
-        const isAgent = (seg.name === 'Agent' || seg.name === 'Task');
-        const agentDesc = isAgent && seg.input && typeof seg.input.description === 'string'
-          ? seg.input.description : null;
-        const nestPrefix = seg.parentToolUseId ? '↳ ' : '';
-        if (agentDesc) {
-          nameEl.textContent = nestPrefix + 'Agent — ' + agentDesc;
-          summary.appendChild(nameEl);
-          const subtype = seg.input && typeof seg.input.subagent_type === 'string'
-            ? seg.input.subagent_type : null;
-          if (subtype) {
-            const sub = document.createElement('span');
-            sub.className = 'tool-card-subtype';
-            sub.style.cssText = 'opacity:0.55;font-size:0.85em;margin-left:0.4em';
-            sub.textContent = subtype;
-            summary.appendChild(sub);
-          }
-        } else {
-          nameEl.textContent = nestPrefix + seg.name;
-          summary.appendChild(nameEl);
-        }
-
-        const status = document.createElement('span');
-        status.className = 'tool-card-status';
-        if (!seg.result) {
-          status.classList.add('tool-card-status-pending');
-          status.textContent = '…';
-        } else if (seg.result.ok) {
-          status.classList.add('tool-card-status-ok');
-          status.textContent = '✓';
-        } else {
-          status.classList.add('tool-card-status-error');
-          status.textContent = '✗';
-        }
-        summary.appendChild(status);
-
-        // S4: a TOP-LEVEL delegation gets a "view ↗" link that jumps to the
-        // live Agents panel for this thread. Only the top-level spawn (no
-        // parentToolUseId) — nested Agent steps share the same panel. The
-        // button stops propagation so it never toggles the <details>.
-        if (isAgent && !seg.parentToolUseId) {
-          const view = document.createElement('button');
-          view.type = 'button';
-          view.className = 'agent-view-link';
-          view.textContent = 'view ↗';
-          view.title = 'Open the live agents panel';
-          view.style.cssText =
-            'margin-left:0.5em;font-size:0.82em;background:none;border:none;color:var(--accent,#8ab4f8);cursor:pointer;padding:0;';
-          view.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const thread = State.activeThreadId || PINNED_THREAD || null;
-            if (window.__TAURI__ && window.__TAURI__.core && thread) {
-              window.__TAURI__.core
-                .invoke('open_widget', { kind: 'agents', params: { thread: thread } })
-                .catch((err) => Logger.warn('open agents panel failed:', err));
-            }
-          });
-          summary.appendChild(view);
-        }
-
-        details.appendChild(summary);
-
-        const body = document.createElement('div');
-        body.className = 'tool-card-body';
-
-        const inputLabel = document.createElement('div');
-        inputLabel.className = 'tool-card-section-label';
-        inputLabel.textContent = 'input';
-        body.appendChild(inputLabel);
-
-        const input = document.createElement('pre');
-        input.className = 'tool-card-input';
-        try {
-          // Elide long string values so a huge subagent prompt doesn't bloat
-          // the collapsed details. Threshold: 400 chars per string field.
-          const CLAMP = 400;
-          const clampedInput = seg.input && typeof seg.input === 'object'
-            ? Object.fromEntries(Object.entries(seg.input).map(([k, v]) => {
-                if (typeof v === 'string' && v.length > CLAMP) {
-                  return [k, v.slice(0, CLAMP) + '… (+' + (v.length - CLAMP) + ' chars)'];
-                }
-                return [k, v];
-              }))
-            : seg.input;
-          input.textContent = JSON.stringify(clampedInput, null, 2);
-        } catch (_) { input.textContent = String(seg.input); }
-        body.appendChild(input);
-
-        if (seg.result) {
-          const rLabel = document.createElement('div');
-          rLabel.className = 'tool-card-section-label';
-          rLabel.textContent = 'result';
-          body.appendChild(rLabel);
-
-          const output = document.createElement('pre');
-          output.className = 'tool-card-output';
-          output.textContent = seg.result.output;
-          body.appendChild(output);
-
-          if (seg.result.truncated) {
-            const trunc = document.createElement('div');
-            trunc.className = 'tool-card-truncated';
-            trunc.textContent = '(output truncated)';
-            body.appendChild(trunc);
-          }
-        }
-
-        details.appendChild(body);
-        card.appendChild(details);
-        return card;
-      },
-
-      _paintTimeline(w, node) {
-        // Gemini-style collapsible "activity" for a tool-using agentic turn —
-        // ONE timeline over the merged RUN of consecutive assistant turns.
-        // Collapse state lives on the run's anchor turn (ChatState), NOT the
-        // DOM, so it survives the per-frame re-render: expanded while the turn
-        // is in flight, auto-collapsed once `turn-complete` settles it; an
-        // explicit user toggle (delegated click) pins it.
-        const turn = w.turn;          // anchor turn — owns the collapse override
-        node.dataset.turnKey = turn.key;
-        const collapsed = (turn._timelineCollapsed !== undefined)
-          ? turn._timelineCollapsed : w.settled;
-        node.classList.toggle('collapsed', collapsed);
-        node.textContent = '';
-
-        // Summary header (the click target — see the delegated listener).
-        const summary = document.createElement('div');
-        summary.className = 'timeline-summary';
-        const chev = document.createElement('span');
-        chev.className = 'timeline-chevron';
-        chev.textContent = '▸';
-        summary.appendChild(chev);
-        const label = document.createElement('span');
-        label.className = 'timeline-summary-label';
-        if (w.settled) {
-          const n = w.lastToolIndex + 1;
-          label.textContent = 'Worked for ' + n + ' step' + (n === 1 ? '' : 's');
-        } else {
-          label.textContent = 'Working on it…';
-        }
-        summary.appendChild(label);
-        if (!w.settled) {
-          const dots = document.createElement('div');
-          dots.className = 'typing-dots';
-          dots.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
-          summary.appendChild(dots);
-        }
-        node.appendChild(summary);
-
-        if (collapsed) return; // body hidden — just the summary pill
-
-        const body = document.createElement('div');
-        body.className = 'timeline-body';
-        for (let i = 0; i <= w.lastToolIndex; i++) {
-          const m = w.merged[i];
-          if (!m) continue;
-          const seg = m.seg;
-          const step = document.createElement('div');
-          step.className = 'timeline-step';
-          const icon = document.createElement('span');
-          icon.className = 'timeline-step-icon';
-          const content = document.createElement('div');
-          content.className = 'timeline-step-content';
-          if (seg.kind === 'tool') {
-            const state = !seg.result ? 'pending' : (seg.result.ok ? 'ok' : 'error');
-            icon.innerHTML = '<span class="tl-dot ' + state + '"></span>';
-            content.appendChild(this.buildToolStep(seg, m.turn.turnId));
-          } else {
-            icon.textContent = '🌙';
-            const txt = document.createElement('div');
-            txt.className = 'timeline-step-text';
-            const fn = seg.done ? renderMarkdown : renderMarkdownStreaming;
-            txt.innerHTML = fn(seg.raw);
-            enhanceCodeBlocks(txt);
-            txt.dataset.streamRaw = seg.raw; // mirror _paintText's legacy hook
-            content.appendChild(txt);
-          }
-          step.appendChild(icon);
-          step.appendChild(content);
-          body.appendChild(step);
-        }
-        node.appendChild(body);
-      },
-
-      _buildPreviewTray(previews, hasText) {
-        const tray = document.createElement('div');
-        tray.className = 'attachments-strip';
-        tray.hidden = false;
-        tray.style.marginTop = hasText ? '8px' : '0';
-        for (const p of previews) {
-          const chip = document.createElement('div');
-          chip.className = 'attachment-chip';
-          if (p.kind === 'image' && p.src) {
-            const img = document.createElement('img');
-            img.className = 'att-thumb';
-            img.src = p.src;
-            img.alt = p.name;
-            chip.appendChild(img);
-          } else {
-            const icon = document.createElement('span');
-            icon.className = 'att-icon';
-            icon.textContent = (p.name.split('.').pop() || 'file').slice(0, 4);
-            chip.appendChild(icon);
-          }
-          const name = document.createElement('span');
-          name.className = 'att-name';
-          name.textContent = p.name;
-          chip.appendChild(name);
-          tray.appendChild(chip);
-        }
-        return tray;
-      },
-    };
-
-    // ========================================================================
-    // CHAT LOOP  ─  rAF-coalesced render scheduler. schedule() is idempotent
-    // within a frame; flush() forces synchronous render (used by frames where
-    // a still-pending frame could otherwise clobber final state).
-    // ========================================================================
-    const ChatLoop = {
-      _pending: 0,
-      schedule() {
-        if (this._pending) return;
-        // Sentinel-first so a synchronously-firing rAF (as used by jsdom test
-        // mocks) clears the flag before the outer assignment can stomp it.
-        this._pending = -1;
-        const id = requestAnimationFrame(() => {
-          this._pending = 0;
-          this._render();
-        });
-        // If the callback already cleared _pending (sync rAF), leave it; else
-        // record the real frame id so flush() can cancel.
-        if (this._pending === -1) this._pending = id || -1;
-      },
-      flush() {
-        if (this._pending && this._pending > 0) {
-          cancelAnimationFrame(this._pending);
-        }
-        this._pending = 0;
-        this._render();
-      },
-      _render() {
-        const el = DOM.chatMessages;
-        if (!el) return;
-        // Stick to bottom ONLY if the user was already near the bottom before
-        // this render — so expanding/collapsing an older timeline (or a tool
-        // card) doesn't yank the viewport down. Streaming stays pinned because
-        // the user sits at the bottom while a turn streams.
-        const wasNearBottom =
-          (el.scrollHeight - el.scrollTop - el.clientHeight) <= 40;
-        ChatRenderer.render(el);
-        if (wasNearBottom) el.scrollTop = el.scrollHeight;
-      },
-    };
+    var ChatState;
+    var ChatLoop;
 
     const ChatEngine = {
       // ----------------------------------------------------------------------
@@ -10582,9 +9095,8 @@
         State.pendingUserMessage = null;
         // The composer draft and staged attachments deliberately survive the
         // switch - they carry into the fresh thread, ready to send.
-        DOM.chatMessages.innerHTML = '';
+        ChatState.reset();
         this.appendMessage('assistant', 'New conversation started. Type a message below!');
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
         if (WebSocketEngine.isConnected()) {
           State.pendingFreshThread = false;
           WebSocketEngine.sendNewThread();
@@ -11521,21 +10033,22 @@
     // this window's UI). preventDefault() keeps the page intact; window.open is
     // best-effort.
     DOM.chatMessages.addEventListener('click', (e) => {
-      // Activity-timeline collapse toggle. State lives on the turn (ChatState),
-      // not the DOM, so it survives the per-frame re-render. Delegated here
-      // because _paintTimeline rebuilds the header node every paint.
+      // Activity-timeline collapse toggle. State lives on the turn
+      // (ChatModel), not the DOM, so it survives the per-frame re-render.
+      // Delegated here because MessageList.tsx rebuilds the header node
+      // every paint.
       const tlSummary = e.target.closest && e.target.closest('.timeline-summary');
       if (tlSummary) {
-        const node = tlSummary.closest('[data-msg-key]');
+        const node = tlSummary.closest('[data-turn-key]');
         // `turnKey` is the run's ANCHOR turn — it owns the collapse override.
-        const turn = node && ChatState.turns.find((t) => t.key === node.dataset.turnKey);
-        if (turn) {
+        const turnKey = node && node.dataset.turnKey;
+        if (turnKey) {
           // Pin the OPPOSITE of what's currently rendered. Reading the DOM's
           // `.collapsed` class (rather than recomputing the auto-default) keeps
           // the toggle correct regardless of whether the auto value is settled-
           // driven or a prior explicit pin.
           const currentlyCollapsed = node.classList.contains('collapsed');
-          turn._timelineCollapsed = !currentlyCollapsed;
+          ChatState.toggleTimelineCollapsed(turnKey, currentlyCollapsed);
           ChatLoop.schedule();
         }
         return;
@@ -11875,7 +10388,8 @@
                 State.activeTurnId = null;
                 State.pendingUserMessage = null;
                 State.skipLastThreadFile = true;
-                if (DOM.chatMessages) DOM.chatMessages.innerHTML = '';
+                ChatState.reset();
+                ChatLoop.flush();
                 await loadConnectionAndConnect();
               })
               .catch((err) => Logger.warn(`hub-event ${p.name} failed:`, err));
@@ -11984,9 +10498,13 @@
       window.__MoonInternals.PoolEngine = PoolEngine;
       window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
       window.__MoonInternals.State = State;
-      window.__MoonInternals.ChatState = ChatState;
-      window.__MoonInternals.ChatRenderer = ChatRenderer;
-      window.__MoonInternals.ChatLoop = ChatLoop;
+      // ChatState / ChatLoop: NOT assigned here - at this point in the
+      // classic script's own synchronous run they're still the unset `var`
+      // forward-declarations (see the CHAT MODEL / RENDERER / LOOP comment
+      // above). main-chat.tsx (the module script, always running after this
+      // one) patches window.__MoonInternals.ChatState/.ChatLoop itself once
+      // MessageList.tsx actually mounts the real bridge. ChatRenderer has no
+      // replacement - it was the DOM-diff half this slice deleted outright.
       window.__MoonInternals.ChatEngine = ChatEngine;
       window.__MoonInternals.VoiceEngine = VoiceEngine;
       window.__MoonInternals.LocalShell = LocalShell;
