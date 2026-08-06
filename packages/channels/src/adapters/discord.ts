@@ -32,14 +32,28 @@
  * gate is sound. Keep the `authorBot` filter, and keep the application set to
  * non-public in the developer portal so nobody else can invite the bot.
  *
- * v1 is TEXT-ONLY. Inbound attachments are ignored (the donor never
- * downloaded them either); `telegram.ts`'s download/sniff pipeline is the
- * template when that lands.
+ * Inbound image/PDF attachments (Slice 4) are validated against the shared
+ * @luna/core attachment limits BEFORE any bytes are fetched (declared type,
+ * declared size, per-turn count and byte budget), downloaded via the CDN
+ * PROXY url under an AbortSignal, then re-verified against the actual bytes
+ * (magic-byte sniff, actual size). Refusals are per-attachment decisions
+ * answered with an emitted user-facing note; a refused or failed attachment
+ * never silently drops the turn's text.
  */
+import { Buffer } from "node:buffer"
 import { Duration, Effect, Either, Fiber, Redacted } from "effect"
 import { Client, Events, GatewayIntentBits, Partials, Routes } from "discord.js"
+import {
+  ALLOWED_ATTACHMENT_MEDIA_TYPES,
+  MAX_ATTACHMENTS_PER_TURN,
+  MAX_IMAGE_RAW_BYTES,
+  MAX_PDF_RAW_BYTES,
+  MAX_TURN_RAW_BYTES,
+  attachmentByteCap,
+} from "@luna/core"
 import type {
   ChannelAdapter,
+  ChannelAttachment,
   ChannelMessage,
   DeliverOptions,
   DeliveryTarget,
@@ -58,6 +72,27 @@ import type {
  * lib/discord/markdown.ts (MAX_LEN = 1900, "leave room for overhead").
  */
 const DISCORD_MAX_MESSAGE_LENGTH = 1900
+
+/**
+ * Longest edge, in pixels, above which an inbound image download asks the
+ * Discord CDN to downscale server-side (?width=&height= on the proxy url)
+ * before the bytes ever move. Ported from Sol Agent
+ * lib/discord/attachments.ts (MAX_IMAGE_PX): the Anthropic API scales any
+ * image past this edge down to it anyway, so shipping more pixels is pure
+ * bandwidth. Adapter-LOCAL on purpose: this is a Discord-CDN downscale
+ * knob, not an @luna/core ingestion limit, so it does not belong in
+ * attachment-limits.ts. Exported for the spec's pin test. GIFs are never
+ * resized: the CDN flattens the animation, a destructive surprise.
+ */
+export const discordMaxImagePx = 1568
+
+/**
+ * Bounds one attachment download. The donor's bare no-timeout fetch is
+ * refused (undici's defaults can pin a handler for minutes); telegram
+ * bounds its download step at 60s, tighter here because the CDN serves
+ * static bytes.
+ */
+const ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 30_000
 
 /** Attempts for a rate-limited (429) REST call before giving up. */
 const MAX_RATE_LIMIT_ATTEMPTS = 3
@@ -204,6 +239,34 @@ export const stripExpandableQuoteMarker = (content: string): string =>
 /* -------------------------------------------------------------------------- */
 
 /**
+ * One inbound attachment as Discord DECLARES it, pre-download. Field names
+ * mirror discord.js `Attachment`, so the real transport's normalization is a
+ * straight map. `contentType`, `width` and `height` are null-tolerant
+ * because discord.js's types lie in production (donor
+ * lib/discord/attachments.ts). `size` is the declared byte count and may lie
+ * too: it is trusted only for the cheap pre-download refusals, never as the
+ * final word (the actual byte length is re-checked after download).
+ *
+ * Deliberately NOT named with the `Inbound*` prefix: that namespace is
+ * reserved for the gated dispatch-callback payloads, and the invariant
+ * file's bidirectional cross-check REDs on any other `Inbound*` export.
+ */
+export interface DiscordAttachmentDescriptor {
+  readonly id: string
+  readonly name: string
+  /** Declared size in bytes. Discord reports it pre-download; it may lie. */
+  readonly size: number
+  /** Declared MIME. Null happens in production and fails CLOSED. */
+  readonly contentType: string | null
+  /** Direct CDN url. Never fetched: rewriting it drops its auth params. */
+  readonly url: string
+  /** Proxy CDN url, auth params intact. The only legitimate fetch target. */
+  readonly proxyURL: string
+  readonly width: number | null
+  readonly height: number | null
+}
+
+/**
  * A Discord message, normalized to what this adapter actually needs.
  * Decoupling from discord.js's `Message` is what makes the allowlist
  * testable without a live gateway connection.
@@ -226,6 +289,12 @@ export interface InboundDiscordMessage {
   readonly isDM: boolean
   /** ISO-8601. */
   readonly createdAt: string
+  /**
+   * Attachments as Discord declared them, UN-downloaded. The adapter
+   * enforces the @luna/core limits against these before fetching any bytes.
+   * Optional: text-only messages omit it.
+   */
+  readonly attachments?: ReadonlyArray<DiscordAttachmentDescriptor> | undefined
 }
 
 /**
@@ -389,6 +458,16 @@ export interface DiscordTransport {
     guildId: string,
     commands: ReadonlyArray<unknown>,
   ) => Promise<void>
+  /**
+   * Download one attachment's bytes (Slice 4). Callers hand this the CDN
+   * PROXY url with its auth params intact and an AbortSignal bound to
+   * ATTACHMENT_DOWNLOAD_TIMEOUT_MS; the direct cdn url is never fetched,
+   * because rebuilding it drops the ?ex=&is=&hm= auth params, a guaranteed
+   * 403 (donor commit 0ca615e). Reject = download failure; the caller folds
+   * it into a per-attachment refusal, never a turn failure. The real
+   * implementation never reads process.env (hazard H2).
+   */
+  readonly fetchAttachment: (url: string, init?: { readonly signal?: AbortSignal }) => Promise<Uint8Array>
 }
 
 /**
@@ -433,6 +512,24 @@ export const makeRealDiscordTransport = (
             parentId: isThread ? ((channel as { parentId?: string }).parentId ?? undefined) : undefined,
             isDM: typeof channel.isDMBased === "function" && channel.isDMBased(),
             createdAt: new Date(m.createdTimestamp).toISOString(),
+            // A straight map of discord.js's Attachment fields; the nulls
+            // are real (see DiscordAttachmentDescriptor). No filtering here:
+            // the DECISIONS about these all live behind the gate, in the
+            // adapter's ingestion pipeline.
+            ...(m.attachments.size > 0
+              ? {
+                  attachments: [...m.attachments.values()].map((a) => ({
+                    id: a.id,
+                    name: a.name ?? "attachment",
+                    size: a.size,
+                    contentType: a.contentType,
+                    url: a.url,
+                    proxyURL: a.proxyURL,
+                    width: a.width,
+                    height: a.height,
+                  })),
+                }
+              : {}),
           })
         } catch (err) {
           console.error("[discord-adapter] inbound normalization failed:", err)
@@ -518,7 +615,215 @@ export const makeRealDiscordTransport = (
       // discord-api-types' own Routes helper, so it is always a RouteLike.
       await putGuildCommands(client.rest as unknown as GuildCommandsRest, appId, guildId, commands)
     },
+    fetchAttachment: async (url, init) => {
+      // A plain HTTPS GET of exactly the url handed in: this function must
+      // not rewrite the url (the proxy auth params are load-bearing) and
+      // must not read process.env (hazard H2). The AbortSignal is the
+      // caller's; undici honours it mid-body, not just pre-connect.
+      const res = await fetch(url, init?.signal !== undefined ? { signal: init.signal } : {})
+      if (!res.ok) {
+        throw new Error(`attachment download failed: HTTP ${res.status}`)
+      }
+      return new Uint8Array(await res.arrayBuffer())
+    },
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Inbound attachments (Slice 4)                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Magic-byte sniff for the five ingestible types. The declared content type
+ * is sender-controlled, so it is never the final authority: after download
+ * the actual bytes must match an allowed signature or the attachment is
+ * refused. Discord-local by design: telegram.ts holds its own private copy
+ * and is frozen for the whole Discord sequence.
+ */
+const sniffAttachmentMediaType = (bytes: Uint8Array): string | null => {
+  const startsWith = (sig: ReadonlyArray<number>, offset = 0): boolean =>
+    bytes.byteLength >= offset + sig.length && sig.every((b, i) => bytes[offset + i] === b)
+  if (startsWith([0x25, 0x50, 0x44, 0x46, 0x2d])) return "application/pdf" // %PDF-
+  if (startsWith([0xff, 0xd8, 0xff])) return "image/jpeg"
+  if (startsWith([0x89, 0x50, 0x4e, 0x47])) return "image/png"
+  if (startsWith([0x47, 0x49, 0x46, 0x38])) return "image/gif" // GIF8
+  if (startsWith([0x52, 0x49, 0x46, 0x46]) && startsWith([0x57, 0x45, 0x42, 0x50], 8)) {
+    return "image/webp" // RIFF....WEBP
+  }
+  return null
+}
+
+/**
+ * The url whose bytes actually move: always the PROXY url (donor 0ca615e:
+ * rebuilding the direct url drops its auth params, a guaranteed 403), with
+ * CDN resize params appended only when a non-GIF image DECLARES both
+ * dimensions and its longest edge exceeds discordMaxImagePx. Null
+ * dimensions are not an error (discord.js's types lie): the fetch proceeds
+ * un-resized. GIFs are never resized; the CDN would flatten the animation.
+ */
+const attachmentFetchUrl = (a: DiscordAttachmentDescriptor, declaredType: string): string => {
+  const resizable = declaredType.startsWith("image/") && declaredType !== "image/gif"
+  if (!resizable || a.width === null || a.height === null) return a.proxyURL
+  const longest = Math.max(a.width, a.height)
+  if (longest <= discordMaxImagePx) return a.proxyURL
+  const scale = discordMaxImagePx / longest
+  const u = new URL(a.proxyURL)
+  // searchParams.set APPENDS to the existing query, so the proxy url's
+  // auth params survive.
+  u.searchParams.set("width", String(Math.max(1, Math.round(a.width * scale))))
+  u.searchParams.set("height", String(Math.max(1, Math.round(a.height * scale))))
+  return u.toString()
+}
+
+/** One refused attachment: the sanitized echo name plus a generic reason. */
+interface AttachmentRefusal {
+  readonly name: string
+  readonly reason: string
+}
+
+/** Echo-safe filename: user-controlled, so strip it to a tame charset. */
+const safeAttachmentName = (name: string): string => {
+  const cleaned = name.replace(/[^\w .()-]/g, "").slice(0, 64).trim()
+  return cleaned.length > 0 ? cleaned : "attachment"
+}
+
+/** Echo-safe declared MIME (also user-controlled, via the uploading client). */
+const safeMimeEcho = (mime: string | null): string => {
+  if (mime === null) return "unknown"
+  const cleaned = mime.replace(/[^\w/+.-]/g, "").slice(0, 64)
+  return cleaned.length > 0 ? cleaned : "unknown"
+}
+
+const asMb = (bytes: number): number => Math.ceil(bytes / (1024 * 1024))
+
+const SUPPORTED_HINT = "I can read JPEG, PNG, GIF and WebP images and PDF files."
+
+/** Size-refusal copy. Both caps quoted FROM @luna/core, never re-stated. */
+const tooLargeReason = (bytes: number): string =>
+  `it is too large (${asMb(bytes)} MB). Images can be up to ` +
+  `${asMb(MAX_IMAGE_RAW_BYTES)} MB and PDFs up to ${asMb(MAX_PDF_RAW_BYTES)} MB`
+
+/**
+ * One EMITTED user-facing note per turn, covering every refusal. Reasons
+ * are generic by construction: no raw Error.message can enter (the same
+ * discipline as the interaction ack-failure log), and both echoed fields
+ * are sanitized above. Capped under the message budget so the note itself
+ * cannot be rejected for length.
+ */
+const attachmentRefusalNote = (refusals: ReadonlyArray<AttachmentRefusal>): string => {
+  const note = refusals
+    .map((r) => `⚠️ Skipped "${safeAttachmentName(r.name)}": ${r.reason}.`)
+    .join("\n")
+  return note.length > DISCORD_MAX_MESSAGE_LENGTH
+    ? `${note.slice(0, DISCORD_MAX_MESSAGE_LENGTH - 3)}...`
+    : note
+}
+
+/**
+ * Validate, download and re-verify a gated message's attachments.
+ *
+ * Size is enforced three times, mirroring fetchTelegramAttachment's
+ * deliberate discipline: the DECLARED size before any network call (the
+ * cheap refusal, and the DoS boundary: this bot fronts an unrestricted
+ * local shell, so an oversized "image" must be refused at a cost of ZERO
+ * bandwidth), the declared TURN total (everything accepted here rides one
+ * Anthropic request), and the ACTUAL byte length after download (declared
+ * sizes lie).
+ *
+ * Refusals are per-attachment: one bad file never takes down its siblings
+ * or the turn's text, and every refusal is collected for one emitted note
+ * (a silent drop is a task #5 FAIL condition). Overflow semantics are
+ * FIRST-N in arrival order for both the count cap and the turn budget;
+ * downloads run sequentially in that same order, so the transport sees a
+ * deterministic call sequence.
+ *
+ * After download the mediaType is re-derived from the bytes: a misnamed
+ * file whose actual type is itself ingestible is CORRECTED rather than
+ * refused (telegram parity), and the corrected type's cap applies, so a
+ * pdf-labelled JPEG answers to the image cap, not the pdf cap.
+ *
+ * Never rejects: the per-attachment try/catch folds download failures into
+ * refusals, and everything outside it is synchronous and total.
+ */
+const ingestDiscordAttachments = async (
+  t: DiscordTransport,
+  attachments: ReadonlyArray<DiscordAttachmentDescriptor>,
+): Promise<{
+  readonly accepted: ReadonlyArray<ChannelAttachment>
+  readonly refusals: ReadonlyArray<AttachmentRefusal>
+}> => {
+  const accepted: ChannelAttachment[] = []
+  const refusals: AttachmentRefusal[] = []
+  let downloads = 0
+  let declaredTurnBytes = 0
+  for (const a of attachments) {
+    // Phase 1: pre-download refusals, on DECLARED metadata only. Type
+    // first (the size cap depends on it, and null fails CLOSED), then the
+    // per-type size cap (inclusive: exactly-at-cap proceeds, telegram
+    // parity), then the count cap, then the turn budget. An attachment
+    // refused here consumes neither a download slot nor turn budget.
+    const declaredType = a.contentType === null ? null : a.contentType.trim().toLowerCase()
+    if (declaredType === null || !ALLOWED_ATTACHMENT_MEDIA_TYPES.has(declaredType)) {
+      refusals.push({
+        name: a.name,
+        reason: `its type (${safeMimeEcho(a.contentType)}) is not one I can read. ${SUPPORTED_HINT}`,
+      })
+      continue
+    }
+    if (a.size > attachmentByteCap(declaredType)) {
+      refusals.push({ name: a.name, reason: tooLargeReason(a.size) })
+      continue
+    }
+    if (downloads >= MAX_ATTACHMENTS_PER_TURN) {
+      refusals.push({
+        name: a.name,
+        reason: `only the first ${MAX_ATTACHMENTS_PER_TURN} attachments of a message are processed`,
+      })
+      continue
+    }
+    if (declaredTurnBytes + a.size > MAX_TURN_RAW_BYTES) {
+      refusals.push({
+        name: a.name,
+        reason: `this message's attachments add up past the ${asMb(MAX_TURN_RAW_BYTES)} MB per-message total`,
+      })
+      continue
+    }
+    declaredTurnBytes += a.size
+    downloads++
+    // Phase 2: the download, bounded by an AbortSignal and refusal-folded.
+    let bytes: Uint8Array
+    try {
+      bytes = await t.fetchAttachment(attachmentFetchUrl(a, declaredType), {
+        signal: AbortSignal.timeout(ATTACHMENT_DOWNLOAD_TIMEOUT_MS),
+      })
+    } catch (err) {
+      // message ONLY, never the raw object and never String(err): vendor
+      // errors carry enumerable url/route members and name getters (the
+      // 3a A5 discipline).
+      console.error(
+        "[discord-adapter] attachment download failed (turn continues):",
+        err instanceof Error ? err.message : String(err),
+      )
+      refusals.push({ name: a.name, reason: "the download failed. Please try sending it again" })
+      continue
+    }
+    // Phase 3: post-download defence. The bytes, not the claims: sniff
+    // first, then the actual length against the SNIFFED type's cap.
+    const sniffed = sniffAttachmentMediaType(bytes)
+    if (sniffed === null || !ALLOWED_ATTACHMENT_MEDIA_TYPES.has(sniffed)) {
+      refusals.push({
+        name: a.name,
+        reason: `its content does not match a type I can read. ${SUPPORTED_HINT}`,
+      })
+      continue
+    }
+    if (bytes.byteLength > attachmentByteCap(sniffed)) {
+      refusals.push({ name: a.name, reason: tooLargeReason(bytes.byteLength) })
+      continue
+    }
+    accepted.push({ mediaType: sniffed, data: Buffer.from(bytes).toString("base64") })
+  }
+  return { accepted, refusals }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -811,7 +1116,10 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
     )
   }
 
-  const toChannelMessage = (m: InboundDiscordMessage): ChannelMessage => ({
+  const toChannelMessage = (
+    m: InboundDiscordMessage,
+    attachments?: ReadonlyArray<ChannelAttachment>,
+  ): ChannelMessage => ({
     transport: "discord",
     channelId: m.channelId,
     senderId: m.authorId,
@@ -821,6 +1129,11 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
     text: m.content,
     platformMessageId: m.id,
     ts: m.createdAt,
+    // Only DOWNLOADED, limit-checked attachments ride to the service; the
+    // conditional spread keeps text-only messages shaped exactly as before
+    // (exactOptionalPropertyTypes: an explicit undefined is not the same
+    // as an absent key).
+    ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
     metadata: {
       guildId: m.guildId,
       isThread: m.isThread,
@@ -921,11 +1234,21 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
   /* Inbound                                                                 */
   /* ---------------------------------------------------------------------- */
 
-  const handleInbound = (m: InboundDiscordMessage): void => {
+  /**
+   * The gated MESSAGE inbound path: gate, then typing, then attachment
+   * ingestion, then dispatch. Async for the same reason handleInteraction
+   * is: the attachment downloads must be awaited before the ChannelMessage
+   * they ride on can dispatch. The body never rejects (everything sits
+   * inside the try/catch), so the floating promise the gateway listener
+   * holds is safe. Text-only messages reach their runFork with ZERO awaits
+   * on the way, preserving the pre-Slice-4 synchronous dispatch order.
+   */
+  const handleInbound = async (m: InboundDiscordMessage): Promise<void> => {
     try {
       // Never react to ourselves or to other bots — the fastest loop there is.
       if (m.authorBot || m.system) return
-      // GATE: before dispatch, before commands, before any session exists.
+      // GATE: before dispatch, before commands, before any session exists,
+      // and before any attachment costs a single byte of bandwidth.
       if (!isInboundAllowed(m)) {
         noteDrop(m, "message")
         return
@@ -939,7 +1262,35 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       // handler check, because otherwise the bot claims to be working on a
       // message that nothing will ever process.
       startTyping(m.channelId)
-      Effect.runFork(handler(toChannelMessage(m)))
+      const declared = m.attachments
+      if (declared === undefined || declared.length === 0) {
+        Effect.runFork(handler(toChannelMessage(m)))
+        return
+      }
+      const t = transport
+      if (t === null) return
+      const { accepted, refusals } = await ingestDiscordAttachments(t, declared)
+      if (refusals.length > 0) {
+        // Direct post-gate send, deliberately NOT via withRateLimitRetry
+        // or the delivery layer: the note is best-effort and must never be
+        // able to delay or fail the turn. EMITTED, not merely computed
+        // (hazard H2); .catch so a dead channel cannot reject the handler.
+        await t.send(m.channelId, attachmentRefusalNote(refusals)).catch((err) => {
+          console.error(
+            "[discord-adapter] attachment refusal note failed:",
+            err instanceof Error ? err.message : String(err),
+          )
+        })
+      }
+      if (accepted.length === 0 && m.content.length === 0) {
+        // Attachments-only message and nothing survived ingestion: the
+        // note above is the whole answer. Dispatching would hand the model
+        // an EMPTY turn (no text, no attachments). Retire the indicator
+        // explicitly, since no delivery will arrive to supersede it.
+        Effect.runFork(stopTyping(m.channelId))
+        return
+      }
+      Effect.runFork(handler(toChannelMessage(m, accepted)))
     } catch (err) {
       console.error("[discord-adapter] inbound handler error:", err)
     }

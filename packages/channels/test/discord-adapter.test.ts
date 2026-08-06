@@ -9,8 +9,18 @@
  * Also covered: fail-closed construction, the stream-edit message-id
  * lifecycle, 429 retry-after handling, and the cross-transport guard.
  */
+import { Buffer } from "node:buffer"
 import { describe, expect, it, vi } from "vitest"
 import { Duration, Effect, Fiber, Redacted } from "effect"
+// SLICE 4 — the limits are REUSED from @luna/core attachment-limits.ts, never
+// redefined. The implementation must import these same names (task #5 FAIL
+// condition: any locally redefined limit constant is an automatic FAIL).
+import {
+  MAX_ATTACHMENTS_PER_TURN,
+  MAX_IMAGE_RAW_BYTES,
+  MAX_PDF_RAW_BYTES,
+  MAX_TURN_RAW_BYTES,
+} from "@luna/core"
 import {
   discordCommandManifest,
   makeDiscordAdapter,
@@ -98,6 +108,32 @@ const wrapWithCallLog = <T extends object>(obj: T, log: TransportCallRecord[]): 
     },
   })
 
+/* -------------------------------------------------------------------------- */
+/* SLICE 4 — attachment byte fixtures (magic-byte-true, tiny)                   */
+/* -------------------------------------------------------------------------- */
+
+/** Bytes whose head carries a real file-type signature, padded to `len`. */
+const bytesWithMagic = (magic: ReadonlyArray<number>, len = 64): Uint8Array => {
+  const b = new Uint8Array(Math.max(len, magic.length))
+  b.set(magic)
+  return b
+}
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] // \x89PNG\r\n\x1a\n
+const GIF_MAGIC = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] // GIF89a
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] // %PDF-
+const smallPng = (): Uint8Array => bytesWithMagic(PNG_MAGIC)
+
+/**
+ * SLICE 4 — one record per attachment download the adapter attempts through
+ * the transport seam. `hasAbortSignal` is the timeout contract: the donor's
+ * bare `fetch` with no timeout (census Finding 4) is exactly what Luna's spec
+ * refuses to port, so every download must carry an AbortSignal.
+ */
+interface AttachmentFetchRecord {
+  readonly url: string
+  readonly hasAbortSignal: boolean
+}
+
 /** A fake DiscordTransport that records outbound calls and can fire inbound. */
 const makeFakeTransport = (opts?: {
   readonly sendImpl?: (channelId: string, content: string, attempt: number) => Promise<{ id: string }>
@@ -120,6 +156,13 @@ const makeFakeTransport = (opts?: {
    * make it fail. The Proxy log records the call either way.
    */
   readonly registerImpl?: (guildId: string, commands: ReadonlyArray<unknown>) => Promise<void>
+  /**
+   * Slice 4. Invoked for every attachment download attempt; reject to make
+   * the download fail. `call` is the 1-based transport-wide attempt index.
+   * When absent, the fake resolves a small REAL PNG (magic bytes intact) so
+   * the sniff-after-download check passes for image/png fixtures.
+   */
+  readonly fetchImpl?: (url: string, call: number) => Promise<Uint8Array>
 }) => {
   let msgCb: ((m: InboundDiscordMessage) => void) | null = null
   let interactionCb: ((i: FakeInboundInteraction) => void) | null = null
@@ -127,6 +170,7 @@ const makeFakeTransport = (opts?: {
   const sent: SendRecord[] = []
   const edits: EditRecord[] = []
   const typingCalls: TypingRecord[] = []
+  const fetchCalls: AttachmentFetchRecord[] = []
   const log: TransportCallRecord[] = []
   let idCounter = 0
   let sendAttempts = 0
@@ -214,6 +258,25 @@ const makeFakeTransport = (opts?: {
         await opts.registerImpl(guildId, commands)
       }
     },
+    /**
+     * SLICE 4 — RED BY DESIGN until the adapter downloads attachments.
+     * Download one attachment's bytes. The REAL implementation performs an
+     * HTTPS GET of the CDN **proxy** URL (never the direct url — commit
+     * 0ca615e in the Sol donor: the direct url's ?ex=&is=&hm= auth params get
+     * dropped => 403) bounded by an AbortSignal timeout, and NEVER reads
+     * process.env (hazard H2: the negative cases below are expressed by
+     * EXPLICIT injection of a failing fetchImpl, not by omitting config).
+     * Recorded BEFORE the impl runs, like sendTyping: a rejected download
+     * still counts, both for the failure-resilience rails and for the
+     * "zero fetches for a stranger" security rail.
+     */
+    fetchAttachment: async (url: string, init?: { readonly signal?: AbortSignal }) => {
+      fetchCalls.push({ url, hasAbortSignal: init?.signal instanceof AbortSignal })
+      if (opts?.fetchImpl !== undefined) {
+        return opts.fetchImpl(url, fetchCalls.length)
+      }
+      return smallPng()
+    },
   }
 
   const transport = wrapWithCallLog(underlying, log) as unknown as DiscordTransport
@@ -231,6 +294,8 @@ const makeFakeTransport = (opts?: {
     sent,
     edits,
     typingCalls,
+    /** SLICE 4 — every attachment download attempt, in order. */
+    fetchCalls,
     typingFor: (channelId: string) => typingCalls.filter((t) => t.channelId === channelId).length,
     attempts: () => ({ send: sendAttempts, edit: editAttempts, typing: typingAttempts }),
   }
@@ -2350,5 +2415,462 @@ describe("Slice 3b — guild command registration on ready (task #10)", () => {
       warnSpy.mockRestore()
       errSpy.mockRestore()
     }
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* SLICE 4 (task #5) — inbound attachments, limits enforced BEFORE download    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * SLICE 4 SPEC — Given an inbound Discord message carrying attachments, when
+ * the allowlist gate accepts it, then each attachment is validated against
+ * @luna/core attachment-limits BEFORE its bytes are fetched, downloaded via
+ * the CDN PROXY url under an AbortSignal, sniffed against its magic bytes,
+ * and dispatched as a base64 ChannelAttachment on the ChannelMessage — and
+ * every refusal is a per-attachment decision with an EMITTED user-facing
+ * note, never a silent whole-turn drop and never a raw Error.message.
+ *
+ * WHY pre-download is a HARD requirement: this bot fronts an unrestricted
+ * local shell on Eric's machine; a 2 GB "image" that is measured only after
+ * download is a trivial resource attack (task #5). The Sol donor's inbound
+ * path is REFUSED wholesale (census Finding 4: no size cap, no count cap, no
+ * MIME allowlist, bare fetch, never reads attachment.size); only its gotchas
+ * are ported (proxyURL, null-tolerant dimensions, MAX_IMAGE_PX=1568 CDN
+ * downscale, never resize GIFs, sniff-after-download).
+ *
+ * OUT OF SCOPE — the implementation for this scenario must NOT modify:
+ *   - packages/channels/src/service.ts, delivery.ts, types.ts (the
+ *     ChannelAttachment / ChannelMessage.attachments contract ALREADY exists
+ *     there), dedup.ts, commands.ts, index.ts
+ *   - packages/channels/src/adapters/telegram.ts (frozen for the whole
+ *     Discord sequence — the sniffing logic it holds is PRIVATE to it; write
+ *     a Discord-local or NEW-module sniffer, do not extract from telegram.ts)
+ *   - packages/core/** (limits are IMPORTED from @luna/core, never moved,
+ *     never redefined — task #5 FAIL condition)
+ *   - every telegram test, channels.test.ts
+ * ALLOWED files: packages/channels/src/adapters/discord.ts; optionally ONE
+ * new src module for the magic-byte sniffer (e.g.
+ * packages/channels/src/media-sniff.ts); and
+ * packages/channels/test/discord-inbound-invariant.test.ts for EXACTLY two
+ * additive lines required by the 3a ratchet:
+ *   1. CLASSIFICATION map: `fetchAttachment: "outbound"` (the exact-set test
+ *      REDs the moment the member lands without it), and
+ *   2. SIDE_EFFECT_TOKENS: `"fetchAttachment"` (so the gate-ordering scan
+ *      mechanically proves no fetch can precede isInboundAllowed).
+ * NAMING TRAP from the same ratchet: any NEW exported interface must NOT be
+ * named `Inbound*` — the invariant file's bidirectional payload cross-check
+ * requires exported Inbound*-prefixed interfaces to be EXACTLY the dispatch
+ * callback payloads. Name the descriptor e.g. `DiscordAttachmentDescriptor`,
+ * or keep it un-exported.
+ *
+ * THE SEAM: one new DiscordTransport member,
+ *   readonly fetchAttachment: (url: string, init?: { readonly signal?: AbortSignal }) => Promise<Uint8Array>
+ * and `InboundDiscordMessage` gains an optional `attachments` array whose
+ * items carry the discord.js Attachment fields this spec's fixtures use:
+ * { id, name, size, contentType: string|null, url, proxyURL,
+ *   width: number|null, height: number|null } (contentType/width/height are
+ * NULL-TOLERANT because discord.js types lie — donor lib/discord/attachments).
+ * The FakeInboundAttachment interface below IS that contract (3a precedent).
+ *
+ * HAZARD H2 (GOAL.md): no test here reads the ambient environment, and the
+ * implementation must not either — negative cases are EXPLICITLY injected
+ * failing/lying fetchImpls, and every refusal is asserted as an EMITTED
+ * transport.send, never a computed-but-unsent string.
+ *
+ * H4 note: this slice needs NO new metadata keys. If the implementation adds
+ * any, they must be namespaced — the invariant file's H4 disjointness scan
+ * REDs on a reserved-key collision.
+ *
+ * CAPACITY PRE-FLIGHT: none required — in-memory fakes only, no network, no
+ * LLM seam (deterministic => the N>=5 multi-trial rule does not apply).
+ *
+ * RED/GREEN inventory at handoff: ALL 16 tests below are RED (the
+ * attachment path is entirely absent: no fetch ever happens, no refusal note
+ * is ever sent, no ChannelMessage ever carries attachments, and the
+ * discordMaxImagePx pin resolves undefined). The stranger HALF of the gate
+ * twin test is GREEN-vacuous alone, which is exactly why it shares one test
+ * with its allowed-user twin — the twin's fetch assertion is RED today and
+ * is what makes the stranger-zero non-vacuous after impl.
+ */
+
+/**
+ * Test-local contract for the normalized inbound attachment descriptor —
+ * field names mirror discord.js `Attachment` so the real transport's
+ * normalization is a straight map. See the naming trap above before
+ * exporting a type for this from discord.ts.
+ */
+interface FakeInboundAttachment {
+  readonly id: string
+  readonly name: string
+  /** DECLARED size in bytes (Discord reports it pre-download; may LIE). */
+  readonly size: number
+  /** Declared MIME. NULL happens in production — must fail CLOSED. */
+  readonly contentType: string | null
+  /** Direct CDN url. Fetching THIS one is the 403 bug — never used. */
+  readonly url: string
+  /** Proxy CDN url with auth params. The ONLY legitimate fetch target. */
+  readonly proxyURL: string
+  readonly width: number | null
+  readonly height: number | null
+}
+
+const att = (o: Partial<FakeInboundAttachment> = {}): FakeInboundAttachment => ({
+  id: "att-1",
+  name: "pic.png",
+  size: 1024,
+  contentType: "image/png",
+  url: "https://cdn.discordapp.com/attachments/g1/c1/pic.png",
+  proxyURL: "https://media.discordapp.net/attachments/g1/c1/pic.png?ex=68aa1&is=68bb2&hm=deadbeef",
+  width: 800,
+  height: 600,
+  ...o,
+})
+
+/** Unique proxy URL per attachment id, auth params intact. */
+const proxyFor = (id: string): string =>
+  `https://media.discordapp.net/attachments/g1/c1/${id}.png?ex=68aa1&is=68bb2&hm=deadbeef`
+
+/**
+ * An InboundDiscordMessage carrying attachments. The cast is the same
+ * conditional-widening trick 3b used for `guildId`: `attachments` is not on
+ * `InboundDiscordMessage` YET, so the cast keeps the package tsc gate green
+ * before the member lands; its behaviour, not its type, is the contract.
+ */
+const inboundWith = (
+  atts: ReadonlyArray<FakeInboundAttachment>,
+  o: Partial<InboundDiscordMessage> = {},
+): InboundDiscordMessage => ({ ...inbound(o), attachments: atts }) as InboundDiscordMessage
+
+const setup4 = (cfg?: {
+  readonly fetchImpl?: (url: string, call: number) => Promise<Uint8Array>
+}) => {
+  const fake = makeFakeTransport(cfg?.fetchImpl !== undefined ? { fetchImpl: cfg.fetchImpl } : {})
+  const received: ChannelMessage[] = []
+  const adapter = makeDiscordAdapter({
+    id: "d-4",
+    transport: fake.transport,
+    logLogin: false,
+    allowedUsers: ["user-allowed"],
+  })
+  adapter.setMessageHandler((m) =>
+    Effect.sync(() => {
+      received.push(m)
+    }),
+  )
+  return { fake, adapter, received }
+}
+
+describe("Slice 4 — accepted attachments become ChannelAttachments (task #5)", () => {
+  it("GIVEN an allowed image WHEN it arrives THEN it is fetched via the PROXY url (auth params intact, AbortSignal wired) and dispatched as base64", async () => {
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith([att()], { id: "s4-1", content: "look at this" }))
+      await tick(50)
+    })
+    expect(s.received, "the turn dispatched exactly once").toHaveLength(1)
+    expect(s.received[0]?.text).toBe("look at this")
+    const atts = s.received[0]?.attachments ?? []
+    expect(atts, "one ChannelAttachment rides the ChannelMessage to the service").toHaveLength(1)
+    expect(atts[0]?.mediaType).toBe("image/png")
+    expect(atts[0]?.data, "raw base64 of the downloaded bytes, no data: prefix").toBe(
+      Buffer.from(smallPng()).toString("base64"),
+    )
+    expect(s.fake.fetchCalls, "exactly one download").toHaveLength(1)
+    const u = new URL(s.fake.fetchCalls[0]!.url)
+    expect(
+      u.host,
+      "fetch targets the PROXY host, never the direct url (donor 0ca615e: dropped ?ex=&is=&hm= => 403)",
+    ).toBe("media.discordapp.net")
+    expect(u.searchParams.get("ex"), "proxy auth param preserved").toBe("68aa1")
+    expect(u.searchParams.get("is"), "proxy auth param preserved").toBe("68bb2")
+    expect(u.searchParams.get("hm"), "proxy auth param preserved").toBe("deadbeef")
+    expect(
+      s.fake.fetchCalls[0]?.hasAbortSignal,
+      "download is bounded by an AbortSignal — the donor's bare no-timeout fetch is refused",
+    ).toBe(true)
+  })
+
+  it("GIVEN a PDF above the image cap but within MAX_PDF_RAW_BYTES THEN the per-TYPE cap (attachmentByteCap) applies and it is accepted", async () => {
+    const declared = MAX_PDF_RAW_BYTES - 1
+    expect(declared, "fixture sanity: sits BETWEEN the two caps").toBeGreaterThan(MAX_IMAGE_RAW_BYTES)
+    const s = setup4({ fetchImpl: async () => bytesWithMagic(PDF_MAGIC) })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(
+        inboundWith(
+          [
+            att({
+              name: "report.pdf",
+              contentType: "application/pdf",
+              size: declared,
+              proxyURL: proxyFor("report-pdf"),
+              width: null,
+              height: null,
+            }),
+          ],
+          { id: "s4-2", content: "read this" },
+        ),
+      )
+      await tick(50)
+    })
+    const atts = s.received[0]?.attachments ?? []
+    expect(atts, "the PDF is dispatched").toHaveLength(1)
+    expect(atts[0]?.mediaType).toBe("application/pdf")
+    expect(s.fake.fetchCalls).toHaveLength(1)
+  })
+})
+
+describe("Slice 4 — limits are enforced BEFORE download (task #5 hard requirement)", () => {
+  it("GIVEN a disallowed declared type THEN ZERO bytes are fetched, a refusal is EMITTED, and the text still dispatches", async () => {
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(
+        inboundWith([att({ name: "x.zip", contentType: "application/zip" })], {
+          id: "s4-3",
+          content: "see file",
+        }),
+      )
+      await tick(50)
+    })
+    expect(s.fake.fetchCalls, "DoS boundary: a refused attachment costs zero bandwidth").toHaveLength(0)
+    expect(s.received, "the text turn survives the refusal").toHaveLength(1)
+    expect(s.received[0]?.text).toBe("see file")
+    expect(s.received[0]?.attachments ?? [], "nothing refused rides to the model").toHaveLength(0)
+    expect(s.fake.sent.length, "refusal must be EMITTED, not merely computed (H2)").toBeGreaterThanOrEqual(1)
+    expect(s.fake.sent[0]?.channelId).toBe("chan-1")
+    expect((s.fake.sent[0]?.content ?? "").length).toBeGreaterThan(0)
+  })
+
+  it("GIVEN a NULL declared contentType (discord.js lies) THEN it fails CLOSED: no fetch, an emitted note, text dispatches", async () => {
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(
+        inboundWith([att({ name: "mystery.bin", contentType: null })], {
+          id: "s4-3b",
+          content: "what is this",
+        }),
+      )
+      await tick(50)
+    })
+    expect(s.fake.fetchCalls, "unknown declared type is refused pre-download").toHaveLength(0)
+    expect(s.received).toHaveLength(1)
+    expect(s.received[0]?.attachments ?? []).toHaveLength(0)
+    expect(s.fake.sent.length, "fail-closed still tells the user").toBeGreaterThanOrEqual(1)
+  })
+
+  it("GIVEN a DECLARED size over MAX_IMAGE_RAW_BYTES THEN no fetch happens; AT the cap the download proceeds (inclusive, telegram parity)", async () => {
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(
+        inboundWith([att({ size: MAX_IMAGE_RAW_BYTES + 1 })], { id: "s4-4a", content: "too big" }),
+      )
+      await tick(50)
+      expect(s.fake.fetchCalls, "over-cap: refused on DECLARED size, zero fetches").toHaveLength(0)
+      expect(s.fake.sent.length, "over-cap refusal emitted").toBeGreaterThanOrEqual(1)
+      s.fake.fire(
+        inboundWith([att({ id: "att-boundary", size: MAX_IMAGE_RAW_BYTES, proxyURL: proxyFor("boundary") })], {
+          id: "s4-4b",
+          content: "at the cap",
+        }),
+      )
+      await tick(50)
+      expect(s.fake.fetchCalls, "at-cap: fetched — the cap is inclusive, like telegram's `> cap`").toHaveLength(1)
+    })
+    expect(s.received, "both turns dispatched").toHaveLength(2)
+  })
+
+  it("GIVEN more than MAX_ATTACHMENTS_PER_TURN attachments THEN the FIRST cap's-worth are processed and the rest refused UNFETCHED with a note", async () => {
+    // Bounding semantics pinned here (task #5 says "bounded"; the plan does
+    // not choose): FIRST-N processed in arrival order, remainder refused with
+    // an emitted note. Total refusal of the whole turn would violate the
+    // no-silent-whole-turn-drop rule for the N valid ones.
+    const count = MAX_ATTACHMENTS_PER_TURN + 2
+    const atts = Array.from({ length: count }, (_, i) => att({ id: `a${i}`, proxyURL: proxyFor(`a${i}`) }))
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith(atts, { id: "s4-5", content: "album" }))
+      await tick(80)
+    })
+    expect(s.fake.fetchCalls, "exactly the cap's worth of downloads").toHaveLength(MAX_ATTACHMENTS_PER_TURN)
+    expect(
+      s.fake.fetchCalls.map((c) => new URL(c.url).pathname),
+      "and they are the FIRST N, in arrival order",
+    ).toEqual(atts.slice(0, MAX_ATTACHMENTS_PER_TURN).map((a) => new URL(a.proxyURL).pathname))
+    expect(s.received[0]?.attachments ?? []).toHaveLength(MAX_ATTACHMENTS_PER_TURN)
+    expect(s.fake.sent.length, "overflow refusal emitted").toBeGreaterThanOrEqual(1)
+  })
+
+  it("GIVEN images whose DECLARED sizes cumulatively exceed MAX_TURN_RAW_BYTES THEN the excess attachment is refused with no fetch", async () => {
+    // 0.4x the turn cap each: two fit (0.8x), the third breaches (1.2x).
+    // Expressed as a fraction of the imported constant so this fixture tracks
+    // @luna/core rather than hardcoding a rival copy of the limit.
+    const each = Math.floor(MAX_TURN_RAW_BYTES * 0.4)
+    expect(each, "fixture sanity: each fits the per-image cap").toBeLessThanOrEqual(MAX_IMAGE_RAW_BYTES)
+    const atts = [0, 1, 2].map((i) => att({ id: `t${i}`, size: each, proxyURL: proxyFor(`t${i}`) }))
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith(atts, { id: "s4-6", content: "batch" }))
+      await tick(80)
+    })
+    expect(s.fake.fetchCalls, "turn budget gates on declared sizes BEFORE download").toHaveLength(2)
+    expect(s.received[0]?.attachments ?? [], "the two within budget still ride").toHaveLength(2)
+    expect(s.fake.sent.length, "turn-budget refusal emitted").toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe("Slice 4 — post-download defence (metadata lies, magic bytes)", () => {
+  it("GIVEN a declared size that LIES WHEN actual bytes exceed the cap THEN the attachment is refused post-download and never dispatched", async () => {
+    const s = setup4({ fetchImpl: async () => bytesWithMagic(PNG_MAGIC, MAX_IMAGE_RAW_BYTES + 1) })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith([att({ size: 1000 })], { id: "s4-7", content: "trust me" }))
+      await tick(80)
+    })
+    expect(s.fake.fetchCalls, "the lie passes the cheap declared-size gate, so the fetch happens").toHaveLength(1)
+    expect(s.received, "the turn survives").toHaveLength(1)
+    expect(s.received[0]?.attachments ?? [], "actual-byte defence: the liar never rides").toHaveLength(0)
+    expect(s.fake.sent.length, "refusal emitted").toBeGreaterThanOrEqual(1)
+  })
+
+  it("GIVEN declared image/png WHEN the magic bytes match no allowed type THEN sniff-after-download refuses it (never trust client Content-Type)", async () => {
+    const s = setup4({
+      fetchImpl: async () => new TextEncoder().encode("#!/bin/sh\necho definitely-not-a-png"),
+    })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith([att()], { id: "s4-8", content: "totally a png" }))
+      await tick(50)
+    })
+    expect(s.fake.fetchCalls).toHaveLength(1)
+    expect(s.received).toHaveLength(1)
+    expect(s.received[0]?.attachments ?? [], "unsniffable bytes never reach the model").toHaveLength(0)
+    expect(s.fake.sent.length, "sniff refusal emitted").toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe("Slice 4 — download failure never fails the turn (no silent drop, no raw errors)", () => {
+  it("GIVEN one failing and one healthy download THEN the turn continues with the survivor, a note is emitted, and the raw Error NEVER reaches the channel", async () => {
+    const SENTINEL = "SENTINEL-S4-RAW-ERROR-do-not-leak"
+    const s = setup4({
+      fetchImpl: async (url) => {
+        if (url.includes("boom")) throw new Error(`ECONNRESET ${SENTINEL}`)
+        return smallPng()
+      },
+    })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(
+        inboundWith(
+          [att({ id: "f1", proxyURL: proxyFor("boom") }), att({ id: "f2", proxyURL: proxyFor("fine") })],
+          { id: "s4-9", content: "mixed bag" },
+        ),
+      )
+      await tick(80)
+    })
+    expect(s.received, "download failure must not fail the turn").toHaveLength(1)
+    expect(s.received[0]?.text).toBe("mixed bag")
+    expect(s.received[0]?.attachments ?? [], "the healthy attachment still rides").toHaveLength(1)
+    expect(s.fake.sent.length, "the user is told about the failure").toBeGreaterThanOrEqual(1)
+    expect(
+      s.fake.sent.map((x) => x.content).join("\n"),
+      "raw Error.message never reaches the channel (same discipline as 3a's A5)",
+    ).not.toContain(SENTINEL)
+  })
+
+  it("GIVEN an attachments-only message WHOSE downloads all fail THEN an explicit failure notice is emitted and NOTHING dispatches to the model", async () => {
+    const SENTINEL = "SENTINEL-S4-ONLY-do-not-leak"
+    const s = setup4({
+      fetchImpl: async () => {
+        throw new Error(SENTINEL)
+      },
+    })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith([att()], { id: "s4-10", content: "" }))
+      await tick(80)
+    })
+    expect(s.fake.sent.length, "a silent whole-turn drop is forbidden — explicit notice").toBeGreaterThanOrEqual(1)
+    expect(s.fake.sent.map((x) => x.content).join("\n")).not.toContain(SENTINEL)
+    expect(s.received, "an empty turn (no text, no attachments) must not reach the model").toHaveLength(0)
+  })
+})
+
+describe("Slice 4 — the gate precedes every download (post-gate side effect)", () => {
+  it("GATE: a stranger's attachment is NEVER fetched — zero transport activity (control twinned with the allowed-user fetch that makes it non-vacuous)", async () => {
+    const s = setup4()
+    const fixture = [att()]
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith(fixture, { id: "s4-g1", authorId: "attacker", content: "download this" }))
+      await tick(50)
+      // Mirror of telegram-adapter.test.ts's :708 rail: no bandwidth for
+      // strangers, and no refusal note either — the gate is SILENT.
+      expect(s.fake.fetchCalls, "no fetch for a stranger, ever").toHaveLength(0)
+      expect(s.fake.sent, "no note for a stranger — silence, not an oracle").toHaveLength(0)
+      expect(s.received).toHaveLength(0)
+      // Non-vacuity TWIN (RED today): the IDENTICAL fixture is fetched once
+      // the author is allowed, proving the zero above measures the gate and
+      // not the absence of download code.
+      s.fake.fire(inboundWith(fixture, { id: "s4-g2", authorId: "user-allowed", content: "download this" }))
+      await tick(50)
+      expect(s.fake.fetchCalls, "twin: the same fixture downloads post-gate").toHaveLength(1)
+    })
+  })
+})
+
+describe("Slice 4 — CDN downscale before the bytes move (donor gotchas)", () => {
+  it("pins the Discord resize constant: discordMaxImagePx === 1568 (donor MAX_IMAGE_PX; adapter-LOCAL on purpose — it is a Discord-CDN knob, not an @luna/core ingestion limit)", async () => {
+    // tsc-green RED pin shape (module namespace needs the double cast).
+    const mod = (await import("../src/adapters/discord.js")) as unknown as Record<string, unknown>
+    expect(mod["discordMaxImagePx"]).toBe(1568)
+  })
+
+  it("GIVEN an image with dims over the 1568 box THEN the fetch URL carries CDN ?width=&height= scaled into the box, auth params intact", async () => {
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      // 4000x2000 scales by 1568/4000 exactly: width=1568, height=784 (the
+      // fixture divides cleanly so no rounding technique is pinned).
+      s.fake.fire(inboundWith([att({ width: 4000, height: 2000 })], { id: "s4-13", content: "wide" }))
+      await tick(50)
+    })
+    expect(s.fake.fetchCalls).toHaveLength(1)
+    const u = new URL(s.fake.fetchCalls[0]!.url)
+    expect(u.searchParams.get("width"), "longest edge capped at discordMaxImagePx").toBe("1568")
+    expect(u.searchParams.get("height"), "aspect preserved").toBe("784")
+    expect(u.searchParams.get("hm"), "resize params must not clobber the auth params").toBe("deadbeef")
+  })
+
+  it("GIVEN dims within the box or UNKNOWN (null) THEN no resize params — and null dims still download (null-tolerant: discord.js types lie)", async () => {
+    const s = setup4()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(inboundWith([att({ id: "small", proxyURL: proxyFor("small") })], { id: "s4-14a", content: "small" }))
+      await tick(50)
+      s.fake.fire(
+        inboundWith([att({ id: "nodims", proxyURL: proxyFor("nodims"), width: null, height: null })], {
+          id: "s4-14b",
+          content: "no dims",
+        }),
+      )
+      await tick(50)
+    })
+    expect(s.fake.fetchCalls, "null dimensions are not an error — the fetch proceeds un-resized").toHaveLength(2)
+    for (const c of s.fake.fetchCalls) {
+      const u = new URL(c.url)
+      expect(u.searchParams.has("width"), `no width param on ${u.pathname}`).toBe(false)
+      expect(u.searchParams.has("height"), `no height param on ${u.pathname}`).toBe(false)
+    }
+  })
+
+  it("NEVER resizes GIFs regardless of size (donor: flattening animation is destructive surprise behavior) — passed through unmodified", async () => {
+    const s = setup4({ fetchImpl: async () => bytesWithMagic(GIF_MAGIC) })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(
+        inboundWith(
+          [att({ name: "anim.gif", contentType: "image/gif", width: 4000, height: 2000, proxyURL: proxyFor("anim-gif") })],
+          { id: "s4-15", content: "gif" },
+        ),
+      )
+      await tick(50)
+    })
+    expect(s.fake.fetchCalls).toHaveLength(1)
+    const u = new URL(s.fake.fetchCalls[0]!.url)
+    expect(u.searchParams.has("width"), "no CDN resize for GIFs, ever").toBe(false)
+    expect(u.searchParams.has("height"), "no CDN resize for GIFs, ever").toBe(false)
+    expect(s.received[0]?.attachments?.[0]?.mediaType).toBe("image/gif")
   })
 })
