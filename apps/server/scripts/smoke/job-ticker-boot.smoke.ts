@@ -14,7 +14,7 @@
  * from the JobTicker wiring in chat-server.ts MUST make this smoke FAIL
  * with a missing-service defect.
  *
- * Run: bun run apps/ui-web/scripts/smoke/job-ticker-boot.smoke.ts
+ * Run: bun run apps/server/scripts/smoke/job-ticker-boot.smoke.ts
  * Exit 0 = PASS, non-zero = FAIL.
  */
 import {

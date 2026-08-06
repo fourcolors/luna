@@ -3,7 +3,7 @@
  *
  * The unit tests in workflow-worker.test.ts exercise `buildWorkflowWorker`
  * in isolation (by invoking the worker function directly). The smoke
- * (apps/ui-web/scripts/smoke/workflow-worker-boot.smoke.ts) proves the
+ * (apps/server/scripts/smoke/workflow-worker-boot.smoke.ts) proves the
  * Layer composes and the WorkerRegistry sees the "workflow" kind.
  *
  * THIS file fills the middle gap: a real end-to-end dispatch path test

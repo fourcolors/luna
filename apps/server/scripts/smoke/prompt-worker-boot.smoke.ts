@@ -1,11 +1,11 @@
 /**
- * workflow-worker-boot.smoke.ts — P5 boot-risk verification.
+ * prompt-worker-boot.smoke.ts — boot-risk verification for P4 (prompt worker)
+ * registration into the V2 ticker's WorkerRegistry. Mirrors the
+ * job-ticker-boot smoke pattern; this one additionally proves the
+ * PromptWorkerLayer composes correctly with SDKClient + WorkerRegistry +
+ * AgentNotesService and that the registered kind appears in listKinds.
  *
- * Proves that PromptWorkerLayer + WorkflowWorkerLayer compose cleanly via
- * Layer.merge and both register into the same WorkerRegistry. Mirrors the
- * prompt-worker-boot smoke pattern.
- *
- * Run: bun run apps/ui-web/scripts/smoke/workflow-worker-boot.smoke.ts
+ * Run: bun run apps/server/scripts/smoke/prompt-worker-boot.smoke.ts
  */
 import {
   AgentNotesService,
@@ -16,23 +16,18 @@ import {
   WorkerRegistry,
   makeWorkerRegistry,
 } from "@luna/core"
-import {
-  PromptWorkerLayer,
-  WorkflowWorkerLayer,
-  SDKClient,
-} from "@luna/adapter-sdk"
+import { PromptWorkerLayer, SDKClient } from "@luna/adapter-sdk"
 import type { Query } from "@luna/adapter-sdk"
 import { Effect, Layer, ManagedRuntime } from "effect"
 
+// SDK fake: never invoked (no jobs to drain), but must satisfy the type.
 const sdkFake: Layer.Layer<SDKClient> = SDKClient.fake(() => {
   async function* gen(): AsyncGenerator<never> {}
   return gen() as unknown as Query
 })
 
-const workerRegistryL = Layer.merge(
-  PromptWorkerLayer(),
-  WorkflowWorkerLayer(),
-).pipe(
+// Worker registry seeded by PromptWorkerLayer.
+const workerRegistryL = PromptWorkerLayer().pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       sdkFake,
@@ -54,10 +49,8 @@ const main = Effect.gen(function* () {
   const reg = yield* WorkerRegistry
   const kinds = yield* reg.listKinds
   console.log("[smoke] registered worker kinds:", [...kinds])
-  for (const expected of ["prompt", "workflow"]) {
-    if (!kinds.includes(expected)) {
-      throw new Error(`[smoke] FAIL — '${expected}' not in kinds: ${JSON.stringify([...kinds])}`)
-    }
+  if (!kinds.includes("prompt")) {
+    throw new Error(`[smoke] FAIL — 'prompt' not in kinds: ${JSON.stringify([...kinds])}`)
   }
   const ticker = yield* JobTicker
   const summary = yield* ticker.drain
@@ -68,7 +61,9 @@ const rt = ManagedRuntime.make(layer)
 rt.runPromise(main)
   .then(() => rt.dispose())
   .then(() => {
-    console.log("[smoke] PASS — PromptWorkerLayer + WorkflowWorkerLayer both register; JobTicker composes")
+    console.log(
+      "[smoke] PASS — PromptWorkerLayer registers 'prompt' worker into WorkerRegistry; JobTicker composes",
+    )
     process.exit(0)
   })
   .catch((err: unknown) => {

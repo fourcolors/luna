@@ -1978,14 +1978,19 @@ exit 0
       expect(result.stdout.trim()).toBe("FOREIGN")
     })
 
-    it("recognizes THIS install's vite web UI dev server as Luna", () => {
+    // apps/ui-web (and its vite dev server) was deleted; the matcher's
+    // dedicated `*apps/ui-web* dev*` arm went with it (S12). Assert the
+    // pattern stays gone rather than deleting this case outright, so a
+    // future re-add of a similarly-shaped command does not silently start
+    // matching again.
+    it("no longer recognizes the retired apps/ui-web vite dev command as Luna", () => {
       const result = runGuard(verdict, {
         env: {
           CMD: "bun run --cwd /Users/me/luna/apps/ui-web dev",
           DIR: "/Users/me/luna",
         },
       })
-      expect(result.stdout.trim()).toBe("LUNA")
+      expect(result.stdout.trim()).toBe("FOREIGN")
     })
 
     const rcOf = (r: { stdout: string }) => r.stdout.match(/rc=(\d+)/)?.[1]

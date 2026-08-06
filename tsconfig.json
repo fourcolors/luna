@@ -49,7 +49,6 @@
     // may still include its own test/ deliberately, when a compile-time
     // proof there needs gating (S04's @ts-expect-error).
     "**/*.test.ts",
-    "apps/ui-web/**",
     "apps/agent-cli/**"
   ]
 }

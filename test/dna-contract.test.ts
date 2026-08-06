@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
-const repoRoot = resolve(__dirname, "../../../..")
+const repoRoot = resolve(__dirname, "..")
 const dna = () => readFileSync(resolve(repoRoot, "DNA.md"), "utf8")
 
 describe("Luna DNA contract", () => {
