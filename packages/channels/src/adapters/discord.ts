@@ -39,6 +39,14 @@
  * (magic-byte sniff, actual size). Refusals are per-attachment decisions
  * answered with an emitted user-facing note; a refused or failed attachment
  * never silently drops the turn's text.
+ *
+ * Reply quotes (Slice 5): a reply's referenced message is resolved POST-GATE
+ * through the transport seam (cache-first then network) and its content is
+ * rendered into the user text with the Sol donor's verbatim template,
+ * bounded at 500 code points (never .slice — split surrogates 400).
+ * replyToMsgId is captured from message.reference BEFORE the fetch, so a
+ * deleted parent still leaves the id in metadata. Cross-channel references
+ * are skipped with a log line and never fetched.
  */
 import { Buffer } from "node:buffer"
 import { Duration, Effect, Either, Fiber, Redacted } from "effect"
@@ -93,6 +101,18 @@ export const discordMaxImagePx = 1568
  * static bytes.
  */
 const ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 30_000
+
+/**
+ * Longest replied-to (quoted) content rendered into the user text, in CODE
+ * POINTS (Slice 5). The donor's bound — `.slice(0, 500)` in Sol's gateway
+ * reply block — ported as a count of code points rather than UTF-16 units:
+ * `.slice` can cut an astral char in half and the lone surrogate earns a 400
+ * from Discord downstream. A clipped quote gains the truncation marker below.
+ */
+const REPLY_QUOTE_MAX_CODE_POINTS = 500
+
+/** Single ellipsis char (U+2026), appended only when the quote was clipped. */
+const REPLY_QUOTE_TRUNCATION_MARKER = "…"
 
 /** Attempts for a rate-limited (429) REST call before giving up. */
 const MAX_RATE_LIMIT_ATTEMPTS = 3
@@ -234,6 +254,28 @@ const classifyFinalSendError = (e: unknown): FinalSendClass => {
 export const stripExpandableQuoteMarker = (content: string): string =>
   content.replace(/^>!\s?/gm, "> ")
 
+/**
+ * Truncate to `max` CODE POINTS. Ported from the donor's own helper (Sol
+ * gateway.ts truncateCodePoints — which Sol wrote and then did NOT use for
+ * the reply quote, leaving `.slice(0, 500)` there): `[...s]` iterates by
+ * code point (one entry per character, even for emoji), so an astral char is
+ * kept whole or dropped whole, never split into a lone surrogate.
+ */
+const truncateCodePoints = (s: string, max: number): string => {
+  const cp = [...s]
+  return cp.length <= max ? s : cp.slice(0, max).join("")
+}
+
+/**
+ * The reply quote's bound (Slice 5, prescribed fixes 1 + 2): clip at
+ * REPLY_QUOTE_MAX_CODE_POINTS code points, and only a CLIPPED quote gains
+ * the marker — content exactly at the bound passes through verbatim.
+ */
+const clipReplyQuote = (content: string): string => {
+  const clipped = truncateCodePoints(content, REPLY_QUOTE_MAX_CODE_POINTS)
+  return clipped === content ? content : clipped + REPLY_QUOTE_TRUNCATION_MARKER
+}
+
 /* -------------------------------------------------------------------------- */
 /* Transport seam (testability)                                                */
 /* -------------------------------------------------------------------------- */
@@ -295,6 +337,36 @@ export interface InboundDiscordMessage {
    * Optional: text-only messages omit it.
    */
   readonly attachments?: ReadonlyArray<DiscordAttachmentDescriptor> | undefined
+  /**
+   * Discord reply reference (discord.js `message.reference`), present when
+   * this message REPLIES to an earlier one (Slice 5). `messageId` is
+   * captured into ChannelMessage metadata (`replyToMsgId`) BEFORE any fetch
+   * — the donor's ordering, so session-resume survives a deleted parent.
+   * `channelId` is the channel the referenced message lives in: when it
+   * differs from THIS message's channel the quote is skipped with a log
+   * line and never fetched (a fetch there is a read outside the gated
+   * channel).
+   */
+  readonly reference?:
+    | { readonly messageId: string; readonly channelId: string }
+    | undefined
+}
+
+/**
+ * The replied-to message as the reference fetch resolves it (Slice 5),
+ * normalized to exactly what the quote template reads. `author` mirrors the
+ * discord.js field names so the donor's VERBATIM fallback chain
+ * (`author?.displayName ?? author?.username ?? "Someone"`) ports unchanged.
+ * Deliberately NOT named with the `Inbound*` prefix: that namespace is
+ * reserved for the gated dispatch-callback payloads (the invariant file's
+ * bidirectional cross-check REDs on any other `Inbound*` export).
+ */
+export interface DiscordReferencedMessage {
+  readonly content: string
+  readonly author: {
+    readonly displayName?: string | undefined
+    readonly username?: string | undefined
+  } | null
 }
 
 /**
@@ -468,6 +540,20 @@ export interface DiscordTransport {
    * implementation never reads process.env (hazard H2).
    */
   readonly fetchAttachment: (url: string, init?: { readonly signal?: AbortSignal }) => Promise<Uint8Array>
+  /**
+   * Resolve the replied-to message for a reply's quote (Slice 5). The real
+   * implementation is cache-first then network — the donor's ordering.
+   * Resolves NULL for a DELETED parent (Unknown Message, code 10008 — an
+   * ordinary outcome, quoted silently as nothing); REJECTS on real fetch
+   * failures (e.g. missing READ_MESSAGE_HISTORY, network), which the caller
+   * logs ONCE — the donor's `.catch(() => null)` made the two
+   * indistinguishable. Callers only ever hand this the message's OWN
+   * channel id: a cross-channel reference is skipped before this seam.
+   */
+  readonly fetchReferencedMessage: (
+    channelId: string,
+    messageId: string,
+  ) => Promise<DiscordReferencedMessage | null>
 }
 
 /**
@@ -528,6 +614,17 @@ export const makeRealDiscordTransport = (
                     width: a.width,
                     height: a.height,
                   })),
+                }
+              : {}),
+            // Slice 5 — a straight map of discord.js's MessageReference.
+            // messageId is optional there (crossposts / channel-follows), so
+            // only a reference that actually names a message survives the map.
+            ...(m.reference?.messageId !== undefined
+              ? {
+                  reference: {
+                    messageId: m.reference.messageId,
+                    channelId: m.reference.channelId,
+                  },
                 }
               : {}),
           })
@@ -625,6 +722,51 @@ export const makeRealDiscordTransport = (
         throw new Error(`attachment download failed: HTTP ${res.status}`)
       }
       return new Uint8Array(await res.arrayBuffer())
+    },
+    fetchReferencedMessage: async (channelId, messageId) => {
+      const channel = await client.channels.fetch(channelId)
+      if (channel === null || !("messages" in channel)) {
+        throw new Error(`channel ${channelId} has no message store`)
+      }
+      const store = (
+        channel as {
+          messages: {
+            cache?: { get: (id: string) => unknown } | undefined
+            fetch: (id: string) => Promise<unknown>
+          }
+        }
+      ).messages
+      let raw: unknown
+      try {
+        // Cache-first then network — the donor's ordering (its cache hit was
+        // `message.channel.messages.cache.get(refMsgId)`).
+        raw = store.cache?.get(messageId) ?? (await store.fetch(messageId))
+      } catch (err) {
+        // Unknown Message (10008): the parent was deleted. Ordinary, not a
+        // failure — resolve null so the caller quotes nothing, silently.
+        if (err !== null && typeof err === "object" && (err as { code?: unknown }).code === 10008) {
+          return null
+        }
+        // Everything else (missing READ_MESSAGE_HISTORY = 50001, network)
+        // REJECTS so the caller can log it once — Slice 5 prescribed fix 4.
+        throw err
+      }
+      if (raw === undefined || raw === null) return null
+      const msg = raw as {
+        content?: unknown
+        author?: { displayName?: unknown; username?: unknown } | null
+      }
+      const author = msg.author ?? null
+      return {
+        content: typeof msg.content === "string" ? msg.content : "",
+        author:
+          author === null
+            ? null
+            : {
+                displayName: typeof author.displayName === "string" ? author.displayName : undefined,
+                username: typeof author.username === "string" ? author.username : undefined,
+              },
+      }
     },
   }
 }
@@ -1140,6 +1282,10 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       parentId: m.parentId,
       isDM: m.isDM,
       messageId: m.id,
+      // Slice 5 — captured from message.reference, NEVER from the reference
+      // fetch's result (the donor's capture-BEFORE-fetch ordering), so a
+      // deleted parent still leaves the id for session resume.
+      replyToMsgId: m.reference?.messageId,
     },
   })
 
@@ -1262,9 +1408,55 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       // handler check, because otherwise the bot claims to be working on a
       // message that nothing will ever process.
       startTyping(m.channelId)
+      // Slice 5 — reply quote (DIRECT PORT of the donor's reply block).
+      // `replyToMsgId` is captured OUTSIDE this block — toChannelMessage
+      // reads m.reference directly — so the donor's capture-before-fetch
+      // ordering holds and a deleted parent cannot erase it. The reference
+      // fetch is a POST-GATE side effect: it sits below isInboundAllowed,
+      // and a cross-channel reference never fetches at all (that would be a
+      // read outside the gated channel). Non-reply messages take ZERO awaits
+      // through here, preserving synchronous dispatch order for plain text.
+      let content = m.content
+      const ref = m.reference
+      if (ref !== undefined) {
+        if (ref.channelId !== m.channelId) {
+          // Prescribed fix 3: skip WITH evidence, never a fetch.
+          console.warn(
+            "[discord-adapter] reply quote skipped: cross-channel reference " +
+              `(message channel=${m.channelId}, referenced channel=${ref.channelId}); never fetched`,
+          )
+        } else {
+          const rt = transport
+          if (rt !== null) {
+            try {
+              const refMsg = await rt.fetchReferencedMessage(ref.channelId, ref.messageId)
+              // Donor guard (`if (refMsg?.content)`): a deleted parent (null)
+              // or an empty parent (image-only) quotes nothing, silently.
+              if (refMsg !== null && refMsg.content.length > 0) {
+                // Template + author fallback VERBATIM from the donor; only
+                // the bound changed (.slice(0, 500) -> clipReplyQuote,
+                // prescribed fixes 1 + 2).
+                const repliedAuthor =
+                  refMsg.author?.displayName ?? refMsg.author?.username ?? "Someone"
+                content = `[Replying to ${repliedAuthor}: "${clipReplyQuote(refMsg.content)}"]\n\n${content}`
+              }
+            } catch (err) {
+              // Prescribed fix 4: ONE line, err.message ONLY (the A5
+              // discipline), then best-effort — no quote, the turn continues.
+              console.error(
+                "[discord-adapter] reply reference fetch failed (quote skipped, turn continues):",
+                err instanceof Error ? err.message : String(err),
+              )
+            }
+          }
+        }
+      }
+      // The message the dispatches below see: identical to the wire message
+      // unless a quote was rendered into the text.
+      const mq = content === m.content ? m : { ...m, content }
       const declared = m.attachments
       if (declared === undefined || declared.length === 0) {
-        Effect.runFork(handler(toChannelMessage(m)))
+        Effect.runFork(handler(toChannelMessage(mq)))
         return
       }
       const t = transport
@@ -1290,7 +1482,7 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
         Effect.runFork(stopTyping(m.channelId))
         return
       }
-      Effect.runFork(handler(toChannelMessage(m, accepted)))
+      Effect.runFork(handler(toChannelMessage(mq, accepted)))
     } catch (err) {
       console.error("[discord-adapter] inbound handler error:", err)
     }

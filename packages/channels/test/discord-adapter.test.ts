@@ -134,6 +134,36 @@ interface AttachmentFetchRecord {
   readonly hasAbortSignal: boolean
 }
 
+/**
+ * SLICE 5 — the referenced (replied-to) message the transport seam resolves,
+ * already normalized. This test-local interface IS the contract for the
+ * `DiscordReferencedMessage` type the implementation must export from
+ * discord.ts (3a/4 precedent). NOT named `Inbound*`: the invariant file's
+ * bidirectional cross-check reserves that prefix for dispatch payloads.
+ * `null` = the parent message no longer exists (deleted), which is ORDINARY;
+ * a REJECTION is a real fetch failure (e.g. missing READ_MESSAGE_HISTORY) —
+ * the donor's `.catch(() => null)` conflated the two, Luna does not.
+ */
+interface FakeReferencedMessage {
+  readonly content: string
+  readonly author: {
+    readonly displayName?: string | undefined
+    readonly username?: string | undefined
+  } | null
+}
+
+/** SLICE 5 — one record per reference-fetch attempt through the seam. */
+interface RefFetchRecord {
+  readonly channelId: string
+  readonly messageId: string
+}
+
+/** SLICE 5 — the parent message the fake resolves when no impl is injected. */
+const DEFAULT_REF_MSG: FakeReferencedMessage = {
+  content: "deploy is done, ready for review",
+  author: { displayName: "Riven", username: "riven_writes" },
+}
+
 /** A fake DiscordTransport that records outbound calls and can fire inbound. */
 const makeFakeTransport = (opts?: {
   readonly sendImpl?: (channelId: string, content: string, attempt: number) => Promise<{ id: string }>
@@ -163,6 +193,17 @@ const makeFakeTransport = (opts?: {
    * the sniff-after-download check passes for image/png fixtures.
    */
   readonly fetchImpl?: (url: string, call: number) => Promise<Uint8Array>
+  /**
+   * Slice 5. Invoked for every reply-reference fetch attempt; resolve null to
+   * model a DELETED parent, reject to model a real fetch failure. `call` is
+   * the 1-based transport-wide attempt index. When absent, the fake resolves
+   * DEFAULT_REF_MSG so the happy-path quote renders.
+   */
+  readonly refMsgImpl?: (
+    channelId: string,
+    messageId: string,
+    call: number,
+  ) => Promise<FakeReferencedMessage | null>
 }) => {
   let msgCb: ((m: InboundDiscordMessage) => void) | null = null
   let interactionCb: ((i: FakeInboundInteraction) => void) | null = null
@@ -171,6 +212,7 @@ const makeFakeTransport = (opts?: {
   const edits: EditRecord[] = []
   const typingCalls: TypingRecord[] = []
   const fetchCalls: AttachmentFetchRecord[] = []
+  const refFetchCalls: RefFetchRecord[] = []
   const log: TransportCallRecord[] = []
   let idCounter = 0
   let sendAttempts = 0
@@ -277,6 +319,25 @@ const makeFakeTransport = (opts?: {
       }
       return smallPng()
     },
+    /**
+     * SLICE 5 — RED BY DESIGN until the adapter resolves reply references.
+     * Fetch the replied-to message so its content can be quoted into the
+     * user text. The REAL implementation is cache-first then network (donor
+     * gateway.ts reply block), resolves NULL for a deleted parent (Unknown
+     * Message is ordinary, not an error) and REJECTS on real failures such
+     * as missing READ_MESSAGE_HISTORY — the donor's `.catch(() => null)`
+     * made those indistinguishable. Recorded BEFORE the impl runs, like
+     * sendTyping/fetchAttachment: a rejected fetch still counts, both for
+     * the failure-resilience rails and the "zero fetches for a stranger"
+     * security rail.
+     */
+    fetchReferencedMessage: async (channelId: string, messageId: string) => {
+      refFetchCalls.push({ channelId, messageId })
+      if (opts?.refMsgImpl !== undefined) {
+        return opts.refMsgImpl(channelId, messageId, refFetchCalls.length)
+      }
+      return DEFAULT_REF_MSG
+    },
   }
 
   const transport = wrapWithCallLog(underlying, log) as unknown as DiscordTransport
@@ -296,6 +357,8 @@ const makeFakeTransport = (opts?: {
     typingCalls,
     /** SLICE 4 — every attachment download attempt, in order. */
     fetchCalls,
+    /** SLICE 5 — every reply-reference fetch attempt, in order. */
+    refFetchCalls,
     typingFor: (channelId: string) => typingCalls.filter((t) => t.channelId === channelId).length,
     attempts: () => ({ send: sendAttempts, edit: editAttempts, typing: typingAttempts }),
   }
@@ -2872,5 +2935,288 @@ describe("Slice 4 — CDN downscale before the bytes move (donor gotchas)", () =
     expect(u.searchParams.has("width"), "no CDN resize for GIFs, ever").toBe(false)
     expect(u.searchParams.has("height"), "no CDN resize for GIFs, ever").toBe(false)
     expect(s.received[0]?.attachments?.[0]?.mediaType).toBe("image/gif")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* SLICE 5 (task #6) — reply quote capture rendered into the user text        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * SLICE 5 SPEC — Given an inbound Discord message that REPLIES to an earlier
+ * message, when the allowlist gate accepts it, then the replied-to message is
+ * resolved through the transport seam (cache-first then network in the REAL
+ * transport) and its content is rendered into the user text with the donor's
+ * VERBATIM template (sol gateway.ts reply block):
+ *
+ *     [Replying to ${repliedAuthor}: "${quoted}"]\n\n${userMessage}
+ *
+ * with author resolution VERBATIM:
+ *     refMsg.author?.displayName ?? refMsg.author?.username ?? "Someone"
+ *
+ * DIRECT PORT plus exactly FOUR prescribed fixes, no more:
+ *   1. the donor's `.slice(0, 500)` becomes its own truncateCodePoints
+ *      helper (donor wrote it and then did not use it here) — a split
+ *      surrogate earns a 400 from Discord;
+ *   2. a truncation marker (single ellipsis char U+2026) when clipped;
+ *   3. CROSS-CHANNEL references are skipped WITH a log line and NEVER
+ *      fetched (a fetch there is a read outside the gated channel);
+ *   4. a fetch FAILURE logs one line (the donor's `.catch(() => null)` made
+ *      missing READ_MESSAGE_HISTORY indistinguishable from a deleted
+ *      parent); behavior stays best-effort — no quote, message processed.
+ *
+ * ORDERING PORTED FROM THE DONOR: `replyToMsgId` is captured from
+ * `message.reference` BEFORE the fetch, so it survives a deleted parent
+ * (session-resume ordering). WHAT THIS SPEC PINS for that ordering: the
+ * ChannelMessage metadata contract (`Readonly<Record<string, unknown>>`,
+ * types.ts FROZEN and already sufficient) carries `replyToMsgId`, and the
+ * deleted-parent test asserts it rides even when the seam resolves null —
+ * capture-before-fetch made observable without new types.
+ *
+ * INVARIANT: the reference fetch is a side effect and runs only AFTER
+ * `isInboundAllowed`. The stranger test asserts a ZERO Proxy-log delta.
+ *
+ * OUT OF SCOPE — the implementation for this scenario must NOT modify:
+ *   - packages/channels/src/service.ts, delivery.ts, types.ts, dedup.ts,
+ *     commands.ts, index.ts, chat-server.ts
+ *   - packages/channels/src/adapters/telegram.ts and every telegram test
+ *   - packages/channels/test/channels.test.ts
+ * ALLOWED: packages/channels/src/adapters/discord.ts, and EXACTLY two
+ * additive lines in discord-inbound-invariant.test.ts required by the 3a
+ * ratchet (3b/4 precedent): CLASSIFICATION `fetchReferencedMessage:
+ * "outbound"` and SIDE_EFFECT_TOKENS `"fetchReferencedMessage"`.
+ * NAMING TRAP: the seam's payload type must NOT be named `Inbound*` (the
+ * ratchet's bidirectional cross-check) — `DiscordReferencedMessage`.
+ *
+ * THE SEAM: one new DiscordTransport member,
+ *   readonly fetchReferencedMessage: (channelId: string, messageId: string)
+ *     => Promise<DiscordReferencedMessage | null>
+ * and `InboundDiscordMessage` gains an optional
+ *   `reference?: { messageId: string; channelId: string } | undefined`
+ * (discord.js MessageReference fields this spec's fixtures use).
+ *
+ * CAPACITY PRE-FLIGHT: none required — in-memory fakes only, no network, no
+ * LLM seam (deterministic => the N>=5 multi-trial rule does not apply).
+ *
+ * RED/GREEN inventory at handoff: ALL 8 tests below are RED (no reference is
+ * ever fetched, no quote is ever rendered, no metadata.replyToMsgId exists).
+ * The stranger HALF of test 8 is GREEN-vacuous alone, which is why it shares
+ * one test with its allowed-user twin — the twin's fetch assertion is RED
+ * today and makes the stranger-zero non-vacuous after impl.
+ */
+
+/** An InboundDiscordMessage replying to `parentMessageId`. Same conditional-
+ * widening cast as `inboundWith` (Slice 4): `reference` is not on
+ * `InboundDiscordMessage` YET; behaviour, not type, is the contract. */
+const replyTo = (
+  parentMessageId: string,
+  o: Partial<InboundDiscordMessage> = {},
+  referenceChannelId?: string,
+): InboundDiscordMessage => {
+  const base = inbound(o)
+  return {
+    ...base,
+    reference: { messageId: parentMessageId, channelId: referenceChannelId ?? base.channelId },
+  } as InboundDiscordMessage
+}
+
+/**
+ * True when `s` contains a lone (unpaired) surrogate — the split-surrogate
+ * defect a UTF-16 `.slice` produces. Hand-rolled because the package
+ * tsconfig's lib predates ES2024's String.prototype.isWellFormed (tsconfig
+ * is FROZEN for this slice).
+ */
+const hasLoneSurrogate = (s: string): boolean => {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true
+      i++ // valid pair: skip the low half
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return true
+    }
+  }
+  return false
+}
+
+const setup5 = (cfg?: {
+  readonly refMsgImpl?: (
+    channelId: string,
+    messageId: string,
+    call: number,
+  ) => Promise<FakeReferencedMessage | null>
+}) => {
+  const fake = makeFakeTransport(cfg?.refMsgImpl !== undefined ? { refMsgImpl: cfg.refMsgImpl } : {})
+  const received: ChannelMessage[] = []
+  const adapter = makeDiscordAdapter({
+    id: "d-5",
+    transport: fake.transport,
+    logLogin: false,
+    allowedUsers: ["user-allowed"],
+  })
+  adapter.setMessageHandler((m) =>
+    Effect.sync(() => {
+      received.push(m)
+    }),
+  )
+  return { fake, adapter, received }
+}
+
+describe("Slice 5 — reply quote rendered into the user text (task #6)", () => {
+  it("1. GIVEN a same-channel reply THEN the user text gains the VERBATIM donor template quote prefix (author displayName path) via ONE seam fetch", async () => {
+    const s = setup5()
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(replyTo("p1", { id: "s5-1", content: "can you summarize this?" }))
+      await tick(50)
+    })
+    expect(s.received, "the turn dispatched exactly once").toHaveLength(1)
+    expect(s.received[0]?.text, "donor template, byte-for-byte").toBe(
+      '[Replying to Riven: "deploy is done, ready for review"]\n\ncan you summarize this?',
+    )
+    expect(s.fake.refFetchCalls, "exactly one reference fetch through the seam").toEqual([
+      { channelId: "chan-1", messageId: "p1" },
+    ])
+  })
+
+  it("2. author fallback chain: no displayName => username; no author at all => \"Someone\"", async () => {
+    const s = setup5({
+      refMsgImpl: async (_c, messageId) =>
+        messageId === "p-username"
+          ? { content: "ship it", author: { username: "riven_writes" } }
+          : { content: "who said this", author: null },
+    })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(replyTo("p-username", { id: "s5-2a", content: "ok" }))
+      await tick(50)
+      s.fake.fire(replyTo("p-noauthor", { id: "s5-2b", content: "hm" }))
+      await tick(50)
+    })
+    expect(s.received).toHaveLength(2)
+    expect(s.received[0]?.text).toBe('[Replying to riven_writes: "ship it"]\n\nok')
+    expect(s.received[1]?.text).toBe('[Replying to Someone: "who said this"]\n\nhm')
+  })
+
+  it("3. long parent content is clipped at 500 CODE POINTS (truncateCodePoints, never .slice) + U+2026 marker — no split surrogate", async () => {
+    // 499 BMP chars then two astral chars: 501 code points, 503 UTF-16 units.
+    // The donor's `.slice(0, 500)` cuts INSIDE the first astral char — the
+    // fixture proves that trap is real, then the impl must avoid it.
+    const ASTRAL = "\u{1F600}" // one code point, TWO UTF-16 units
+    const parentContent = "x".repeat(499) + ASTRAL + ASTRAL
+    expect([...parentContent].length, "fixture sanity: 501 code points").toBe(501)
+    expect(
+      hasLoneSurrogate(parentContent.slice(0, 500)),
+      "fixture sanity: naive .slice(0,500) DOES split the surrogate (the donor bug)",
+    ).toBe(true)
+    const s = setup5({
+      refMsgImpl: async () => ({ content: parentContent, author: { displayName: "Riven" } }),
+    })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(replyTo("p-long", { id: "s5-3", content: "tldr?" }))
+      await tick(50)
+    })
+    expect(s.received).toHaveLength(1)
+    const expectedQuote = "x".repeat(499) + ASTRAL + "…"
+    expect(s.received[0]?.text, "clip at 500 code points, whole astral char kept, marker appended").toBe(
+      `[Replying to Riven: "${expectedQuote}"]\n\ntldr?`,
+    )
+    expect(
+      hasLoneSurrogate(s.received[0]?.text ?? ""),
+      "no lone surrogate anywhere in the rendered text",
+    ).toBe(false)
+  })
+
+  it("4. parent content AT the bound (500 code points) is quoted verbatim with NO truncation marker", async () => {
+    const parentContent = "y".repeat(500)
+    const s = setup5({
+      refMsgImpl: async () => ({ content: parentContent, author: { displayName: "Riven" } }),
+    })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(replyTo("p-exact", { id: "s5-4", content: "noted" }))
+      await tick(50)
+    })
+    expect(s.received).toHaveLength(1)
+    expect(s.received[0]?.text).toBe(`[Replying to Riven: "${parentContent}"]\n\nnoted`)
+    expect(s.received[0]?.text, "no marker when nothing was clipped").not.toContain("…")
+  })
+
+  it("5. CROSS-CHANNEL reference: ZERO fetches (never a read outside the gated channel), no quote, ONE log line, message still dispatched", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const s = setup5()
+      await withStarted(s.adapter, async () => {
+        s.fake.fire(replyTo("p-cross", { id: "s5-5", content: "what about this?" }, "chan-OTHER"))
+        await tick(50)
+      })
+      expect(s.fake.refFetchCalls, "cross-channel is a SKIP, never a fetch").toHaveLength(0)
+      expect(s.received, "best-effort: the message still dispatches").toHaveLength(1)
+      expect(s.received[0]?.text, "no quote").toBe("what about this?")
+      const lines = warn.mock.calls.filter((c) => /cross-channel/.test(c.join(" ")))
+      expect(lines, "exactly one skip log line").toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("6. fetch FAILURE (seam rejects): no quote, ONE log line (never the donor's silent conflation), message still dispatched", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const s = setup5({
+        refMsgImpl: async () => {
+          throw new Error("Missing Access")
+        },
+      })
+      await withStarted(s.adapter, async () => {
+        s.fake.fire(replyTo("p-fail", { id: "s5-6", content: "still here" }))
+        await tick(50)
+      })
+      expect(s.fake.refFetchCalls, "the fetch was attempted").toHaveLength(1)
+      expect(s.received, "best-effort: the turn survives the failed fetch").toHaveLength(1)
+      expect(s.received[0]?.text, "no quote on failure").toBe("still here")
+      const lines = err.mock.calls.filter((c) => /reference fetch failed/.test(c.join(" ")))
+      expect(lines, "exactly one failure log line").toHaveLength(1)
+    } finally {
+      err.mockRestore()
+    }
+  })
+
+  it("7. DELETED parent (seam resolves null): no quote, message dispatched, and replyToMsgId — captured BEFORE the fetch — still rides metadata", async () => {
+    const s = setup5({ refMsgImpl: async () => null })
+    await withStarted(s.adapter, async () => {
+      s.fake.fire(replyTo("p-deleted", { id: "s5-7", content: "reviving this thread" }))
+      await tick(50)
+    })
+    expect(s.fake.refFetchCalls).toHaveLength(1)
+    expect(s.received).toHaveLength(1)
+    expect(s.received[0]?.text, "a deleted parent quotes nothing").toBe("reviving this thread")
+    // THE PINNED ORDERING (donor port): replyToMsgId comes from
+    // message.reference BEFORE the fetch, so a deleted parent cannot erase
+    // it — asserted on the metadata contract types.ts already carries.
+    expect(s.received[0]?.metadata?.["replyToMsgId"], "capture-before-fetch survives a deleted parent").toBe(
+      "p-deleted",
+    )
+  })
+
+  it("8. GATE: a stranger's reply causes ZERO reference fetches — empty Proxy-log delta (twinned with the allowed-user fetch that makes it non-vacuous)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const s = setup5()
+      await withStarted(s.adapter, async () => {
+        const before = s.fake.log.length
+        s.fake.fire(replyTo("p-str", { id: "s5-8a", authorId: "attacker", content: "quote me" }))
+        await tick(50)
+        expect(s.fake.log.length, "ZERO transport calls for a stranger — Proxy log delta empty").toBe(before)
+        expect(s.fake.refFetchCalls, "no reference fetch for a stranger, ever").toHaveLength(0)
+        expect(s.received, "no dispatch for a stranger").toHaveLength(0)
+        // Non-vacuity TWIN (RED today): the IDENTICAL fixture fetches once
+        // the author is allowed, proving the zero above measures the gate
+        // and not the absence of reply-quote code.
+        s.fake.fire(replyTo("p-str", { id: "s5-8b", content: "quote me" }))
+        await tick(50)
+        expect(s.fake.refFetchCalls, "twin: the same fixture fetches post-gate").toHaveLength(1)
+      })
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

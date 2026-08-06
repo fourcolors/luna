@@ -124,6 +124,7 @@ const CLASSIFICATION: Record<string, "inbound-dispatch" | "lifecycle-callback" |
   ackInteractionEphemeral: "outbound",
   registerGuildCommands: "outbound",
   fetchAttachment: "outbound",
+  fetchReferencedMessage: "outbound",
 }
 
 /**
@@ -138,6 +139,7 @@ const SIDE_EFFECT_TOKENS = [
   "ackInteractionEphemeral",
   "sendTyping",
   "fetchAttachment",
+  "fetchReferencedMessage",
   "noteDrop", // drop-logging a message the gate has not REJECTED is also pre-gate observation
 ] as const
 
