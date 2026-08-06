@@ -11,7 +11,7 @@
  *   propose → respond(accept) with AcceptHandler provided → in_progress + a
  *   durable one-shot job recorded.
  *
- * Run: bun run apps/ui-web/scripts/smoke/suggested-actions-boot.smoke.ts
+ * Run: bun run apps/server/scripts/smoke/suggested-actions-boot.smoke.ts
  */
 import {
   AcceptHandler,

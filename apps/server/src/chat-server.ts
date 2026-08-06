@@ -10,7 +10,7 @@
  * driven by a real Claude Agent SDK subprocess.
  *
  * Run:
- *   bun run --filter '@luna/ui-web' server:chat
+ *   bun run scripts/luna-chat-server-entry.ts
  *
  * Phase 25b: this script is the first production caller of
  * AccountBroker. The Claude OAuth token is no longer pulled from
@@ -4762,9 +4762,7 @@ const buildMain = (
     console.log(`✅ ui-ws chat server: ws://${handle.host}:${handle.port}/ui`)
     console.log(`🔑 token: configured`)
     console.log(`🧠 chat enabled (capabilities.chat=true, streamingDeltas=true)`)
-    console.log(`💡 web UI: bun run --filter '@luna/ui-web' dev`)
-    console.log(`   token auto-fills via .env.development — start a thread`)
-    console.log(`💤 idle until a client connects — Ctrl-C to exit`)
+    console.log(`💡 connect with Moon or agent-cli — Ctrl-C to exit`)
 
     // ── Communication channels: register + start adapters ────────────────────
     // Telegram is wired unconditionally; the bot token is the only requirement.

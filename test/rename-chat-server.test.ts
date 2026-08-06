@@ -26,7 +26,7 @@ const EXCLUDES = [
   ":(exclude)docs/superpowers",
   ":(exclude)docs/next/stack23-plan.json",
   ":(exclude)docs/next/stack23-slices.md",
-  ":(exclude)apps/ui-web/scripts/__tests__/rename-chat-server.test.ts",
+  ":(exclude)test/rename-chat-server.test.ts",
 ];
 
 const NEEDLES = ["dev-server-chat", "dev:server:chat"];

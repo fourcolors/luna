@@ -13,7 +13,7 @@
  *            delta — the exact chat-server-restart hydration path — and a
  *            registry hydrated from it excludes the disabled skill's body.
  *
- * Run: bun run apps/ui-web/scripts/smoke/skill-prefs.smoke.ts
+ * Run: bun run apps/server/scripts/smoke/skill-prefs.smoke.ts
  * Exit 0 = PASS, non-zero = FAIL
  */
 import {

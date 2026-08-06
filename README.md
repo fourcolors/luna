@@ -42,7 +42,7 @@ client installer does not read or write Claude OAuth tokens.
 - **Agent SDK:** [Anthropic Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - **Database:** SQLite via `@effect/sql-sqlite-bun` · Vectorlite for HNSW vector search
 - **Testing:** Vitest
-- **UI:** Solid.js (web) · Luna Moon floating widget (Tauri) · the `luna` terminal client
+- **UI:** Luna Moon floating widget (Tauri) · the `luna` terminal client
 
 ## Architecture
 
@@ -76,7 +76,6 @@ packages/
   capabilities/   - versioned capability layer (slash commands, skills) a backend advertises to UIs
 apps/
   agent-cli/      — the `luna` terminal client (chat, doctor, pair, account, memory)
-  ui-web/         — Solid.js web chat interface (Vite dev server on :5174)
   ui-moon-tauri/  — Luna Moon: a small transparent floating-widget desktop app (Tauri)
 ```
 
@@ -85,7 +84,6 @@ apps/
 | App | What it is |
 |-----|------------|
 | `agent-cli` | The `luna` CLI you install on your Mac. `luna chat` opens a terminal chat; `luna doctor` runs a connection preflight; `luna pair` points the CLI + Moon widget at a server in one command. |
-| `ui-web` | The Solid.js web chat UI, served by Vite on `http://localhost:5174`. This is also where first-run Claude subscription login happens. |
 | `ui-moon-tauri` | "Luna Moon" — a small (140×140), transparent, always-on-top floating crescent widget. Click it for a chat panel; toggle with `Cmd/Ctrl+Shift+K`. |
 
 The LLM behind every surface is **cloud Claude via your Claude.ai subscription**
@@ -95,7 +93,7 @@ Local Ollama is used only for memory embeddings, not for chat.
 
 ## Quick Start
 
-Luna is a monorepo. A clone contains the terminal client, web UI, the desktop
+Luna is a monorepo. A clone contains the terminal client, the desktop
 widget, the server runtime, shared packages, and host/container setup scripts.
 
 **Step 0 — clone the repo.** Everything below assumes you have a local clone:
@@ -298,7 +296,7 @@ Focused checks for the deployment/client work:
 
 ```bash
 bash -n install.sh scripts/luna-server-install scripts/luna-container-create scripts/luna-guardian scripts/luna-guardian-remote-check scripts/lib/luna-deploy.sh
-LUNA_TEST_HOST_ENV=1 bun run test test/deploy-scripts.test.ts apps/ui-web/scripts/__tests__/rename-chat-server.test.ts
+LUNA_TEST_HOST_ENV=1 bun run test test/deploy-scripts.test.ts test/rename-chat-server.test.ts
 bun run --filter '@luna/agent-cli' test
 ```
 
@@ -315,10 +313,9 @@ ManagedRuntime boot smokes — see
 
 ```bash
 # Web UI (Vite, hot reload)
-bun run --filter '@luna/ui-web' dev
 
 # Chat backend (requires the `claude` CLI logged in via `claude setup-token`)
-bun run --filter '@luna/ui-web' server:chat
+bun run scripts/luna-chat-server-entry.ts
 ```
 
 ### Branching & releases

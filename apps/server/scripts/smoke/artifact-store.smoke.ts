@@ -14,7 +14,7 @@
  *            AND its full version history — the exact chat-server-restart
  *            hydration path — then unpin clears head + ledger.
  *
- * Run: bun run apps/ui-web/scripts/smoke/artifact-store.smoke.ts
+ * Run: bun run apps/server/scripts/smoke/artifact-store.smoke.ts
  * Exit 0 = PASS, non-zero = FAIL
  */
 import { ArtifactStore, Clock } from "@luna/core"

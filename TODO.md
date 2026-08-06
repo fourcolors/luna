@@ -19,22 +19,24 @@ _(items that can't move forward without a decision, dependency, or external fact
 
 ## ⬜ Next Up
 
-- [ ] **Moon: widget minimize** — roll a widget window up to its title bar (explicit ask in the Luna Workspace design handoff; the web board already has it). Touches dock-group geometry — the Rust group logic tracks member sizes, so a rolled-up window mid-group needs care + a real-Tauri verify.
-- [ ] **Moon: ☆ favorites** — star widgets from the title bar; a favorites surface summons them (web-board parity).
+- [ ] **Moon: widget minimize** — roll a widget window up to its title bar (explicit ask in the Luna Workspace design handoff). Touches dock-group geometry — the Rust group logic tracks member sizes, so a rolled-up window mid-group needs care + a real-Tauri verify.
+- [ ] **Moon: ☆ favorites** — star widgets from the title bar; a favorites surface summons them.
 
 ---
 
 ## 🟡 Backlog
 
-- [ ] **ui-web: Shiki light theme** — code blocks stay dark slabs in all palettes (github-dark colors are baked inline per token). Re-theme = dual-theme highlighter in ui-shared-solid's CodeBlock keyed off `html[data-theme]`.
-- [ ] **ui-web board: design extras** — tomagotchi friend (Pip), agents panel (needs a live-agents wire frame), voice mode, ☾ moon-collapse rest state from the Luna Workspace design.
-- [ ] **Watercolor tokens: single source** — `apps/ui-web/src/watercolor.css` duplicates `apps/ui-moon-tauri/frontend/vendor/moon-palette.css` by copy (the moon's static frontend can't import packages). Consider generating both from one source at build time.
+_(nothing queued)_
 
 ---
 
 ## ✅ Recently Completed
 
 _(checked items stay briefly for context, then get pruned)_
+
+- [x] **ui-web: Shiki light theme** - resolved by deletion: `apps/ui-web` and `packages/design-system` were removed (stack23 S12); there is no longer a web board to re-theme.
+- [x] **ui-web board: design extras** - resolved by deletion: `apps/ui-web` was removed (stack23 S12); the web board these extras targeted no longer exists.
+- [x] **Watercolor tokens: single source** - resolved by deletion: `apps/ui-web/src/styles/astryx-watercolor-theme.css` and `packages/design-system` were removed (stack23 S12); `apps/ui-moon-tauri/frontend/vendor/moon-palette.css` is now the single source of watercolor tokens.
 
 ---
 
