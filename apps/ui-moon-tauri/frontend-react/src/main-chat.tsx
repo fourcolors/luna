@@ -3,20 +3,24 @@
 // Mounts the invisible boot probe (see boot.tsx), the React-owned title-bar
 // chrome shared with widget.html (chat/chat-chrome-mount.tsx: `.bar-title` +
 // `.collapse-moon-btn`), the chat transcript (chat/MessageList.tsx, stack23
-// S15) into `#chat-messages`, and - as of stack23 S16a - the composer's
-// staged-attachment tray (chat/Attachments.tsx) into `#attachments-strip` /
-// `#attach-error`. chat.html's WebSocketEngine/PoolEngine/ThreadDrawerEngine
-// -driven wire pipeline and every other title-bar control (new-thread-btn,
-// redock-btn) keep running completely unchanged in chat.html's own inline
-// <script> - see chat-chrome-mount.tsx's module doc for the chrome scope
-// rationale, MessageList.tsx's module doc for the transcript-conversion seam
-// (the `window.ChatState` / `window.ChatLoop` bridge this file assigns
-// below), and Attachments.tsx's module doc for the `window.Attachments`
-// bridge assigned the same way.
+// S15) into `#chat-messages`, the composer's staged-attachment tray
+// (chat/Attachments.tsx, stack23 S16a) into `#attachments-strip` /
+// `#attach-error`, and - as of stack23 S16b - the composer's model + effort
+// switcher (chat/ComposerConfig.tsx) into the composer-config cluster.
+// chat.html's WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire
+// pipeline and every other title-bar control (new-thread-btn, redock-btn)
+// keep running completely unchanged in chat.html's own inline <script> -
+// see chat-chrome-mount.tsx's module doc for the chrome scope rationale,
+// MessageList.tsx's module doc for the transcript-conversion seam (the
+// `window.ChatState` / `window.ChatLoop` bridge this file assigns below),
+// and Attachments.tsx's / ComposerConfig.tsx's module docs for the
+// `window.Attachments` / `window.ComposerConfig` bridges assigned the same
+// way.
 import "./chat/message-list.css"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { mountChatChrome } from "./chat/chat-chrome-mount"
+import { mountComposerConfig, moonInternalsComposerCtx } from "./chat/ComposerConfig"
 import { mountMessageList, WELCOME_ITEM } from "./chat/MessageList"
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
@@ -41,6 +45,40 @@ if (attachmentsMount) {
   w.Attachments = attachmentsMount.Attachments
   if (w.__MoonInternals) {
     w.__MoonInternals.Attachments = attachmentsMount.Attachments
+  }
+}
+
+// ── ComposerConfig (model + effort switcher) ────────────────────────────
+//
+// Same `var ComposerConfig` forward-declaration + bridge-assignment pattern
+// as Attachments above - see ComposerConfig.tsx's module doc for the mount
+// itself and chat.html's own comment on the `var ComposerConfig` declaration.
+// `moonInternalsComposerCtx()` reads/writes chat.html's live `State` object
+// (threadModels/threadEfforts/serverSupportsEffort/selectedEffort) and sends
+// over the live WS connection through window.__MoonInternals, exactly like
+// getChatGlobalState() below reads State for the transcript - both are
+// populated by chat.html's classic script before this module ever runs.
+const composerConfigMount = mountComposerConfig(
+  {
+    cluster: document.getElementById("composer-config"),
+    modelBtn: document.getElementById("model-cfg-btn"),
+    modelMenu: document.getElementById("model-cfg-menu"),
+    effortBtn: document.getElementById("effort-cfg-btn"),
+    effortMenu: document.getElementById("effort-cfg-menu"),
+    effortSep: document.getElementById("effort-cfg-sep"),
+    deferredHint: document.getElementById("cfg-deferred-hint"),
+  },
+  moonInternalsComposerCtx(),
+)
+
+if (composerConfigMount) {
+  const w = window as unknown as {
+    ComposerConfig?: unknown
+    __MoonInternals?: { ComposerConfig?: unknown }
+  }
+  w.ComposerConfig = composerConfigMount.ComposerConfig
+  if (w.__MoonInternals) {
+    w.__MoonInternals.ComposerConfig = composerConfigMount.ComposerConfig
   }
 }
 

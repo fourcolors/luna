@@ -2409,12 +2409,11 @@
       <!-- Model + effort popovers — anchored to .chat-input-area (position:
            relative); open upward above the control bar. Kept ahead of the visible
            rows in source order so they stack above on open. -->
-      <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true">
-        <div class="cfg-menu-hint">Model for new conversations</div>
-      </div>
-      <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true">
-        <div class="cfg-menu-hint">Effort level</div>
-      </div>
+      <!-- Empty: React-owned (ComposerConfig.tsx renders the hint line +
+           item list; createRoot(host).render() would wipe any static
+           children here anyway - see that module's doc). -->
+      <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
+      <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
       <!-- Slash-command popover — anchored to .chat-input-area (position:relative),
            opens upward-LEFT above the composer. Kept in the pre-rows block so its
            equal z-index ties on DOM source order in WKWebView. Rows injected by JS. -->
@@ -2485,10 +2484,13 @@
             </svg>
           </button>
         </div>
+        <!-- Model/effort labels are React-owned (ComposerConfig.tsx) - both
+             buttons stay empty here for the same reason the two popovers
+             above do. -->
         <div class="composer-config" id="composer-config" hidden>
-          <button type="button" class="cfg-btn" id="model-cfg-btn" aria-label="Change model" aria-haspopup="true">Server default</button>
+          <button type="button" class="cfg-btn" id="model-cfg-btn" aria-label="Change model" aria-haspopup="true"></button>
           <div class="cfg-sep" id="effort-cfg-sep" hidden></div>
-          <button type="button" class="cfg-btn" id="effort-cfg-btn" aria-label="Change effort" aria-haspopup="true" hidden>—</button>
+          <button type="button" class="cfg-btn" id="effort-cfg-btn" aria-label="Change effort" aria-haspopup="true" hidden></button>
           <div class="cfg-deferred-hint" id="cfg-deferred-hint"></div>
         </div>
       </div>
@@ -2693,15 +2695,18 @@
       scopeBtn: document.getElementById('scope-btn'),
       scopeMenu: document.getElementById('scope-menu'),
       scopeFullAccess: document.getElementById('scope-full-access'),
-      // Composer config cluster (model + effort switcher).
-      composerConfig:    document.getElementById('composer-config'),
+      // Composer config cluster (model + effort switcher). `#composer-config`,
+      // `#effort-cfg-sep`, and `#cfg-deferred-hint` are React-owned now
+      // (ComposerConfig.tsx, mounted from main-chat.tsx via
+      // document.getElementById directly) - the rest stay here because
+      // SlashMenu's /model and /effort no-arg pickers (vanilla, stays
+      // vanilla - S16c's concern) and the Escape handler still reach into
+      // them directly.
       modelCfgBtn:       document.getElementById('model-cfg-btn'),
       modelCfgMenu:      document.getElementById('model-cfg-menu'),
       effortCfgBtn:      document.getElementById('effort-cfg-btn'),
       effortCfgMenu:     document.getElementById('effort-cfg-menu'),
-      effortCfgSep:      document.getElementById('effort-cfg-sep'),
       slashMenu:         document.getElementById('slash-menu'),
-      cfgDeferredHint:   document.getElementById('cfg-deferred-hint'),
     };
 
     /**
@@ -6938,503 +6943,27 @@
       window.__poolEngineState = null;
     }
 
-    // ── Composer Config Engine (model + effort switcher) ─────────────────────
-    // Manages the compact right-aligned config cluster below the composer row:
-    // model label button + effort label button, each opening an upward popover.
-    // Logic kept inline (no separate JS file) — same pattern as ArtifactsEngine /
-    // SurveyEngine above. Exposed via __MoonInternals for tests.
+    // ── Composer Config (model + effort switcher) ────────────────────────
+    // Manages the compact right-aligned config cluster below the composer
+    // row: model label button + effort label button, each opening an
+    // upward popover, plus the set-thread-config optimistic-revert
+    // protocol. Converted to a typed React module (stack23 S16b): the
+    // model/effort picks, the per-thread model/effort truth, and the
+    // reconcile-on-ack logic now live in src/chat/ComposerConfig.tsx, which
+    // paints the labels/menus/deferred-hint directly via React - the manual
+    // per-item document.createElement building is gone.
     //
-    // Available-models list: from applyAvailableModels() (called during hello).
-    // Each entry: { id: string, label: string, efforts: string[] }
-    // Back-compat: the cache may contain old plain-id entries from an older
-    // moon build; the normalisation in applyAvailableModels handles that,
-    // so ComposerConfig always sees full objects.
-    const ComposerConfig = {
-      /** Current normalized model list (full objects). Set by applyModels(). */
-      _models: [],
-
-      /**
-       * Prior picks snapshotted just before an optimistic localStorage write
-       * that triggered a set-thread-config send. The server's thread-config
-       * ack consumes them: `rejected` rolls the write back (localStorage +
-       * per-thread maps + labels); `applied`/`deferred` discard the snapshot.
-       * Keys: `model`, `modelEffort` (the effort a model pick may have
-       * cascade-cleared), `effort` (all localStorage; empty string = "was
-       * unset") and `threadModel` / `threadEffort` (State.threadModels /
-       * State.threadEfforts; null = "was unset").
-       */
-      _pendingRevert: {},
-
-      /**
-       * Normalize a raw cache entry to { id, label, efforts }.
-       * Handles both the new object shape and legacy plain-id strings.
-       */
-      _normalizeEntry(entry) {
-        if (typeof entry === 'string') return { id: entry, label: entry, efforts: [] };
-        if (entry && typeof entry.id === 'string' && entry.id) {
-          return {
-            id: entry.id,
-            label: typeof entry.label === 'string' && entry.label ? entry.label : entry.id,
-            efforts: Array.isArray(entry.efforts) ? entry.efforts : [],
-          };
-        }
-        return null;
-      },
-
-      /**
-       * Called by applyAvailableModels() after the hello model list is
-       * received. Rebuilds the composer model popover and refreshes labels.
-       */
-      applyModels(models) {
-        this._models = (models || []).map((m) => this._normalizeEntry(m)).filter(Boolean);
-        this._rebuildModelMenu();
-        this._refreshLabels();
-        // Show the cluster only when there are models to choose from.
-        if (DOM.composerConfig) {
-          DOM.composerConfig.hidden = this._models.length === 0;
-        }
-      },
-
-      /**
-       * Capability gate: called after the hello caps are parsed.
-       * When false (older server), hide the effort button and separator.
-       */
-      applyCapability(supportsEffort) {
-        this._refreshEffortVisibility(supportsEffort);
-      },
-
-      /** Find the model object for the currently selected model id.
-       *  Reads the GLOBAL localStorage pick — this is the new-thread default
-       *  (used by sendNewThread + isEffortValidForCurrentModel), NOT what the
-       *  composer displays for an existing thread. */
-      _currentModelEntry() {
-        const id = localStorage.getItem('luna_model') || '';
-        if (!id) return this._models[0] || null;
-        return this._models.find((m) => m.id === id) || null;
-      },
-
-      /**
-       * The model id the composer should DISPLAY: the active thread's actual
-       * model when the server has told us (thread-created / thread-list /
-       * thread-config ack / smart-bar), else the operator's global pick.
-       * This is what makes a mid-thread switch — or opening an older thread —
-       * show the thread's REAL model instead of the last global selection.
-       */
-      _displayModelId() {
-        const tid = State.activeThreadId;
-        if (tid && State.threadModels[tid]) return State.threadModels[tid];
-        return localStorage.getItem('luna_model') || '';
-      },
-
-      /** The model entry to render menus/labels from (display-model aware). */
-      _displayModelEntry() {
-        const id = this._displayModelId();
-        if (!id) return this._models[0] || null;
-        return this._models.find((m) => m.id === id) || null;
-      },
-
-      /** The effort the composer should DISPLAY (active thread first). */
-      _displayEffort() {
-        const tid = State.activeThreadId;
-        if (tid && State.threadEfforts[tid]) return State.threadEfforts[tid];
-        return localStorage.getItem('luna_effort') || '';
-      },
-
-      /** Re-render menus + labels from current per-thread-aware state. */
-      refreshComposer() {
-        this._rebuildModelMenu();
-        this._rebuildEffortMenu();
-        this._refreshLabels();
-      },
-
-      /**
-       * Record a thread's ACTUAL config as reported by the server and refresh
-       * the composer when it concerns the active thread. Pass null/undefined
-       * for a field to leave it untouched. Sources: thread-created and
-       * thread-list summaries, thread-config acks, smart-bar model pills.
-       */
-      recordThreadConfig(threadId, model, effort) {
-        if (!threadId) return;
-        let changed = false;
-        if (typeof model === 'string' && model) {
-          if (State.threadModels[threadId] !== model) {
-            State.threadModels[threadId] = model;
-            changed = true;
-          }
-        }
-        if (typeof effort === 'string' && effort) {
-          if (State.threadEfforts[threadId] !== effort) {
-            State.threadEfforts[threadId] = effort;
-            changed = true;
-          }
-        }
-        if (changed && threadId === State.activeThreadId) {
-          this.refreshComposer();
-        }
-      },
-
-      /**
-       * True when `effort` is in the current model's efforts list.
-       * Used by sendNewThread to decide whether to include the effort field.
-       */
-      isEffortValidForCurrentModel(effort) {
-        const entry = this._currentModelEntry();
-        return !!(entry && Array.isArray(entry.efforts) && entry.efforts.includes(effort));
-      },
-
-      /** Rebuild the model popover menu items. */
-      _rebuildModelMenu() {
-        const menu = DOM.modelCfgMenu;
-        if (!menu) return;
-        // Keep the hint div (first child), remove the rest.
-        while (menu.children.length > 1) menu.removeChild(menu.lastChild);
-        const current = this._displayModelId();
-        for (const m of this._models) {
-          const item = document.createElement('div');
-          item.className = 'cfg-menu-item' + (m.id === current ? ' selected' : '');
-          item.dataset.modelId = m.id;
-          item.tabIndex = 0;
-          item.setAttribute('role', 'menuitemradio');
-          item.setAttribute('aria-checked', m.id === current ? 'true' : 'false');
-          const label = document.createElement('span');
-          label.textContent = m.label;
-          const check = document.createElement('span');
-          check.className = 'cfg-menu-check';
-          check.setAttribute('aria-hidden', 'true');
-          check.textContent = '✓';
-          item.appendChild(label);
-          item.appendChild(check);
-          item.addEventListener('click', () => this._selectModel(m.id));
-          item.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._selectModel(m.id); } });
-          menu.appendChild(item);
-        }
-      },
-
-      /** Rebuild the effort popover menu items for the current model. */
-      _rebuildEffortMenu() {
-        const menu = DOM.effortCfgMenu;
-        if (!menu) return;
-        while (menu.children.length > 1) menu.removeChild(menu.lastChild);
-        const entry = this._displayModelEntry();
-        const rawEfforts = (entry && entry.efforts) || [];
-        // Display order: surface "ultracode" at the TOP of the menu (the
-        // headline mode), then the real effort levels in server order.
-        const efforts = [
-          ...rawEfforts.filter((e) => e === 'ultracode'),
-          ...rawEfforts.filter((e) => e !== 'ultracode'),
-        ];
-        const current = this._displayEffort();
-        // "Server default" item (empty effort = omit from frame)
-        const defItem = document.createElement('div');
-        defItem.className = 'cfg-menu-item' + (!current ? ' selected' : '');
-        defItem.dataset.effortId = '';
-        defItem.tabIndex = 0;
-        defItem.setAttribute('role', 'menuitemradio');
-        defItem.setAttribute('aria-checked', !current ? 'true' : 'false');
-        const defLabel = document.createElement('span');
-        defLabel.textContent = 'Default';
-        const defCheck = document.createElement('span');
-        defCheck.className = 'cfg-menu-check';
-        defCheck.setAttribute('aria-hidden', 'true');
-        defCheck.textContent = '✓';
-        defItem.appendChild(defLabel);
-        defItem.appendChild(defCheck);
-        defItem.addEventListener('click', () => this._selectEffort(''));
-        menu.appendChild(defItem);
-        for (const ef of efforts) {
-          const item = document.createElement('div');
-          item.className = 'cfg-menu-item' + (ef === current ? ' selected' : '');
-          item.dataset.effortId = ef;
-          item.tabIndex = 0;
-          item.setAttribute('role', 'menuitemradio');
-          item.setAttribute('aria-checked', ef === current ? 'true' : 'false');
-          const itemLabel = document.createElement('span');
-          // Capitalize the effort label (low → Low, xhigh → Xhigh, max → Max);
-          // ultracode gets a headline label with a ⚡ glyph.
-          itemLabel.textContent = ef === 'ultracode'
-            ? '⚡ Ultracode'
-            : ef.charAt(0).toUpperCase() + ef.slice(1);
-          const check = document.createElement('span');
-          check.className = 'cfg-menu-check';
-          check.setAttribute('aria-hidden', 'true');
-          check.textContent = '✓';
-          item.appendChild(itemLabel);
-          item.appendChild(check);
-          item.addEventListener('click', () => this._selectEffort(ef));
-          item.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._selectEffort(ef); } });
-          menu.appendChild(item);
-        }
-      },
-
-      /** Persist model selection, update labels, send mid-thread config if live. */
-      _selectModel(id) {
-        const prev = localStorage.getItem('luna_model') || '';
-        if (id) {
-          localStorage.setItem('luna_model', id);
-        } else {
-          localStorage.removeItem('luna_model');
-        }
-        // Validate effort for new model; clear if no longer in the new model's list.
-        const entry = this._models.find((m) => m.id === id) || this._models[0] || null;
-        const savedEffort = localStorage.getItem('luna_effort') || '';
-        if (savedEffort && entry && !entry.efforts.includes(savedEffort)) {
-          localStorage.removeItem('luna_effort');
-          State.selectedEffort = null;
-        }
-        this.closeAllMenus();
-        // Mid-thread: if there's an active thread, send set-thread-config.
-        // Change detection compares against the thread's ACTUAL model when
-        // known (not the global localStorage pick) — otherwise re-picking your
-        // global default on a thread running something else silently no-ops.
-        const tid = State.activeThreadId;
-        const liveCurrent = (tid && State.threadModels[tid]) || prev;
-        if (tid && State.serverSupportsEffort && id !== liveCurrent && id) {
-          // Snapshot the prior picks so a `rejected` ack can roll back the
-          // optimistic writes (localStorage, per-thread map, cascade-cleared
-          // effort). null marks "was unset" for the per-thread map.
-          this._pendingRevert.model = prev;
-          this._pendingRevert.modelEffort = savedEffort;
-          this._pendingRevert.threadModel =
-            Object.prototype.hasOwnProperty.call(State.threadModels, tid)
-              ? State.threadModels[tid]
-              : null;
-          State.threadModels[tid] = id; // optimistic — ack reconciles
-          WebSocketEngine.send({
-            type: 'set-thread-config',
-            threadId: tid,
-            model: id,
-          });
-        }
-        this.refreshComposer();
-      },
-
-      /** Persist effort selection, update labels, send mid-thread config if live. */
-      _selectEffort(effort) {
-        const prev = localStorage.getItem('luna_effort') || '';
-        if (effort) {
-          localStorage.setItem('luna_effort', effort);
-          State.selectedEffort = effort;
-        } else {
-          localStorage.removeItem('luna_effort');
-          State.selectedEffort = null;
-        }
-        this.closeAllMenus();
-        // Mid-thread: if there's an active thread and cap on, send set-thread-config.
-        // Change detection compares against the thread's ACTUAL effort when
-        // known (not the global localStorage pick).
-        const tid = State.activeThreadId;
-        const liveCurrent = (tid && State.threadEfforts[tid]) || prev;
-        if (tid && State.serverSupportsEffort && effort !== liveCurrent && effort) {
-          // Snapshot the prior pick so a `rejected` ack can roll back the
-          // optimistic writes (localStorage + per-thread map; null marks
-          // "was unset" for the per-thread map).
-          this._pendingRevert.effort = prev;
-          this._pendingRevert.threadEffort =
-            Object.prototype.hasOwnProperty.call(State.threadEfforts, tid)
-              ? State.threadEfforts[tid]
-              : null;
-          State.threadEfforts[tid] = effort; // optimistic — ack reconciles
-          WebSocketEngine.send({
-            type: 'set-thread-config',
-            threadId: tid,
-            effort: effort,
-          });
-        }
-        this.refreshComposer();
-      },
-
-      /** Update the visible button labels. Prefers the ACTIVE thread's
-       *  server-reported model/effort; falls back to the global picks. */
-      _refreshLabels() {
-        const modelId = this._displayModelId();
-        const entry = modelId
-          ? (this._models.find((m) => m.id === modelId) || null)
-          : (this._models[0] || null);
-        if (DOM.modelCfgBtn) {
-          // A model id the hello list doesn't know (custom/older server) is
-          // shown raw rather than silently mislabelled as the default model.
-          DOM.modelCfgBtn.textContent = entry
-            ? entry.label
-            : (modelId || 'Server default');
-        }
-        const effort = this._displayEffort();
-        if (DOM.effortCfgBtn) {
-          DOM.effortCfgBtn.textContent = effort
-            ? effort.charAt(0).toUpperCase() + effort.slice(1)
-            : 'Default';
-        }
-      },
-
-      /** Show/hide the effort button + separator based on capability and model efforts. */
-      _refreshEffortVisibility(supportsEffort) {
-        const supEff = supportsEffort !== undefined ? supportsEffort : State.serverSupportsEffort;
-        const entry = this._currentModelEntry();
-        const hasEfforts = !!(entry && entry.efforts && entry.efforts.length > 0);
-        const visible = supEff && hasEfforts;
-        if (DOM.effortCfgBtn) DOM.effortCfgBtn.hidden = !visible;
-        if (DOM.effortCfgSep) DOM.effortCfgSep.hidden = !visible;
-      },
-
-      /** True while either config popover menu is open (Esc-dismissal gate). */
-      anyMenuOpen() {
-        return !!((DOM.modelCfgMenu && DOM.modelCfgMenu.classList.contains('open'))
-          || (DOM.effortCfgMenu && DOM.effortCfgMenu.classList.contains('open')));
-      },
-
-      /** Close all config popover menus. */
-      closeAllMenus() {
-        if (DOM.modelCfgMenu) { DOM.modelCfgMenu.classList.remove('open'); DOM.modelCfgMenu.setAttribute('aria-hidden', 'true'); }
-        if (DOM.effortCfgMenu) { DOM.effortCfgMenu.classList.remove('open'); DOM.effortCfgMenu.setAttribute('aria-hidden', 'true'); }
-        if (DOM.modelCfgBtn) DOM.modelCfgBtn.setAttribute('aria-expanded', 'false');
-        if (DOM.effortCfgBtn) DOM.effortCfgBtn.setAttribute('aria-expanded', 'false');
-      },
-
-      /** Write an effort pick to localStorage + State ('' clears it). */
-      _writeEffort(value) {
-        if (value) {
-          localStorage.setItem('luna_effort', value);
-          State.selectedEffort = value;
-        } else {
-          localStorage.removeItem('luna_effort');
-          State.selectedEffort = null;
-        }
-      },
-
-      /**
-       * Reconcile a `thread-config` server ack. Called by the MoonFrames
-       * handler. `applied` confirms picks; `deferred` triggers a subtle hint;
-       * `rejected` rolls the optimistic localStorage write back to the
-       * snapshot taken at send time (_pendingRevert) and re-renders.
-       */
-      reconcileThreadConfig(frame) {
-        if (!frame) return;
-        const applied = Array.isArray(frame.applied) ? frame.applied : [];
-        const deferred = Array.isArray(frame.deferred) ? frame.deferred : [];
-        const rejected = Array.isArray(frame.rejected) ? frame.rejected : [];
-        if (deferred.length > 0 && DOM.cfgDeferredHint) {
-          const fields = deferred.join(' & ');
-          // "next conversation", not "next message": a cross-lane deferred
-          // model only takes effect on a NEW thread (or restart+resubscribe) —
-          // the live thread keeps its model regardless of further messages.
-          DOM.cfgDeferredHint.textContent = `${fields} applies to next conversation`;
-          DOM.cfgDeferredHint.classList.add('visible');
-          clearTimeout(this._deferredHintTimer);
-          this._deferredHintTimer = setTimeout(() => {
-            if (DOM.cfgDeferredHint) DOM.cfgDeferredHint.classList.remove('visible');
-          }, 4000);
-        }
-        // Applied → the server confirmed; record the EFFECTIVE values it
-        // echoes (effort may have been clamped, ultracode normalized) as the
-        // thread's truth so labels/menus reflect reality, not the request.
-        let changed = false;
-        const ackThreadId = typeof frame.threadId === 'string' ? frame.threadId : '';
-        if (ackThreadId) {
-          if (applied.includes('model') && typeof frame.model === 'string' && frame.model) {
-            State.threadModels[ackThreadId] = frame.model;
-            changed = true;
-          }
-          if (applied.includes('effort') && typeof frame.effort === 'string' && frame.effort) {
-            State.threadEfforts[ackThreadId] = frame.effort;
-            changed = true;
-          }
-        }
-        // Rejected → roll back the optimistic write to the send-time snapshot.
-        let reverted = false;
-        for (const r of rejected) {
-          if (!r) continue;
-          if (r.field === 'model' && this._pendingRevert.model !== undefined) {
-            const prevModel = this._pendingRevert.model;
-            if (prevModel) {
-              localStorage.setItem('luna_model', prevModel);
-            } else {
-              localStorage.removeItem('luna_model');
-            }
-            // The model pick may have cascade-cleared the effort — restore it too.
-            if (this._pendingRevert.modelEffort !== undefined) {
-              this._writeEffort(this._pendingRevert.modelEffort);
-            }
-            // Roll back the per-thread optimistic write (null = "was unset").
-            if (ackThreadId && this._pendingRevert.threadModel !== undefined) {
-              if (this._pendingRevert.threadModel === null) {
-                delete State.threadModels[ackThreadId];
-              } else {
-                State.threadModels[ackThreadId] = this._pendingRevert.threadModel;
-              }
-            }
-            reverted = true;
-          }
-          if (r.field === 'effort' && this._pendingRevert.effort !== undefined) {
-            this._writeEffort(this._pendingRevert.effort);
-            if (ackThreadId && this._pendingRevert.threadEffort !== undefined) {
-              if (this._pendingRevert.threadEffort === null) {
-                delete State.threadEfforts[ackThreadId];
-              } else {
-                State.threadEfforts[ackThreadId] = this._pendingRevert.threadEffort;
-              }
-            }
-            reverted = true;
-          }
-        }
-        // Every field in this ack is settled — drop its snapshot (applied and
-        // deferred keep the optimistic value; rejected was restored above).
-        const settled = applied.concat(deferred, rejected.map((r) => r && r.field));
-        for (const f of settled) {
-          if (f === 'model') {
-            delete this._pendingRevert.model;
-            delete this._pendingRevert.modelEffort;
-            delete this._pendingRevert.threadModel;
-          }
-          if (f === 'effort') {
-            delete this._pendingRevert.effort;
-            delete this._pendingRevert.threadEffort;
-          }
-        }
-        if (reverted || changed) {
-          this._rebuildModelMenu();
-          this._rebuildEffortMenu();
-          this._refreshLabels();
-          this._refreshEffortVisibility();
-        }
-      },
-
-      /** Bootstrap: read persisted effort from localStorage into State. */
-      init() {
-        const saved = localStorage.getItem('luna_effort') || '';
-        State.selectedEffort = saved || null;
-        // Wire button click handlers (idempotent: buttons exist at boot time).
-        if (DOM.modelCfgBtn) {
-          DOM.modelCfgBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const open = DOM.modelCfgMenu && DOM.modelCfgMenu.classList.contains('open');
-            this.closeAllMenus();
-            if (!open && DOM.modelCfgMenu) {
-              this._rebuildModelMenu();
-              DOM.modelCfgMenu.classList.add('open');
-              DOM.modelCfgMenu.setAttribute('aria-hidden', 'false');
-              DOM.modelCfgBtn.setAttribute('aria-expanded', 'true');
-            }
-          });
-        }
-        if (DOM.effortCfgBtn) {
-          DOM.effortCfgBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const open = DOM.effortCfgMenu && DOM.effortCfgMenu.classList.contains('open');
-            this.closeAllMenus();
-            if (!open && DOM.effortCfgMenu) {
-              this._rebuildEffortMenu();
-              DOM.effortCfgMenu.classList.add('open');
-              DOM.effortCfgMenu.setAttribute('aria-hidden', 'false');
-              DOM.effortCfgBtn.setAttribute('aria-expanded', 'true');
-            }
-          });
-        }
-        // Close menus on outside click.
-        document.addEventListener('click', () => this.closeAllMenus());
-      },
-    };
-
-    // Bootstrap ComposerConfig as soon as the const is defined.
-    ComposerConfig.init();
+    // `ComposerConfig` is a forward-declared `var` - for a classic
+    // (non-module) script this IS `window.ComposerConfig`, so every call
+    // site below (WebSocketEngine.sendNewThread, the hello/thread-config/
+    // thread-list/thread-created/smart-bar frame handlers, SlashMenu's
+    // /model and /effort commands) keeps calling the same bare identifier.
+    // Safe for the same reason the ChatState/ChatLoop/Attachments `var`s
+    // are (see those comments): main-chat.tsx's module script always
+    // finishes running after this classic script, and every call site below
+    // runs from inside an async event handler, never synchronously before
+    // that mount.
+    var ComposerConfig;
 
     // ── Smart Bar Engine ─────────────────────────────────────────────────
     // Renders server-pushed `smart-bar` frame items as context pills above
@@ -10183,20 +9712,20 @@
       window.__MoonInternals.cropAndEncodeFeedbackScreenshot = cropAndEncodeFeedbackScreenshot;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.SmartBarEngine = SmartBarEngine;
-      window.__MoonInternals.ComposerConfig = ComposerConfig;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
       window.__MoonInternals.PoolEngine = PoolEngine;
       window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
       window.__MoonInternals.State = State;
-      // ChatState / ChatLoop / Attachments: NOT assigned here - at this
-      // point in the classic script's own synchronous run they're still the
-      // unset `var` forward-declarations (see the CHAT MODEL / RENDERER /
-      // LOOP comment above and the Attachments comment near the old
-      // composer-state block). main-chat.tsx (the module script, always
-      // running after this one) patches window.__MoonInternals.ChatState/
-      // .ChatLoop/.Attachments itself once MessageList.tsx / Attachments.tsx
-      // actually mount their real bridges. ChatRenderer has no replacement -
-      // it was the DOM-diff half S15 deleted outright.
+      // ChatState / ChatLoop / Attachments / ComposerConfig: NOT assigned
+      // here - at this point in the classic script's own synchronous run
+      // they're still the unset `var` forward-declarations (see the CHAT
+      // MODEL / RENDERER / LOOP comment above and the Attachments/
+      // ComposerConfig comments near their own `var` declarations).
+      // main-chat.tsx (the module script, always running after this one)
+      // patches window.__MoonInternals.ChatState/.ChatLoop/.Attachments/
+      // .ComposerConfig itself once MessageList.tsx / Attachments.tsx /
+      // ComposerConfig.tsx actually mount their real bridges. ChatRenderer
+      // has no replacement - it was the DOM-diff half S15 deleted outright.
       window.__MoonInternals.ChatEngine = ChatEngine;
       window.__MoonInternals.VoiceEngine = VoiceEngine;
       window.__MoonInternals.LocalShell = LocalShell;
