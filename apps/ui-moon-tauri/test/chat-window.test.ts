@@ -16,14 +16,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-
-// jsdom never fetches external <script src> tags, so required vendor files
-// are loaded by hand, in the same order the page declares them (same
-// mechanism as moon-app.test.ts / widget-window.test.ts).
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
+import {
+  evalChatInlineScriptWithBridge,
+  installSyncRequestAnimationFrame,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  mountChatMessageListBridge,
+  readChatHtml,
+} from './helpers/chat-harness'
 
 describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   let htmlContent: string
@@ -39,9 +39,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     window.history.replaceState({}, '', '/')
 
     // 1. Load chat.html content + body structure.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
 
     // 2. Mock the Tauri window surface. NOTE: no `core` by default — boot
     // degrades exactly like the hub harness (voice unavailable, localStorage
@@ -98,13 +97,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       removeEventListener() {}
     })
 
-    // 4. Select the inline page script by CONTENT, not position (an added
-    // config stub must fail loudly here, not silently run the wrong script).
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    // 4. Mount the React transcript (src/chat/MessageList.tsx) into
+    // #chat-messages, then select the inline page script by CONTENT, not
+    // position (an added config stub must fail loudly here, not silently
+    // run the wrong script), and patch its ChatState/ChatLoop forward
+    // -declarations to the real bridge in the SAME scope (see
+    // helpers/chat-harness.ts's module doc for why that has to happen
+    // together instead of as a separate assignment afterward).
+    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+    evalChatInlineScriptWithBridge(htmlContent, mount)
 
     vi.useFakeTimers()
   })
@@ -117,6 +118,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -268,11 +271,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // observe the render without waiting for an actual frame. The real
       // runtime uses rAF for coalescing; here we want determinism.
       vi.useRealTimers()
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => {
-        cb(0)
-        return 1
-      }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
     })
 
     it('Scenario: closeOpenFences auto-closes a dangling ``` so partial code renders as code', () => {
@@ -928,8 +927,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     beforeEach(() => {
       // Synchronous rAF so we observe each frame's effect immediately.
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       chat = document.getElementById('chat-messages') as HTMLElement
       chat.innerHTML = ''
@@ -1426,8 +1424,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     beforeEach(() => {
       // Synchronous rAF so each frame's render is observable immediately.
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       chat = document.getElementById('chat-messages') as HTMLElement
       chat.innerHTML = ''
@@ -1699,8 +1696,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       const m = M()
       if (m && m.ChatState && typeof m.ChatState.reset === 'function') m.ChatState.reset()
       const panel = document.getElementById('user-ask-panel')
@@ -1903,8 +1899,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const status = () => document.getElementById('secret-prompt-status') as HTMLElement
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       M().SecretPromptEngine.hide()
     })
@@ -2041,8 +2036,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       spy.mock.calls.filter((c: any[]) => (c[0] as any).type === 'user-message')
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       // Reset chat state + textarea so the suite is independent.
       const m = M()
       if (m?.ChatState?.reset) m.ChatState.reset()
@@ -2151,10 +2145,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // robust to the stylesheet being split across multiple <style> blocks —
     // unlike a text/regex match.
     it('Scenario: a direct child of .chat-messages computes flex-shrink:0 (cannot be compressed away)', () => {
-      // Pull EVERY <style> block out of the source and apply them all.
+      // Pull EVERY <style> block out of the source and apply them all, PLUS
+      // src/chat/message-list.css - the `.chat-messages > * { flex-shrink: 0 }`
+      // rule this scenario pins moved there verbatim as part of the S15
+      // ChatRenderer -> React conversion (see that file's module doc); a real
+      // page load pulls it in via main-chat.tsx's `import "./chat/message-list.css"`,
+      // which jsdom never sees unless we read the file directly like this.
+      const messageListCss = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/message-list.css'),
+        'utf8',
+      )
       const css = [...htmlContent.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
         .map((m) => m[1])
-        .join('\n')
+        .join('\n') + '\n' + messageListCss
       const styleEl = document.createElement('style')
       styleEl.textContent = css
       document.head.appendChild(styleEl)
@@ -2466,8 +2469,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const fakeWs = { readyState: WebSocket.OPEN, send: vi.fn() }
       m.State.ws = fakeWs
       m.State.activeThreadId = 'thread-snap-123'
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
 
       m.handleFrame({ type: 'thread-snapshot', messages: [] })
 
@@ -2535,8 +2537,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.State.pinnedThread = null
       m.State.reattachRound = 0
       m.State.skipLastThreadFile = false
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       m.ChatState.reset()
     })
 
@@ -2763,8 +2764,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       M().State.activeThreadId = null
       M().State.pendingUserMessage = null
@@ -2926,8 +2926,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
     })
 
@@ -2953,21 +2952,32 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(el.hidden).toBe(true)
     })
 
+    // The hard version-mismatch banner used to be a raw DOM node with a
+    // fixed id ("protocol-mismatch-banner") the vanilla code checked for
+    // idempotency; the S15 conversion moved that idempotency check onto the
+    // reducer state itself (ChatState.turns.some(banner-with-this-text)) and
+    // renders the banner through the normal ChatEngine.appendMessage path
+    // (see chat.html's showVersionMismatch), so it no longer carries any id.
+    // These assert the same OBSERVABLE behavior via its text instead.
+    const versionMismatchBanners = () =>
+      Array.from(document.querySelectorAll('#chat-messages .msg.assistant'))
+        .filter((n) => n.textContent!.includes('Version mismatch'))
+
     it('a protocol-version MISMATCH warns loudly but keeps chatting enabled (idempotent banner)', () => {
       M().handleFrame({ type: 'hello', protocolVersion: 99, capabilities: {} })
       const statusEl = document.getElementById('connection-status')!
       expect(statusEl.className).toBe('version-warning')
       expect(statusEl.textContent).toContain('v99')
-      expect(document.getElementById('protocol-mismatch-banner')).not.toBeNull()
+      expect(versionMismatchBanners().length).toBe(1)
       // Reconnects re-deliver hello — no duplicate banners.
       M().handleFrame({ type: 'hello', protocolVersion: 99, capabilities: {} })
-      expect(document.querySelectorAll('#protocol-mismatch-banner').length).toBe(1)
+      expect(versionMismatchBanners().length).toBe(1)
     })
 
     it('an older server with NO protocolVersion gets one soft note, never a hard banner', () => {
       M().handleFrame({ type: 'hello', capabilities: {} })
       M().handleFrame({ type: 'hello', capabilities: {} })
-      expect(document.getElementById('protocol-mismatch-banner')).toBeNull()
+      expect(versionMismatchBanners().length).toBe(0)
       const notes = Array.from(document.querySelectorAll('#chat-messages .msg.assistant'))
         .filter((n) => n.textContent!.includes('older server'))
       expect(notes.length).toBe(1)
@@ -3687,8 +3697,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
     })
 
@@ -3748,8 +3757,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const A = () => M().Attachments
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       A().items = []
       A().setError(null)
@@ -3848,8 +3856,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       const chat = document.getElementById('chat-messages')!
       chat.innerHTML = ''
@@ -3873,7 +3880,24 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect('parentToolUseId' in seg).toBe(false)
     })
 
-    // ── ChatRenderer.buildToolStep: Agent label with description ─────────────
+    // ── appendToolCallCard: Agent label with description ─────────────────────
+    // ChatRenderer.buildToolStep (a pure seg->card renderer) has no
+    // replacement post-S15 - MessageList.tsx's ToolCard only renders as part
+    // of the full reducer-driven turn tree (see chatModel.ts's module doc).
+    // These cases now drive the same OBSERVABLE behavior through the real
+    // bridge: appendToolCallCard(frame) dispatches applyToolCall + flushes,
+    // then returns the rendered `.tool-call-card` by data-tool-call-id -
+    // exactly what buildToolStep(seg, turnId) used to hand back directly.
+    function buildToolStep(seg: any, turnId: string) {
+      return M().appendToolCallCard({
+        turnId,
+        toolCallId: seg.id,
+        name: seg.name,
+        input: seg.input,
+        ...(seg.parentToolUseId ? { parentToolUseId: seg.parentToolUseId } : {}),
+      })
+    }
+
     it('buildToolStep renders "Agent — <description>" for an Agent tool call with a description', () => {
       const seg = {
         kind: 'tool',
@@ -3882,7 +3906,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'Research lunar cycles', prompt: 'look it up' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent — Research lunar cycles')
     })
@@ -3895,7 +3919,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'Compile the report', prompt: 'do it' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent — Compile the report')
     })
@@ -3908,7 +3932,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { prompt: 'do something' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent')
     })
@@ -3921,7 +3945,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'Analyze code', prompt: 'x', subagent_type: 'codebase-analyzer' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent — Analyze code')
       const sub = card.querySelector('.tool-card-subtype')!
@@ -3939,7 +3963,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         result: null,
         parentToolUseId: 'parent-agent-id',
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('↳ Read')
     })
@@ -3953,7 +3977,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         result: null,
         parentToolUseId: 'outer-agent-call',
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('↳ Agent — Sub-task')
     })
@@ -3966,7 +3990,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { command: 'ls' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Bash')
       expect(nameEl.textContent).not.toContain('↳')
@@ -3982,7 +4006,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'big task', prompt: longPrompt },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const inputEl = card.querySelector('.tool-card-input')!
       expect(inputEl.textContent).toContain('… (+200 chars)')
       // The full value must not appear (it was elided).
@@ -4000,7 +4024,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { file_path: borderline },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const inputEl = card.querySelector('.tool-card-input')!
       expect(inputEl.textContent).not.toContain('… (+')
       expect(inputEl.textContent).toContain(borderline)
@@ -4015,7 +4039,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { command: bigCmd },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const inputEl = card.querySelector('.tool-card-input')!
       expect(inputEl.textContent).toContain('… (+100 chars)')
       expect(inputEl.textContent).not.toContain(bigCmd)
@@ -4470,12 +4494,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // readyState gate would wrongly take the offline branch here.
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
@@ -4492,12 +4513,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: the PoolEngine path shares the one-create-at-a-time intent guard and adopts its ack', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       m.PoolEngine._isConnected = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
@@ -4549,12 +4567,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // one test re-runs the page script under a pinned URL (same mechanism
       // as the beforeEach boot) instead of injecting State.pinnedThread.
       window.history.replaceState({}, '', '/?thread=t-pinned')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       expect((document.getElementById('new-thread-btn') as HTMLElement).hidden).toBe(true)
       // The non-pinned boot in beforeEach leaves it visible (contrast pin).
       window.history.replaceState({}, '', '/')
@@ -4615,12 +4630,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // silently skip the list request and the sidebar would render empty.
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
@@ -4637,12 +4649,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag a fast-path resubscribe refreshes an already-open thread drawer (State.threadDrawerOpen true)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
@@ -4662,12 +4671,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag a fast-path resubscribe leaves a CLOSED drawer alone (State.threadDrawerOpen false)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
@@ -4687,12 +4693,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is closed (State.threadDrawerOpen false)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
@@ -4712,12 +4715,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is open (State.threadDrawerOpen true)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
+      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       m.State.ws = null
@@ -4760,7 +4760,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: shrinking the window re-clamps an over-wide open sidebar (resize listener)', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      installSyncRequestAnimationFrame()
       const m = M()
       const panel = document.getElementById('chat-panel')!
       const rect = vi.spyOn(panel, 'getBoundingClientRect')
@@ -4778,7 +4778,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: a collapsed sidebar is left untouched by a window resize', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      installSyncRequestAnimationFrame()
       const m = M()
       expect(m.State.sidebarWidth).toBe(0)
       window.dispatchEvent(new Event('resize'))
@@ -4888,7 +4888,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: a collapsed resize refreshes the divider aria-valuemax for AT', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      installSyncRequestAnimationFrame()
       const m = M()
       const panel = document.getElementById('chat-panel')!
       const rect = vi.spyOn(panel, 'getBoundingClientRect')
