@@ -3350,3 +3350,109 @@ describe("restart via ChannelService (task #8)", () => {
     expect(fake.typingFor("chan-1")).toBeGreaterThanOrEqual(1)
   }, 15_000)
 })
+
+/* -------------------------------------------------------------------------- */
+/* Task #12 — standalone sends go through the measured classifier              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * THE TRAP THIS FILE EXISTS TO CATCH: making delivery.ts's standalone loop
+ * stop-at-first-failure is a NO-OP on Discord by itself. The standalone branch
+ * routes through `withRateLimitRetry`, whose whole contract is to never fail
+ * the effect — it logs and returns null. A stop-at-first loop above it would
+ * never observe a failure, and a delivery.ts test driven by a scripted fake
+ * would pass while the real adapter stayed silently broken.
+ *
+ * So parity requires the standalone branch to use `sendFinalClassified`, the
+ * same measured classifier the FINAL chunk path uses:
+ *   - at most TWO transport.send calls (refetch immediate / retry after a flat
+ *     discordDeliveryRetryMs / permanent: none),
+ *   - a terminal failure SURFACES as an Exit failure so delivery.ts can stop,
+ *   - `sentMessageIds` is still never touched, so a concurrent live turn keeps
+ *     editing its own placeholder (#375 invariant, pinned at :669 above).
+ *
+ * TALLY: 5 tests, 4 RED on arrival, 1 control (labelled CONTROL).
+ */
+describe("Task #12 — standalone sends use the measured classifier", () => {
+  const STANDALONE = { ...FINAL, standalone: true }
+
+  it("CONTROL (GREEN ON ARRIVAL): a clean standalone send is exactly ONE attempt with no retry pause", async () => {
+    // Vacuity rail for the attempt bounds below: "exactly 2" is satisfiable by
+    // always retrying, and a flat 750ms sleep smuggled onto the happy path
+    // would satisfy the RED tests too.
+    const t0 = Date.now()
+    const fake = makeFakeTransport()
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "job output", STANDALONE))
+    expect(exit._tag).toBe("Success")
+    expect(fake.attempts().send).toBe(1)
+    expect(fake.sent.map((s) => s.content)).toEqual(["job output"])
+    expect(Date.now() - t0).toBeLessThan(700)
+  })
+
+  it("PERMANENT: a standalone token failure surfaces instead of being swallowed to null", async () => {
+    // RED today for exactly one reason: withRateLimitRetry logs the error and
+    // returns null, so deliver() resolves Success and delivery.ts's loop can
+    // never see the failure. Loop parity alone would be a no-op here.
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_TOKEN()
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "job output", STANDALONE))
+    expect(exit._tag).toBe("Failure") // RED today: "Success"
+    expect(fake.attempts().send).toBe(1) // permanent: no re-attempt
+    expect(fake.sent).toHaveLength(0)
+  })
+
+  it("RETRY: a persistent 5xx standalone send stops after EXACTLY ONE retry and surfaces", async () => {
+    const fake = makeFakeTransport({
+      sendImpl: async () => {
+        throw ERR_5XX()
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "job output", STANDALONE))
+    expect(fake.attempts().send).toBe(2) // RED today: stays 1 (no app-level retry)
+    expect(exit._tag).toBe("Failure") // RED today: "Success"
+    expect(fake.sent).toHaveLength(0)
+  })
+
+  it("REFETCH: a standalone channel-cache miss gets one immediate re-attempt and recovers", async () => {
+    const fake = makeFakeTransport({
+      sendImpl: async (_c, _content, attempt) => {
+        if (attempt === 1) throw ERR_CHANNEL_CACHE()
+        return { id: "msg-refetched" }
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "job output", STANDALONE))
+    expect(fake.attempts().send).toBe(2) // RED today: no re-attempt, stays 1
+    expect(exit._tag).toBe("Success") // RED today: Success but NOTHING was sent
+    expect(fake.sent.map((s) => s.content)).toEqual(["job output"])
+  })
+
+  it("#375 INVARIANT SURVIVES: a FAILED standalone send still never touches the live turn's edit map", async () => {
+    // The classifier swap must not smuggle the standalone path into
+    // sentMessageIds. A live turn already holding a placeholder must keep
+    // editing it after a standalone send blows up.
+    const fake = makeFakeTransport({
+      sendImpl: async (_c, content) => {
+        if (content === "job output") throw ERR_TOKEN()
+        return { id: "msg-1" }
+      },
+    })
+    const adapter = mkClassifierAdapter(fake)
+    await Effect.runPromise(adapter.deliver(target(), "live partial", PARTIAL))
+    const exit = await Effect.runPromiseExit(adapter.deliver(target(), "job output", STANDALONE))
+    expect(exit._tag).toBe("Failure") // RED today: swallowed to Success
+    await Effect.runPromise(adapter.deliver(target(), "live final", FINAL))
+    expect(fake.sent.map((s) => s.content)).toEqual(["live partial"])
+    expect(fake.edits).toHaveLength(1)
+    expect(fake.edits[0]?.messageId).toBe("msg-1")
+    expect(fake.edits[0]?.content).toBe("live final")
+  })
+})

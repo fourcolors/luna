@@ -3225,3 +3225,174 @@ describe("Slice 3b — reserved reply-address keys win over inbound metadata (R3
     expect(address["guildId"], "non-reserved metadata still rides").toBe("meta-guild-1")
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* Task #12 — standalone (background-job) multi-chunk stop-at-first parity      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * The live finalize path got stop-at-first + truncation marker in c5b9d221.
+ * The STANDALONE path (delivery-stamped assistant-done, i.e. background jobs
+ * and suggested-action results, delivery.ts's `frame.message.delivery !==
+ * undefined` branch) still ran the old per-chunk swallow, so a mid-answer
+ * failure left a silent HOLE: later chunks kept being sent, the reply looked
+ * complete, and nothing was logged. This block is the parity spec.
+ *
+ * GIVEN a background-job assistant-done whose text needs 6 chunks,
+ * WHEN chunk N's deliver() fails,
+ * THEN the loop stops at N (N+1.. are NEVER attempted), the cause is LOGGED,
+ * and, when at least one chunk landed, a truncation marker is sent.
+ *
+ * THE MARKER MUST CARRY `standalone: true`. Both shipping adapters run
+ * `if (opts.isFinal) sentMessageIds.delete(turnKey)` BEFORE any chunkIndex
+ * check (discord.ts / telegram.ts), and the marker is isFinal. service.ts
+ * builds ONE DeliveryTarget per (threadId, adapter) reused for every frame, so
+ * a background frame shares its turnKey with a concurrent LIVE turn. A
+ * non-standalone marker would delete the live turn's edit-routing entry and
+ * fork the live reply — the exact #375 hazard.
+ *
+ * TALLY: 5 tests, 4 RED on arrival, 1 control (labelled CONTROL).
+ */
+
+/**
+ * The standalone branch chunks with plain splitToChunks at the adapter's
+ * maxMessageLength (no fence-repair pass — the fence budget is a finalize-path
+ * concern). SLICE_1B_TEXT is fence-free, so this is the same 6-chunk fixture;
+ * the CONTROL below proves that calibration rather than assuming it.
+ */
+const STANDALONE_CHUNKS = splitToChunks(SLICE_1B_TEXT, SLICE_1B_MAXLEN)
+
+describe("Task #12 — standalone multi-chunk stop-at-first parity", () => {
+  /**
+   * Drive ONE delivery-stamped assistant-done (the #375 background-job shape:
+   * no deltas, no turn-complete) carrying the 6-chunk fixture.
+   */
+  const driveStandalone = async (
+    ctx: ReturnType<typeof makeScriptedFailureAdapter>,
+    pmId: string,
+  ): Promise<void> => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(ctx.adapter)
+          yield* svc.handleMessage(makeMessage({ platformMessageId: pmId }))
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(
+            pub,
+            makeAssistantDoneFrame(threadId, SLICE_1B_TEXT, 7, {
+              source: "background-job",
+              label: "Nightly research",
+            }),
+          )
+          yield* Effect.sleep("300 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+  }
+
+  const chunkAttempts = (ctx: ReturnType<typeof makeScriptedFailureAdapter>): string[] =>
+    ctx.attempts.filter((a) => STANDALONE_CHUNKS.includes(a.content)).map((a) => a.content)
+  const markerAttempts = (
+    ctx: ReturnType<typeof makeScriptedFailureAdapter>,
+  ): ScriptedAttempt[] => ctx.attempts.filter((a) => /reply truncated/i.test(a.content))
+  const failStandaloneChunk3 = (c: string): boolean => c === STANDALONE_CHUNKS[2]
+
+  /** Spy union: Effect's default logger and direct console.* both land here. */
+  const captureConsole = async (body: (logs: string[]) => Promise<void>): Promise<void> => {
+    const logs: string[] = []
+    const spies = (["log", "warn", "error"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+        logs.push(args.map(String).join(" "))
+      }),
+    )
+    try {
+      await body(logs)
+    } finally {
+      for (const s of spies) s.mockRestore()
+    }
+  }
+
+  it("CONTROL (GREEN ON ARRIVAL): a clean standalone 6-chunk job delivers every chunk in order, all standalone, no marker", async () => {
+    // Fixture calibration AND the vacuity rail: proves the standalone branch
+    // really produces these 6 chunks, that every one of them already carries
+    // standalone: true today, and that the marker/log rails below cannot pass
+    // against a happy job.
+    await captureConsole(async (logs) => {
+      const ctx = makeScriptedFailureAdapter("12-clean", () => false)
+      await driveStandalone(ctx, "12-clean-pm1")
+      expect(STANDALONE_CHUNKS).toHaveLength(6)
+      expect(STANDALONE_CHUNKS).toEqual([...SLICE_1B_CHUNKS])
+      expect(ctx.attempts.map((a) => a.content)).toEqual([...STANDALONE_CHUNKS])
+      expect(ctx.attempts.every((a) => a.opts.standalone === true)).toBe(true)
+      expect(ctx.attempts.every((a) => a.opts.isPartial === false)).toBe(true)
+      expect(markerAttempts(ctx)).toHaveLength(0)
+      expect(logs.filter((l) => /truncat|INJECTED-DELIVERY-FAILURE/i.test(l))).toEqual([])
+    })
+  })
+
+  it("stops at the FIRST failed chunk: chunks 1-2 delivered, 3 attempted, 4-6 NEVER attempted", async () => {
+    expect(STANDALONE_CHUNKS).toHaveLength(6) // fixture precondition
+    const ctx = makeScriptedFailureAdapter("12-stop", failStandaloneChunk3)
+    await driveStandalone(ctx, "12-stop-pm1")
+    // RED today: the per-chunk swallow marches on and attempts all six,
+    // leaving a silent hole at chunk 3.
+    expect(chunkAttempts(ctx)).toEqual(STANDALONE_CHUNKS.slice(0, 3))
+  })
+
+  it("appends a truncation marker that CARRIES standalone: true (the #375 hazard)", async () => {
+    expect(STANDALONE_CHUNKS).toHaveLength(6)
+    const ctx = makeScriptedFailureAdapter("12-marker", failStandaloneChunk3)
+    await driveStandalone(ctx, "12-marker-pm1")
+    const markers = markerAttempts(ctx)
+    expect(markers).toHaveLength(1) // RED today: no marker exists at all
+    const marker = markers[0]!
+    expect(marker.content).toContain("2 of 6") // delivered of total
+    expect(marker.content).toMatch(/resend/i)
+    // THE LOAD-BEARING ASSERTION. Without this flag both shipping adapters
+    // run `if (opts.isFinal) sentMessageIds.delete(turnKey)` on the marker and
+    // evict a CONCURRENT live turn's edit-routing entry, forking the live
+    // reply into a second message.
+    expect(marker.opts.standalone).toBe(true)
+    expect(marker.opts.isFinal).toBe(true)
+    // Reports, not predicts: the marker comes AFTER the failed chunk.
+    const failedAt = ctx.attempts.findIndex((a) => a.content === STANDALONE_CHUNKS[2])
+    const markerAt = ctx.attempts.findIndex((a) => /reply truncated/i.test(a.content))
+    expect(failedAt).toBeGreaterThanOrEqual(0)
+    expect(markerAt).toBeGreaterThan(failedAt)
+  })
+
+  it("LOGS the failure cause: the injected error's message reaches a log line", async () => {
+    await captureConsole(async (logs) => {
+      const ctx = makeScriptedFailureAdapter("12-log", failStandaloneChunk3)
+      await driveStandalone(ctx, "12-log-pm1")
+      // RED today: catchAllCause(() => Effect.void) logs nothing at all.
+      expect(logs.filter((l) => l.includes("INJECTED-DELIVERY-FAILURE")).length).toBeGreaterThanOrEqual(1)
+      expect(logs.filter((l) => /TRUNCATED REPLY/.test(l)).length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it("a standalone job whose FIRST chunk fails is observable: logged, NO marker, nothing further attempted", async () => {
+    expect(STANDALONE_CHUNKS).toHaveLength(6)
+    await captureConsole(async (logs) => {
+      const ctx = makeScriptedFailureAdapter("12-first", (c) => c === STANDALONE_CHUNKS[0])
+      await driveStandalone(ctx, "12-first-pm1")
+      // RED today: the loop marches on and attempts all six.
+      expect(chunkAttempts(ctx)).toEqual([STANDALONE_CHUNKS[0]!])
+      // delivered === 0: nothing suggests the channel can receive, so no
+      // marker send is attempted (donor rule). The LOG carries the evidence.
+      expect(markerAttempts(ctx)).toHaveLength(0)
+      expect(logs.filter((l) => l.includes("INJECTED-DELIVERY-FAILURE")).length).toBeGreaterThanOrEqual(1)
+    })
+  })
+})

@@ -1622,11 +1622,14 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
 
   /**
    * Run a Discord REST op, honouring 429 retry-after. Returns null when the
-   * op ultimately failed. Its remaining callers are the PARTIAL-send,
-   * placeholder-EDIT and standalone paths, which delivery.ts treats as
-   * best-effort (their failures are swallowed upstream), so returning null
-   * keeps the turn alive. FINAL sends go through sendFinalClassified below,
-   * which surfaces terminal failures instead of swallowing them.
+   * op ultimately failed. Its remaining callers are the PARTIAL-send and
+   * placeholder-EDIT paths, which delivery.ts treats as best-effort — a
+   * partial is superseded by the final anyway — so returning null keeps the
+   * turn alive. FINAL sends go through sendFinalClassified below, which
+   * surfaces terminal failures instead of swallowing them. Task #12 moved
+   * STANDALONE (background-job) sends over to sendFinalClassified too: they
+   * are finals, and a null return here would make delivery.ts's
+   * stop-at-first-failure loop unable to observe a failed chunk at all.
    */
   const withRateLimitRetry = <A>(
     op: () => Promise<A>,
@@ -1822,8 +1825,15 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
         // Standalone (background job) deliveries always post a fresh message
         // and never touch the live stream-edit map, so a concurrent live turn
         // in the same channel keeps editing its own placeholder.
+        //
+        // Classified, NOT withRateLimitRetry (task #12): a standalone chunk is
+        // a final, and withRateLimitRetry never fails its effect, so routing
+        // these through it would make delivery.ts's stop-at-first-failure loop
+        // structurally blind to a failed standalone chunk. sendFinalClassified
+        // still records nothing in sentMessageIds, so the #375 invariant that
+        // a standalone never disturbs a live turn is untouched.
         if (opts.standalone) {
-          yield* withRateLimitRetry(() => t.send(channelId, text), "send(standalone)", false)
+          yield* sendFinalClassified(t, channelId, text)
           return
         }
 

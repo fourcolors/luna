@@ -454,34 +454,6 @@ const buildStreamEditText = (
 /** Minimum ms between stream-edit updates to respect platform rate limits. */
 const STREAM_EDIT_THROTTLE_MS = 1500
 
-/**
- * Deliver a sequence of text chunks to the adapter.
- * Sets isPartial/isFinal/chunkIndex/totalChunks on each deliver call.
- * When `standalone` is true (background job delivery), adapters must not
- * mutate live stream-edit turn state (#375).
- */
-const deliverChunks = (
-  adapter: ChannelAdapter,
-  target: DeliveryTarget,
-  chunks: string[],
-  isPartial: boolean,
-  standalone = false,
-): Effect.Effect<void> => {
-  const total = chunks.length
-  return Effect.forEach(
-    chunks,
-    (chunk, i) =>
-      adapter.deliver(target, chunk, {
-        isPartial,
-        isFinal: !isPartial && i === total - 1,
-        chunkIndex: i,
-        totalChunks: total,
-        ...(standalone ? { standalone: true as const } : {}),
-      }).pipe(Effect.catchAllCause(() => Effect.void)),
-    { discard: true },
-  )
-}
-
 /* -------------------------------------------------------------------------- */
 /* Stream-edit finalize loop (stop at the first failed chunk)                  */
 /* -------------------------------------------------------------------------- */
@@ -493,6 +465,12 @@ const deliverChunks = (
  * two minutes the user has moved on, so remaining chunks are abandoned and
  * the truncation marker says what arrived. Wired in deliverFinalChunks;
  * exported for the spec's pin test.
+ *
+ * The SAME budget applies to standalone (background-job) deliveries, and not
+ * merely for symmetry: subscribeAndDeliver pushes every frame for a thread
+ * through ONE sequential Stream.runForEach, so a stuck standalone delivery
+ * head-of-line-blocks that thread's LIVE frames. The deadline is what bounds
+ * that starvation.
  */
 export const deliveryDeadlineMs = 120_000
 
@@ -528,13 +506,27 @@ const truncationMarker = (delivered: number, total: number): string =>
  *  - The whole loop runs under deliveryDeadlineMs of wall clock. Once the
  *    budget is spent, remaining chunks are abandoned and counted as
  *    undelivered; same marker rules apply.
+ *
+ * `standalone` (task #12) selects the BACKGROUND-JOB flavour of the same loop:
+ * the delivery-stamped assistant-done path (#375), which used to run a
+ * per-chunk swallow of its own and could therefore leave silent holes. It is
+ * threaded into the per-chunk metadata AND into the truncation marker's, and
+ * the marker's flag is load-bearing: both shipping adapters run
+ * `if (opts.isFinal) sentMessageIds.delete(turnKey)` BEFORE any chunkIndex
+ * check, the marker is isFinal, and service.ts reuses ONE DeliveryTarget per
+ * (threadId, adapter) for every frame — so a non-standalone marker on a
+ * background frame would evict a CONCURRENT live turn's edit-routing entry and
+ * fork the live reply. There is no isPartial parameter: partial delivery goes
+ * through deliverStreamEdit and the inline placeholder send, never here.
  */
 const deliverFinalChunks = (
   adapter: ChannelAdapter,
   target: DeliveryTarget,
   chunks: string[],
+  standalone = false,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
+    const standaloneOpt = standalone ? { standalone: true as const } : {}
     const total = chunks.length
     const deadlineAt = Date.now() + deliveryDeadlineMs
     let delivered = 0
@@ -550,6 +542,7 @@ const deliverFinalChunks = (
           isFinal: idx === total - 1,
           chunkIndex: idx,
           totalChunks: total,
+          ...standaloneOpt,
         }),
       )
       if (Exit.isFailure(exit)) {
@@ -569,6 +562,7 @@ const deliverFinalChunks = (
         isFinal: true,
         chunkIndex: total,
         totalChunks: total + 1,
+        ...standaloneOpt,
       }),
     )
     if (Exit.isFailure(markerExit)) {
@@ -716,10 +710,16 @@ export const subscribeAndDeliver = (
                 // out immediately as a standalone final so stream-edit
                 // (Telegram) and final-only adapters receive it without
                 // waiting for turn-complete or mutating a live stream-edit.
+                //
+                // Task #12: this runs the SAME stop-at-first-failure loop as
+                // the live finalize path (standalone=true only changes the
+                // per-chunk and marker metadata). A multi-chunk job result
+                // that fails halfway now stops and says so instead of leaving
+                // a silent hole in the middle of the answer.
                 if (frame.message.delivery !== undefined) {
                   if (text.trim().length > 0) {
                     const chunks = splitToChunks(text, maxLen)
-                    yield* deliverChunks(adapter, target, chunks, false, true)
+                    yield* deliverFinalChunks(adapter, target, chunks, true)
                   }
                   break
                 }
@@ -729,8 +729,11 @@ export const subscribeAndDeliver = (
                     prev.length > 0 ? prev + "\n\n" + text : text,
                   )
                 } else if (capability === "discrete-chunks") {
+                  // Fires once per assistant-done, so stop-at-first is
+                  // per-MESSAGE here. Worst case a marker is followed by more
+                  // content later, which is strictly better than a hole.
                   const chunks = splitToChunks(text, maxLen)
-                  yield* deliverChunks(adapter, target, chunks, false)
+                  yield* deliverFinalChunks(adapter, target, chunks)
                 }
                 // stream-edit: live turns wait for turn-complete (unchanged)
                 break
@@ -840,7 +843,7 @@ export const subscribeAndDeliver = (
                   const buffered = yield* Ref.get(turnBuffer)
                   if (buffered.length > 0) {
                     const chunks = splitToChunks(buffered, maxLen)
-                    yield* deliverChunks(adapter, target, chunks, false)
+                    yield* deliverFinalChunks(adapter, target, chunks)
                   }
                   yield* Ref.set(turnBuffer, "")
                 } else if (capability === "discrete-chunks") {
