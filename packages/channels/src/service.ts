@@ -320,6 +320,13 @@ export const ChannelServiceLayer: Layer.Layer<
         for (const adapter of adapterList) {
           yield* adapter.stop().pipe(Effect.catchAllCause(() => Effect.void))
         }
+        // Every registered adapter is now stopped, so the started-id guard
+        // must forget them: it means "currently started", not "ever started".
+        // Without this clear a later startAdapters() hits the guard and the
+        // restart is a silent no-op — no fork, no error, no log (task #8).
+        // The no-double-fork property is untouched: within one started
+        // generation the guard still skips already-started ids.
+        yield* Ref.set(startedAdapterIds, new Set<string>())
         // Interrupt all delivery fibers
         const fibers = yield* Ref.get(deliveryFibers)
         yield* Fiber.interruptAll(Array.from(fibers.values()))

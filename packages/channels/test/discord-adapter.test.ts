@@ -11,16 +11,26 @@
  */
 import { Buffer } from "node:buffer"
 import { describe, expect, it, vi } from "vitest"
-import { Duration, Effect, Fiber, Redacted } from "effect"
+import { Duration, Effect, Fiber, Layer, Option, Redacted, Stream } from "effect"
 // SLICE 4 — the limits are REUSED from @luna/core attachment-limits.ts, never
 // redefined. The implementation must import these same names (task #5 FAIL
 // condition: any locally redefined limit constant is an automatic FAIL).
 import {
+  Clock,
   MAX_ATTACHMENTS_PER_TURN,
   MAX_IMAGE_RAW_BYTES,
   MAX_PDF_RAW_BYTES,
   MAX_TURN_RAW_BYTES,
 } from "@luna/core"
+import { ChatService } from "@luna/chat-service"
+import {
+  ChannelService,
+  ChannelServiceLayer,
+  ChannelSessionStore,
+  InboundDedupStore,
+} from "../src/index.js"
+import type { CreateThreadOptions } from "@luna/chat-service"
+import type { ChatMessage as CoreChatMessage, SessionSummary } from "@luna/core"
 import {
   discordCommandManifest,
   makeDiscordAdapter,
@@ -3219,4 +3229,124 @@ describe("Slice 5 — reply quote rendered into the user text (task #6)", () => 
       warn.mockRestore()
     }
   })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Task #8 — restart via ChannelService (service-layer stop → start)           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Stub ChatService for the service-layer restart test: thin clone of the one
+ * in channels.test.ts (the telegram-adapter.test.ts e2e precedent). subscribe
+ * returns an empty stream — the test asserts typing, never delivery.
+ */
+const makeStubChatService = () => {
+  let createCount = 0
+  const makeSummary = (id: string): SessionSummary => ({
+    id,
+    parentId: null,
+    title: `d-thread-${id}`,
+    tags: [],
+    createdAt: Date.now(),
+    endedAt: null,
+    model: "test",
+    status: "active" as const,
+    lastMessageAt: null,
+    lastMessagePreview: null,
+  })
+  const service = {
+    createThread: (opts: CreateThreadOptions) =>
+      Effect.sync(() => makeSummary(opts.threadIdOverride ?? `thr_d_${(++createCount).toString(16)}`)),
+    send: (_threadId: string, _text: string) => Effect.succeed(Option.none<CoreChatMessage>()),
+    interrupt: () => Effect.void,
+    subscribe: () => Stream.empty,
+    listThreads: () => Effect.succeed([] as ReadonlyArray<SessionSummary>),
+    searchMemory: () =>
+      Effect.succeed({
+        hits: [] as ReadonlyArray<{ id: string; kind: string; content: string; score: number }>,
+      }),
+    closeThread: () => Effect.void,
+    setThreadConfig: (opts: { threadId: string; model?: string }) =>
+      Effect.succeed({
+        threadId: opts.threadId,
+        applied: [] as ReadonlyArray<"model" | "effort">,
+        deferred: [] as ReadonlyArray<"model" | "effort">,
+      }),
+  }
+  return { service }
+}
+
+describe("restart via ChannelService (task #8)", () => {
+  it("restart: after stopAdapters() → startAdapters(), an allowed inbound still gets a typing attempt", async () => {
+    // The SAME restart scenario as the telegram e2e restart test, on the
+    // Discord adapter. discord.ts already resets its typingSwept latch in
+    // start() (the `if (!started)` block), so this test turns green the
+    // moment the SERVICE fix lands (stopAdapters clearing startedAdapterIds)
+    // and pins both behaviours against drift: the ordered `starts` assertion
+    // pins the service, the typing assertion pins the adapter's reset.
+    const { service: chatService } = makeStubChatService()
+    const fake = makeFakeTransport()
+    const adapter = makeDiscordAdapter({
+      id: "d-restart",
+      transport: fake.transport,
+      logLogin: false,
+      allowedUsers: ["user-allowed"],
+    })
+    // Count start() forks (channels.test.ts wrapCounting shape): a boolean
+    // cannot tell "restarted" from "the first start is still there".
+    let starts = 0
+    const counting = {
+      ...adapter,
+      start: () => {
+        starts += 1
+        return adapter.start()
+      },
+    }
+
+    const serviceLayer = ChannelServiceLayer.pipe(
+      Layer.provide(ChannelSessionStore.Memory),
+      Layer.provide(InboundDedupStore.Memory),
+      Layer.provide(
+        Layer.succeed(ChatService, chatService as unknown as InstanceType<typeof ChatService>),
+      ),
+      Layer.provide(Clock.Default),
+    )
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(counting)
+          yield* svc.startAdapters()
+          yield* Effect.sleep(Duration.millis(40))
+
+          yield* svc.stopAdapters()
+          yield* svc.startAdapters()
+          // Give the re-forked start() fiber a turn: the fork count updates
+          // synchronously in startAdapters, but the typingSwept reset (and
+          // transport re-wiring) run inside the fiber.
+          yield* Effect.sleep(Duration.millis(40))
+
+          // ORDERED ASSERTION 1 — service layer (task #8 landmine 1):
+          // without the started-id clear in stopAdapters this restart is a
+          // silent no-op and start() is never re-forked.
+          expect(starts).toBe(2)
+
+          // Sanity: nothing was fired pre-restart, so the typing count below
+          // cannot be a pre-stop leftover.
+          expect(fake.typingCalls).toHaveLength(0)
+
+          // ORDERED ASSERTION 2 — adapter layer: an allowed inbound after
+          // the restart must still produce a typing attempt.
+          yield* Effect.sync(() => {
+            fake.fire(inbound({ id: "restart-1", content: "after restart" }))
+          })
+          yield* Effect.sleep(Duration.millis(60))
+        }),
+        serviceLayer,
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fake.typingFor("chan-1")).toBeGreaterThanOrEqual(1)
+  }, 15_000)
 })

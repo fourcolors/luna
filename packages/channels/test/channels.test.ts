@@ -2706,6 +2706,46 @@ describe("startAdapters idempotency", () => {
 
     expect(late.state.starts).toBe(1)
   })
+
+  it("an adapter stopped via stopAdapters() is re-forked by the next startAdapters()", async () => {
+    // The guard must mean "currently started", not "ever started".
+    // stopAdapters() stops every registered adapter, so a following
+    // startAdapters() must fork start() again — without clearing
+    // startedAdapterIds in stopAdapters the restart is a silent no-op: the
+    // adapter stays fully dead with no error and no log line. (Task #8's
+    // service-layer landmine; it fires BEFORE the telegram typingSwept flag
+    // can even matter.)
+    //
+    // The double-start pin above ("a second startAdapters() does not re-fork
+    // an already-started adapter") is deliberately UNCHANGED by this: it
+    // never stops between its two calls, so the no-double-fork property and
+    // this restart property pin two DIFFERENT transitions of the same guard.
+    const { service: chatService } = makeStubChatService(new Map())
+    const a = wrapCounting(makeFakeAdapterClean("idem-restart", "final-only").adapter)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(a.adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("50 millis")
+
+          yield* svc.stopAdapters()
+          yield* svc.startAdapters()
+          yield* Effect.sleep("50 millis")
+        }),
+        baseLayer(
+          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
+        ),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // "Started, stopped, started" must re-fork; "started twice without
+    // stopping" (the pin above) must not. Exactly 2, not ≥2: a restart that
+    // double-forks would recreate the 409-flapping the guard exists to stop.
+    expect(a.state.starts).toBe(2)
+  })
 })
 
 /* -------------------------------------------------------------------------- */
