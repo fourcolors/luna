@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { Duration, Effect, Fiber, Redacted } from "effect"
 import {
+  discordCommandManifest,
   makeDiscordAdapter,
   parseDiscord429RetryMs,
   stripExpandableQuoteMarker,
@@ -114,9 +115,15 @@ const makeFakeTransport = (opts?: {
   ) => Promise<void>
   /** Slice 3a. Invoked for every interaction ack; reject to make it fail. */
   readonly ackImpl?: (interactionId: string, token: string, content: string) => Promise<void>
+  /**
+   * Slice 3b. Invoked for every guild command registration attempt; reject to
+   * make it fail. The Proxy log records the call either way.
+   */
+  readonly registerImpl?: (guildId: string, commands: ReadonlyArray<unknown>) => Promise<void>
 }) => {
   let msgCb: ((m: InboundDiscordMessage) => void) | null = null
   let interactionCb: ((i: FakeInboundInteraction) => void) | null = null
+  let readyCb: ((botTag: string) => void) | null = null
   const sent: SendRecord[] = []
   const edits: EditRecord[] = []
   const typingCalls: TypingRecord[] = []
@@ -142,7 +149,12 @@ const makeFakeTransport = (opts?: {
     onInteraction: (cb: (i: FakeInboundInteraction) => void) => {
       interactionCb = cb
     },
-    onReady: () => {},
+    // SLICE 3b — captured so tests can fire the gateway `ready` event. Never
+    // fired implicitly: tests that do not call `fireReady` see the exact
+    // pre-3b world (no test before this slice ever fired ready).
+    onReady: (cb: (botTag: string) => void) => {
+      readyCb = cb
+    },
     onError: () => {},
     login: async () => {},
     destroy: async () => {},
@@ -186,6 +198,22 @@ const makeFakeTransport = (opts?: {
         await opts.ackImpl(interactionId, token, content)
       }
     },
+    /**
+     * SLICE 3b — RED BY DESIGN until the adapter calls it from the ready
+     * path. The REAL implementation bulk-overwrites the guild-scoped command
+     * endpoint (PUT /applications/{appId}/guilds/{guildId}/commands — the
+     * Sol donor's rest.put shape); the fake only records the call (via the
+     * Proxy log) and honours an injected failure. NOTE a fake structurally
+     * CANNOT catch a global-endpoint impl (it records whatever guildId it is
+     * handed) — endpoint choice is pinned at the REST layer by the ops-script
+     * test (apps/ui-web/scripts/discord-commands.test.ts) and by the auditor
+     * reading the real transport.
+     */
+    registerGuildCommands: async (guildId: string, commands: ReadonlyArray<unknown>) => {
+      if (opts?.registerImpl !== undefined) {
+        await opts.registerImpl(guildId, commands)
+      }
+    },
   }
 
   const transport = wrapWithCallLog(underlying, log) as unknown as DiscordTransport
@@ -196,6 +224,8 @@ const makeFakeTransport = (opts?: {
     isWired: () => msgCb !== null,
     fireInteraction: (i: FakeInboundInteraction) => interactionCb?.(i),
     isInteractionWired: () => interactionCb !== null,
+    /** SLICE 3b — fire the gateway ready event (RESUME can refire it). */
+    fireReady: (tag = "eddy#0001") => readyCb?.(tag),
     /** The ONE ordered call log. Tests may push "__dispatch__" markers into it. */
     log,
     sent,
@@ -2047,5 +2077,278 @@ describe("Slice 3a — registration manifest as data (wired to Discord by 3b)", 
     expect(/\bflags:\s*64\b/.test(src), "EPHEMERAL flag 64 present").toBe(true)
     expect(/\btype:\s*5\b/.test(src), "no deferred callback (type 5)").toBe(false)
     expect(/deferReply/.test(src), "deferReply must not appear (even in comments)").toBe(false)
+  })
+})
+
+/* ========================================================================== */
+/* SLICE 3b — guild-scoped slash-command registration (task #10)               */
+/* ========================================================================== */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * Scenario (task #10): on gateway `ready`, the adapter bulk-registers the
+ * 3a manifest (`discordCommandManifest`, pinned as data at the "Slice 3a —
+ * registration manifest as data" block above) via the transport seam
+ * `registerGuildCommands(guildId, commands)` — guild-scoped, ONCE per
+ * start(), only when a home guild is configured. Donor shape:
+ * sol-agent lib/discord/commands.ts registerSlashCommands (guild-scoped
+ * rest.put per guild, called from ready, "instant propagation, no 1-hour
+ * cache"). What is deliberately NOT ported: the donor's console.error
+ * swallow — registration failure here must be LOUD (and still non-fatal).
+ *
+ * Advisor D1 rider, restated because it is the posture of this whole slice:
+ * registration scoping (guild-scoped, default_member_permissions "0",
+ * guild-install only, no DM context) is NOISE REDUCTION, NEVER AUTH.
+ * `isInboundAllowed` remains the only boundary. 3b exists to make 3a's
+ * no-ack stranger-drop path and the residual reply-permission gap RARE.
+ *
+ * OUT OF SCOPE — pong may touch ONLY:
+ *   - packages/channels/src/adapters/discord.ts  (transport member +
+ *     `guildId?: string` on DiscordAdapterConfig + ready-path wiring)
+ *   - packages/channels/src/service.ts           (ONE line: the
+ *     buildDeliveryTarget metadata spread reorder — see the R3 test in
+ *     channels.test.ts; NOTHING else in this file)
+ *   - apps/ui-web/scripts/discord-commands.ts    (NEW ops script)
+ * Explicitly NOT to be touched: telegram.ts, delivery.ts, commands.ts,
+ * index.ts (the ops script reaches the manifest by relative import — do NOT
+ * add an index re-export, it drags index.ts into scope), dedup.ts, types.ts,
+ * this test file, discord-inbound-invariant.test.ts, channels.test.ts.
+ * NOTE: task #10 also names apps/ui-web/scripts/chat-server.ts (:4791-:4817,
+ * LUNA_DISCORD_GUILD_ID -> config.guildId wiring) while the 3b dispatch's
+ * allowed list omits it; that conflict is bubbled to the lead in the task's
+ * Ping (spec) section — pong must NOT touch chat-server.ts without the
+ * lead's explicit ruling.
+ *
+ * CAPACITY PRE-FLIGHT: none required — in-memory fakes only, no network, no
+ * LLM seam (deterministic => the N>=5 multi-trial rule does not apply).
+ *
+ * RED/GREEN inventory at handoff: all 6 tests in this block are RED (the
+ * seam is absent: nothing calls registerGuildCommands, no skip/failure log
+ * lines exist). Zero GREEN-by-design controls in THIS block; the harness
+ * controls live in the 3a Proxy-log block above.
+ */
+
+/**
+ * The evidence line GOAL.md's Slice-6 scripted check greps for
+ * ("discord slash commands: registered guild=<id> count=3"). count is
+ * COMPUTED from the manifest so a manifest change cannot silently rot it.
+ */
+const registeredLine = (guildId: string): string =>
+  `discord slash commands: registered guild=${guildId} count=${discordCommandManifest.length}`
+
+const setup3b = (cfg?: {
+  readonly guildId?: string
+  readonly registerImpl?: (guildId: string, commands: ReadonlyArray<unknown>) => Promise<void>
+}) => {
+  const fake = makeFakeTransport(
+    cfg?.registerImpl !== undefined ? { registerImpl: cfg.registerImpl } : {},
+  )
+  const received: ChannelMessage[] = []
+  const adapter = makeDiscordAdapter({
+    id: "d-3b",
+    transport: fake.transport,
+    logLogin: false,
+    allowedUsers: ["user-allowed"],
+    // `guildId` is 3b's NEW config member (task #10: DiscordAdapterConfig
+    // gains guildId?: string). The conditional spread keeps the package tsc
+    // gate green BEFORE the member is declared — excess-property checking
+    // does not fire through a conditional spread (GOAL.md caveat, proven on
+    // typingRefreshMs in Slice 1). The member's behaviour, not its type, is
+    // the contract under test here.
+    ...(cfg?.guildId !== undefined ? { guildId: cfg.guildId } : {}),
+  })
+  adapter.setMessageHandler((m) =>
+    Effect.sync(() => {
+      fake.log.push({ member: "__dispatch__", args: [m] })
+      received.push(m)
+    }),
+  )
+  return { fake, adapter, received }
+}
+
+/** Registration attempts, straight off the ONE ordered Proxy log. */
+const regCalls = (s: { fake: { log: TransportCallRecord[] } }): TransportCallRecord[] =>
+  s.fake.log.filter((e) => e.member === "registerGuildCommands")
+
+/** Every arg of every recorded console call, flattened to strings. */
+const consoleText = (spies: ReadonlyArray<{ mock: { calls: unknown[][] } }>): string =>
+  spies
+    .flatMap((s) => s.mock.calls)
+    .map((args) => args.map((a) => String(a)).join(" "))
+    .join("\n")
+
+describe("Slice 3b — guild command registration on ready (task #10)", () => {
+  it("GIVEN a configured home guild WHEN the gateway fires ready THEN the manifest is bulk-registered exactly once, guild-scoped, with the Slice-6 evidence line", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    try {
+      const s = setup3b({ guildId: "guild-home-1" })
+      await withStarted(s.adapter, async () => {
+        // Registration must NOT happen before ready: no application id
+        // exists yet and the real endpoint would 404 (task #10 trap 3).
+        await tick(20)
+        expect(regCalls(s), "no registration before ready").toHaveLength(0)
+
+        s.fake.fireReady("eddy#0001")
+        await tick(40)
+
+        const calls = regCalls(s)
+        expect(calls, "exactly one registration per ready").toHaveLength(1)
+        // Guild-scoped: the configured home guild, verbatim.
+        expect(calls[0]?.args[0]).toBe("guild-home-1")
+        // The payload IS the manifest — as data, same discipline as 3a. The
+        // manifest's own content (help/new/stop, ZERO options, "0"/[0]/[0])
+        // is already pinned by the 3a manifest block above; re-pinning the
+        // fields here would only add duplicate green assertions. What a fake
+        // cannot see (a literal ["new","stop","help"] hand-copy inside
+        // discord.ts, or a global endpoint behind this member) is the
+        // auditor's grep, per task #10's trap list.
+        expect(calls[0]?.args[1]).toEqual([...discordCommandManifest])
+      })
+      // Operational evidence: GOAL.md Slice 6 greps for this exact line.
+      expect(
+        consoleText([logSpy]),
+        "registered evidence line for the ops runbook",
+      ).toContain(registeredLine("guild-home-1"))
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+
+  it("WHEN gateway RESUME refires ready THEN registration still happens exactly once per start() (latch)", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    try {
+      const s = setup3b({ guildId: "guild-home-1" })
+      await withStarted(s.adapter, async () => {
+        s.fake.fireReady("eddy#0001")
+        await tick(20)
+        // Gateway session RESUME refires ready on the SAME start().
+        s.fake.fireReady("eddy#0001")
+        await tick(20)
+        expect(regCalls(s), "ready refire must not re-register").toHaveLength(1)
+      })
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+
+  it("WHEN messages flow after ready THEN no per-message re-registration storm", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    try {
+      const s = setup3b({ guildId: "guild-home-1" })
+      await withStarted(s.adapter, async () => {
+        s.fake.fireReady("eddy#0001")
+        await tick(20)
+        s.fake.fire(inbound({ id: "3b-m1", content: "first" }))
+        s.fake.fire(inbound({ id: "3b-m2", content: "second" }))
+        await tick(60)
+        // Both messages really flowed (anti-vacuity: an adapter that stopped
+        // dispatching would trivially satisfy the count below).
+        expect(dispatchCount(s), "both allowed messages dispatched").toBe(2)
+        expect(regCalls(s), "registration is per start(), never per message").toHaveLength(1)
+      })
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+
+  it.each([
+    ["undefined", undefined],
+    ["empty string", ""],
+  ])(
+    "GIVEN no home guild configured (%s) WHEN ready fires THEN ZERO registration calls, one visible skip line, and the adapter keeps working — never a throw",
+    async (_label, guildId) => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        const s = setup3b(guildId === undefined ? {} : { guildId })
+        await withStarted(s.adapter, async () => {
+          s.fake.fireReady("eddy#0001")
+          await tick(40)
+          // GREEN-vacuous alone (nothing registers today either) — paired
+          // with the RED skip-line assertion below, per the deletion-cheat
+          // rule: silence must be a DECISION with evidence, not an accident.
+          expect(regCalls(s), "no guild => no registration call at all").toHaveLength(0)
+
+          // Visible decision line: contains BOTH the what and the why. The
+          // exact phrasing is pinned loosely (two substrings) so pong owns
+          // the sentence, but an operator grepping "slash commands" finds it.
+          const text = consoleText([logSpy, warnSpy])
+          expect(text, "skip line names the feature").toContain("slash commands: not registered")
+          expect(text, "skip line names the reason").toContain("guildId")
+
+          // Adapter is alive and gated messages still flow.
+          s.fake.fire(inbound({ id: `3b-skip-${_label}`, content: "still alive?" }))
+          await tick(40)
+          expect(dispatchCount(s), "adapter continues without registration").toBe(1)
+        })
+      } finally {
+        logSpy.mockRestore()
+        warnSpy.mockRestore()
+      }
+    },
+  )
+
+  it("WHEN registration fails THEN the failure is LOUD, primitive-fields-only (A5: no err.name, no raw error object), and the adapter stays up", async () => {
+    // A5 (3a audit finding, remediated at discord.ts:937-944): discord.js
+    // RateLimitError.name embeds the tokened route, and String(err) /
+    // console.error(err) serialize enumerable url/route members. The fake
+    // failure plants a sentinel in exactly those places; err.message stays a
+    // safe primitive ("Missing Permissions" — the realistic 50013 case).
+    const LEAK = "itok-LEAK-SENTINEL-3B"
+    const err = new Error("Missing Permissions")
+    err.name = `RateLimitError[/applications/app/guilds/${LEAK}/commands]`
+    ;(err as unknown as Record<string, unknown>)["url"] =
+      `https://discord.com/api/v10/${LEAK}`
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const s = setup3b({
+        guildId: "guild-home-1",
+        registerImpl: async () => {
+          throw err
+        },
+      })
+      await withStarted(s.adapter, async () => {
+        s.fake.fireReady("eddy#0001")
+        await tick(40)
+        // The attempt happened (this is what makes the loudness assertions
+        // non-vacuous — and it is the assertion that is RED pre-impl).
+        expect(regCalls(s), "registration was attempted").toHaveLength(1)
+
+        // LOUD: exactly one console.error, naming the feature and the guild.
+        // NOT the donor's swallow (Sol logs and moves on with no guild id and
+        // at .message granularity only when it remembers) and NOT a crash.
+        expect(errSpy.mock.calls, "exactly one failure line").toHaveLength(1)
+        const line = errSpy.mock.calls[0]?.map((a) => String(a)).join(" ") ?? ""
+        expect(line).toContain("slash commands")
+        expect(line).toContain("failed")
+        expect(line).toContain("guild-home-1")
+
+        // A5: primitive fields only — no argument may be an object (that is
+        // how enumerable url/route members reach the log), and the sentinel
+        // planted in err.name/err.url must appear NOWHERE on any console.
+        for (const arg of errSpy.mock.calls[0] ?? []) {
+          expect(
+            ["string", "number", "boolean"].includes(typeof arg),
+            `console.error arg is a primitive, got ${typeof arg}`,
+          ).toBe(true)
+        }
+        expect(consoleText([logSpy, warnSpy, errSpy])).not.toContain(LEAK)
+
+        // Non-fatal: the gateway continues, gated messages still dispatch.
+        // (The floating-rejection rule from 3a ruling 8 applies unchanged: a
+        // rejected registration must never surface as an unhandledRejection —
+        // this test completing at all is that evidence.)
+        s.fake.fire(inbound({ id: "3b-fail-m1", content: "after the failure" }))
+        await tick(40)
+        expect(dispatchCount(s), "adapter survived the failed registration").toBe(1)
+      })
+    } finally {
+      logSpy.mockRestore()
+      warnSpy.mockRestore()
+      errSpy.mockRestore()
+    }
   })
 })

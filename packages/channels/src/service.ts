@@ -104,11 +104,11 @@ const buildChannelUserText = (msg: ChannelMessage): string => {
 const buildDeliveryTarget = (msg: ChannelMessage): DeliveryTarget => ({
   inReplyTo: msg,
   address: {
+    ...(msg.metadata ?? {}),
     transport: msg.transport,
     channelId: msg.channelId,
     senderId: msg.senderId,
     threadingKey: msg.threadingKey,
-    ...(msg.metadata ?? {}),
   },
 })
 

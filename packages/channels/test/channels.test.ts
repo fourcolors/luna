@@ -3098,3 +3098,90 @@ describe("Slice 1b+11 — stop-at-first-failure delivery loop", () => {
     expect(mod["deliveryDeadlineMs"]).toBe(120_000) // RED today: export absent
   })
 })
+
+/* ========================================================================== */
+/* SLICE 3b — R3 rider: reserved reply-address keys win over metadata (H4)     */
+/* ========================================================================== */
+
+/**
+ * EXECUTABLE SPEC (written before the implementation; RED on arrival).
+ *
+ * buildDeliveryTarget (service.ts:104-113) spreads `msg.metadata` into the
+ * reply address AFTER the four reserved routing keys, so a metadata key named
+ * `channelId` (or senderId/transport/threadingKey) silently REROUTES every
+ * reply of the thread — hazard H4, a disclosure bug on a bot fronting a
+ * shell. 3a's invariant file pins that no CURRENT adapter manufactures a
+ * colliding key (static, source-scan); THIS test pins the service-level
+ * behavior for any adapter, present or future. The fix the advisor mandated
+ * (R3, riding with 3b) is a one-line reorder: spread the metadata FIRST so
+ * the reserved keys win. That reorder is pong's ONLY permitted service.ts
+ * change in this slice.
+ *
+ * OUT OF SCOPE — pong may touch ONLY discord.ts, service.ts (the one-line
+ * spread reorder in buildDeliveryTarget, nothing else), and the new
+ * apps/ui-web/scripts/discord-commands.ts. This file, delivery.ts,
+ * telegram.ts, commands.ts, index.ts, types.ts stay untouched.
+ */
+describe("Slice 3b — reserved reply-address keys win over inbound metadata (R3/H4)", () => {
+  it("a metadata key colliding with a reserved address key LOSES; namespaced metadata still rides along", async () => {
+    // GIVEN a registered adapter and an inbound message whose metadata
+    //       (an untyped adapter-owned bag) carries keys colliding with the
+    //       reserved routing keys, plus one honest namespaced key,
+    // WHEN  the turn completes and the reply is delivered,
+    // THEN  the reply address routes by the MESSAGE's own routing fields
+    //       (reserved keys win), while the honest metadata key still rides
+    //       in the address (the spread must move, not vanish).
+    const { service: stubChat, threads } = makeStubChatService(new Map())
+    const ctx = makeFakeAdapterClean("r3-fake", "final-only", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(ctx.adapter)
+          yield* svc.handleMessage(
+            makeMessage({
+              channelId: "real-chan-1",
+              senderId: "real-sender-1",
+              platformMessageId: "r3-pm-1",
+              text: "route me honestly",
+              metadata: {
+                // The attack shape H4 describes — NOT manufactured by any
+                // current adapter (the 3a invariant test proves that), but
+                // one metadata-emitting slice away at any time.
+                channelId: "evil-chan-9",
+                senderId: "evil-sender-9",
+                // The honest key: proves the fix is a REORDER, not a
+                // deletion of the metadata spread (a spread-less address
+                // would pass the two assertions above and break Telegram's
+                // chatType-carrying replies).
+                guildId: "meta-guild-1",
+              },
+            }),
+          )
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
+          yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "Routed reply."))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(stubChat),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(ctx.deliveries).toHaveLength(1)
+    const address = ctx.deliveries[0]?.target.address as Record<string, unknown>
+    // RED today: metadata spreads LAST, so these two read "evil-*".
+    expect(address["channelId"], "reserved channelId wins over metadata").toBe("real-chan-1")
+    expect(address["senderId"], "reserved senderId wins over metadata").toBe("real-sender-1")
+    expect(address["transport"], "transport stays the adapter's own").toBe("fake")
+    // GREEN today by design (survival guard): the metadata spread must
+    // SURVIVE the reorder — deleting it would satisfy the pins above while
+    // silently breaking every adapter that routes replies off metadata.
+    expect(address["guildId"], "non-reserved metadata still rides").toBe("meta-guild-1")
+  })
+})

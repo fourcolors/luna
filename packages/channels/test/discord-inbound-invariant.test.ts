@@ -122,6 +122,7 @@ const CLASSIFICATION: Record<string, "inbound-dispatch" | "lifecycle-callback" |
   edit: "outbound",
   sendTyping: "outbound",
   ackInteractionEphemeral: "outbound",
+  registerGuildCommands: "outbound",
 }
 
 /**

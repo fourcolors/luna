@@ -377,6 +377,18 @@ export interface DiscordTransport {
     token: string,
     content: string,
   ) => Promise<void>
+  /**
+   * Bulk-overwrite the GUILD-scoped slash-command set (Slice 3b): one
+   * idempotent PUT to /applications/{appId}/guilds/{guildId}/commands.
+   * Guild-scoped on purpose, never the global endpoint: guild commands
+   * propagate instantly, while global ones cache for up to an hour and
+   * pollute every guild the bot is in. Called from the ready path only,
+   * because the application id does not exist before ready.
+   */
+  readonly registerGuildCommands: (
+    guildId: string,
+    commands: ReadonlyArray<unknown>,
+  ) => Promise<void>
 }
 
 /**
@@ -493,6 +505,19 @@ export const makeRealDiscordTransport = (
         body: { type: 4, data: { content, flags: 64 } },
       })
     },
+    registerGuildCommands: async (guildId, commands) => {
+      // Ready-path only: discord.js populates client.application on ready,
+      // and the guild-commands route is addressed by the application id.
+      const appId = client.application?.id
+      if (appId === undefined) {
+        throw new Error("application id unavailable (client not ready)")
+      }
+      // The cast widens REST#put's `RouteLike` (a `/`-prefixed string
+      // template type) to the injectable plain-string shape putGuildCommands
+      // accepts; the route it is handed is built by guildCommandsRoute from
+      // discord-api-types' own Routes helper, so it is always a RouteLike.
+      await putGuildCommands(client.rest as unknown as GuildCommandsRest, appId, guildId, commands)
+    },
   }
 }
 
@@ -555,6 +580,42 @@ export const discordCommandManifest: ReadonlyArray<{
   },
 ]
 
+/**
+ * Minimal discord.js-REST shape the registration PUT needs. Widened to plain
+ * `string` routes so tests (and the ops script) can inject a recording fake;
+ * a real `REST` instance satisfies it via the cast at the one transport call
+ * site above.
+ */
+export interface GuildCommandsRest {
+  readonly put: (route: string, opts: { readonly body: unknown }) => Promise<unknown>
+}
+
+/**
+ * The ONE authority for the guild-commands endpoint, used by the real
+ * transport and by apps/ui-web/scripts/discord-commands.ts. Built from
+ * discord-api-types' Routes so the app AND the guild are always in the path:
+ * the global endpoint (/applications/{appId}/commands, no /guilds/ segment)
+ * propagates lazily for up to an hour and pollutes every guild the bot is
+ * in, so nothing in this codebase may construct it.
+ */
+export const guildCommandsRoute = (appId: string, guildId: string): string =>
+  Routes.applicationGuildCommands(appId, guildId)
+
+/**
+ * Bulk-overwrite the guild's slash-command set with `commands` (default: the
+ * shared manifest above). ONE idempotent PUT, never one-POST-per-command:
+ * PUT replaces the whole set, so re-running converges and deleting a command
+ * from the manifest deletes it from the guild. `putGuildCommands(rest, app,
+ * guild, [])` is therefore the rollback: it unregisters everything. Returns
+ * the API's echo of the resulting command set.
+ */
+export const putGuildCommands = (
+  rest: GuildCommandsRest,
+  appId: string,
+  guildId: string,
+  commands: ReadonlyArray<unknown> = discordCommandManifest,
+): Promise<unknown> => rest.put(guildCommandsRoute(appId, guildId), { body: commands })
+
 /* -------------------------------------------------------------------------- */
 /* Config                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -591,6 +652,14 @@ export interface DiscordAdapterConfig {
   readonly typingRefreshMs?: number
   /** Log "logged in as ..." on ready. Default true. */
   readonly logLogin?: boolean
+  /**
+   * Home guild id for slash-command registration (wired from
+   * LUNA_DISCORD_GUILD_ID). Unset or empty: registration is SKIPPED with a
+   * visible log line and the adapter runs message-only, never a throw.
+   * Registration scoping is NOISE REDUCTION, NEVER AUTH (advisor D1):
+   * `isInboundAllowed` remains the only boundary.
+   */
+  readonly guildId?: string
 }
 
 /* -------------------------------------------------------------------------- */
@@ -643,6 +712,14 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
   let messageHandler: ((msg: ChannelMessage) => Effect.Effect<void>) | null = null
   let transport: DiscordTransport | null = config.transport ?? null
   let started = false
+  /**
+   * Slash-command registration latch, ONCE per start(): gateway session
+   * RESUME refires `ready` on the SAME connection, and re-registering there
+   * would be a pointless rate-limited write (the PUT is a bulk overwrite, so
+   * once is already convergent). Reset in start(), not stop(), so a
+   * stop()/start() cycle registers again against a possibly-changed manifest.
+   */
+  let commandsRegistered = false
 
   /** Turn key → the message id we are stream-editing for that turn. */
   const sentMessageIds = new Map<string, string>()
@@ -664,6 +741,10 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
    * ruling 10). The service-level (transport, platformMessageId) dedup
    * would also drop the replayed dispatch, but only AFTER a second ack had
    * gone out, so it is not a substitute.
+   * In-memory by design (A3): a restart clears this set, and the re-ack
+   * window that opens is bounded by the durable service-level dedup
+   * (SQLite, keyed (transport, platformMessageId) = ("discord", the
+   * interaction snowflake)), which still drops the replayed dispatch.
    */
   const seenInteractionIds = new Set<string>()
 
@@ -948,6 +1029,50 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
     }
   }
 
+  /**
+   * Slice 3b: bulk-register the shared manifest against the configured home
+   * guild. Runs from the ready path only (no application id exists earlier;
+   * the real endpoint would 404). The payload IS `discordCommandManifest`,
+   * never a local list: the manifest is derived state and hand-copying it
+   * here is the catalog-duplication trap task #10 forbids.
+   *
+   * Failure discipline, deliberately NOT the Sol donor's silent swallow:
+   * LOUD (one console.error) but non-fatal, with PRIMITIVE args only (A5,
+   * same rule as the ack-failure line below: @discordjs/rest errors carry
+   * tokened routes in `.name` and enumerable `.url`/`.route` members, so
+   * only `err.message` may be printed, never the object, never String(err)).
+   * The awaited transport call is the only rejection source and it sits
+   * inside the try, so the un-awaited call from the ready listener can never
+   * surface an unhandledRejection (3a ruling 8).
+   */
+  const registerCommandsOnReady = async (t: DiscordTransport): Promise<void> => {
+    const guildId = config.guildId
+    if (guildId === undefined || guildId === "") {
+      // Silence must be a DECISION with evidence: the operator grepping
+      // "slash commands" finds both the what and the why.
+      console.log(
+        "[discord-adapter] slash commands: not registered (no guildId configured; " +
+          "set LUNA_DISCORD_GUILD_ID to the home guild id). Message handling continues.",
+      )
+      return
+    }
+    try {
+      await t.registerGuildCommands(guildId, discordCommandManifest)
+      // Operational evidence line, grepped by GOAL.md's Slice-6 check. The
+      // count is COMPUTED from the manifest so a manifest change cannot
+      // silently rot it.
+      console.log(
+        `[discord-adapter] discord slash commands: registered guild=${guildId} count=${discordCommandManifest.length}`,
+      )
+    } catch (err) {
+      console.error(
+        `[discord-adapter] discord slash commands registration failed guild=${guildId} ` +
+          "(commands stay unregistered; message handling continues):",
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+  }
+
   /* ---------------------------------------------------------------------- */
   /* Outbound helpers                                                        */
   /* ---------------------------------------------------------------------- */
@@ -1065,6 +1190,8 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
           started = true
           // A restart after stop() must be able to type again.
           typingSwept = false
+          // ... and to register commands again (see the latch's doc above).
+          commandsRegistered = false
           t.onMessage(handleInbound)
           t.onInteraction(handleInteraction)
           t.onError((e) => {
@@ -1077,6 +1204,13 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
                 `[discord-adapter] allowlist: ${allowedUsers.size} user(s), ` +
                   `${allowedChannels.size === 0 ? "any" : String(allowedChannels.size)} channel(s)`,
               )
+            }
+            // Latch BEFORE the async attempt: a RESUME-refired ready racing
+            // an in-flight registration must not double the PUT. The skip
+            // decision (no guildId) latches too: one line per start().
+            if (!commandsRegistered) {
+              commandsRegistered = true
+              void registerCommandsOnReady(t)
             }
           })
         }
