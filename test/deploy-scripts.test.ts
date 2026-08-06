@@ -1856,18 +1856,43 @@ exit 0
     expect(script).toContain("--stable-fallback-url ws://127.0.0.1:4753/ui")
   })
 
-  it("desktop install probes/serves the Vite UI on the correct port (5174, not 5173)", () => {
+  it("desktop install no longer guards/boots the retired Vite web UI (stack23 S13)", () => {
     const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
-    // Pre-existing bug the review caught: vite.config.ts binds the dev server on
-    // 5174, but the installer probed/polled/opened 5173 (which Vite never bound).
-    // All five references corrected to 5174.
+    // apps/ui-web (and its Vite dev server on :5174) was deleted (S12); the
+    // installer must not reference the port, the tool, or the deleted app dir.
+    expect(script).not.toContain("5174")
     expect(script).not.toContain("5173")
-    expect(script).toContain("http://localhost:5174")
-    expect(script).toContain('ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR"')
-    // Decision latch (#3): keep the plain Vite dev server, NOT dev:preview —
-    // `vite preview` is not a production server and would bake the token into
-    // on-disk dist/. Do not let a refactor silently re-introduce it.
+    // Case-insensitive: a re-introduced `vite ...` invocation must fail this too.
+    expect(script).not.toMatch(/vite/i)
+    expect(script).not.toContain("apps/ui-web")
     expect(script).not.toContain("dev:preview")
+  })
+
+  it("desktop install (option 1) confirms /readyz and directs the user at Luna Moon", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // Replaces the old Vite-boot/browser-open flow: confirm the daemon is
+    // actually serving (not just that launchd accepted the bootstrap), then
+    // point the new user at Luna Moon instead of a URL that no longer exists.
+    expect(script).toContain("wait_for_readyz() {")
+    expect(script).toContain("wait_for_readyz 4753")
+    expect(script).toContain("http://127.0.0.1:4753/readyz")
+    expect(script).toContain("Luna Moon")
+  })
+
+  it("desktop install keeps the one-time login recipe reachable, even on a slow boot", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // The three strings a fresh install cannot complete without - a refactor
+    // that drops or mangles any of them strands new users in setup-mode with
+    // no interactive client (the web UI is gone).
+    expect(script).toContain("CLAUDE_CONFIG_DIR=")
+    expect(script).toContain("claude setup-token")
+    expect(script).toContain("claude-code:login")
+    expect(script).toContain("launchctl kickstart -k")
+    // Fail-OPEN on readiness timeout: BOTH install options must still print
+    // the recipe when SERVER_READY != 1 (a slow first boot is not a reason
+    // to suppress the only path to login).
+    const failOpenCount = (script.match(/If it comes up in setup-mode/g) ?? []).length
+    expect(failOpenCount).toBe(2)
   })
 
   it("desktop install writes only the canonical UI_WS_TOKEN, not a redundant LUNA_STABLE_UI_WS_TOKEN", () => {
@@ -2121,7 +2146,9 @@ exit 0
       const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
       expect(script).toContain("source scripts/lib/port-guard.sh")
       expect(script).toContain('ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR"')
-      expect(script).toContain('ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR"')
+      // apps/ui-web (and the port it guarded) was deleted (S12) - only the
+      // chat-server port is guarded now.
+      expect(script).not.toContain("ensure_port_free 5174")
       // The dangerous old behavior must be gone for good (finding #7).
       expect(script).not.toContain("kill -9")
       expect(script).not.toContain("check_port")
