@@ -30,6 +30,7 @@ import "./chat/message-list.css"
 // points (parseClientConfig, makeNodeTokenResolver, the dev stubs) that the
 // package's "." export would pull in.
 import * as LunaTransport from "@luna/ui-transport/browser"
+import * as ThreadListLogic from "./chat/threadList"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -74,6 +75,18 @@ function assignBridge(
 // chat.html's classic-script top level, so any point before first connect
 // would do - see that call site's own fallback branch.
 ;(window as unknown as { LunaTransport: typeof LunaTransport }).LunaTransport = LunaTransport
+
+// ── Thread list logic (stack23 S17) ─────────────────────────────────────
+//
+// The drawer's pure selection-and-ordering functions. Published under the
+// name chat.html forward-declares, so ThreadDrawerEngine's delegating
+// methods resolve it at call time.
+//
+// This moves ahead of the rest of the drawer deliberately: S17 lands as one
+// cohesive slice because render/_renderRow/_wireRow form a DOM-ownership
+// cycle, and these functions touch no DOM, so they carry none of that risk.
+// See threadList.ts's module doc.
+;(window as unknown as { ThreadListLogic: typeof ThreadListLogic }).ThreadListLogic = ThreadListLogic
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //

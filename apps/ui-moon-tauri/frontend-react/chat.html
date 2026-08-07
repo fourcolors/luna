@@ -4075,6 +4075,14 @@
     //   artifact-pin       → pin()
     //   artifact-unpin     → unpin()
     //
+    // ── Thread list logic (src/chat/threadList.ts) ───────────────────────────
+    // Forward-declared `var` - for a classic (non-module) script this IS
+    // `window.ThreadListLogic`, so ThreadDrawerEngine's delegating methods
+    // below resolve it at CALL time and main-chat.tsx can assign it after this
+    // script has finished (stack23 S17). Same bridge pattern as
+    // ChatState/ChatLoop/Attachments/ComposerConfig/SlashMenu/SmartBarEngine.
+    var ThreadListLogic;
+
     // ── Thread cache ─────────────────────────────────────────────────────────
     // Per-thread transcript cache for ChatGPT-style switching. Server
     // re-snapshot on re-subscribe is the source of truth; this cache removes
@@ -4416,37 +4424,15 @@
 
       setSearch(q) { State.threadSearch = q || ''; this.render(); },
 
-      _ts(t) {
-        const v = (t && (t.lastMessageAt || t.updatedAt || t.createdAt)) || 0;
-        const n = typeof v === 'number' ? v : Date.parse(v);
-        return Number.isFinite(n) ? n : 0;
-      },
+      // Pure selection/ordering logic lives in src/chat/threadList.ts
+      // (stack23 S17). These three delegate to the forward-declared
+      // `ThreadListLogic` (== window.ThreadListLogic for a classic script),
+      // which main-chat.tsx assigns. Safe for the same reason every other
+      // module bridge is: each is called from an event handler or a frame
+      // handler, never at this script's own top level.
+      _ts(t) { return ThreadListLogic.threadTimestamp(t); },
 
-      _visibleThreads() {
-        const q = (State.threadSearch || '').trim().toLowerCase();
-        let rows = (State.threads || []).filter((t) => t && t.id && !t.system);
-        // Detached floaters leave the strip (Chrome-like) until redock / close.
-        const floated = State.floatedThreadIds;
-        if (floated) {
-          rows = rows.filter((t) => !floated[t.id]);
-        }
-        if (q) {
-          rows = rows.filter((t) =>
-            ((t.title || '') + ' ' + (t.lastMessagePreview || '')).toLowerCase().includes(q));
-        }
-        // Session-local order from drag-to-redock inserts (does not rewrite server).
-        const order = State.threadOrder;
-        if (Array.isArray(order) && order.length) {
-          const rank = new Map(order.map((id, i) => [id, i]));
-          return rows.sort((a, b) => {
-            const ra = rank.has(a.id) ? rank.get(a.id) : 1e9;
-            const rb = rank.has(b.id) ? rank.get(b.id) : 1e9;
-            if (ra !== rb) return ra - rb;
-            return this._ts(b) - this._ts(a);
-          });
-        }
-        return rows.sort((a, b) => this._ts(b) - this._ts(a));
-      },
+      _visibleThreads() { return ThreadListLogic.visibleThreads(State); },
 
       // --- render -------------------------------------------------------------
       render() {
@@ -4486,12 +4472,7 @@
         }
       },
 
-      _insertIndexForRatio(n, yRatio) {
-        if (n <= 0) return 0;
-        const r = Math.max(0, Math.min(1, Number(yRatio) || 0));
-        // Map vertical ratio onto [0..n] insert slots (before, between, after).
-        return Math.min(n, Math.max(0, Math.round(r * n)));
-      },
+      _insertIndexForRatio(n, yRatio) { return ThreadListLogic.insertIndexForRatio(n, yRatio); },
 
       /**
        * Live strip geometry for native redock (logical points, webview top-left).
