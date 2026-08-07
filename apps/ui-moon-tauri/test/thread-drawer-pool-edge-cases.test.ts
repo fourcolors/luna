@@ -41,12 +41,14 @@ describe('ThreadDrawerEngine & PoolEngine Stress & Edge Case Tests', () => {
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
     loadVendorInto(window, 'moon-dock.js')
-    if (usePoolEngine) {
-      loadVendorInto(window, 'pool-engine.js')
-      localStorage.setItem('luna_pool_engine', '1')
-    } else {
-      localStorage.removeItem('luna_pool_engine')
-    }
+    // ENGINE SELECTION IS EXPLICIT IN BOTH DIRECTIONS (stack23 S18b).
+    // PoolEngine is now the DEFAULT, so "legacy" can no longer be expressed by
+    // simply omitting the flag - absence means pool. This file compares the
+    // two engines against each other, so each branch has to say which one it
+    // wants out loud, or the "legacy" half silently tests pool and the parity
+    // it claims to prove becomes a comparison of pool against itself.
+    loadVendorInto(window, 'pool-engine.js')
+    localStorage.setItem('luna_pool_engine', usePoolEngine ? '1' : '0')
 
     vi.stubGlobal('WebSocket', class {
       static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3
