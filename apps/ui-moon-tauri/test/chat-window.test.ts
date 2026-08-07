@@ -5252,27 +5252,37 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: ThreadDragSession wired — open_widget only after detach action', () => {
       // Contract: createSession.pointerMove while in strip never implies spawn.
-      expect(htmlContent).toMatch(/move\.action === 'detach'/)
-      expect(htmlContent).toMatch(/outcome === 'reorder'/)
-      expect(htmlContent).toMatch(/LunaThreadDrag\.createSession/)
-      expect(htmlContent).toMatch(/focus: false/)
+      //
+      // These read src/chat/threadDrag.ts, not chat.html: stack23 S17f moved
+      // the gesture there VERBATIM. Repointing rather than deleting is the
+      // whole value - the invariants still hold, and the fact that every one
+      // of them still matches after the move is independent evidence that the
+      // 430 lines relocated intact.
+      const dragSrc = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/threadDrag.ts'),
+        'utf8',
+      )
+      expect(dragSrc).toMatch(/move\.action === 'detach'/)
+      expect(dragSrc).toMatch(/outcome === 'reorder'/)
+      expect(dragSrc).toMatch(/LunaThreadDrag\.createSession/)
+      expect(dragSrc).toMatch(/focus: false/)
       // Detach path spawns the floater; enter_attached only updates strip chrome.
       // a8c1ac22 ("hard-promote Chrome-tab drag, native free motion") replaced
       // the old placeFloater(..., focus:false) call with hardPromoteFloater(),
       // which spawns ONCE and hands motion to the OS. The no-focus-steal
       // guarantee moved with it: hardPromoteFloater calls
       // openInNewWindow(id, x, y, { focus: false }).
-      expect(htmlContent).toMatch(
+      expect(dragSrc).toMatch(
         /move\.action === 'detach'[\s\S]{0,400}hardPromoteFloater\(/,
       )
-      expect(htmlContent).toMatch(
+      expect(dragSrc).toMatch(
         /const hardPromoteFloater[\s\S]{0,600}openInNewWindow\([^)]*\{\s*focus:\s*false\s*\}/,
       )
-      expect(htmlContent).toMatch(
+      expect(dragSrc).toMatch(
         /move\.action === 'enter_attached'[\s\S]{0,160}showAttachedChrome/,
       )
       // enter_attached must never spawn a floater by any of its names.
-      expect(htmlContent).not.toMatch(
+      expect(dragSrc).not.toMatch(
         /move\.action === 'enter_attached'[\s\S]{0,160}(placeFloater|hardPromoteFloater)/,
       )
     })

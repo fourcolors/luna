@@ -34,6 +34,7 @@ import * as ThreadListLogic from "./chat/threadList"
 import * as ThreadStrip from "./chat/threadStrip"
 import * as ThreadCacheLogic from "./chat/threadCache"
 import * as ThreadCreateLogic from "./chat/threadCreate"
+import * as ThreadDrag from "./chat/threadDrag"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -93,6 +94,7 @@ function assignBridge(
 ;(window as unknown as { ThreadStrip: typeof ThreadStrip }).ThreadStrip = ThreadStrip
 ;(window as unknown as { ThreadCacheLogic: typeof ThreadCacheLogic }).ThreadCacheLogic = ThreadCacheLogic
 ;(window as unknown as { ThreadCreateLogic: typeof ThreadCreateLogic }).ThreadCreateLogic = ThreadCreateLogic
+;(window as unknown as { ThreadDrag: typeof ThreadDrag }).ThreadDrag = ThreadDrag
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
