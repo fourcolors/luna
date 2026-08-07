@@ -37,6 +37,7 @@ import * as ThreadCreateLogic from "./chat/threadCreate"
 import * as ThreadDrag from "./chat/threadDrag"
 import { createResultToasts } from "./chat/resultToasts"
 import { createUpdateBanner } from "./chat/updateBanner"
+import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -62,6 +63,7 @@ function assignBridge(
     | "SmartBarEngine"
     | "ResultToasts"
     | "UpdateBanner"
+    | "FeedbackEngine"
     | "ChatState"
     | "ChatLoop",
   value: unknown,
@@ -117,6 +119,47 @@ assignBridge(
   "UpdateBanner",
   createUpdateBanner({ Logger: { warn: (...a: unknown[]) => console.warn(...a) } }),
 )
+
+// ── FeedbackEngine (point-at-the-UI crosshair, stack23 S19c) ────────────
+//
+// Constructed HERE rather than in chat.html because everything it needs is
+// already reachable through the EXISTING host contract - no new LunaChatHost
+// member, which matters because S19 is the slice that DELETES Group C rather
+// than growing it:
+//   WebSocketEngine.send -> host.send
+//   State.*              -> host.state(), which returns the LIVE object, so
+//                           capturing it once is the same reference chat.html
+//                           mutates (never a copy)
+//   DOM.*                -> eight element lookups, resolved here because the
+//                           deferred module runs after the body is parsed
+assignBridge(
+  "FeedbackEngine",
+  createFeedbackEngine({
+    DOM: {
+      feedbackBtn: document.getElementById("feedback-btn"),
+      feedbackPickerOverlay: document.getElementById("feedback-picker-overlay"),
+      feedbackPickerHighlight: document.getElementById("feedback-picker-highlight"),
+      feedbackPanel: document.getElementById("feedback-panel"),
+      feedbackTargetChip: document.getElementById("feedback-target-chip"),
+      feedbackInput: document.getElementById("feedback-input"),
+      feedbackStatus: document.getElementById("feedback-status"),
+      feedbackSubmit: document.getElementById("feedback-submit-btn"),
+    },
+    State: getChatHost()?.state(),
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+  }),
+)
+
+// Test hooks that moved with the feedback cluster. chat.html exposed these two
+// directly until S19c; the namespace is unchanged so the suites reading them
+// need no edit.
+{
+  const internals = (window as unknown as { __MoonInternals?: Record<string, unknown> }).__MoonInternals
+  if (internals) {
+    internals["describeTarget"] = describeTarget
+    internals["cropAndEncodeFeedbackScreenshot"] = cropAndEncodeFeedbackScreenshot
+  }
+}
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
