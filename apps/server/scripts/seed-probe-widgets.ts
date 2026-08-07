@@ -23,10 +23,6 @@
  * seed-sized writes, but already-connected clients only learn of the new
  * artifacts on their next connect — open the widget windows after seeding.
  */
-// TODO(#444): 26 pre-existing strictNullChecks/noUncheckedIndexedAccess
-// errors, mostly in the markdown->HTML helpers below plus argValue in
-// main() - outside apps/*/src/** on purpose so this doesn't regress the
-// tsc gate. Remove this marker only when the errors are fixed.
 import { readFileSync } from "node:fs"
 import * as path from "node:path"
 import { Effect, Layer } from "effect"
@@ -66,13 +62,20 @@ const inline = (escaped: string): string => {
   )
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
   out = out.replace(/(^|\s)_([^_]+)_(?=\s|$|[.,;:])/g, "$1<em>$2</em>")
-  return out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => codeSpans[Number(i)])
+  return out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => codeSpans[Number(i)] ?? "")
 }
 
 export const markdownToHtml = (md: string): string => {
   const lines = md.split("\n")
   const out: string[] = []
   let i = 0
+
+  /** Bounds-safe line read. Every call below sits behind an `i < lines.length`
+   *  guard, so the `""` fallback is unreachable in practice - it exists so the
+   *  scanner can be indexed under noUncheckedIndexedAccess without sprinkling
+   *  non-null assertions, and an empty line is the correct sentinel for a line
+   *  scanner regardless (#444). */
+  const at = (n: number): string => lines[n] ?? ""
 
   const isTableLine = (l: string) => /^\s*\|.*\|\s*$/.test(l)
   const tableCells = (l: string) =>
@@ -83,7 +86,7 @@ export const markdownToHtml = (md: string): string => {
       .map((c) => inline(escapeHtml(c.trim())))
 
   while (i < lines.length) {
-    const line = lines[i]
+    const line = at(i)
 
     if (line.trim() === "") {
       i++
@@ -93,8 +96,8 @@ export const markdownToHtml = (md: string): string => {
     if (line.trim().startsWith("```")) {
       const buf: string[] = []
       i++
-      while (i < lines.length && !lines[i].trim().startsWith("```")) {
-        buf.push(escapeHtml(lines[i]))
+      while (i < lines.length && !at(i).trim().startsWith("```")) {
+        buf.push(escapeHtml(at(i)))
         i++
       }
       i++ // closing fence
@@ -110,18 +113,18 @@ export const markdownToHtml = (md: string): string => {
     // headings
     const h = line.match(/^(#{1,3})\s+(.*)$/)
     if (h) {
-      const level = h[1].length
-      out.push(`<h${level}>${inline(escapeHtml(h[2]))}</h${level}>`)
+      const level = (h[1] ?? "").length
+      out.push(`<h${level}>${inline(escapeHtml(h[2] ?? ""))}</h${level}>`)
       i++
       continue
     }
     // table
-    if (isTableLine(line) && i + 1 < lines.length && /^\s*\|[\s|:-]+\|\s*$/.test(lines[i + 1])) {
+    if (isTableLine(line) && i + 1 < lines.length && /^\s*\|[\s|:-]+\|\s*$/.test(at(i + 1))) {
       const header = tableCells(line)
       i += 2
       const rows: string[][] = []
-      while (i < lines.length && isTableLine(lines[i])) {
-        rows.push(tableCells(lines[i]))
+      while (i < lines.length && isTableLine(at(i))) {
+        rows.push(tableCells(at(i)))
         i++
       }
       out.push(
@@ -141,12 +144,12 @@ export const markdownToHtml = (md: string): string => {
       const ordered = /^\s*\d+\./.test(line)
       const items: string[] = []
       while (i < lines.length) {
-        const m = lines[i].match(/^(\s*)(?:-|\d+\.)\s+(.*)$/)
+        const m = at(i).match(/^(\s*)(?:-|\d+\.)\s+(.*)$/)
         if (m) {
-          items.push(m[2])
+          items.push(m[2] ?? "")
           i++
-        } else if (/^\s{2,}\S/.test(lines[i]) && items.length > 0) {
-          items[items.length - 1] += " " + lines[i].trim()
+        } else if (/^\s{2,}\S/.test(at(i)) && items.length > 0) {
+          items[items.length - 1] = (items[items.length - 1] ?? "") + " " + at(i).trim()
           i++
         } else {
           break
@@ -165,11 +168,11 @@ export const markdownToHtml = (md: string): string => {
     i++
     while (
       i < lines.length &&
-      lines[i].trim() !== "" &&
-      !/^(#{1,3}\s|```|-{3,}\s*$|\s*\|)/.test(lines[i]) &&
-      !/^(\s*)(?:-|\d+\.)\s+/.test(lines[i])
+      at(i).trim() !== "" &&
+      !/^(#{1,3}\s|```|-{3,}\s*$|\s*\|)/.test(at(i)) &&
+      !/^(\s*)(?:-|\d+\.)\s+/.test(at(i))
     ) {
-      buf.push(lines[i])
+      buf.push(at(i))
       i++
     }
     out.push(`<p>${inline(escapeHtml(buf.join(" ")))}</p>`)
@@ -188,7 +191,7 @@ const main = async () => {
   const argv = process.argv.slice(2)
   const argValue = (flag: string): string | null => {
     const i = argv.indexOf(flag)
-    return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null
+    return i >= 0 && i + 1 < argv.length ? (argv[i + 1] ?? null) : null
   }
 
   const dbPath = argValue("--db")
