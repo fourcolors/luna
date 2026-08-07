@@ -308,36 +308,48 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
       expect(resetSpy).toHaveBeenCalledTimes(1)
     })
 
-    // RESUBSCRIBE-ON-RECONNECT IS DELIBERATELY *NOT* PINNED HERE, and saying
-    // so is the point. ws-contract proves it for WebSocketEngine by driving a
-    // raw socket the engine owns directly. Under PoolEngine the reconnect is
-    // driven by the ADAPTER's internal retry, and reproducing it in jsdom needs
-    // the harness to satisfy a full attach handshake on a socket the adapter
-    // mints on its own schedule - several attempts here produced an empty
-    // sent-frame list, i.e. a test that would have passed only if written
-    // loosely enough to assert nothing.
+    // RESUBSCRIBE-ON-RECONNECT, now genuinely pinned.
     //
-    // Rather than ship that, the property below is the part this harness CAN
-    // prove honestly, and the resubscribe itself stays owed to S18's own
-    // deployNote gate: "Exercise a real server restart against a running Moon
-    // to prove reconnect, not just a fresh connect." That gate exists for
-    // exactly this.
-    it('the active thread identity survives a drop and the engine recovers', async () => {
+    // This scenario was previously left unpinned because every attempt saw an
+    // EMPTY sent-frame list while `send()` was demonstrably called with the
+    // right frame. The cause was not the engine: FakeWebSocket carried the
+    // readyState constants only as STATICS, while the DOM also puts them on
+    // WebSocket.prototype - so LunaWsAdapter.sendFrame's
+    // `this.#ws.readyState === this.#ws.OPEN` compared `1 === undefined` and
+    // SILENTLY DROPPED every frame. The fake now mirrors the DOM, and the
+    // engine turns out to have been correct all along.
+    //
+    // Worth keeping in view: without that fix this suite could only ever have
+    // "passed" by asserting nothing about sends.
+    it('re-subscribes the active thread on the connection that replaces a dropped one', async () => {
       internals().State.activeThreadId = 'thread-abc'
       const sock0 = await bringUp()
-      const before = FakeWebSocket.instances.length
+      expect(
+        sock0.getSentMessages(),
+        'the first connection should subscribe to the active thread',
+      ).toContainEqual({ type: 'subscribe', threadId: 'thread-abc' })
 
       sock0.simulateDrop()
-      await settle(12, 2000)
 
-      expect(pool().isConnected(), 'a dropped connection must report disconnected').toBe(false)
+      // Complete the handshake on the FIRST replacement socket the adapter
+      // mints. Advancing in one jump instead lets it create several and time
+      // each out, leaving `latest()` on a dead one.
+      let sock1: ReturnType<typeof FakeWebSocket.latest> = null
+      for (let i = 0; i < 40 && !sock1; i++) {
+        await vi.advanceTimersByTimeAsync(200)
+        const candidate = FakeWebSocket.latest()
+        if (candidate && candidate !== sock0) sock1 = candidate
+      }
+      expect(sock1, 'the adapter should have minted a replacement socket').toBeTruthy()
+      sock1!.simulateOpen()
+      sock1!.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      await settle()
+
+      expect(internals().State.activeThreadId, 'a drop must not move the user off their thread').toBe('thread-abc')
       expect(
-        FakeWebSocket.instances.length,
-        'the adapter should attempt a replacement connection',
-      ).toBeGreaterThan(before)
-      // The identity the resubscribe would use is intact - a drop must never
-      // silently move the user off their thread.
-      expect(internals().State.activeThreadId).toBe('thread-abc')
+        sock1!.getSentMessages(),
+        'the replacement connection must re-subscribe, or chat goes silent after every drop',
+      ).toContainEqual({ type: 'subscribe', threadId: 'thread-abc' })
     })
 
     it('a flap sequence leaks no timers', async () => {
