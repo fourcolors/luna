@@ -262,4 +262,88 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
       expect(m.State.reconnectAttempts).toBe(1)
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Scenario F: the registerCloseHook seam, driven through a REAL close.
+  //
+  // WHY HERE AND NOT IN chat-window.test.ts. That suite already pins the
+  // shipped hook's BODY, but it does so by reaching into
+  // `WebSocketEngine._closeHooks` and calling each entry directly:
+  //
+  //     for (const hook of hooks) hook()
+  //
+  // That proves the wipe works when invoked. It cannot prove the ENGINE
+  // invokes it. An engine rewrite that dropped the `for (const hook of
+  // this._closeHooks)` loop in the close handler would leave that test
+  // green while a typed-but-unsent secret survived a socket drop - which is
+  // a security property, not a cosmetic one.
+  //
+  // stack23 S18 is about to rewrite exactly that close handler onto the ESM
+  // ConnectionManager, so the seam gets an integration-level pin in the CI
+  // hard gate FIRST, driven by a real `close` event through FakeWebSocket.
+  // ───────────────────────────────────────────────────────────────────────
+  describe('Scenario: close hooks run on a real socket drop (registerCloseHook seam)', () => {
+    it('a mid-stream drop invokes every registered close hook, in registration order', () => {
+      const m = internals()
+      const order: string[] = []
+      m.WebSocketEngine.registerCloseHook(() => order.push('first'))
+      m.WebSocketEngine.registerCloseHook(() => order.push('second'))
+
+      FakeWebSocket.latest()!.simulateOpen()
+      expect(order).toEqual([]) // nothing runs while the socket is healthy
+      FakeWebSocket.latest()!.simulateDrop()
+
+      expect(order).toEqual(['first', 'second'])
+    })
+
+    it('the SHIPPED secret-wipe hook clears a typed secret through a real drop, not just when called directly', () => {
+      const input = document.getElementById('secret-prompt-input') as HTMLInputElement | null
+      expect(input, 'chat.html must still carry #secret-prompt-input').toBeTruthy()
+      input!.value = 'typed-not-sent'
+
+      FakeWebSocket.latest()!.simulateOpen()
+      FakeWebSocket.latest()!.simulateDrop()
+
+      // The end-to-end property: socket drops => no typed secret retained.
+      expect(input!.value).toBe('')
+    })
+
+    it('a throwing hook does not prevent later hooks from running', () => {
+      // Hook isolation matters precisely because the secret wipe may not be
+      // the only registered policy: one panel's failing hook must not strand
+      // another panel's secret in the DOM.
+      const m = internals()
+      const order: string[] = []
+      m.WebSocketEngine.registerCloseHook(() => {
+        order.push('throwing')
+        throw new Error('boom')
+      })
+      m.WebSocketEngine.registerCloseHook(() => order.push('after-throw'))
+
+      FakeWebSocket.latest()!.simulateOpen()
+      expect(() => FakeWebSocket.latest()!.simulateDrop()).not.toThrow()
+
+      expect(order).toEqual(['throwing', 'after-throw'])
+    })
+
+    it('hooks run on EVERY drop across a reconnect, not only the first', () => {
+      // A rewrite that registered the close handler once against the first
+      // socket - rather than per-connection - would pass the single-drop
+      // tests above and silently stop wiping from the second drop onward.
+      const m = internals()
+      let runs = 0
+      m.WebSocketEngine.registerCloseHook(() => {
+        runs += 1
+      })
+
+      for (let i = 0; i < 3; i++) {
+        const sock = FakeWebSocket.latest()!
+        sock.simulateOpen()
+        sock.simulateDrop()
+        vi.advanceTimersByTime(1000) // let the scheduled reconnect mint the next socket
+      }
+
+      expect(runs).toBe(3)
+    })
+  })
 })
