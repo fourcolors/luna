@@ -7116,61 +7116,12 @@
     // Self-contained: lazily mounts its own #result-toasts container, auto-
     // dismisses after ~6.5s, and click-to-dismiss. Exposed on __MoonInternals
     // for screenshot/agent-browser harnesses.
-    const ResultToasts = {
-      _host: null,
-      _timers: new Map(),
-      _seq: 0,
-      _container() {
-        if (this._host && document.body.contains(this._host)) return this._host;
-        let el = document.getElementById('result-toasts');
-        if (!el) {
-          el = document.createElement('div');
-          el.id = 'result-toasts';
-          document.body.appendChild(el);
-        }
-        this._host = el;
-        return el;
-      },
-      show(notification) {
-        const n = notification || {};
-        const host = this._container();
-        const id = 'rt-' + (++this._seq);
-        const toast = document.createElement('div');
-        toast.className = 'result-toast';
-        toast.dataset.id = id;
-        const title = document.createElement('div');
-        title.className = 'rt-title';
-        const star = document.createElement('span');
-        star.textContent = '✓';
-        const titleText = document.createElement('span');
-        titleText.textContent = 'Luna finished'
-          + (n.label ? ': ' + n.label : '');
-        title.appendChild(star);
-        title.appendChild(titleText);
-        toast.appendChild(title);
-        if (n.preview) {
-          const preview = document.createElement('div');
-          preview.className = 'rt-preview';
-          preview.textContent = String(n.preview);
-          toast.appendChild(preview);
-        }
-        const dismiss = () => this.dismiss(id);
-        toast.addEventListener('click', dismiss);
-        host.appendChild(toast);
-        this._timers.set(id, setTimeout(dismiss, 6500));
-        return id;
-      },
-      dismiss(id) {
-        const host = this._host;
-        if (!host) return;
-        const toast = host.querySelector('.result-toast[data-id="' + id + '"]');
-        const timer = this._timers.get(id);
-        if (timer) { clearTimeout(timer); this._timers.delete(id); }
-        if (!toast) return;
-        toast.classList.add('leaving');
-        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 220);
-      },
-    };
+    // Converted to a typed module (stack23 S19a): src/chat/resultToasts.ts.
+    // A forward-declared `var` - the ONE call site below is a frame handler,
+    // so it resolves this at CALL time, after main-chat.tsx has assigned it.
+    // First S19 extraction on purpose: it reaches nothing but `document` and
+    // timers, so unlike ThreadCache it needs no ctx handed over from here.
+    var ResultToasts;
 
     MoonFrames.register('result-delivered', (frame) => {
       ResultToasts.show(frame);

@@ -35,6 +35,7 @@ import * as ThreadStrip from "./chat/threadStrip"
 import * as ThreadCacheLogic from "./chat/threadCache"
 import * as ThreadCreateLogic from "./chat/threadCreate"
 import * as ThreadDrag from "./chat/threadDrag"
+import { createResultToasts } from "./chat/resultToasts"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -53,7 +54,14 @@ import { mountSmartBar } from "./chat/SmartBarEngine"
  * the module-to-classic-script direction; `window.LunaChatHost`
  * (chat-host.ts) is the opposite direction and is never touched here. */
 function assignBridge(
-  name: "Attachments" | "ComposerConfig" | "SlashMenu" | "SmartBarEngine" | "ChatState" | "ChatLoop",
+  name:
+    | "Attachments"
+    | "ComposerConfig"
+    | "SlashMenu"
+    | "SmartBarEngine"
+    | "ResultToasts"
+    | "ChatState"
+    | "ChatLoop",
   value: unknown,
 ): void {
   const w = window as unknown as Record<string, unknown> & { __MoonInternals?: Record<string, unknown> }
@@ -95,6 +103,11 @@ function assignBridge(
 ;(window as unknown as { ThreadCacheLogic: typeof ThreadCacheLogic }).ThreadCacheLogic = ThreadCacheLogic
 ;(window as unknown as { ThreadCreateLogic: typeof ThreadCreateLogic }).ThreadCreateLogic = ThreadCreateLogic
 ;(window as unknown as { ThreadDrag: typeof ThreadDrag }).ThreadDrag = ThreadDrag
+// One instance per window: the toast list owns real per-instance state.
+// Through assignBridge so the __MoonInternals copy is refreshed too - chat.html
+// captured the pre-mount `undefined`, and that copy is what the screenshot /
+// agent-browser harnesses read (see chat.html's own "#124 toast harness" note).
+assignBridge("ResultToasts", createResultToasts())
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
