@@ -6424,6 +6424,16 @@
 
         MoonFace.setBusy(false);
         this.updateStatus('connecting', 'Connecting…');
+        // Arm close hooks HERE, at the start of the attempt, not on 'ready'.
+        // The shipped hook wipes a typed-but-unsent secret, and a secret typed
+        // while a connection was still coming up is exactly as sensitive as one
+        // typed against a live socket. WebSocketEngine fires its hooks from the
+        // raw close handler with no arming condition at all, so a connection
+        // that never established still wipes there; arming at attempt start is
+        // how this engine matches that conservative behavior while keeping the
+        // exactly-once-per-attempt guard that stops recovering→down sequences
+        // double-firing (stack23 S18b).
+        this._hooksArmed = true;
 
         // Resolve the route via MoonSession (C2) → build a ConnectionManager
         // route entry from State.wsUrl / State.wsToken as fallback.
@@ -6504,6 +6514,15 @@
           if (!this._gen.gate(myGen)) return;
           Logger.error('[PoolEngine] acquire failed:', e);
           this.updateStatus('disconnected', 'Connection Error');
+          // Close hooks MUST run on this path too (stack23 S18b). A socket can
+          // open, take a typed secret, and drop before the handshake completes
+          // — acquire() then rejects and the connection-state subscription was
+          // never wired, so _onConnectionState can never fire for this attempt.
+          // Without this call the secret-wipe policy would silently not run for
+          // exactly the connections most likely to be flaky. WebSocketEngine has
+          // no equivalent hole because it attaches its close listener to the
+          // socket synchronously.
+          this._fireDisconnect('acquire-failed');
           // (2) The adapter's internal backoff handles reconnect; but if acquire
           // itself threw (before the adapter was running), schedule a manual retry
           this._scheduleRetry();
@@ -6607,8 +6626,9 @@
       },
 
       // _fireDisconnect — run close hooks + clean up a stuck typing indicator.
-      // Double-fire guard: _hooksArmed is set to true only on 'ready'; cleared
-      // atomically here so recovering→down sequences fire hooks exactly once.
+      // Double-fire guard: _hooksArmed is set at CONNECT-ATTEMPT start (and
+      // re-set on each 'ready'); cleared atomically here so recovering→down
+      // sequences fire hooks exactly once per attempt.
       _fireDisconnect(reason) {
         if (!this._hooksArmed) return; // not connected since last disconnect — skip
         this._hooksArmed = false;
