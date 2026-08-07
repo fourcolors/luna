@@ -22,7 +22,7 @@
  * The three baseline test files are untouched: the ENTIRE existing suite
  * exercises the inplace arm unchanged.
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -128,6 +128,21 @@ const makeReleasesFixture = (
   symlinkSync(`releases/${prevSha}`, join(deploy, "current"))
 
   return { origin, deploy, mirror, releases, prevSha, targetSha }
+}
+
+/**
+ * Removes the `current` SYMLINK itself, never what it points at.
+ *
+ * Use this instead of `rmSync` on any deploy symlink. `rmSync` stats THROUGH
+ * the link, so on a link-to-directory it throws ERR_FS_EISDIR ("Path is a
+ * directory") on Node 24 and the whole test dies before it can assert
+ * anything; `rmSync(..., { recursive: true })` would "work" but by deleting
+ * the release the link resolves to, silently destroying the fixture the test
+ * is about to make claims against. `unlinkSync` is the only call with the
+ * semantics the deploy layout actually wants.
+ */
+function unlinkCurrent(deploy: string): void {
+  unlinkSync(join(deploy, "current"))
 }
 
 /**
@@ -370,7 +385,7 @@ describe("releases layout — materialize", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     // Empty-root bootstrap: remove the pre-built release AND current.
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     rmSync(join(fx.releases, fx.prevSha), { recursive: true })
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
@@ -1142,7 +1157,7 @@ describe("releases layout — identity fails closed", () => {
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const r = runReleases(fx, stubs, temp)
     expect(r.status, r.stdout + r.stderr).toBe(1)
@@ -1256,7 +1271,7 @@ describe("luna-autodeploy — releases mode", () => {
     expect(ok.stdout).not.toContain("--ref origin/master")
 
     // Dangling current: refuse unattended repair, exit 2.
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const bad = spawnSync("bash", [AUTODEPLOY, "stable", "--repair"], { cwd: repoRoot, encoding: "utf8", env })
     expect(bad.status, bad.stdout + bad.stderr).toBe(2)
@@ -1292,7 +1307,7 @@ describe("luna-autodeploy — releases mode", () => {
     gitDir(fx.mirror, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 
     // Broken element 3: dangling current.
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const dangling = spawnSync("bash", [AUTODEPLOY, "stable", "--validate"], { cwd: repoRoot, encoding: "utf8", env })
     expect(dangling.status).toBe(2)
