@@ -71,6 +71,7 @@ import * as ThreadCreateLogic from '../../frontend-react/src/chat/threadCreate'
 import * as ThreadDrag from '../../frontend-react/src/chat/threadDrag'
 import { createResultToasts } from '../../frontend-react/src/chat/resultToasts'
 import { createUpdateBanner } from '../../frontend-react/src/chat/updateBanner'
+import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from '../../frontend-react/src/chat/feedbackEngine'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -256,6 +257,28 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
     throw new Error('chat-harness: mountSmartBar degraded to null - is #smart-bar missing from the loaded body?')
   }
 
+  // A THUNK, not an instance. FeedbackEngine reads State and send through
+  // LunaChatHost, which the classic script publishes - and in THIS harness the
+  // modules mount BEFORE that script runs, so constructing eagerly would
+  // capture an undefined State. The shipped page has the opposite order and is
+  // unaffected; calling this from inside the bridged source below is what puts
+  // the harness on the same footing.
+  const makeFeedbackEngine = () =>
+    createFeedbackEngine({
+      DOM: {
+        feedbackBtn: document.getElementById('feedback-btn'),
+        feedbackPickerOverlay: document.getElementById('feedback-picker-overlay'),
+        feedbackPickerHighlight: document.getElementById('feedback-picker-highlight'),
+        feedbackPanel: document.getElementById('feedback-panel'),
+        feedbackTargetChip: document.getElementById('feedback-target-chip'),
+        feedbackInput: document.getElementById('feedback-input'),
+        feedbackStatus: document.getElementById('feedback-status'),
+        feedbackSubmit: document.getElementById('feedback-submit-btn'),
+      },
+      State: getChatHost()?.state(),
+      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
+    })
+
   const bridged = `${inlineScripts[0]}
 ;ChatState = __mount.ChatState;
 ChatLoop = __mount.ChatLoop;
@@ -270,6 +293,7 @@ ThreadCreateLogic = __threadCreateLogic;
 ThreadDrag = __threadDrag;
 ResultToasts = __resultToasts;
 UpdateBanner = __updateBanner;
+FeedbackEngine = __feedbackEngine();
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -283,6 +307,7 @@ window.ThreadCreateLogic = ThreadCreateLogic;
 window.ThreadDrag = ThreadDrag;
 window.ResultToasts = ResultToasts;
 window.UpdateBanner = UpdateBanner;
+window.FeedbackEngine = FeedbackEngine;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -290,6 +315,12 @@ if (window.__MoonInternals) {
   window.__MoonInternals.ComposerConfig = ComposerConfig;
   window.__MoonInternals.SlashMenu = SlashMenu;
   window.__MoonInternals.SmartBarEngine = SmartBarEngine;
+  window.__MoonInternals.ThreadCache = ThreadCache;
+  window.__MoonInternals.ResultToasts = ResultToasts;
+  window.__MoonInternals.UpdateBanner = UpdateBanner;
+  window.__MoonInternals.FeedbackEngine = FeedbackEngine;
+  window.__MoonInternals.describeTarget = __describeTarget;
+  window.__MoonInternals.cropAndEncodeFeedbackScreenshot = __cropAndEncode;
 }
 `
   new Function(
@@ -305,8 +336,11 @@ if (window.__MoonInternals) {
     '__threadDrag',
     '__resultToasts',
     '__updateBanner',
+    '__feedbackEngine',
+    '__describeTarget',
+    '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }))
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
