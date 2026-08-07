@@ -85,6 +85,13 @@ import { flushSync } from "react-dom"
 // before bundling, so this is safe ONLY as long as it stays type-only (same
 // warning, verbatim, as src/chat/chat-ctx.ts's own note on this import).
 import type { ClientFrame } from "@luna/ui-ws"
+// Unlike the type-only import above, this one is a RUNTIME import - and it is
+// deliberately from @luna/tools/protocol-descriptor, not @luna/ui-ws.
+// protocol-descriptor.ts is a zero-import leaf behind its own subpath export,
+// so it bundles clean; @luna/ui-ws publishes a single "." export that also
+// re-exports server.js plus six node-side bridges and must stay type-only.
+// See that file's own comment for why the effort vocabulary lives there.
+import { isEffortOption, type EffortOption } from "@luna/tools/protocol-descriptor"
 
 // ============================================================================
 // Types
@@ -93,7 +100,11 @@ import type { ClientFrame } from "@luna/ui-ws"
 export interface ModelEntry {
   readonly id: string
   readonly label: string
-  readonly efforts: readonly string[]
+  /** Narrowed at the hello/cache boundary by `normalizeModelEntry` - see
+   * there for the one behavior delta this buys (#462). Everything downstream
+   * gets the closed wire union for free, which is what removed this file's
+   * last `as`-assertion at the wire boundary. */
+  readonly efforts: readonly EffortOption[]
 }
 
 /** The live, mutable slice of chat.html's `State` this module reads AND
@@ -125,11 +136,22 @@ export interface ComposerConfigCtx {
   send: (frame: ClientFrame) => void
 }
 
-// ComposerConfig.tsx - the ONE wire-boundary construction site that needs
-// this: `selectEffort` below is the only production caller narrowing a plain
-// string onto the canonical frame's closed effort union - see that
-// function's own TODO(#462) for why.
-type Effort = NonNullable<Extract<ClientFrame, { type: "set-thread-config" }>["effort"]>
+// COMPILE-TIME DRIFT GUARD, zero runtime cost (#462). This used to be a
+// `type Effort = ...` alias existing only so `selectEffort` could assert onto
+// it; the assertion is gone, but the underlying skew it papered over is worth
+// keeping pinned. `EffortOption` comes from @luna/tools/protocol-descriptor
+// (what the client validates against) and `set-thread-config`'s `effort`
+// comes from @luna/ui-ws (what the server parses). They are separate
+// declarations in separate packages, so nothing but this line forces them to
+// agree - and they must agree in BOTH directions, or the client either
+// advertises a token the server rejects or drops one the server accepts.
+//
+// The runtime half of the same guarantee is packages/tools/test/
+// effort-parity.test.ts, which pins the leaf's list against chat-service's.
+type FrameEffort = NonNullable<Extract<ClientFrame, { type: "set-thread-config" }>["effort"]>
+type MutuallyAssignable<A extends B, B extends C, C = A> = true
+/** Fails `tsc` if the two effort vocabularies ever diverge. */
+export type EffortVocabularyIsInSync = MutuallyAssignable<EffortOption, FrameEffort, EffortOption>
 
 interface RejectedField {
   readonly field?: unknown
@@ -183,18 +205,42 @@ interface PendingRevert {
 // Pure helpers - ported 1:1 from the vanilla ComposerConfig object.
 // ============================================================================
 
-/** Normalize a raw cache/wire entry to { id, label, efforts }. Handles both
- * the new object shape and legacy plain-id strings (an older moon build's
- * cached model list). */
+/** THE HELLO/CACHE BOUNDARY (#462). Normalizes a raw wire or localStorage
+ * entry to `{ id, label, efforts }`, handling both the object shape and
+ * legacy plain-id strings (an older moon build's cached model list).
+ *
+ * This is where an untrusted `string[]` becomes the closed `EffortOption[]`
+ * union, validated with a real runtime guard rather than asserted. Doing it
+ * HERE, once, is what lets every downstream reader - the menu builders,
+ * `isEffortValidForCurrentModel`, and the `set-thread-config` construction
+ * in `selectEffort` - be type-correct without a single `as`.
+ *
+ * THE ONE BEHAVIOR DELTA, deliberate: an effort the server advertises that
+ * is not in the wire vocabulary is DROPPED rather than shown. Previously such
+ * a row rendered, the user could pick it, and the server silently
+ * `clampEffort`-ed it to something else - a menu item that lied about what it
+ * would do. No capability is lost, because the server was never going to
+ * honor the value. It is logged rather than swallowed so a genuine protocol
+ * extension shows up as a console warning instead of a silently missing row. */
 function normalizeModelEntry(entry: unknown): ModelEntry | null {
   if (typeof entry === "string") return { id: entry, label: entry, efforts: [] }
   if (entry && typeof entry === "object" && "id" in entry) {
     const raw = entry as { id: unknown; label?: unknown; efforts?: unknown }
     if (typeof raw.id === "string" && raw.id) {
+      const advertised: unknown[] = Array.isArray(raw.efforts) ? raw.efforts : []
+      const efforts = advertised.filter(isEffortOption)
+      if (efforts.length !== advertised.length) {
+        const unknown = advertised.filter((e) => !isEffortOption(e))
+        console.warn(
+          `[ComposerConfig] model "${raw.id}" advertised effort(s) outside the wire vocabulary; ` +
+            `dropping ${JSON.stringify(unknown)}. If this is a real protocol extension, add it to ` +
+            `EFFORT_OPTIONS in @luna/tools/protocol-descriptor.`,
+        )
+      }
       return {
         id: raw.id,
         label: typeof raw.label === "string" && raw.label ? raw.label : raw.id,
-        efforts: Array.isArray(raw.efforts) ? (raw.efforts as string[]) : [],
+        efforts,
       }
     }
   }
@@ -203,7 +249,7 @@ function normalizeModelEntry(entry: unknown): ModelEntry | null {
 
 /** ultracode surfaces at the TOP of the effort menu (the headline mode);
  * every other level stays in server order. */
-function orderEfforts(efforts: readonly string[]): string[] {
+function orderEfforts(efforts: readonly EffortOption[]): EffortOption[] {
   return [...efforts.filter((e) => e === "ultracode"), ...efforts.filter((e) => e !== "ultracode")]
 }
 
@@ -299,7 +345,10 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
 
   function isEffortValidForCurrentModel(effort: string): boolean {
     const entry = currentModelEntry()
-    return !!(entry && entry.efforts.includes(effort))
+    // The `isEffortOption` prefix is not a second check - a string outside the
+    // vocabulary cannot be in the narrowed array either, so this is the same
+    // predicate, expressed without widening `efforts` back to string[].
+    return !!(entry && isEffortOption(effort) && entry.efforts.includes(effort))
   }
 
   /** Recomputes the cached `effortVisible` flag - the vanilla object's
@@ -450,7 +499,9 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
     // Validate effort for the new model; clear if no longer in its list.
     const entry = models.find((m) => m.id === id) ?? models[0] ?? null
     const savedEffort = localStorage.getItem("luna_effort") || ""
-    if (savedEffort && entry && !entry.efforts.includes(savedEffort)) {
+    // A saved effort outside the vocabulary is by definition not offered by
+    // this model, so it clears exactly as an out-of-matrix one always did.
+    if (savedEffort && entry && !(isEffortOption(savedEffort) && entry.efforts.includes(savedEffort))) {
       localStorage.removeItem("luna_effort")
       if (state) state.selectedEffort = null
     }
@@ -481,20 +532,21 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
     closeMenus()
     const tid = state?.activeThreadId ?? null
     const liveCurrent = (tid && state?.threadEfforts[tid]) || prev
-    if (tid && state?.serverSupportsEffort && effort !== liveCurrent && effort) {
+    // `isEffortOption` replaces what used to be a bare `&& effort` truthiness
+    // check AND the `as Effort` assertion that stood here (#462). It is
+    // behavior-identical: the only non-vocabulary value that ever reached this
+    // line was the Default row's `""`, which `&& effort` already excluded, and
+    // every other caller is pre-validated against `entry.efforts` - which
+    // `normalizeModelEntry` now narrows at the boundary. The difference is
+    // that the frame below is type-correct by CONSTRUCTION instead of by
+    // assertion, so a future protocol change breaks the build here.
+    if (tid && state?.serverSupportsEffort && effort !== liveCurrent && isEffortOption(effort)) {
       pendingRevert.effort = prev
       pendingRevert.threadEffort = Object.prototype.hasOwnProperty.call(state.threadEfforts, tid)
         ? (state.threadEfforts[tid] ?? null)
         : null
       state.threadEfforts[tid] = effort // optimistic - ack reconciles
-      // TODO(#462): fix-or-remove - `ModelEntry.efforts` is whatever the server
-      // advertised in `hello` (readonly string[]), while the canonical frame
-      // narrows to a closed union. Narrowing selectEffort's own parameter would
-      // be a BEHAVIOR change (the menu passes item.id unvalidated, exactly as
-      // vanilla did), so the skew is asserted here, once, at the ONE
-      // wire-boundary construction site. The real fix is to narrow
-      // ModelEntry.efforts at the hello boundary.
-      ctx.send({ type: "set-thread-config", threadId: tid, effort: effort as Effort })
+      ctx.send({ type: "set-thread-config", threadId: tid, effort })
     }
     publish()
   }

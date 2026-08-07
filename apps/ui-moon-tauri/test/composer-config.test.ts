@@ -258,6 +258,75 @@ describe('ComposerConfig (chat.html)', () => {
       const items = document.querySelectorAll('#effort-cfg-menu .cfg-menu-item')
       expect(items).toHaveLength(1) // only Default
     })
+
+    // ── #462: the hello boundary narrows `efforts` to the wire vocabulary ────
+    //
+    // THE ONE DELIBERATE BEHAVIOR DELTA of that fix, pinned here rather than
+    // shipped as a silent filter. Previously an unrecognized advertised effort
+    // rendered a row the user could pick, which the server then silently
+    // clampEffort-ed to something else - a menu item that lied about what it
+    // would do. Now it is dropped at `normalizeModelEntry` and logged.
+    it('drops a server-advertised effort outside the wire vocabulary, and warns (#462)', () => {
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'turbo', 'max'] }]
+      sendHello({ models, effortSelection: true })
+      localStorage.setItem('luna_model', 'claude-fable-5')
+
+      // Spy AFTER sendHello: chat.html's hello handler already ran one
+      // applyModels, and normalization warns once per applyModels (it runs
+      // there and nowhere else - never per render, so there is no spam path).
+      // Starting clean here pins the per-normalization count exactly at one
+      // instead of asserting an incidental total.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      internals().ComposerConfig.applyModels(models)
+      internals().ComposerConfig._rebuildEffortMenu()
+
+      const labels = Array.from(document.querySelectorAll('#effort-cfg-menu .cfg-menu-item')).map(
+        (el) => el.querySelector('span')!.textContent,
+      )
+      expect(labels).toContain('Low')
+      expect(labels).toContain('Max')
+      expect(labels).not.toContain('Turbo')
+      expect(labels).not.toContain('turbo')
+
+      // Dropped LOUDLY - a real protocol extension must surface as a warning,
+      // not as a row that quietly stopped existing. The message has to name
+      // both the offending token and where to add it.
+      const dropWarnings = warn.mock.calls.map((c) => String(c[0])).filter((s) => /turbo/.test(s))
+      expect(dropWarnings).toHaveLength(1)
+      expect(dropWarnings[0]).toMatch(/EFFORT_OPTIONS/)
+      expect(dropWarnings[0]).toMatch(/claude-fable-5/)
+      warn.mockRestore()
+    })
+
+    it('keeps every in-vocabulary effort, and warns for none of them (#462)', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      // The full wire vocabulary - the reverse control for the test above, so
+      // an over-aggressive filter cannot pass by dropping everything.
+      const efforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts }]
+      sendHello({ models, effortSelection: true })
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      internals().ComposerConfig.applyModels(models)
+      internals().ComposerConfig._rebuildEffortMenu()
+
+      const items = document.querySelectorAll('#effort-cfg-menu .cfg-menu-item')
+      expect(items).toHaveLength(efforts.length + 1) // + the Default row
+      expect(warn.mock.calls.filter((c) => /outside the wire vocabulary/.test(String(c[0])))).toHaveLength(0)
+      warn.mockRestore()
+    })
+
+    it('a model advertising only unknown efforts collapses to Default alone (#462)', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['turbo', 'plaid'] }]
+      sendHello({ models, effortSelection: true })
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      internals().ComposerConfig.applyModels(models)
+      internals().ComposerConfig._rebuildEffortMenu()
+      // Same end state as the haiku no-efforts case above - never a crash,
+      // never a half-built menu.
+      expect(document.querySelectorAll('#effort-cfg-menu .cfg-menu-item')).toHaveLength(1)
+      warn.mockRestore()
+    })
   })
 
   // ─────────────────────────────────────────────────────────────────────────

@@ -58,6 +58,9 @@ import { useLayoutEffect, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 import { flushSync } from "react-dom"
 import type { CapabilityDescriptor, ExecuteRequest, ExecuteResult } from "@luna/capabilities"
+// Runtime import, and deliberately from the zero-import leaf behind its own
+// subpath export rather than @luna/ui-ws - see ComposerConfig.tsx's own note.
+import { isEffortOption } from "@luna/tools/protocol-descriptor"
 import type { ComposerConfigBridge } from "./ComposerConfig"
 
 // ============================================================================
@@ -476,7 +479,11 @@ function createSlashMenuEngine(
     const normalized = arg.toLowerCase() === "default" ? "" : arg.toLowerCase()
     if (normalized !== "") {
       const entry = cc ? cc._currentModelEntry() : null
-      const valid = entry ? entry.efforts.includes(normalized) : false
+      // `isEffortOption` is not an extra gate - a string outside the wire
+      // vocabulary cannot be in `efforts`, which ComposerConfig narrows at the
+      // hello boundary (#462). It just lets the check stay type-correct
+      // instead of widening the array back to string[].
+      const valid = entry ? isEffortOption(normalized) && entry.efforts.includes(normalized) : false
       if (!valid) {
         const avail = entry && entry.efforts.length ? entry.efforts.join(", ") : "none for this model"
         ctx.appendMessage("assistant", `⚠️ Unknown effort "${arg}". Available: ${avail}`)
