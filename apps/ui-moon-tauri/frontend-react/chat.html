@@ -4092,6 +4092,9 @@
     // Per-thread transcript cache logic (src/chat/threadCache.ts, S17d).
     var ThreadCacheLogic;
 
+    // New-thread intent arbitration (src/chat/threadCreate.ts, S17e).
+    var ThreadCreateLogic;
+
     // ── Thread cache ─────────────────────────────────────────────────────────
     // Per-thread transcript cache for ChatGPT-style switching. Server
     // re-snapshot on re-subscribe is the source of truth; this cache removes
@@ -5696,48 +5699,18 @@
     // do we subscribe and arm the thread-snapshot watchdog. Keeping this state
     // explicit prevents an unrelated thread-list from treating the temporary
     // activeThreadId=null as permission to attach the previous latest thread.
+    // The new-thread INTENT arbitration lives in src/chat/threadCreate.ts
+    // (stack23 S17e) - it decides whether a "+ New" still owns the window by
+    // the time the server's thread-created ack lands, against a row click that
+    // may have happened milliseconds later. Pure State reads/writes, no DOM and
+    // no outbound edges, so unlike ThreadCache it needs no ctx from here - just
+    // the live State object.
     const ThreadCreateState = {
-      begin() {
-        State.threadListAutoSelectPending = false;
-        if (State.threadCreateIntent !== null) {
-          // A second "+" means "stay with the fresh-thread intent", not "mint
-          // another concurrent thread". Re-adopt a request that had been moved
-          // to the background by an intervening row click.
-          State.threadCreateIntent = 'attach';
-          return false;
-        }
-        State.threadCreateIntent = 'attach';
-        return true;
-      },
-
-      moveToBackground() {
-        if (State.threadCreateIntent === 'attach') State.threadCreateIntent = 'background';
-      },
-
-      settle() {
-        const shouldAttach = State.threadCreateIntent === 'attach';
-        State.threadCreateIntent = null;
-        State.threadListAutoSelectPending = false;
-        return shouldAttach;
-      },
-
-      fail() {
-        const shouldSurface = State.threadCreateIntent === 'attach';
-        State.threadCreateIntent = null;
-        State.threadListAutoSelectPending = false;
-        return shouldSurface;
-      },
-
-      onDisconnect() {
-        // The outcome of an in-flight create is unknowable after a socket drop.
-        // Preserve the user's stronger "fresh thread" intent on reconnect; an
-        // extra empty row is preferable to silently attaching an old thread.
-        if (State.threadCreateIntent === 'attach' && !State.activeThreadId) {
-          State.pendingFreshThread = true;
-        }
-        State.threadCreateIntent = null;
-        State.threadListAutoSelectPending = false;
-      },
+      begin() { return ThreadCreateLogic.begin(State); },
+      moveToBackground() { return ThreadCreateLogic.moveToBackground(State); },
+      settle() { return ThreadCreateLogic.settle(State); },
+      fail() { return ThreadCreateLogic.fail(State); },
+      onDisconnect() { return ThreadCreateLogic.onDisconnect(State); },
     };
 
     const WebSocketEngine = {
