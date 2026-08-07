@@ -4089,52 +4089,42 @@
     // event handler, never from this script's own top level.
     var ThreadStrip;
 
+    // Per-thread transcript cache logic (src/chat/threadCache.ts, S17d).
+    var ThreadCacheLogic;
+
     // ── Thread cache ─────────────────────────────────────────────────────────
     // Per-thread transcript cache for ChatGPT-style switching. Server
     // re-snapshot on re-subscribe is the source of truth; this cache removes
     // the blank-flash and makes A→B→A feel instant. Plain module object (Moon
     // is a single HTML page — no zustand/jotai needed).
+    // Cache LOGIC lives in src/chat/threadCache.ts (stack23 S17d); this object
+    // is the thin shim that supplies its ctx. The split is that way round on
+    // purpose: the cache's one outbound edge is ThreadDrawerEngine.render(),
+    // and ThreadDrawerEngine is a classic-script `const` that a module cannot
+    // reach at all - an earlier attempt to have the module build its own ctx
+    // was reverted for exactly that (see the OUTBOUND-EDGE RULE in
+    // docs/next/stack23-slices.md). chat.html can see it, so chat.html hands
+    // it over.
+    //
+    // `_ctx()` is rebuilt per call rather than captured once, keeping every
+    // dependency late-bound: ThreadCacheLogic itself is a forward-declared
+    // `var` the module assigns after this script has finished.
     const ThreadCache = {
-      put(threadId, messages, throughSeq) {
-        if (!threadId) return;
-        const list = Array.isArray(messages) ? messages.slice() : [];
-        State.threadCache[threadId] = {
-          messages: list,
-          throughSeq: Number.isFinite(throughSeq) ? throughSeq : -1,
+      _ctx() {
+        return {
+          state: State,
+          chatState: typeof ChatState !== 'undefined' ? ChatState : null,
+          chatLoop: typeof ChatLoop !== 'undefined' ? ChatLoop : null,
+          requestRender: () => ThreadDrawerEngine.render(),
         };
       },
-      get(threadId) {
-        if (!threadId) return null;
-        return State.threadCache[threadId] || null;
-      },
-      /** Paint ChatState from cache. Returns true if a cache entry existed. */
-      paint(threadId) {
-        const entry = this.get(threadId);
-        if (!entry) return false;
-        try { ChatState.reset(); } catch (_) { /* ChatState may not be ready in early boot tests */ }
-        try { ChatState.loadHistory(entry.messages); } catch (_) { return false; }
-        try { ChatLoop.flush(); } catch (_) { /* renderer optional in unit tests */ }
-        return true;
-      },
-      clear(threadId) {
-        if (!threadId) return;
-        delete State.threadCache[threadId];
-      },
-      markBusy(threadId) {
-        if (!threadId) return;
-        if (State.busyThreads[threadId]) return;
-        State.busyThreads[threadId] = true;
-        try { ThreadDrawerEngine.render(); } catch (_) { /* sidebar may be closed */ }
-      },
-      clearBusy(threadId) {
-        if (!threadId) return;
-        if (!State.busyThreads[threadId]) return;
-        delete State.busyThreads[threadId];
-        try { ThreadDrawerEngine.render(); } catch (_) { /* best-effort */ }
-      },
-      isBusy(threadId) {
-        return !!(threadId && State.busyThreads[threadId]);
-      },
+      put(threadId, messages, throughSeq) { return ThreadCacheLogic.put(this._ctx(), threadId, messages, throughSeq); },
+      get(threadId) { return ThreadCacheLogic.get(this._ctx(), threadId); },
+      paint(threadId) { return ThreadCacheLogic.paint(this._ctx(), threadId); },
+      clear(threadId) { return ThreadCacheLogic.clear(this._ctx(), threadId); },
+      markBusy(threadId) { return ThreadCacheLogic.markBusy(this._ctx(), threadId); },
+      clearBusy(threadId) { return ThreadCacheLogic.clearBusy(this._ctx(), threadId); },
+      isBusy(threadId) { return ThreadCacheLogic.isBusy(this._ctx(), threadId); },
     };
 
     // ── Drag debug + E2E surface (observe-only; never affects product path) ──
