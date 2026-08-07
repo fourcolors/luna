@@ -70,6 +70,7 @@ import * as ThreadCacheLogic from '../../frontend-react/src/chat/threadCache'
 import * as ThreadCreateLogic from '../../frontend-react/src/chat/threadCreate'
 import * as ThreadDrag from '../../frontend-react/src/chat/threadDrag'
 import { createResultToasts } from '../../frontend-react/src/chat/resultToasts'
+import { createUpdateBanner } from '../../frontend-react/src/chat/updateBanner'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -268,6 +269,7 @@ ThreadCacheLogic = __threadCacheLogic;
 ThreadCreateLogic = __threadCreateLogic;
 ThreadDrag = __threadDrag;
 ResultToasts = __resultToasts;
+UpdateBanner = __updateBanner;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -280,6 +282,7 @@ window.ThreadCacheLogic = ThreadCacheLogic;
 window.ThreadCreateLogic = ThreadCreateLogic;
 window.ThreadDrag = ThreadDrag;
 window.ResultToasts = ResultToasts;
+window.UpdateBanner = UpdateBanner;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -301,8 +304,9 @@ if (window.__MoonInternals) {
     '__threadCreateLogic',
     '__threadDrag',
     '__resultToasts',
+    '__updateBanner',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts())
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }))
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

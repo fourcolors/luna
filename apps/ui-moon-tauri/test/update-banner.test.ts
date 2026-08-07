@@ -14,6 +14,7 @@
 //     same-version re-show, but a NEWER version shows again
 //   - "What's new" opens the Updates panel (open_widget settings.updates)
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createUpdateBanner } from '../frontend-react/src/chat/updateBanner'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -80,7 +81,20 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
       .map((m) => m[1])
       .filter((s) => s.includes('WebSocketEngine'))
     expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    // UpdateBanner is a forward-declared `var` since stack23 S19b - the module
+    // owns the logic and the page is assigned it after the classic script
+    // runs. This suite predates chat-harness and hand-rolls its own boot, so
+    // it has to perform that assignment itself, in the SAME `new Function`
+    // scope (a `window.UpdateBanner = ...` from outside would create a
+    // different binding - see chat-harness.ts's module doc on that wall).
+    new Function(
+      '__updateBanner',
+      inlineScripts[0] + `
+;UpdateBanner = __updateBanner;
+window.UpdateBanner = UpdateBanner;
+if (window.__MoonInternals) window.__MoonInternals.UpdateBanner = UpdateBanner;
+`,
+    )(createUpdateBanner({ Logger: { warn: () => {} } }))
   })
 
   afterEach(() => {

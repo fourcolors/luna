@@ -36,6 +36,7 @@ import * as ThreadCacheLogic from "./chat/threadCache"
 import * as ThreadCreateLogic from "./chat/threadCreate"
 import * as ThreadDrag from "./chat/threadDrag"
 import { createResultToasts } from "./chat/resultToasts"
+import { createUpdateBanner } from "./chat/updateBanner"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -60,6 +61,7 @@ function assignBridge(
     | "SlashMenu"
     | "SmartBarEngine"
     | "ResultToasts"
+    | "UpdateBanner"
     | "ChatState"
     | "ChatLoop",
   value: unknown,
@@ -108,6 +110,13 @@ function assignBridge(
 // captured the pre-mount `undefined`, and that copy is what the screenshot /
 // agent-browser harnesses read (see chat.html's own "#124 toast harness" note).
 assignBridge("ResultToasts", createResultToasts())
+// Logger is chat.html-private, so the banner gets a console-backed warn here
+// and the real Logger when chat.html is the one constructing it. Only the
+// `warn` arm is used (apply_update / open-updates failures).
+assignBridge(
+  "UpdateBanner",
+  createUpdateBanner({ Logger: { warn: (...a: unknown[]) => console.warn(...a) } }),
+)
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
