@@ -25,6 +25,72 @@ import {
   readChatHtml,
 } from './helpers/chat-harness'
 
+/**
+ * Set the page's socket stub AND the ACTIVE engine's connected flag.
+ *
+ * chat.html delegates `WebSocketEngine.isConnected` to PoolEngine when the
+ * pool engine is live (stack23 S18b), so assigning `State.ws` alone no longer
+ * decides connectivity - it only did for the legacy engine, whose
+ * isConnected() reads State.ws.readyState directly. Tests that stub a socket
+ * to mean "we are online" have to say so in a way BOTH engines understand,
+ * otherwise every send path silently short-circuits and the assertion that
+ * fails is a missing `subscribe`, miles from the actual cause.
+ *
+ * The adapter stub routes frames back through the same `ws.send` the legacy
+ * path uses, and stringifies exactly as chat.html does, so socket-level
+ * assertions keep seeing the shape they always saw.
+ */
+function setWs(m: any, ws: any): void {
+  m.State.ws = ws
+  if (!m.PoolEngine) return
+  const open = !!ws && ws.readyState === 1
+  m.PoolEngine._isConnected = open
+  m.PoolEngine._adapter = open && typeof ws.send === 'function'
+    ? { sendFrame: (frame: unknown) => ws.send(JSON.stringify(frame)) }
+    : null
+  // The pool engine's watchdogs gate on its OWN generation counter rather
+  // than State.connGen (see startSubscribeTimeout: `!this._gen ||
+  // !this._gen.gate(myGen)` returns early). A stub that never went through
+  // PoolEngine.connect() has no counter, so every watchdog would silently
+  // no-op and the failure would surface as "onReattachStalled was never
+  // called" rather than "this connection was never really up".
+  const helper = (globalThis as any).PoolEngineHelper
+  if (open && !m.PoolEngine._gen && helper?.createGenCounter) {
+    m.PoolEngine._gen = helper.createGenCounter()
+    m.PoolEngine._gen.bump()
+  }
+}
+
+/**
+ * Spy on the ACTIVE engine's `send`.
+ *
+ * chat.html routes all 23 call sites through `WebSocketEngine.send`, which is
+ * patched to delegate to PoolEngine when the pool engine is live (stack23
+ * S18b). That wrapper catches those 23 - but NOT sends made from inside an
+ * engine method via `this.send`, which resolve straight to the active
+ * engine's own function. `syncThread` is exactly such a caller, which is why
+ * spying only on WebSocketEngine.send made 27 scenarios look like the engine
+ * had stopped subscribing when it had simply stopped routing through the
+ * wrapper.
+ *
+ * Spying on the active engine covers both paths, and keeps these tests
+ * engine-agnostic so the same assertions hold whichever engine is default.
+ */
+function activeEngine(m: any) {
+  return m.USE_POOL_ENGINE && m.PoolEngine ? m.PoolEngine : m.WebSocketEngine
+}
+
+/** Spy on a method of the ACTIVE engine - see spyOnSend's note. Engine
+ *  methods invoked internally via `this.<name>` bypass the WebSocketEngine
+ *  wrapper entirely, so a spy pinned to WebSocketEngine sees nothing. */
+function spyOnEngine(m: any, name: string) {
+  return vi.spyOn(activeEngine(m), name)
+}
+
+function spyOnSend(m: any) {
+  return spyOnEngine(m, 'send')
+}
+
 describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   let htmlContent: string
   // Window-targeted event handlers captured from getCurrentWindow().listen —
@@ -73,6 +139,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
     loadVendorInto(window, 'moon-dock.js')
+    // pool-engine.js ONLY. moon-session.js is deliberately NOT loaded here:
+    // several scenarios in this file assert the `typeof MoonSession ===
+    // 'undefined'` fallback branches (legacy set_last_thread_id, legacy
+    // get_last_thread_id) and stub MoonSession per-test where they need it.
+    // PoolEngine.connect() already treats a missing MoonSession as a
+    // non-fatal fallback to the legacy URL.
+    loadVendorInto(window, 'pool-engine.js')
     loadVendorInto(window, 'thread-drag-session.js')
 
     // Clean localStorage so persisted-prefs tests don't leak across cases.
@@ -151,7 +224,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // offline message no longer shows a phantom typing indicator).
       const mi = (window as any).__MoonInternals
       mi.State.activeThreadId = 'th-watchdog'
-      mi.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
 
       // 1. User types "How does this look?" and submits
       messageInput.value = 'How does this look?'
@@ -189,7 +262,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: submitting with no thread while OFFLINE stashes the message and marks pendingFreshThread (reconnect mints a thread + flushes it)', () => {
       const mi = (window as any).__MoonInternals
       // Offline: no open socket, no active thread.
-      mi.State.ws = null
+      setWs(mi, null)
       mi.State.activeThreadId = null
       mi.State.pendingFreshThread = false
       mi.State.pendingUserMessage = null
@@ -216,7 +289,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: second offline no-thread submit does not overwrite the first queued message', async () => {
       const mi = (window as any).__MoonInternals
-      mi.State.ws = null
+      setWs(mi, null)
       mi.State.activeThreadId = null
       mi.State.pendingFreshThread = false
       mi.State.pendingUserMessage = null
@@ -1797,7 +1870,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: Submit sends one survey-response frame and hides the panel', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame(sampleFrame())
 
       // Answer task_quality + one belief.
@@ -1825,7 +1898,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: Dismiss closes the panel WITHOUT sending any wire frame', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame(sampleFrame())
 
       const dismiss = document.getElementById('user-ask-dismiss') as HTMLButtonElement
@@ -1837,7 +1910,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: Submit is a no-op when task_quality is unanswered (defence in depth past disabled button)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame(sampleFrame())
       // Only answer a belief — leave Likert null.
       const items = document.querySelectorAll('.user-ask-item')
@@ -1922,7 +1995,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('submit with an empty value shows an error and sends nothing', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       showFrame()
       document.getElementById('secret-prompt-submit')!.click()
       expect(sendSpy).not.toHaveBeenCalled()
@@ -1930,9 +2003,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('submit while the socket is not OPEN refuses (send() logs frames when not open — the leak guard)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       showFrame()
-      M().State.ws = null
+      setWs(M(), null)
       input().value = 'sk-secret'
       document.getElementById('secret-prompt-submit')!.click()
       expect(sendSpy).not.toHaveBeenCalled()
@@ -1943,8 +2016,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('submit on an OPEN socket sends ONE secret-result and wipes the input immediately', () => {
       showFrame()
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'sk-live-12345'
       document.getElementById('secret-prompt-submit')!.click()
       expect(sendSpy).toHaveBeenCalledTimes(1)
@@ -1957,8 +2030,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Enter in the password field submits (single-field form feel)', () => {
       showFrame()
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'sk-enter'
       input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
       expect(sendSpy).toHaveBeenCalledTimes(1)
@@ -1967,8 +2040,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('cancel sends secret-result cancelled:true (when OPEN), hides + wipes', () => {
       showFrame()
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'half-typed'
       document.getElementById('secret-prompt-cancel')!.click()
       expect(sendSpy).toHaveBeenCalledWith({
@@ -1997,7 +2070,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       vi.advanceTimersByTime(5000)
       expect(panel().hidden).toBe(false)
       // _reqId cleared → a stray submit is inert.
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'retyped'
       M().SecretPromptEngine.submit()
       expect(sendSpy).not.toHaveBeenCalled()
@@ -2006,7 +2079,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('the WS close hook wipes a typed-but-unsent secret (registerCloseHook seam)', () => {
       showFrame()
       input().value = 'typed-not-sent'
-      const hooks = M().WebSocketEngine._closeHooks
+      const hooks = activeEngine(M())._closeHooks
       expect(hooks.length).toBeGreaterThanOrEqual(1)
       for (const hook of hooks) hook()
       expect(input().value).toBe('')
@@ -2027,7 +2100,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // send path on State.ws.readyState (see WebSocketEngine.isConnected's
       // own doc comment) — without it every submit below would silently take
       // the offline branch and never call WebSocketEngine.send at all.
-      M().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
+      setWs(M(), { readyState: WebSocket.OPEN, send: () => {} })
       // Model the real new-thread → thread-created acknowledgement sequence.
       M().State.threadCreateIntent = 'attach'
       M().handleFrame({ type: 'thread-created', thread: { id } })
@@ -2048,7 +2121,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a single Enter keypress in the textarea fires exactly ONE user-message frame', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2060,7 +2133,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a single form-submit fires exactly ONE user-message frame', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2072,7 +2145,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: keydown Enter IMMEDIATELY followed by a synthetic form-submit fires exactly ONE user-message frame (WKWebView implicit-submission defence)', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2086,7 +2159,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: calling ChatEngine.handleSubmit() synchronously twice fires exactly ONE user-message frame', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2104,7 +2177,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: two intentional submits separated by a microtask DO both fire (guard self-clears)', async () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'first'
@@ -2195,7 +2268,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2210,7 +2283,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       )
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2231,11 +2304,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // rendered "No threads yet." forever even though threads existed.
       const m = M()
       stubInvoke()
-      m.State.ws = fakeOpenSocket()          // WebSocketEngine.isConnected() must read true
+      setWs(m, fakeOpenSocket())          // WebSocketEngine.isConnected() must read true
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
       m.State.threadDrawerOpen = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2246,11 +2319,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a fast-path resubscribe leaves a CLOSED drawer alone (no spurious list-threads)', async () => {
       const m = M()
       stubInvoke()
-      m.State.ws = fakeOpenSocket()
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
       m.State.threadDrawerOpen = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2263,11 +2336,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = stubInvoke((cmd) =>
         Promise.resolve(cmd === 'get_last_thread_id' ? 'file-thread' : null),
       )
-      m.State.ws = fakeOpenSocket()
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = false
       m.State.threadDrawerOpen = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2281,7 +2354,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
       m.State.activeThreadId = 'stale-old-server-thread'
       m.State.skipLastThreadFile = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2294,9 +2367,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       stubInvoke()
       // Neutralize any pending auto-reconnect so connGen cannot shift under us.
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket() // socket is fine; only the thread is missing
-      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket()) // socket is fine; only the thread is missing
+      const stalled = spyOnEngine(m, 'onReattachStalled').mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       expect(m.State.subscribeTimeout).not.toBeNull()
@@ -2310,10 +2383,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a thread-snapshot cancels the watchdog (success is not treated as stalled)', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = 'thread-xyz'
-      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
+      const stalled = spyOnEngine(m, 'onReattachStalled').mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       m.handleFrame({ type: 'thread-snapshot', messages: [] })
@@ -2326,7 +2399,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a thread-snapshot persists the thread id for restart-survival', () => {
       const m = M()
       const invoke = stubInvoke()
-      m.State.ws = fakeOpenSocket()
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = 'thread-xyz'
 
       m.handleFrame({ type: 'thread-snapshot', messages: [] })
@@ -2337,11 +2410,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a stalled reattach self-heals by listing this server\'s threads (round 1)', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()        // socket is fine; the stored thread is gone from THIS server
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())        // socket is fine; the stored thread is gone from THIS server
       m.State.activeThreadId = 'thread-pruned-from-this-server'
       m.State.reattachRound = 0
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       vi.advanceTimersByTime(7000)         // watchdog fires → real onReattachStalled recovers
@@ -2356,11 +2429,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: stalls surface "Reattach stalled" only after the retry budget is exhausted', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
       m.State.reattachRound = 3            // budget at the limit (MAX_REATTACH_ROUNDS = 3)
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       m.WebSocketEngine.onReattachStalled()
 
@@ -2370,7 +2443,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: a successful reattach refreshes the self-heal budget', () => {
       const m = M()
-      vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
       m.State.reattachRound = 2
       m.State.stalledThreadId = 'some-thread'
 
@@ -2433,7 +2506,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         }
         return Promise.resolve(null)
       })
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2453,7 +2526,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         if (cmd === 'get_last_thread_id') return Promise.resolve('legacy-fallback')
         return Promise.resolve(null)
       })
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2468,7 +2541,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = stubInvokeWithSession(() => Promise.resolve(undefined))
       const fakeWs = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.ws = fakeWs
+      setWs(m, fakeWs)
       m.State.activeThreadId = 'thread-snap-123'
       installSyncRequestAnimationFrame()
 
@@ -2488,7 +2561,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = stubInvokeWithSession(() => Promise.resolve(null))
       m.State.pinnedThread = 'pinned-xyz'
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2551,8 +2624,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // recover if the id is truly gone.
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'th-stored' : null))
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2570,10 +2643,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // stalled status (within budget).
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'th-gone' : null))
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
       // Blind-subscribed; watchdog armed.
@@ -2601,8 +2674,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: empty server on cold start (no stored id) → mints a fresh thread, never stalls', async () => {
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? null : null))
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2622,7 +2695,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
       m.State.activeThreadId = 'live-thread'    // session already running
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2638,10 +2711,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: single tombstone (lists but no snapshot) → thread-list handler advances to next', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       // First round: subscribed to th-tombstone, stalled.
       m.State.activeThreadId = 'th-tombstone'
@@ -2671,10 +2744,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // With stalledIdSet accumulation, both A and B are skipped on round 2.
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       // Round 1: subscribe A → stall.
       m.State.activeThreadId = 'th-A'
@@ -2706,10 +2779,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: server unresponsive (no list reply) → surfaces stalled after retry budget', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
-      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
+      spyOnSend(m).mockImplementation(() => {})
 
       // Exhaust 3 rounds of stalls (server never replies to list-threads).
       m.State.reattachRound = 0
@@ -2734,11 +2807,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Tests set it directly to exercise the guard without a page reload.
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'other-thread' : null))
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
       m.State.pinnedThread = 'pinned-id'
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       // syncThread with pinnedThread set: subscribes directly, never list-threads.
       await m.WebSocketEngine.syncThread()
@@ -2772,7 +2845,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('thread-list with threads and no active thread subscribes to the most recent', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-new' }, { id: 'th-old' }] })
       expect(M().State.activeThreadId).toBe('th-new')
@@ -2780,7 +2853,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('thread-list with NO threads auto-creates one (new-thread frame)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [] })
       expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread' })
@@ -2788,7 +2861,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('the new-thread frame carries the persisted model pick (luna_model)', () => {
       localStorage.setItem('luna_model', 'gemini-3-flash')
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [] })
       expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread', model: 'gemini-3-flash' })
@@ -2796,7 +2869,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('an existing active thread ignores a thread-list (no re-subscribe)', () => {
       M().State.activeThreadId = 'th-current'
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-other' }] })
       expect(sendSpy).not.toHaveBeenCalled()
       expect(M().State.activeThreadId).toBe('th-current')
@@ -2813,10 +2886,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // runs because a message just arrived on an open socket).
       const m = M()
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
       // flushPendingUserMessage uses State.ws.send directly (clear-after-send);
       // subscribe still goes through WebSocketEngine.send.
-      const engSend = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation((frame: any) => {
+      const engSend = spyOnSend(m).mockImplementation((frame: any) => {
         if (m.State.ws && m.State.ws.readyState === WebSocket.OPEN) {
           m.State.ws.send(JSON.stringify(frame))
         }
@@ -2841,8 +2914,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // OLD code would still fire its setTimeout(..., 100) blindly and lose
       // the message on the dead socket. The fix must neither send on a dead
       // socket nor drop the stash -- it leaves it queued for the retry path.
-      m.State.ws = { readyState: WebSocket.CLOSED, send: vi.fn() }
-      const engSend = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.CLOSED, send: vi.fn() })
+      const engSend = spyOnSend(m).mockImplementation(() => {})
       m.State.pendingUserMessage = { text: 'queued while dropping', attachments: undefined }
       m.State.threadCreateIntent = 'attach'
 
@@ -2858,7 +2931,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // server replays a thread-snapshot -- the next proof this connection
       // can deliver. That is what retries the stashed send now, not a timer.
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
       // thread-snapshot's restart-survival tail calls window.__TAURI__.core.invoke
       // when a core bridge is present (see the `stubInvoke` convention used
       // elsewhere in this file); stub it so that fire-and-forget call doesn't
@@ -2878,7 +2951,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('M41: unbound stash refuses snapshot flush into an unrelated active thread (Devin misdelivery fix)', () => {
       const m = M()
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
       // No thread-created yet - stash has text only, no target threadId.
       m.State.pendingUserMessage = { text: 'meant for a new chat', attachments: undefined }
       m.State.activeThreadId = 'th-older'
@@ -2898,7 +2971,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('M41: stash bound to th-fresh refuses flush into th-other', () => {
       const m = M()
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
       m.State.pendingUserMessage = {
         text: 'for fresh only',
         attachments: undefined,
@@ -3002,9 +3075,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: empty composer -> transcript fills and auto-sends via the EXACT existing send path (client info included)', () => {
       voiceLive()
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.activeThreadId = 'th-voice'
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the auto-send delivers, so the composer clears
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })   // connected: the auto-send delivers, so the composer clears
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3026,7 +3099,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: non-empty draft -> transcript appends with a space and does NOT send', () => {
       voiceLive()
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = 'remind me to'
 
@@ -3039,7 +3112,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: a blank transcript is a no-op', () => {
       voiceLive()
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().VoiceEngine.handleTranscript('   ')
       expect(sendSpy).not.toHaveBeenCalled()
       expect(document.querySelectorAll('#chat-messages .msg.user').length).toBe(0)
@@ -3052,7 +3125,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: transcript arriving after voice was turned OFF is dropped', () => {
       const V = voiceLive()
       V.mode = 'off'
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3066,7 +3139,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: transcript arriving after the mic-pause click is dropped', () => {
       const V = voiceLive()
       V.micPaused = true   // the pause click is exactly "stop listening NOW"
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3292,8 +3365,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // handleTranscript dispatches a form submit, so it needs the same
       // connected-socket gate as ChatEngine.handleSubmit (see
       // WebSocketEngine.isConnected's doc comment).
-      M().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: () => {} })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.activeThreadId = 'th-boot'
       M().VoiceEngine.micPaused = false
       windowEventHandlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
@@ -3410,7 +3483,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       sentFrames.length = 0
       const m = M()
       m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-      m.State.ws = { readyState: WebSocket.OPEN }
+      setWs(m, { readyState: WebSocket.OPEN })
       m.State.pinnedArtifacts = []
       m.State.sessionArtifacts = []
       m.State.artifactsPanelOpen = false
@@ -3796,8 +3869,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       m.State.threadCreateIntent = 'attach'
       m.handleFrame({ type: 'thread-created', thread: { id: 'th-att' } })
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the send delivers, so the bubble paints + composer clears
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })   // connected: the send delivers, so the bubble paints + composer clears
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'see attached'
       document.getElementById('chat-form')!.dispatchEvent(
@@ -4389,13 +4462,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking + preserves the typed draft and staged attachments (they carry into the fresh thread)', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = 'draft that must survive'
       input.style.height = '120px'
       m.Attachments.items = [{ id: 'att_x', kind: 'text', name: 'notes.txt', text: 'notes' }]
       m.Attachments.render()
-      const sendNewThread = vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
+      const sendNewThread = spyOnEngine(m, 'sendNewThread').mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
 
@@ -4408,8 +4481,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: the online + waits for thread-created before arming the snapshot watchdog', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const watchdog = spyOnEngine(m, 'startSubscribeTimeout')
 
       document.getElementById('new-thread-btn')!.click()
 
@@ -4421,9 +4494,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: an in-flight informational thread-list cannot attach the previous latest thread while + is minting', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'current-thread'
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       m.handleFrame({ type: 'thread-list', threads: [{ id: 'previous-latest' }] })
@@ -4434,8 +4507,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: thread-create-error stays on the fresh surface and never falls back to the previous latest thread', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       m.handleFrame({ type: 'thread-create-error', message: 'Could not create the thread. Please try again.' })
@@ -4448,8 +4521,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: double-clicking + emits only one new-thread request while creation is pending', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       document.getElementById('new-thread-btn')!.click()
@@ -4460,8 +4533,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: choosing an existing row while creation is pending wins over the late thread-created ack', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       m.ThreadDrawerEngine.onRowClick('chosen-thread')
@@ -4500,7 +4573,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       const mint = vi.spyOn(m.PoolEngine, 'sendNewThread').mockImplementation(() => {})
 
@@ -4536,15 +4609,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = vi.fn((cmd: string) => Promise.resolve(cmd === 'get_last_thread_id' ? 'persisted-thread' : null))
       ;(window as any).__TAURI__.core = { invoke }
-      m.State.ws = null
+      setWs(m, null)
       m.State.activeThreadId = 'current-thread'
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
 
       expect(sendSpy).not.toHaveBeenCalled()
       expect(m.State.activeThreadId).toBeNull()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
 
       await m.WebSocketEngine.syncThread()
 
@@ -4604,8 +4677,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: opening the sidebar gives it a width + aria-hidden and requests the thread list', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} } // WebSocket.OPEN
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      setWs(m, { readyState: 1, send: () => {} }) // WebSocket.OPEN
+      const send = spyOnSend(m)
       const drawer = document.getElementById('thread-drawer')!
       expect(m.State.sidebarWidth).toBe(0)
       m.ThreadDrawerEngine.openPanel()
@@ -4617,9 +4690,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: requestList is a true no-op when the drawer is closed (State.threadDrawerOpen false)', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
+      setWs(m, { readyState: 1, send: () => {} })
       m.State.threadDrawerOpen = false
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const send = spyOnSend(m)
 
       m.ThreadDrawerEngine.requestList()
 
@@ -4636,7 +4709,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.threadDrawerOpen = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
@@ -4655,7 +4728,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
@@ -4677,7 +4750,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
@@ -4699,7 +4772,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = true
@@ -4721,7 +4794,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       evalChatInlineScriptWithBridge(htmlContent, rebootMount)
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = true
@@ -4929,10 +5002,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
+      setWs(m, { readyState: 1, send: () => {} })
       m.State.activeThreadId = 'other'
       m.ThreadDrawerEngine.openPanel()
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const send = spyOnSend(m)
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
       expect(m.State.threadDrawerOpen).toBe(true)          // stays open, unlike the old overlay drawer
@@ -4941,10 +5014,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking a row arms the subscribe watchdog so a lost snapshot self-heals', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'other'
-      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+      spyOnSend(m).mockImplementation(() => {})
+      const watchdog = spyOnEngine(m, 'startSubscribeTimeout')
 
       m.ThreadDrawerEngine.onRowClick('b')
 
@@ -4955,16 +5028,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: clicking a row cancels a deferred "+ New" so reconnect resubscribes instead of minting', async () => {
       const m = M()
       // Offline "+ New" defers the mint…
-      m.State.ws = null
+      setWs(m, null)
       m.State.pendingFreshThread = true
       // …then the user picks an existing thread before reconnecting.
       m.ThreadDrawerEngine.onRowClick('b')
       expect(m.State.pendingFreshThread).toBe(false)
       expect(m.State.activeThreadId).toBe('b')
       // Reconnect honors the newer intent: fast-path resubscribe, no mint.
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const mint = vi.spyOn(m.WebSocketEngine, 'sendNewThread')
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
+      const mint = spyOnEngine(m, 'sendNewThread')
       await m.WebSocketEngine.syncThread()
       expect(mint).not.toHaveBeenCalled()
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
@@ -4972,10 +5045,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking the already-active thread does not re-subscribe and keeps the sidebar open', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
+      setWs(m, { readyState: 1, send: () => {} })
       m.State.activeThreadId = 'b'
       m.ThreadDrawerEngine.openPanel()
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const send = spyOnSend(m)
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
       expect(m.State.threadDrawerOpen).toBe(true)
@@ -4985,7 +5058,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Regression: server used to no-op re-subscribe, and the client wiped
       // ChatState with no cache — switch-back left an empty transcript.
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'a'
       m.ThreadCache.put('a', [
         { role: 'user', text: 'hello from A', ts: 1 },
@@ -4994,7 +5067,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.ThreadCache.put('b', [
         { role: 'user', text: 'hello from B', ts: 3 },
       ], 1)
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       m.ThreadDrawerEngine.onRowClick('b')
       expect(m.State.activeThreadId).toBe('b')

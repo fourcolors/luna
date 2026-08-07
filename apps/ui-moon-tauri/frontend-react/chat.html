@@ -6910,22 +6910,50 @@
       },
     };
 
-    // ── Dark-flag engine selection ────────────────────────────────────────────
+    // ── Engine selection ──────────────────────────────────────────────────────
     //
-    // USE_POOL_ENGINE is evaluated ONCE at page load. The flag is checked via
-    // PoolEngineHelper.isDarkFlagSet() which reads:
-    //   localStorage.getItem('luna_pool_engine') === '1'
-    //   window.__LUNA_POOL_ENGINE === true
+    // POOLENGINE IS THE DEFAULT (stack23 S18b). The ConnectionManager engine is
+    // now Moon's live chat transport; WebSocketEngine remains as the
+    // kill-switch fallback until S19/S20 delete it.
     //
-    // When false (default): WebSocketEngine is used — zero behavioral change.
-    // When true:            PoolEngine is used.
+    // Evaluated ONCE at page load. To force the LEGACY engine:
+    //   localStorage.setItem('luna_pool_engine', '0')
+    //   window.__LUNA_POOL_ENGINE = false     (before this script runs)
+    //
+    // The flag inverted from opt-IN to opt-OUT HERE and not in
+    // vendor/pool-engine.js, which stays byte-unchanged: that file is loaded by
+    // the hub surface too (frontend-react/index.html) and S18's own
+    // verification asserts it is untouched, so isDarkFlagSet() keeps its
+    // original opt-in meaning for every other consumer.
+    //
+    // WHAT WAS PROVEN BEFORE FLIPPING, this being the live connection path:
+    // PoolEngine's contract suite (test/pool-engine-contract.test.ts) is
+    // BROADER than the legacy engine's ws-contract (14 vs 11) - gen gating,
+    // cross-thread bleed, exactly-once delivery, flap timer leaks, close-hook
+    // parity, resubscribe-on-reconnect. Reconnect across a REAL server restart
+    // is proven on real sockets in packages/ui-transport. And chat.html's own
+    // 285-scenario behavioral suite now runs against THIS engine, which is
+    // what actually gated the flip: it started at 45 failures.
+    //
+    // STILL OWED and not automatable: S18's deployNote asks for a hands-on
+    // exercise against a running Moon, covering the Tauri host, token
+    // re-resolution through the real resolver, and OS-level socket teardown.
+    // The kill-switch above is the escape hatch if that surfaces anything.
     //
     // All 23 WebSocketEngine.send() call sites continue to call
     // `WebSocketEngine.send(...)` directly — because WebSocketEngine.send
     // is patched to delegate to PoolEngine.send when the pool flag is set
     // (see below). This is the least-invasive approach: one delegation point,
     // all 23 sites unchanged, default path byte-identical.
-    const USE_POOL_ENGINE = (typeof PoolEngineHelper !== 'undefined') && PoolEngineHelper.isDarkFlagSet();
+    const FORCE_LEGACY_WS_ENGINE = (() => {
+      try {
+        if (typeof window !== 'undefined' && window.__LUNA_POOL_ENGINE === false) return true;
+        return typeof localStorage !== 'undefined' && localStorage.getItem('luna_pool_engine') === '0';
+      } catch (_) {
+        return false;   // storage unavailable is not a reason to change engines
+      }
+    })();
+    const USE_POOL_ENGINE = (typeof PoolEngineHelper !== 'undefined') && !FORCE_LEGACY_WS_ENGINE;
 
     // When pool engine is active, patch WebSocketEngine entry points so they
     // delegate to PoolEngine. All 23 WebSocketEngine call sites are redirected
@@ -6941,6 +6969,27 @@
       // Save originals under a different key so they're still callable
       WebSocketEngine._legacyConnect = WebSocketEngine.connect.bind(WebSocketEngine);
       WebSocketEngine._legacySend    = WebSocketEngine.send.bind(WebSocketEngine);
+
+      // SYNCTHREAD PARITY (stack23 S18b). PoolEngine shipped its OWN 77-line
+      // syncThread, while WebSocketEngine's is 116 lines - and the difference
+      // was not stylistic: the pool version had no `get_panel_last_thread`
+      // path, so a panel window would lose its per-panel thread memory on
+      // boot. Twenty-seven chat-window.test.ts scenarios pinned that gap.
+      //
+      // Rather than port ~40 lines into a third copy of the same
+      // thread-resolution state machine, PoolEngine reuses the legacy one
+      // VERBATIM with `this` bound to itself. That is sound because
+      // WebSocketEngine.syncThread contains ZERO direct `WebSocketEngine.*`
+      // references - it only calls `this.send`, `this.sendNewThread` and
+      // `this.startSubscribeTimeout`, all of which PoolEngine implements - so
+      // every send routes through the pool path while resolution stays
+      // identical. Same pattern as checkProtocolVersion/applyBuildSha/
+      // applyAvailableModels, which already delegate the other way.
+      //
+      // The reference is captured BEFORE the override two lines below, or the
+      // two would call each other forever.
+      const legacySyncThread = WebSocketEngine.syncThread;
+      PoolEngine.syncThread = function() { return legacySyncThread.call(PoolEngine); };
 
       // Override connect and send to delegate to PoolEngine
       WebSocketEngine.connect = function() { return PoolEngine.connect(); };
