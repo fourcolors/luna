@@ -167,7 +167,17 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
       expect(order).toEqual(['mine'])
     })
 
-    it('DELTA vs WebSocketEngine: hooks do NOT fire for a socket that never reached ready', async () => {
+    // DELTA 2 OF S18b, NOW SETTLED. This test previously pinned the opposite:
+    // PoolEngine armed hooks only on 'ready', so a connection that never
+    // established never wiped. WebSocketEngine fires its hooks from the raw
+    // close handler with no arming condition, so it DOES wipe there.
+    //
+    // A secret typed while a connection was still coming up is exactly as
+    // sensitive as one typed against a live socket, so the conservative
+    // behavior wins: PoolEngine now arms at connect-attempt start. The
+    // exactly-once guard survives - it just covers the whole attempt rather
+    // than only the established part.
+    it('fires hooks even for a socket that never reached ready (the conservative side)', async () => {
       const order: string[] = []
       internals().WebSocketEngine.registerCloseHook(() => order.push('mine'))
       await settle()
@@ -175,10 +185,20 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
       await settle()
       FakeWebSocket.latest()!.simulateDrop()
       await settle()
-      // WebSocketEngine WOULD have fired here (it hooks the raw close event),
-      // and its hook wipes a typed-but-unsent secret. S18b must decide whether
-      // to keep PoolEngine's narrower arming or match the conservative one.
-      expect(order).toEqual([])
+      expect(order).toEqual(['mine'])
+    })
+
+    it('still fires exactly once per attempt, not once per recovery tick', async () => {
+      // The arming guard's original job. A recovering→down sequence must not
+      // re-run a wipe policy several times.
+      let runs = 0
+      internals().WebSocketEngine.registerCloseHook(() => {
+        runs += 1
+      })
+      const sock = await bringUp()
+      sock.simulateDrop()
+      await settle(10, 500)
+      expect(runs).toBe(1)
     })
   })
 
