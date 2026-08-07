@@ -1013,4 +1013,126 @@ describe("LunaWsAdapter", () => {
       await adapter.dispose()
     }, 10_000)
   })
+
+  // ── reconnect jitter ───────────────────────────────────────────────────────
+  //
+  // The random spread on each reconnect delay is CORRECT in production: it is
+  // what stops every client reconnecting in lockstep after a server restart.
+  // But it makes the schedule non-deterministic, and stack23 S18b promotes the
+  // pooled engine to default in Moon, whose connection contract pins an EXACT
+  // reconnect sequence. Without a way to disable the spread that pin would
+  // have to be loosened to a range on the highest-risk surface in the app.
+  //
+  // These tests pin both halves: the knob works, and the production default
+  // still spreads.
+  describe("reconnect delay jitter", () => {
+    /** Collects the delays passed to setTimeout while `fn` runs. */
+    const captureDelays = async (fn: () => Promise<void>): Promise<number[]> => {
+      const delays: number[] = []
+      const realSetTimeout = globalThis.setTimeout
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(globalThis as any).setTimeout = ((cb: () => void, ms?: number, ...rest: unknown[]) => {
+        if (typeof ms === "number") delays.push(ms)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (realSetTimeout as any)(cb, ms, ...rest)
+      }) as typeof globalThis.setTimeout
+      try {
+        await fn()
+      } finally {
+        globalThis.setTimeout = realSetTimeout
+      }
+      return delays
+    }
+
+    /** A scriptable socket. A FAILED attach does not schedule a reconnect -
+     *  only a socket that opened, handshook, and then CLOSED does - so the
+     *  fake has to complete the hello handshake before it can be dropped. */
+    class ScriptedSocket {
+      static instances: ScriptedSocket[] = []
+      readyState = 0
+      #listeners = new Map<string, Set<(e: unknown) => void>>()
+      constructor() {
+        ScriptedSocket.instances.push(this)
+        // Open + hello on the next microtask so attach() can await them.
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.#emit("open", {})
+          this.#emit("message", {
+            data: JSON.stringify({ type: "hello", protocolVersion: 2, capabilities: {} }),
+          })
+        })
+      }
+      #emit(type: string, e: unknown) {
+        for (const cb of this.#listeners.get(type) ?? []) cb(e)
+      }
+      addEventListener(type: string, cb: (e: unknown) => void) {
+        if (!this.#listeners.has(type)) this.#listeners.set(type, new Set())
+        this.#listeners.get(type)!.add(cb)
+      }
+      removeEventListener(type: string, cb: (e: unknown) => void) {
+        this.#listeners.get(type)?.delete(cb)
+      }
+      send() {}
+      close() {
+        this.readyState = 3
+      }
+      drop() {
+        this.readyState = 3
+        this.#emit("close", { code: 1006, reason: "test drop", wasClean: false })
+      }
+    }
+
+    const scriptedFactory: WsFactory = () => new ScriptedSocket() as unknown as WebSocket
+
+    const makeAdapter = (jitterMs: number | undefined) =>
+      new LunaWsAdapter(
+        { routeKey: "jitter", endpoints: ["ws://127.0.0.1:1/ui"], tokenRef: "none" },
+        scriptedFactory,
+        1000,
+        { baseMs: 1000, maxMs: 16_000, maxAttempts: 3, ...(jitterMs === undefined ? {} : { jitterMs }) },
+      )
+
+    const dropLatest = () => {
+      const s = ScriptedSocket.instances.at(-1)
+      s?.drop()
+    }
+
+    it("jitterMs: 0 makes the schedule exactly min(baseMs * 2^n, maxMs)", async () => {
+      const adapter = makeAdapter(0)
+      await adapter.attach()
+      const delays = await captureDelays(async () => {
+        dropLatest()
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      await adapter.dispose()
+
+      // Filter to the reconnect-shaped delays (the handshake timeout is 20ms).
+      const reconnects = delays.filter((d) => d >= 1000)
+      expect(reconnects.length, JSON.stringify(delays)).toBeGreaterThan(0)
+      // Every one is a clean power-of-two multiple of the base, with no spread.
+      for (const d of reconnects) {
+        expect(Number.isInteger(d), `delay ${d} should be an integer`).toBe(true)
+        expect([1000, 2000, 4000, 8000, 16_000], `unexpected delay ${d}`).toContain(d)
+      }
+    }, 10_000)
+
+    it("the production default still spreads the delay", async () => {
+      const adapter = makeAdapter(undefined)
+      await adapter.attach()
+      const delays = await captureDelays(async () => {
+        dropLatest()
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      await adapter.dispose()
+
+      const reconnects = delays.filter((d) => d >= 1000)
+      expect(reconnects.length, JSON.stringify(delays)).toBeGreaterThan(0)
+      // Not asserting randomness (that would flake) - asserting the spread is
+      // APPLIED, i.e. delays are not clamped to the bare exact ladder. A
+      // fractional value can only come from the jitter term.
+      const anyFractional = reconnects.some((d) => !Number.isInteger(d))
+      const anyOffLadder = reconnects.some((d) => ![1000, 2000, 4000, 8000, 16_000].includes(d))
+      expect(anyFractional || anyOffLadder, JSON.stringify(reconnects)).toBe(true)
+    }, 10_000)
+  })
 })
