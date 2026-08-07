@@ -7,22 +7,21 @@
 // (chat/Attachments.tsx, stack23 S16a) into `#attachments-strip` /
 // `#attach-error`, the composer's model + effort switcher
 // (chat/ComposerConfig.tsx, stack23 S16b) into the composer-config cluster,
-// and - as of stack23 S16c - the "/command" popover (chat/SlashMenu.tsx)
-// into `#slash-menu`. The context-pill Smart Bar (chat.html's own
-// `SmartBarEngine`) is deferred past S16c's ~800-line budget (see that
-// slice's abandon condition) and stays vanilla for now. chat.html's
-// WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire pipeline and
-// every other title-bar control (new-thread-btn, redock-btn) keep running
-// completely unchanged in chat.html's own inline <script> - see
+// the "/command" popover (chat/SlashMenu.tsx, stack23 S16c) into
+// `#slash-menu`, and - as of stack23 S16d, completing the composer arc - the
+// context-pill Smart Bar (chat/SmartBarEngine.tsx) into `#smart-bar`.
+// chat.html's WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire
+// pipeline and every other title-bar control (new-thread-btn, redock-btn)
+// keep running completely unchanged in chat.html's own inline <script> - see
 // chat-chrome-mount.tsx's module doc for the chrome scope rationale,
 // MessageList.tsx's module doc for the transcript-conversion seam (the
 // `window.ChatState` / `window.ChatLoop` bridge this file assigns below),
-// Attachments.tsx's / ComposerConfig.tsx's / SlashMenu.tsx's module docs for
-// the `window.Attachments` / `window.ComposerConfig` / `window.SlashMenu`
-// bridges assigned the same way (module -> classic-script, the reverse
-// direction), and chat-host.ts's module doc for the classic-script ->
-// module direction this file reads FROM (`window.LunaChatHost`, stack23
-// S16c-host).
+// Attachments.tsx's / ComposerConfig.tsx's / SlashMenu.tsx's / SmartBarEngine
+// .tsx's module docs for the `window.Attachments` / `window.ComposerConfig` /
+// `window.SlashMenu` / `window.SmartBarEngine` bridges assigned the same way
+// (module -> classic-script, the reverse direction), and chat-host.ts's
+// module doc for the classic-script -> module direction this file reads
+// FROM (`window.LunaChatHost`, stack23 S16c-host).
 import "./chat/message-list.css"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
@@ -31,16 +30,20 @@ import { mountChatChrome } from "./chat/chat-chrome-mount"
 import { mountComposerConfig } from "./chat/ComposerConfig"
 import { mountMessageList, WELCOME_ITEM } from "./chat/MessageList"
 import { mountSlashMenu } from "./chat/SlashMenu"
+import { mountSmartBar } from "./chat/SmartBarEngine"
 
 /** Patches chat.html's forward-declared `var <name>` (== `window.<name>` for
  * a classic script) AND, when present, the `window.__MoonInternals.<name>`
  * copy chat.html's own end-of-script block captured before this module ever
  * mounted anything (see chat.html's "ChatState / ChatLoop / Attachments /
- * ComposerConfig / SlashMenu: NOT assigned here" comment) - one write site
- * for the pattern every mount* call below repeats. This is the
- * module-to-classic-script direction; `window.LunaChatHost` (chat-host.ts)
- * is the opposite direction and is never touched here. */
-function assignBridge(name: "Attachments" | "ComposerConfig" | "SlashMenu" | "ChatState" | "ChatLoop", value: unknown): void {
+ * ComposerConfig / SlashMenu / SmartBarEngine: NOT assigned here" comment) -
+ * one write site for the pattern every mount* call below repeats. This is
+ * the module-to-classic-script direction; `window.LunaChatHost`
+ * (chat-host.ts) is the opposite direction and is never touched here. */
+function assignBridge(
+  name: "Attachments" | "ComposerConfig" | "SlashMenu" | "SmartBarEngine" | "ChatState" | "ChatLoop",
+  value: unknown,
+): void {
   const w = window as unknown as Record<string, unknown> & { __MoonInternals?: Record<string, unknown> }
   w[name] = value
   if (w.__MoonInternals) {
@@ -111,6 +114,16 @@ const slashMenuMount = mountSlashMenu(
 )
 
 if (slashMenuMount) assignBridge("SlashMenu", slashMenuMount.SlashMenu)
+
+// ── SmartBarEngine (context-pill Smart Bar) ─────────────────────────────
+//
+// See SmartBarEngine.tsx's module doc for the mount itself and chat.html's
+// own comment on the `var SmartBarEngine` declaration. No ctx object: this
+// module reads no chat.html state - it only paints whatever `frame.items`
+// the `smart-bar` frame handler hands to `applyFrame`.
+const smartBarMount = mountSmartBar(document.getElementById("smart-bar"))
+
+if (smartBarMount) assignBridge("SmartBarEngine", smartBarMount.SmartBarEngine)
 
 mountMoonReactRoot("chat")
 

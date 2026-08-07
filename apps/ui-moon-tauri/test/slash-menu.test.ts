@@ -8,6 +8,15 @@
 // Coverage: open/filter on '/', kind-exclusion, arrow-nav highlight, Tab complete,
 // Enter accept + dispatch, Esc (does not reach voice), mousedown accept, and the
 // handleSubmit intercept for typed "/cmd args".
+//
+// Also covers src/chat/SmartBarEngine.tsx (stack23 S16d) - the composer's
+// context-pill Smart Bar - driven through the SAME `internals().handleFrame`
+// seam composer-config.test.ts's own `smart-bar`-frame test uses. These are
+// the VANILLA-IDENTICAL differential probes: written and confirmed green
+// against chat.html's former vanilla `SmartBarEngine` object BEFORE the S16d
+// port, then reconfirmed green after - see SmartBarEngine.tsx's module doc
+// for the one enumerated invisible-only delta (JSX's auto-escaping replacing
+// the vanilla object's manual `_esc`).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   evalChatInlineScriptWithBridge,
@@ -77,6 +86,7 @@ describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
     WebSocketEngine: any
     State: any
     Attachments: any
+    SmartBarEngine: any
     handleFrame: (f: any) => void
   }
 
@@ -590,5 +600,137 @@ describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
     // an unavailable result now surfaces the warning line rather than
     // silently doing nothing.
     expect(append.mock.calls.some((c: any[]) => /⚠️ chat host unavailable/.test(String(c[1])))).toBe(true)
+  })
+
+  // ── SmartBar (src/chat/SmartBarEngine.tsx, stack23 S16d) ──────────────────
+  //
+  // Differential probes for the context-pill Smart Bar, driven through the
+  // real `smart-bar` frame handler (chat.html) -> SmartBarEngine.applyFrame
+  // seam, exactly like a real server push. Ported 1:1 from the vanilla
+  // object's `_render`/`_renderItem` logic - see SmartBarEngine.tsx's module
+  // doc.
+  describe('SmartBar (src/chat/SmartBarEngine.tsx)', () => {
+    const smartBar = () => document.getElementById('smart-bar')!
+    const pills = () => Array.from(smartBar().querySelectorAll('.sb-item'))
+
+    function sendSmartBar(items: any[], threadId = 'thr-1') {
+      internals().handleFrame({ type: 'smart-bar', threadId, version: 1, items })
+    }
+
+    it('the bar is hidden on load', () => {
+      expect(smartBar().hidden).toBe(true)
+    })
+
+    it('a single info item renders one pill and unhides the bar', () => {
+      sendSmartBar([{ id: 'git.worktree', kind: 'info', label: 'branch', value: 'main', icon: '⎇' }])
+      expect(smartBar().hidden).toBe(false)
+      expect(pills()).toHaveLength(1)
+      const pill = pills()[0]
+      expect(pill.querySelector('.sb-lbl')!.textContent).toBe('branch')
+      expect(pill.querySelector('.sb-val')!.textContent).toBe('main')
+      expect(pill.querySelector('.sb-ic')!.textContent).toBe('⎇')
+    })
+
+    it('non-"info" kinds are silently skipped (v1: info only)', () => {
+      sendSmartBar([{ id: 'x', kind: 'warning', label: 'a', value: 'b' }])
+      expect(smartBar().hidden).toBe(true)
+      expect(pills()).toHaveLength(0)
+    })
+
+    it('sorts rendered pills by group then priority (lower priority number = leftmost)', () => {
+      sendSmartBar([
+        { id: 'b', kind: 'info', group: 'z', priority: 1, value: 'B' },
+        { id: 'a', kind: 'info', group: 'a', priority: 2, value: 'A2' },
+        { id: 'c', kind: 'info', group: 'a', priority: 1, value: 'A1' },
+      ])
+      expect(pills().map((p) => p.querySelector('.sb-val')!.textContent)).toEqual(['A1', 'A2', 'B'])
+    })
+
+    it('an item with no priority sorts after prioritized items in the same group (default 999)', () => {
+      sendSmartBar([
+        { id: 'a', kind: 'info', group: 'g', value: 'no-priority' },
+        { id: 'b', kind: 'info', group: 'g', priority: 1, value: 'has-priority' },
+      ])
+      expect(pills().map((p) => p.querySelector('.sb-val')!.textContent)).toEqual(['has-priority', 'no-priority'])
+    })
+
+    it('the git.worktree item gets the flagship accent class; others do not', () => {
+      sendSmartBar([
+        { id: 'git.worktree', kind: 'info', value: 'main' },
+        { id: 'other', kind: 'info', value: 'x' },
+      ])
+      expect(pills()[0]!.classList.contains('sb-flagship')).toBe(true)
+      expect(pills()[1]!.classList.contains('sb-flagship')).toBe(false)
+    })
+
+    it('tone "good"/"warn" map to sb-good/sb-warn; a plain item gets neither', () => {
+      sendSmartBar([
+        { id: 'ok', kind: 'info', value: '1', tone: 'good' },
+        { id: 'bad', kind: 'info', value: '2', tone: 'warn' },
+        { id: 'plain', kind: 'info', value: '3' },
+      ])
+      const [ok, warn, plain] = pills()
+      expect(ok!.classList.contains('sb-good')).toBe(true)
+      expect(warn!.classList.contains('sb-warn')).toBe(true)
+      expect(plain!.classList.contains('sb-good')).toBe(false)
+      expect(plain!.classList.contains('sb-warn')).toBe(false)
+    })
+
+    it('a tooltip becomes the pill\'s title attribute; no tooltip means no title attribute', () => {
+      sendSmartBar([
+        { id: 'x', kind: 'info', value: '1', tooltip: 'hover text' },
+        { id: 'y', kind: 'info', value: '2' },
+      ])
+      const [withTip, withoutTip] = pills()
+      expect(withTip!.getAttribute('title')).toBe('hover text')
+      expect(withoutTip!.hasAttribute('title')).toBe(false)
+    })
+
+    it('omits the icon/label/value spans entirely when the item omits them (not just empties them)', () => {
+      sendSmartBar([{ id: 'x', kind: 'info' }])
+      const pill = pills()[0]!
+      expect(pill.querySelector('.sb-ic')).toBeNull()
+      expect(pill.querySelector('.sb-lbl')).toBeNull()
+      expect(pill.querySelector('.sb-val')).toBeNull()
+    })
+
+    it('a value of 0 still renders (present-but-falsy, not treated as absent)', () => {
+      sendSmartBar([{ id: 'x', kind: 'info', value: 0 }])
+      expect(pills()[0]!.querySelector('.sb-val')!.textContent).toBe('0')
+    })
+
+    it('a later frame REPLACES the bar wholesale, it does not merge with the previous one', () => {
+      sendSmartBar([
+        { id: 'a', kind: 'info', value: '1' },
+        { id: 'b', kind: 'info', value: '2' },
+      ])
+      expect(pills()).toHaveLength(2)
+      sendSmartBar([{ id: 'c', kind: 'info', value: '3' }])
+      expect(pills()).toHaveLength(1)
+      expect(pills()[0]!.querySelector('.sb-val')!.textContent).toBe('3')
+    })
+
+    it('an empty items array hides the bar again', () => {
+      sendSmartBar([{ id: 'a', kind: 'info', value: '1' }])
+      expect(smartBar().hidden).toBe(false)
+      sendSmartBar([])
+      expect(smartBar().hidden).toBe(true)
+    })
+
+    it('HTML-special characters in label/value render as literal text, never as markup', () => {
+      sendSmartBar([{ id: 'x', kind: 'info', label: '<b>&"', value: '<i>tag</i>' }])
+      const pill = pills()[0]!
+      expect(pill.querySelector('.sb-lbl')!.textContent).toBe('<b>&"')
+      expect(pill.querySelector('.sb-val')!.textContent).toBe('<i>tag</i>')
+      expect(pill.querySelector('.sb-val')!.querySelector('i')).toBeNull() // never parsed as an element
+    })
+
+    it('a malformed frame (items missing/non-array) degrades to an empty, hidden bar without throwing', () => {
+      sendSmartBar([{ id: 'a', kind: 'info', value: '1' }])
+      expect(smartBar().hidden).toBe(false)
+      expect(() => internals().handleFrame({ type: 'smart-bar', threadId: 'thr-1', version: 1 })).not.toThrow()
+      expect(smartBar().hidden).toBe(true)
+      expect(pills()).toHaveLength(0)
+    })
   })
 })

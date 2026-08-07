@@ -2,19 +2,20 @@
  * chat-harness.ts - the shared jsdom loader for frontend-react/chat.html's
  * classic inline script AND its React module graph (stack23 S15's chat
  * transcript conversion, S16a's attachments-tray conversion, S16b's composer
- * model/effort switcher conversion, and S16c's SlashMenu conversion). Used
- * by chat-window.test.ts, ws-contract.test.ts, slash-menu.test.ts and
- * composer-config.test.ts so a future conversion slice (more of chat.html's
- * inline script moving into src/chat/*.tsx) only ever has to update THIS
- * file, not each test file's own beforeEach.
+ * model/effort switcher conversion, S16c's SlashMenu conversion, and S16d's
+ * SmartBarEngine conversion). Used by chat-window.test.ts, ws-contract.test.ts,
+ * slash-menu.test.ts and composer-config.test.ts so a future conversion
+ * slice (more of chat.html's inline script moving into src/chat/*.tsx) only
+ * ever has to update THIS file, not each test file's own beforeEach.
  *
  * THE WALL this works around: chat.html's inline <script> is a classic
  * (non-module) script. In the real page it runs at true top level, so its
  * `var ChatState;` / `var ChatLoop;` / `var Attachments;` / `var
- * ComposerConfig;` / `var SlashMenu;` forward-declarations (see chat.html's
- * "CHAT MODEL / RENDERER / LOOP" comment and its Attachments/ComposerConfig/
- * SlashMenu comments) ARE `window.ChatState` / `window.ChatLoop` /
- * `window.Attachments` / `window.ComposerConfig` / `window.SlashMenu` -
+ * ComposerConfig;` / `var SlashMenu;` / `var SmartBarEngine;`
+ * forward-declarations (see chat.html's "CHAT MODEL / RENDERER / LOOP"
+ * comment and its Attachments/ComposerConfig/SlashMenu/SmartBarEngine
+ * comments) ARE `window.ChatState` / `window.ChatLoop` / `window.Attachments`
+ * / `window.ComposerConfig` / `window.SlashMenu` / `window.SmartBarEngine` -
  * every bare reference anywhere on the page, including from main-chat.tsx's
  * `type="module"` script that runs after it, resolves to the SAME global
  * binding.
@@ -28,8 +29,8 @@
  * WebSocketEngine frame handlers, …) would keep reading their own local
  * `undefined` forever. `evalChatInlineScriptWithBridge` fixes this by
  * appending the bridge assignment (ChatState/ChatLoop/Attachments/
- * ComposerConfig/SlashMenu) as literal source text onto the SAME
- * `new Function(...)` body, so it runs in the SAME scope as the `var`
+ * ComposerConfig/SlashMenu/SmartBarEngine) as literal source text onto the
+ * SAME `new Function(...)` body, so it runs in the SAME scope as the `var`
  * declarations and can actually reassign them.
  *
  * jsdom vs happy-dom: not a concern here - apps/ui-moon-tauri has exactly
@@ -59,6 +60,7 @@ import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from '../../fr
 import { mountComposerConfig, type ComposerConfigMount } from '../../frontend-react/src/chat/ComposerConfig'
 import { mountMessageList, type ChatMessageListMount } from '../../frontend-react/src/chat/MessageList'
 import { mountSlashMenu, type SlashMenuMount } from '../../frontend-react/src/chat/SlashMenu'
+import { mountSmartBar, type SmartBarMount } from '../../frontend-react/src/chat/SmartBarEngine'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -162,19 +164,19 @@ export function installSyncRequestAnimationFrame(target: Window & typeof globalT
  * that patch has to live inside the same `new Function(...)` body instead
  * of being a separate `window.ChatState = …` assignment from outside.
  *
- * `Attachments.tsx`, `ComposerConfig.tsx` and `SlashMenu.tsx` mount into
- * their respective DOM anchors here exactly the way main-chat.tsx mounts
- * them in the shipped page (all already present in the live document via
- * `mountChatDomFromHtml`, called before this function in every suite) -
- * throws rather than degrading to a no-op for the same reason
- * `mountChatMessageListBridge` does.
+ * `Attachments.tsx`, `ComposerConfig.tsx`, `SlashMenu.tsx` and
+ * `SmartBarEngine.tsx` mount into their respective DOM anchors here exactly
+ * the way main-chat.tsx mounts them in the shipped page (all already present
+ * in the live document via `mountChatDomFromHtml`, called before this
+ * function in every suite) - throws rather than degrading to a no-op for the
+ * same reason `mountChatMessageListBridge` does.
  *
  * Also mirrors main-chat.tsx's own post-mount step of refreshing
  * `window.__MoonInternals.ChatState/.ChatLoop/.Attachments/.ComposerConfig/
- * .SlashMenu` (captured `undefined`/never-set by the script's own
- * end-of-script assignment, which runs before this bridge patch - see
- * chat.html's "ChatState / ChatLoop / Attachments / ComposerConfig /
- * SlashMenu: NOT assigned here" note).
+ * .SlashMenu/.SmartBarEngine` (captured `undefined`/never-set by the
+ * script's own end-of-script assignment, which runs before this bridge
+ * patch - see chat.html's "ChatState / ChatLoop / Attachments /
+ * ComposerConfig / SlashMenu / SmartBarEngine: NOT assigned here" note).
  *
  * Deletes any prior boot's `window.LunaChatHost` before mounting: the mounts
  * below run BEFORE the classic script's own `window.LunaChatHost =
@@ -239,23 +241,31 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
     )
   }
 
+  const smartBarMount: SmartBarMount | null = mountSmartBar(document.getElementById('smart-bar'))
+  if (!smartBarMount) {
+    throw new Error('chat-harness: mountSmartBar degraded to null - is #smart-bar missing from the loaded body?')
+  }
+
   const bridged = `${inlineScripts[0]}
 ;ChatState = __mount.ChatState;
 ChatLoop = __mount.ChatLoop;
 Attachments = __attachmentsMount.Attachments;
 ComposerConfig = __composerConfigMount.ComposerConfig;
 SlashMenu = __slashMenuMount.SlashMenu;
+SmartBarEngine = __smartBarMount.SmartBarEngine;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
 window.ComposerConfig = ComposerConfig;
 window.SlashMenu = SlashMenu;
+window.SmartBarEngine = SmartBarEngine;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
   window.__MoonInternals.Attachments = Attachments;
   window.__MoonInternals.ComposerConfig = ComposerConfig;
   window.__MoonInternals.SlashMenu = SlashMenu;
+  window.__MoonInternals.SmartBarEngine = SmartBarEngine;
 }
 `
   new Function(
@@ -263,8 +273,9 @@ if (window.__MoonInternals) {
     '__attachmentsMount',
     '__composerConfigMount',
     '__slashMenuMount',
+    '__smartBarMount',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount)
 }
 
-export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount }
+export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
