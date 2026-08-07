@@ -61,6 +61,10 @@ import { mountComposerConfig, type ComposerConfigMount } from '../../frontend-re
 import { mountMessageList, type ChatMessageListMount } from '../../frontend-react/src/chat/MessageList'
 import { mountSlashMenu, type SlashMenuMount } from '../../frontend-react/src/chat/SlashMenu'
 import { mountSmartBar, type SmartBarMount } from '../../frontend-react/src/chat/SmartBarEngine'
+// Pure drawer selection/ordering logic. chat.html forward-declares
+// `var ThreadListLogic` and ThreadDrawerEngine delegates to it, so the harness
+// must publish it exactly as main-chat.tsx does in the shipped page (S17).
+import * as ThreadListLogic from '../../frontend-react/src/chat/threadList'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -253,12 +257,14 @@ Attachments = __attachmentsMount.Attachments;
 ComposerConfig = __composerConfigMount.ComposerConfig;
 SlashMenu = __slashMenuMount.SlashMenu;
 SmartBarEngine = __smartBarMount.SmartBarEngine;
+ThreadListLogic = __threadListLogic;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
 window.ComposerConfig = ComposerConfig;
 window.SlashMenu = SlashMenu;
 window.SmartBarEngine = SmartBarEngine;
+window.ThreadListLogic = ThreadListLogic;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -274,8 +280,9 @@ if (window.__MoonInternals) {
     '__composerConfigMount',
     '__slashMenuMount',
     '__smartBarMount',
+    '__threadListLogic',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
