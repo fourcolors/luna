@@ -131,18 +131,37 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   static readonly #MAX_RECONNECT_ATTEMPTS = 6
   static readonly #BASE_RECONNECT_MS = 500
   static readonly #MAX_RECONNECT_MS = 15_000
+  /** Default random spread added to each reconnect delay, in ms. Production
+   *  default; see the `jitterMs` option for why it is overridable. */
+  static readonly #RECONNECT_JITTER_MS = 200
 
   readonly #maxReconnectAttempts: number
   readonly #baseReconnectMs: number
   readonly #maxReconnectMs: number
+  readonly #jitterMs: number
 
   constructor(
     route: RouteConfig,
     wsFactory?: WsFactory,
     /** Timeout in ms before handshake is considered failed. Default: 10_000. */
     handshakeTimeoutMs = 10_000,
-    /** For tests: override reconnect timing constants. */
-    reconnectOpts?: { maxAttempts?: number; baseMs?: number; maxMs?: number },
+    /**
+     * For tests: override reconnect timing constants.
+     *
+     * `jitterMs` caps the random spread added to each computed delay
+     * (default 200). It exists because the spread is CORRECT in production -
+     * it is what stops every client reconnecting in lockstep after a server
+     * restart - but it makes the schedule non-deterministic, so a test cannot
+     * pin an exact backoff sequence while it is on. Setting `jitterMs: 0`
+     * makes the schedule exactly `min(baseMs * 2^n, maxMs)`.
+     *
+     * This matters beyond tests: stack23 S18b promotes the pooled engine to
+     * default, and Moon's connection contract pins an exact reconnect
+     * sequence. Without this knob that pin would have to be loosened to a
+     * range on the highest-risk surface in the app, which trades gate
+     * precision for a default nobody chose.
+     */
+    reconnectOpts?: { maxAttempts?: number; baseMs?: number; maxMs?: number; jitterMs?: number },
     /**
      * Optional resolver for route.tokenRef → bearer token. When omitted, the
      * literal route.tokenRef is used (backward compat). Resolved lazily, once.
@@ -156,6 +175,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     this.#maxReconnectAttempts = reconnectOpts?.maxAttempts ?? LunaWsAdapter.#MAX_RECONNECT_ATTEMPTS
     this.#baseReconnectMs = reconnectOpts?.baseMs ?? LunaWsAdapter.#BASE_RECONNECT_MS
     this.#maxReconnectMs = reconnectOpts?.maxMs ?? LunaWsAdapter.#MAX_RECONNECT_MS
+    this.#jitterMs = reconnectOpts?.jitterMs ?? LunaWsAdapter.#RECONNECT_JITTER_MS
     this.#tokenResolver = tokenResolver
   }
 
@@ -565,7 +585,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       Math.min(
         this.#baseReconnectMs * Math.pow(2, this.#reconnectAttempts),
         this.#maxReconnectMs,
-      ) + Math.random() * 200
+      ) + (this.#jitterMs > 0 ? Math.random() * this.#jitterMs : 0)
     this.#reconnectAttempts++
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null
