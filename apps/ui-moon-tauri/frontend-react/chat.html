@@ -2404,7 +2404,10 @@
       </div>
       <!-- Smart Bar: context-aware info pills, server-assembled and pushed as
            a smart-bar frame. Hidden when the item list is empty (v1: info only).
-           Sits inside the flex-column form ABOVE the composer row. -->
+           Sits inside the flex-column form ABOVE the composer row.
+           Empty: React-owned (SmartBarEngine.tsx renders the pill list AND
+           this container's own `hidden` attribute; createRoot(host).render()
+           would wipe any static children here anyway - see that module's doc). -->
       <div id="smart-bar" class="smart-bar" hidden aria-label="Context bar"></div>
       <!-- Model + effort popovers — anchored to .chat-input-area (position:
            relative); open upward above the control bar. Kept ahead of the visible
@@ -6969,97 +6972,23 @@
 
     // ── Smart Bar Engine ─────────────────────────────────────────────────
     // Renders server-pushed `smart-bar` frame items as context pills above
-    // the composer row. v1: only renders kind="info"; unknown kinds are
-    // silently skipped. Hides the bar when the item list is empty.
-    // Exposed on window.__MoonInternals.SmartBarEngine for tests.
-    const SmartBarEngine = {
-      /** Currently rendered items (last frame received). */
-      _items: [],
-
-      /** The bar DOM element. Resolved once on first render. */
-      _el: null,
-
-      _getEl() {
-        if (!this._el) this._el = document.getElementById('smart-bar');
-        return this._el;
-      },
-
-      /**
-       * Apply a new item list from a `smart-bar` frame. Replaces the
-       * current bar contents wholesale and toggles visibility.
-       * Unknown kinds are silently skipped.
-       */
-      applyFrame(frame) {
-        const items = Array.isArray(frame.items) ? frame.items : [];
-        this._items = items;
-        this._render();
-      },
-
-      _render() {
-        const el = this._getEl();
-        if (!el) return;
-
-        // Only render kind="info" items in v1; skip unknown kinds.
-        const infoItems = this._items.filter((item) => item.kind === 'info');
-
-        if (infoItems.length === 0) {
-          el.hidden = true;
-          el.innerHTML = '';
-          return;
-        }
-
-        // Sort by group then priority (lower priority number = leftmost).
-        // Server already orders them, but we apply a stable client-side
-        // sort so locally-received frames are always consistent.
-        const sorted = infoItems.slice().sort((a, b) => {
-          const ga = a.group || '';
-          const gb = b.group || '';
-          if (ga < gb) return -1;
-          if (ga > gb) return 1;
-          const pa = typeof a.priority === 'number' ? a.priority : 999;
-          const pb = typeof b.priority === 'number' ? b.priority : 999;
-          return pa - pb;
-        });
-
-        el.innerHTML = sorted.map((item) => this._renderItem(item)).join('');
-        el.hidden = false;
-      },
-
-      _renderItem(item) {
-        // Determine tone class.
-        const toneClass = item.tone === 'good' ? ' sb-good'
-          : item.tone === 'warn' ? ' sb-warn'
-          : '';
-
-        // Flagship item: worktree chip gets accent emphasis.
-        const flagshipClass = item.id === 'git.worktree' ? ' sb-flagship' : '';
-
-        // Build icon span only when an icon is provided.
-        const iconHtml = item.icon
-          ? `<span class="sb-ic" aria-hidden="true">${this._esc(item.icon)}</span>`
-          : '';
-
-        // Label (muted) + value (bright).
-        const labelHtml = item.label
-          ? `<span class="sb-lbl">${this._esc(item.label)}</span>`
-          : '';
-        const valueHtml = item.value !== undefined
-          ? `<span class="sb-val">${this._esc(String(item.value))}</span>`
-          : '';
-
-        const tooltip = item.tooltip ? ` title="${this._esc(item.tooltip)}"` : '';
-
-        return `<span class="sb-item${flagshipClass}${toneClass}"${tooltip}>${iconHtml}${labelHtml}${valueHtml}</span>`;
-      },
-
-      _esc(str) {
-        return String(str)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
-      },
-    };
+    // the composer row (`#smart-bar`). v1: only renders kind="info"; unknown
+    // kinds are silently skipped. Hides the bar when the item list is empty.
+    // Converted to a typed React module (stack23 S16d, the last inline-DOM
+    // composer subsystem): the pill list painting now lives in
+    // src/chat/SmartBarEngine.tsx, which owns `#smart-bar`'s children AND
+    // its own `hidden` attribute directly - the manual `innerHTML` string
+    // building + `_esc` escaping are gone.
+    //
+    // `SmartBarEngine` is a forward-declared `var` - for a classic
+    // (non-module) script this IS `window.SmartBarEngine`, so the one call
+    // site below (the `smart-bar` frame handler) keeps calling the same bare
+    // identifier. Safe for the same reason the ChatState/ChatLoop/
+    // Attachments/ComposerConfig/SlashMenu `var`s are (see those comments):
+    // main-chat.tsx's module script always finishes running after this
+    // classic script, and the call site below runs from inside an async
+    // frame handler, never synchronously before that mount.
+    var SmartBarEngine;
 
     // ── UI-WS frame handlers ──────────────────────────────────────────────
     // The former handleFrame switch, case by case, on the shared registry
@@ -9528,22 +9457,22 @@
       window.__MoonInternals.describeTarget = describeTarget;
       window.__MoonInternals.cropAndEncodeFeedbackScreenshot = cropAndEncodeFeedbackScreenshot;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
-      window.__MoonInternals.SmartBarEngine = SmartBarEngine;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
       window.__MoonInternals.PoolEngine = PoolEngine;
       window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
       window.__MoonInternals.State = State;
-      // ChatState / ChatLoop / Attachments / ComposerConfig / SlashMenu: NOT
-      // assigned here - at this point in the classic script's own
-      // synchronous run they're still the unset `var` forward-declarations
-      // (see the CHAT MODEL / RENDERER / LOOP comment above and the
-      // Attachments/ComposerConfig/SlashMenu comments near their own `var`
-      // declarations). main-chat.tsx (the module script, always running
-      // after this one) patches window.__MoonInternals.ChatState/.ChatLoop/
-      // .Attachments/.ComposerConfig/.SlashMenu itself once MessageList.tsx /
-      // Attachments.tsx / ComposerConfig.tsx / SlashMenu.tsx actually mount
-      // their real bridges. ChatRenderer has no replacement - it was the
-      // DOM-diff half S15 deleted outright.
+      // ChatState / ChatLoop / Attachments / ComposerConfig / SlashMenu /
+      // SmartBarEngine: NOT assigned here - at this point in the classic
+      // script's own synchronous run they're still the unset `var` forward-
+      // declarations (see the CHAT MODEL / RENDERER / LOOP comment above and
+      // the Attachments/ComposerConfig/SlashMenu/SmartBarEngine comments near
+      // their own `var` declarations). main-chat.tsx (the module script,
+      // always running after this one) patches window.__MoonInternals.
+      // ChatState/.ChatLoop/.Attachments/.ComposerConfig/.SlashMenu/
+      // .SmartBarEngine itself once MessageList.tsx / Attachments.tsx /
+      // ComposerConfig.tsx / SlashMenu.tsx / SmartBarEngine.tsx actually
+      // mount their real bridges. ChatRenderer has no replacement - it was
+      // the DOM-diff half S15 deleted outright.
       window.__MoonInternals.ChatEngine = ChatEngine;
       window.__MoonInternals.VoiceEngine = VoiceEngine;
       window.__MoonInternals.LocalShell = LocalShell;
