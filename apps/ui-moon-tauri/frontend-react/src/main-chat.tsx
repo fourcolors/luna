@@ -38,6 +38,7 @@ import * as ThreadDrag from "./chat/threadDrag"
 import { createResultToasts } from "./chat/resultToasts"
 import { createUpdateBanner } from "./chat/updateBanner"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
+import { createArtifactsEngine } from "./chat/artifactsEngine"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -64,6 +65,7 @@ function assignBridge(
     | "ResultToasts"
     | "UpdateBanner"
     | "FeedbackEngine"
+    | "ArtifactsEngine"
     | "ChatState"
     | "ChatLoop",
   value: unknown,
@@ -147,6 +149,41 @@ assignBridge(
     },
     State: getChatHost()?.state(),
     WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+  }),
+)
+
+// ── ArtifactsEngine (overlay panel, stack23 S19d) ───────────────────────
+//
+// The two markdown functions come from the vendor global rather than a
+// chat.html alias, because S19d deleted that alias block - this engine was its
+// last production reader. `renderMarkdown` is the AUDITED sanitizer; the
+// preview pane feeds untrusted artifact content through it, so it must stay
+// exactly that function and not a lookalike.
+assignBridge(
+  "ArtifactsEngine",
+  createArtifactsEngine({
+    // Ids read from chat.html's own DOM object, not guessed - S19c and this
+    // slice both cost time to a guessed list.
+    DOM: {
+      artifactsBtn: document.getElementById("artifacts-btn"),
+      artifactsBadge: document.getElementById("artifacts-badge"),
+      artifactsPanel: document.getElementById("artifacts-panel"),
+      artifactsPinnedSection: document.getElementById("artifacts-pinned-section"),
+      artifactsPinnedList: document.getElementById("artifacts-pinned-list"),
+      artifactsSessionSection: document.getElementById("artifacts-session-section"),
+      artifactsSessionList: document.getElementById("artifacts-session-list"),
+      artifactsEmpty: document.getElementById("artifacts-empty"),
+      artifactsPreview: document.getElementById("artifacts-preview"),
+      artifactsPreviewTitle: document.getElementById("artifacts-preview-title"),
+      artifactsPreviewCopy: document.getElementById("artifacts-preview-copy"),
+      artifactsPreviewBody: document.getElementById("artifacts-preview-body"),
+    },
+    State: getChatHost()?.state(),
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+    renderMarkdown: (md: string) =>
+      (window as unknown as { LunaMarkdown: { renderMarkdown: (m: string) => string } }).LunaMarkdown.renderMarkdown(md),
+    enhanceCodeBlocks: (root: unknown) =>
+      (window as unknown as { LunaMarkdown: { enhanceCodeBlocks: (r: unknown) => void } }).LunaMarkdown.enhanceCodeBlocks(root),
   }),
 )
 
