@@ -681,11 +681,22 @@ function EffortLabelView({ store }: { store: ComposerConfigStore }) {
   return <>{snap.effortLabel}</>
 }
 
+/** One popover row. EVERY row activates on Enter and Space, including the
+ * effort menu's "Default" row.
+ *
+ * Vanilla wired a keydown listener to every row EXCEPT that one, so it
+ * advertised `role="menuitemradio"` with `tabIndex={0}` while responding to
+ * the mouse only - a keyboard user could focus it and not activate it (WCAG
+ * 2.1.1 Keyboard). S16b preserved the asymmetry deliberately to keep the
+ * conversion behavior-free and filed it as #459; this is that issue's
+ * fix-or-remove resolution, taking the "fix" branch because a mouse-only row
+ * inside a keyboard-navigable menu is a defect, not a feature.
+ *
+ * The ONE deliberate delta from vanilla in this file. */
 function MenuItemRow({
   item,
   kind,
   onSelect,
-  withKeyboardActivation,
 }: {
   item: ComposerMenuItem
   /** Which popover this row belongs to - only used to reproduce the
@@ -694,13 +705,11 @@ function MenuItemRow({
    * assertions read it - kept for DOM parity). */
   kind: "model" | "effort"
   onSelect: (id: string) => void
-  /** The vanilla effort menu's "Default" row never got a keydown listener
-   * (only click) - a pre-existing asymmetry this port preserves exactly
-   * rather than "fixing" it as an out-of-scope behavior change. */
-  withKeyboardActivation: boolean
 }) {
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" || e.key === " ") {
+      // preventDefault on Space stops the page scrolling out from under an
+      // open popover; on Enter it stops a stray form submit.
       e.preventDefault()
       onSelect(item.id)
     }
@@ -714,7 +723,7 @@ function MenuItemRow({
       onClick={() => onSelect(item.id)}
       data-model-id={kind === "model" ? item.id : undefined}
       data-effort-id={kind === "effort" ? item.id : undefined}
-      onKeyDown={withKeyboardActivation ? handleKeyDown : undefined}
+      onKeyDown={handleKeyDown}
     >
       <span>{item.label}</span>
       <span className="cfg-menu-check" aria-hidden="true">
@@ -730,7 +739,7 @@ function ModelMenuView({ store, onSelect }: { store: ComposerConfigStore; onSele
     <>
       <div className="cfg-menu-hint">Model for new conversations</div>
       {snap.modelMenuItems.map((m) => (
-        <MenuItemRow key={m.id} item={m} kind="model" onSelect={onSelect} withKeyboardActivation />
+        <MenuItemRow key={m.id} item={m} kind="model" onSelect={onSelect} />
       ))}
     </>
   )
@@ -743,12 +752,9 @@ function EffortMenuView({ store, onSelect }: { store: ComposerConfigStore; onSel
   return (
     <>
       <div className="cfg-menu-hint">Effort level</div>
-      {defaultItem ? (
-        // TODO(#459): fix-or-remove - menuitemradio without keyboard activation (WCAG 2.1.1)
-        <MenuItemRow item={defaultItem} kind="effort" onSelect={onSelect} withKeyboardActivation={false} />
-      ) : null}
+      {defaultItem ? <MenuItemRow item={defaultItem} kind="effort" onSelect={onSelect} /> : null}
       {rest.map((item) => (
-        <MenuItemRow key={item.id} item={item} kind="effort" onSelect={onSelect} withKeyboardActivation />
+        <MenuItemRow key={item.id} item={item} kind="effort" onSelect={onSelect} />
       ))}
     </>
   )

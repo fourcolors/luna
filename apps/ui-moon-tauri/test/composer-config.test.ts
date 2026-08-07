@@ -784,31 +784,72 @@ describe('ComposerConfig (chat.html)', () => {
       consoleError.mockRestore()
     })
 
-    // The vanilla effort menu's "Default" row never got a keydown listener
-    // (only click) - MenuItemRow's `withKeyboardActivation={false}` on that
-    // one row preserves this asymmetry exactly, marked
-    // TODO(#459): fix-or-remove at ComposerConfig.tsx's withKeyboardActivation
-    // prop. Pinned here since nothing else in this file asserts either
-    // attribute; closing #459 means rewriting this test, not deleting it.
-    it('the effort menu Default row has no keydown handler - Enter does nothing', () => {
-      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] }]
+    // ── #459 CLOSED: the Default row is keyboard-activatable ────────────────
+    //
+    // Vanilla wired keydown to every effort row EXCEPT "Default", so that row
+    // advertised role="menuitemradio" + tabIndex 0 while answering the mouse
+    // only (WCAG 2.1.1 Keyboard). S16b preserved the asymmetry deliberately to
+    // keep the conversion behavior-free, and THIS TEST used to pin the broken
+    // behavior; #459's fix-or-remove took the "fix" branch, so it is rewritten
+    // rather than deleted, per that issue's own instruction.
+    //
+    // Selecting Default means CLEARING the override, so the assertion is that
+    // `luna_effort` is REMOVED - same end state as the click path pinned by
+    // 'selecting Default effort removes luna_effort from localStorage' above.
+    // Both keys are covered: Enter and Space.
+    for (const key of ['Enter', ' ']) {
+      it(`the effort menu Default row activates on ${key === ' ' ? 'Space' : 'Enter'} (#459)`, () => {
+        const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] }]
+        sendHello({ models, effortSelection: true })
+        internals().State.serverSupportsEffort = true
+        localStorage.setItem('luna_model', 'claude-fable-5')
+        localStorage.setItem('luna_effort', 'max')
+        internals().ComposerConfig.applyModels(models)
+        internals().ComposerConfig.applyCapability(true)
+
+        document.getElementById('effort-cfg-btn')!.click()
+        const menu = document.getElementById('effort-cfg-menu')!
+        const defaultItem = menu.querySelector('.cfg-menu-item[data-effort-id=""]') as HTMLElement
+        expect(defaultItem).toBeTruthy()
+        const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+        defaultItem.dispatchEvent(ev)
+
+        expect(localStorage.getItem('luna_effort')).toBeNull()
+        expect(menu.classList.contains('open')).toBe(false)
+        // The handler must consume the key: an un-prevented Space scrolls the
+        // page out from under the popover the user was just using.
+        expect(ev.defaultPrevented).toBe(true)
+      })
+    }
+
+    it('every rendered menu row in both popovers answers the keyboard (#459 regression net)', () => {
+      const models = [
+        { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+        { id: 'claude-opus-5', label: 'Opus 5', efforts: ['low'] },
+      ]
       sendHello({ models, effortSelection: true })
       internals().State.serverSupportsEffort = true
       localStorage.setItem('luna_model', 'claude-fable-5')
-      localStorage.setItem('luna_effort', 'max')
       internals().ComposerConfig.applyModels(models)
       internals().ComposerConfig.applyCapability(true)
 
-      document.getElementById('effort-cfg-btn')!.click()
-      const menu = document.getElementById('effort-cfg-menu')!
-      const defaultItem = menu.querySelector('.cfg-menu-item[data-effort-id=""]') as HTMLElement
-      expect(defaultItem).toBeTruthy()
-      defaultItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-
-      // No onKeyDown handler on this row - luna_effort is untouched, the
-      // menu stays open (only a real click reaches _selectEffort('')).
-      expect(localStorage.getItem('luna_effort')).toBe('max')
-      expect(menu.classList.contains('open')).toBe(true)
+      // Assert against EVERY row both popovers render, so a future row that
+      // forgets keyboard activation fails here rather than shipping.
+      for (const btn of ['model-cfg-btn', 'effort-cfg-btn']) {
+        document.getElementById(btn)!.click()
+        const menuId = btn === 'model-cfg-btn' ? 'model-cfg-menu' : 'effort-cfg-menu'
+        const rows = Array.from(document.getElementById(menuId)!.querySelectorAll('.cfg-menu-item'))
+        expect(rows.length).toBeGreaterThan(0)
+        for (const row of rows) {
+          // A row that claims menuitemradio + tabIndex 0 must consume Enter.
+          expect(row.getAttribute('role')).toBe('menuitemradio')
+          expect((row as HTMLElement).tabIndex).toBe(0)
+          const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+          row.dispatchEvent(ev)
+          expect(ev.defaultPrevented, `row ${row.textContent} ignored Enter`).toBe(true)
+          document.getElementById(btn)!.click() // reopen; selecting closed it
+        }
+      }
     })
   })
 
