@@ -32,6 +32,7 @@ import "./chat/message-list.css"
 import * as LunaTransport from "@luna/ui-transport/browser"
 import * as ThreadListLogic from "./chat/threadList"
 import * as ThreadStrip from "./chat/threadStrip"
+import * as ThreadCacheLogic from "./chat/threadCache"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -89,6 +90,7 @@ function assignBridge(
 // See threadList.ts's module doc.
 ;(window as unknown as { ThreadListLogic: typeof ThreadListLogic }).ThreadListLogic = ThreadListLogic
 ;(window as unknown as { ThreadStrip: typeof ThreadStrip }).ThreadStrip = ThreadStrip
+;(window as unknown as { ThreadCacheLogic: typeof ThreadCacheLogic }).ThreadCacheLogic = ThreadCacheLogic
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
