@@ -36,10 +36,13 @@
     // launchd both exec it directly). The other scripts/*.ts files are
     // dev/release tooling with no deploy-path stakes.
     "scripts/luna-chat-server-entry.ts",
-    // mcp-demo's verdict reads were fixed in S11b; gate them so the union
-    // narrowing cannot silently regress (the rest of apps/server/scripts
-    // stays out per issue #444).
-    "apps/server/scripts/mcp-demo.ts"
+    // All of apps/server/scripts, not just mcp-demo.ts: issue #444 closed the
+    // last carve-out by fixing enable-wake.ts (bun:sqlite reached through
+    // createRequire, the workspaces-loader.ts idiom) and seed-probe-widgets.ts
+    // (26 strictNullChecks / noUncheckedIndexedAccess reads). These are ops
+    // CLIs that touch luna.db and pin widgets into a live ArtifactStore, so
+    // "dev tooling, leave it untyped" was never the right call for them.
+    "apps/server/scripts/**/*.ts"
   ],
   "exclude": [
     "**/dist",

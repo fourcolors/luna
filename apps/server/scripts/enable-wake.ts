@@ -18,13 +18,8 @@
  *      around) — otherwise wake just records `no-op`.
  *   2. Ensure the workspace's `kind:'wake'` job row in luna.db is enabled.
  */
-// TODO(#444): `import ... from "bun:sqlite"` has no type declarations under
-// the root tsconfig; this file is outside apps/*/src/** on purpose so it
-// doesn't regress the tsc gate. Fix by switching to the require("bun:sqlite")
-// pattern used elsewhere in apps/server/src; remove this marker only with
-// that fix.
-import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
+import { createRequire } from "node:module"
 import { resolve as resolvePath } from "node:path"
 import { hasWakeSchema, installWakeSchema } from "@luna/core"
 
@@ -50,10 +45,32 @@ function parseArgs(argv: ReadonlyArray<string>): Args {
   return { dbPath }
 }
 
+/** Minimal bun:sqlite shape - just what this script needs. Mirrors
+ *  `MinimalReadOnlyDb` in apps/server/src/workspaces-loader.ts, plus `run`
+ *  since this script writes. */
+interface MinimalDb {
+  query: (sql: string) => {
+    get: (...p: unknown[]) => unknown
+    all: (...p: unknown[]) => unknown[]
+  }
+  run: (sql: string) => unknown
+  close: () => void
+}
+
+/** `bun:sqlite` has no type declarations under the root tsconfig, so it is
+ *  reached through `createRequire` rather than a bare import - the documented
+ *  idiom from workspaces-loader.ts / setup-login.ts. This is what let
+ *  apps/server/scripts join the tsc gate (#444). */
+const openDb = (dbPath: string): MinimalDb => {
+  const req = createRequire(import.meta.url)
+  const mod = req("bun:sqlite") as { Database: new (p: string) => MinimalDb }
+  return new mod.Database(dbPath)
+}
+
 /** Report next_actions.goal_slug nullability — the old test-only schema had it
  *  NOT NULL, which silently drops unattached proposals. We can't safely ALTER an
  *  existing table here, so detect-and-warn instead of pretending it's fine. */
-function goalSlugIsNotNull(db: Database): boolean {
+function goalSlugIsNotNull(db: MinimalDb): boolean {
   const cols = db.query("PRAGMA table_info(next_actions)").all() as Array<{
     name: string
     notnull: number
@@ -70,7 +87,7 @@ function main(): void {
   }
   console.log("[enable-wake] target db:", dbPath)
 
-  const db = new Database(dbPath)
+  const db = openDb(dbPath)
   try {
     db.run("PRAGMA journal_mode = WAL")
     db.run("PRAGMA foreign_keys = ON")
