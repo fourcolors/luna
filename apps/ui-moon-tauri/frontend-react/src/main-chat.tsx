@@ -31,6 +31,7 @@ import "./chat/message-list.css"
 // package's "." export would pull in.
 import * as LunaTransport from "@luna/ui-transport/browser"
 import * as ThreadListLogic from "./chat/threadList"
+import * as ThreadStrip from "./chat/threadStrip"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -87,6 +88,7 @@ function assignBridge(
 // cycle, and these functions touch no DOM, so they carry none of that risk.
 // See threadList.ts's module doc.
 ;(window as unknown as { ThreadListLogic: typeof ThreadListLogic }).ThreadListLogic = ThreadListLogic
+;(window as unknown as { ThreadStrip: typeof ThreadStrip }).ThreadStrip = ThreadStrip
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
