@@ -254,4 +254,108 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
       expect(pool().isConnected()).toBe(false)
     })
   })
+
+  // ── COVERAGE PARITY WITH ws-contract.test.ts ──────────────────────────────
+  //
+  // ws-contract (CI hard gate 5) proves these properties for WebSocketEngine.
+  // S18b promotes PoolEngine to default, and promoting an engine with LESS
+  // coverage than the one it replaces is a regression no test would report.
+  // These are the same scenarios restated against PoolEngine's model: its own
+  // `_gen` counter rather than State.connGen, an adapter rather than State.ws,
+  // and gated dispatch rather than a raw message listener.
+  describe('coverage parity with the legacy engine contract', () => {
+    it('a superseded connection cannot resurrect state (gen gating)', async () => {
+      const sock0 = await bringUp()
+      expect(internals().State.serverSupportsArtifacts).toBe(false)
+
+      // A second connect() supersedes the first without sock0 closing first.
+      void pool().connect()
+      await settle()
+
+      // A late frame on the now-superseded socket must be ignored.
+      sock0.injectServerMessage({ type: 'hello', capabilities: { artifacts: true } })
+      await settle()
+      expect(
+        internals().State.serverSupportsArtifacts,
+        'a frame from a superseded connection must not be applied',
+      ).toBe(false)
+    })
+
+    it('a thread-snapshot for a non-active thread is dropped (cross-thread bleed guard)', async () => {
+      const sock = await bringUp()
+      internals().State.activeThreadId = 'thread-current'
+      const resetSpy = vi.spyOn(internals().ChatState, 'reset')
+
+      sock.injectServerMessage({ type: 'thread-snapshot', threadId: 'thread-stale', messages: [] })
+      await settle()
+      expect(resetSpy, 'a stale thread snapshot must not reset the viewed transcript').not.toHaveBeenCalled()
+
+      sock.injectServerMessage({ type: 'thread-snapshot', threadId: 'thread-current', messages: [] })
+      await settle()
+      expect(resetSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('a live frame is applied exactly once, not per subscriber', async () => {
+      const sock = await bringUp()
+      const resetSpy = vi.spyOn(internals().ChatState, 'reset')
+      internals().State.activeThreadId = 'thr-1'
+
+      sock.injectServerMessage({ type: 'thread-snapshot', threadId: 'thr-1', messages: [] })
+      await settle()
+      // Double delivery is the failure this guards: the adapter exposes BOTH
+      // subscribeFrames and openSession, and consuming both would dispatch
+      // every post-hello frame twice (luna-ws.ts says so explicitly).
+      expect(resetSpy).toHaveBeenCalledTimes(1)
+    })
+
+    // RESUBSCRIBE-ON-RECONNECT IS DELIBERATELY *NOT* PINNED HERE, and saying
+    // so is the point. ws-contract proves it for WebSocketEngine by driving a
+    // raw socket the engine owns directly. Under PoolEngine the reconnect is
+    // driven by the ADAPTER's internal retry, and reproducing it in jsdom needs
+    // the harness to satisfy a full attach handshake on a socket the adapter
+    // mints on its own schedule - several attempts here produced an empty
+    // sent-frame list, i.e. a test that would have passed only if written
+    // loosely enough to assert nothing.
+    //
+    // Rather than ship that, the property below is the part this harness CAN
+    // prove honestly, and the resubscribe itself stays owed to S18's own
+    // deployNote gate: "Exercise a real server restart against a running Moon
+    // to prove reconnect, not just a fresh connect." That gate exists for
+    // exactly this.
+    it('the active thread identity survives a drop and the engine recovers', async () => {
+      internals().State.activeThreadId = 'thread-abc'
+      const sock0 = await bringUp()
+      const before = FakeWebSocket.instances.length
+
+      sock0.simulateDrop()
+      await settle(12, 2000)
+
+      expect(pool().isConnected(), 'a dropped connection must report disconnected').toBe(false)
+      expect(
+        FakeWebSocket.instances.length,
+        'the adapter should attempt a replacement connection',
+      ).toBeGreaterThan(before)
+      // The identity the resubscribe would use is intact - a drop must never
+      // silently move the user off their thread.
+      expect(internals().State.activeThreadId).toBe('thread-abc')
+    })
+
+    it('a flap sequence leaks no timers', async () => {
+      await bringUp()
+      const timersBeforeFlap = vi.getTimerCount()
+      for (let i = 0; i < 4; i++) {
+        FakeWebSocket.latest()!.simulateDrop()
+        await settle(4, 2000)
+        const s = FakeWebSocket.latest()
+        s?.simulateOpen()
+        s?.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+        await settle()
+      }
+      await settle(6, 4000)
+      // Asserting the DELTA, not a literal count: chat.html arms unrelated
+      // boot timers (update poll, UI heartbeat, MoonBar's quip rotation) that
+      // this scenario is not about - the same reasoning ws-contract records.
+      expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBeforeFlap)
+    })
+  })
 })
