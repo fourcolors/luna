@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import * as LunaTransport from '@luna/ui-transport/browser'
 // Aliases used in the lower describe blocks (avoid duplicate import)
 const fsSync = fs
 const pathSync = path
@@ -330,12 +331,19 @@ describe('Engine selection (chat.html dark flag wiring)', () => {
     pageWindow.WebSocket = class { readyState = 3; addEventListener() {} close() {} send() {} }
     pageWindow.URL = URL
 
-    // Load vendor helpers
+    // Load vendor helpers. pool-engine.js STAYS a vendor script (it serves the
+    // hub surface, frontend-react/index.html) - only ui-transport.js left the
+    // vendor layer.
     loadVendorInto(pageWindow, 'moon-protocol.js')
     loadVendorInto(pageWindow, 'moon-ws.js')
     loadVendorInto(pageWindow, 'pool-engine.js')
-    loadVendorInto(pageWindow, 'ui-transport.js')
     loadVendorInto(pageWindow, 'moon-session.js')
+
+    // `window.LunaTransport` used to arrive via loadVendorInto('ui-transport.js').
+    // stack23 S18 deleted that generated bundle; the shipped page now gets this
+    // global from main-chat.tsx's ESM import, so the harness mirrors that exactly
+    // rather than reading an artifact off disk.
+    pageWindow.LunaTransport = LunaTransport
   }
 
   describe('flag OFF (default)', () => {

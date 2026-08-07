@@ -17,8 +17,10 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 import WebSocket from "ws"
-import { readFileSync } from "node:fs"
-import { resolve as pathResolve, dirname } from "node:path"
+import { readFileSync, unlinkSync } from "node:fs"
+import { resolve as pathResolve, dirname, join as pathJoin } from "node:path"
+import { tmpdir } from "node:os"
+import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 import { LunaWsAdapter } from "../src/adapters/luna-ws.js"
@@ -367,22 +369,68 @@ describe("browser-safety: no node: imports in the browser surface", () => {
     expect(pulledNodeEntry).toBe(false)
   })
 
-  it("the generated vendor bundle has no node: module specifier", () => {
-    const bundlePath = pathResolve(
-      __dirname,
-      "../../../apps/ui-moon-tauri/frontend/vendor/ui-transport.js",
-    )
-    let bundle: string
+  // THE BARE-SPECIFIER BACKSTOP. The source walk above deliberately does not
+  // follow bare specifiers (@luna/ui-shared, smol-toml, ws), so on its own it
+  // cannot see a `node:` import pulled in transitively through one of them.
+  // A bundle is the only thing that resolves those.
+  //
+  // This used to read the committed `vendor/ui-transport.js` and `return`
+  // early when it was absent - which stack23 S18 would have turned into a
+  // permanently vacuous always-green test the moment that file was deleted.
+  // It now BUILDS the browser entry on demand instead, so the guarantee
+  // survives the vendor bundle's retirement rather than quietly evaporating
+  // with it.
+  //
+  // IT MUST BUILD WITH --target node, WHICH LOOKS BACKWARDS AND IS THE WHOLE
+  // POINT. `bun build --target browser` SILENTLY STUBS a node: import into
+  // `(() => ({}))` and drops the specifier entirely, so asserting
+  // `not.toContain("node:fs")` on a browser-target bundle can never fail.
+  // Measured directly: with a `node:fs` import added to browser.ts, a
+  // browser-target bundle contains 0 occurrences of "node:fs" while a
+  // node-target bundle contains 1.
+  //
+  // That means the deleted vendor-bundle guard this replaces - which asserted
+  // exactly that against a browser-target CJS build - was VACUOUS for its
+  // entire life, despite the source-walk test above delegating its
+  // bare-specifier blind spot to it. The gap it was believed to cover was
+  // never covered.
+  //
+  // It also means the silent-stub behavior is itself the hazard: a transitive
+  // node: import would yield a browser bundle that BUILDS FINE and throws at
+  // runtime on an empty object. A node-target build resolves the same bare
+  // specifiers but leaves node: visible, so it can actually be asserted on.
+  it("a fresh bundle of the browser entry pulls in no node: builtin", () => {
+    const bun = (() => {
+      try {
+        return execFileSync("which", ["bun"], { encoding: "utf8" }).trim()
+      } catch {
+        return "bun"
+      }
+    })()
+    const entry = pathResolve(__dirname, "../src/browser.ts")
+    const outFile = pathJoin(tmpdir(), `ui-transport-nodecheck-${process.pid}.js`)
     try {
-      bundle = readFileSync(bundlePath, "utf8")
-    } catch {
-      // If the bundle is absent in this checkout, skip rather than fail.
-      return
+      // Deliberately NOT skipped when bun is missing: a silent skip is what
+      // made the previous version of this test worthless.
+      execFileSync(
+        bun,
+        ["build", entry, "--target", "node", "--format", "esm", "--outfile", outFile],
+        { stdio: "pipe" },
+      )
+      const bundle = readFileSync(outFile, "utf8")
+      expect(bundle.length).toBeGreaterThan(1000) // sanity: we bundled something real
+      const found = [...new Set(bundle.match(/node:[a-z_/]+/g) ?? [])]
+      expect(
+        found,
+        `browser entry must pull in no node: builtin, even through a bare ` +
+          `specifier the source walk cannot follow - found: ${JSON.stringify(found)}`,
+      ).toEqual([])
+    } finally {
+      try {
+        unlinkSync(outFile)
+      } catch {
+        /* already gone */
+      }
     }
-    // Strip the generated header/comment lines, then assert no node: require/import.
-    expect(bundle).not.toMatch(/require\(\s*['"]node:/)
-    expect(bundle).not.toMatch(/from\s*['"]node:/)
-    expect(bundle).not.toContain("node:child_process")
-    expect(bundle).not.toContain("node:fs")
-  })
+  }, 30_000)
 })

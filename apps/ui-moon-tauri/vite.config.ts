@@ -15,9 +15,11 @@ import react from "@vitejs/plugin-react"
 //       plain string at runtime (`s.src = 'panels/' + type + '.js'`); Vite
 //       never sees that reference statically, so the file must simply exist,
 //       unhashed, at that path in the shipped bundle.
-//     - vendor/ui-transport.js attaches `window.LunaTransport` as a classic
-//       global script (see scripts/bundle-ui-transport.ts); chat.html's
-//       PoolEngine reads that global directly, not via ESM import.
+//     (vendor/ui-transport.js used to be listed here as a classic global
+//     script; stack23 S18 deleted that generated bundle. chat.html's
+//     PoolEngine still reads `window.LunaTransport`, but the global is now
+//     published by src/main-chat.tsx from @luna/ui-transport/browser, so it
+//     rides the normal ESM graph and needs no publicDir carve-out.)
 //   Every four HTML shells were mechanically updated (`="vendor/` ->
 //   `="/vendor/`) so their <link>/<script> tags reference these public
 //   assets via Vite's required root-absolute convention for publicDir

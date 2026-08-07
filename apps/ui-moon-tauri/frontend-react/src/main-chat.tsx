@@ -23,6 +23,13 @@
 // module doc for the classic-script -> module direction this file reads
 // FROM (`window.LunaChatHost`, stack23 S16c-host).
 import "./chat/message-list.css"
+// The transport surface PoolEngine reads as `window.LunaTransport`. Imported
+// from the package's browser-safe subpath and re-published below, replacing
+// the generated `vendor/ui-transport.js` IIFE this slice deletes (stack23
+// S18). `./browser` exists precisely for this: it excludes the node: entry
+// points (parseClientConfig, makeNodeTokenResolver, the dev stubs) that the
+// package's "." export would pull in.
+import * as LunaTransport from "@luna/ui-transport/browser"
 import { mountMoonReactRoot } from "./boot"
 import { mountAttachments } from "./chat/Attachments"
 import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from "./chat/chat-host"
@@ -50,6 +57,23 @@ function assignBridge(
     w.__MoonInternals[name] = value
   }
 }
+
+// ── Transport global (stack23 S18) ──────────────────────────────────────
+//
+// Republishes the ESM transport under the SAME `window.LunaTransport` name
+// and shape the deleted `vendor/ui-transport.js` IIFE published, so
+// chat.html's PoolEngine keeps reading its one call site unchanged. The
+// vendor file was a CJS build of this exact module wrapped in an IIFE that
+// assigned `module.exports` to the global; a namespace import IS that object,
+// so the swap is shape-identical by construction rather than by hand-mirroring
+// a member list.
+//
+// Assignment order is not delicate here, but it is deliberately FIRST among
+// this file's side effects: PoolEngine's only read (`const LT =
+// window.LunaTransport`) happens inside a method during connect, never at
+// chat.html's classic-script top level, so any point before first connect
+// would do - see that call site's own fallback branch.
+;(window as unknown as { LunaTransport: typeof LunaTransport }).LunaTransport = LunaTransport
 
 // ── Attachments (composer's staged-file tray) ───────────────────────────
 //
