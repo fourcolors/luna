@@ -68,6 +68,7 @@ import * as ThreadListLogic from '../../frontend-react/src/chat/threadList'
 import * as ThreadStrip from '../../frontend-react/src/chat/threadStrip'
 import * as ThreadCacheLogic from '../../frontend-react/src/chat/threadCache'
 import * as ThreadCreateLogic from '../../frontend-react/src/chat/threadCreate'
+import * as ThreadDrag from '../../frontend-react/src/chat/threadDrag'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -264,6 +265,7 @@ ThreadListLogic = __threadListLogic;
 ThreadStrip = __threadStrip;
 ThreadCacheLogic = __threadCacheLogic;
 ThreadCreateLogic = __threadCreateLogic;
+ThreadDrag = __threadDrag;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -274,6 +276,7 @@ window.ThreadListLogic = ThreadListLogic;
 window.ThreadStrip = ThreadStrip;
 window.ThreadCacheLogic = ThreadCacheLogic;
 window.ThreadCreateLogic = ThreadCreateLogic;
+window.ThreadDrag = ThreadDrag;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -293,8 +296,9 @@ if (window.__MoonInternals) {
     '__threadStrip',
     '__threadCacheLogic',
     '__threadCreateLogic',
+    '__threadDrag',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
