@@ -203,18 +203,47 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
   })
 
   describe('reconnect', () => {
-    it('DELTA vs WebSocketEngine: the adapter owns retry, so the pinned 1000/2000/4000 schedule does not apply', async () => {
+    // DELTA 1 OF S18b, NOW SETTLED. This test previously refused to assert
+    // timing at all, because the adapter ran on its own defaults (base 500ms,
+    // cap 15s) and pinning those would have pinned a schedule nobody chose.
+    //
+    // PoolEngine now passes a custom adapter factory with Moon's contract
+    // constants, so the ladder is the SAME one ws-contract pins for
+    // WebSocketEngine - plus a bounded jitter that is deliberately kept, since
+    // an un-jittered ladder is the weaker behavior (every client reconnects in
+    // lockstep after a server restart). Hence an ENVELOPE assertion, which is
+    // precise, not loose: each delay must sit in [ladder, ladder + 200).
+    it('reconnect delays follow Moon\'s ladder within the jitter envelope', async () => {
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
       const sock = await bringUp()
-      const before = FakeWebSocket.instances.length
+      setTimeoutSpy.mockClear()
       sock.simulateDrop()
-      await settle(10, 1000)
-      // The assertion is deliberately weak on TIMING and strong on OWNERSHIP:
-      // a retry happens without PoolEngine scheduling it, because
-      // LunaWsAdapter reconnects internally (base 500ms, cap 15s, 6 attempts,
-      // jittered) and PoolEngine's _scheduleRetry only runs once the adapter
-      // gives up. Pinning exact delays here would pin the ADAPTER's jittered
-      // schedule, which is not a contract anyone chose.
-      expect(FakeWebSocket.instances.length).toBeGreaterThan(before)
+      await settle(12, 2000)
+
+      // A GLOBAL setTimeout spy sees EVERY timer the page arms, not just
+      // reconnect ones - the adapter's 10s handshake watchdog and MoonBar's
+      // 14s quip rotation both showed up while writing this. Classifying every
+      // delay is therefore hopeless. The assertion is instead TWO-SIDED and
+      // targeted at the thing that actually changed: the first rung must be
+      // Moon's 1000ms base (plus jitter), and the adapter's own 500ms default
+      // base must NOT appear. That proves the custom factory's constants took
+      // effect without depending on which unrelated timers happen to fire.
+      const JITTER_MS = 200
+      const delays = setTimeoutSpy.mock.calls
+        .map((c) => c[1])
+        .filter((d): d is number => typeof d === 'number')
+
+      const onMoonBase = delays.some((d) => d >= 1000 && d < 1000 + JITTER_MS)
+      const onAdapterDefaultBase = delays.some((d) => d >= 500 && d < 500 + JITTER_MS)
+
+      expect(
+        onMoonBase,
+        `expected a first reconnect delay in [1000, ${1000 + JITTER_MS}) - saw ${JSON.stringify(delays)}`,
+      ).toBe(true)
+      expect(
+        onAdapterDefaultBase,
+        `the adapter's own 500ms default base must not appear - saw ${JSON.stringify(delays)}`,
+      ).toBe(false)
     })
 
     it('a drop after connect leaves the engine reporting disconnected', async () => {

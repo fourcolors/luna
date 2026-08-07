@@ -6505,7 +6505,31 @@
         // literal bearer; this is tracked as the host-side resolver-wiring
         // follow-up and is out of scope for the seam-only token-resolver slice.
         const routeMap = new Map([[routeKey, { routeKey, endpoints, tokenRef }]]);
-        const manager = new LT.ConnectionManager(routeMap, LT.selectAdapter);
+        // Custom adapter factory rather than the bare LT.selectAdapter, which
+        // hardcodes reconnectOpts to undefined and so would leave the adapter
+        // on its own defaults (base 500ms, cap 15s) (stack23 S18b delta 1).
+        //
+        // Moon's connection contract is base 1000ms doubling to a 16s cap -
+        // the ladder ws-contract.test.ts pins as
+        // [1000,2000,4000,8000,16000,16000]. Matching it here is what lets the
+        // pooled engine satisfy that contract instead of forcing the pin down
+        // to a range.
+        //
+        // JITTER IS DELIBERATELY LEFT ON (adapter default, 200ms). It is what
+        // stops every client reconnecting in lockstep after a server restart,
+        // and WebSocketEngine's un-jittered ladder is the WEAKER behavior here,
+        // not the target. So the observable schedule is the exact ladder plus a
+        // bounded 0-200ms spread, which the contract asserts as an envelope.
+        // `reconnectOpts.jitterMs` exists for tests that need determinism.
+        //
+        // maxAttempts stays on the adapter default (6): after those the adapter
+        // publishes 'down' and PoolEngine's own _scheduleRetry takes over, so
+        // retry is unbounded overall through that two-layer handoff.
+        const manager = new LT.ConnectionManager(routeMap, (route) =>
+          new LT.LunaWsAdapter(route, undefined, undefined, {
+            baseMs: 1000,
+            maxMs: 16000,
+          }));
 
         try {
           this._handle = await manager.acquire(routeKey);
