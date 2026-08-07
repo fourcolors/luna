@@ -4083,6 +4083,12 @@
     // ChatState/ChatLoop/Attachments/ComposerConfig/SlashMenu/SmartBarEngine.
     var ThreadListLogic;
 
+    // Row rendering for the thread strip (src/chat/threadStrip.ts, stack23
+    // S17c). Same forward-declared `var` bridge; render() below resolves it at
+    // CALL time, and every call to render() comes from a frame handler or an
+    // event handler, never from this script's own top level.
+    var ThreadStrip;
+
     // ── Thread cache ─────────────────────────────────────────────────────────
     // Per-thread transcript cache for ChatGPT-style switching. Server
     // re-snapshot on re-subscribe is the source of truth; this cache removes
@@ -4438,38 +4444,39 @@
       render() {
         // A row drag-out holds pointer capture on a live DOM node. Rebuilding
         // the list mid-gesture detaches that node and silently aborts the pull.
+        // This guard stays HERE, not in the module, because it also sets the
+        // deferred-repaint flag the drag path consumes when the gesture ends.
         if (State.threadDragActive) {
           this._renderPendingDuringDrag = true;
           return;
         }
-        const listEl = DOM.threadDrawerList;
-        if (!listEl) return;
-        // Drop existing rows (keep the empty-state node + we'll rebuild gap).
-        listEl.querySelectorAll('.thread-row, .thread-row-insert-gap').forEach((n) => n.remove());
         const rows = this._visibleThreads();
-        if (DOM.threadDrawerEmpty) {
-          DOM.threadDrawerEmpty.style.display = rows.length ? 'none' : '';
-          DOM.threadDrawerEmpty.textContent =
-            (State.threadSearch || '').trim() ? 'No matching threads.' : 'No threads yet.';
-        }
         const preview = State.redockPreview;
-        const insertAt = preview && preview.over
-          ? this._insertIndexForRatio(rows.length, preview.yRatio)
-          : -1;
-        const frag = document.createDocumentFragment();
-        for (let i = 0; i < rows.length; i++) {
-          if (i === insertAt) frag.appendChild(this._makeInsertGap(preview));
-          const row = this._renderRow(rows[i]);
-          if (preview && preview.threadId && rows[i].id === preview.threadId) {
-            row.classList.add('redock-source');
-          }
-          frag.appendChild(row);
-        }
-        if (insertAt === rows.length) frag.appendChild(this._makeInsertGap(preview));
-        listEl.appendChild(frag);
-        if (DOM.threadDrawer) {
-          DOM.threadDrawer.classList.toggle('redock-target', !!(preview && preview.over));
-        }
+        // Row building lives in src/chat/threadStrip.ts (stack23 S17c). The
+        // render/_wireRow CYCLE IS PRESERVED: the module hands each freshly
+        // built row to `wireRow` below before it is attached, exactly as the
+        // inline `_renderRow` did, so the drag machinery is untouched.
+        ThreadStrip.renderThreadStrip({
+          listEl: DOM.threadDrawerList,
+          emptyEl: DOM.threadDrawerEmpty,
+          drawerEl: DOM.threadDrawer,
+          rows,
+          search: State.threadSearch || '',
+          activeThreadId: State.activeThreadId,
+          preview,
+          insertAt: preview && preview.over
+            ? this._insertIndexForRatio(rows.length, preview.yRatio)
+            : -1,
+          isBusy: (id) => ThreadCache.isBusy(id),
+          relTime: (t) => this._relTime(t),
+          wireRow: (row, t) => this._wireRow(row, t),
+          makeInsertGap: (p) => this._makeInsertGap(p),
+          onRowKeyActivate: (id, inNewWindow) => {
+            if (inNewWindow) this.openInNewWindow(id);
+            else this.onRowClick(id);
+          },
+          onPopOut: (id) => this.openInNewWindow(id),
+        });
       },
 
       _insertIndexForRatio(n, yRatio) { return ThreadListLogic.insertIndexForRatio(n, yRatio); },
@@ -4757,49 +4764,9 @@
         State.threadOrder = ids;
       },
 
-      _renderRow(t) {
-        const row = document.createElement('div');
-        row.className = 'thread-row';
-        row.setAttribute('role', 'listitem');
-        row.tabIndex = 0;
-        row.dataset.threadId = t.id;
-        if (t.id === State.activeThreadId) row.classList.add('active');
-        if (ThreadCache.isBusy(t.id) && t.id !== State.activeThreadId) row.classList.add('busy');
-        // Static skeleton (icons only); text set via textContent to avoid any
-        // markup injection from server-provided titles/previews.
-        row.innerHTML =
-          '<span class="thread-row-grip" aria-hidden="true">' +
-            '<span></span><span></span><span></span><span></span><span></span><span></span>' +
-          '</span>' +
-          '<span class="thread-row-dot" aria-hidden="true"></span>' +
-          '<span class="thread-row-info">' +
-            '<span class="thread-row-title"></span>' +
-            '<span class="thread-row-preview"></span>' +
-          '</span>' +
-          '<button type="button" class="thread-row-pop" title="Open in new window" aria-label="Open in new window">⤢</button>';
-        row.querySelector('.thread-row-title').textContent = (t.title && String(t.title).trim()) || 'Untitled thread';
-        const preview = (t.lastMessagePreview && String(t.lastMessagePreview).trim()) || this._relTime(t);
-        row.querySelector('.thread-row-preview').textContent = preview;
-        // Enter/Space opens in place; Meta/Ctrl-Enter opens a Phase 8 window.
-        // Primary click/drag is handled by _wireRow (pointer capture).
-        row.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            if (e.metaKey || e.ctrlKey) this.openInNewWindow(t.id);
-            else this.onRowClick(t.id);
-          }
-        });
-        this._wireRow(row, t);
-        const pop = row.querySelector('.thread-row-pop');
-        if (pop) {
-          pop.addEventListener('pointerdown', (e) => e.stopPropagation());
-          pop.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.openInNewWindow(t.id);
-          });
-        }
-        return row;
-      },
+      // _renderRow moved to src/chat/threadStrip.ts (stack23 S17c) - see
+      // render() above for the ctx it is called with, and that module's doc
+      // for why the row list stays imperative rather than becoming React.
 
       _relTime(t) {
         const ms = this._ts(t);
