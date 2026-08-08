@@ -38,12 +38,6 @@ import type { Delivery } from "./chatModel"
  * - the same object every frame handler mutates, never a copy. Names only
  * the fields the module side reads; `State` itself carries many more. */
 export interface ChatHostState {
-  /** The raw socket, present ONLY under the legacy WebSocketEngine - PoolEngine
-   *  never assigns it (see chat.html's isConnected() note). Read by
-   *  SecretPromptEngine's OPEN guard, which is why it is exposed at all;
-   *  see issue #500, which replaces that read with the engine-aware
-   *  predicate and lets this field come back out. */
-  ws: WebSocket | null
   activeThreadId: string | null
   threadModels: Record<string, string>
   threadEfforts: Record<string, string>
@@ -64,6 +58,12 @@ export interface LunaChatHostApi {
    * safety) while the provider's internal snapshot is untouched, because
    * `hello` is not one of the two frame types the provider subscribes to. */
   readonly backendCapabilities: () => readonly CapabilityDescriptor[]
+  /** ENGINE-AWARE connectivity. Never derive this from a raw socket: PoolEngine,
+   *  the default since #489, does not assign `State.ws` at all, so a readyState
+   *  check reads "offline" while the pool is connected - which is exactly how
+   *  secure secret entry silently died (#500). chat.html patches its own
+   *  isConnected() to delegate to the active engine; this exposes that one. */
+  readonly isConnected: () => boolean
 
   // ── Group A - the wire. S18 deletes BOTH of these together.
   readonly send: (frame: ClientFrame) => void
