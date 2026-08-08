@@ -72,6 +72,8 @@ import * as ThreadDrag from '../../frontend-react/src/chat/threadDrag'
 import { createResultToasts } from '../../frontend-react/src/chat/resultToasts'
 import { createUpdateBanner } from '../../frontend-react/src/chat/updateBanner'
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from '../../frontend-react/src/chat/feedbackEngine'
+import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
+import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
 import { createArtifactsEngine } from '../../frontend-react/src/chat/artifactsEngine'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
@@ -265,6 +267,20 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   // unaffected; calling this from inside the bridged source below is what puts
   // the harness on the same footing.
   const byId = (id: string) => document.getElementById(id)
+  const makeMoonFace = () => {
+    const f = createMoonFace({ lunaFace: byId('luna-face') })
+    f.init()
+    return f
+  }
+  const makeMoonBar = () => {
+    const b = createMoonBar({
+      lunaQuip: byId('luna-quip'),
+      lunaSuggestion: byId('luna-suggestion'),
+      lunaSuggestionText: byId('luna-suggestion-text'),
+    })
+    b.init()
+    return b
+  }
   const makeArtifactsEngine = () =>
     createArtifactsEngine({
       DOM: {
@@ -319,6 +335,8 @@ ResultToasts = __resultToasts;
 UpdateBanner = __updateBanner;
 FeedbackEngine = __feedbackEngine();
 ArtifactsEngine = __artifactsEngine();
+MoonFace = __moonFace();
+MoonBar = __moonBar();
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -334,6 +352,8 @@ window.ResultToasts = ResultToasts;
 window.UpdateBanner = UpdateBanner;
 window.FeedbackEngine = FeedbackEngine;
 window.ArtifactsEngine = ArtifactsEngine;
+window.MoonFace = MoonFace;
+window.MoonBar = MoonBar;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -346,6 +366,8 @@ if (window.__MoonInternals) {
   window.__MoonInternals.UpdateBanner = UpdateBanner;
   window.__MoonInternals.FeedbackEngine = FeedbackEngine;
   window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
+  window.__MoonInternals.MoonFace = MoonFace;
+  window.__MoonInternals.MoonBar = MoonBar;
   window.__MoonInternals.describeTarget = __describeTarget;
   window.__MoonInternals.cropAndEncodeFeedbackScreenshot = __cropAndEncode;
 }
@@ -365,10 +387,12 @@ if (window.__MoonInternals) {
     '__updateBanner',
     '__feedbackEngine',
     '__artifactsEngine',
+    '__moonFace',
+    '__moonBar',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

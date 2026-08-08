@@ -37,6 +37,8 @@ import * as ThreadCreateLogic from "./chat/threadCreate"
 import * as ThreadDrag from "./chat/threadDrag"
 import { createResultToasts } from "./chat/resultToasts"
 import { createUpdateBanner } from "./chat/updateBanner"
+import { createMoonFace } from "./chat/moonFace"
+import { createMoonBar } from "./chat/moonBar"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
 import { createArtifactsEngine } from "./chat/artifactsEngine"
 import { mountMoonReactRoot } from "./boot"
@@ -64,6 +66,8 @@ function assignBridge(
     | "SmartBarEngine"
     | "ResultToasts"
     | "UpdateBanner"
+    | "MoonFace"
+    | "MoonBar"
     | "FeedbackEngine"
     | "ArtifactsEngine"
     | "ChatState"
@@ -121,6 +125,28 @@ assignBridge(
   "UpdateBanner",
   createUpdateBanner({ Logger: { warn: (...a: unknown[]) => console.warn(...a) } }),
 )
+
+// ── MoonFace + MoonBar (the header's expression + message zone, S19e) ───
+//
+// These two move together and FIRST in their group because they are the
+// outbound edges of SuggestedActionsEngine: that engine calls both, so neither
+// could stay a chat.html-private const if it was ever to follow (the
+// OUTBOUND-EDGE RULE). They in turn reach nothing but their own elements.
+//
+// init() IS CALLED HERE, not in chat.html. chat.html used to call it at
+// classic top level, where a module-published global is still undefined - so
+// the boot call relocates to the construction site rather than getting a shim.
+// It only reads the DOM, and this module is deferred, so later is still valid.
+const moonFace = createMoonFace({ lunaFace: document.getElementById("luna-face") })
+const moonBar = createMoonBar({
+  lunaQuip: document.getElementById("luna-quip"),
+  lunaSuggestion: document.getElementById("luna-suggestion"),
+  lunaSuggestionText: document.getElementById("luna-suggestion-text"),
+})
+moonFace.init()
+moonBar.init()
+assignBridge("MoonFace", moonFace)
+assignBridge("MoonBar", moonBar)
 
 // ── FeedbackEngine (point-at-the-UI crosshair, stack23 S19c) ────────────
 //

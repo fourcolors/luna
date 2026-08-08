@@ -3360,42 +3360,12 @@
      * All the actual motion lives in CSS keyframes keyed off [data-state];
      * this controller only flips that one attribute.
      */
-    const MoonFace = {
-      _conn: 'connecting',   // 'connecting' | 'connected' | 'disconnected'
-      _busy: false,          // a turn is in flight
-      _voice: '',            // '' | 'listening' | 'speaking'
-      _suggesting: false,
-      _el: null,
-
-      init() { this._el = DOM.lunaFace; this._apply(); },
-
-      // statusClass comes straight from WebSocketEngine.updateStatus:
-      // 'connected' | 'connecting' | 'disconnected' | 'version-warning'.
-      // A version-warning still chats, so it reads as connected (awake).
-      setConnection(statusClass) {
-        this._conn = statusClass === 'connecting' ? 'connecting'
-                   : statusClass === 'disconnected' ? 'disconnected'
-                   : 'connected';
-        this._apply();
-      },
-      setBusy(b)       { this._busy = !!b; this._apply(); },
-      setVoice(state)  { this._voice = (state === 'listening' || state === 'speaking') ? state : ''; this._apply(); },
-      setSuggesting(b) { this._suggesting = !!b; this._apply(); },
-
-      _resolve() {
-        if (this._conn === 'connecting')   return 'connecting';
-        if (this._conn === 'disconnected') return 'offline';
-        if (this._busy)                    return 'busy';
-        if (this._voice === 'listening')   return 'listening';
-        if (this._voice === 'speaking')    return 'speaking';
-        if (this._suggesting)              return 'suggesting';
-        return '';   // awake / idle
-      },
-      _apply() {
-        const el = this._el || (this._el = DOM.lunaFace);
-        if (el) el.dataset.state = this._resolve();
-      },
-    };
+    // Converted to a typed module (stack23 S19e): src/chat/moonFace.ts, moved
+    // verbatim. Forward-declared `var`; every reader is inside a frame handler
+    // or an event callback, so it resolves at CALL time. Its `init()` moved to
+    // the construction site in main-chat.tsx - a classic-top-level init() call
+    // cannot see a module-published global (BOOT-ORDER RULE).
+    var MoonFace;
 
     /**
      * MoonBar — the header's free-space message zone.
@@ -3406,96 +3376,10 @@
      * The quip line doubles as a connection mood line ("waking up…",
      * "reconnecting…") so the bar always says something honest.
      */
-    const MoonBar = {
-      _quips: [
-        'just vibing ✨',
-        'ready when you are 🌙',
-        'the night is quiet… I’m here',
-        'thinking up something clever…',
-        'your friendly moon, reporting in',
-        'drifting through some stardust',
-        'tap me anytime',
-        'all systems calm',
-      ],
-      _qi: 0,
-      _timer: null,
-      _conn: 'connecting',   // 'connecting' | 'connected' | 'disconnected'
-      _hasSuggestion: false,
-
-      init() {
-        if (!DOM.lunaQuip) return;
-        this._renderQuip(false);
-        this._scheduleRotate();
-      },
-
-      // Self-rescheduling (not setInterval) so it stops cleanly the moment the
-      // bar leaves the document — e.g. jsdom test teardown — instead of leaking
-      // a timer that fires forever on a detached node. The real chat window
-      // keeps #luna-quip mounted for its whole life, so quips keep rotating.
-      _scheduleRotate() {
-        if (this._timer) return;
-        this._timer = setTimeout(() => {
-          this._timer = null;
-          try {
-            if (!DOM.lunaQuip || !DOM.lunaQuip.isConnected) return;   // torn down → stop
-            if (!this._hasSuggestion && this._connQuip() == null) {
-              this._qi = (this._qi + 1) % this._quips.length;
-              this._renderQuip(true);
-            }
-            this._scheduleRotate();
-          } catch (_) { /* never let a stray tick surface an unhandled error */ }
-        }, 14000);
-        // Hygiene: under Node (the jsdom test harness) a long pending timer
-        // would keep the event loop alive; unref() lets the loop exit. It's
-        // undefined in the browser, where the timer behaves normally.
-        if (this._timer && typeof this._timer.unref === 'function') this._timer.unref();
-      },
-
-      setConnection(statusClass) {
-        this._conn = (statusClass === 'connected' || statusClass === 'version-warning') ? 'connected'
-                   : statusClass === 'connecting' ? 'connecting'
-                   : 'disconnected';
-        if (!this._hasSuggestion) this._renderQuip(false);
-      },
-
-      showSuggestion(action) {
-        if (!DOM.lunaSuggestion || !DOM.lunaSuggestionText) return;
-        this._hasSuggestion = true;
-        const title = (action && action.title) ? action.title : 'Luna has an idea';
-        DOM.lunaSuggestionText.textContent = title;
-        DOM.lunaSuggestion.title = title;
-        // Dynamic accessible name — a static aria-label would override the
-        // visible title and hide the actual suggestion from screen readers.
-        DOM.lunaSuggestion.setAttribute('aria-label', 'Open Luna’s suggestion: ' + title);
-        if (DOM.lunaQuip) DOM.lunaQuip.hidden = true;
-        DOM.lunaSuggestion.hidden = false;
-      },
-
-      clearSuggestion() {
-        this._hasSuggestion = false;
-        if (DOM.lunaSuggestion) DOM.lunaSuggestion.hidden = true;
-        if (DOM.lunaQuip) { DOM.lunaQuip.hidden = false; this._renderQuip(false); }
-      },
-
-      // A non-connected state replaces the playful quip with an honest mood line.
-      _connQuip() {
-        if (this._conn === 'connecting')   return 'waking up…';
-        if (this._conn === 'disconnected') return 'lost the thread… reconnecting';
-        return null;
-      },
-      _renderQuip(fade) {
-        const el = DOM.lunaQuip;
-        if (!el) return;
-        const conn = this._connQuip();
-        const text = conn != null ? conn : this._quips[this._qi % this._quips.length];
-        if (fade) {
-          el.classList.add('fading');
-          setTimeout(() => { el.textContent = text; el.classList.remove('fading'); }, 600);
-        } else {
-          el.textContent = text;
-        }
-      },
-    };
+    // Converted to a typed module (stack23 S19e): src/chat/moonBar.ts, moved
+    // verbatim apart from one erased `!`. Same forward-declaration and same
+    // relocated `init()` as MoonFace above.
+    var MoonBar;
 
     /**
      * Secure secret-entry UI controller.
@@ -4634,7 +4518,9 @@
         // A (re)connect means no turn from a prior socket is in flight; settle
         // the face so a turn abandoned by a drop can't resurface as "thinking"
         // when the new socket opens (covers paths where State.ws was nulled).
-        MoonFace.setBusy(false);
+        // `?.` for the same boot-order reason as updateStatus below: a first
+        // connect() can precede the module, and `_busy` already defaults to false.
+        MoonFace?.setBusy(false);
 
         // fix-6: each connect() bumps the generation. Handlers attached below
         // capture this gen; a superseded socket's late async events (which
@@ -4766,8 +4652,18 @@
         DOM.connectionStatus.className = statusClass;
         DOM.connectionStatus.textContent = text;
         // Mirror connection into the animated face + free-space bar mood.
-        MoonFace.setConnection(statusClass);
-        MoonBar.setConnection(statusClass);
+        // `?.` HERE ONLY, and it is not defensive noise. This is the one path
+        // that can run BEFORE the deferred module publishes MoonFace/MoonBar:
+        // loadConnectionAndConnect() is a classic-top-level call whose
+        // synchronous prefix reaches connect() in a plain browser (the Tauri
+        // branch awaits first, so it never does). Skipping the call is the
+        // IDENTITY: both controllers default to _conn 'connecting' / _busy
+        // false, and their init() paints exactly that default at construction.
+        // Every other reader is inside a frame handler or event callback and
+        // stays unguarded, so a genuinely-early read added later still throws
+        // instead of silently no-opping.
+        MoonFace?.setConnection(statusClass);
+        MoonBar?.setConnection(statusClass);
       },
 
       /**
@@ -5240,7 +5136,9 @@
         State.stalledIdSet = new Set();
         State.threadListAutoSelectPending = false;
 
-        MoonFace.setBusy(false);
+        // `?.` for the same boot-order reason as updateStatus below: a first
+        // connect() can precede the module, and `_busy` already defaults to false.
+        MoonFace?.setBusy(false);
         this.updateStatus('connecting', 'Connecting…');
         // Arm close hooks HERE, at the start of the attempt, not on 'ready'.
         // The shipped hook wipes a typed-but-unsent secret, and a secret typed
@@ -5544,8 +5442,18 @@
         // Identical contract to WebSocketEngine.updateStatus
         DOM.connectionStatus.className = statusClass;
         DOM.connectionStatus.textContent = text;
-        MoonFace.setConnection(statusClass);
-        MoonBar.setConnection(statusClass);
+        // `?.` HERE ONLY, and it is not defensive noise. This is the one path
+        // that can run BEFORE the deferred module publishes MoonFace/MoonBar:
+        // loadConnectionAndConnect() is a classic-top-level call whose
+        // synchronous prefix reaches connect() in a plain browser (the Tauri
+        // branch awaits first, so it never does). Skipping the call is the
+        // IDENTITY: both controllers default to _conn 'connecting' / _busy
+        // false, and their init() paints exactly that default at construction.
+        // Every other reader is inside a frame handler or event callback and
+        // stays unguarded, so a genuinely-early read added later still throws
+        // instead of silently no-opping.
+        MoonFace?.setConnection(statusClass);
+        MoonBar?.setConnection(statusClass);
       },
 
       // ── Turn watchdog (behavior 5) ─────────────────────────────────────
@@ -6834,9 +6742,8 @@
       });
     }
 
-    // Boot the animated face + free-space bar (idempotent; safe under jsdom).
-    MoonFace.init();
-    MoonBar.init();
+    // (The animated face + free-space bar boot themselves at construction in
+    // main-chat.tsx now - stack23 S19e.)
 
     /**
      * File / image attachment composer state - converted to a typed React
