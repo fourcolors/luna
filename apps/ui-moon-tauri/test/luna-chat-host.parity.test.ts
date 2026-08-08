@@ -85,9 +85,20 @@ describe('window.LunaChatHost (stack23 S16c-host runtime parity)', () => {
     expect(typeof host.backendCapabilities).toBe('function')
     expect(typeof host.send).toBe('function')
     expect(typeof host.executeCapability).toBe('function')
-    expect(typeof host.appendMessage).toBe('function')
-    expect(typeof host.newConversation).toBe('function')
-    expect(typeof host.autoGrowMessageInput).toBe('function')
+    expect(typeof host.isConnected).toBe('function')
+    expect(typeof host.clearTurnTimeout).toBe('function')
+    expect(typeof host.startTurnTimeout).toBe('function')
+    expect(typeof host.startSubscribeTimeout).toBe('function')
+    expect(typeof host.sendNewThread).toBe('function')
+    // GROUP C IS GONE as of S19k. appendMessage / newConversation /
+    // autoGrowMessageInput were its last three members and were all
+    // ChatEngine calls; ChatEngine is a module, so its callers hold it
+    // directly. What is left is the wire and state reads.
+    expect('appendMessage' in host).toBe(false)
+    expect('newConversation' in host).toBe(false)
+    expect('autoGrowMessageInput' in host).toBe(false)
+    expect('closeLocalShellMenu' in host).toBe(false)
+    expect('buildMessageMeta' in host).toBe(false)
   })
 
   it('state() returns the live State object (fields the ChatHostState interface names)', () => {
