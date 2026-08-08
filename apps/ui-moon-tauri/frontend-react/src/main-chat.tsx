@@ -41,6 +41,9 @@ import { Logger } from "./chat/logger"
 import { createMoonFace } from "./chat/moonFace"
 import { createMoonBar } from "./chat/moonBar"
 import { createSurveyEngine, buildSurveyVerdicts } from "./chat/surveyEngine"
+import { createLocalShell } from "./chat/localShell"
+import { createNotifier } from "./chat/notifier"
+import { MoonClient } from "./chat/moonClient"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -70,6 +73,9 @@ function assignBridge(
     | "SmartBarEngine"
     | "ResultToasts"
     | "UpdateBanner"
+    | "LocalShell"
+    | "Notifier"
+    | "MoonClient"
     | "SurveyEngine"
     | "SecretPromptEngine"
     | "SuggestedActionsEngine"
@@ -133,6 +139,30 @@ assignBridge(
   "UpdateBanner",
   createUpdateBanner({ Logger }),
 )
+
+// ── The leaf controllers: LocalShell, Notifier, MoonClient (stack23 S19h) ──
+//
+// LocalShell is a SECURITY surface - the frame it sends is the authority for
+// what the agent may touch on this machine - so it moved character-identical.
+// State arrives from host.state(), the LIVE object, because `State.localShell`
+// is mutated in place rather than replaced.
+const localShell = createLocalShell({
+  Logger,
+  DOM: {
+    scopeBtn: document.getElementById("scope-btn"),
+    scopeMenu: document.getElementById("scope-menu"),
+    scopeFullAccess: document.getElementById("scope-full-access"),
+  },
+  State: getChatHost()?.state(),
+  WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+})
+// Called HERE, not at chat.html's top level, for the reason MoonFace.init()
+// moved in S19e: a classic-top-level call cannot see a module-published
+// global. It is only read when the capability frame goes out after hello.
+localShell.refreshPlatform()
+assignBridge("LocalShell", localShell)
+assignBridge("Notifier", createNotifier({ Logger }))
+assignBridge("MoonClient", MoonClient)
 
 // ── MoonFace + MoonBar (the header's expression + message zone, S19e) ───
 //
@@ -291,6 +321,10 @@ const slashMenuMount = mountSlashMenu(
   chatHostSlashMenuCtx({
     getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
     clearAttachments: () => attachmentsMount?.Attachments.clear(),
+    // Straight to the module. This used to be
+    // `getChatHost()?.closeLocalShellMenu()`, a Group C member that existed
+    // only to bridge module -> vanilla const. S19h DELETED it.
+    closeLocalShellMenu: () => localShell.openMenu(false),
   }),
 )
 

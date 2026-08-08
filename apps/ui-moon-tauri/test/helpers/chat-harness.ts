@@ -76,6 +76,9 @@ import { Logger as LunaLogger } from '../../frontend-react/src/chat/logger'
 import { createSurveyEngine, buildSurveyVerdicts as __bsv } from '../../frontend-react/src/chat/surveyEngine'
 import { createSecretPromptEngine } from '../../frontend-react/src/chat/secretPromptEngine'
 import { createSuggestedActionsEngine } from '../../frontend-react/src/chat/suggestedActionsEngine'
+import { createLocalShell } from '../../frontend-react/src/chat/localShell'
+import { createNotifier } from '../../frontend-react/src/chat/notifier'
+import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
 import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
 import { createArtifactsEngine } from '../../frontend-react/src/chat/artifactsEngine'
@@ -251,6 +254,10 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
     chatHostSlashMenuCtx({
       getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
       clearAttachments: () => attachmentsMount.Attachments.clear(),
+      // LATE-BOUND on purpose: this harness mounts SlashMenu before it builds
+      // LocalShell, the reverse of production. Capturing eagerly here would
+      // capture null.
+      closeLocalShellMenu: () => localShellInstance?.openMenu(false),
     }),
   )
   if (!slashMenuMount) {
@@ -272,6 +279,18 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   // the harness on the same footing.
   const byId = (id: string) => document.getElementById(id)
   const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
+  let localShellInstance: ReturnType<typeof createLocalShell> | null = null
+  const makeLocalShell = () =>
+    (localShellInstance = createLocalShell({
+      Logger: quietLogger,
+      DOM: {
+        scopeBtn: byId('scope-btn'),
+        scopeMenu: byId('scope-menu'),
+        scopeFullAccess: byId('scope-full-access'),
+      },
+      State: getChatHost()?.state(),
+      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
+    }))
   const makeSurveyEngine = () =>
     createSurveyEngine({
       Logger: quietLogger,
@@ -387,6 +406,10 @@ buildSurveyVerdicts = __buildSurveyVerdicts;
 SurveyEngine = __surveyEngine();
 SecretPromptEngine = __secretPromptEngine();
 SuggestedActionsEngine = __suggestedActionsEngine(MoonFace, MoonBar);
+LocalShell = __localShell();
+LocalShell.refreshPlatform();
+Notifier = __notifier();
+MoonClient = __moonClient;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -407,6 +430,9 @@ window.MoonBar = MoonBar;
 window.SurveyEngine = SurveyEngine;
 window.SecretPromptEngine = SecretPromptEngine;
 window.SuggestedActionsEngine = SuggestedActionsEngine;
+window.LocalShell = LocalShell;
+window.Notifier = Notifier;
+window.MoonClient = MoonClient;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -424,6 +450,8 @@ if (window.__MoonInternals) {
   window.__MoonInternals.SurveyEngine = SurveyEngine;
   window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
   window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
+  window.__MoonInternals.Notifier = Notifier;
+  window.__MoonInternals.MoonClient = MoonClient;
   window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
   window.__MoonInternals.describeTarget = __describeTarget;
   window.__MoonInternals.cropAndEncodeFeedbackScreenshot = __cropAndEncode;
@@ -450,10 +478,13 @@ if (window.__MoonInternals) {
     '__surveyEngine',
     '__secretPromptEngine',
     '__suggestedActionsEngine',
+    '__localShell',
+    '__notifier',
+    '__moonClient',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
