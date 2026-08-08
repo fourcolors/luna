@@ -22,14 +22,19 @@
  * tell a regression from an intended change. The rewrite is its own slice,
  * after this one is proven identical.
  *
- * ONE LINE IS NOT VERBATIM, and it is a fix rather than an accident.
- * `wireThreadRow` used to pass `typeof winLabel !== 'undefined' ? winLabel :
- * null`, reading a chat.html top-level `let`. In a module that guard is not an
- * error - it silently evaluates to null and the drag would lose its owner
- * label. It now reads `State.winLabel`, which chat.html assigns from the same
- * variable at boot, and which THIS FILE ALREADY PREFERRED twelve lines later
- * in openInNewWindow ("Prefer State.winLabel (set at boot)"). The two reads
- * are consistent now instead of disagreeing.
+ * IT IS NOW VERBATIM, ALL OF IT. S19j moved this with exactly one changed
+ * line: `wireThreadRow` used to pass `typeof winLabel !== 'undefined' ?
+ * winLabel : null`, and I rewrote it to read `State.winLabel`, reasoning that
+ * the old guard would silently yield null in a module and cost the drag its
+ * owner label.
+ *
+ * THAT REASONING WAS SOUND AND THE LINE WAS STILL POINTLESS. The `winLabel`
+ * dep was destructured by threadDrag.ts and never read - passing
+ * "XXX-GARBAGE-XXX" changed nothing anywhere. The drag's owner label has
+ * always come from `State.winLabel`, read directly at the point of use. The
+ * dead parameter is deleted, so this move is now character-identical, and the
+ * one line that actually carries the owner label finally has a test
+ * (thread-drag-detach.test.ts).
  */
 // @ts-nocheck
 
@@ -674,11 +679,6 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         Logger,
         moonDragDebugNote,
         LunaThreadDrag,
-        // Was `typeof winLabel !== 'undefined' ? winLabel : null`, reading a
-      // chat.html top-level `let`. In a module that silently yields null and
-      // the drag loses its owner label. State.winLabel is the same value,
-      // and is what openInNewWindow below already prefers.
-      winLabel: State.winLabel || null,
       });
     },
 

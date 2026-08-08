@@ -50,11 +50,10 @@ export interface ThreadDragDeps {
   readonly Logger: any
   readonly moonDragDebugNote: (...a: any[]) => void
   readonly LunaThreadDrag: any
-  readonly winLabel: string | null
 }
 
 export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDeps): void {
-  const { State, DOM, Logger, moonDragDebugNote, LunaThreadDrag, winLabel } = deps
+  const { State, DOM, Logger, moonDragDebugNote, LunaThreadDrag } = deps
   const self = engine
   // Cursor sits this far inside the floater top-left (logical points, y down).
   // Must match begin_native_pullout_drag grab defaults so the window sticks.
@@ -161,6 +160,11 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
         if (floatedLabel && window.__TAURI__ && window.__TAURI__.core) {
           nativePulloutArmed = true;
           const title = (t.title && String(t.title).trim()) || null;
+          // THE REDOCK TARGET, and the one line in this file that had no test
+          // until thread-drag-detach.test.ts. Nulling it left all 1531 other
+          // tests green, and a null owner means the native pullout never arms:
+          // the floater stops sticking to the cursor and Redock has nowhere to
+          // fold back into.
           const owner = State.winLabel || null;
           if (owner) {
             const metrics = self.measureStripMetrics();
