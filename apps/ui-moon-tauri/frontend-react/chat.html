@@ -3007,38 +3007,11 @@
      * Every emitted verdict stamps `at = issuedAt` so the server's idempotency
      * key (ref, signalKind, at) is stable on retry (spec D-LOCK-5).
      */
-    function buildSurveyVerdicts(items, answers, issuedAt) {
-      const out = [];
-      for (const item of items || []) {
-        if (item.kind === 'task_quality') {
-          const n = answers.likert;
-          if (n !== null && n !== undefined) {
-            out.push({
-              itemId: item.id,
-              kind: 'task_quality',
-              ref: item.ref,
-              score: (n - 1) / 4,
-              via: 'survey',
-              at: issuedAt,
-            });
-          }
-        } else if (item.kind === 'belief_validation' && item.beliefId !== undefined) {
-          const ans = answers.beliefAnswers[item.beliefId];
-          if (ans !== undefined) {
-            out.push({
-              itemId: item.id,
-              kind: 'belief_validation',
-              ref: item.ref,
-              beliefId: item.beliefId,
-              verdict: ans,
-              via: 'survey',
-              at: issuedAt,
-            });
-          }
-        }
-      }
-      return out;
-    }
+    // buildSurveyVerdicts moved with SurveyEngine to src/chat/surveyEngine.ts
+    // (stack23 S19f). It is the half of that feature with a CROSS-CLIENT
+    // contract - the TUI's headless.ts must emit identical frames for
+    // identical answers - so it moved verbatim rather than being rewritten.
+    var buildSurveyVerdicts;
 
     /**
      * UserAsk / alignment-survey UI controller.
@@ -3059,167 +3032,11 @@
      *                  confirmation banner into the chat transcript.
      *   dismiss()    — hide panel only (no wire traffic).
      */
-    const SurveyEngine = {
-      pending: null,                     // { surveyId, issuedAt, items } | null
-      answers: { likert: null, beliefAnswers: {} },
-
-      show(frame) {
-        if (!frame || !Array.isArray(frame.items)) {
-          Logger.warn('SurveyEngine.show: malformed survey-request frame', frame);
-          return;
-        }
-        this.pending = {
-          surveyId: frame.surveyId || ('survey-' + (frame.issuedAt || Date.now())),
-          issuedAt: frame.issuedAt || Date.now(),
-          items: frame.items,
-        };
-        this.answers = { likert: null, beliefAnswers: {} };
-        this._render();
-        if (DOM.userAskPanel) DOM.userAskPanel.hidden = false;
-        // (The hub auto-opened its collapsed chat here; the chat WINDOW is
-        // always visible, so there is nothing to open.)
-        Logger.info('SurveyEngine: shown', this.pending);
-      },
-
-      hide() {
-        if (DOM.userAskPanel) DOM.userAskPanel.hidden = true;
-        if (DOM.userAskBody) DOM.userAskBody.innerHTML = '';
-        this.pending = null;
-        this.answers = { likert: null, beliefAnswers: {} };
-      },
-
-      submit() {
-        if (!this.pending) return;
-        if (this.answers.likert === null) {
-          // Mandatory task_quality unanswered — guarded by disabled button,
-          // but defend in depth for keyboard / test paths.
-          if (DOM.userAskHint) {
-            DOM.userAskHint.textContent = 'Rate task quality (1–5) before submitting';
-            DOM.userAskHint.classList.add('error');
-          }
-          return;
-        }
-        const verdicts = buildSurveyVerdicts(
-          this.pending.items, this.answers, this.pending.issuedAt
-        );
-        WebSocketEngine.send({
-          type: 'survey-response',
-          surveyId: this.pending.surveyId,
-          issuedAt: this.pending.issuedAt,
-          verdicts: verdicts,
-        });
-        this.hide();
-        // Light confirmation in the transcript so the operator sees their
-        // answer landed (banner = non-streaming assistant bubble).
-        try { ChatState.appendBanner('✓ Thanks — feedback recorded.'); ChatLoop.flush(); }
-        catch (_) { /* ChatState wiring not present in early-boot edge cases */ }
-      },
-
-      dismiss() {
-        // No wire frame. The survey re-surfaces on the next connection-time
-        // due-check (alignment spec Execution Correction #1).
-        this.hide();
-      },
-
-      // Build the panel body: one task_quality row + N belief rows.
-      _render() {
-        const body = DOM.userAskBody;
-        if (!body || !this.pending) return;
-        body.innerHTML = '';
-
-        for (const item of this.pending.items) {
-          const row = document.createElement('div');
-          row.className = 'user-ask-item';
-          row.dataset.itemId = item.id;
-          if (item.beliefId) row.dataset.beliefId = item.beliefId;
-          row.dataset.kind = item.kind;
-
-          const prompt = document.createElement('div');
-          prompt.className = 'user-ask-prompt';
-          prompt.textContent = item.prompt || '';
-          row.appendChild(prompt);
-
-          const choices = document.createElement('div');
-          choices.className = 'user-ask-choices';
-          row.appendChild(choices);
-
-          if (item.kind === 'task_quality') {
-            const sub = document.createElement('div');
-            sub.className = 'user-ask-prompt-sub';
-            sub.textContent = 'How did Luna do? 1 = poor, 5 = great';
-            prompt.appendChild(sub);
-            for (let n = 1; n <= 5; n++) {
-              const btn = document.createElement('button');
-              btn.type = 'button';
-              btn.className = 'user-ask-choice';
-              btn.dataset.likert = String(n);
-              btn.setAttribute('aria-label', 'Rate ' + n + ' out of 5');
-              btn.textContent = String(n);
-              btn.addEventListener('click', () => this._setLikert(n));
-              choices.appendChild(btn);
-            }
-          } else if (item.kind === 'belief_validation' && item.beliefId) {
-            const beliefId = item.beliefId;
-            const verdicts = [
-              { v: 'confirmed', label: 'Confirm' },
-              { v: 'corrected', label: 'Needs tweak' },
-              { v: 'rejected',  label: 'Reject' },
-            ];
-            for (const { v, label } of verdicts) {
-              const btn = document.createElement('button');
-              btn.type = 'button';
-              btn.className = 'user-ask-choice';
-              btn.dataset.verdict = v;
-              btn.textContent = label;
-              btn.addEventListener('click', () => this._setBelief(beliefId, v));
-              choices.appendChild(btn);
-            }
-          }
-
-          body.appendChild(row);
-        }
-        this._refreshSelection();
-      },
-
-      _setLikert(n) {
-        this.answers.likert = n;
-        if (DOM.userAskHint) {
-          DOM.userAskHint.classList.remove('error');
-          DOM.userAskHint.textContent = 'Ready — press Submit';
-        }
-        this._refreshSelection();
-      },
-
-      _setBelief(beliefId, verdict) {
-        this.answers.beliefAnswers[beliefId] = verdict;
-        this._refreshSelection();
-      },
-
-      // Reflect the current `answers` onto button states + Submit enablement.
-      _refreshSelection() {
-        const body = DOM.userAskBody;
-        if (!body) return;
-        const rows = body.querySelectorAll('.user-ask-item');
-        rows.forEach((row) => {
-          const kind = row.dataset.kind;
-          row.querySelectorAll('.user-ask-choice').forEach((btn) => btn.classList.remove('selected'));
-          if (kind === 'task_quality' && this.answers.likert !== null) {
-            const sel = row.querySelector('.user-ask-choice[data-likert="' + this.answers.likert + '"]');
-            if (sel) sel.classList.add('selected');
-          } else if (kind === 'belief_validation') {
-            const beliefId = row.dataset.beliefId;
-            const ans = this.answers.beliefAnswers[beliefId];
-            if (ans) {
-              const sel = row.querySelector('.user-ask-choice[data-verdict="' + ans + '"]');
-              if (sel) sel.classList.add('selected');
-            }
-          }
-        });
-        if (DOM.userAskSubmit) {
-          DOM.userAskSubmit.disabled = (this.answers.likert === null);
-        }
-      },
-    };
+    // Converted to a typed module (stack23 S19f): src/chat/surveyEngine.ts,
+    // moved verbatim together with buildSurveyVerdicts - a feature-private
+    // helper, not a shared utility. Forward-declared `var`; every reader is a
+    // frame handler or a click handler, so it resolves at CALL time.
+    var SurveyEngine;
 
     /**
      * SuggestedActionsEngine — inline chip controller.
@@ -3246,109 +3063,11 @@
      *   _hide()            — hide chip.
      *   _respond(actionId, decision) — send wire frame + optimistic flip.
      */
-    const SuggestedActionsEngine = {
-      // Map of threadId → SuggestedActionWire[]
-      _store: {},
-      // Whether the server advertises suggestedActions capability.
-      _capable: false,
-
-      applyCapability(hasCapability) {
-        this._capable = !!hasCapability;
-        if (!this._capable) this._hide();
-      },
-
-      applySet(frame) {
-        if (!frame || !frame.threadId) return;
-        this._store[frame.threadId] = Array.isArray(frame.actions) ? frame.actions : [];
-        this.refresh();
-      },
-
-      applyUpdate(frame) {
-        if (!frame || !frame.action || !frame.action.threadId) return;
-        const tid = frame.action.threadId;
-        const current = this._store[tid] || [];
-        const idx = current.findIndex((a) => a.id === frame.action.id);
-        if (idx >= 0) {
-          this._store[tid] = current.slice();
-          this._store[tid][idx] = Object.assign({}, current[idx], frame.action);
-        } else {
-          this._store[tid] = [frame.action].concat(current);
-        }
-        this.refresh();
-      },
-
-      refresh() {
-        if (!this._capable) { this._hide(); return; }
-        // Stacking precedence: secret > survey > suggestion.
-        // If a higher-priority panel is currently visible, keep chip hidden.
-        const secretVisible = DOM.secretPromptPanel && !DOM.secretPromptPanel.hidden;
-        const surveyVisible = DOM.userAskPanel && !DOM.userAskPanel.hidden;
-        if (secretVisible || surveyVisible) { this._hide(); return; }
-
-        const tid = State.activeThreadId;
-        if (!tid) { this._hide(); return; }
-        const actions = this._store[tid] || [];
-        // Find the most-recently-created proposed action.
-        const proposed = actions
-          .filter((a) => a.status === 'proposed')
-          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
-        if (!proposed) { this._hide(); return; }
-        this._show(proposed);
-      },
-
-      _show(action) {
-        if (!DOM.suggestedActionPanel) return;
-        const typeLabels = {
-          task: 'Task',
-          research: 'Research',
-          create_skill: 'Create Skill',
-          create_workflow: 'Create Workflow',
-          run_workflow: 'Run Workflow',
-        };
-        if (DOM.suggestedActionType) DOM.suggestedActionType.textContent = typeLabels[action.actionType] || (action.actionType || '');
-        if (DOM.suggestedActionText) DOM.suggestedActionText.textContent = action.title || '';
-        if (DOM.suggestedActionRationale) {
-          if (action.rationale) {
-            DOM.suggestedActionRationale.textContent = action.rationale;
-            DOM.suggestedActionRationale.hidden = false;
-          } else {
-            DOM.suggestedActionRationale.textContent = '';
-            DOM.suggestedActionRationale.hidden = true;
-          }
-        }
-        // Store current actionId on panel so buttons always act on the shown action.
-        DOM.suggestedActionPanel.dataset.actionId = action.id;
-        // Top-bar redesign: the suggestion now surfaces as a compact teaser
-        // chip in the header's free space (MoonBar). The full docked panel
-        // (rationale + accept/dismiss/see-all) stays painted but hidden until
-        // the user clicks the chip — so the bar is the glance and the panel is
-        // the detail, instead of two suggestion surfaces showing at once.
-        MoonBar.showSuggestion(action);
-        MoonFace.setSuggesting(true);
-      },
-
-      _hide() {
-        if (DOM.suggestedActionPanel) DOM.suggestedActionPanel.hidden = true;
-        MoonBar.clearSuggestion();
-        MoonFace.setSuggesting(false);
-      },
-
-      _respond(actionId, decision) {
-        const tid = State.activeThreadId;
-        if (!tid || !actionId) return;
-        WebSocketEngine.send({ type: 'suggested-action-respond', threadId: tid, actionId: actionId, decision: decision });
-        // Optimistic flip — update the local store immediately so refresh()
-        // picks up the new status without waiting for a server round-trip.
-        const current = this._store[tid] || [];
-        const newStatus = decision === 'accept' ? 'accepted' : 'dismissed';
-        const idx = current.findIndex((a) => a.id === actionId);
-        if (idx >= 0) {
-          this._store[tid] = current.slice();
-          this._store[tid][idx] = Object.assign({}, current[idx], { status: newStatus });
-        }
-        this.refresh();
-      },
-    };
+    // Converted to a typed module (stack23 S19f):
+    // src/chat/suggestedActionsEngine.ts, moved verbatim. It was blocked until
+    // S19e made MoonBar and MoonFace modules - a module cannot reach a
+    // chat.html-private const (the OUTBOUND-EDGE RULE).
+    var SuggestedActionsEngine;
 
     /**
      * MoonFace — drives the animated header avatar's expression.
@@ -3411,110 +3130,11 @@
      *   handleStatus()  — show server ack; on ok, leave a brief "saved" then hide.
      *   hide()          — hide panel, defensively clear input, drop _reqId.
      */
-    const SecretPromptEngine = {
-      _reqId: null,
-      _hideTimer: null,
-
-      show(frame) {
-        if (!frame || !frame.requestId) {
-          Logger.warn('SecretPromptEngine.show: malformed secret-request frame', frame);
-          return;
-        }
-        // A fresh request supersedes any pending auto-hide from a prior ok.
-        if (this._hideTimer) { clearTimeout(this._hideTimer); this._hideTimer = null; }
-        this._reqId = frame.requestId;
-
-        // textContent (never innerHTML) — prompt + destinationLabel are
-        // server-controlled strings.
-        if (DOM.secretPromptPrompt) {
-          DOM.secretPromptPrompt.textContent = frame.prompt || 'Luna needs a secret value.';
-        }
-        if (DOM.secretPromptConsent) {
-          const label = (frame.destinationLabel || '').trim();
-          if (label) {
-            DOM.secretPromptConsent.textContent = 'Will be stored as: ' + label;
-            DOM.secretPromptConsent.hidden = false;
-          } else {
-            DOM.secretPromptConsent.textContent = '';
-            DOM.secretPromptConsent.hidden = true;
-          }
-        }
-        this.setStatus('', null);
-        if (DOM.secretPromptInput) {
-          DOM.secretPromptInput.value = '';
-          try { DOM.secretPromptInput.focus(); } catch (_) { /* non-fatal in jsdom */ }
-        }
-        if (DOM.secretPromptPanel) DOM.secretPromptPanel.hidden = false;
-        // (The hub auto-opened its collapsed chat here; the chat WINDOW is
-        // always visible, so there is nothing to open.)
-        Logger.info('SecretPromptEngine: shown for request', this._reqId);
-      },
-
-      submit() {
-        if (!this._reqId) return;
-        const value = (DOM.secretPromptInput && DOM.secretPromptInput.value) || '';
-        if (!value) { this.setStatus('Enter a value first.', 'error'); return; }
-        // OPEN-socket guard BEFORE send: WebSocketEngine.send() logs the whole
-        // frame when the socket is NOT open (which would leak the secret). When
-        // OPEN it never logs the frame, so this is the only safe path.
-        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
-          this.setStatus('Not connected.', 'error');
-          return;
-        }
-        WebSocketEngine.send({ type: 'secret-result', requestId: this._reqId, secret: value });
-        if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';  // one-shot — never retained
-        this.setStatus('Saving…', 'info');
-      },
-
-      cancel() {
-        if (this._reqId && State.ws && State.ws.readyState === WebSocket.OPEN) {
-          WebSocketEngine.send({ type: 'secret-result', requestId: this._reqId, cancelled: true });
-        }
-        if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
-        this.hide();
-      },
-
-      setStatus(msg, kind) {
-        const el = DOM.secretPromptStatus;
-        if (!el) return;
-        el.textContent = msg || '';
-        el.hidden = !msg;
-        el.classList.remove('error', 'ok');
-        if (kind === 'error') el.classList.add('error');
-        else if (kind === 'ok') el.classList.add('ok');
-      },
-
-      handleStatus(frame) {
-        if (!frame || frame.requestId !== this._reqId) return;  // ignore stale/unmatched
-        this.setStatus(
-          frame.ok ? (frame.message || 'Saved.') : (frame.message || 'Could not save the secret.'),
-          frame.ok ? 'ok' : 'error',
-        );
-        // Terminal either way: the server's request is one-shot — it has already
-        // resolved and discarded this requestId, so retyping here cannot retry
-        // against it. Clear _reqId so a stray submit() is inert; if another
-        // attempt is needed the agent re-calls request_secret, and show()
-        // replaces this panel with a fresh request.
-        this._reqId = null;
-        if (frame.ok) {
-          // Brief "saved" message, then hide. The server typically restarts
-          // after storing a secret; the client auto-reconnects on its own.
-          if (this._hideTimer) clearTimeout(this._hideTimer);
-          this._hideTimer = setTimeout(() => { this._hideTimer = null; this.hide(); }, 1500);
-        }
-        // On error: leave the message + panel visible (now inert) so the
-        // operator can read it; they dismiss with Cancel, or the agent
-        // re-prompts with a fresh panel.
-      },
-
-      hide() {
-        if (this._hideTimer) { clearTimeout(this._hideTimer); this._hideTimer = null; }
-        if (DOM.secretPromptPanel) DOM.secretPromptPanel.hidden = true;
-        if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';  // defensive
-        this.setStatus('', null);
-        this._reqId = null;
-      },
-    };
+    // Converted to a typed module (stack23 S19f):
+    // src/chat/secretPromptEngine.ts, moved verbatim. The OPEN-socket guard
+    // before send() is load-bearing (an unopened socket makes send() log the
+    // whole frame, secret included), so State arrives BY REFERENCE.
+    var SecretPromptEngine;
 
     // ── Point-at-the-UI feedback ─────────────────────────────────────────────
     //

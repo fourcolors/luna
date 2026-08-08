@@ -37,8 +37,12 @@ import * as ThreadCreateLogic from "./chat/threadCreate"
 import * as ThreadDrag from "./chat/threadDrag"
 import { createResultToasts } from "./chat/resultToasts"
 import { createUpdateBanner } from "./chat/updateBanner"
+import { Logger } from "./chat/logger"
 import { createMoonFace } from "./chat/moonFace"
 import { createMoonBar } from "./chat/moonBar"
+import { createSurveyEngine, buildSurveyVerdicts } from "./chat/surveyEngine"
+import { createSecretPromptEngine } from "./chat/secretPromptEngine"
+import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
 import { createArtifactsEngine } from "./chat/artifactsEngine"
 import { mountMoonReactRoot } from "./boot"
@@ -66,6 +70,10 @@ function assignBridge(
     | "SmartBarEngine"
     | "ResultToasts"
     | "UpdateBanner"
+    | "SurveyEngine"
+    | "SecretPromptEngine"
+    | "SuggestedActionsEngine"
+    | "buildSurveyVerdicts"
     | "MoonFace"
     | "MoonBar"
     | "FeedbackEngine"
@@ -118,12 +126,12 @@ function assignBridge(
 // captured the pre-mount `undefined`, and that copy is what the screenshot /
 // agent-browser harnesses read (see chat.html's own "#124 toast harness" note).
 assignBridge("ResultToasts", createResultToasts())
-// Logger is chat.html-private, so the banner gets a console-backed warn here
+// The banner gets the REAL Logger now (S19f). It used to get a bare
 // and the real Logger when chat.html is the one constructing it. Only the
 // `warn` arm is used (apply_update / open-updates failures).
 assignBridge(
   "UpdateBanner",
-  createUpdateBanner({ Logger: { warn: (...a: unknown[]) => console.warn(...a) } }),
+  createUpdateBanner({ Logger }),
 )
 
 // ── MoonFace + MoonBar (the header's expression + message zone, S19e) ───
@@ -355,3 +363,75 @@ if (messageListMount) {
   assignBridge("ChatState", messageListMount.ChatState)
   assignBridge("ChatLoop", messageListMount.ChatLoop)
 }
+
+// ── The docked panel stack: secret > survey > suggestion (stack23 S19f) ──
+//
+// All three move in ONE slice because the precedence rule spans them:
+// SuggestedActionsEngine hides its chip by reading the OTHER TWO panels'
+// `hidden` flags. Splitting them would have put that rule across the boundary.
+//
+// State arrives from host.state(), which returns the LIVE object chat.html
+// mutates - never a copy. That matters most for SecretPromptEngine, whose
+// OPEN-socket guard reads `State.ws` and must see the CURRENT socket after a
+// reconnect, not the one that existed when this module ran.
+const byId = (id: string) => document.getElementById(id)
+
+assignBridge("buildSurveyVerdicts", buildSurveyVerdicts)
+
+assignBridge(
+  "SurveyEngine",
+  createSurveyEngine({
+    Logger,
+    DOM: {
+      userAskPanel: byId("user-ask-panel"),
+      userAskBody: byId("user-ask-body"),
+      userAskHint: byId("user-ask-hint"),
+      userAskSubmit: byId("user-ask-submit"),
+    },
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+    // The REAL pair, captured from the MessageList mount above rather than
+    // routed through host.appendMessage. appendBanner renders a PLAIN-TEXT
+    // bubble; appendMessage renders markdown, which would have turned the
+    // survey confirmation into a different thing.
+    ChatState: { appendBanner: (text: string) => messageListMount?.ChatState.appendBanner(text) },
+    ChatLoop: { flush: () => messageListMount?.ChatLoop.flush() },
+  }),
+)
+
+assignBridge(
+  "SecretPromptEngine",
+  createSecretPromptEngine({
+    Logger,
+    DOM: {
+      secretPromptPanel: byId("secret-prompt-panel"),
+      secretPromptPrompt: byId("secret-prompt-prompt"),
+      secretPromptConsent: byId("secret-prompt-consent"),
+      secretPromptInput: byId("secret-prompt-input"),
+      secretPromptStatus: byId("secret-prompt-status"),
+    },
+    State: getChatHost()?.state(),
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+  }),
+)
+
+// MoonBar/MoonFace are passed as the very instances constructed above -
+// module to module, with no bridge in between. That is the whole payoff of
+// having moved them first in S19e.
+assignBridge(
+  "SuggestedActionsEngine",
+  createSuggestedActionsEngine({
+    DOM: {
+      suggestedActionPanel: byId("suggested-action-panel"),
+      suggestedActionType: byId("suggested-action-type"),
+      suggestedActionText: byId("suggested-action-text"),
+      suggestedActionRationale: byId("suggested-action-rationale"),
+      secretPromptPanel: byId("secret-prompt-panel"),
+      userAskPanel: byId("user-ask-panel"),
+    },
+    State: getChatHost()?.state(),
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+    MoonBar: moonBar,
+    MoonFace: moonFace,
+  }),
+)
+
