@@ -22,7 +22,6 @@ import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -65,8 +64,7 @@ describe('ComposerConfig (chat.html)', () => {
 
     localStorage.clear()
 
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
 
     vi.useFakeTimers()
   })

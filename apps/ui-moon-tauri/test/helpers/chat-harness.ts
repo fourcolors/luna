@@ -80,6 +80,7 @@ import { createLocalShell } from '../../frontend-react/src/chat/localShell'
 import { createNotifier } from '../../frontend-react/src/chat/notifier'
 import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
 import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
+import { bootChat } from '../../frontend-react/src/chat/bootChat'
 import { createWire } from '../../frontend-react/src/chat/wire'
 import { createFrames } from '../../frontend-react/src/chat/frames'
 import { installWiring } from '../../frontend-react/src/chat/wiring'
@@ -213,539 +214,99 @@ export function installSyncRequestAnimationFrame(target: Window & typeof globalT
  * null, the same cross-test bleed `window.__MoonInternals` deletion in each
  * suite's own `afterEach` already guards against.
  */
-export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatMessageListMount): void {
-  delete window.LunaChatHost
-  const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-    .map((m) => m[1])
-    .filter((s): s is string => typeof s === 'string' && s.includes('WebSocketEngine'))
-  expect(inlineScripts).toHaveLength(1)
-
-  const attachmentsMount: AttachmentsMount | null = mountAttachments({
-    strip: document.getElementById('attachments-strip'),
-    error: document.getElementById('attach-error'),
+/**
+ * Boot the chat window the way production boots it (stack23 S20d).
+ *
+ * This used to evaluate chat.html's inline <script> and inject module
+ * instances into its scope through a hand-maintained prologue. chat.html has
+ * no script any more, and - more importantly - that prologue was a SECOND
+ * implementation of the boot ORDER. It drifted twice in the S20 arc alone
+ * (frames before wire; wire before wiring), each time producing failures
+ * production never had.
+ *
+ * So it calls bootChat(), the same function main-chat.tsx calls, and then
+ * publishes the test surface from what that returns. There is no second order
+ * to keep in sync.
+ *
+ * The `htmlContent` / `mount` parameters are kept so the 11 call sites did not
+ * all have to change shape in the same commit; both are now unused, and
+ * mountChatDomFromHtml (which the callers already run) is what puts the body
+ * in place.
+ */
+export function evalChatInlineScriptWithBridge(_htmlContent?: string, _mount?: unknown): void {
+  // flushSync around the WHOLE boot, which is what mountChatMessageListBridge
+  // used to do around its single mount. jsdom tests assert synchronously right
+  // after an action, so React's default async commit would leave them reading
+  // an empty transcript.
+  let boot!: ReturnType<typeof bootChat>
+  flushSync(() => {
+    boot = bootChat()
   })
-  if (!attachmentsMount) {
-    throw new Error(
-      'chat-harness: mountAttachments degraded to null - are #attachments-strip/#attach-error missing from the loaded body?',
-    )
-  }
 
-  const composerConfigMount: ComposerConfigMount | null = mountComposerConfig(
-    {
-      cluster: document.getElementById('composer-config'),
-      modelBtn: document.getElementById('model-cfg-btn'),
-      modelMenu: document.getElementById('model-cfg-menu'),
-      effortBtn: document.getElementById('effort-cfg-btn'),
-      effortMenu: document.getElementById('effort-cfg-menu'),
-      effortSep: document.getElementById('effort-cfg-sep'),
-      deferredHint: document.getElementById('cfg-deferred-hint'),
-    },
-    chatHostComposerCtx(),
-  )
-  if (!composerConfigMount) {
-    throw new Error(
-      'chat-harness: mountComposerConfig degraded to null - is the composer-config cluster missing from the loaded body?',
-    )
+  const w = window as unknown as Record<string, unknown> & {
+    __MoonInternals?: Record<string, unknown>
   }
+  w.__MoonInternals = w.__MoonInternals || {}
+  const M = w.__MoonInternals
 
-  const slashMenuMount: SlashMenuMount | null = mountSlashMenu(
-    {
-      menu: document.getElementById('slash-menu'),
-      messageInput: document.getElementById('message-input') as HTMLTextAreaElement | null,
-      modelMenu: document.getElementById('model-cfg-menu'),
-      modelBtn: document.getElementById('model-cfg-btn'),
-      effortMenu: document.getElementById('effort-cfg-menu'),
-      effortBtn: document.getElementById('effort-cfg-btn'),
-    },
-    chatHostSlashMenuCtx({
-      getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
-      clearAttachments: () => attachmentsMount.Attachments.clear(),
-      getBackendCommands: () => framesInstance?.backendCapabilities() ?? [],
-      executeCapability: (req: any) =>
-        framesInstance?.executeCapability(req) ??
-        Promise.resolve({ ok: false, error: 'capability layer unavailable', reason: 'unavailable' }),
-      // Late-bound for the same reason production is: SlashMenu mounts before
-      // the engine exists, and a dispatch only happens on a user action.
-      appendMessage: (role: string, text: string) => chatEngineInstance?.ChatEngine.appendMessage(role, text),
-      newConversation: () => chatEngineInstance?.ChatEngine.newConversation(),
-      autoGrowMessageInput: () => chatEngineInstance?.ChatEngine.autoGrowMessageInput(),
-      // LATE-BOUND on purpose: this harness mounts SlashMenu before it builds
-      // LocalShell, the reverse of production. Capturing eagerly here would
-      // capture null.
-      closeLocalShellMenu: () => localShellInstance?.openMenu(false),
-    }),
-  )
-  if (!slashMenuMount) {
-    throw new Error(
-      'chat-harness: mountSlashMenu degraded to null - is #slash-menu/#message-input missing from the loaded body?',
-    )
-  }
-
-  const smartBarMount: SmartBarMount | null = mountSmartBar(document.getElementById('smart-bar'))
-  if (!smartBarMount) {
-    throw new Error('chat-harness: mountSmartBar degraded to null - is #smart-bar missing from the loaded body?')
-  }
-
-  // A THUNK, not an instance. FeedbackEngine reads State and send through
-  // LunaChatHost, which the classic script publishes - and in THIS harness the
-  // modules mount BEFORE that script runs, so constructing eagerly would
-  // capture an undefined State. The shipped page has the opposite order and is
-  // unaffected; calling this from inside the bridged source below is what puts
-  // the harness on the same footing.
-  const byId = (id: string) => document.getElementById(id)
-  const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
-  let localShellInstance: ReturnType<typeof createLocalShell> | null = null
-  let chatEngineInstance: ReturnType<typeof createChatEngine> | null = null
-  let framesInstance: any = null
-  const makeWiring = (engines: any) =>
-    installWiring({
-      Logger: quietLogger,
-      // The SAME verified ids main-chat.tsx uses, read out of chat.html's own
-      // DOM object rather than derived by a camelCase-to-kebab heuristic.
-      DOM: {
-        artifactsBtnInner: byId('artifacts-btn-inner'),
-        artifactsPanelClose: byId('artifacts-panel-close'),
-        attachBtn: byId('attach-btn'),
-        chatForm: byId('chat-form'),
-        chatMessages: byId('chat-messages'),
-        chatPanel: byId('chat-panel'),
-        feedbackBtn: byId('feedback-btn'),
-        feedbackCancel: byId('feedback-cancel'),
-        feedbackCancelX: byId('feedback-cancel-x'),
-        feedbackInput: byId('feedback-input'),
-        feedbackSubmit: byId('feedback-submit-btn'),
-        fileInput: byId('file-input'),
-        lunaSuggestion: byId('luna-suggestion'),
-        messageInput: byId('message-input'),
-        scopeBtn: byId('scope-btn'),
-        scopeFullAccess: byId('scope-full-access'),
-        scopeMenu: byId('scope-menu'),
-        secretPromptCancel: byId('secret-prompt-cancel'),
-        secretPromptCancelX: byId('secret-prompt-cancel-x'),
-        secretPromptInput: byId('secret-prompt-input'),
-        secretPromptSubmit: byId('secret-prompt-submit'),
-        suggestedActionAccept: byId('suggested-action-accept'),
-        suggestedActionCancelX: byId('suggested-action-cancel-x'),
-        suggestedActionDismiss: byId('suggested-action-dismiss'),
-        suggestedActionPanel: byId('suggested-action-panel'),
-        suggestedActionSeeAll: byId('suggested-action-see-all'),
-        threadDrawerClose: byId('thread-drawer-close'),
-        threadDrawerNew: byId('thread-drawer-new'),
-        threadDrawerSearch: byId('thread-drawer-search-input'),
-        toggleSettings: byId('toggle-settings'),
-        toggleThreads: byId('toggle-threads'),
-        userAskDismiss: byId('user-ask-dismiss'),
-        userAskSubmit: byId('user-ask-submit'),
-      },
-      State: getChatHost()?.state() as never,
-      engines,
-    })
-  const makeFrames = (engines: any) => {
-    const p = new URLSearchParams(location.search).get('thread') || null
-    const spawnFresh = p === 'new'
-    return (framesInstance = createFrames({
-      Logger: quietLogger,
-      State: getChatHost()?.state() as never,
-      SPAWN_FRESH: spawnFresh,
-      PINNED_THREAD: spawnFresh ? null : p,
-      winLabel: ((getChatHost()?.state() as any)?.winLabel) ?? null,
-      engines,
-    }))
-  }
-  const makeWire = (ce: any, cs: any, cl: any, cc: any, mb: any, mf: any, tcs: any, tde: any) => {
-    const p = new URLSearchParams(location.search).get('thread') || null
-    const spawnFresh = p === 'new'
-    return createWire({
-      Logger: quietLogger,
-      DOM: {
-        connectionStatus: byId('connection-status'),
-        buildSha: byId('build-sha'),
-        modelSelect: byId('model-select'),
-        secretPromptInput: byId('secret-prompt-input'),
-      },
-      State: getChatHost()?.state() as never,
-      MoonFrames: { dispatch: (f: unknown) => framesInstance?.dispatch(f) },
-      ChatEngine: ce as never,
-      ChatState: cs as never,
-      ChatLoop: cl as never,
-      ComposerConfig: cc as never,
-      MoonBar: mb as never,
-      MoonFace: mf as never,
-      ThreadCreateState: tcs as never,
-      ThreadDrawerEngine: tde as never,
-      MOON_EXPECTED_PROTOCOL_VERSION: (window as any).LunaProtocol.PROTOCOL_VERSION,
-      SPAWN_FRESH: spawnFresh,
-      PINNED_THREAD: spawnFresh ? null : p,
-      winLabel: ((getChatHost()?.state() as any)?.winLabel) ?? null,
-    })
-  }
-  const makeChatEngine = (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) =>
-    createChatEngine({
-      Logger: quietLogger,
-      DOM: {
-        chatMessages: byId('chat-messages'),
-        messageInput: byId('message-input'),
-        chatForm: byId('chat-form'),
-        moonWrapper: byId('moon-wrapper'),
-        voiceMicBtn: byId('voice-mic-btn'),
-      },
-      State: getChatHost()?.state() as never,
-      WebSocketEngine: {
-        send: (f: unknown) => getChatHost()?.send(f as never),
-        isConnected: () => getChatHost()?.isConnected() ?? false,
-        clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
-        startTurnTimeout: () => getChatHost()?.startTurnTimeout(),
-        sendNewThread: () => getChatHost()?.sendNewThread(),
-      },
-      ChatState: cs as never,
-      ChatLoop: cl as never,
-      MoonFace: mf,
-      MoonClient: __moonClientConst,
-      SlashMenu: sm as never,
-      Attachments: at as never,
-      ThreadCache: tc,
-    })
-  const makeThreadDrawer = (mf: any, cs: any, cl: any) =>
-    createThreadDrawer({
-      Logger: quietLogger,
-      DOM: {
-        chatPanel: byId('chat-panel'),
-        threadDrawer: byId('thread-drawer'),
-        threadDrawerList: byId('thread-drawer-list'),
-        threadDrawerEmpty: byId('thread-drawer-empty'),
-        threadDivider: byId('thread-divider'),
-      },
-      State: getChatHost()?.state() as never,
-      WebSocketEngine: {
-        send: (f: unknown) => getChatHost()?.send(f as never),
-        isConnected: () => getChatHost()?.isConnected() ?? false,
-        clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
-        startSubscribeTimeout: () => getChatHost()?.startSubscribeTimeout(),
-      },
-      // The WHOLE objects - see main-chat.tsx's note.
-      ChatState: cs as never,
-      ChatLoop: cl as never,
-      // The IMPORTED modules, not window.* - the prologue publishes the
-      // window aliases AFTER this factory runs, so reading them here would
-      // hand the drawer a set of undefineds.
-      MoonFace: mf,
-      ThreadListLogic,
-      ThreadStrip,
-      ThreadCacheLogic,
-      ThreadCreateLogic,
-      ThreadDrag,
-      formatRelTime: __frt,
-      LunaThreadDrag: (window as any).LunaThreadDrag,
-    })
-  const makeLocalShell = () =>
-    (localShellInstance = createLocalShell({
-      Logger: quietLogger,
-      DOM: {
-        scopeBtn: byId('scope-btn'),
-        scopeMenu: byId('scope-menu'),
-        scopeFullAccess: byId('scope-full-access'),
-      },
-      State: getChatHost()?.state(),
-      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
-    }))
-  const makeSurveyEngine = () =>
-    createSurveyEngine({
-      Logger: quietLogger,
-      DOM: {
-        userAskPanel: byId('user-ask-panel'),
-        userAskBody: byId('user-ask-body'),
-        userAskHint: byId('user-ask-hint'),
-        userAskSubmit: byId('user-ask-submit'),
-      },
-      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
-      ChatState: { appendBanner: (t: string) => (window as any).ChatState?.appendBanner(t) },
-      ChatLoop: { flush: () => (window as any).ChatLoop?.flush() },
-    })
-  const makeSecretPromptEngine = () =>
-    createSecretPromptEngine({
-      Logger: quietLogger,
-      DOM: {
-        secretPromptPanel: byId('secret-prompt-panel'),
-        secretPromptPrompt: byId('secret-prompt-prompt'),
-        secretPromptConsent: byId('secret-prompt-consent'),
-        secretPromptInput: byId('secret-prompt-input'),
-        secretPromptStatus: byId('secret-prompt-status'),
-      },
-      isConnected: () => getChatHost()?.isConnected() ?? false,
-      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
-    })
-  const makeSuggestedActionsEngine = (mf: any, mb: any) =>
-    createSuggestedActionsEngine({
-      DOM: {
-        suggestedActionPanel: byId('suggested-action-panel'),
-        suggestedActionType: byId('suggested-action-type'),
-        suggestedActionText: byId('suggested-action-text'),
-        suggestedActionRationale: byId('suggested-action-rationale'),
-        secretPromptPanel: byId('secret-prompt-panel'),
-        userAskPanel: byId('user-ask-panel'),
-      },
-      State: getChatHost()?.state(),
-      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
-      MoonBar: mb,
-      MoonFace: mf,
-    })
-  const makeMoonFace = () => {
-    const f = createMoonFace({ lunaFace: byId('luna-face') })
-    f.init()
-    return f
-  }
-  const makeMoonBar = () => {
-    const b = createMoonBar({
-      lunaQuip: byId('luna-quip'),
-      lunaSuggestion: byId('luna-suggestion'),
-      lunaSuggestionText: byId('luna-suggestion-text'),
-    })
-    b.init()
-    return b
-  }
-  const makeArtifactsEngine = () =>
-    createArtifactsEngine({
-      DOM: {
-        artifactsBtn: byId('artifacts-btn'),
-        artifactsBadge: byId('artifacts-badge'),
-        artifactsPanel: byId('artifacts-panel'),
-        artifactsPinnedSection: byId('artifacts-pinned-section'),
-        artifactsPinnedList: byId('artifacts-pinned-list'),
-        artifactsSessionSection: byId('artifacts-session-section'),
-        artifactsSessionList: byId('artifacts-session-list'),
-        artifactsEmpty: byId('artifacts-empty'),
-        artifactsPreview: byId('artifacts-preview'),
-        artifactsPreviewTitle: byId('artifacts-preview-title'),
-        artifactsPreviewCopy: byId('artifacts-preview-copy'),
-        artifactsPreviewBody: byId('artifacts-preview-body'),
-      },
-      State: getChatHost()?.state(),
-      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
-      renderMarkdown: (md: string) => (window as any).LunaMarkdown.renderMarkdown(md),
-      enhanceCodeBlocks: (r: unknown) => (window as any).LunaMarkdown.enhanceCodeBlocks(r),
-    })
-
-  const makeFeedbackEngine = () =>
-    createFeedbackEngine({
-      DOM: {
-        feedbackBtn: document.getElementById('feedback-btn'),
-        feedbackPickerOverlay: document.getElementById('feedback-picker-overlay'),
-        feedbackPickerHighlight: document.getElementById('feedback-picker-highlight'),
-        feedbackPanel: document.getElementById('feedback-panel'),
-        feedbackTargetChip: document.getElementById('feedback-target-chip'),
-        feedbackInput: document.getElementById('feedback-input'),
-        feedbackStatus: document.getElementById('feedback-status'),
-        feedbackSubmit: document.getElementById('feedback-submit-btn'),
-      },
-      State: getChatHost()?.state(),
-      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
-    })
-
-  const bridged = `${inlineScripts[0]}
-;ChatState = __mount.ChatState;
-ChatLoop = __mount.ChatLoop;
-Attachments = __attachmentsMount.Attachments;
-ComposerConfig = __composerConfigMount.ComposerConfig;
-SlashMenu = __slashMenuMount.SlashMenu;
-SmartBarEngine = __smartBarMount.SmartBarEngine;
-ThreadListLogic = __threadListLogic;
-ThreadStrip = __threadStrip;
-ThreadCacheLogic = __threadCacheLogic;
-ThreadCreateLogic = __threadCreateLogic;
-ThreadDrag = __threadDrag;
-ResultToasts = __resultToasts;
-UpdateBanner = __updateBanner;
-FeedbackEngine = __feedbackEngine();
-ArtifactsEngine = __artifactsEngine();
-MoonFace = __moonFace();
-MoonBar = __moonBar();
-buildSurveyVerdicts = __buildSurveyVerdicts;
-SurveyEngine = __surveyEngine();
-SecretPromptEngine = __secretPromptEngine();
-SuggestedActionsEngine = __suggestedActionsEngine(MoonFace, MoonBar);
-LocalShell = __localShell();
-LocalShell.refreshPlatform();
-Notifier = __notifier();
-MoonClient = __moonClient;
-formatRelTime = __formatRelTime;
-buildMessageMeta = __buildMessageMeta;
-buildMessageCopyButton = __buildMessageCopyButton;
-moonDragDebugNote = __moonDragDebugNote;
-var __td = __threadDrawer(MoonFace, ChatState, ChatLoop);
-ThreadDrawerEngine = __td.ThreadDrawerEngine;
-ThreadCache = __td.ThreadCache;
-ThreadCreateState = __td.ThreadCreateState;
-var __ce = __chatEngine(ChatState, ChatLoop, MoonFace, SlashMenu, Attachments, ThreadCache);
-ChatEngine = __ce.ChatEngine;
-VoiceEngine = __ce.VoiceEngine;
-CSS_escape = __CSS_escape;
-splitSpeakableSentences = __splitSpeakableSentences;
-toSpeakable = __toSpeakable;
-// ORDER MIRRORS PRODUCTION (S20c): wiring -> wire -> frames -> boot.
-// wiring sets State.winLabel and State.pinnedThread, which the wire reads at
-// CONSTRUCTION - building the wire first silently handed it nulls.
-var __wiringOut = __makeWiring({
-  ArtifactsEngine: ArtifactsEngine,
-  Attachments: Attachments,
-  ChatLoop: ChatLoop,
-  ChatState: ChatState,
-  ComposerConfig: ComposerConfig,
-  FeedbackEngine: FeedbackEngine,
-  LocalShell: LocalShell,
-  SecretPromptEngine: SecretPromptEngine,
-  SlashMenu: SlashMenu,
-  SuggestedActionsEngine: SuggestedActionsEngine,
-  SurveyEngine: SurveyEngine,
-  ThreadCache: ThreadCache,
-  ThreadDrawerEngine: ThreadDrawerEngine,
-  ChatEngine: ChatEngine,
-  VoiceEngine: VoiceEngine,
-  formatRelTime: formatRelTime,
-  buildMessageMeta: buildMessageMeta,
-  moonDragDebugNote: moonDragDebugNote,
-});
-
-var __w = __wire(ChatEngine, ChatState, ChatLoop, ComposerConfig, MoonBar, MoonFace, ThreadCreateState, ThreadDrawerEngine);
-WebSocketEngine = __w.WebSocketEngine;
-PoolEngine = __w.PoolEngine;
-USE_POOL_ENGINE = __w.USE_POOL_ENGINE;
-// The drawer's boot calls run AFTER installWiring, which is what sets
-// State.pinnedThread that wireDivider is gated on.
-ThreadDrawerEngine.initSidebar();
-if (!(window.LunaChatHost && window.LunaChatHost.state().pinnedThread)) { ThreadDrawerEngine.wireDivider(document.getElementById('thread-divider')); }
-var __frames = __makeFrames({
-  ArtifactsEngine: ArtifactsEngine,
-  ChatEngine: ChatEngine,
-  ChatLoop: ChatLoop,
-  ChatState: ChatState,
-  ComposerConfig: ComposerConfig,
-  FeedbackEngine: FeedbackEngine,
-  LocalShell: LocalShell,
-  MoonClient: MoonClient,
-  MoonFace: MoonFace,
-  Notifier: Notifier,
-  ResultToasts: ResultToasts,
-  SecretPromptEngine: SecretPromptEngine,
-  SmartBarEngine: SmartBarEngine,
-  SuggestedActionsEngine: SuggestedActionsEngine,
-  SurveyEngine: SurveyEngine,
-  ThreadCache: ThreadCache,
-  ThreadCreateState: ThreadCreateState,
-  ThreadDrawerEngine: ThreadDrawerEngine,
-  VoiceEngine: VoiceEngine,
-  PoolEngine: PoolEngine,
-  WebSocketEngine: WebSocketEngine,
-});
-MoonFrames = __frames.MoonFrames;
-WebSocketEngine.registerCloseHook(function(){ var el = document.getElementById('secret-prompt-input'); if (el) el.value = ''; });
-__w.boot();
-Promise.resolve(VoiceEngine.init()).catch(function(){});
-window.ChatState = ChatState;
-window.ChatLoop = ChatLoop;
-window.Attachments = Attachments;
-window.ComposerConfig = ComposerConfig;
-window.SlashMenu = SlashMenu;
-window.SmartBarEngine = SmartBarEngine;
-window.ThreadListLogic = ThreadListLogic;
-window.ThreadStrip = ThreadStrip;
-window.ThreadCacheLogic = ThreadCacheLogic;
-window.ThreadCreateLogic = ThreadCreateLogic;
-window.ThreadDrag = ThreadDrag;
-window.ResultToasts = ResultToasts;
-window.UpdateBanner = UpdateBanner;
-window.FeedbackEngine = FeedbackEngine;
-window.ArtifactsEngine = ArtifactsEngine;
-window.MoonFace = MoonFace;
-window.MoonBar = MoonBar;
-window.SurveyEngine = SurveyEngine;
-window.SecretPromptEngine = SecretPromptEngine;
-window.SuggestedActionsEngine = SuggestedActionsEngine;
-window.LocalShell = LocalShell;
-window.Notifier = Notifier;
-window.MoonClient = MoonClient;
-if (window.__MoonInternals) {
-  window.__MoonInternals.ChatState = ChatState;
-  window.__MoonInternals.ChatLoop = ChatLoop;
-  window.__MoonInternals.Attachments = Attachments;
-  window.__MoonInternals.ComposerConfig = ComposerConfig;
-  window.__MoonInternals.SlashMenu = SlashMenu;
-  window.__MoonInternals.SmartBarEngine = SmartBarEngine;
-  window.__MoonInternals.ThreadCache = ThreadCache;
-  window.__MoonInternals.ResultToasts = ResultToasts;
-  window.__MoonInternals.UpdateBanner = UpdateBanner;
-  window.__MoonInternals.FeedbackEngine = FeedbackEngine;
-  window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
-  window.__MoonInternals.MoonFace = MoonFace;
-  window.__MoonInternals.MoonBar = MoonBar;
-  window.__MoonInternals.SurveyEngine = SurveyEngine;
-  window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
-  window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
-  window.__MoonInternals.Notifier = Notifier;
-  // chat.html's own end-of-script assignment ran BEFORE this prologue and
-  // captured the pre-bridge undefined placeholders (same reason ChatState and
-  // ChatLoop are refreshed here). NOTE: no backticks in comments here - this
-  // whole block lives inside a template literal.
-  window.__MoonInternals.formatRelTime = formatRelTime;
-  window.__MoonInternals.buildMessageMeta = buildMessageMeta;
-  window.__MoonInternals.buildMessageCopyButton = buildMessageCopyButton;
-  window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
-  window.__MoonInternals.ThreadCache = ThreadCache;
-  window.__MoonInternals.ThreadCreateState = ThreadCreateState;
-  window.__MoonInternals.ChatEngine = ChatEngine;
-  window.__MoonInternals.VoiceEngine = VoiceEngine;
-  window.__MoonInternals.WebSocketEngine = WebSocketEngine;
-  window.__MoonInternals.PoolEngine = PoolEngine;
-  window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
-  window.__MoonInternals.MoonFrames = MoonFrames;
-  window.__MoonInternals.frames = __frames;   // S20b: the capability provider lives here now
-  window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
-  window.__MoonInternals.toSpeakable = toSpeakable;
-  window.__MoonInternals.MoonClient = MoonClient;
-  window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
-  window.__MoonInternals.describeTarget = __describeTarget;
-  window.__MoonInternals.cropAndEncodeFeedbackScreenshot = __cropAndEncode;
+  // bootChat's own assignBridge already published most of these; this fills in
+  // the pieces that were only ever test hooks.
+  M.State = boot.State
+  M.DOM = boot.DOM
+  M.WebSocketEngine = boot.wire.WebSocketEngine
+  M.PoolEngine = boot.wire.PoolEngine
+  M.USE_POOL_ENGINE = boot.wire.USE_POOL_ENGINE
+  M.MoonFrames = boot.frames.MoonFrames
+  M.frames = boot.frames
+  M.ThreadDrawerEngine = boot.threadDrawer.ThreadDrawerEngine
+  M.ThreadCache = boot.threadDrawer.ThreadCache
+  M.ThreadCreateState = boot.threadDrawer.ThreadCreateState
+  M.ChatEngine = boot.chatEngine.ChatEngine
+  M.VoiceEngine = boot.chatEngine.VoiceEngine
+  M.ChatState = boot.messageListMount?.ChatState
+  M.ChatLoop = boot.messageListMount?.ChatLoop
+  M.SecretPromptEngine = boot.secretPromptEngine
+  M.SurveyEngine = boot.surveyEngine
+  M.SuggestedActionsEngine = boot.suggestedActionsEngine
+  M.FeedbackEngine = boot.feedbackEngine
+  M.ArtifactsEngine = boot.artifactsEngine
+  M.LocalShell = boot.localShell
+  M.Notifier = boot.notifier
+  M.ResultToasts = boot.resultToasts
+  M.MoonFace = boot.moonFace
+  M.MoonBar = boot.moonBar
+  M.SlashMenu = boot.slashMenuMount?.SlashMenu
+  M.SmartBarEngine = boot.smartBarMount?.SmartBarEngine
+  M.ComposerConfig = boot.composerConfigMount?.ComposerConfig
+  M.Attachments = boot.attachmentsMount?.Attachments
+  // handleFrame goes through the ENGINE, not frames.dispatch directly - that is
+  // what chat.html published, and the engine adds generation gating the raw
+  // registry does not.
+  // handleFrame goes through the ENGINE, not frames.dispatch directly - that is
+  // what chat.html published, and the engine adds generation gating the raw
+  // registry does not.
+  M.handleFrame = (frame: unknown) => boot.wire.WebSocketEngine.handleFrame(frame)
+  M.appendToolCallCard = (f: unknown) => boot.chatEngine.ChatEngine.appendToolCallCard(f)
+  M.attachToolResult = (f: unknown) => boot.chatEngine.ChatEngine.attachToolResult(f)
+  M.autoGrowMessageInput = () => boot.chatEngine.ChatEngine.autoGrowMessageInput()
+  M.UpdateBanner = boot.updateBanner
+  const md = (window as unknown as { LunaMarkdown: Record<string, unknown> }).LunaMarkdown
+  M.renderMarkdown = md.renderMarkdown
+  M.renderMarkdownStreaming = md.renderMarkdownStreaming
+  M.closeOpenFences = md.closeOpenFences
+  M.enhanceCodeBlocks = md.enhanceCodeBlocks
+  M.moonDragDebug = (window as unknown as { __moonDragDebug?: unknown }).__moonDragDebug ?? null
+  M.moonE2E = (window as unknown as { __moonE2E?: unknown }).__moonE2E ?? null
+  M.StreamRender = (window as unknown as { LunaMarkdown: { StreamRender: unknown } }).LunaMarkdown.StreamRender
+  M.LunaThreadDrag = (window as unknown as { LunaThreadDrag?: unknown }).LunaThreadDrag ?? null
+  M.buildSurveyVerdicts = __bsv
+  M.formatRelTime = __frt
+  M.buildMessageMeta = __bmm
+  M.buildMessageCopyButton = __bmcb
+  M.splitSpeakableSentences = __splitsp
+  M.toSpeakable = __tospk
+  M.CSS_escape = __cssesc
+  M.moonDragDebugNote = __mddn
+  M.describeTarget = describeTarget
+  M.cropAndEncodeFeedbackScreenshot = cropAndEncodeFeedbackScreenshot
 }
-`
-  new Function(
-    '__mount',
-    '__attachmentsMount',
-    '__composerConfigMount',
-    '__slashMenuMount',
-    '__smartBarMount',
-    '__threadListLogic',
-    '__threadStrip',
-    '__threadCacheLogic',
-    '__threadCreateLogic',
-    '__threadDrag',
-    '__resultToasts',
-    '__updateBanner',
-    '__feedbackEngine',
-    '__artifactsEngine',
-    '__moonFace',
-    '__moonBar',
-    '__buildSurveyVerdicts',
-    '__surveyEngine',
-    '__secretPromptEngine',
-    '__suggestedActionsEngine',
-    '__localShell',
-    '__notifier',
-    '__moonClient',
-    '__formatRelTime',
-    '__buildMessageMeta',
-    '__buildMessageCopyButton',
-    '__threadDrawer',
-    '__moonDragDebugNote',
-    '__chatEngine',
-    '__CSS_escape',
-    '__splitSpeakableSentences',
-    '__toSpeakable',
-    '__wire',
-    '__makeFrames',
-    '__makeWiring',
-    '__describeTarget',
-    '__cropAndEncode',
-    bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, makeWire, makeFrames, makeWiring, describeTarget, cropAndEncodeFeedbackScreenshot)
-}
-
-export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

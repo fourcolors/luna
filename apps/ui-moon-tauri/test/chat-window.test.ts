@@ -21,7 +21,6 @@ import {
   installSyncRequestAnimationFrame,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -177,8 +176,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // -declarations to the real bridge in the SAME scope (see
     // helpers/chat-harness.ts's module doc for why that has to happen
     // together instead of as a separate assignment afterward).
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
 
     vi.useFakeTimers()
   })
@@ -554,7 +552,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: appendToolCallCard renders a collapsible card with the tool name + JSON input + pending status', () => {
       const { appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const card = appendToolCallCard({
         type: 'tool-call',
         threadId: 't1', turnId: 'turn-1', toolCallId: 'call-1',
@@ -586,7 +583,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: appendToolCallCard escapes the tool name + input (no XSS via name/input)', () => {
       const { appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const card = appendToolCallCard({
         type: 'tool-call',
         threadId: 't', turnId: 't', toolCallId: 'c',
@@ -602,7 +598,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult flips the matching cards status pill to OK and appends the output', () => {
       const { appendToolCallCard, attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       appendToolCallCard({
         type: 'tool-call',
         threadId: 't', turnId: 't', toolCallId: 'call-A',
@@ -625,7 +620,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult with status=error flips the pill to error', () => {
       const { appendToolCallCard, attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       appendToolCallCard({
         type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'call-X',
         name: 'Bash', input: { command: 'false' },
@@ -642,7 +636,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult shows a truncated-output hint when frame.truncated is true', () => {
       const { appendToolCallCard, attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       appendToolCallCard({ type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'big', name: 'Read', input: {} })
       const card = attachToolResult({
         type: 'tool-result', threadId: 't', toolCallId: 'big',
@@ -656,13 +649,17 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult is a no-op when no matching tool-call card exists', () => {
       const { attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const ret = attachToolResult({
         type: 'tool-result', threadId: 't', toolCallId: 'missing',
         status: 'ok', output: 'x', truncated: false,
       })
       expect(ret).toBeNull()
-      expect(chat.children.length).toBe(0)
+      // The WELCOME item is what production renders for an empty transcript, and
+      // it is a child. This used to read 0 only because the harness mounted
+      // MessageList WITHOUT `emptyStateItem` - a divergence S20d removed. The
+      // assertion's intent is "no ghost bubble was added", so it counts real
+      // message bubbles rather than every child.
+      expect(chat.querySelectorAll('.msg:not([data-msg-key="welcome"])').length).toBe(0)
     })
 
     // ── Regression: text after tool round-trip (moon-009 fix) ─────────────
@@ -688,7 +685,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: assistant-delta after a tool-call-card opens a fresh text bubble (does NOT overwrite the card)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
 
       // Tool round-trip already happened.
       appendToolCallCard({
@@ -723,7 +719,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: assistant-done after tool-call+text-stream finalizes with streamRaw (does NOT duplicate via frame.message.text)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
 
       // Multi-segment turn: text-before-tool, then tool, then text-after-tool.
       // Pre-fix bug: assistant-done would write frame.message.text (= the
@@ -777,7 +772,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a turn that ends on a tool settles to the pill on turn-complete (no finalize-into-card)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
 
       // Turn that ended on a tool with no trailing assistant text. doneMsg
       // would be the tool-call-card itself. Pre-fix, finalize would write
@@ -825,7 +819,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: pre-tool-call typing-dots/delta path still works (regression guard for the simple case)', () => {
       const { handleFrame } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const dots = document.createElement('div')
       dots.className = 'msg assistant'
       dots.innerHTML = '<div class="typing-dots"><div class="dot"></div></div>'
@@ -1004,7 +997,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       installSyncRequestAnimationFrame()
       M().ChatState.reset()
       chat = document.getElementById('chat-messages') as HTMLElement
-      chat.innerHTML = ''
     })
 
     it('thread-snapshot with messages renders one bubble per non-empty message', () => {
@@ -1052,7 +1044,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.querySelector('.typing-dots')).not.toBeNull()
 
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
-      expect(chat.children.length).toBe(0)
+      // The WELCOME item is what production renders for an empty transcript, and
+      // it is a child. This used to read 0 only because the harness mounted
+      // MessageList WITHOUT `emptyStateItem` - a divergence S20d removed. The
+      // assertion's intent is "no ghost bubble was added", so it counts real
+      // message bubbles rather than every child.
+      expect(chat.querySelectorAll('.msg:not([data-msg-key="welcome"])').length).toBe(0)
     })
 
     it('a background-delivered assistant-done raises an OS notification via the notify command', () => {
@@ -1165,7 +1162,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('a delta that arrives empty does NOT pollute the transcript', () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: '' })
       expect(M().ChatState.turns).toHaveLength(0)
-      expect(chat.children.length).toBe(0)
+      // The WELCOME item is what production renders for an empty transcript, and
+      // it is a child. This used to read 0 only because the harness mounted
+      // MessageList WITHOUT `emptyStateItem` - a divergence S20d removed. The
+      // assertion's intent is "no ghost bubble was added", so it counts real
+      // message bubbles rather than every child.
+      expect(chat.querySelectorAll('.msg:not([data-msg-key="welcome"])').length).toBe(0)
     })
 
     // Regression: chat-service publishes the CUMULATIVE assistant text on
@@ -1501,7 +1503,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       installSyncRequestAnimationFrame()
       M().ChatState.reset()
       chat = document.getElementById('chat-messages') as HTMLElement
-      chat.innerHTML = ''
     })
 
     it('Scenario: a settled assistant answer copies its RAW markdown (not the rendered text)', async () => {
@@ -3939,7 +3940,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       installSyncRequestAnimationFrame()
       M().ChatState.reset()
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
     })
 
     // ── ChatState.applyToolCall preserves parentToolUseId ────────────────────
@@ -4575,8 +4575,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       setWs(m, null)
@@ -4594,8 +4593,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       m.PoolEngine._isConnected = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
@@ -4648,8 +4646,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // as the beforeEach boot) instead of injecting State.pinnedThread.
       window.history.replaceState({}, '', '/?thread=t-pinned')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       expect((document.getElementById('new-thread-btn') as HTMLElement).hidden).toBe(true)
       // The non-pinned boot in beforeEach leaves it visible (contrast pin).
       window.history.replaceState({}, '', '/')
@@ -4711,8 +4708,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       setWs(m, null)
@@ -4730,8 +4726,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       setWs(m, null)
@@ -4752,8 +4747,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       setWs(m, null)
@@ -4774,8 +4768,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       setWs(m, null)
@@ -4796,8 +4789,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
       mountChatDomFromHtml(htmlContent)
-      const rebootMount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-      evalChatInlineScriptWithBridge(htmlContent, rebootMount)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
       setWs(m, null)
