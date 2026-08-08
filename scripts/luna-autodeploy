@@ -76,6 +76,51 @@ source "$(dirname "$SELF")/lib/luna-deploy.sh"
 # shellcheck source=scripts/lib/luna-registry.sh
 source "$(dirname "$SELF")/lib/luna-registry.sh"
 
+# ── S22c: engine selection (LUNA_DEPLOY_ENGINE) ───────────────────────────────
+# Chooses which engine performs the deploy. DEFAULT IS BASH: with the variable
+# unset this returns the pinned bash engine and behaviour is bit-for-bit what
+# it was before this function existed. S23 is the slice that flips the default,
+# and it is deliberately a separate, signed-off change - this one only makes
+# the choice expressible.
+#
+# BOTH FAILURE MODES ARE LOUD, and that is the deliberate part:
+#
+#   - an UNRECOGNISED value refuses rather than falling back to bash. A typo
+#     ("binry") that silently ran bash would leave an operator believing they
+#     had soaked the binary when they had not, which is the exact class of
+#     silent-wrong-answer this arc exists to remove. A refusal stops the
+#     profile updating until it is fixed, which the guardian surfaces.
+#
+#   - LUNA_DEPLOY_ENGINE=binary with no usable binary in the pin ALSO refuses,
+#     for the same reason: the operator asked for the binary, and quietly
+#     giving them bash answers a question they did not ask.
+#
+# Args:   luna_select_engine <pinned_engine_path>
+# Stdout: path of the engine to exec
+# Return: 0 on success; 1 on any refusal (message on stderr)
+luna_select_engine() {
+  local pinned_engine="$1"
+  local choice="${LUNA_DEPLOY_ENGINE:-bash}"
+  case "$choice" in
+    bash)
+      printf '%s' "$pinned_engine"
+      ;;
+    binary)
+      local cli
+      cli="$(dirname "$pinned_engine")/deploy-cli"
+      if [[ ! -x "$cli" ]]; then
+        printf 'luna-autodeploy: LUNA_DEPLOY_ENGINE=binary but no executable deploy-cli beside the pinned engine (%s); refusing rather than silently running bash\n' "$cli" >&2
+        return 1
+      fi
+      printf '%s' "$cli"
+      ;;
+    *)
+      printf 'luna-autodeploy: LUNA_DEPLOY_ENGINE=%s is not one of bash|binary; refusing rather than silently choosing one\n' "$choice" >&2
+      return 1
+      ;;
+  esac
+}
+
 # ── F11: pinned-copy engine quarantine ───────────────────────────────────────
 # Before the REAL luna-update-server invocation, copy the engine bundle (the
 # binary + its lib/ siblings) to a content-addressed directory OUTSIDE the
@@ -451,8 +496,12 @@ do_deploy() {
   local pinned_engine
   pinned_engine="$(luna_pin_engine "$P_REPO")"
 
+  # S22c: which engine runs. Unset => the pinned bash engine, unchanged.
+  local engine
+  engine="$(luna_select_engine "$pinned_engine")" || return 2
+
   local rc=0
-  "$pinned_engine" "${P_UPDATE_ARGS[@]}" ${extra[@]+"${extra[@]}"} || rc=$?
+  "$engine" "${P_UPDATE_ARGS[@]}" ${extra[@]+"${extra[@]}"} || rc=$?
   case "$rc" in
     0)
       # Engine exit 0 does NOT prove the checkout reached the target: the
