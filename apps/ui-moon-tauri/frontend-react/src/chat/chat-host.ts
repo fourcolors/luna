@@ -38,6 +38,8 @@ export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   backendCapabilities: true,
   isConnected: true,
   send: true,
+  clearTurnTimeout: true,
+  startSubscribeTimeout: true,
   executeCapability: true,
   appendMessage: true,
   newConversation: true,
