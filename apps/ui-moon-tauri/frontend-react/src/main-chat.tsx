@@ -49,6 +49,7 @@ import { createThreadDrawer, moonDragDebugNote } from "./chat/threadDrawer"
 import { createChatEngine, CSS_escape, splitSpeakableSentences, toSpeakable } from "./chat/chatEngine"
 import { createWire } from "./chat/wire"
 import { createFrames } from "./chat/frames"
+import { installWiring } from "./chat/wiring"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -470,17 +471,6 @@ const threadDrawer = createThreadDrawer({
 assignBridge("ThreadDrawerEngine", threadDrawer.ThreadDrawerEngine)
 assignBridge("ThreadCache", threadDrawer.ThreadCache)
 assignBridge("ThreadCreateState", threadDrawer.ThreadCreateState)
-// The drawer's only two boot calls, relocated from chat.html's top level
-// for the reason MoonFace.init() was in S19e. Both only read localStorage
-// and attach listeners, so a tick later is equivalent.
-threadDrawer.ThreadDrawerEngine.initSidebar()
-// GATED, exactly as chat.html gated it. wireDivider lived in the `else` of
-// `if (State.pinnedThread)`: a pinned ?thread=<id> window is single-thread
-// and deliberately has no divider to drag. Hoisting it unconditionally
-// would have given pinned windows a resizable sidebar they must not have.
-if (!getChatHost()?.state().pinnedThread) {
-  threadDrawer.ThreadDrawerEngine.wireDivider(document.getElementById("thread-divider"))
-}
 assignBridge("moonDragDebugNote", moonDragDebugNote)
 
 // ── ChatEngine + VoiceEngine (stack23 S19k) ─────────────────────────────
@@ -590,12 +580,82 @@ const suggestedActionsEngine = createSuggestedActionsEngine({
   })
 assignBridge("SuggestedActionsEngine", suggestedActionsEngine)
 
-// `new` is a SENTINEL meaning "mint your own fresh thread", not a real
-// thread id. Derived ONCE, here, and passed to both frames and the wire.
-const _threadParam = new URLSearchParams(location.search).get("thread") || null
-const SPAWN_FRESH = _threadParam === "new"
-const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam
 
+// Read from chat.html's own DOM object, not typed from memory - S19c and
+// S19d each cost time to a hand-guessed list.
+const WIRING_DOM: Record<string, HTMLElement | null> = {
+  artifactsBtnInner: document.getElementById("artifacts-btn-inner"),
+  artifactsPanelClose: document.getElementById("artifacts-panel-close"),
+  attachBtn: document.getElementById("attach-btn"),
+  chatForm: document.getElementById("chat-form"),
+  chatMessages: document.getElementById("chat-messages"),
+  chatPanel: document.getElementById("chat-panel"),
+  feedbackBtn: document.getElementById("feedback-btn"),
+  feedbackCancel: document.getElementById("feedback-cancel"),
+  feedbackCancelX: document.getElementById("feedback-cancel-x"),
+  feedbackInput: document.getElementById("feedback-input"),
+  feedbackSubmit: document.getElementById("feedback-submit-btn"),
+  fileInput: document.getElementById("file-input"),
+  lunaSuggestion: document.getElementById("luna-suggestion"),
+  messageInput: document.getElementById("message-input"),
+  scopeBtn: document.getElementById("scope-btn"),
+  scopeFullAccess: document.getElementById("scope-full-access"),
+  scopeMenu: document.getElementById("scope-menu"),
+  secretPromptCancel: document.getElementById("secret-prompt-cancel"),
+  secretPromptCancelX: document.getElementById("secret-prompt-cancel-x"),
+  secretPromptInput: document.getElementById("secret-prompt-input"),
+  secretPromptSubmit: document.getElementById("secret-prompt-submit"),
+  suggestedActionAccept: document.getElementById("suggested-action-accept"),
+  suggestedActionCancelX: document.getElementById("suggested-action-cancel-x"),
+  suggestedActionDismiss: document.getElementById("suggested-action-dismiss"),
+  suggestedActionPanel: document.getElementById("suggested-action-panel"),
+  suggestedActionSeeAll: document.getElementById("suggested-action-see-all"),
+  threadDrawerClose: document.getElementById("thread-drawer-close"),
+  threadDrawerNew: document.getElementById("thread-drawer-new"),
+  threadDrawerSearch: document.getElementById("thread-drawer-search-input"),
+  toggleSettings: document.getElementById("toggle-settings"),
+  toggleThreads: document.getElementById("toggle-threads"),
+  userAskDismiss: document.getElementById("user-ask-dismiss"),
+  userAskSubmit: document.getElementById("user-ask-submit"),
+}
+
+// ── DOM event wiring + boot params (stack23 S20c) ───────────────────────
+//
+// AFTER every engine (its 33 listeners call them) and BEFORE the wire (which
+// needs the params, and whose boot reads the State.pinnedThread this sets).
+// Nothing here touches the wire, which is what makes that slot available.
+const { SPAWN_FRESH, PINNED_THREAD } = installWiring({
+  Logger,
+  DOM: WIRING_DOM,
+  State: getChatHost()?.state() as never,
+  engines: {
+    ArtifactsEngine: artifactsEngine,
+    Attachments: attachmentsMount?.Attachments,
+    ChatLoop: messageListMount?.ChatLoop,
+    ChatState: messageListMount?.ChatState,
+    ComposerConfig: composerConfigMount?.ComposerConfig,
+    FeedbackEngine: feedbackEngine,
+    LocalShell: localShell,
+    SecretPromptEngine: secretPromptEngine,
+    SlashMenu: slashMenuMount?.SlashMenu,
+    SuggestedActionsEngine: suggestedActionsEngine,
+    SurveyEngine: surveyEngine,
+    ThreadCache: threadDrawer.ThreadCache,
+    ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine,
+    ChatEngine: chatEngine.ChatEngine,
+    VoiceEngine: chatEngine.VoiceEngine,
+    formatRelTime,
+    buildMessageMeta,
+    moonDragDebugNote,
+  },
+})
+
+// The drawer's two boot calls run HERE, not at its construction: wireDivider is
+// gated on State.pinnedThread, which installWiring above is what sets.
+threadDrawer.ThreadDrawerEngine.initSidebar()
+if (!getChatHost()?.state().pinnedThread) {
+  threadDrawer.ThreadDrawerEngine.wireDivider(document.getElementById("thread-divider"))
+}
 
 // ── The wire, and its ignition (stack23 S20a) ───────────────────────────
 //
