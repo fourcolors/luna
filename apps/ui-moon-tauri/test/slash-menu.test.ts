@@ -571,9 +571,15 @@ describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
   // pins below swap the WHOLE window.LunaChatHost global instead of poking one
   // accessor - see chat-host.ts's HOST_ABSENT fallback and the standing
   // late-bound-read rule (chat.html's own construction-site comment).
-  it('with window.LunaChatHost absent, the menu builds only local commands without throwing', () => {
-    sendCapCatalog([interruptCap]) // populates chat.html's private _backendCatalog
-    delete (window as any).LunaChatHost
+  it('with the capability provider gone, the menu builds only local commands without throwing', () => {
+    // RETARGETED at the frame layer (stack23 S20b). The backend catalog used
+    // to live in chat.html behind LunaChatHost.backendCapabilities, so
+    // deleting the host was how you simulated "no backend commands". The
+    // provider moved to frames.ts with the `hello` handler that clears it, so
+    // the honest equivalent is emptying THAT - deleting the host now only
+    // removes state reads and the wire, which is a different scenario.
+    sendCapCatalog([interruptCap])
+    vi.spyOn(internals().frames, 'backendCapabilities').mockReturnValue([])
     expect(() => typeInComposer('/')).not.toThrow()
     expect(items().map((el) => el.getAttribute('data-command'))).toEqual(['clear', 'new', 'help'])
   })
@@ -584,11 +590,12 @@ describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
     // Swap in a host whose executeCapability resolves the same {ok:false}
     // shape chat-host.ts's HOST_ABSENT fallback does - backendCapabilities()
     // stays real so '/interrupt' is still found and routed as executor:'server'.
-    const real = (window as any).LunaChatHost
-    ;(window as any).LunaChatHost = {
-      ...real,
-      executeCapability: () => Promise.resolve({ ok: false, error: 'chat host unavailable', reason: 'unavailable' }),
-    }
+    // Stubbed on the FRAME LAYER, which owns executeCapability as of S20b.
+    // backendCapabilities() stays real so '/interrupt' is still found and
+    // routed as executor:'server' - the point is the execute path, not lookup.
+    vi.spyOn(internals().frames, 'executeCapability').mockResolvedValue(
+      { ok: false, error: 'chat host unavailable', reason: 'unavailable' } as never,
+    )
     const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
     const sent: any[] = []
     vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })

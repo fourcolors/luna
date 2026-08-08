@@ -67,7 +67,6 @@ export interface LunaChatHostApi {
    * EVERY hello (chat.html's own construction-site comment, server-swap
    * safety) while the provider's internal snapshot is untouched, because
    * `hello` is not one of the two frame types the provider subscribes to. */
-  readonly backendCapabilities: () => readonly CapabilityDescriptor[]
   /** ENGINE-AWARE connectivity. Never derive this from a raw socket: PoolEngine,
    *  the default since #489, does not assign `State.ws` at all, so a readyState
    *  check reads "offline" while the pool is connected - which is exactly how
@@ -83,10 +82,6 @@ export interface LunaChatHostApi {
   readonly startSubscribeTimeout: () => void
   readonly startTurnTimeout: () => void
   readonly sendNewThread: () => void
-  /** MoonFrames.dispatch. The registry itself stays in chat.html until its 27
-   *  handlers move; the engines only ever call dispatch. */
-  readonly dispatchFrame: (frame: unknown) => void
-  readonly executeCapability: (req: ExecuteRequest) => Promise<ExecuteResult>
 
 }
 

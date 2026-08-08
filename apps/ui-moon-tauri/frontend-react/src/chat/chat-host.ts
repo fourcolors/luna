@@ -23,7 +23,7 @@
  * send` after the host is built - a captured reference would miss both the
  * patch and the spy.
  */
-import type { ExecuteResult } from "@luna/capabilities"
+import type { CapabilityDescriptor, ExecuteRequest, ExecuteResult } from "@luna/capabilities"
 import type { ComposerConfigBridge, ComposerConfigCtx } from "./ComposerConfig"
 import type { LunaChatHostApi } from "./luna-chat-host"
 import type { SlashMenuCtx } from "./SlashMenu"
@@ -35,15 +35,12 @@ export function getChatHost(): LunaChatHostApi | null {
 /** Compile-time member manifest - see this file's module doc. */
 export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   state: true,
-  backendCapabilities: true,
   isConnected: true,
   send: true,
   clearTurnTimeout: true,
   startSubscribeTimeout: true,
   startTurnTimeout: true,
   sendNewThread: true,
-  dispatchFrame: true,
-  executeCapability: true,
 }
 export const CHAT_HOST_MEMBER_NAMES: readonly string[] = Object.keys(CHAT_HOST_MEMBERS).sort()
 
@@ -67,6 +64,10 @@ export function chatHostSlashMenuCtx(peers: {
    *  of S19h, so this is a direct module-to-module call and
    *  LunaChatHost.closeLocalShellMenu could be DELETED. */
   closeLocalShellMenu: () => void
+  /** As of S20b these come from frames.ts, not the host: the capability
+   *  provider moved with the `hello` handler that clears its catalog. */
+  getBackendCommands: () => readonly CapabilityDescriptor[]
+  executeCapability: (req: ExecuteRequest) => Promise<ExecuteResult>
   /** Same story as of S19k, for ChatEngine. These three were the LAST Group C
    *  members; passing the engine directly emptied the category. */
   appendMessage: (role: string, text: string) => void
@@ -77,8 +78,8 @@ export function chatHostSlashMenuCtx(peers: {
     getState: () => getChatHost()?.state() ?? null,
     getComposerConfig: peers.getComposerConfig,
     clearAttachments: peers.clearAttachments,
-    getBackendCommands: () => getChatHost()?.backendCapabilities() ?? [],
-    executeCapability: (req) => getChatHost()?.executeCapability(req) ?? Promise.resolve(HOST_ABSENT),
+    getBackendCommands: peers.getBackendCommands,
+    executeCapability: peers.executeCapability,
     appendMessage: peers.appendMessage,
     newConversation: peers.newConversation,
     closeLocalShellMenu: peers.closeLocalShellMenu,
