@@ -95,15 +95,25 @@ source "$(dirname "$SELF")/lib/luna-registry.sh"
 #     for the same reason: the operator asked for the binary, and quietly
 #     giving them bash answers a question they did not ask.
 #
+# THE BINARY NEEDS A SUBCOMMAND AND THE BASH ENGINE MUST NOT HAVE ONE.
+# luna-update-server has a FLAG-ONLY surface (`--profile stable --ref ...`);
+# deploy-cli replaces three scripts and so dispatches on `update|autodeploy|
+# guardian`. Returning only a path made the call site exec bare flags against
+# the binary, which citty rejects with "Unknown command stable" (exit 1) before
+# reaching any of its own logic - a confusing parse error standing in for the
+# intended failure. This function therefore emits the full argv PREFIX, and the
+# caller execs it followed by the shared flags.
+#
 # Args:   luna_select_engine <pinned_engine_path>
-# Stdout: path of the engine to exec
+# Stdout: argv prefix to exec, one field per line (path, then any subcommand)
 # Return: 0 on success; 1 on any refusal (message on stderr)
 luna_select_engine() {
   local pinned_engine="$1"
   local choice="${LUNA_DEPLOY_ENGINE:-bash}"
   case "$choice" in
     bash)
-      printf '%s' "$pinned_engine"
+      # Flag-only surface: the path IS the whole prefix.
+      printf '%s\n' "$pinned_engine"
       ;;
     binary)
       local cli
@@ -112,7 +122,8 @@ luna_select_engine() {
         printf 'luna-autodeploy: LUNA_DEPLOY_ENGINE=binary but no executable deploy-cli beside the pinned engine (%s); refusing rather than silently running bash\n' "$cli" >&2
         return 1
       fi
-      printf '%s' "$cli"
+      # `update` names which of the three scripts this invocation replaces.
+      printf '%s\n%s\n' "$cli" "update"
       ;;
     *)
       printf 'luna-autodeploy: LUNA_DEPLOY_ENGINE=%s is not one of bash|binary; refusing rather than silently choosing one\n' "$choice" >&2
@@ -496,12 +507,15 @@ do_deploy() {
   local pinned_engine
   pinned_engine="$(luna_pin_engine "$P_REPO")"
 
-  # S22c: which engine runs. Unset => the pinned bash engine, unchanged.
-  local engine
-  engine="$(luna_select_engine "$pinned_engine")" || return 2
+  # S22c: which engine runs, and with what argv prefix. Unset => the pinned
+  # bash engine and a prefix of just its path, so this is bit-for-bit the
+  # pre-S22c invocation.
+  local engine_argv=() _line
+  while IFS= read -r _line; do [[ -n "$_line" ]] && engine_argv+=("$_line"); done < <(luna_select_engine "$pinned_engine")
+  (( ${#engine_argv[@]} > 0 )) || return 2
 
   local rc=0
-  "$engine" "${P_UPDATE_ARGS[@]}" ${extra[@]+"${extra[@]}"} || rc=$?
+  "${engine_argv[@]}" "${P_UPDATE_ARGS[@]}" ${extra[@]+"${extra[@]}"} || rc=$?
   case "$rc" in
     0)
       # Engine exit 0 does NOT prove the checkout reached the target: the

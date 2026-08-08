@@ -35,6 +35,12 @@ const makePin = (opts: { readonly cli: "executable" | "not-executable" | "absent
   return engine
 }
 
+/**
+ * The gate emits an argv PREFIX, one field per line - not just a path. The bash
+ * engine's surface is flag-only so its prefix is one field; the binary replaces
+ * three scripts and needs `update` naming which one, or citty rejects the
+ * shared flags with "Unknown command stable" before reaching its own logic.
+ */
 const select = (pinnedEngine: string, env: Record<string, string | undefined>) => {
   const script = [
     "set -uo pipefail",
@@ -44,7 +50,13 @@ const select = (pinnedEngine: string, env: Record<string, string | undefined>) =
   const r = spawnSync("bash", ["-c", script], { encoding: "utf8", env: { ...process.env, ...env } })
   const out = r.stdout ?? ""
   const nl = out.lastIndexOf("\n")
-  return { chosen: out.slice(0, nl), rc: Number(out.slice(nl + 1)), stderr: r.stderr ?? "" }
+  const argv = out.slice(0, nl).split("\n").filter((l) => l !== "")
+  return {
+    argv,
+    chosen: argv[0] ?? "",
+    rc: Number(out.slice(nl + 1)),
+    stderr: r.stderr ?? "",
+  }
 }
 
 describe("LUNA_DEPLOY_ENGINE", () => {
@@ -55,6 +67,10 @@ describe("LUNA_DEPLOY_ENGINE", () => {
       expect(r.rc).toBe(0)
       expect(r.chosen).toBe(engine)
       expect(r.stderr).toBe("")
+      // EXACTLY one field: luna-update-server's surface is flag-only, so a
+      // subcommand here would be passed through as a positional argument and
+      // change the bash invocation this slice promises to leave untouched.
+      expect(r.argv, "the bash prefix must be the path alone").toEqual([engine])
     })
 
     it("chooses bash even when a perfectly good binary sits beside it", () => {
@@ -71,11 +87,16 @@ describe("LUNA_DEPLOY_ENGINE", () => {
   })
 
   describe("binary", () => {
-    it("selects the deploy-cli beside the pinned engine", () => {
+    it("selects the deploy-cli beside the pinned engine, WITH the update subcommand", () => {
       const engine = makePin({ cli: "executable" })
       const r = select(engine, { LUNA_DEPLOY_ENGINE: "binary" })
       expect(r.rc).toBe(0)
       expect(r.chosen).toBe(join(engine, "..", "deploy-cli").replace("/..", ""))
+      // Without this the shared flags reach citty as a bare command and it
+      // answers "Unknown command stable" (exit 1) - a parse error standing in
+      // for whatever the binary would actually have done.
+      expect(r.argv[1], "the subcommand naming which script this replaces").toBe("update")
+      expect(r.argv).toHaveLength(2)
     })
 
     it("REFUSES when the binary is absent rather than falling back to bash", () => {
