@@ -40,10 +40,9 @@ export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   send: true,
   clearTurnTimeout: true,
   startSubscribeTimeout: true,
+  startTurnTimeout: true,
+  sendNewThread: true,
   executeCapability: true,
-  appendMessage: true,
-  newConversation: true,
-  autoGrowMessageInput: true,
 }
 export const CHAT_HOST_MEMBER_NAMES: readonly string[] = Object.keys(CHAT_HOST_MEMBERS).sort()
 
@@ -67,6 +66,11 @@ export function chatHostSlashMenuCtx(peers: {
    *  of S19h, so this is a direct module-to-module call and
    *  LunaChatHost.closeLocalShellMenu could be DELETED. */
   closeLocalShellMenu: () => void
+  /** Same story as of S19k, for ChatEngine. These three were the LAST Group C
+   *  members; passing the engine directly emptied the category. */
+  appendMessage: (role: string, text: string) => void
+  newConversation: () => void
+  autoGrowMessageInput: () => void
 }): SlashMenuCtx {
   return {
     getState: () => getChatHost()?.state() ?? null,
@@ -74,9 +78,9 @@ export function chatHostSlashMenuCtx(peers: {
     clearAttachments: peers.clearAttachments,
     getBackendCommands: () => getChatHost()?.backendCapabilities() ?? [],
     executeCapability: (req) => getChatHost()?.executeCapability(req) ?? Promise.resolve(HOST_ABSENT),
-    appendMessage: (role, text) => getChatHost()?.appendMessage(role, text),
-    newConversation: () => getChatHost()?.newConversation(),
+    appendMessage: peers.appendMessage,
+    newConversation: peers.newConversation,
     closeLocalShellMenu: peers.closeLocalShellMenu,
-    autoGrowMessageInput: () => getChatHost()?.autoGrowMessageInput(),
+    autoGrowMessageInput: peers.autoGrowMessageInput,
   }
 }

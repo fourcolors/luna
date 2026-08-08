@@ -19,8 +19,10 @@
  *
  * Grouped by LIFETIME, not by feature - that grouping is what makes later
  * deletions mechanical: Group A (the wire) is deleted as a unit by S18;
- * Group B (state reads) is retired per-field as owners convert; Group C
- * (imperative engine calls) is deleted by S19/S20 as those engines convert.
+ * Group B (state reads) is retired per-field as owners convert. Group C
+ * (imperative engine calls) is GONE as of S19k - its last three members were
+ * all ChatEngine calls, and ChatEngine is a module now, so callers hold the
+ * engine directly. What remains is the wire (Group A) and state reads.
  */
 import type { CapabilityDescriptor, ExecuteRequest, ExecuteResult } from "@luna/capabilities"
 // @luna/ui-ws publishes only the "." export, which re-exports server.js plus
@@ -79,12 +81,10 @@ export interface LunaChatHostApi {
    *  like send(): these are the wire, and they go when the engines move. */
   readonly clearTurnTimeout: () => void
   readonly startSubscribeTimeout: () => void
+  readonly startTurnTimeout: () => void
+  readonly sendNewThread: () => void
   readonly executeCapability: (req: ExecuteRequest) => Promise<ExecuteResult>
 
-  // ── Group C - imperative calls into vanilla engines. S19/S20 delete these.
-  readonly appendMessage: (role: string, text: string) => void
-  readonly newConversation: () => void
-  readonly autoGrowMessageInput: () => void
 }
 
 declare global {

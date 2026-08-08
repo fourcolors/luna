@@ -80,6 +80,7 @@ import { createLocalShell } from '../../frontend-react/src/chat/localShell'
 import { createNotifier } from '../../frontend-react/src/chat/notifier'
 import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
 import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
+import { createChatEngine, CSS_escape as __cssesc, splitSpeakableSentences as __splitsp, toSpeakable as __tospk } from '../../frontend-react/src/chat/chatEngine'
 import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
 import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
@@ -256,6 +257,11 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
     chatHostSlashMenuCtx({
       getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
       clearAttachments: () => attachmentsMount.Attachments.clear(),
+      // Late-bound for the same reason production is: SlashMenu mounts before
+      // the engine exists, and a dispatch only happens on a user action.
+      appendMessage: (role: string, text: string) => chatEngineInstance?.ChatEngine.appendMessage(role, text),
+      newConversation: () => chatEngineInstance?.ChatEngine.newConversation(),
+      autoGrowMessageInput: () => chatEngineInstance?.ChatEngine.autoGrowMessageInput(),
       // LATE-BOUND on purpose: this harness mounts SlashMenu before it builds
       // LocalShell, the reverse of production. Capturing eagerly here would
       // capture null.
@@ -282,6 +288,33 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   const byId = (id: string) => document.getElementById(id)
   const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
   let localShellInstance: ReturnType<typeof createLocalShell> | null = null
+  let chatEngineInstance: ReturnType<typeof createChatEngine> | null = null
+  const makeChatEngine = (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) =>
+    createChatEngine({
+      Logger: quietLogger,
+      DOM: {
+        chatMessages: byId('chat-messages'),
+        messageInput: byId('message-input'),
+        chatForm: byId('chat-form'),
+        moonWrapper: byId('moon-wrapper'),
+        voiceMicBtn: byId('voice-mic-btn'),
+      },
+      State: getChatHost()?.state() as never,
+      WebSocketEngine: {
+        send: (f: unknown) => getChatHost()?.send(f as never),
+        isConnected: () => getChatHost()?.isConnected() ?? false,
+        clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
+        startTurnTimeout: () => getChatHost()?.startTurnTimeout(),
+        sendNewThread: () => getChatHost()?.sendNewThread(),
+      },
+      ChatState: cs as never,
+      ChatLoop: cl as never,
+      MoonFace: mf,
+      MoonClient: __moonClientConst,
+      SlashMenu: sm as never,
+      Attachments: at as never,
+      ThreadCache: tc,
+    })
   const makeThreadDrawer = (mf: any, cs: any, cl: any) =>
     createThreadDrawer({
       Logger: quietLogger,
@@ -452,6 +485,13 @@ var __td = __threadDrawer(MoonFace, ChatState, ChatLoop);
 ThreadDrawerEngine = __td.ThreadDrawerEngine;
 ThreadCache = __td.ThreadCache;
 ThreadCreateState = __td.ThreadCreateState;
+var __ce = __chatEngine(ChatState, ChatLoop, MoonFace, SlashMenu, Attachments, ThreadCache);
+ChatEngine = __ce.ChatEngine;
+VoiceEngine = __ce.VoiceEngine;
+CSS_escape = __CSS_escape;
+splitSpeakableSentences = __splitSpeakableSentences;
+toSpeakable = __toSpeakable;
+Promise.resolve(VoiceEngine.init()).catch(function(){});
 ThreadDrawerEngine.initSidebar();
 if (!(window.LunaChatHost && window.LunaChatHost.state().pinnedThread)) { ThreadDrawerEngine.wireDivider(document.getElementById('thread-divider')); }
 window.ChatState = ChatState;
@@ -505,6 +545,10 @@ if (window.__MoonInternals) {
   window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
   window.__MoonInternals.ThreadCache = ThreadCache;
   window.__MoonInternals.ThreadCreateState = ThreadCreateState;
+  window.__MoonInternals.ChatEngine = ChatEngine;
+  window.__MoonInternals.VoiceEngine = VoiceEngine;
+  window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
+  window.__MoonInternals.toSpeakable = toSpeakable;
   window.__MoonInternals.MoonClient = MoonClient;
   window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
   window.__MoonInternals.describeTarget = __describeTarget;
@@ -540,10 +584,14 @@ if (window.__MoonInternals) {
     '__buildMessageCopyButton',
     '__threadDrawer',
     '__moonDragDebugNote',
+    '__chatEngine',
+    '__CSS_escape',
+    '__splitSpeakableSentences',
+    '__toSpeakable',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

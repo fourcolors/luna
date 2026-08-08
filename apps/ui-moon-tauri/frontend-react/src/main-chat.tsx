@@ -46,6 +46,7 @@ import { createNotifier } from "./chat/notifier"
 import { MoonClient } from "./chat/moonClient"
 import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./chat/messageMeta"
 import { createThreadDrawer, moonDragDebugNote } from "./chat/threadDrawer"
+import { createChatEngine, CSS_escape, splitSpeakableSentences, toSpeakable } from "./chat/chatEngine"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -85,6 +86,11 @@ function assignBridge(
     | "ThreadCache"
     | "ThreadCreateState"
     | "moonDragDebugNote"
+    | "ChatEngine"
+    | "VoiceEngine"
+    | "CSS_escape"
+    | "splitSpeakableSentences"
+    | "toSpeakable"
     | "SurveyEngine"
     | "SecretPromptEngine"
     | "SuggestedActionsEngine"
@@ -335,6 +341,13 @@ const slashMenuMount = mountSlashMenu(
   chatHostSlashMenuCtx({
     getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
     clearAttachments: () => attachmentsMount?.Attachments.clear(),
+    // Straight to the engine. These three were LunaChatHost's last Group C
+    // members; S19k made ChatEngine a module and the category went to zero.
+    // Late-bound: SlashMenu mounts before the engine is built, and a dispatch
+    // can only happen on a user action, which is far later than either.
+    appendMessage: (role: string, text: string) => chatEngine.ChatEngine.appendMessage(role, text),
+    newConversation: () => chatEngine.ChatEngine.newConversation(),
+    autoGrowMessageInput: () => chatEngine.ChatEngine.autoGrowMessageInput(),
     // Straight to the module. This used to be
     // `getChatHost()?.closeLocalShellMenu()`, a Group C member that existed
     // only to bridge module -> vanilla const. S19h DELETED it.
@@ -464,6 +477,48 @@ if (!getChatHost()?.state().pinnedThread) {
   threadDrawer.ThreadDrawerEngine.wireDivider(document.getElementById("thread-divider"))
 }
 assignBridge("moonDragDebugNote", moonDragDebugNote)
+
+// ── ChatEngine + VoiceEngine (stack23 S19k) ─────────────────────────────
+//
+// One factory because they reference each other. Every collaborator is passed
+// WHOLE rather than narrowed to the members this call site can see used -
+// S19j lost time to exactly that narrowing.
+const chatEngine = createChatEngine({
+  Logger,
+  DOM: {
+    chatMessages: document.getElementById("chat-messages"),
+    messageInput: document.getElementById("message-input"),
+    chatForm: document.getElementById("chat-form"),
+    moonWrapper: document.getElementById("moon-wrapper"),
+    voiceMicBtn: document.getElementById("voice-mic-btn"),
+  },
+  State: getChatHost()?.state() as never,
+  WebSocketEngine: {
+    send: (frame: unknown) => getChatHost()?.send(frame as never),
+    isConnected: () => getChatHost()?.isConnected() ?? false,
+    clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
+    startTurnTimeout: () => getChatHost()?.startTurnTimeout(),
+    sendNewThread: () => getChatHost()?.sendNewThread(),
+  },
+  ChatState: messageListMount?.ChatState as never,
+  ChatLoop: messageListMount?.ChatLoop as never,
+  MoonFace: moonFace,
+  MoonClient,
+  SlashMenu: slashMenuMount?.SlashMenu as never,
+  Attachments: attachmentsMount?.Attachments as never,
+  ThreadCache: threadDrawer.ThreadCache,
+})
+assignBridge("ChatEngine", chatEngine.ChatEngine)
+assignBridge("VoiceEngine", chatEngine.VoiceEngine)
+assignBridge("CSS_escape", CSS_escape)
+assignBridge("splitSpeakableSentences", splitSpeakableSentences)
+assignBridge("toSpeakable", toSpeakable)
+// Relocated from chat.html's top level (S19k). It was already
+// fire-and-forget with a non-fatal catch, so running a tick later changes
+// nothing except that the engine now exists when it is called.
+Promise.resolve(chatEngine.VoiceEngine.init()).catch((e: unknown) =>
+  Logger.warn("Voice init failed (non-fatal):", e),
+)
 
 // ── The docked panel stack: secret > survey > suggestion (stack23 S19f) ──
 //
