@@ -79,6 +79,7 @@ import { createSuggestedActionsEngine } from '../../frontend-react/src/chat/sugg
 import { createLocalShell } from '../../frontend-react/src/chat/localShell'
 import { createNotifier } from '../../frontend-react/src/chat/notifier'
 import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
+import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
 import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
 import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
@@ -281,6 +282,38 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   const byId = (id: string) => document.getElementById(id)
   const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
   let localShellInstance: ReturnType<typeof createLocalShell> | null = null
+  const makeThreadDrawer = (mf: any, cs: any, cl: any) =>
+    createThreadDrawer({
+      Logger: quietLogger,
+      DOM: {
+        chatPanel: byId('chat-panel'),
+        threadDrawer: byId('thread-drawer'),
+        threadDrawerList: byId('thread-drawer-list'),
+        threadDrawerEmpty: byId('thread-drawer-empty'),
+        threadDivider: byId('thread-divider'),
+      },
+      State: getChatHost()?.state() as never,
+      WebSocketEngine: {
+        send: (f: unknown) => getChatHost()?.send(f as never),
+        isConnected: () => getChatHost()?.isConnected() ?? false,
+        clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
+        startSubscribeTimeout: () => getChatHost()?.startSubscribeTimeout(),
+      },
+      // The WHOLE objects - see main-chat.tsx's note.
+      ChatState: cs as never,
+      ChatLoop: cl as never,
+      // The IMPORTED modules, not window.* - the prologue publishes the
+      // window aliases AFTER this factory runs, so reading them here would
+      // hand the drawer a set of undefineds.
+      MoonFace: mf,
+      ThreadListLogic,
+      ThreadStrip,
+      ThreadCacheLogic,
+      ThreadCreateLogic,
+      ThreadDrag,
+      formatRelTime: __frt,
+      LunaThreadDrag: (window as any).LunaThreadDrag,
+    })
   const makeLocalShell = () =>
     (localShellInstance = createLocalShell({
       Logger: quietLogger,
@@ -414,6 +447,13 @@ MoonClient = __moonClient;
 formatRelTime = __formatRelTime;
 buildMessageMeta = __buildMessageMeta;
 buildMessageCopyButton = __buildMessageCopyButton;
+moonDragDebugNote = __moonDragDebugNote;
+var __td = __threadDrawer(MoonFace, ChatState, ChatLoop);
+ThreadDrawerEngine = __td.ThreadDrawerEngine;
+ThreadCache = __td.ThreadCache;
+ThreadCreateState = __td.ThreadCreateState;
+ThreadDrawerEngine.initSidebar();
+if (!(window.LunaChatHost && window.LunaChatHost.state().pinnedThread)) { ThreadDrawerEngine.wireDivider(document.getElementById('thread-divider')); }
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -462,6 +502,9 @@ if (window.__MoonInternals) {
   window.__MoonInternals.formatRelTime = formatRelTime;
   window.__MoonInternals.buildMessageMeta = buildMessageMeta;
   window.__MoonInternals.buildMessageCopyButton = buildMessageCopyButton;
+  window.__MoonInternals.ThreadDrawerEngine = ThreadDrawerEngine;
+  window.__MoonInternals.ThreadCache = ThreadCache;
+  window.__MoonInternals.ThreadCreateState = ThreadCreateState;
   window.__MoonInternals.MoonClient = MoonClient;
   window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
   window.__MoonInternals.describeTarget = __describeTarget;
@@ -495,10 +538,12 @@ if (window.__MoonInternals) {
     '__formatRelTime',
     '__buildMessageMeta',
     '__buildMessageCopyButton',
+    '__threadDrawer',
+    '__moonDragDebugNote',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

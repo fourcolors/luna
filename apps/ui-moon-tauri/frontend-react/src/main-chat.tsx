@@ -45,6 +45,7 @@ import { createLocalShell } from "./chat/localShell"
 import { createNotifier } from "./chat/notifier"
 import { MoonClient } from "./chat/moonClient"
 import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./chat/messageMeta"
+import { createThreadDrawer, moonDragDebugNote } from "./chat/threadDrawer"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -80,6 +81,10 @@ function assignBridge(
     | "formatRelTime"
     | "buildMessageMeta"
     | "buildMessageCopyButton"
+    | "ThreadDrawerEngine"
+    | "ThreadCache"
+    | "ThreadCreateState"
+    | "moonDragDebugNote"
     | "SurveyEngine"
     | "SecretPromptEngine"
     | "SuggestedActionsEngine"
@@ -406,6 +411,59 @@ if (messageListMount) {
   assignBridge("ChatState", messageListMount.ChatState)
   assignBridge("ChatLoop", messageListMount.ChatLoop)
 }
+
+// ── The thread drawer knot (stack23 S19j) ───────────────────────────────
+//
+// Built as ONE unit because ThreadCache and ThreadDrawerEngine reference each
+// other (#484). The five logic modules it takes have been modules since S17;
+// this slice is what finally gives them a module-side owner instead of a
+// chat.html const calling into them.
+const threadDrawer = createThreadDrawer({
+  Logger,
+  DOM: {
+    chatPanel: document.getElementById("chat-panel"),
+    threadDrawer: document.getElementById("thread-drawer"),
+    threadDrawerList: document.getElementById("thread-drawer-list"),
+    threadDrawerEmpty: document.getElementById("thread-drawer-empty"),
+    threadDivider: document.getElementById("thread-divider"),
+  },
+  State: getChatHost()?.state() as never,
+  WebSocketEngine: {
+    send: (frame: unknown) => getChatHost()?.send(frame as never),
+    isConnected: () => getChatHost()?.isConnected() ?? false,
+    clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
+    startSubscribeTimeout: () => getChatHost()?.startSubscribeTimeout(),
+  },
+  // The WHOLE objects, not a narrowed {reset}/{flush}. The drawer's own
+  // text only calls those two, but it hands ChatState/ChatLoop straight
+  // through to ThreadCacheLogic, which uses more of them - a narrowed stub
+  // made ThreadCache.paint() return false with nothing else failing.
+  ChatState: messageListMount?.ChatState as never,
+  ChatLoop: messageListMount?.ChatLoop as never,
+  MoonFace: moonFace,
+  ThreadListLogic,
+  ThreadStrip,
+  ThreadCacheLogic,
+  ThreadCreateLogic,
+  ThreadDrag,
+  formatRelTime,
+  LunaThreadDrag: (window as unknown as { LunaThreadDrag?: unknown }).LunaThreadDrag,
+})
+assignBridge("ThreadDrawerEngine", threadDrawer.ThreadDrawerEngine)
+assignBridge("ThreadCache", threadDrawer.ThreadCache)
+assignBridge("ThreadCreateState", threadDrawer.ThreadCreateState)
+// The drawer's only two boot calls, relocated from chat.html's top level
+// for the reason MoonFace.init() was in S19e. Both only read localStorage
+// and attach listeners, so a tick later is equivalent.
+threadDrawer.ThreadDrawerEngine.initSidebar()
+// GATED, exactly as chat.html gated it. wireDivider lived in the `else` of
+// `if (State.pinnedThread)`: a pinned ?thread=<id> window is single-thread
+// and deliberately has no divider to drag. Hoisting it unconditionally
+// would have given pinned windows a resizable sidebar they must not have.
+if (!getChatHost()?.state().pinnedThread) {
+  threadDrawer.ThreadDrawerEngine.wireDivider(document.getElementById("thread-divider"))
+}
+assignBridge("moonDragDebugNote", moonDragDebugNote)
 
 // ── The docked panel stack: secret > survey > suggestion (stack23 S19f) ──
 //

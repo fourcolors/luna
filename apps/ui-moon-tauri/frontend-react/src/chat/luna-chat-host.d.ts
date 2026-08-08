@@ -75,6 +75,10 @@ export interface LunaChatHostApi {
 
   // ── Group A - the wire. S18 deletes BOTH of these together.
   readonly send: (frame: ClientFrame) => void
+  /** The drawer drives the subscribe watchdog when it opens a thread. Group A
+   *  like send(): these are the wire, and they go when the engines move. */
+  readonly clearTurnTimeout: () => void
+  readonly startSubscribeTimeout: () => void
   readonly executeCapability: (req: ExecuteRequest) => Promise<ExecuteResult>
 
   // ── Group C - imperative calls into vanilla engines. S19/S20 delete these.

@@ -5187,11 +5187,18 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Global * { -webkit-user-drag: none } kills HTML5 DnD in WKWebView;
       // pull-out is pointer-capture based with a card ghost + ThreadDragSession.
       expect(row?.draggable).toBe(false)
-      expect(htmlContent).toMatch(/thread-drag-ghost/)
-      expect(htmlContent).toMatch(/threadDragActive/)
-      expect(htmlContent).toMatch(/setPointerCapture/)
-      expect(htmlContent).toMatch(/LunaThreadDrag/)
-      expect(htmlContent).toMatch(/_seedFloaterCache/)
+      // These read src/chat/threadDrawer.ts, not chat.html: stack23 S19j
+      // moved ThreadDrawerEngine out. Same assertions, correct file - the
+      // sibling ThreadDragSession test below already did this after S17f.
+      const drawerSrc = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/threadDrawer.ts'),
+        'utf8',
+      )
+      expect(drawerSrc).toMatch(/thread-drag-ghost/)
+      expect(drawerSrc).toMatch(/threadDragActive/)
+      expect(drawerSrc).toMatch(/setPointerCapture/)
+      expect(drawerSrc).toMatch(/LunaThreadDrag/)
+      expect(drawerSrc).toMatch(/_seedFloaterCache/)
       expect((window as any).LunaThreadDrag?.createSession).toBeTypeOf('function')
       const ghost = m.ThreadDrawerEngine._makeGhost({
         id: 'a',
