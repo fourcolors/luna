@@ -42,6 +42,7 @@ export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   startSubscribeTimeout: true,
   startTurnTimeout: true,
   sendNewThread: true,
+  dispatchFrame: true,
   executeCapability: true,
 }
 export const CHAT_HOST_MEMBER_NAMES: readonly string[] = Object.keys(CHAT_HOST_MEMBERS).sort()

@@ -47,6 +47,7 @@ import { MoonClient } from "./chat/moonClient"
 import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./chat/messageMeta"
 import { createThreadDrawer, moonDragDebugNote } from "./chat/threadDrawer"
 import { createChatEngine, CSS_escape, splitSpeakableSentences, toSpeakable } from "./chat/chatEngine"
+import { createWire } from "./chat/wire"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -91,6 +92,9 @@ function assignBridge(
     | "CSS_escape"
     | "splitSpeakableSentences"
     | "toSpeakable"
+    | "WebSocketEngine"
+    | "PoolEngine"
+    | "USE_POOL_ENGINE"
     | "SurveyEngine"
     | "SecretPromptEngine"
     | "SuggestedActionsEngine"
@@ -519,6 +523,62 @@ assignBridge("toSpeakable", toSpeakable)
 Promise.resolve(chatEngine.VoiceEngine.init()).catch((e: unknown) =>
   Logger.warn("Voice init failed (non-fatal):", e),
 )
+
+// ── The wire, and its ignition (stack23 S20a) ───────────────────────────
+//
+// Both socket engines plus loadConnectionAndConnect. The ignition moved with
+// them because its SYNCHRONOUS prefix reaches connect() in a plain browser, so
+// a module-published engine would have been undefined exactly when boot needed
+// it - fine in the installed Tauri app, broken in dev and every test.
+//
+// SPAWN_FRESH / PINNED_THREAD are derived ONCE, here, and passed in: `new` is a
+// SENTINEL meaning "mint your own fresh thread", not a real thread id, and two
+// readers of that rule is one too many.
+const _threadParam = new URLSearchParams(location.search).get("thread") || null
+const SPAWN_FRESH = _threadParam === "new"
+const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam
+
+const wire = createWire({
+  Logger,
+  DOM: {
+    connectionStatus: document.getElementById("connection-status"),
+    buildSha: document.getElementById("build-sha"),
+    modelSelect: document.getElementById("model-select"),
+    secretPromptInput: document.getElementById("secret-prompt-input"),
+  },
+  State: getChatHost()?.state() as never,
+  MoonFrames: { dispatch: (frame: unknown) => getChatHost()?.dispatchFrame(frame) },
+  ChatEngine: chatEngine.ChatEngine as never,
+  ChatState: messageListMount?.ChatState as never,
+  ChatLoop: messageListMount?.ChatLoop as never,
+  ComposerConfig: composerConfigMount?.ComposerConfig as never,
+  MoonBar: moonBar as never,
+  MoonFace: moonFace as never,
+  ThreadCreateState: threadDrawer.ThreadCreateState as never,
+  ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine as never,
+  MOON_EXPECTED_PROTOCOL_VERSION: (window as unknown as { LunaProtocol: { PROTOCOL_VERSION: number } })
+    .LunaProtocol.PROTOCOL_VERSION,
+  SPAWN_FRESH,
+  PINNED_THREAD,
+  winLabel: (getChatHost()?.state() as { winLabel?: string | null } | undefined)?.winLabel ?? null,
+})
+assignBridge("WebSocketEngine", wire.WebSocketEngine)
+assignBridge("PoolEngine", wire.PoolEngine)
+assignBridge("USE_POOL_ENGINE", wire.USE_POOL_ENGINE)
+
+// Never retain a typed secret across a socket drop. Clear the VALUE only - do
+// NOT hide the panel, so the success flow's brief "saved" message (server
+// restarts, socket closes, auto-reconnect) is not killed early. Relocated from
+// chat.html's top level with the engine it registers on.
+wire.WebSocketEngine.registerCloseHook(() => {
+  const el = document.getElementById("secret-prompt-input") as HTMLInputElement | null
+  if (el) el.value = ""
+})
+
+// IGNITION LAST. Everything the engines reach is constructed by this point,
+// which is the property chat.html's top-level call could not offer a module.
+wire.boot()
+
 
 // ── The docked panel stack: secret > survey > suggestion (stack23 S19f) ──
 //

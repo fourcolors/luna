@@ -80,6 +80,7 @@ import { createLocalShell } from '../../frontend-react/src/chat/localShell'
 import { createNotifier } from '../../frontend-react/src/chat/notifier'
 import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
 import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
+import { createWire } from '../../frontend-react/src/chat/wire'
 import { createChatEngine, CSS_escape as __cssesc, splitSpeakableSentences as __splitsp, toSpeakable as __tospk } from '../../frontend-react/src/chat/chatEngine'
 import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
@@ -289,6 +290,33 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
   let localShellInstance: ReturnType<typeof createLocalShell> | null = null
   let chatEngineInstance: ReturnType<typeof createChatEngine> | null = null
+  const makeWire = (ce: any, cs: any, cl: any, cc: any, mb: any, mf: any, tcs: any, tde: any) => {
+    const p = new URLSearchParams(location.search).get('thread') || null
+    const spawnFresh = p === 'new'
+    return createWire({
+      Logger: quietLogger,
+      DOM: {
+        connectionStatus: byId('connection-status'),
+        buildSha: byId('build-sha'),
+        modelSelect: byId('model-select'),
+        secretPromptInput: byId('secret-prompt-input'),
+      },
+      State: getChatHost()?.state() as never,
+      MoonFrames: { dispatch: (f: unknown) => getChatHost()?.dispatchFrame(f) },
+      ChatEngine: ce as never,
+      ChatState: cs as never,
+      ChatLoop: cl as never,
+      ComposerConfig: cc as never,
+      MoonBar: mb as never,
+      MoonFace: mf as never,
+      ThreadCreateState: tcs as never,
+      ThreadDrawerEngine: tde as never,
+      MOON_EXPECTED_PROTOCOL_VERSION: (window as any).LunaProtocol.PROTOCOL_VERSION,
+      SPAWN_FRESH: spawnFresh,
+      PINNED_THREAD: spawnFresh ? null : p,
+      winLabel: ((getChatHost()?.state() as any)?.winLabel) ?? null,
+    })
+  }
   const makeChatEngine = (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) =>
     createChatEngine({
       Logger: quietLogger,
@@ -491,6 +519,12 @@ VoiceEngine = __ce.VoiceEngine;
 CSS_escape = __CSS_escape;
 splitSpeakableSentences = __splitSpeakableSentences;
 toSpeakable = __toSpeakable;
+var __w = __wire(ChatEngine, ChatState, ChatLoop, ComposerConfig, MoonBar, MoonFace, ThreadCreateState, ThreadDrawerEngine);
+WebSocketEngine = __w.WebSocketEngine;
+PoolEngine = __w.PoolEngine;
+USE_POOL_ENGINE = __w.USE_POOL_ENGINE;
+WebSocketEngine.registerCloseHook(function(){ var el = document.getElementById('secret-prompt-input'); if (el) el.value = ''; });
+__w.boot();
 Promise.resolve(VoiceEngine.init()).catch(function(){});
 ThreadDrawerEngine.initSidebar();
 if (!(window.LunaChatHost && window.LunaChatHost.state().pinnedThread)) { ThreadDrawerEngine.wireDivider(document.getElementById('thread-divider')); }
@@ -547,6 +581,9 @@ if (window.__MoonInternals) {
   window.__MoonInternals.ThreadCreateState = ThreadCreateState;
   window.__MoonInternals.ChatEngine = ChatEngine;
   window.__MoonInternals.VoiceEngine = VoiceEngine;
+  window.__MoonInternals.WebSocketEngine = WebSocketEngine;
+  window.__MoonInternals.PoolEngine = PoolEngine;
+  window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
   window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
   window.__MoonInternals.toSpeakable = toSpeakable;
   window.__MoonInternals.MoonClient = MoonClient;
@@ -588,10 +625,11 @@ if (window.__MoonInternals) {
     '__CSS_escape',
     '__splitSpeakableSentences',
     '__toSpeakable',
+    '__wire',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, makeWire, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
