@@ -5305,10 +5305,17 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Assert the markup + CSS hide rule exist so a pinned window can show it.
       expect(htmlContent).toMatch(/id="redock-btn"/)
       expect(htmlContent).toMatch(/#title-bar \.redock-btn\[hidden\]/)
-      expect(htmlContent).toMatch(/redock_thread/)
-      expect(htmlContent).toMatch(/begin_redock_drag/)
-      expect(htmlContent).toMatch(/redock-preview/)
-      expect(htmlContent).toMatch(/redock-drag-ended/)
+      // The BEHAVIOUR assertions read src/chat/wiring.ts now: stack23 S20c moved
+      // the redock button wiring out of chat.html. The markup + CSS above stay
+      // where they are, because that is still chat.html's job.
+      const wiringSrc = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/wiring.ts'), 'utf8',
+      )
+      expect(wiringSrc).toMatch(/redock_thread/)
+      expect(wiringSrc).toMatch(/begin_redock_drag/)
+      expect(wiringSrc).toMatch(/redock-preview/)
+      expect(wiringSrc).toMatch(/redock-drag-ended/)
+      // Still chat.html: this one is the drop-gap CSS class, not the button wiring.
       expect(htmlContent).toMatch(/thread-row-insert-gap/)
     })
 

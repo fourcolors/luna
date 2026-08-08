@@ -82,6 +82,7 @@ import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/m
 import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
 import { createWire } from '../../frontend-react/src/chat/wire'
 import { createFrames } from '../../frontend-react/src/chat/frames'
+import { installWiring } from '../../frontend-react/src/chat/wiring'
 import { createChatEngine, CSS_escape as __cssesc, splitSpeakableSentences as __splitsp, toSpeakable as __tospk } from '../../frontend-react/src/chat/chatEngine'
 import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
@@ -296,6 +297,49 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   let localShellInstance: ReturnType<typeof createLocalShell> | null = null
   let chatEngineInstance: ReturnType<typeof createChatEngine> | null = null
   let framesInstance: any = null
+  const makeWiring = (engines: any) =>
+    installWiring({
+      Logger: quietLogger,
+      // The SAME verified ids main-chat.tsx uses, read out of chat.html's own
+      // DOM object rather than derived by a camelCase-to-kebab heuristic.
+      DOM: {
+        artifactsBtnInner: byId('artifacts-btn-inner'),
+        artifactsPanelClose: byId('artifacts-panel-close'),
+        attachBtn: byId('attach-btn'),
+        chatForm: byId('chat-form'),
+        chatMessages: byId('chat-messages'),
+        chatPanel: byId('chat-panel'),
+        feedbackBtn: byId('feedback-btn'),
+        feedbackCancel: byId('feedback-cancel'),
+        feedbackCancelX: byId('feedback-cancel-x'),
+        feedbackInput: byId('feedback-input'),
+        feedbackSubmit: byId('feedback-submit-btn'),
+        fileInput: byId('file-input'),
+        lunaSuggestion: byId('luna-suggestion'),
+        messageInput: byId('message-input'),
+        scopeBtn: byId('scope-btn'),
+        scopeFullAccess: byId('scope-full-access'),
+        scopeMenu: byId('scope-menu'),
+        secretPromptCancel: byId('secret-prompt-cancel'),
+        secretPromptCancelX: byId('secret-prompt-cancel-x'),
+        secretPromptInput: byId('secret-prompt-input'),
+        secretPromptSubmit: byId('secret-prompt-submit'),
+        suggestedActionAccept: byId('suggested-action-accept'),
+        suggestedActionCancelX: byId('suggested-action-cancel-x'),
+        suggestedActionDismiss: byId('suggested-action-dismiss'),
+        suggestedActionPanel: byId('suggested-action-panel'),
+        suggestedActionSeeAll: byId('suggested-action-see-all'),
+        threadDrawerClose: byId('thread-drawer-close'),
+        threadDrawerNew: byId('thread-drawer-new'),
+        threadDrawerSearch: byId('thread-drawer-search-input'),
+        toggleSettings: byId('toggle-settings'),
+        toggleThreads: byId('toggle-threads'),
+        userAskDismiss: byId('user-ask-dismiss'),
+        userAskSubmit: byId('user-ask-submit'),
+      },
+      State: getChatHost()?.state() as never,
+      engines,
+    })
   const makeFrames = (engines: any) => {
     const p = new URLSearchParams(location.search).get('thread') || null
     const spawnFresh = p === 'new'
@@ -537,10 +581,38 @@ VoiceEngine = __ce.VoiceEngine;
 CSS_escape = __CSS_escape;
 splitSpeakableSentences = __splitSpeakableSentences;
 toSpeakable = __toSpeakable;
+// ORDER MIRRORS PRODUCTION (S20c): wiring -> wire -> frames -> boot.
+// wiring sets State.winLabel and State.pinnedThread, which the wire reads at
+// CONSTRUCTION - building the wire first silently handed it nulls.
+var __wiringOut = __makeWiring({
+  ArtifactsEngine: ArtifactsEngine,
+  Attachments: Attachments,
+  ChatLoop: ChatLoop,
+  ChatState: ChatState,
+  ComposerConfig: ComposerConfig,
+  FeedbackEngine: FeedbackEngine,
+  LocalShell: LocalShell,
+  SecretPromptEngine: SecretPromptEngine,
+  SlashMenu: SlashMenu,
+  SuggestedActionsEngine: SuggestedActionsEngine,
+  SurveyEngine: SurveyEngine,
+  ThreadCache: ThreadCache,
+  ThreadDrawerEngine: ThreadDrawerEngine,
+  ChatEngine: ChatEngine,
+  VoiceEngine: VoiceEngine,
+  formatRelTime: formatRelTime,
+  buildMessageMeta: buildMessageMeta,
+  moonDragDebugNote: moonDragDebugNote,
+});
+
 var __w = __wire(ChatEngine, ChatState, ChatLoop, ComposerConfig, MoonBar, MoonFace, ThreadCreateState, ThreadDrawerEngine);
 WebSocketEngine = __w.WebSocketEngine;
 PoolEngine = __w.PoolEngine;
 USE_POOL_ENGINE = __w.USE_POOL_ENGINE;
+// The drawer's boot calls run AFTER installWiring, which is what sets
+// State.pinnedThread that wireDivider is gated on.
+ThreadDrawerEngine.initSidebar();
+if (!(window.LunaChatHost && window.LunaChatHost.state().pinnedThread)) { ThreadDrawerEngine.wireDivider(document.getElementById('thread-divider')); }
 var __frames = __makeFrames({
   ArtifactsEngine: ArtifactsEngine,
   ChatEngine: ChatEngine,
@@ -568,8 +640,6 @@ MoonFrames = __frames.MoonFrames;
 WebSocketEngine.registerCloseHook(function(){ var el = document.getElementById('secret-prompt-input'); if (el) el.value = ''; });
 __w.boot();
 Promise.resolve(VoiceEngine.init()).catch(function(){});
-ThreadDrawerEngine.initSidebar();
-if (!(window.LunaChatHost && window.LunaChatHost.state().pinnedThread)) { ThreadDrawerEngine.wireDivider(document.getElementById('thread-divider')); }
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -671,10 +741,11 @@ if (window.__MoonInternals) {
     '__toSpeakable',
     '__wire',
     '__makeFrames',
+    '__makeWiring',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, makeWire, makeFrames, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, makeWire, makeFrames, makeWiring, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
