@@ -42,7 +42,6 @@ export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   appendMessage: true,
   newConversation: true,
   autoGrowMessageInput: true,
-  closeLocalShellMenu: true,
   buildMessageMeta: true,
 }
 export const CHAT_HOST_MEMBER_NAMES: readonly string[] = Object.keys(CHAT_HOST_MEMBERS).sort()
@@ -63,6 +62,10 @@ export function chatHostComposerCtx(): ComposerConfigCtx {
 export function chatHostSlashMenuCtx(peers: {
   getComposerConfig: () => ComposerConfigBridge | null
   clearAttachments: () => void
+  /** Passed in rather than routed through the host: LocalShell is a module as
+   *  of S19h, so this is a direct module-to-module call and
+   *  LunaChatHost.closeLocalShellMenu could be DELETED. */
+  closeLocalShellMenu: () => void
 }): SlashMenuCtx {
   return {
     getState: () => getChatHost()?.state() ?? null,
@@ -72,7 +75,7 @@ export function chatHostSlashMenuCtx(peers: {
     executeCapability: (req) => getChatHost()?.executeCapability(req) ?? Promise.resolve(HOST_ABSENT),
     appendMessage: (role, text) => getChatHost()?.appendMessage(role, text),
     newConversation: () => getChatHost()?.newConversation(),
-    closeLocalShellMenu: () => getChatHost()?.closeLocalShellMenu(),
+    closeLocalShellMenu: peers.closeLocalShellMenu,
     autoGrowMessageInput: () => getChatHost()?.autoGrowMessageInput(),
   }
 }

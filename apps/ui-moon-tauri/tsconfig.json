@@ -22,5 +22,5 @@
     "allowImportingTsExtensions": false,
     "types": ["vite/client"]
   },
-  "include": ["frontend-react/src/**/*"]
+  "include": ["frontend-react/src/**/*", "test/helpers/**/*"]
 }

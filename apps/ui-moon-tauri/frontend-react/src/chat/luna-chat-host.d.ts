@@ -39,6 +39,14 @@ import type { Delivery } from "./chatModel"
  * the fields the module side reads; `State` itself carries many more. */
 export interface ChatHostState {
   activeThreadId: string | null
+  /** Mutated in place by LocalShell (S19h); the module needs the SAME object. */
+  localShell: {
+    enabled: boolean
+    roots: string[]
+    fullAccess: boolean
+    platform: string
+    clientId: string
+  }
   threadModels: Record<string, string>
   threadEfforts: Record<string, string>
   serverSupportsEffort: boolean
@@ -73,7 +81,6 @@ export interface LunaChatHostApi {
   readonly appendMessage: (role: string, text: string) => void
   readonly newConversation: () => void
   readonly autoGrowMessageInput: () => void
-  readonly closeLocalShellMenu: () => void
   readonly buildMessageMeta: (text: string, ts: number | undefined, delivery: Delivery | null) => HTMLElement
 }
 

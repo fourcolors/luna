@@ -74,7 +74,10 @@ export class FakeWebSocket {
 
   constructor(url: string, protocols?: string | string[]) {
     this.url = url
-    this.protocols = protocols
+    // Assigned only when present: the field is optional and the project runs
+    // exactOptionalPropertyTypes, so writing an explicit `undefined` is a
+    // different thing from leaving it unset.
+    if (protocols !== undefined) this.protocols = protocols
     FakeWebSocket.instances.push(this)
   }
 
