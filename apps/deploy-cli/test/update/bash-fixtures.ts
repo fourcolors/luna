@@ -1,123 +1,30 @@
 /**
- * Hermetic bash-side fixture for the golden parity harness: a scoped-down
- * copy of test/update-server.test.ts's own makeDeployRepo / makeStubBin /
- * runUpdate pattern (that file cannot be imported from here - its helpers
- * are private to that test module, and test/helpers/guardian-harness.ts, the
- * one shared harness file, does not export an update-server-specific rig).
- * Trimmed to exactly what proving journal byte-parity needs: a real git
- * checkout to drive `git fetch` / `git reset --hard` against, and
- * deterministic systemctl/curl/bun stubs so the readiness gate's verdict is
- * driven by the repo's own HEAD rather than by timing.
+ * Hermetic bash-side fixture for the golden parity harness: builds on the
+ * shared git/makeDeployRepo/makeStubBin fixture (test/helpers/
+ * update-server-fixtures.ts - a pure move of what used to be private to
+ * test/update-server.test.ts, so this file no longer needs its own ~150-line
+ * trimmed duplicate of them) plus the runUpdate pattern below.
  */
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
+import { makeDeployRepo, makeStubBin } from "../../../../test/helpers/update-server-fixtures.js"
 import { cleanupTempDirs as sharedCleanupTempDirs, makeTempDir as sharedMakeTempDir, repoRoot } from "./temp-dirs.js"
 
 export const cleanupTempDirs = sharedCleanupTempDirs
-const makeTempDir = (): string => sharedMakeTempDir("deploy-cli-journal-parity-")
-
-const git = (cwd: string, ...args: ReadonlyArray<string>): string => {
-  const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" })
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`)
-  return r.stdout.trim()
-}
-
-/**
- * A deploy-style checkout: a local bare `origin` plus a working clone with
- * two commits on master (prevSha = first, targetSha = HEAD). The working
- * clone starts checked out at prevSha, so an update to origin/master moves
- * it forward - mirrors test/update-server.test.ts's makeDeployRepo.
- */
-const makeDeployRepo = (root: string): { work: string; prevSha: string; targetSha: string } => {
-  const origin = join(root, "origin.git")
-  const work = join(root, "repo")
-  mkdirSync(origin, { recursive: true })
-  git(origin, "init", "--quiet", "--bare")
-
-  const seed = join(root, "seed")
-  mkdirSync(seed, { recursive: true })
-  git(seed, "init", "--quiet")
-  git(seed, "config", "user.email", "t@example.test")
-  git(seed, "config", "user.name", "Test")
-  git(seed, "checkout", "-q", "-B", "master")
-  writeFileSync(join(seed, "file.txt"), "v1\n")
-  writeFileSync(join(seed, "bun.lock"), "lock-v1\n")
-  git(seed, "add", "-A")
-  git(seed, "commit", "--quiet", "-m", "prev")
-  const prevSha = git(seed, "rev-parse", "HEAD")
-  writeFileSync(join(seed, "file.txt"), "v2\n")
-  git(seed, "add", "-A")
-  git(seed, "commit", "--quiet", "-m", "target")
-  const targetSha = git(seed, "rev-parse", "HEAD")
-  git(seed, "remote", "add", "origin", origin)
-  git(seed, "push", "--quiet", "origin", "master")
-
-  git(root, "clone", "--quiet", origin, work)
-  git(work, "config", "user.email", "t@example.test")
-  git(work, "config", "user.name", "Test")
-  git(work, "checkout", "--quiet", prevSha)
-
-  // bun install's node_modules postcondition: untracked, survives reset --hard both ways.
-  mkdirSync(join(work, "node_modules"), { recursive: true })
-  writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-
-  return { work, prevSha, targetSha }
-}
-
-/**
- * Deterministic systemctl/curl/bun stubs. The readiness VERDICT is keyed off
- * the repo's live HEAD compared to the sha(s) marked ready, so there is no
- * timing dependence - mirrors test/update-server.test.ts's makeStubBin,
- * trimmed to the readyAtTarget/readyAtPrev axis this harness needs (no
- * setup-mode / buildSha-omission scenarios - those are readiness-gate
- * concerns out of scope for S22a).
- */
-const makeStubBin = (
-  root: string,
-  opts: { readonly repo: string; readonly prevSha: string; readonly targetSha: string; readonly readyAtTarget: boolean; readonly readyAtPrev: boolean },
-): { bin: string } => {
-  const bin = join(root, "bin")
-  mkdirSync(bin, { recursive: true })
-
-  writeFileSync(
-    join(bin, "systemctl"),
-    `#!/usr/bin/env bash
-case "$1" in
-  is-active) printf 'active\\n'; exit 0 ;;
-  show) printf '0\\n'; exit 0 ;;
-  *) exit 0 ;;
-esac
-`,
-  )
-
-  writeFileSync(
-    join(bin, "curl"),
-    `#!/usr/bin/env bash
-head="$(git -C "${opts.repo}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
-code='503'
-if [[ "$head" == "${opts.targetSha}" && "${opts.readyAtTarget ? "1" : "0"}" == "1" ]]; then code='200'; fi
-if [[ "$head" == "${opts.prevSha}" && "${opts.readyAtPrev ? "1" : "0"}" == "1" ]]; then code='200'; fi
-if [[ "$*" == *"/readyz"* ]]; then
-  printf '{"status":"ok","mode":"normal","credentialOk":true,"buildSha":"%s"}\\n%s' "$head" "$code"
-  exit 0
-fi
-printf '%s' "$code"
-exit 0
-`,
-  )
-
-  writeFileSync(join(bin, "bun"), `#!/usr/bin/env bash\nexit 0\n`)
-
-  spawnSync("chmod", ["+x", join(bin, "systemctl"), join(bin, "curl"), join(bin, "bun")])
-  return { bin }
-}
+// Shared by both the S22a journal-parity suite and the S22b restart/
+// session-guard parity suite below - not journal-specific despite the file's
+// own S22a origin, so a leaked temp dir points at the right suite.
+const makeTempDir = (): string => sharedMakeTempDir("deploy-cli-update-parity-")
 
 /** The SYSTEM unit file the script's user-unit guard requires (scripts/luna-update-server's user-unit-out-of-scope refusal). */
 const writeUnit = (serviceDir: string, name = "luna-chat-server.service"): void => {
   mkdirSync(serviceDir, { recursive: true })
   writeFileSync(join(serviceDir, name), "[Unit]\n")
 }
+
+/** Single source of truth for the readiness/ws port every fixture pins, so `--readiness-port` (in args, below) and `readinessPort` (on Fixture, for a caller building a SessionGuardOptions) can never drift apart. */
+export const READINESS_PORT = 4753
 
 interface RunResult {
   readonly status: number | null
@@ -142,23 +49,34 @@ export interface Fixture {
   readonly prevSha: string
   readonly targetSha: string
   readonly updateState: string
+  readonly serviceName: string
+  readonly readinessPort: number
+  readonly bin: string
+  readonly systemctlLog: string
   readonly args: ReadonlyArray<string>
   readonly env: Record<string, string | undefined>
 }
 
-export const makeFixture = (opts: { readonly readyAtTarget: boolean; readonly readyAtPrev: boolean }): Fixture => {
+export const makeFixture = (
+  opts: { readonly readyAtTarget: boolean; readonly readyAtPrev: boolean; readonly isActive?: string },
+): Fixture => {
   const temp = makeTempDir()
   const { work, prevSha, targetSha } = makeDeployRepo(temp)
   const serviceDir = join(temp, "systemd")
   const updateState = join(temp, "update-state")
-  writeUnit(serviceDir)
-  const { bin } = makeStubBin(temp, { repo: work, prevSha, targetSha, ...opts })
+  const serviceName = "luna-chat-server.service"
+  writeUnit(serviceDir, serviceName)
+  const { bin, systemctlLog } = makeStubBin(temp, { repo: work, prevSha, targetSha, ...opts })
   return {
     temp,
     work,
     prevSha,
     targetSha,
     updateState,
+    serviceName,
+    readinessPort: READINESS_PORT,
+    bin,
+    systemctlLog,
     args: [
       // Pin every value the bash script would otherwise resolve from
       // ambient LUNA_* env (PROFILE/SUPERVISOR/READINESS_PORT) so a
@@ -172,7 +90,7 @@ export const makeFixture = (opts: { readonly readyAtTarget: boolean; readonly re
       "--service-dir", serviceDir,
       "--readiness-timeout", "2",
       "--readiness-interval", "0.3",
-      "--readiness-port", "4753",
+      "--readiness-port", String(READINESS_PORT),
       "--supervisor", "systemd",
     ],
     env: {
@@ -181,4 +99,42 @@ export const makeFixture = (opts: { readonly readyAtTarget: boolean; readonly re
       LUNA_UPDATE_STATE_DIR: updateState,
     },
   }
+}
+
+/** The pieces of `Fixture` a TS-only scenario (no `runUpdate` call) ever consumes. */
+export interface LightFixture {
+  readonly temp: string
+  readonly serviceName: string
+  readonly readinessPort: number
+  readonly bin: string
+  readonly systemctlLog: string
+}
+
+/**
+ * A TS-only fixture path (FIX10): every scenario in restart-guard-parity.test.ts
+ * that never calls `runUpdate` - it only drives `restartServiceSync`/
+ * `restartSessionGuardSync`/`queryActiveWsCountSync` directly against the
+ * stub `systemctl` binary - still paid for `makeFixture`'s full
+ * `makeDeployRepo` (git init + a bare origin + a seed clone + two commits +
+ * a push + a second clone + a checkout, ~15 subprocesses) despite consuming
+ * only `.bin`/`.serviceName`/`.readinessPort`/`.systemctlLog` from the
+ * result. `makeStubBin`'s own `curl` stub interpolates `repo`/`prevSha`/
+ * `targetSha` into its script TEXT but never validates them at fixture-
+ * build time - a TS-only scenario never executes that stub (it never spawns
+ * `curl` at all), so placeholder strings are exactly as good as a real repo
+ * here. `makeFixture` (above) stays the one used by every scenario that
+ * actually calls `runUpdate` against the real bash script.
+ */
+export const makeLightFixture = (
+  opts: { readonly readyAtTarget: boolean; readonly readyAtPrev: boolean; readonly isActive?: string },
+): LightFixture => {
+  const temp = makeTempDir()
+  const serviceName = "luna-chat-server.service"
+  const { bin, systemctlLog } = makeStubBin(temp, {
+    repo: join(temp, "unused-repo"),
+    prevSha: "unused-prev-sha",
+    targetSha: "unused-target-sha",
+    ...opts,
+  })
+  return { temp, serviceName, readinessPort: READINESS_PORT, bin, systemctlLog }
 }
