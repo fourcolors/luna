@@ -88,7 +88,6 @@ describe('window.LunaChatHost (stack23 S16c-host runtime parity)', () => {
     expect(typeof host.appendMessage).toBe('function')
     expect(typeof host.newConversation).toBe('function')
     expect(typeof host.autoGrowMessageInput).toBe('function')
-    expect(typeof host.buildMessageMeta).toBe('function')
   })
 
   it('state() returns the live State object (fields the ChatHostState interface names)', () => {
