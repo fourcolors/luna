@@ -83,6 +83,9 @@ export interface LunaChatHostApi {
   readonly startSubscribeTimeout: () => void
   readonly startTurnTimeout: () => void
   readonly sendNewThread: () => void
+  /** MoonFrames.dispatch. The registry itself stays in chat.html until its 27
+   *  handlers move; the engines only ever call dispatch. */
+  readonly dispatchFrame: (frame: unknown) => void
   readonly executeCapability: (req: ExecuteRequest) => Promise<ExecuteResult>
 
 }
