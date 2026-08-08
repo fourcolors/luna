@@ -38,6 +38,12 @@ import type { Delivery } from "./chatModel"
  * - the same object every frame handler mutates, never a copy. Names only
  * the fields the module side reads; `State` itself carries many more. */
 export interface ChatHostState {
+  /** The raw socket, present ONLY under the legacy WebSocketEngine - PoolEngine
+   *  never assigns it (see chat.html's isConnected() note). Read by
+   *  SecretPromptEngine's OPEN guard, which is why it is exposed at all;
+   *  see issue #500, which replaces that read with the engine-aware
+   *  predicate and lets this field come back out. */
+  ws: WebSocket | null
   activeThreadId: string | null
   threadModels: Record<string, string>
   threadEfforts: Record<string, string>

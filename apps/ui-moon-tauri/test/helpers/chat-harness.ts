@@ -72,6 +72,10 @@ import * as ThreadDrag from '../../frontend-react/src/chat/threadDrag'
 import { createResultToasts } from '../../frontend-react/src/chat/resultToasts'
 import { createUpdateBanner } from '../../frontend-react/src/chat/updateBanner'
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from '../../frontend-react/src/chat/feedbackEngine'
+import { Logger as LunaLogger } from '../../frontend-react/src/chat/logger'
+import { createSurveyEngine, buildSurveyVerdicts as __bsv } from '../../frontend-react/src/chat/surveyEngine'
+import { createSecretPromptEngine } from '../../frontend-react/src/chat/secretPromptEngine'
+import { createSuggestedActionsEngine } from '../../frontend-react/src/chat/suggestedActionsEngine'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
 import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
 import { createArtifactsEngine } from '../../frontend-react/src/chat/artifactsEngine'
@@ -267,6 +271,48 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   // unaffected; calling this from inside the bridged source below is what puts
   // the harness on the same footing.
   const byId = (id: string) => document.getElementById(id)
+  const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
+  const makeSurveyEngine = () =>
+    createSurveyEngine({
+      Logger: quietLogger,
+      DOM: {
+        userAskPanel: byId('user-ask-panel'),
+        userAskBody: byId('user-ask-body'),
+        userAskHint: byId('user-ask-hint'),
+        userAskSubmit: byId('user-ask-submit'),
+      },
+      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
+      ChatState: { appendBanner: (t: string) => (window as any).ChatState?.appendBanner(t) },
+      ChatLoop: { flush: () => (window as any).ChatLoop?.flush() },
+    })
+  const makeSecretPromptEngine = () =>
+    createSecretPromptEngine({
+      Logger: quietLogger,
+      DOM: {
+        secretPromptPanel: byId('secret-prompt-panel'),
+        secretPromptPrompt: byId('secret-prompt-prompt'),
+        secretPromptConsent: byId('secret-prompt-consent'),
+        secretPromptInput: byId('secret-prompt-input'),
+        secretPromptStatus: byId('secret-prompt-status'),
+      },
+      State: getChatHost()?.state(),
+      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
+    })
+  const makeSuggestedActionsEngine = (mf: any, mb: any) =>
+    createSuggestedActionsEngine({
+      DOM: {
+        suggestedActionPanel: byId('suggested-action-panel'),
+        suggestedActionType: byId('suggested-action-type'),
+        suggestedActionText: byId('suggested-action-text'),
+        suggestedActionRationale: byId('suggested-action-rationale'),
+        secretPromptPanel: byId('secret-prompt-panel'),
+        userAskPanel: byId('user-ask-panel'),
+      },
+      State: getChatHost()?.state(),
+      WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
+      MoonBar: mb,
+      MoonFace: mf,
+    })
   const makeMoonFace = () => {
     const f = createMoonFace({ lunaFace: byId('luna-face') })
     f.init()
@@ -337,6 +383,10 @@ FeedbackEngine = __feedbackEngine();
 ArtifactsEngine = __artifactsEngine();
 MoonFace = __moonFace();
 MoonBar = __moonBar();
+buildSurveyVerdicts = __buildSurveyVerdicts;
+SurveyEngine = __surveyEngine();
+SecretPromptEngine = __secretPromptEngine();
+SuggestedActionsEngine = __suggestedActionsEngine(MoonFace, MoonBar);
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -354,6 +404,9 @@ window.FeedbackEngine = FeedbackEngine;
 window.ArtifactsEngine = ArtifactsEngine;
 window.MoonFace = MoonFace;
 window.MoonBar = MoonBar;
+window.SurveyEngine = SurveyEngine;
+window.SecretPromptEngine = SecretPromptEngine;
+window.SuggestedActionsEngine = SuggestedActionsEngine;
 if (window.__MoonInternals) {
   window.__MoonInternals.ChatState = ChatState;
   window.__MoonInternals.ChatLoop = ChatLoop;
@@ -368,6 +421,10 @@ if (window.__MoonInternals) {
   window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
   window.__MoonInternals.MoonFace = MoonFace;
   window.__MoonInternals.MoonBar = MoonBar;
+  window.__MoonInternals.SurveyEngine = SurveyEngine;
+  window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
+  window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
+  window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
   window.__MoonInternals.describeTarget = __describeTarget;
   window.__MoonInternals.cropAndEncodeFeedbackScreenshot = __cropAndEncode;
 }
@@ -389,10 +446,14 @@ if (window.__MoonInternals) {
     '__artifactsEngine',
     '__moonFace',
     '__moonBar',
+    '__buildSurveyVerdicts',
+    '__surveyEngine',
+    '__secretPromptEngine',
+    '__suggestedActionsEngine',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }
