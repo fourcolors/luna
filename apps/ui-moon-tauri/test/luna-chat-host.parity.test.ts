@@ -82,9 +82,7 @@ describe('window.LunaChatHost (stack23 S16c-host runtime parity)', () => {
   it('every member has the type luna-chat-host.d.ts declares', () => {
     const host = window.LunaChatHost!
     expect(typeof host.state).toBe('function')
-    expect(typeof host.backendCapabilities).toBe('function')
     expect(typeof host.send).toBe('function')
-    expect(typeof host.executeCapability).toBe('function')
     expect(typeof host.isConnected).toBe('function')
     expect(typeof host.clearTurnTimeout).toBe('function')
     expect(typeof host.startTurnTimeout).toBe('function')
@@ -99,6 +97,11 @@ describe('window.LunaChatHost (stack23 S16c-host runtime parity)', () => {
     expect('autoGrowMessageInput' in host).toBe(false)
     expect('closeLocalShellMenu' in host).toBe(false)
     expect('buildMessageMeta' in host).toBe(false)
+    // S20b moved the capability provider to frames.ts with the `hello`
+    // handler that clears its catalog, so these three left the host too.
+    expect('backendCapabilities' in host).toBe(false)
+    expect('executeCapability' in host).toBe(false)
+    expect('dispatchFrame' in host).toBe(false)
   })
 
   it('state() returns the live State object (fields the ChatHostState interface names)', () => {
@@ -113,12 +116,14 @@ describe('window.LunaChatHost (stack23 S16c-host runtime parity)', () => {
     expect(s).toHaveProperty('pinnedThread')
   })
 
-  it('backendCapabilities() starts empty before any capability-catalog frame', () => {
-    expect(window.LunaChatHost!.backendCapabilities()).toEqual([])
+  it('the frame layer starts with an empty backend catalog', () => {
+    // Asserted on frames.ts, which owns the provider as of S20b. Same
+    // behaviour, correct owner.
+    expect((window as any).__MoonInternals.frames.backendCapabilities()).toEqual([])
   })
 
   it('executeCapability() resolves the real frame-provider\'s own unavailable path when no capability-catalog frame has arrived', async () => {
-    const result = await window.LunaChatHost!.executeCapability({ kind: 'command', id: 'nope', args: '' })
+    const result = await (window as any).__MoonInternals.frames.executeCapability({ kind: 'command', id: 'nope', args: '' })
     expect(result.ok).toBe(false)
     expect(result).toMatchObject({ reason: 'unavailable' })
   })
@@ -174,7 +179,11 @@ describe('window.LunaChatHost executeCapability() absent-provider fallback (wind
   })
 
   it('executeCapability() is total: resolves the declared absent-provider warning instead of rejecting', async () => {
-    const result = await window.LunaChatHost!.executeCapability({ kind: 'command', id: 'nope', args: '' })
+    // frames.ts owns the provider as of S20b, so the totality guarantee is
+    // asserted there. This is the ONLY path that reaches the absent-provider
+    // branch: window.LunaCapabilities is deliberately never loaded above, so
+    // createFrames never constructs a provider at all.
+    const result = await (window as any).__MoonInternals.frames.executeCapability({ kind: 'command', id: 'nope', args: '' })
     expect(result).toEqual({ ok: false, error: 'capability layer unavailable', reason: 'unavailable' })
   })
 })

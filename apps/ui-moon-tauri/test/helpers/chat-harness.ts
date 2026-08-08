@@ -81,6 +81,7 @@ import { createNotifier } from '../../frontend-react/src/chat/notifier'
 import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
 import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
 import { createWire } from '../../frontend-react/src/chat/wire'
+import { createFrames } from '../../frontend-react/src/chat/frames'
 import { createChatEngine, CSS_escape as __cssesc, splitSpeakableSentences as __splitsp, toSpeakable as __tospk } from '../../frontend-react/src/chat/chatEngine'
 import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
@@ -258,6 +259,10 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
     chatHostSlashMenuCtx({
       getComposerConfig: () => composerConfigMount?.ComposerConfig ?? null,
       clearAttachments: () => attachmentsMount.Attachments.clear(),
+      getBackendCommands: () => framesInstance?.backendCapabilities() ?? [],
+      executeCapability: (req: any) =>
+        framesInstance?.executeCapability(req) ??
+        Promise.resolve({ ok: false, error: 'capability layer unavailable', reason: 'unavailable' }),
       // Late-bound for the same reason production is: SlashMenu mounts before
       // the engine exists, and a dispatch only happens on a user action.
       appendMessage: (role: string, text: string) => chatEngineInstance?.ChatEngine.appendMessage(role, text),
@@ -290,6 +295,19 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
   const quietLogger = { info: () => {}, warn: () => {}, error: () => {} }
   let localShellInstance: ReturnType<typeof createLocalShell> | null = null
   let chatEngineInstance: ReturnType<typeof createChatEngine> | null = null
+  let framesInstance: any = null
+  const makeFrames = (engines: any) => {
+    const p = new URLSearchParams(location.search).get('thread') || null
+    const spawnFresh = p === 'new'
+    return (framesInstance = createFrames({
+      Logger: quietLogger,
+      State: getChatHost()?.state() as never,
+      SPAWN_FRESH: spawnFresh,
+      PINNED_THREAD: spawnFresh ? null : p,
+      winLabel: ((getChatHost()?.state() as any)?.winLabel) ?? null,
+      engines,
+    }))
+  }
   const makeWire = (ce: any, cs: any, cl: any, cc: any, mb: any, mf: any, tcs: any, tde: any) => {
     const p = new URLSearchParams(location.search).get('thread') || null
     const spawnFresh = p === 'new'
@@ -302,7 +320,7 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
         secretPromptInput: byId('secret-prompt-input'),
       },
       State: getChatHost()?.state() as never,
-      MoonFrames: { dispatch: (f: unknown) => getChatHost()?.dispatchFrame(f) },
+      MoonFrames: { dispatch: (f: unknown) => framesInstance?.dispatch(f) },
       ChatEngine: ce as never,
       ChatState: cs as never,
       ChatLoop: cl as never,
@@ -523,6 +541,30 @@ var __w = __wire(ChatEngine, ChatState, ChatLoop, ComposerConfig, MoonBar, MoonF
 WebSocketEngine = __w.WebSocketEngine;
 PoolEngine = __w.PoolEngine;
 USE_POOL_ENGINE = __w.USE_POOL_ENGINE;
+var __frames = __makeFrames({
+  ArtifactsEngine: ArtifactsEngine,
+  ChatEngine: ChatEngine,
+  ChatLoop: ChatLoop,
+  ChatState: ChatState,
+  ComposerConfig: ComposerConfig,
+  FeedbackEngine: FeedbackEngine,
+  LocalShell: LocalShell,
+  MoonClient: MoonClient,
+  MoonFace: MoonFace,
+  Notifier: Notifier,
+  ResultToasts: ResultToasts,
+  SecretPromptEngine: SecretPromptEngine,
+  SmartBarEngine: SmartBarEngine,
+  SuggestedActionsEngine: SuggestedActionsEngine,
+  SurveyEngine: SurveyEngine,
+  ThreadCache: ThreadCache,
+  ThreadCreateState: ThreadCreateState,
+  ThreadDrawerEngine: ThreadDrawerEngine,
+  VoiceEngine: VoiceEngine,
+  PoolEngine: PoolEngine,
+  WebSocketEngine: WebSocketEngine,
+});
+MoonFrames = __frames.MoonFrames;
 WebSocketEngine.registerCloseHook(function(){ var el = document.getElementById('secret-prompt-input'); if (el) el.value = ''; });
 __w.boot();
 Promise.resolve(VoiceEngine.init()).catch(function(){});
@@ -584,6 +626,8 @@ if (window.__MoonInternals) {
   window.__MoonInternals.WebSocketEngine = WebSocketEngine;
   window.__MoonInternals.PoolEngine = PoolEngine;
   window.__MoonInternals.USE_POOL_ENGINE = USE_POOL_ENGINE;
+  window.__MoonInternals.MoonFrames = MoonFrames;
+  window.__MoonInternals.frames = __frames;   // S20b: the capability provider lives here now
   window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
   window.__MoonInternals.toSpeakable = toSpeakable;
   window.__MoonInternals.MoonClient = MoonClient;
@@ -626,10 +670,11 @@ if (window.__MoonInternals) {
     '__splitSpeakableSentences',
     '__toSpeakable',
     '__wire',
+    '__makeFrames',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, makeWire, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, makeThreadDrawer, __mddn, (cs: any, cl: any, mf: any, sm: any, at: any, tc: any) => (chatEngineInstance = makeChatEngine(cs, cl, mf, sm, at, tc)), __cssesc, __splitsp, __tospk, makeWire, makeFrames, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

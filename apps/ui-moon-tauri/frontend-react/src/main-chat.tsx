@@ -48,6 +48,7 @@ import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./chat/
 import { createThreadDrawer, moonDragDebugNote } from "./chat/threadDrawer"
 import { createChatEngine, CSS_escape, splitSpeakableSentences, toSpeakable } from "./chat/chatEngine"
 import { createWire } from "./chat/wire"
+import { createFrames } from "./chat/frames"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -150,7 +151,8 @@ function assignBridge(
 // Through assignBridge so the __MoonInternals copy is refreshed too - chat.html
 // captured the pre-mount `undefined`, and that copy is what the screenshot /
 // agent-browser harnesses read (see chat.html's own "#124 toast harness" note).
-assignBridge("ResultToasts", createResultToasts())
+const resultToasts = createResultToasts()
+assignBridge("ResultToasts", resultToasts)
 // The banner gets the REAL Logger now (S19f). It used to get a bare
 // and the real Logger when chat.html is the one constructing it. Only the
 // `warn` arm is used (apply_update / open-updates failures).
@@ -180,7 +182,8 @@ const localShell = createLocalShell({
 // global. It is only read when the capability frame goes out after hello.
 localShell.refreshPlatform()
 assignBridge("LocalShell", localShell)
-assignBridge("Notifier", createNotifier({ Logger }))
+const notifier = createNotifier({ Logger })
+assignBridge("Notifier", notifier)
 assignBridge("MoonClient", MoonClient)
 // chat.html still reads formatRelTime (the drawer stamps, the msg-time refresh
 // listener); buildMessageMeta stays bridged only for __MoonInternals.
@@ -222,9 +225,7 @@ assignBridge("MoonBar", moonBar)
 //                           mutates (never a copy)
 //   DOM.*                -> eight element lookups, resolved here because the
 //                           deferred module runs after the body is parsed
-assignBridge(
-  "FeedbackEngine",
-  createFeedbackEngine({
+const feedbackEngine = createFeedbackEngine({
     DOM: {
       feedbackBtn: document.getElementById("feedback-btn"),
       feedbackPickerOverlay: document.getElementById("feedback-picker-overlay"),
@@ -237,8 +238,8 @@ assignBridge(
     },
     State: getChatHost()?.state(),
     WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
-  }),
-)
+  })
+assignBridge("FeedbackEngine", feedbackEngine)
 
 // ── ArtifactsEngine (overlay panel, stack23 S19d) ───────────────────────
 //
@@ -247,9 +248,7 @@ assignBridge(
 // last production reader. `renderMarkdown` is the AUDITED sanitizer; the
 // preview pane feeds untrusted artifact content through it, so it must stay
 // exactly that function and not a lookalike.
-assignBridge(
-  "ArtifactsEngine",
-  createArtifactsEngine({
+const artifactsEngine = createArtifactsEngine({
     // Ids read from chat.html's own DOM object, not guessed - S19c and this
     // slice both cost time to a guessed list.
     DOM: {
@@ -272,8 +271,8 @@ assignBridge(
       (window as unknown as { LunaMarkdown: { renderMarkdown: (m: string) => string } }).LunaMarkdown.renderMarkdown(md),
     enhanceCodeBlocks: (root: unknown) =>
       (window as unknown as { LunaMarkdown: { enhanceCodeBlocks: (r: unknown) => void } }).LunaMarkdown.enhanceCodeBlocks(root),
-  }),
-)
+  })
+assignBridge("ArtifactsEngine", artifactsEngine)
 
 // Test hooks that moved with the feedback cluster. chat.html exposed these two
 // directly until S19c; the namespace is unchanged so the suites reading them
@@ -349,6 +348,8 @@ const slashMenuMount = mountSlashMenu(
     // members; S19k made ChatEngine a module and the category went to zero.
     // Late-bound: SlashMenu mounts before the engine is built, and a dispatch
     // can only happen on a user action, which is far later than either.
+    getBackendCommands: () => frames.backendCapabilities(),
+    executeCapability: (req) => frames.executeCapability(req),
     appendMessage: (role: string, text: string) => chatEngine.ChatEngine.appendMessage(role, text),
     newConversation: () => chatEngine.ChatEngine.newConversation(),
     autoGrowMessageInput: () => chatEngine.ChatEngine.autoGrowMessageInput(),
@@ -524,6 +525,78 @@ Promise.resolve(chatEngine.VoiceEngine.init()).catch((e: unknown) =>
   Logger.warn("Voice init failed (non-fatal):", e),
 )
 
+// ── The docked panel stack: secret > survey > suggestion (stack23 S19f) ──
+//
+// All three move in ONE slice because the precedence rule spans them:
+// SuggestedActionsEngine hides its chip by reading the OTHER TWO panels'
+// `hidden` flags. Splitting them would have put that rule across the boundary.
+//
+// State arrives from host.state(), which returns the LIVE object chat.html
+// mutates - never a copy. That matters most for SecretPromptEngine, whose
+// OPEN-socket guard reads `State.ws` and must see the CURRENT socket after a
+// reconnect, not the one that existed when this module ran.
+const byId = (id: string) => document.getElementById(id)
+
+assignBridge("buildSurveyVerdicts", buildSurveyVerdicts)
+
+const surveyEngine = createSurveyEngine({
+    Logger,
+    DOM: {
+      userAskPanel: byId("user-ask-panel"),
+      userAskBody: byId("user-ask-body"),
+      userAskHint: byId("user-ask-hint"),
+      userAskSubmit: byId("user-ask-submit"),
+    },
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+    // The REAL pair, captured from the MessageList mount above rather than
+    // routed through host.appendMessage. appendBanner renders a PLAIN-TEXT
+    // bubble; appendMessage renders markdown, which would have turned the
+    // survey confirmation into a different thing.
+    ChatState: { appendBanner: (text: string) => messageListMount?.ChatState.appendBanner(text) },
+    ChatLoop: { flush: () => messageListMount?.ChatLoop.flush() },
+  })
+assignBridge("SurveyEngine", surveyEngine)
+
+const secretPromptEngine = createSecretPromptEngine({
+    Logger,
+    DOM: {
+      secretPromptPanel: byId("secret-prompt-panel"),
+      secretPromptPrompt: byId("secret-prompt-prompt"),
+      secretPromptConsent: byId("secret-prompt-consent"),
+      secretPromptInput: byId("secret-prompt-input"),
+      secretPromptStatus: byId("secret-prompt-status"),
+    },
+    isConnected: () => getChatHost()?.isConnected() ?? false,
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+  })
+assignBridge("SecretPromptEngine", secretPromptEngine)
+
+// MoonBar/MoonFace are passed as the very instances constructed above -
+// module to module, with no bridge in between. That is the whole payoff of
+// having moved them first in S19e.
+const suggestedActionsEngine = createSuggestedActionsEngine({
+    DOM: {
+      suggestedActionPanel: byId("suggested-action-panel"),
+      suggestedActionType: byId("suggested-action-type"),
+      suggestedActionText: byId("suggested-action-text"),
+      suggestedActionRationale: byId("suggested-action-rationale"),
+      secretPromptPanel: byId("secret-prompt-panel"),
+      userAskPanel: byId("user-ask-panel"),
+    },
+    State: getChatHost()?.state(),
+    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+    MoonBar: moonBar,
+    MoonFace: moonFace,
+  })
+assignBridge("SuggestedActionsEngine", suggestedActionsEngine)
+
+// `new` is a SENTINEL meaning "mint your own fresh thread", not a real
+// thread id. Derived ONCE, here, and passed to both frames and the wire.
+const _threadParam = new URLSearchParams(location.search).get("thread") || null
+const SPAWN_FRESH = _threadParam === "new"
+const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam
+
+
 // ── The wire, and its ignition (stack23 S20a) ───────────────────────────
 //
 // Both socket engines plus loadConnectionAndConnect. The ignition moved with
@@ -534,10 +607,6 @@ Promise.resolve(chatEngine.VoiceEngine.init()).catch((e: unknown) =>
 // SPAWN_FRESH / PINNED_THREAD are derived ONCE, here, and passed in: `new` is a
 // SENTINEL meaning "mint your own fresh thread", not a real thread id, and two
 // readers of that rule is one too many.
-const _threadParam = new URLSearchParams(location.search).get("thread") || null
-const SPAWN_FRESH = _threadParam === "new"
-const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam
-
 const wire = createWire({
   Logger,
   DOM: {
@@ -547,7 +616,7 @@ const wire = createWire({
     secretPromptInput: document.getElementById("secret-prompt-input"),
   },
   State: getChatHost()?.state() as never,
-  MoonFrames: { dispatch: (frame: unknown) => getChatHost()?.dispatchFrame(frame) },
+  MoonFrames: { dispatch: (frame: unknown) => frames.dispatch(frame) },
   ChatEngine: chatEngine.ChatEngine as never,
   ChatState: messageListMount?.ChatState as never,
   ChatLoop: messageListMount?.ChatLoop as never,
@@ -575,79 +644,49 @@ wire.WebSocketEngine.registerCloseHook(() => {
   if (el) el.value = ""
 })
 
+// ── The frame layer (stack23 S20b) ──────────────────────────────────────
+//
+// Constructed AFTER the wire, so the engines arrive as real objects rather
+// than getters. The reverse edge - the wire dispatching INTO here - is safe
+// because its `dispatch` is a lambda that closes over `frames` and is only
+// ever called on an inbound frame, which cannot happen before boot() below.
+//
+// Destructuring is why the order matters: `const { WebSocketEngine } =
+// ctx.engines` runs ONCE at construction, so a getter here would have been
+// read eagerly and captured undefined.
+const frames = createFrames({
+  Logger,
+  State: getChatHost()?.state() as never,
+  SPAWN_FRESH,
+  PINNED_THREAD,
+  winLabel: (getChatHost()?.state() as { winLabel?: string | null } | undefined)?.winLabel ?? null,
+  engines: {
+    ArtifactsEngine: artifactsEngine,
+    ChatEngine: chatEngine.ChatEngine,
+    ChatLoop: messageListMount?.ChatLoop,
+    ChatState: messageListMount?.ChatState,
+    ComposerConfig: composerConfigMount?.ComposerConfig,
+    FeedbackEngine: feedbackEngine,
+    LocalShell: localShell,
+    MoonClient,
+    MoonFace: moonFace,
+    Notifier: notifier,
+    ResultToasts: resultToasts,
+    SecretPromptEngine: secretPromptEngine,
+    SmartBarEngine: smartBarMount?.SmartBarEngine,
+    SuggestedActionsEngine: suggestedActionsEngine,
+    SurveyEngine: surveyEngine,
+    ThreadCache: threadDrawer.ThreadCache,
+    ThreadCreateState: threadDrawer.ThreadCreateState,
+    ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine,
+    VoiceEngine: chatEngine.VoiceEngine,
+    PoolEngine: wire.PoolEngine,
+    WebSocketEngine: wire.WebSocketEngine,
+  },
+})
+
 // IGNITION LAST. Everything the engines reach is constructed by this point,
 // which is the property chat.html's top-level call could not offer a module.
 wire.boot()
 
-
-// ── The docked panel stack: secret > survey > suggestion (stack23 S19f) ──
-//
-// All three move in ONE slice because the precedence rule spans them:
-// SuggestedActionsEngine hides its chip by reading the OTHER TWO panels'
-// `hidden` flags. Splitting them would have put that rule across the boundary.
-//
-// State arrives from host.state(), which returns the LIVE object chat.html
-// mutates - never a copy. That matters most for SecretPromptEngine, whose
-// OPEN-socket guard reads `State.ws` and must see the CURRENT socket after a
-// reconnect, not the one that existed when this module ran.
-const byId = (id: string) => document.getElementById(id)
-
-assignBridge("buildSurveyVerdicts", buildSurveyVerdicts)
-
-assignBridge(
-  "SurveyEngine",
-  createSurveyEngine({
-    Logger,
-    DOM: {
-      userAskPanel: byId("user-ask-panel"),
-      userAskBody: byId("user-ask-body"),
-      userAskHint: byId("user-ask-hint"),
-      userAskSubmit: byId("user-ask-submit"),
-    },
-    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
-    // The REAL pair, captured from the MessageList mount above rather than
-    // routed through host.appendMessage. appendBanner renders a PLAIN-TEXT
-    // bubble; appendMessage renders markdown, which would have turned the
-    // survey confirmation into a different thing.
-    ChatState: { appendBanner: (text: string) => messageListMount?.ChatState.appendBanner(text) },
-    ChatLoop: { flush: () => messageListMount?.ChatLoop.flush() },
-  }),
-)
-
-assignBridge(
-  "SecretPromptEngine",
-  createSecretPromptEngine({
-    Logger,
-    DOM: {
-      secretPromptPanel: byId("secret-prompt-panel"),
-      secretPromptPrompt: byId("secret-prompt-prompt"),
-      secretPromptConsent: byId("secret-prompt-consent"),
-      secretPromptInput: byId("secret-prompt-input"),
-      secretPromptStatus: byId("secret-prompt-status"),
-    },
-    isConnected: () => getChatHost()?.isConnected() ?? false,
-    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
-  }),
-)
-
-// MoonBar/MoonFace are passed as the very instances constructed above -
-// module to module, with no bridge in between. That is the whole payoff of
-// having moved them first in S19e.
-assignBridge(
-  "SuggestedActionsEngine",
-  createSuggestedActionsEngine({
-    DOM: {
-      suggestedActionPanel: byId("suggested-action-panel"),
-      suggestedActionType: byId("suggested-action-type"),
-      suggestedActionText: byId("suggested-action-text"),
-      suggestedActionRationale: byId("suggested-action-rationale"),
-      secretPromptPanel: byId("secret-prompt-panel"),
-      userAskPanel: byId("user-ask-panel"),
-    },
-    State: getChatHost()?.state(),
-    WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
-    MoonBar: moonBar,
-    MoonFace: moonFace,
-  }),
-)
 
