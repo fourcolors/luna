@@ -34,6 +34,17 @@
         "vitest": "^2.1.5",
       },
     },
+    "apps/deploy-cli": {
+      "name": "@luna/deploy-cli",
+      "version": "0.0.1",
+      "dependencies": {
+        "citty": "^0.1.6",
+      },
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+      },
+    },
     "apps/server": {
       "name": "@luna/server",
       "version": "0.0.1",
@@ -740,6 +751,8 @@
     "@luna/control-server": ["@luna/control-server@workspace:packages/control-server"],
 
     "@luna/core": ["@luna/core@workspace:packages/core"],
+
+    "@luna/deploy-cli": ["@luna/deploy-cli@workspace:apps/deploy-cli"],
 
     "@luna/job-input-tools": ["@luna/job-input-tools@workspace:packages/job-input-tools"],
 

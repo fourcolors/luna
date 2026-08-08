@@ -169,6 +169,43 @@ exec perl "$@"
 `)
 }
 
+// Stand-in for a real `bun build --compile`: writes a placeholder executable
+// at --outfile instead of actually compiling apps/deploy-cli, so a harness-
+// driven publish_engine (S21, scripts/luna-guardian) can complete without
+// paying for a real compile per install. Shared by guardian.test.ts's
+// stubBun and deploy-scripts.test.ts's makeBunStub, which were ~16 verbatim-
+// identical lines differing only in the tail: how an invocation this stub
+// does not recognize is handled. `strict` fails loudly (stderr message,
+// exit 1) so an unexpected bun invocation shape surfaces at the stub
+// itself; the lenient default exits 0 unconditionally.
+export const writeBunBuildStub = (bin: string, opts: { strict?: boolean } = {}) => {
+  const tail = opts.strict
+    ? `  chmod +x "\$outfile"
+  exit 0
+fi
+printf 'bun stub: unsupported invocation: %s\\n' "\$*" >&2
+exit 1
+`
+    : `  chmod +x "\$outfile"
+fi
+exit 0
+`
+  writeStub(join(bin, "bun"), `#!/usr/bin/env bash
+set -euo pipefail
+outfile=""
+for arg in "\$@"; do
+  case "\$arg" in
+    --outfile=*) outfile="\${arg#--outfile=}" ;;
+  esac
+done
+if [[ "\${1:-}" == build && -n "\$outfile" ]]; then
+  cat > "\$outfile" <<'STUB'
+#!/usr/bin/env bash
+printf 'stub\\n'
+STUB
+${tail}`)
+}
+
 export const headSha = () =>
   spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
 
