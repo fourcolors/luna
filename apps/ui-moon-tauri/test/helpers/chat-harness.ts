@@ -79,6 +79,7 @@ import { createSuggestedActionsEngine } from '../../frontend-react/src/chat/sugg
 import { createLocalShell } from '../../frontend-react/src/chat/localShell'
 import { createNotifier } from '../../frontend-react/src/chat/notifier'
 import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
+import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
 import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
 import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
 import { createArtifactsEngine } from '../../frontend-react/src/chat/artifactsEngine'
@@ -410,6 +411,9 @@ LocalShell = __localShell();
 LocalShell.refreshPlatform();
 Notifier = __notifier();
 MoonClient = __moonClient;
+formatRelTime = __formatRelTime;
+buildMessageMeta = __buildMessageMeta;
+buildMessageCopyButton = __buildMessageCopyButton;
 window.ChatState = ChatState;
 window.ChatLoop = ChatLoop;
 window.Attachments = Attachments;
@@ -451,6 +455,13 @@ if (window.__MoonInternals) {
   window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
   window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
   window.__MoonInternals.Notifier = Notifier;
+  // chat.html's own end-of-script assignment ran BEFORE this prologue and
+  // captured the pre-bridge undefined placeholders (same reason ChatState and
+  // ChatLoop are refreshed here). NOTE: no backticks in comments here - this
+  // whole block lives inside a template literal.
+  window.__MoonInternals.formatRelTime = formatRelTime;
+  window.__MoonInternals.buildMessageMeta = buildMessageMeta;
+  window.__MoonInternals.buildMessageCopyButton = buildMessageCopyButton;
   window.__MoonInternals.MoonClient = MoonClient;
   window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
   window.__MoonInternals.describeTarget = __describeTarget;
@@ -481,10 +492,13 @@ if (window.__MoonInternals) {
     '__localShell',
     '__notifier',
     '__moonClient',
+    '__formatRelTime',
+    '__buildMessageMeta',
+    '__buildMessageCopyButton',
     '__describeTarget',
     '__cropAndEncode',
     bridged,
-  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, describeTarget, cropAndEncodeFeedbackScreenshot)
+  )(mount, attachmentsMount, composerConfigMount, slashMenuMount, smartBarMount, ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic, ThreadDrag, createResultToasts(), createUpdateBanner({ Logger: { warn: () => {} } }), makeFeedbackEngine, makeArtifactsEngine, makeMoonFace, makeMoonBar, __bsv, makeSurveyEngine, makeSecretPromptEngine, makeSuggestedActionsEngine, makeLocalShell, () => createNotifier({ Logger: quietLogger }), __moonClientConst, __frt, __bmm, __bmcb, describeTarget, cropAndEncodeFeedbackScreenshot)
 }
 
 export type { ChatMessageListMount, AttachmentsMount, ComposerConfigMount, SlashMenuMount, SmartBarMount }

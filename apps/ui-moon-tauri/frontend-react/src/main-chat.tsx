@@ -44,6 +44,7 @@ import { createSurveyEngine, buildSurveyVerdicts } from "./chat/surveyEngine"
 import { createLocalShell } from "./chat/localShell"
 import { createNotifier } from "./chat/notifier"
 import { MoonClient } from "./chat/moonClient"
+import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./chat/messageMeta"
 import { createSecretPromptEngine } from "./chat/secretPromptEngine"
 import { createSuggestedActionsEngine } from "./chat/suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./chat/feedbackEngine"
@@ -76,6 +77,9 @@ function assignBridge(
     | "LocalShell"
     | "Notifier"
     | "MoonClient"
+    | "formatRelTime"
+    | "buildMessageMeta"
+    | "buildMessageCopyButton"
     | "SurveyEngine"
     | "SecretPromptEngine"
     | "SuggestedActionsEngine"
@@ -163,6 +167,11 @@ localShell.refreshPlatform()
 assignBridge("LocalShell", localShell)
 assignBridge("Notifier", createNotifier({ Logger }))
 assignBridge("MoonClient", MoonClient)
+// chat.html still reads formatRelTime (the drawer stamps, the msg-time refresh
+// listener); buildMessageMeta stays bridged only for __MoonInternals.
+assignBridge("formatRelTime", formatRelTime)
+assignBridge("buildMessageMeta", buildMessageMeta)
+assignBridge("buildMessageCopyButton", buildMessageCopyButton)
 
 // ── MoonFace + MoonBar (the header's expression + message zone, S19e) ───
 //

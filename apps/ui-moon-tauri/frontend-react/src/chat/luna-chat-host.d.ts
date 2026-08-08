@@ -81,7 +81,6 @@ export interface LunaChatHostApi {
   readonly appendMessage: (role: string, text: string) => void
   readonly newConversation: () => void
   readonly autoGrowMessageInput: () => void
-  readonly buildMessageMeta: (text: string, ts: number | undefined, delivery: Delivery | null) => HTMLElement
 }
 
 declare global {

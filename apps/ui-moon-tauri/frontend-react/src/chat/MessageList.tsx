@@ -52,23 +52,20 @@ import {
   type Turn,
 } from "./chatModel"
 import { getChatHost } from "./chat-host"
-import type { LunaChatHostApi } from "./luna-chat-host"
+import { buildMessageMeta } from "./messageMeta"
 
 // ============================================================================
-// window.LunaChatHost.buildMessageMeta bridge
+// buildMessageMeta
 //
-// buildMessageMeta/buildMessageCopyButton/formatRelTime stay vanilla DOM
-// builders in chat.html (defined well before the CHAT MODEL block this slice
-// converts - see chat.html's own comment there), carrying real behavior this
-// slice must not fork (clipboard write + a timed "copied" state). Reused
-// here via chat-host.ts's `getChatHost()` - see luna-chat-host.d.ts for the
-// full seam.
+// IMPORTED, not bridged, as of S19i. It used to be reached through
+// `LunaChatHost.buildMessageMeta` for one reason only: it lived in chat.html.
+// It is a module now, so that Group C member was DELETED and this is an
+// ordinary import.
+//
+// It is still a vanilla DOM builder carrying real behaviour this file must not
+// fork (clipboard write + a timed "copied" state), which is why MetaRow hosts
+// it imperatively rather than re-expressing it as JSX.
 // ============================================================================
-
-function getBuildMessageMeta(): LunaChatHostApi["buildMessageMeta"] | null {
-  const fn = getChatHost()?.buildMessageMeta
-  return typeof fn === "function" ? fn : null
-}
 
 /** Imperatively hosts buildMessageMeta's built `.msg-meta` row. `display:
  * contents` on the host makes it participate in `.msg`'s flex layout as if
@@ -78,9 +75,8 @@ function MetaRow({ text, ts, delivery }: { text: string; ts: number | undefined;
   const hostRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const host = hostRef.current
-    const build = getBuildMessageMeta()
-    if (!host || !build) return
-    host.replaceChildren(build(text, ts, delivery))
+    if (!host) return
+    host.replaceChildren(buildMessageMeta(text, ts, delivery))
     return () => {
       host.replaceChildren()
     }
