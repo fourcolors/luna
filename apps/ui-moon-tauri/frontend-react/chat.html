@@ -5649,8 +5649,11 @@
       }
       // Still require the bound thread to be the viewed one (user didn't leave).
       if (threadId !== State.activeThreadId) return;
-      if (!WebSocketEngine.isConnected()
-          || !(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+      // ENGINE-AWARE ONLY (#500). This used to re-check `State.ws` on top of
+      // the predicate, which PoolEngine never assigns - so under the default
+      // engine the second clause was always false and a stashed message could
+      // never drain, no matter how healthy the connection was.
+      if (!WebSocketEngine.isConnected()) {
         Logger.warn(
           `flushPendingUserMessage: not connected yet for "${threadId}"; keeping queued for retry`,
         );
@@ -5664,7 +5667,10 @@
         ...(pending.attachments ? { attachments: pending.attachments } : {}),
       };
       try {
-        State.ws.send(JSON.stringify(frame));
+        // Through the ENGINE, not the raw socket: `State.ws` is null under
+        // PoolEngine, so this line used to be an unreachable TypeError waiting
+        // behind the guard above (#500).
+        WebSocketEngine.send(frame);
       } catch (e) {
         Logger.error('flushPendingUserMessage: send failed; restoring stash', e);
         return;
@@ -7661,6 +7667,8 @@
       // Group B
       state: () => State,
       backendCapabilities: () => (_backendCatalog && _backendCatalog.capabilities) || [],
+      // Engine-aware, and deliberately NOT `State.ws` - see #500.
+      isConnected: () => WebSocketEngine.isConnected(),
       // Group A
       send: (frame) => WebSocketEngine.send(frame),
       executeCapability: (req) => (

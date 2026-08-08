@@ -2887,8 +2887,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const rawSend = vi.fn()
       setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
-      // flushPendingUserMessage uses State.ws.send directly (clear-after-send);
-      // subscribe still goes through WebSocketEngine.send.
+      // Both the subscribe and the flush go through WebSocketEngine.send
+      // (#500 routed the flush through the engine; it used to reach for
+      // State.ws directly, which PoolEngine never assigns). This spy forwards
+      // to the raw socket so the wire assertion below still sees the frame.
       const engSend = spyOnSend(m).mockImplementation((frame: any) => {
         if (m.State.ws && m.State.ws.readyState === WebSocket.OPEN) {
           m.State.ws.send(JSON.stringify(frame))
@@ -2932,6 +2934,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // can deliver. That is what retries the stashed send now, not a timer.
       const rawSend = vi.fn()
       setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
+      engSend.mockClear()
       // thread-snapshot's restart-survival tail calls window.__TAURI__.core.invoke
       // when a core bridge is present (see the `stubInvoke` convention used
       // elsewhere in this file); stub it so that fire-and-forget call doesn't
@@ -2940,12 +2943,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.handleFrame({ type: 'thread-snapshot', threadId: 'th-fresh', messages: [] })
 
       expect(m.State.pendingUserMessage).toBeNull()
-      const payloads = rawSend.mock.calls.map((c: any[]) => {
-        try { return JSON.parse(String(c[0])) } catch { return null }
-      })
-      expect(payloads.some((p: any) =>
-        p && p.type === 'user-message' && p.threadId === 'th-fresh' && p.text === 'queued while dropping',
-      )).toBe(true)
+      // Asserted on the ENGINE, not the raw socket. This used to read the raw
+      // socket, which only worked because the flush bypassed the engine and
+      // wrote to State.ws itself - the very thing that made it dead code under
+      // PoolEngine (#500). Through the engine is both the fix and the stronger
+      // assertion, since it is the path every other send already takes.
+      expect(engSend).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'user-message', threadId: 'th-fresh', text: 'queued while dropping',
+      }))
+      expect(rawSend, 'the flush must not write to the socket behind the engine').not.toHaveBeenCalled()
     })
 
     it('M41: unbound stash refuses snapshot flush into an unrelated active thread (Devin misdelivery fix)', () => {

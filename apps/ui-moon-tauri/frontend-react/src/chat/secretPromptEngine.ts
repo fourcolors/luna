@@ -10,12 +10,17 @@
  * only until the OPEN-guarded send. It is NEVER written to localStorage, a
  * Tauri command, the chat transcript, or anywhere else.
  *
- * THE OPEN-SOCKET GUARD IS LOAD-BEARING AND IS WHY THIS IS A VERBATIM MOVE.
- * WebSocketEngine.send() logs the WHOLE FRAME when the socket is not open,
- * which would put the secret in the console. So the guard must run BEFORE
- * send, not inside it, and `State.ws` must be the LIVE socket chat.html
- * reconnects - not a snapshot. That is why State arrives by reference through
- * host.state() and is never copied.
+ * THE CONNECTIVITY GUARD IS LOAD-BEARING. Both engines' send() log the WHOLE
+ * FRAME when not connected, which would put the secret in the console. So the
+ * guard must run BEFORE send, not inside it.
+ *
+ * IT IS ENGINE-AWARE, NOT SOCKET-AWARE (#500). It used to read
+ * `State.ws.readyState`, which ONLY the legacy WebSocketEngine ever assigns -
+ * PoolEngine, the default since #489, does not assign it at all. So on the
+ * shipped engine the guard could never pass: the operator saw "Not connected."
+ * while fully connected, and the secret was never sent. It now asks the same
+ * predicate chat.html patches to delegate to whichever engine is live, and it
+ * asks at CALL time so the answer is the one true at submit.
  *
  * Wire frames (defined server-side; do not change):
  *   server->client  secret-request { requestId, prompt, destinationLabel }
@@ -24,28 +29,19 @@
  *
  * `prompt` and `destinationLabel` are server-controlled strings and are
  * written with textContent, never innerHTML.
- *
- * TODO(#500): the guard reads `State.ws`, which ONLY the legacy
- * WebSocketEngine assigns - PoolEngine never does, and PoolEngine has been the
- * default since #489. So on the default engine this guard can never pass: the
- * operator sees "Not connected." while fully connected and the secret is never
- * sent. Moved verbatim here, bug included, so the move stays provable; #500
- * makes the guard engine-aware. Fix it there, do not paper over it here - the
- * guard itself must stay, because both engines' send() log the whole frame
- * when not connected.
  */
 // @ts-nocheck
 
 export interface SecretPromptEngineCtx {
   readonly Logger: { info: (m?: unknown, ...a: unknown[]) => void; warn: (m?: unknown, ...a: unknown[]) => void }
   readonly DOM: Record<string, HTMLElement | null>
-  /** The LIVE State object, never a copy - `State.ws` must be the current socket. */
-  readonly State: { ws: WebSocket | null } | undefined
+  /** ENGINE-AWARE connectivity, evaluated at CALL time. */
+  readonly isConnected: () => boolean
   readonly WebSocketEngine: { send: (frame: unknown) => void }
 }
 
 export function createSecretPromptEngine(ctx: SecretPromptEngineCtx) {
-  const { Logger, DOM, State, WebSocketEngine } = ctx
+  const { Logger, DOM, isConnected, WebSocketEngine } = ctx
   const SecretPromptEngine = {
     _reqId: null,
     _hideTimer: null,
@@ -92,7 +88,7 @@ export function createSecretPromptEngine(ctx: SecretPromptEngineCtx) {
       // OPEN-socket guard BEFORE send: WebSocketEngine.send() logs the whole
       // frame when the socket is NOT open (which would leak the secret). When
       // OPEN it never logs the frame, so this is the only safe path.
-      if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+      if (!isConnected()) {
         this.setStatus('Not connected.', 'error');
         return;
       }
@@ -102,7 +98,7 @@ export function createSecretPromptEngine(ctx: SecretPromptEngineCtx) {
     },
 
     cancel() {
-      if (this._reqId && State.ws && State.ws.readyState === WebSocket.OPEN) {
+      if (this._reqId && isConnected()) {
         WebSocketEngine.send({ type: 'secret-result', requestId: this._reqId, cancelled: true });
       }
       if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';

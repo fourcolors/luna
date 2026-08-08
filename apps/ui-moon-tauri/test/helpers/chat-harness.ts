@@ -295,7 +295,7 @@ export function evalChatInlineScriptWithBridge(htmlContent: string, mount: ChatM
         secretPromptInput: byId('secret-prompt-input'),
         secretPromptStatus: byId('secret-prompt-status'),
       },
-      State: getChatHost()?.state(),
+      isConnected: () => getChatHost()?.isConnected() ?? false,
       WebSocketEngine: { send: (f: unknown) => getChatHost()?.send(f as never) },
     })
   const makeSuggestedActionsEngine = (mf: any, mb: any) =>

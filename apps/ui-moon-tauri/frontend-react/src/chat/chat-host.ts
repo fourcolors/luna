@@ -36,6 +36,7 @@ export function getChatHost(): LunaChatHostApi | null {
 export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   state: true,
   backendCapabilities: true,
+  isConnected: true,
   send: true,
   executeCapability: true,
   appendMessage: true,
