@@ -147,11 +147,58 @@ Future subcommand slices (S22+) that port real `citty` commands should extend `m
 
 A scaffold-only stub subcommand exits `CRITICAL` (`2`) directly rather than through a separate alias constant, keeping this table a byte-faithful copy of the bash contract - `2` is the correct "something is wrong, look closer" code for a subcommand whose logic has not been ported yet.
 
-## Current state (S21)
+## The state-file format contract (S22a)
+
+This section, and the parity harness below it, scope to S22a: the first of the three PRs S22 splits into, per the deployNote minimum-slice-count for a change this size.
+S22b and S22c cover session-guard/restart and readiness/rollback respectively, wiring the state machine the files below only record.
+
+The deploy engine's crash-safety rests on three on-disk `key=value` text files, each written atomically (tmp file at mode `0600`, then `mv`/`rename()`) so a reader never observes a partial write.
+The containing state directory is created at mode `0700` before each write, via `ensureStateDir` in `atomic-file.ts`.
+That mirrors the bash writer's own `mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"` pair for two of the three files: `write_guardian_status` (`scripts/luna-guardian:287-288`) and `health_journal_write` (`scripts/luna-guardian:397-398`) each do exactly that immediately before their own printf.
+`write_transaction` (`scripts/luna-update-server:1010-1021`) does NOT mkdir or chmod at all - `$UPDATE_STATE_DIR` is provisioned once, earlier in the real flow, by `acquire_update_lock` (`scripts/luna-update-server:981-982`).
+`writeTransactionSync` still calls `ensureStateDir` on every write as a pragmatic stand-in until S22b/S22c port `acquire_update_lock`'s own state machine - that call is not a byte-format claim about `write_transaction` itself.
+
+| File | Written by | Read by |
+|------|-----------|---------|
+| `$UPDATE_STATE_DIR/transaction-<profile>` | `write_transaction` (`scripts/luna-update-server:1010-1021`) | `load_transaction` (`scripts/luna-update-server:1028-1044`), on next-tick resumption after a crash |
+| `$STATE_DIR/status-<profile>` | `write_guardian_status` (`scripts/luna-guardian:283-326`) | `status_value` (`scripts/luna-guardian:271-275`) and `scripts/luna-guardian-remote-check`'s `value()` (line 34), over ssh |
+| `$STATE_DIR/health-<profile>` | `health_journal_write` (`scripts/luna-guardian:393-412`) | `status_value`, via `health_journal_read` / `health_journal_zero_recorded` (`scripts/luna-guardian:344-434`) |
+
+FORMAT IS A CONTRACT, not an implementation detail: `scripts/luna-guardian-remote-check` parses the status file with `sed`, over ssh, from a machine that may be running either engine.
+Byte-exact preservation is what lets a bash host and a binary host coexist without a flag day - the whole reason this fold ships incrementally (S21-S25) instead of as one cutover.
+
+`apps/deploy-cli/src/update/` ports the on-disk IO for all three files, as pure readers/writers only:
+
+- `journal.ts` - `writeTransactionSync` / `loadTransactionSync` / `clearTransactionSync`, plus `TX_PHASES`, the closed set of phases `write_transaction` accepts (`prepared`, `checkout`, `applied`, `restarting`, `verifying`, `rolling-back`, `rollback-failed`, `forward-failed`). `loadTransactionSync` is three-state: undefined when the journal is absent, a thrown `CorruptJournalError` when it is present but unreadable or fails validation, and a parsed `Transaction` otherwise - mirroring the opposite meanings bash's own `[[ -f "$UPDATE_JOURNAL" ]]` check and `load_transaction`'s own failure give those two cases (`scripts/luna-update-server:1923-1927`).
+- `status-file.ts` - `writeGuardianStatusSync`.
+- `health-journal.ts` - `writeHealthJournalSync`.
+- `atomic-file.ts` - the shared tmp-then-rename writer, `ensureStateDir` (the mkdir+chmod pair each writer calls explicitly before writing - see the provenance note above), `readKeyValue` (matching `status_value`'s `sed -n "s/^$1=//p" | head -1` - the one bash reader both the status file and the health journal share, so the port does not fragment it into two identical copies), and `allKeyValuesLastWins` (matching `load_transaction`'s `while IFS='=' read` loop).
+
+What this port deliberately does NOT include: the phase-sequencing and next-tick resumption logic in `scripts/luna-update-server`'s main flow (still bash-only until S22b/S22c port session-guard/restart and readiness/rollback), and guardian's own supervision-loop decisions - when a check tick runs, the freshness-window evidence gating in `health_journal_read`, the `consecutive_healthy`/`consecutive_runtime_healthy` increment arithmetic in `write_guardian_status` (still bash-only until S24 folds guardian itself).
+Every writer in `apps/deploy-cli/src/update/` takes its fields explicit; nothing here decides when to call them or what value to pass.
+`packages/server-registry/src/driver/contract.ts` is untouched by this slice, matching the frozen-contract decision above.
+
+### The parity harness
+
+`apps/deploy-cli/test/update/` proves byte parity against the real bash, not a hand-derived expectation of it, using two different techniques depending on what the bash side offers:
+
+- **`scripts/luna-update-server` has no sourcing guard** - executing it always runs the live update flow.
+  `journal-parity.test.ts` instead drives the real script end-to-end as a subprocess (a real git checkout, deterministic systemctl/curl/bun stubs), using `LUNA_TEST_CRASH_AFTER_PHASE` to `SIGKILL` it immediately after each phase write - the same seam `test/update-server.test.ts` already uses for its own recovery test.
+  Every reachable phase is captured this way (crash-injected for the five forward phases and `rolling-back`; run to natural completion for the terminal failure states `rollback-failed` and `forward-failed`, which are never crash-injected because they are simply where the script itself exits) and diffed byte-for-byte against `journal.ts`'s writer.
+  The `checkout` case goes one step further: a TS-authored journal (independently re-serialized, not a copy of the captured bytes) is dropped in place of the bash-authored one, and the real bash script's own recovery path is run against it to a clean exit `0` - proving the coexistence property directly, not just the format.
+- **`scripts/luna-guardian` ships a documented sourcing guard** (`if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then ... fi` at its tail, with a comment naming it a test seam).
+  `status-file-parity.test.ts` and `health-journal-parity.test.ts` source the real script and call `write_guardian_status` / `health_journal_write` directly against a temp `$P_REPO`/`$STATE_DIR`, then diff the result against `status-file.ts` / `health-journal.ts`.
+  `status-file-parity.test.ts` additionally runs the literal `sed -n "s/^$1=//p" | head -1` idiom `scripts/luna-guardian-remote-check`'s `value()` uses against a TS-authored status file, for every field it reads - the sed-level proof standing in for a live ssh round-trip.
+
+These three suites shell out to the real ops scripts, the same shape `vitest.config.ts`'s `HOST_ENV_TESTS` list excludes from the default blocking `bun run test` run and defers to the non-blocking `bun run test:hostenv` step, because most such suites read the HOST's own incus/tailscale/launchd/systemd/profile-lock state rather than a fixture.
+They stay in the default blocking suite anyway, deliberately: every value each one touches is pinned to a hermetic per-test fixture - `--profile`/`--repo-dir`/`--luna-home`/`--service-dir`/`--supervisor`/`--readiness-port` plus `LUNA_UPDATE_STATE_DIR`, `LUNA_TEST_WS_COUNT=0`, `LUNA_TEST_BUN_PATH`, and a `PATH` pointed at deterministic stub `systemctl`/`curl`/`bun` binaries - so none of them can read or write real profile state, unlike a `HOST_ENV_TESTS` suite like `test/deploy-scripts.test.ts`.
+A byte-parity proof against the real bash is only worth gating every PR on because that pinning holds; a suite that could not make the same guarantee belongs in `HOST_ENV_TESTS` instead.
+
+## Current state (S21-S22a)
 
 - `apps/deploy-cli` is a workspace app under `apps/*/src`, so it is typechecked from birth by the root `tsconfig.json`'s `apps/*/src/**/*.ts` include glob.
 - It implements `--version`, `--help`, and three stub subcommands (`update`, `autodeploy`, `guardian`) mirroring the three bash entrypoints' top-level argv surfaces.
-- Every subcommand exits `CRITICAL` (`2`) with `deploy-cli <name>: not implemented` on stderr - no deploy logic has been ported yet.
+- Every subcommand exits `CRITICAL` (`2`) with `deploy-cli <name>: not implemented` on stderr - no deploy logic has been WIRED yet; `apps/deploy-cli/src/update/` (S22a) ports the transaction-journal and guardian status/health state-file IO those subcommands will eventually call, but nothing in `main.ts` invokes it yet.
 - `publish_engine` builds and ships it in every new engine pin, named `deploy-cli`, executable, verified to print its own version before the pin is marked complete.
 - The compiled binary measures ~60MB.
   `prune_engines` keeps 5 engines, so steady-state pin storage on the guardian host grows from a few hundred KB to roughly 300MB.
