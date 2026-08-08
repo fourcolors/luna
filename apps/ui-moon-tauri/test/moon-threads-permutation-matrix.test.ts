@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { evalChatInlineScriptWithBridge, mountChatMessageListBridge } from './helpers/chat-harness'
+import { evalChatInlineScriptWithBridge } from './helpers/chat-harness'
 
 function loadVendorInto(target: any, file: string) {
   const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
@@ -100,8 +100,7 @@ describe('PR 350 Thread State Combination Matrix', () => {
     // module now, so a bare eval leaves it undefined and every assertion
     // here dies on `undefined.requestList`. chat-harness is what wires the
     // module side the way production wires it.
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
 
     return (window as any).__MoonInternals
   }

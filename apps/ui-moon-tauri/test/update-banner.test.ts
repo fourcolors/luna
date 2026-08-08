@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createUpdateBanner } from '../frontend-react/src/chat/updateBanner'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { evalChatInlineScriptWithBridge, loadVendorInto, mountChatDomFromHtml, readChatHtml } from './helpers/chat-harness'
 
 // jsdom never fetches external <script src> tags; load the vendor files the page
 // script references at definition time, in declaration order (same mechanism as
@@ -77,24 +78,12 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
     })
 
     // 4. Select the inline page script by CONTENT (the WebSocketEngine one).
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    // UpdateBanner is a forward-declared `var` since stack23 S19b - the module
-    // owns the logic and the page is assigned it after the classic script
-    // runs. This suite predates chat-harness and hand-rolls its own boot, so
-    // it has to perform that assignment itself, in the SAME `new Function`
-    // scope (a `window.UpdateBanner = ...` from outside would create a
-    // different binding - see chat-harness.ts's module doc on that wall).
-    new Function(
-      '__updateBanner',
-      inlineScripts[0] + `
-;UpdateBanner = __updateBanner;
-window.UpdateBanner = UpdateBanner;
-if (window.__MoonInternals) window.__MoonInternals.UpdateBanner = UpdateBanner;
-`,
-    )(createUpdateBanner({ Logger: { warn: () => {} } }))
+    // Through the SHARED boot (stack23 S20d). This suite predated chat-harness
+    // and hand-rolled its own `new Function(inlineScript)` boot so it could
+    // assign UpdateBanner inside that scope. There is no inline script any
+    // more, and bootChat() constructs the banner itself - so the hand-rolled
+    // boot is not just broken, it is redundant.
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {

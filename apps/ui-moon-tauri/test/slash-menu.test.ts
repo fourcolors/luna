@@ -22,7 +22,6 @@ import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -56,8 +55,7 @@ describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
 
     localStorage.clear()
 
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
 
     vi.useFakeTimers()
   })

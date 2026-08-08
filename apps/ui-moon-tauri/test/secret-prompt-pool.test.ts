@@ -33,7 +33,6 @@ import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -75,8 +74,7 @@ describe('secure secret entry on the default PoolEngine (#500)', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.useFakeTimers()
 
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {

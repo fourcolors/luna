@@ -28,6 +28,23 @@ import type { ComposerConfigBridge, ComposerConfigCtx } from "./ComposerConfig"
 import type { LunaChatHostApi } from "./luna-chat-host"
 import type { SlashMenuCtx } from "./SlashMenu"
 
+/**
+ * The host lives on `window`, and as of S20d bootChat.ts is what publishes it
+ * rather than chat.html's (now deleted) classic script.
+ *
+ * I FIRST HELD IT IN A MODULE-LOCAL AND THAT WAS WRONG. A module-local
+ * survives `delete window.LunaChatHost`, which is precisely how all eleven
+ * jsdom suites reset between cases - so the previous case's host, with its own
+ * State and its own live engines, leaked into the next one. 68 tests failed in
+ * the file and every one of them passed in isolation.
+ *
+ * The window property IS the lifetime. One window, one host, and tearing the
+ * window down tears the host down with it.
+ */
+export function setChatHost(next: LunaChatHostApi | null): void {
+  ;(window as unknown as { LunaChatHost: LunaChatHostApi | null }).LunaChatHost = next
+}
+
 export function getChatHost(): LunaChatHostApi | null {
   return window.LunaChatHost ?? null
 }

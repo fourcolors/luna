@@ -30,7 +30,6 @@ import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -66,8 +65,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
     loadVendorInto(window, 'moon-dock.js')
     loadVendorInto(window, 'thread-drag-session.js')
     localStorage.clear()
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {

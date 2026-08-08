@@ -19,7 +19,6 @@ import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -51,8 +50,7 @@ describe('window.LunaChatHost (stack23 S16c-host runtime parity)', () => {
 
     localStorage.clear()
 
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {
@@ -160,8 +158,7 @@ describe('window.LunaChatHost executeCapability() absent-provider fallback (wind
 
     localStorage.clear()
 
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {

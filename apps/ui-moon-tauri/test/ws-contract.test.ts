@@ -25,7 +25,6 @@ import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
-  mountChatMessageListBridge,
   readChatHtml,
 } from './helpers/chat-harness'
 
@@ -84,8 +83,7 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     // 'WebSocketEngine' instead of silently running the wrong one) and
     // patch its ChatState/ChatLoop forward-declarations to the real bridge
     // in the SAME scope (see helpers/chat-harness.ts's module doc).
-    const mount = mountChatMessageListBridge(document.getElementById('chat-messages'))
-    evalChatInlineScriptWithBridge(htmlContent, mount)
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {
