@@ -110,6 +110,42 @@ describe("every engine exec goes through the gate", () => {
     ).toEqual([])
   })
 
+  /**
+   * ALSO A SOURCE INVARIANT, and for the same reason as the bypass test above:
+   * the property is "every exec site carries it", which is a statement about
+   * the shape of the script. A behavioural test can only ever prove the ONE
+   * site it drives, and the defect this guards against is precisely a second
+   * site that someone forgot - the shape of the do_repair bug.
+   *
+   * The binary derives the shared bash library as
+   * dirname($LUNA_DEPLOY_BASH_ENGINE)/lib/luna-deploy.sh. If the variable is
+   * absent, resolveBashLib REFUSES (deliberately, rather than guessing a path),
+   * so an exec site missing this prefix means every delegated topology - the
+   * ones the binary hands back to bash - dies on that host. The bash engine
+   * never reads the variable, so a missing prefix is invisible until someone
+   * sets LUNA_DEPLOY_ENGINE=binary, which is the worst time to discover it.
+   */
+  it("hands the PINNED engine path to every exec site, not just the deploy path", () => {
+    const execSites = source
+      .split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      // An exec of the gate's argv prefix. The lines that BUILD the arrays use
+      // `engine_argv+=(...)`, which this deliberately does not match.
+      .filter(({ line }) => /"\$\{(?:engine|repair)_argv\[@\]\}"/.test(line))
+
+    // Guard the guard: if the exec sites are ever renamed, this test must fail
+    // loudly rather than silently vacuously passing over an empty list.
+    expect(execSites.length, "expected do_deploy plus both do_repair rungs").toBe(3)
+
+    const missing = execSites.filter(
+      ({ line }) => !line.startsWith('LUNA_DEPLOY_BASH_ENGINE="$pinned_engine" '),
+    )
+    expect(
+      missing.map((m) => `${m.n}: ${m.line}`),
+      "every engine exec must hand over the pinned engine path",
+    ).toEqual([])
+  })
+
   it("routes BOTH repair rungs through the gate, not just the deploy path", () => {
     // Rung 1 is --restart-only; rung 2 is a full redeploy. Both were ungated.
     const gateCalls = source.split("\n").filter((l) => l.includes("luna_select_engine \"$pinned_engine\""))
