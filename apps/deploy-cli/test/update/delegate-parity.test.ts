@@ -38,9 +38,9 @@
  * suite that only ever injected a recording stub would prove the orchestration
  * and none of the plumbing.
  */
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
   BASH_ENGINE_ENV,
@@ -613,6 +613,189 @@ describe("the default runner: a real spawn of the real bash engine", () => {
     })
     expect(outcome.exitCode).toBe(EXIT_PREFLIGHT)
     expect(stderr.some((line) => line.startsWith("error: failed to exec the bash engine"))).toBe(true)
+  })
+
+  it("the REAL default runner also reports a failed exec, not just the injected seam above", () => {
+    // The test above proves the CONSUMER of `result.error` (the `if
+    // (result.error !== undefined)` branch) by injecting a fake runEngine that
+    // hands back an error. It never proves the PRODUCER: that defaultRunEngine
+    // itself - the thing that actually runs in production, with no runEngine
+    // override - populates `error` from the real spawnSync result rather than
+    // dropping it. Drive that for real: an X_OK-executable file whose bytes
+    // are not a valid executable format passes resolveBashEngine's probe and
+    // then fails at exec time with ENOEXEC, exactly the "pin pruned mid-run"
+    // race the header describes.
+    const root = makeTempDir("delegate-enoexec-")
+    const path = join(root, "luna-update-server")
+    writeFileSync(path, Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]))
+    chmodSync(path, 0o755)
+    const stderr: string[] = []
+    const outcome = delegateToBashSync({
+      flag: "--dry-run",
+      rawArgs: [UPDATE_SUBCOMMAND, ...SHARED],
+      env: { [BASH_ENGINE_ENV]: path },
+      writeStderr: (line) => { stderr.push(line) },
+      // No runEngine override: this must go through the real defaultRunEngine.
+    })
+    expect(outcome.exitCode).toBe(EXIT_PREFLIGHT)
+    expect(
+      stderr.some((line) => line.startsWith("error: failed to exec the bash engine") && line.includes("ENOEXEC")),
+      `expected an ENOEXEC exec-failure line, got: ${JSON.stringify(stderr)}`,
+    ).toBe(true)
+    // The exec-failure arm's `kind` is the ONLY structural signal telling a
+    // future caller "we already wrote the DELEGATED marker before this
+    // failed" apart from "we refused before running anything at all" - the
+    // exitCode is EXIT_PREFLIGHT either way, so kind (and the argv the
+    // outcome type promises alongside it) is all that distinguishes a marked-
+    // but-failed delegation from a clean preflight refusal.
+    if (outcome.kind !== "delegated") {
+      throw new Error(`expected a delegated outcome even though the exec failed, got: ${JSON.stringify(outcome)}`)
+    }
+    expect(outcome.argv).toEqual([path, ...SHARED])
+  })
+
+  it("honours an injected isExecutableFile seam rather than always probing for real", () => {
+    // DelegateOptions.isExecutableFile is documented and exported, but no
+    // other test in this file ever passes it - so a caller that quietly
+    // dropped the `options.isExecutableFile ??` fallback and always used
+    // defaultIsExecutableFile would still pass every other test here. Force a
+    // real probe to refuse (the path does not exist) while the injected seam
+    // says "yes, executable"; only honouring the seam reaches "delegated".
+    const missing = join(makeTempDir("delegate-seam-"), "no-such-engine")
+    const runner = recordingRunner()
+    const outcome = delegateToBashSync({
+      flag: "--user",
+      rawArgs: [UPDATE_SUBCOMMAND, ...SHARED],
+      env: { [BASH_ENGINE_ENV]: missing },
+      writeStderr: () => {},
+      runEngine: runner.run,
+      isExecutableFile: () => true,
+    })
+    expect(outcome.kind).toBe("delegated")
+    expect(runner.calls).toHaveLength(1)
+  })
+
+  it("accepts a bash engine reached through a symlink, matching bash's own -f semantics", () => {
+    // defaultIsExecutableFile is not exported, so this can only be proven by
+    // driving delegateToBashSync with NEITHER isExecutableFile NOR runEngine
+    // injected: a real symlink, resolved by the real probe, run by the real
+    // spawn. This is not a hypothetical fixture - scripts/luna-guardian:1406
+    // publishes the engine pin via `ln -s "$pin" "$linktmp"` +
+    // luna_atomic_replace, so LUNA_DEPLOY_BASH_ENGINE is a symlink on every
+    // real host. bash's own `[[ -x && -f ]]` follows the link, and so does
+    // statSync; lstatSync does not (it reports the link itself, which is
+    // never a regular file), so a probe swapped to lstat would refuse every
+    // real deployment while every OTHER test in this file - which all point
+    // straight at a regular file - stayed green.
+    const engine = makeStubEngine({ exitCode: 0 })
+    const linkPath = join(dirname(engine.path), "luna-update-server-link")
+    symlinkSync(engine.path, linkPath)
+    const outcome = delegateToBashSync({
+      flag: "--dry-run",
+      rawArgs: [UPDATE_SUBCOMMAND, ...SHARED],
+      env: { [BASH_ENGINE_ENV]: linkPath },
+      writeStderr: () => {},
+      // No isExecutableFile, no runEngine: both real defaults, end to end.
+    })
+    expect(outcome.kind).toBe("delegated")
+    expect(outcome.exitCode).toBe(0)
+  })
+
+  it("resolves the engine BEFORE computing argv, so an unset engine refuses cleanly even with malformed rawArgs", () => {
+    // Order matters here too, just like marker-before-exec above: if argv
+    // computation (forwardedFlags, which throws on a rawArgs missing the
+    // 'update' token) were hoisted ahead of engine resolution, a caller bug
+    // AND an unconfigured engine together would throw an unhandled error
+    // instead of the ordinary preflight refusal an operator can read. Cross
+    // both failure conditions to prove resolution wins the race.
+    const stderr: string[] = []
+    const outcome = delegateToBashSync({
+      flag: "--dry-run",
+      rawArgs: ["--profile", "stable"], // no 'update' subcommand
+      env: {}, // LUNA_DEPLOY_BASH_ENGINE unset
+      writeStderr: (line) => { stderr.push(line) },
+      runEngine: () => { throw new Error("must not run") },
+    })
+    expect(outcome).toEqual({ kind: "refused", exitCode: EXIT_PREFLIGHT })
+    expect(stderr).toEqual([bashEngineUnsetError()])
+  })
+
+  it("pipes fd 2 through when a runEngine override captures it, but the REAL default inherits it", () => {
+    // The suite's own inherited-stdio tests either drive spawnSync directly
+    // (bypassing delegateToBashSync entirely) or only observe stdout through
+    // defaultRunEngine's wrapper trick. None of them observe fd 2 specifically
+    // through the real default. Reuse the wrapper-process trick: spawn a
+    // child Node/Bun process that calls delegateToBashSync with no runEngine
+    // override, pointed at a stub engine that writes a marker to ITS OWN
+    // stderr. If defaultRunEngine inherits stdio (all three fds), that marker
+    // rides straight through into the wrapper's own stderr, which this test
+    // captures via an outer spawnSync. If fd 2 were piped instead (the
+    // mutation under test), the marker would be trapped inside
+    // defaultRunEngine's discarded spawnSync return value and never surface.
+    const root = makeTempDir("delegate-stderr-inherit-")
+    const enginePath = join(root, "luna-update-server")
+    const marker = "ENGINE-WROTE-THIS-TO-STDERR"
+    writeFileSync(enginePath, `#!/usr/bin/env bash\nprintf '%s\\n' ${JSON.stringify(marker)} >&2\nexit 0\n`)
+    chmodSync(enginePath, 0o755)
+
+    const wrapper = join(root, "wrapper.ts")
+    const delegateSrc = join(repoRoot, "apps/deploy-cli/src/update/delegate.ts")
+    writeFileSync(
+      wrapper,
+      [
+        `import { delegateToBashSync } from ${JSON.stringify(delegateSrc)}`,
+        "delegateToBashSync({",
+        `  flag: "--dry-run",`,
+        `  rawArgs: [${JSON.stringify(UPDATE_SUBCOMMAND)}, "--profile", "stable"],`,
+        `  env: { ${JSON.stringify(BASH_ENGINE_ENV)}: ${JSON.stringify(enginePath)} },`,
+        "  writeStderr: () => {},",
+        "})",
+      ].join("\n"),
+    )
+
+    const r = spawnSync("bun", [wrapper], { encoding: "utf8" })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stderr).toContain(marker)
+  })
+
+  it("inherits stdin too, completing defaultRunEngine's fd table", () => {
+    // The two tests above prove fd 1 and fd 2 are inherited through the real
+    // default; fd 0 is the third fd on the SAME `stdio: ENGINE_STDIO` object
+    // and this module's own header claims all three ("byte-indistinguishable
+    // from one where autodeploy had exec'd bash directly"), but nothing here
+    // observed it before now. A stdio table that inherited fd 1/2 but closed
+    // fd 0 (e.g. `["ignore", ENGINE_STDIO, ENGINE_STDIO]`) would still pass
+    // both tests above while breaking every delegated `git` operation that
+    // prompts for credentials on stdin. Reuse the wrapper-process trick: the
+    // OUTER spawnSync supplies `input`, which becomes the wrapper's stdin; if
+    // defaultRunEngine inherits fd 0, that same pipe reaches the stub
+    // engine's `cat`, which is the only way the payload can land in the log
+    // file this test reads back.
+    const root = makeTempDir("delegate-stdin-inherit-")
+    const enginePath = join(root, "luna-update-server")
+    const stdinLog = join(root, "stdin.log")
+    writeFileSync(enginePath, `#!/usr/bin/env bash\ncat > ${JSON.stringify(stdinLog)}\nexit 0\n`)
+    chmodSync(enginePath, 0o755)
+
+    const wrapper = join(root, "wrapper.ts")
+    const delegateSrc = join(repoRoot, "apps/deploy-cli/src/update/delegate.ts")
+    writeFileSync(
+      wrapper,
+      [
+        `import { delegateToBashSync } from ${JSON.stringify(delegateSrc)}`,
+        "delegateToBashSync({",
+        `  flag: "--dry-run",`,
+        `  rawArgs: [${JSON.stringify(UPDATE_SUBCOMMAND)}, "--profile", "stable"],`,
+        `  env: { ${JSON.stringify(BASH_ENGINE_ENV)}: ${JSON.stringify(enginePath)} },`,
+        "  writeStderr: () => {},",
+        "})",
+      ].join("\n"),
+    )
+
+    const payload = "STDIN-PAYLOAD-FROM-THE-OUTER-SPAWN\n"
+    const r = spawnSync("bun", [wrapper], { encoding: "utf8", input: payload })
+    expect(r.status, r.stderr).toBe(0)
+    expect(readFileSync(stdinLog, "utf8")).toBe(payload)
   })
 })
 

@@ -466,6 +466,16 @@ describe("execution waist: golden parity with scripts/luna-update-server", () =>
       expect(bashQ("~lead")).toBe(bashMajor >= 5 ? "\\~lead" : "~lead")
     })
 
+    // backslashQuote's three-way positional rule is position-0, right-after-
+    // `=`, and right-after-`:` (bash 5's shquote.c). The %q corpus above only
+    // ever puts a tilde at position 0, after `=`, or bare mid-string, so the
+    // `:` branch has no coverage anywhere else in this file.
+    it("a tilde right after a colon expands too, not just after '=' or position 0", () => {
+      expect(quoteForLunaRun("a:~b")).toBe("a:\\~b")
+      expect(quoteForLunaRun("PATH=/a:~/bin")).toBe("PATH=/a:\\~/bin")
+      if (bashMajor >= 5) expect(bashQ("PATH=/a:~/bin")).toBe("PATH=/a:\\~/bin")
+    })
+
     // The ANSI-C arm is where a SECOND divergence would be expected, and there
     // is none: 3.2.57 and 5.3 agree on the named escapes, on the octal
     // fallback, and on a single quote embedded in a $'...' string. (A
@@ -572,6 +582,101 @@ describe("execution waist: golden parity with scripts/luna-update-server", () =>
       const probe = spawnSync(process.execPath, [probePath], { encoding: "utf8" })
       expect(probe.stdout).toBe("CAPTURED=[out]")
       expect(probe.stderr).toContain("STDERR_MARKER_9f3a")
+    })
+
+    // The mirror image of the stderr probe above: the MUTATING arm
+    // (capture:false) is documented to let the child write straight to the
+    // engine's own stdout (this module's header). That is an OS-level fd
+    // handoff invisible to a mock or a return-value check, since
+    // capture:false always returns stdout:"" regardless of what the child
+    // wrote - so the only way to prove the bytes actually reached the
+    // operator is a real grandchild whose own stdout WE capture one level up.
+    // BOTH fds are asserted, and the stderr half is the one that matters most.
+    // capture:false is the arm every MUTATING command runs through - bun
+    // install, systemctl daemon-reload, systemctl restart, git fetch - so it is
+    // where essentially every deploy failure message originates. An earlier
+    // version of this test pinned stdout only, which left `"inherit"` free to
+    // become `"pipe"` on fd 2 alone: the deploy would still return its non-zero
+    // status, but the operator would see a rollback with no reason attached.
+    // The module header states this as a contract in both arms, so proving one
+    // of them was proving half a promise.
+    it("lets a mutating child's stdout AND stderr reach the operator rather than swallowing them into an unread pipe", () => {
+      const dir = makeTempDir("target-stdout-probe-")
+      const probePath = join(dir, "probe.mjs")
+      const targetPath = join(repoRoot, "apps/deploy-cli/src/update/target.ts")
+      writeFileSync(
+        probePath,
+        [
+          `import { defaultSpawnTarget } from ${JSON.stringify(targetPath)}`,
+          `defaultSpawnTarget(["bash", "-c", "printf STDOUT_MARKER_7c2e; printf STDERR_MARKER_4b81 >&2"], { capture: false })`,
+        ].join("\n"),
+      )
+      const probe = spawnSync(process.execPath, [probePath], { encoding: "utf8" })
+      expect(probe.stdout).toContain("STDOUT_MARKER_7c2e")
+      expect(
+        probe.stderr,
+        "a failed deploy step's diagnostic must reach the operator, not an unread pipe",
+      ).toContain("STDERR_MARKER_4b81")
+    })
+
+    // CommandResult's own doc block promises that a signal-killed child comes
+    // back as `status: null`, never a fabricated number, and that every
+    // caller in this slice tests `!== 0` so null reads as failure exactly as
+    // bash's non-zero would. A real SIGKILL is the only way to prove that: a
+    // mocked spawn can return whatever a test author types, but this asserts
+    // what Node's spawnSync ACTUALLY reports for a process the kernel killed.
+    it("a child killed by a signal is not reported as a success", () => {
+      const r = defaultSpawnTarget(["bash", "-c", "kill -9 $$"], { capture: false })
+      expect(r.status).not.toBe(0)
+    })
+  })
+
+  describe("spawnOf's production default - `ctx.spawn ?? defaultSpawnTarget` (target.ts:286)", () => {
+    // Every scenario above, and every test in the two describe blocks just
+    // above this one, injects `ctx.spawn` - so the `??` itself is never
+    // forced to fall through to `defaultSpawnTarget` in production shape.
+    // The only tests that omit `spawn` are the dry-run-default-sink pair
+    // (line ~246), and dry-run RETURNS before `spawnOf` is ever called, so
+    // even those never reach this line. These two tests are the one place
+    // in the suite that supplies NO injected spawn AND sets dryRun:false, so
+    // a real OS process is what has to answer - a stubbed `?? (() => ...)`
+    // fallback, or a fallback that quietly swaps the capture flag, or a
+    // fallback whose capture arm trims the child's stdout, all have to
+    // survive an actual `bash` child rather than a test-authored double.
+    it("run_target with no injected spawn forks a real process: a file it writes lands on real disk", () => {
+      const dir = makeTempDir("target-default-spawn-mutating-")
+      const marker = join(dir, "marker.txt")
+      const ctx: TargetContext = {
+        incusContainer: "",
+        dryRun: false,
+        layout: "inplace",
+        hostRepoDir: HOST_REPO,
+        // `spawn` deliberately OMITTED: this is the one context shape that
+        // actually reaches `ctx.spawn ?? defaultSpawnTarget`. A stubbed
+        // fallback that reports success without running anything (or one
+        // that misroutes capture so the child's redirection target never
+        // gets opened the way bash would) leaves this file missing.
+      }
+      const result = runTargetSync(ctx, ["bash", "-c", `printf '%s' REAL_SPAWN_MARKER_a1 > ${sq(marker)}`])
+      expect(result.status).toBe(0)
+      expect(readFileSync(marker, "utf8")).toBe("REAL_SPAWN_MARKER_a1")
+    })
+
+    it("run_target_capture with no injected spawn returns a real child's raw, untrimmed stdout", () => {
+      const ctx: TargetContext = {
+        incusContainer: "",
+        dryRun: false,
+        layout: "inplace",
+        hostRepoDir: HOST_REPO,
+        // `spawn` deliberately OMITTED, same reasoning as above. RAW carries
+        // leading, interior and trailing whitespace plus a blank line, so a
+        // fallback whose capture arm reaches for `.trim()` instead of
+        // leaving `$( )`-style raw bytes to the caller cannot pass either.
+      }
+      const RAW = "  leading and trailing padded  \n\n"
+      const result = runTargetCaptureSync(ctx, ["bash", "-c", `printf '%s' ${sq(RAW)}`])
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe(RAW)
     })
   })
 

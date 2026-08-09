@@ -267,8 +267,16 @@ const runTs = (s: Scenario): Trace & { readonly reason: AcquireFailureReason | n
 
   const warnings: string[] = []
   let calls = 0
-  const fingerprint = (): string => {
+  // Pid-keyed, not merely call-count-keyed: acquireUpdateLockSync and
+  // lockOwnerAliveSync each have their OWN call site that reads
+  // `probes.processFingerprint`/`opts.processFingerprint`, and a caller that
+  // fingerprinted `process.pid` (this test worker) instead of the injected
+  // SELF_PID would be undetectable if the stub answered from the queue
+  // regardless of its argument. Answering "WRONG-PID" for anything but
+  // SELF_PID makes a wrong-pid call diverge from bash's real rc/reason.
+  const fingerprint = (calledPid: number): string => {
     calls += 1
+    if (calledPid !== SELF_PID) return "WRONG-PID"
     if (s.fingerprints.length === 0) return ""
     const idx = Math.min(calls, s.fingerprints.length) - 1
     return s.fingerprints[idx] ?? ""
@@ -349,6 +357,27 @@ describe("updateLockDirPath", () => {
     // place the literal itself is pinned.
     expect(updateLockDirPath("/tmp/update-state", "stable")).toBe(join("/tmp/update-state", "lock-stable"))
     expect(updateLockDirPath("/tmp/update-state", "dev")).toBe(join("/tmp/update-state", "lock-dev"))
+  })
+
+  /**
+   * THE SAME BLIND SPOT AS THE LOCK DIR, on the two operator-facing lines.
+   * Every golden-parity scenario pins PROFILE="stable" on both drives, so
+   * neither builder's `profile` interpolation is ever exercised - each could
+   * ignore its argument entirely and hardcode 'stable' with all scenarios
+   * still green.
+   *
+   * Luna runs two live profiles. A deferral or a stale takeover on `dev` that
+   * announced 'stable' would send an operator, or the guardian grepping these
+   * lines, to the wrong profile at precisely the moment of an incident. That is
+   * the same false-diagnosis class this module's header argues for at length
+   * over the 4-versus-3 exit codes, and these strings are documented as
+   * byte-exact, so the interpolation is part of the contract.
+   */
+  it("interpolates the REAL profile into both warn lines, not a hardcoded 'stable'", () => {
+    expect(lockContendedLine("dev")).toBe("DEFERRED: another update for profile 'dev' is already running")
+    expect(removingStaleLockLine("dev")).toBe("removing stale update lock for profile 'dev'")
+    expect(lockContendedLine("stable")).toBe("DEFERRED: another update for profile 'stable' is already running")
+    expect(removingStaleLockLine("stable")).toBe("removing stale update lock for profile 'stable'")
   })
 })
 
@@ -460,6 +489,34 @@ describe("acquire_update_lock: golden parity with scripts/luna-update-server", (
     }
   })
 
+  it("stale takeover: warns BEFORE removing the stale lock dir, not after (bash :986-988 warns first)", () => {
+    const root = tempRoot()
+    const stateDir = join(root, "update-state")
+    const lockDir = updateLockDirPath(stateDir, PROFILE)
+    mkdirSync(lockDir, { recursive: true })
+    writeFileSync(ownerFilePath(lockDir), ownerRecord(DEAD_PID, "FP-DEAD"), { mode: 0o600 })
+    let lockDirPresentWhenWarned: boolean | null = null
+    const outcome = acquireUpdateLockSync({
+      stateDir,
+      profile: PROFILE,
+      pid: SELF_PID,
+      // DEAD_PID (the stale owner) is never alive; SELF_PID (our own mandatory
+      // self-readback after the takeover) must be, or this test's own acquire
+      // would fail for an unrelated reason before ever reaching the warn.
+      processAlive: (pid) => pid !== DEAD_PID,
+      processFingerprint: () => "FP-SELF",
+      warn: (line) => {
+        // Captured AT THE MOMENT warn fires - if the removal ran first, the
+        // stale lock dir (and its owner file) would already be gone here. This
+        // is the sibling of the readback-failure ordering test just below,
+        // pinning the OTHER of bash's two warn/remove orderings.
+        if (line === removingStaleLockLine(PROFILE)) lockDirPresentWhenWarned = existsSync(lockDir)
+      },
+    })
+    expect(outcome.acquired).toBe(true)
+    expect(lockDirPresentWhenWarned, "the stale lock dir must still be present when the warn fires").toBe(true)
+  })
+
   it("readback failure: removes the lock dir BEFORE warning, not after (bash :1001-1003 removes first)", () => {
     const root = tempRoot()
     const stateDir = join(root, "update-state")
@@ -517,6 +574,78 @@ describe("acquire_update_lock: golden parity with scripts/luna-update-server", (
   })
 })
 
+describe("acquireUpdateLockSync / lockOwnerAliveSync: the PRODUCTION DEFAULTS, driven with no injected collaborators", () => {
+  /**
+   * Every scenario above (and every other test in this file) injects `pid`,
+   * `processAlive` and `processFingerprint` explicitly, so `opts.pid ??
+   * process.pid` (:372) and the `probes.processAlive ?? processAliveSync` /
+   * `probes.processFingerprint ?? processFingerprintSync` fallbacks (:278-279,
+   * reached again from :394 for the write) never actually run - the `??`
+   * never gets a chance to pick its right side. This block calls the real
+   * functions with those three fields OMITTED, against THIS test process's
+   * own real pid, so the only way it can pass is if the genuine defaults ran:
+   * a real `process.kill(pid, 0)`, a real spawn of `ps` (or a real
+   * `/proc/<pid>/stat` read on Linux), and a real owner file on disk naming
+   * the real process.
+   */
+  it("acquireUpdateLockSync with no pid/processAlive/processFingerprint: acquires as THIS process and writes ITS real fingerprint", () => {
+    const root = tempRoot()
+    const stateDir = join(root, "update-state")
+    const lockDir = updateLockDirPath(stateDir, PROFILE)
+
+    const outcome = acquireUpdateLockSync({ stateDir, profile: PROFILE, warn: () => {} })
+    try {
+      expect(outcome.acquired).toBe(true)
+      if (!outcome.acquired) return
+      // A broken `opts.pid ?? 0` default would write "pid=0" here instead of
+      // this test's own pid; a broken `?? processFingerprintSync` fallback at
+      // :394 would write "" or some stub value instead of the fingerprint the
+      // same real probe reports independently below.
+      const written = readFileSync(ownerFilePath(lockDir), "utf8")
+      expect(written).toBe(ownerRecordContents(process.pid, readProcessFingerprintSync(process.pid).fingerprint))
+      // Reaching "acquired: true" at all also proves the mandatory
+      // self-readback (:407) succeeded, which ran lockOwnerAliveSync against
+      // the SAME empty probes object acquireUpdateLockSync builds when
+      // nothing is injected (:374-377) - so this one assertion also pins the
+      // :278-279 fallbacks answering honestly about this real, genuinely-alive
+      // process. A processAlive fallback stubbed to always answer false (or a
+      // processFingerprint fallback returning the wrong value) would make the
+      // readback fail and this outcome come back "ownership-unrecordable"
+      // instead of acquired.
+    } finally {
+      if (outcome.acquired) releaseUpdateLockSync(outcome.lock)
+    }
+  })
+
+  it("lockOwnerAliveSync with no probes argument at all judges a real, matching record for THIS process alive", () => {
+    const root = tempRoot()
+    const lockDir = join(root, "lock-stable")
+    mkdirSync(lockDir, { recursive: true })
+    const fingerprint = readProcessFingerprintSync(process.pid).fingerprint
+    expect(fingerprint, "sanity: this live process must fingerprint to something").not.toBe("")
+    writeFileSync(ownerFilePath(lockDir), ownerRecordContents(process.pid, fingerprint), { mode: 0o600 })
+
+    // The ONE call in the whole suite that omits the second argument
+    // entirely - every other call, including acquireUpdateLockSync's own
+    // internal ones, always passes an explicit (if empty) probes object - so
+    // only this line exercises the `probes.processAlive ?? processAliveSync`
+    // / `probes.processFingerprint ?? processFingerprintSync` fallbacks with
+    // nothing at all standing in front of them.
+    expect(lockOwnerAliveSync(lockDir)).toBe(true)
+  })
+
+  it("lockOwnerAliveSync with no probes argument judges a dead pid's record NOT alive, via the same real defaults", () => {
+    // The companion negative case: a default degenerated into an always-true
+    // stub would pass the test above too, so this pins the other direction
+    // with a pid this test never owns.
+    const root = tempRoot()
+    const lockDir = join(root, "lock-stable")
+    mkdirSync(lockDir, { recursive: true })
+    writeFileSync(ownerFilePath(lockDir), ownerRecordContents(DEAD_PID, "FP-DEAD"), { mode: 0o600 })
+    expect(lockOwnerAliveSync(lockDir)).toBe(false)
+  })
+})
+
 describe("release_update_lock", () => {
   it("is idempotent and never removes a lock it does not hold", () => {
     const root = tempRoot()
@@ -548,6 +677,40 @@ describe("release_update_lock", () => {
     expect(second.acquired).toBe(true)
     releaseUpdateLockSync(outcome.lock)
     expect(existsSync(lockDir), "the stale handle must not delete the new owner's lock").toBe(true)
+  })
+
+  it("defaults to the REAL process when no target is injected, not a no-op stub", () => {
+    // Every other hook test injects a fake target, so none of them exercises
+    // the production default parameter. This one calls installLockReleaseHooks
+    // with ONE argument, driving the real `process` object, and proves the
+    // listener counts actually move - the only way to catch a default that
+    // silently became a no-op.
+    const root = tempRoot()
+    const outcome = acquireUpdateLockSync({
+      stateDir: join(root, "update-state"),
+      profile: PROFILE,
+      pid: SELF_PID,
+      processAlive: () => true,
+      processFingerprint: () => "FP",
+      warn: () => {},
+    })
+    expect(outcome.acquired).toBe(true)
+    if (!outcome.acquired) return
+
+    const beforeExit = process.listenerCount("exit")
+    const beforeUncaught = process.listenerCount("uncaughtException")
+    const uninstall = installLockReleaseHooks(outcome.lock)
+    expect(process.listenerCount("exit")).toBe(beforeExit + 1)
+    expect(process.listenerCount("uncaughtException")).toBe(beforeUncaught + 1)
+
+    // Uninstall before this test ends: a stub target would need no cleanup,
+    // but the real process must not carry this test's listeners into the rest
+    // of the suite.
+    uninstall()
+    expect(process.listenerCount("exit")).toBe(beforeExit)
+    expect(process.listenerCount("uncaughtException")).toBe(beforeUncaught)
+
+    releaseUpdateLockSync(outcome.lock)
   })
 
   it("wires only the hooks Node dispatches synchronously; INT/TERM are a documented divergence", () => {
@@ -648,11 +811,18 @@ describe("lock_owner_alive: the owner record reader", () => {
     ].join("\n")
     const r = spawnSync("bash", ["-c", script], { encoding: "utf8" })
     const line = (r.stdout ?? "").split("\n").find((l) => l.startsWith("RC:"))
+    // Pid-keyed to the pid actually parsed out of the owner record: a caller
+    // that fingerprinted the wrong pid (e.g. process.pid instead of the pid
+    // lockOwnerAliveSync parsed from the record) gets a different answer, so
+    // the verdict flips instead of silently agreeing. `owner === null` has no
+    // recorded pid to key on, but that path returns before ever consulting a
+    // probe, so NaN never actually gets compared against.
+    const recordedPid = owner === null ? Number.NaN : Number(parseOwnerRecord(owner).pid)
     // The TS drive runs against the identical directory, so any divergence is
     // in the reader, not in the fixture.
     const tsVerdict = lockOwnerAliveSync(lockDir, {
       processAlive: (pid) => alivePids.includes(pid),
-      processFingerprint: () => fingerprint,
+      processFingerprint: (pid) => (pid === recordedPid ? fingerprint : `WRONG-PID-${pid}`),
     })
     expect(tsVerdict, "TS verdict disagrees with bash lock_owner_alive").toBe(line === "RC:0")
     return line === "RC:0" ? 0 : 1
@@ -686,6 +856,17 @@ describe("lock_owner_alive: the owner record reader", () => {
 
   it("keeps everything after the FIRST '=' in a fingerprint value", () => {
     expect(runBashOwnerAlive(`pid=${SELF_PID}\nfingerprint=a=b\n`, [SELF_PID], "a=b")).toBe(0)
+  })
+
+  it("rejects a pid with surrounding whitespace: the digit test is ANCHORED, not a bare search for a digit run", () => {
+    // `Number(" 424242 ")` coerces to a valid, live, matching pid (JS's Number
+    // trims surrounding whitespace) - so an unanchored `/[0-9]+/` in place of
+    // `/^[0-9]+$/` would sail past this check on the substring alone and go on
+    // to classify the record ALIVE, while bash's anchored `[[ =~ ^[0-9]+$ ]]`
+    // rejects the same line outright. Unlike the "not-a-pid" fixture above
+    // (which has no digits at all and so cannot tell an anchored test from an
+    // unanchored one), this fixture only diverges if the anchors are real.
+    expect(runBashOwnerAlive(ownerRecord(` ${SELF_PID} `, "FP"), [SELF_PID], "FP")).toBe(1)
   })
 })
 

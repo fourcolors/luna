@@ -46,6 +46,7 @@ import {
   lunaDieLine,
   makeSpawnBashRunner,
   resolveBashLib,
+  spawnBashSync,
 } from "../../src/update/bash-lib.js"
 import { type Fixture, cleanupTempDirs, makeFixturePair, makeLightFixture } from "./bash-fixtures.js"
 import { repoRoot } from "./temp-dirs.js"
@@ -205,6 +206,34 @@ describe("resolveBashLib", () => {
     }
   })
 
+  it("checks the DERIVED lib path for readability, never the engine path itself", () => {
+    // resolveBashLib exists to catch a lib that is missing OR unreadable
+    // BESIDE an engine that is itself perfectly fine (a partial rsync that
+    // copied the engine but not lib/, or a mode-000 lib after an interrupted
+    // write). If the readability predicate were ever pointed at `engine`
+    // instead of the derived `libFile`, this exact scenario - a real,
+    // readable engine file whose sibling lib/luna-deploy.sh does not exist at
+    // all - would resolve OK. The lock would then be taken, and the first
+    // delegated call (luna_validate_profile) would die with a bare 127 well
+    // after the loud, pre-lock refusal this function exists to give instead.
+    const fx = makeLightFixture({ readyAtTarget: true, readyAtPrev: true })
+    const dir = join(fx.temp, "engine-without-lib")
+    mkdirSync(dir, { recursive: true })
+    const engine = join(dir, "luna-update-server")
+    writeFileSync(engine, "#!/usr/bin/env bash\nexit 0\n")
+    chmodSync(engine, 0o755)
+    // No lib/ directory at all beside it, so the two paths disagree: the
+    // engine is readable, its derived lib is not even present.
+    expect(defaultIsReadableFile(engine)).toBe(true)
+    const resolved = resolveBashLib({
+      env: () => engine,
+      isReadableFile: defaultIsReadableFile,
+      runBash: explodingRunner,
+    })
+    expect(resolved.ok).toBe(false)
+    if (!resolved.ok) expect(resolved.errorLine).toContain(libFileFor(engine))
+  })
+
   it("creates nothing on disk, so it is safe to call before the lock exists", () => {
     const fx = makeLightFixture({ readyAtTarget: true, readyAtPrev: true })
     const probe = join(fx.temp, "lock-probe")
@@ -265,6 +294,88 @@ describe("makeSpawnBashRunner", () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toBe("absent")
   })
+
+  it("surfaces an unspawnable bash (ENOENT) as status 127, never coerced to a false success", () => {
+    // A REAL spawn against a path that does not exist: spawnSync reports this
+    // with status: null, exactly the shape `?? 127` exists to catch. If that
+    // fallback were ever coerced to 0 instead, a missing pinned bash engine
+    // would report every delegated call - luna_validate_profile included - as
+    // rc 0, i.e. "succeeded", with nothing downstream able to tell the
+    // difference from a real success.
+    const fx = makeLightFixture({ readyAtTarget: true, readyAtPrev: true })
+    const runner = makeSpawnBashRunner(baseEnv(fx), join(fx.temp, "no-such-bash-binary"))
+    const result = runner({ script: "true\n", args: [], env: {} })
+    expect(result.status).toBe(127)
+    expect(result.stdout).toBe("")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// spawnBashSync: the ONE production entry point that injects NOTHING - every
+// other describe block in this file drives makeSpawnBashRunner with an
+// injected env and an injected bashPath, which means the two defaults
+// spawnBashSync itself relies on (`makeSpawnBashRunner(process.env)`, and the
+// un-overridden `bashPath = "bash"` default parameter that call leaves in
+// place) are exercised by nothing else in this suite. These two tests drive
+// spawnBashSync directly - no wrapper, no injected collaborator - mutating
+// and restoring the REAL process.env, so a wrong default can only be caught
+// by a genuine spawn of the genuine binary.
+// ---------------------------------------------------------------------------
+
+describe("spawnBashSync: the production entry point, with nothing injected", () => {
+  it("forwards the REAL process.env, not an empty environment", () => {
+    // `makeSpawnBashRunner(process.env)` is the whole contract here: if it
+    // were ever `makeSpawnBashRunner({})`, this variable - set on the actual
+    // process.env, exactly as a real deploy's shell environment would carry
+    // UI_WS_TOKEN or PATH - would never reach the spawned bash at all.
+    const marker = "LUNA_BASH_LIB_ENV_FORWARD_SENTINEL"
+    const value = `sentinel-${Date.now()}`
+    const original = process.env[marker]
+    process.env[marker] = value
+    try {
+      const result = spawnBashSync({
+        script: `printf %s "\${${marker}:-absent}"\n`,
+        args: [],
+        env: {},
+      })
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe(value)
+    } finally {
+      if (original === undefined) delete process.env[marker]
+      else process.env[marker] = original
+    }
+  })
+
+  it("spawns the literal binary `bash`, the un-overridden default parameter", () => {
+    // A PATH directory that resolves `bash` (a shim that re-execs the real
+    // bash on this machine) but carries no `sh` at all. If the production
+    // default were ever "sh" instead of "bash", spawnSync would report ENOENT
+    // against this PATH and surface as status 127 rather than running the
+    // script - the same 127-not-a-false-success shape the ENOENT test above
+    // pins for an unspawnable absolute path, but here for the bare command
+    // name spawnBashSync actually uses.
+    //
+    // This has to override the real process.env.PATH (rather than, say, pass
+    // an empty env to force the lookup): the previous test proved
+    // spawnBashSync forwards process.env, and libuv only falls back to its
+    // OS-default search path when PATH is entirely ABSENT from the child's
+    // env - an explicit PATH that merely lacks the binary gets no such
+    // fallback, which is exactly what makes a PATH override load-bearing here.
+    const fx = makeLightFixture({ readyAtTarget: true, readyAtPrev: true })
+    const shimDir = join(fx.temp, "bash-only-on-this-path")
+    mkdirSync(shimDir, { recursive: true })
+    writeFileSync(join(shimDir, "bash"), `#!/bin/sh\nexec ${BASH} "$@"\n`)
+    chmodSync(join(shimDir, "bash"), 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = shimDir
+    try {
+      const result = spawnBashSync({ script: 'printf %s "ran-as-bash"\n', args: [], env: {} })
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe("ran-as-bash")
+    } finally {
+      process.env.PATH = originalPath
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -301,6 +412,45 @@ describe("a lib that vanishes after resolution", () => {
     // the bare exit code.
     expect(result.stderr).not.toContain("command not found")
   })
+
+  /**
+   * FINDBUN NEEDS THE SAME FIXTURE, and it is the more dangerous of the two.
+   *
+   * Every luna_find_bun parity case asserts `oracle.status === 0` before
+   * comparing, and the real bash helper (scripts/lib/luna-deploy.sh:441-455)
+   * always returns 0 - its last arm is an unverified
+   * `printf '%s\n' "$HOME/.bun/bin/bun"`. So nothing anywhere drove findBun
+   * down its failure branch, and the `r.status === 0` discriminator could be
+   * replaced by a constant `true` with the whole suite still green.
+   *
+   * WHY THAT IS WORSE THAN IT LOOKS. findBun's result becomes a path the
+   * deploy then EXECUTES. preflight.ts declares its seam as
+   * `findBun: () => string`, which structurally discards the ok flag, so a
+   * broken discriminator does not surface as an error - it yields
+   * `{ ok: true, path: "" }` and hands BUN_BIN="" to the deploy. preflight.ts
+   * gave findBun no default precisely to prevent that ("a wrong silent default
+   * there would hand the deploy a bun that does not exist").
+   *
+   * The nonzero case is not hypothetical: it is the 127 that scriptFor's
+   * `source "$1" || exit 127` arm exists to produce when the co-pinned lib
+   * vanishes mid-run, which is exactly the fixture above.
+   */
+  it("reports findBun as FAILED when the call cannot run, never as a success carrying an empty path", () => {
+    const fx = makeLightFixture({ readyAtTarget: true, readyAtPrev: true })
+    const engine = join(fx.temp, "vanished-pin", "luna-update-server")
+    const resolved = resolveBashLib({
+      env: () => engine,
+      isReadableFile: () => true,
+      runBash: makeSpawnBashRunner(baseEnv(fx), BASH),
+    })
+    expect(resolved.ok).toBe(true)
+    if (!resolved.ok) return
+
+    const result = resolved.lib.findBun()
+    expect(result.ok, "a failed find_bun must not read as success").toBe(false)
+    if (result.ok) return
+    expect(result.exitCode).toBe(127)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -313,6 +463,23 @@ describe("defaultIsReadableFile", () => {
     const dir = join(fx.temp, "a-readable-directory")
     mkdirSync(dir, { recursive: true })
     expect(defaultIsReadableFile(dir)).toBe(false)
+  })
+
+  it("rejects a REGULAR file that is not readable (mode 000), the -r half of the check", () => {
+    // The mirror of the directory case above: `isFile()` alone would pass a
+    // mode-000 file straight through. Without the accessSync(R_OK) call, the
+    // loud pre-lock refusal the header's "IT FAILS LOUDLY, BEFORE THE LOCK"
+    // section is built on degrades into an obscure runtime failure once bash
+    // itself tries (and fails) to read the file, after the lock is taken.
+    const fx = makeLightFixture({ readyAtTarget: true, readyAtPrev: true })
+    const file = join(fx.temp, "unreadable-lib.sh")
+    writeFileSync(file, "#!/usr/bin/env bash\n")
+    chmodSync(file, 0o000)
+    try {
+      expect(defaultIsReadableFile(file)).toBe(false)
+    } finally {
+      chmodSync(file, 0o644)
+    }
   })
 })
 
@@ -415,6 +582,32 @@ describe("luna_find_bun: golden parity", () => {
     "the LUNA_TEST_BUN_PATH seam wins over everything else",
     baseEnv(fx, { LUNA_TEST_BUN_PATH: join(fx.bin, "bun") }),
     () => join(fx.bin, "bun"),
+  )
+
+  // `printf '%s\n' "$LUNA_TEST_BUN_PATH"` adds exactly one trailing newline;
+  // if the resolved VALUE itself already ends in a newline (env vars can
+  // carry one - only NUL and '=' are forbidden), the real oracle's stdout
+  // ends in TWO. `$(...)` strips ALL of them, which is what the header
+  // claims and `.replace(/\n+$/, "")` implements; a single-newline strip
+  // would leave a trailing blank line nothing in the fixture corpus above
+  // could ever expose, because every other fixture value has zero embedded
+  // newlines to begin with.
+  parity(
+    "strips ALL trailing newlines, not just one, when the resolved value itself ends in a newline",
+    baseEnv(fx, { LUNA_TEST_BUN_PATH: `${join(fx.bin, "bun")}\n` }),
+    () => join(fx.bin, "bun"),
+  )
+
+  // The mirror of the trailing-newlines case above, but for LEADING
+  // whitespace: bash's `printf '%s\n'` preserves it verbatim, and
+  // stripTrailingNewlines must too. `.trim()` at findBun's own call site
+  // (rather than luna_env_value's) would pass every other fixture here since
+  // none of them carry leading whitespace - this is the one case that
+  // distinguishes the two implementations at THIS call site specifically.
+  parity(
+    "keeps LEADING whitespace from LUNA_TEST_BUN_PATH too - stripTrailingNewlines, not .trim(), at this call site",
+    baseEnv(fx, { LUNA_TEST_BUN_PATH: `  ${join(fx.bin, "bun")}` }),
+    () => `  ${join(fx.bin, "bun")}`,
   )
 
   parity(
@@ -520,6 +713,27 @@ describe("luna_env_value: golden parity", () => {
     "LUNA_CLAUDE_CODE_EXECUTABLE",
     { found: false, value: "" },
   )
+
+  it("coerces value to empty on a nonzero exit even if the subprocess printed something first", () => {
+    // Not reachable through the real awk (its only nonzero exit, the END
+    // block's "found ? 0 : 1", never prints beforehand), so this drives the
+    // injected `runBash` seam directly - the same seam
+    // "a lib that vanishes after resolution" above uses - to prove the shape
+    // the header's found/value distinction depends on: a partial-stdout-then-
+    // fail subprocess (a real TOCTOU or an interrupted awk) must not leak the
+    // partial bytes into `value` once `found` is false.
+    const resolved = resolveBashLib({
+      env: () => pin.engine,
+      isReadableFile: defaultIsReadableFile,
+      runBash: () => ({ status: 1, stdout: "leaked-partial-value\n", stderr: "" }),
+    })
+    expect(resolved.ok).toBe(true)
+    if (!resolved.ok) return
+    const result = resolved.lib.envValue(populated, "UI_WS_TOKEN")
+    expect(result.found).toBe(false)
+    expect(result.exitCode).toBe(1)
+    expect(result.value).toBe("")
+  })
 })
 
 // ---------------------------------------------------------------------------

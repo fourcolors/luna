@@ -253,10 +253,16 @@ export const delegatedLine = (flag: string): string => `DELEGATED to bash engine
  * got before this binary existed.
  *
  * PRECEDENCE IS FIXED so the marker is deterministic for the same argv. It
- * follows the spec's own listing order. `--materialize` sits last but can
- * never actually be reached first: validation (:264-265) already rejects it
- * off the releases layout, so any surviving `--materialize` run is also a
- * releases run and reports the layout.
+ * follows the spec's own listing order. `--materialize` is declared and
+ * parsed (see the parse loop) but has NO branch of its own here: validation
+ * (:264-265) already rejects it off the releases layout, so
+ * `config.materializeOnly` is true only when `config.layout === "releases"`,
+ * which the FIRST branch below already catches. A `--materialize` branch at
+ * the end of this function would therefore be dead code reachable through no
+ * call of `delegationFor` from `parseUpdateConfig` (its one caller) - so it
+ * is omitted rather than kept as an arm nothing can ever take. If a future
+ * change lets `--materialize` exist off the releases layout, add its branch
+ * back here, ordered last per the spec's listing.
  *
  * Call this AFTER validation, never before: `--layout bogus` must exit 1 with
  * bash's message, not delegate a typo to a bash engine that will reject it
@@ -267,7 +273,6 @@ export const delegationFor = (config: UpdateConfig): Delegation | null => {
   if (config.supervisor !== "systemd") return { flag: `--supervisor ${config.supervisor}` }
   if (config.systemdUser) return { flag: "--user" }
   if (config.dryRun) return { flag: "--dry-run" }
-  if (config.materializeOnly) return { flag: "--materialize" }
   return null
 }
 

@@ -92,8 +92,13 @@ export const libFileFor = (bashEngine: string): string => join(dirname(bashEngin
 /** `luna_die`'s line, byte-exact (scripts/lib/luna-deploy.sh:6), without its trailing newline. */
 export const lunaDieLine = (message: string): string => `error: ${message}`
 
-/** `luna_warn`'s line, byte-exact (scripts/lib/luna-deploy.sh:5), without its trailing newline. */
-export const lunaWarnLine = (message: string): string => `warning: ${message}`
+// No `lunaWarnLine` formatter here (deliberately, not an oversight): unlike
+// `luna_die`, this module never RECONSTRUCTS a `luna_warn` line - the one
+// warning callers see (the stale-pin line in `ConfigureClaudeResult.stderr`)
+// is forwarded verbatim from the delegated subprocess's own stderr bytes, per
+// the header's "so the caller can forward the bytes instead of reconstructing
+// them". A formatter with no call site would be exactly the kind of dead
+// export a mutation can rewrite for free with the suite staying green.
 
 // --- the injected subprocess seam --------------------------------------------
 

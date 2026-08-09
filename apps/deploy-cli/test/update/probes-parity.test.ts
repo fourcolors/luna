@@ -216,6 +216,18 @@ describe("probes: sup_is_active golden parity", () => {
     { systemdUser: true, stdout: "active\n", rc: 0 },
     { value: "active", argv: ["systemctl", "--user", ...IS_ACTIVE] },
   )
+
+  // stripTrailingNewlines is documented (see its own doc, session-guard.ts) to
+  // strip ALL trailing newlines, the way `$()` does - never just the last one.
+  // A single systemctl line never carries more than one, so this needs its
+  // own scenario: multiple trailing newlines, on the SUCCESS arm so no
+  // fallback concatenation masks a partial strip.
+  captureParity(
+    "sup_is_active",
+    "every trailing newline is stripped, not just the last one, matching $()",
+    { systemdUser: false, stdout: "active\n\n\n", rc: 0 },
+    { value: "active", argv: ["systemctl", ...IS_ACTIVE] },
+  )
 })
 
 describe("probes: sup_restart_count golden parity", () => {
@@ -232,6 +244,19 @@ describe("probes: sup_restart_count golden parity", () => {
     "sup_restart_count",
     "a non-numeric answer normalises to 0",
     { systemdUser: false, stdout: "[not-set]\n", rc: 0 },
+    { value: "0", argv: ["systemctl", ...NRESTARTS] },
+  )
+
+  // `[[ "$n" =~ ^[0-9]+$ ]]` requires ONE OR MORE digits; a successful
+  // (rc=0, so no fallback concatenation) but EMPTY property read - a unit
+  // type without restart accounting, or a freshly-loaded unit - must also
+  // fail that guard and collapse to 0, exactly like the non-numeric case
+  // above. An unanchored-at-`+`-vs-`*` regression would let "" through
+  // unchanged instead.
+  captureParity(
+    "sup_restart_count",
+    "a successful but empty answer normalises to 0, not left blank",
+    { systemdUser: false, stdout: "", rc: 0 },
     { value: "0", argv: ["systemctl", ...NRESTARTS] },
   )
 
@@ -602,6 +627,28 @@ describe("probes: makeRunSystemctl argv parity with sup_reload/sup_stop/sup_star
     // (restart.ts:175), so the probe must not strip or trim on its behalf.
     expect(runSystemctl(["is-active", SERVICE])).toEqual({ status: 4, stdout: "inactive\n" })
   })
+
+  // The test above injects `status: 4` - a value `?? 0` is a no-op on, so it
+  // cannot see a coalesced default. Only a null status exercises that branch,
+  // and a stubbed `status: null` would prove no more than the test above does:
+  // it is still a canned value, never a status the port actually produced. So
+  // this drives a REAL child process, killed by a REAL signal via spawnSync's
+  // own `timeout` option - the same mechanism an OOM-killer or an operator's
+  // Ctrl-C uses on a live `systemctl` - so `r.status` here is null because the
+  // OS says so, not because a test double was told to say so.
+  it("makeRunSystemctl passes through a genuine null status from a real signal-killed process, not coerced to success", () => {
+    const realCapture: RunTargetCapture = () => {
+      const r = spawnSync("sleep", ["5"], { timeout: 50 })
+      return { status: r.status, stdout: r.stdout ? r.stdout.toString() : "" }
+    }
+    const runSystemctl = makeRunSystemctl({ systemdUser: false, runTargetCapture: realCapture })
+    const result = runSystemctl(["stop", SERVICE])
+    // restart.ts:181 takes this `.status` as the step's rc. A signal-killed
+    // systemctl must stay null (failure) here - `?? 0` would read it as
+    // success and let a rolled-back transaction proceed to the readiness gate
+    // on a service that was never actually restarted.
+    expect(result.status).toBeNull()
+  })
 })
 
 describe("probes: _systemctl_user_flag", () => {
@@ -772,6 +819,39 @@ describe("probes: makeReadinessProbes wires the real poll-interval sleep", () =>
 
     const logged = readFileSync(log, "utf8").split("\n").filter((l) => l !== "")
     expect(logged).toEqual(["2"])
+  })
+})
+
+describe("probes: makeReadinessProbes wires one anchored clock, not a fresh one per call", () => {
+  // Every gate test in this file overrides BOTH now and sleep before calling
+  // readinessOkSync, so a `now` that re-anchors on every call (rather than
+  // anchoring once, at makeReadinessProbes construction time, the way
+  // makeMonotonicSeconds is documented to) can hide behind those stubs
+  // forever. readiness.ts computes `deadline = now() + timeoutSecs` once and
+  // then loops `while (now() < deadline)` - a re-anchored clock reads 0 at
+  // every call, so the deadline is never reached and the gate spins forever
+  // instead of giving up. Stubbing hrtime directly proves the SAME clock
+  // instance is threaded through, independent of wall-clock timing.
+  it("probes.now() advances across calls instead of re-anchoring to 0 each time", () => {
+    const realBigint = process.hrtime.bigint
+    let ns = 0n
+    process.hrtime.bigint = () => ns
+    try {
+      const { run } = recordingRunner(() => ({ status: 0, stdout: "" }))
+      const probes = makeReadinessProbes({
+        serviceName: SERVICE,
+        systemdUser: false,
+        readinessPort: PORT,
+        curlMaxTime: CURL_MAX_TIME,
+        runTargetCapture: run,
+      })
+
+      expect(probes.now()).toBe(0)
+      ns = 2_000_000_000n // 2 seconds after the probes were constructed
+      expect(probes.now()).toBe(2)
+    } finally {
+      process.hrtime.bigint = realBigint
+    }
   })
 })
 

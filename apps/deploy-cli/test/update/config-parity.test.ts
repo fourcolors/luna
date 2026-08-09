@@ -365,6 +365,15 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
       env: { ...baseEnv(), LUNA_REPO_DIR: "/mnt/from-env" },
     })
 
+    // `[[ -n "${LUNA_REPO_DIR:-}" ]]` (:58-59) is false for an EXPORTED but
+    // empty value, not just an unset one - envSet must agree, or a stray
+    // `LUNA_REPO_DIR=` on the command line silently freezes the host mount
+    // path instead of falling back to the profile-derived one.
+    accepts("LUNA_REPO_DIR set to the empty string is NOT explicit", {
+      argv: ["--profile", "dev", "--incus", "luna-dev"],
+      env: { ...baseEnv(), LUNA_REPO_DIR: "" },
+    })
+
     accepts("--incus resolves the in-container bun through the LUNA_TEST_BUN_PATH seam", {
       argv: ["--incus", "luna-stable"],
       env: { ...baseEnv(), LUNA_TEST_BUN_PATH: "/opt/hermetic/bun" },
@@ -383,6 +392,15 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
     accepts("--user leaves SERVICE_DIR alone when LUNA_SERVICE_DIR is set", {
       argv: ["--user"],
       env: { ...baseEnv(), LUNA_SERVICE_DIR: "/etc/systemd/system" },
+    })
+
+    // The other call site of the same `-n`-shaped guard: an exported but
+    // EMPTY LUNA_SERVICE_DIR must still count as unset, so --user still
+    // rewrites to the XDG dir instead of freezing at the (empty-sourced)
+    // system default.
+    accepts("--user rewrites SERVICE_DIR when LUNA_SERVICE_DIR is set to the empty string", {
+      argv: ["--user"],
+      env: { ...baseEnv(), LUNA_SERVICE_DIR: "" },
     })
 
     accepts("--user rewrites even an EXPLICIT --service-dir /etc/systemd/system", {
@@ -470,6 +488,43 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
     accepts("an EMPTY LUNA_PROFILE falls back to stable, exactly like an unset one", {
       argv: [],
       env: { ...baseEnv(), LUNA_PROFILE: "", LUNA_HOME: "", LUNA_READINESS_TIMEOUT: "" },
+    })
+
+    // Same `${VAR:-default}` fallback, but for the ONE env var (:934-936) that
+    // is never left simply unset in the scenario above - it is always either
+    // absent or asserted at a real value ("every LUNA_* default is honoured").
+    // A `LUNA_UPDATE_STATE_DIR=""` line (a common EnvironmentFile shape) is
+    // UNSET-equivalent to `envOr`, but not to a bare `env[key] ?? dflt`, which
+    // would leave `updateStateDir` as "" and derive the lock dir and journal
+    // at filesystem root. This scenario is the only one in the suite that
+    // exercises the empty-string arm of THIS particular envOr call.
+    accepts("an EMPTY LUNA_UPDATE_STATE_DIR falls back to $LUNA_HOME/update, not the filesystem root", {
+      argv: [],
+      env: { ...baseEnv(), LUNA_HOME: "/srv/state", LUNA_UPDATE_STATE_DIR: "" },
+    })
+
+    // SAME-CLASS SWEEP: every OTHER envOr-defaulted LUNA_* key this suite does
+    // not already drive empty somewhere above, all set to "" in one scenario.
+    // Each is `${VAR:-default}`-shaped in bash (:44-100), so an EXPORTED but
+    // empty line - the shape a systemd EnvironmentFile produces for an unset
+    // interpolation - must fall back exactly like an absent one. `--incus` is
+    // included so LUNA_TEST_BUN_PATH's fallback (bunBinIncus) is exercised
+    // too, since that branch only assigns it under --incus.
+    accepts("every remaining LUNA_* env default falls back on the empty string too", {
+      argv: ["--incus", "luna-dev"],
+      env: {
+        ...baseEnv(),
+        LUNA_READINESS_PORT: "",
+        LUNA_READINESS_INTERVAL: "",
+        LUNA_READINESS_CURL_MAX_TIME: "",
+        LUNA_RESTART_SETTLE_SECS: "",
+        LUNA_SUPERVISOR: "",
+        LUNA_CONTAINER_DEPLOY_ROOT: "",
+        LUNA_CONTAINER_ENV_FILE: "",
+        LUNA_LAUNCHD_LABEL: "",
+        LUNA_LAUNCHD_PLIST: "",
+        LUNA_TEST_BUN_PATH: "",
+      },
     })
 
     accepts("a profile with dots, dashes and underscores keeps its own unit name", {
@@ -660,6 +715,15 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
         expect(outcome.flag).toBe(argv[argv.length - (argv[argv.length - 1] === "" ? 2 : 1)])
         // bash's diagnostic is its own; ours is the `word` from the `${2:?word}`.
         expect(bash.stderr).toContain(outcome.message)
+        // The line above is a `toContain`, which a BLANKED `outcome.message`
+        // ("") would pass vacuously - every string contains the empty string.
+        // Pin the real word too: bash's own diagnostic for `${2:?word}` is
+        // always `<script>: line N: 2: <word>`, so the text after the last
+        // "2: " on that real, spawned line IS `word` byte-for-byte, and
+        // `outcome.message` must equal it exactly (and be non-empty).
+        const bashWord = bash.stderr.trimEnd().replace(/^.*: 2: /, "")
+        expect(outcome.message.length).toBeGreaterThan(0)
+        expect(outcome.message).toBe(bashWord)
       })
     }
 
@@ -762,6 +826,19 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
     // first would report the wrong flag for an identical argv.
     it("--user precedes --dry-run when both are set", () => {
       expect(delegationOf(["--user", "--dry-run"])).toBe("--user")
+    })
+
+    // Same precedence claim, one rung higher: --layout releases + --user is a
+    // VALID combination (nothing in the validation block forbids it, unlike
+    // --supervisor launchd + --user), so this is the one argv that can
+    // actually reach delegationFor with BOTH the layout branch and the
+    // --user branch true at once. The fixed listing order puts layout first;
+    // a port that hoisted the `config.systemdUser` check above the layout
+    // check would report "--user" here instead.
+    it("--layout releases precedes --user when both are set", () => {
+      expect(
+        delegationOf(["--layout", "releases", "--deploy-root", "/srv/d", "--user", "--ref", "origin/master"]),
+      ).toBe("--layout releases")
     })
 
     it("the marker line is the one spelling the accept gate greps for", async () => {

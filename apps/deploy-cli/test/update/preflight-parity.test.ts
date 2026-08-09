@@ -46,12 +46,13 @@
  * mismatch instead of as a green test with a different message.
  */
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { join, relative } from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
 import {
   type PreflightOptions,
   type Supervisor,
+  notAGitCloneMessage,
   resolveDefaultRefSync,
   runPreflightSync,
   unitPreflightSync,
@@ -875,6 +876,241 @@ describe("preflight: the real default seams and the guard in front of them", () 
       )
       expect(refusal?.check).toBe("unit")
       expect(refusal?.message).toBe(unitRefusalMessages.incus(unit, "some-container"))
+    })
+
+    // The two tests above both hardcode "some-container" as the argument AND
+    // as the only container name the stub ever sees, so a default that
+    // silently substituted some OTHER fixed container name for whatever the
+    // caller passed would still pass them both - the container argument
+    // itself is never actually exercised. This test uses a SEPARATE stub
+    // that only answers about the file when it is invoked for the exact
+    // container the test asked about, so a default that forwards a
+    // hardcoded stand-in container instead of the caller's own argument
+    // gets refused even though the real unit file genuinely exists.
+    it("forwards the CALLER's own container argument to incus, not a hardcoded stand-in", () => {
+      const expectedContainer = "expected-container-xyz"
+      const altBinDir = makeTempDir("deploy-cli-preflight-incus-argcheck-bin-")
+      writeFileSync(
+        join(altBinDir, "incus"),
+        // $2 is the container position in `incus exec <container> -- test -f <path>`.
+        `#!/bin/sh\nif [ "$2" != "${expectedContainer}" ]; then exit 1; fi\nif [ -f "$6" ]; then exit 0; else exit 1; fi\n`,
+        { mode: 0o755 },
+      )
+      const dir = makeTempDir("deploy-cli-preflight-incus-argcheck-unit-")
+      const unit = join(dir, "unit.service")
+      writeFileSync(unit, "[Unit]\n")
+      const original = process.env.PATH ?? ""
+      process.env.PATH = `${altBinDir}:${original}`
+      try {
+        const refusal = unitPreflightSync({
+          dryRun: false,
+          materializeOnly: false,
+          supervisor: "systemd",
+          incusContainer: expectedContainer,
+          systemdUser: false,
+          launchdPlist: "/unused",
+          serviceFile: unit,
+          userUnitFile: "/unused",
+        })
+        expect(refusal, "the real default must send the caller's own container, not a hardcoded one").toBeUndefined()
+      } finally {
+        process.env.PATH = original
+      }
+    })
+
+    // bash's own `incus exec` answers with SOME exit code for every failure
+    // mode - missing binary, daemon down, unknown container, a transient
+    // 125-class incus error - and only exit 0 means "unit present". A status
+    // mapping spelled as "anything but the known-absent code counts as
+    // present" fails OPEN on every one of those, which is the worst
+    // direction for a check that runs before the update lock is taken. incus
+    // being entirely absent from PATH (verified above: `which incus` finds
+    // nothing on this host) is the simplest REAL way to produce a status this
+    // suite's other two incus scenarios (0 and 1) never do: spawnSync's ENOENT
+    // leaves `status` at `null`.
+    it("fails CLOSED (refuses) when incus itself cannot even be spawned, never fail-open", () => {
+      const dir = makeTempDir("deploy-cli-preflight-incus-enoent-")
+      const unit = join(dir, "unit.service")
+      writeFileSync(unit, "[Unit]\n") // the file genuinely exists; only the "incus" spawn fails
+      const emptyBinDir = makeTempDir("deploy-cli-preflight-incus-enoent-bin-")
+      const original = process.env.PATH ?? ""
+      process.env.PATH = emptyBinDir
+      try {
+        const refusal = unitPreflightSync({
+          dryRun: false,
+          materializeOnly: false,
+          supervisor: "systemd",
+          incusContainer: "some-container",
+          systemdUser: false,
+          launchdPlist: "/unused",
+          serviceFile: unit,
+          userUnitFile: "/unused",
+        })
+        expect(refusal?.check).toBe("unit")
+      } finally {
+        process.env.PATH = original
+      }
+    })
+  })
+
+  describe("the default git-failure guard on realGitCurrentBranch", () => {
+    // Every REAL git failure this repo can produce prints either "" or the
+    // literal "HEAD" on stdout (proven above against the unborn-branch case
+    // and against a repo whose current branch's ref was deliberately
+    // corrupted: `git rev-parse --abbrev-ref HEAD` still answers "HEAD" with
+    // exit 128), and resolveDefaultRefSync already treats both the same as a
+    // detached checkout - so no REAL git invocation can discriminate the
+    // `if (r.status !== 0) return ""` guard from its removal. A binary put on
+    // PATH ahead of the real `git` can, though, and that is exactly what a
+    // wrapped or shimmed `git` (a corporate git-proxy, a pre-commit shim, a
+    // broken PATH ordering) could do in production: exit non-zero while still
+    // printing something on stdout. The guard's whole job is to make sure
+    // THAT stdout is never trusted, which only shows up once something
+    // actually prints on a failing exit.
+    const stubBinDir = makeTempDir("deploy-cli-preflight-git-stub-")
+    writeFileSync(
+      join(stubBinDir, "git"),
+      "#!/bin/sh\nprintf 'custom-branch\\n'\nexit 1\n",
+      { mode: 0o755 },
+    )
+
+    it("does not trust stdout from a git invocation that exits non-zero", () => {
+      const dir = makeTempDir("deploy-cli-preflight-git-guard-")
+      mkdirSync(join(dir, ".git"), { recursive: true })
+      const original = process.env.PATH ?? ""
+      process.env.PATH = `${stubBinDir}:${original}`
+      try {
+        // No gitCurrentBranch override: this drives the real default seam
+        // through a real spawnSync("git", ...) call.
+        const ref = resolveDefaultRefSync({ ref: "", hostRepoDir: dir })
+        expect(ref).toBe("origin/master")
+      } finally {
+        process.env.PATH = original
+      }
+    })
+  })
+
+  describe("the default fileExists seam (realFileExists)", () => {
+    // bash's `[[ -f "$SERVICE_FILE" ]]` is false for a directory; a port that
+    // accepted any existing filesystem node would pass the unit-existence
+    // preflight on a host where something else (a stray mkdir, a bind mount)
+    // put a directory at the unit path, and hand back a silent half-deploy.
+    it("does not treat a DIRECTORY at the unit path as an existing unit file", () => {
+      const dir = makeTempDir("deploy-cli-preflight-fileexists-dir-")
+      const unitPath = join(dir, "looks-like-a-unit.service")
+      mkdirSync(unitPath)
+      // fileExists DELIBERATELY left unset: this drives the real
+      // statSync-based default, not an injected seam.
+      const refusal = unitPreflightSync({
+        dryRun: false,
+        materializeOnly: false,
+        supervisor: "systemd",
+        incusContainer: "",
+        systemdUser: false,
+        launchdPlist: "/unused",
+        serviceFile: unitPath,
+        userUnitFile: "/unused",
+      })
+      expect(refusal?.check).toBe("unit")
+      expect(refusal?.message).toBe(unitRefusalMessages.system(unitPath))
+    })
+
+    // bash's `[[ -f ]]` FOLLOWS symlinks, and a symlinked unit is not
+    // hypothetical here: `systemctl enable` and this module's own advertised
+    // "cp or symlink your unit" wording (see unitRefusalMessages.systemdUser
+    // above) both produce one. A default that switched to lstat semantics
+    // would refuse a perfectly real, symlinked unit with an operator-hostile
+    // "not found" message.
+    it("follows a SYMLINK to a real unit file, matching bash's [[ -f ]]", () => {
+      const dir = makeTempDir("deploy-cli-preflight-fileexists-symlink-")
+      const realUnit = join(dir, "real.service")
+      writeFileSync(realUnit, "[Unit]\n")
+      const linkedUnit = join(dir, "linked.service")
+      symlinkSync(realUnit, linkedUnit)
+      // fileExists DELIBERATELY left unset: this drives the real
+      // statSync-based default, not an injected seam.
+      const refusal = unitPreflightSync({
+        dryRun: false,
+        materializeOnly: false,
+        supervisor: "systemd",
+        incusContainer: "",
+        systemdUser: false,
+        launchdPlist: "/unused",
+        serviceFile: linkedUnit,
+        userUnitFile: "/unused",
+      })
+      expect(refusal).toBeUndefined()
+    })
+  })
+
+  describe("the default dirExists seam (realDirExists)", () => {
+    // NOT hypothetical: a git worktree's `.git` is a regular FILE (a gitdir
+    // pointer), never a directory - and this very worktree is one. bash's
+    // `[[ -d ]]` is false there and refuses "is not a git clone"; a port that
+    // accepted any existing node at that path would proceed to mutate a
+    // worktree checkout that isn't a git dir by that name at all.
+    it("refuses a repo whose .git is a FILE, not a directory (a real git worktree shape)", () => {
+      const dir = makeTempDir("deploy-cli-preflight-direxists-worktree-")
+      writeFileSync(join(dir, ".git"), "gitdir: /some/real/worktrees/foo\n")
+      // dirExists DELIBERATELY left unset: this drives the real
+      // statSync-based default, not an injected seam.
+      const outcome = runPreflightSync({
+        profile: "dev",
+        incusContainer: "",
+        supervisor: "systemd",
+        systemdUser: false,
+        hostRepoDir: dir,
+        containerRepoDir: dir,
+        serviceFile: "/unused",
+        userUnitFile: "/unused",
+        launchdLabel: "unused",
+        launchdPlist: "/unused",
+        uid: "0",
+        dryRun: false,
+        materializeOnly: false,
+        ref: "",
+        bunBinIncus: "/unused",
+        print: () => undefined,
+        findBun: () => "/unused",
+      })
+      expect(outcome.ok).toBe(false)
+      if (outcome.ok) throw new Error("expected a refusal")
+      expect(outcome.check).toBe("git-clone")
+      expect(outcome.message).toBe(notAGitCloneMessage(dir))
+    })
+
+    // The other side of the same coin: bash's `[[ -d ]]` FOLLOWS symlinks, so
+    // a `.git` that is a symlink to a real directory (not the gitdir-pointer
+    // FILE shape above) must still pass. A default that switched to lstat
+    // semantics would refuse a perfectly real clone whose `.git` happens to
+    // be a symlink.
+    it("follows a SYMLINK-to-directory .git, matching bash's [[ -d ]]", () => {
+      const dir = makeTempDir("deploy-cli-preflight-direxists-symlink-")
+      const realGitDir = join(dir, "real-git-dir")
+      mkdirSync(realGitDir, { recursive: true })
+      symlinkSync(realGitDir, join(dir, ".git"))
+      // dirExists DELIBERATELY left unset: this drives the real
+      // statSync-based default, not an injected seam.
+      const outcome = runPreflightSync({
+        profile: "dev",
+        incusContainer: "",
+        supervisor: "systemd",
+        systemdUser: false,
+        hostRepoDir: dir,
+        containerRepoDir: dir,
+        serviceFile: "/unused",
+        userUnitFile: "/unused",
+        launchdLabel: "unused",
+        launchdPlist: "/unused",
+        uid: "0",
+        dryRun: true,
+        materializeOnly: false,
+        ref: "irrelevant",
+        bunBinIncus: "/unused",
+        print: () => undefined,
+        findBun: () => "/unused",
+      })
+      expect(outcome.ok, "a symlinked .git dir must not read as 'not a git clone'").toBe(true)
     })
   })
 })
