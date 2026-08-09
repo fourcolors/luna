@@ -558,6 +558,38 @@ describe("execution waist: golden parity with scripts/luna-update-server", () =>
       expect(defaultSpawnTarget([], { capture: false })).toEqual({ status: 0, stdout: "" })
     })
 
+    /**
+     * THE PROBE MUST RUN UNDER A RUNTIME THAT UNDERSTANDS TYPESCRIPT, and
+     * `process.execPath` is not reliably one.
+     *
+     * The probe imports target.ts directly. process.execPath is whatever
+     * launched vitest, which on the Linux CI runner is a Node that cannot
+     * import a .ts file - so the probe died before writing anything, and both
+     * probe tests failed on a MISSING MARKER rather than on the behaviour they
+     * exist to check. That is the worst failure shape available: the assertion
+     * still reads like a real stdio regression.
+     *
+     * These passed locally only because this machine's launcher happens to
+     * handle TypeScript, which quietly made the host OS part of the fixture.
+     * bun is this repo's runtime and is version-pinned in CI, so the probe now
+     * names its interpreter instead of inheriting one.
+     *
+     * A MISSING bun FAILS LOUDLY rather than skipping: a silent skip here would
+     * turn the only real proof of the fd handoff into a no-op the day the
+     * toolchain moved, which is exactly how these two tests became decorative
+     * in CI for four merges without anyone noticing.
+     */
+    const runProbe = (probePath: string): { stdout: string; stderr: string } => {
+      const which = spawnSync("which", ["bun"], { encoding: "utf8" })
+      const bun = (which.stdout ?? "").trim()
+      expect(
+        bun,
+        "bun is required to run the TypeScript probe; process.execPath cannot be assumed to import .ts",
+      ).not.toBe("")
+      const probe = spawnSync(bun, [probePath], { encoding: "utf8" })
+      return { stdout: probe.stdout ?? "", stderr: probe.stderr ?? "" }
+    }
+
     // A capture:true child's stderr must still reach the operator (this
     // module's header: stderr always flows through in both arms). Proving
     // that needs a REAL descendant process, because "inherit" is an OS-level
@@ -579,7 +611,7 @@ describe("execution waist: golden parity with scripts/luna-update-server", () =>
       // The probe is a real grandchild-spawning process, not the vitest
       // worker itself: WE pipe its stdout/stderr, so "inherit" one level down
       // hands the grandchild's stderr straight to the pipe we are reading.
-      const probe = spawnSync(process.execPath, [probePath], { encoding: "utf8" })
+      const probe = runProbe(probePath)
       expect(probe.stdout).toBe("CAPTURED=[out]")
       expect(probe.stderr).toContain("STDERR_MARKER_9f3a")
     })
@@ -611,7 +643,7 @@ describe("execution waist: golden parity with scripts/luna-update-server", () =>
           `defaultSpawnTarget(["bash", "-c", "printf STDOUT_MARKER_7c2e; printf STDERR_MARKER_4b81 >&2"], { capture: false })`,
         ].join("\n"),
       )
-      const probe = spawnSync(process.execPath, [probePath], { encoding: "utf8" })
+      const probe = runProbe(probePath)
       expect(probe.stdout).toContain("STDOUT_MARKER_7c2e")
       expect(
         probe.stderr,

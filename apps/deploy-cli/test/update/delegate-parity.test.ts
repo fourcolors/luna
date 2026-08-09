@@ -625,22 +625,37 @@ describe("the default runner: a real spawn of the real bash engine", () => {
     // are not a valid executable format passes resolveBashEngine's probe and
     // then fails at exec time with ENOEXEC, exactly the "pin pruned mid-run"
     // race the header describes.
-    const root = makeTempDir("delegate-enoexec-")
+    //
+    // THE FIXTURE IS A VANISHED PIN, NOT A MALFORMED ONE, and the difference is
+    // portability. The first version of this test wrote garbage bytes to an
+    // X_OK file expecting ENOEXEC, which is macOS behaviour: on Linux, execvp
+    // answers ENOEXEC by RETRYING the file through /bin/sh, so Node is handed a
+    // plain non-zero status and never populates `error` at all. The test then
+    // failed on the CI runner with 127-instead-of-1, having encoded the
+    // developer's host OS as if it were the contract.
+    //
+    // A path that does not exist produces a genuine spawn ENOENT on both
+    // platforms, with no shell fallback to launder it, and it models the same
+    // race more directly: `isExecutableFile` says yes (as it truthfully did a
+    // moment earlier), the pin is pruned, and the exec then fails.
+    const root = makeTempDir("delegate-vanished-")
     const path = join(root, "luna-update-server")
-    writeFileSync(path, Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]))
-    chmodSync(path, 0o755)
     const stderr: string[] = []
     const outcome = delegateToBashSync({
       flag: "--dry-run",
       rawArgs: [UPDATE_SUBCOMMAND, ...SHARED],
       env: { [BASH_ENGINE_ENV]: path },
       writeStderr: (line) => { stderr.push(line) },
-      // No runEngine override: this must go through the real defaultRunEngine.
+      // Lies "yes" exactly as a real TOCTOU race would: the probe passed, then
+      // the pin vanished before the exec. This is the ONLY injection here -
+      // runEngine is deliberately NOT overridden, so the exec itself goes
+      // through the real defaultRunEngine, which is the producer under test.
+      isExecutableFile: () => true,
     })
     expect(outcome.exitCode).toBe(EXIT_PREFLIGHT)
     expect(
-      stderr.some((line) => line.startsWith("error: failed to exec the bash engine") && line.includes("ENOEXEC")),
-      `expected an ENOEXEC exec-failure line, got: ${JSON.stringify(stderr)}`,
+      stderr.some((line) => line.startsWith("error: failed to exec the bash engine") && line.includes("ENOENT")),
+      `expected an ENOENT exec-failure line, got: ${JSON.stringify(stderr)}`,
     ).toBe(true)
     // The exec-failure arm's `kind` is the ONLY structural signal telling a
     // future caller "we already wrote the DELEGATED marker before this
