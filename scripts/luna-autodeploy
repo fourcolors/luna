@@ -104,11 +104,21 @@ source "$(dirname "$SELF")/lib/luna-registry.sh"
 # intended failure. This function therefore emits the full argv PREFIX, and the
 # caller execs it followed by the shared flags.
 #
-# Args:   luna_select_engine <pinned_engine_path>
+# THE BINARY IS NOT BESIDE THE PINNED BASH ENGINE, and the first version of
+# this function assumed it was. luna_pin_engine copies luna-update-server and
+# lib/ into /usr/local/lib/luna/deploy-engine@<sha>/ and NOTHING ELSE, so
+# `dirname($pinned_engine)/deploy-cli` names a path no code ever writes -
+# LUNA_DEPLOY_ENGINE=binary hit the refusal below on every real host. deploy-cli
+# is published by guardian into its own pin (scripts/luna-guardian:1216-1219),
+# which is the directory autodeploy itself was exec'd from. So the caller passes
+# that directory explicitly rather than deriving it from the wrong artifact.
+#
+# Args:   luna_select_engine <pinned_engine_path> <binary_search_dir>
 # Stdout: argv prefix to exec, one field per line (path, then any subcommand)
 # Return: 0 on success; 1 on any refusal (message on stderr)
 luna_select_engine() {
   local pinned_engine="$1"
+  local binary_dir="$2"
   local choice="${LUNA_DEPLOY_ENGINE:-bash}"
   case "$choice" in
     bash)
@@ -117,9 +127,9 @@ luna_select_engine() {
       ;;
     binary)
       local cli
-      cli="$(dirname "$pinned_engine")/deploy-cli"
+      cli="${binary_dir}/deploy-cli"
       if [[ ! -x "$cli" ]]; then
-        printf 'luna-autodeploy: LUNA_DEPLOY_ENGINE=binary but no executable deploy-cli beside the pinned engine (%s); refusing rather than silently running bash\n' "$cli" >&2
+        printf 'luna-autodeploy: LUNA_DEPLOY_ENGINE=binary but no executable deploy-cli at %s; refusing rather than silently running bash\n' "$cli" >&2
         return 1
       fi
       # `update` names which of the three scripts this invocation replaces.
@@ -511,7 +521,7 @@ do_deploy() {
   # bash engine and a prefix of just its path, so this is bit-for-bit the
   # pre-S22c invocation.
   local engine_argv=() _line
-  while IFS= read -r _line; do [[ -n "$_line" ]] && engine_argv+=("$_line"); done < <(luna_select_engine "$pinned_engine")
+  while IFS= read -r _line; do [[ -n "$_line" ]] && engine_argv+=("$_line"); done < <(luna_select_engine "$pinned_engine" "$(dirname "$UPDATE_SERVER")")
   (( ${#engine_argv[@]} > 0 )) || return 2
 
   local rc=0
@@ -588,7 +598,14 @@ do_repair() {
   local pinned_engine rc=0
   pinned_engine="$(luna_pin_engine "$P_REPO")"
   echo "[repair:$profile] rung 1: plain unit restart (checkout untouched)"
-  "$pinned_engine" "${repair_args[@]}" --restart-only || rc=$?
+  # THROUGH THE GATE, like do_deploy. This used to exec the pinned bash engine
+  # directly, so guardian's whole unattended repair ladder ran bash whatever
+  # LUNA_DEPLOY_ENGINE said - which made --restart-only unreachable for the
+  # binary and left rung 2 (a FULL redeploy, below) outside the gate entirely.
+  local repair_argv=() _rline
+  while IFS= read -r _rline; do [[ -n "$_rline" ]] && repair_argv+=("$_rline"); done < <(luna_select_engine "$pinned_engine" "$(dirname "$UPDATE_SERVER")")
+  (( ${#repair_argv[@]} > 0 )) || return 2
+  "${repair_argv[@]}" "${repair_args[@]}" --restart-only || rc=$?
   case "$rc" in
     0) echo "[repair:$profile] REPAIRED by unit restart"; return 0 ;;
     3) echo "[repair:$profile] DEFERRED by session guard — live/unknown sessions; not escalating"; return 3 ;;
@@ -596,7 +613,7 @@ do_repair() {
   esac
   echo "[repair:$profile] rung 1 failed (rc=$rc); rung 2: full rebuild of current ref ${cur_sha:0:9}"
   rc=0
-  "$pinned_engine" "${repair_args[@]}" || rc=$?
+  "${repair_argv[@]}" "${repair_args[@]}" || rc=$?
   case "$rc" in
     0) echo "[repair:$profile] REPAIRED by full redeploy of ${cur_sha:0:9}" ;;
     1) echo "[repair:$profile] ROLLED BACK — full redeploy failed, recovered to previous" >&2 ;;
