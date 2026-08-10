@@ -37,7 +37,7 @@ import { repoRoot } from "./temp-dirs.js"
 const UPDATE_SERVER = join(repoRoot, "scripts/luna-update-server")
 
 const SERVICE = "luna-chat-server.service"
-const PORT = 4753
+const PORT = "4753"
 
 interface Scenario {
   readonly active: string

@@ -80,9 +80,27 @@
  * and `sup_restart_count` (:1409). S22d's binary owns LAYOUT=inplace +
  * SUPERVISOR=systemd only and DELEGATES `--supervisor launchd` whole to the
  * bash engine before the lock is acquired, so porting a launchd arm here would
- * ship an untested path that nothing can reach. Also out of scope:
- * `sup_main_pid` (:1416-1433) - restart.ts reads MainPID through the same
- * injected runSystemctl this module builds, so it needs no second probe.
+ * ship an untested path that nothing can reach. `sup_main_pid`'s launchd arm
+ * (:1425-1427's `if [[ "$SUPERVISOR" == "systemd" ]]` is the whole of it) is
+ * out of scope for the same reason and for the one bash states itself: launchd
+ * deliberately answers the empty string there.
+ *
+ * `sup_main_pid` ITSELF IS IN SCOPE (supMainPidSync below), reversing what this
+ * header said through S22c ("restart.ts reads MainPID through the same injected
+ * runSystemctl this module builds, so it needs no second probe"). That was true
+ * only while restart.ts excluded the MainPID postcondition entirely; now that
+ * restart.ts ports it, the read is a CAPTURE, and `runSystemctl` is the
+ * status-only `run_target` waist. Routing it through the same RunTargetCapture
+ * as the other probes is what keeps the incus arm honest: bash's own read is a
+ * `run_target_capture` (:1426), so on a container target the MainPID it
+ * compares is the container's, not the host's.
+ *
+ * PORT SPELLING: `readinessPort` arrives as the STRING config.ts already holds
+ * (config.ts:186/:358), never a parsed number. Nothing here does arithmetic on
+ * it - it is interpolated into `http://127.0.0.1:<port>/healthz` and nothing
+ * else - so a number would silently renormalise an operator's
+ * `--readiness-port 04753` and change the curl argv the bash engine emits.
+ * Same rule, same reason as `curlMaxTime` below.
  */
 import { spawnSync } from "node:child_process"
 import type { ReadinessProbeOptions, ReadinessResult, ReadyzCapture } from "./readiness.js"
@@ -115,6 +133,9 @@ export type RunTargetCapture = (argv: ReadonlyArray<string>) => CaptureResult
 
 /** `[[ "$n" =~ ^[0-9]+$ ]]` - sup_restart_count's own validation (scripts/luna-update-server:1412). Re-derived here rather than imported from readiness.ts because the two guards are separate bash statements that happen to share a regex; readiness.ts re-checks the value this returns, exactly as `readiness_ok` re-checks it at :1079. */
 const RESTART_COUNT_FORMAT = /^[0-9]+$/
+
+/** `[[ "$pid" =~ ^[0-9]+$ ]] || pid=""` - sup_main_pid's own validation (scripts/luna-update-server:1428). Same regex as above, a separate bash statement, so it is spelled separately here for the same reason RESTART_COUNT_FORMAT is. */
+const MAIN_PID_FORMAT = /^[0-9]+$/
 
 /**
  * `$( cmd 2>/dev/null || printf '<fallback>' )`.
@@ -182,10 +203,41 @@ export const supRestartCountSync = (options: SystemdProbeOptions): string => {
   return RESTART_COUNT_FORMAT.test(n) ? n : "0"
 }
 
+/**
+ * `sup_main_pid` (scripts/luna-update-server:1423-1430), systemd arm: the
+ * unit's MainPID via `systemctl show --property=MainPID --value`, normalised to
+ * the EMPTY STRING for anything that is not a bare run of digits (:1428's
+ * `[[ "$pid" =~ ^[0-9]+$ ]] || pid=""`).
+ *
+ * The fallback here is genuinely empty, unlike every other probe in this file:
+ * bash writes `|| true`, not `|| printf '<something>'` (:1426), so a failing
+ * systemctl contributes only whatever it printed to stdout - and that is then
+ * almost always non-numeric and collapses to "". captureOrFallback is still the
+ * right shared helper (an empty fallback concatenates to nothing), which keeps
+ * the trailing-newline stripping identical to its siblings.
+ *
+ * "" and "0" are DIFFERENT ANSWERS and restart.ts's postcondition treats them
+ * differently: "" means nobody answered (skip the check), "0" means systemd
+ * answered "no main process" (which disproves "the old process is still
+ * serving"). A port that folded them together would either fail healthy
+ * deploys or blind the check.
+ */
+export const supMainPidSync = (options: SystemdProbeOptions): string => {
+  const pid = captureOrFallback(
+    options.runTargetCapture,
+    systemctlArgv(options.systemdUser, ["show", options.serviceName, "--property=MainPID", "--value"]),
+    "",
+  )
+  return MAIN_PID_FORMAT.test(pid) ? pid : ""
+}
+
 /** Which loopback endpoint and with what `--max-time` the two readiness curls are aimed at. */
 export interface CurlProbeOptions {
-  /** `READINESS_PORT` (scripts/luna-update-server:86). */
-  readonly readinessPort: number
+  /**
+   * `READINESS_PORT` (scripts/luna-update-server:86) as a STRING, the raw
+   * spelling config.ts holds - see PORT SPELLING in this module's header.
+   */
+  readonly readinessPort: string
   /**
    * `READINESS_CURL_MAX_TIME` (:89) as a STRING, the same choice restart.ts
    * makes for settleSecs: the value reaches curl as an argv element, so
@@ -198,14 +250,14 @@ export interface CurlProbeOptions {
 }
 
 /** The /healthz argv, byte-exact (scripts/luna-update-server:1084-1086). */
-export const healthzArgv = (readinessPort: number, curlMaxTime: string): ReadonlyArray<string> => [
+export const healthzArgv = (readinessPort: string, curlMaxTime: string): ReadonlyArray<string> => [
   "curl", "-fsS", "-o", "/dev/null", "-w", "%{http_code}",
   "--max-time", curlMaxTime,
   `http://127.0.0.1:${readinessPort}/healthz`,
 ]
 
 /** The /readyz argv, byte-exact (scripts/luna-update-server:1088-1090). The `-w` value carries a LITERAL backslash-n that curl expands - see the header. */
-export const readyzArgv = (readinessPort: number, curlMaxTime: string): ReadonlyArray<string> => [
+export const readyzArgv = (readinessPort: string, curlMaxTime: string): ReadonlyArray<string> => [
   "curl", "-sS", "-w", "\\n%{http_code}",
   "--max-time", curlMaxTime,
   `http://127.0.0.1:${readinessPort}/readyz`,

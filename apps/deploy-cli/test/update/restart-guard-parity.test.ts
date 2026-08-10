@@ -53,7 +53,7 @@ const extractWarnSeparator = (pattern: RegExp, label: string): string => {
   return match[1]
 }
 
-const liveSessionsWarnLine = (n: number, readinessPort: number): string => {
+const liveSessionsWarnLine = (n: number, readinessPort: string): string => {
   const dash = extractWarnSeparator(
     /luna_warn "session guard: \$n active session\(s\) on :\$READINESS_PORT (.) deferring restart"/,
     "live-sessions",
@@ -108,7 +108,17 @@ const restartVerbs = (log: string): ReadonlyArray<string> =>
     .map((line) => line.split(" ")[0] ?? "")
     .filter((verb) => verb === "daemon-reload" || verb === "stop" || verb === "start" || verb === "settle")
 
-const baseGuard = (serviceName: string, readinessPort: number): SessionGuardOptions => ({
+/**
+ * restartServiceSync's `warn` seam is REQUIRED (restart.ts prints the two
+ * MainPID postcondition warns through it, at bash's own positions inside
+ * restart_service). No scenario in THIS file supplies a `mainPid` seam, so the
+ * postcondition is skipped exactly as bash skips it on an unknown pre-PID and
+ * nothing here can emit - the byte-exactness of those two lines is proven in
+ * the MainPID suite, against both drives, not here.
+ */
+const noWarn = (): void => {}
+
+const baseGuard = (serviceName: string, readinessPort: string): SessionGuardOptions => ({
   dryRun: false,
   guardSessions: true,
   supervisor: "systemd",
@@ -225,6 +235,7 @@ describe("restart primitive: call order and settle timing match the real bash pr
 
     const tsBefore = Date.now()
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: tsFixture.serviceName,
       dryRun: false,
       settleSecs: "1",
@@ -254,6 +265,7 @@ describe("restart primitive: call order and settle timing match the real bash pr
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: tsFixture.serviceName,
       dryRun: false,
       settleSecs: "0",
@@ -276,6 +288,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: true,
       settleSecs: "1",
@@ -312,6 +325,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -330,6 +344,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
   it("omitting settleSecs reaches settleAfterStopSync as the verbatim default ('6'), not silently skipped", () => {
     const seen: string[] = []
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       guard: { ...baseGuard("luna-chat-server.service", READINESS_PORT), queryActiveWsCount: () => 0 },
@@ -356,6 +371,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -385,6 +401,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -407,6 +424,7 @@ describe("restart primitive: reload/stop failures short-circuit before start (FI
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -427,6 +445,7 @@ describe("restart primitive: reload/stop failures short-circuit before start (FI
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -450,6 +469,7 @@ describe("restart primitive: the guard's systemd fallback is routed through THIS
     }
 
     const outcome = restartServiceSync({
+      warn: noWarn,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -497,6 +517,7 @@ describe("restart primitive: the guard's systemd fallback is routed through THIS
       }
 
       const outcome = restartServiceSync({
+        warn: noWarn,
         serviceName: "luna-chat-server.service",
         dryRun: false,
         settleSecs: "0",
@@ -681,7 +702,7 @@ describe("session guard: the ws-count seam-boundary integer validation (FIX1) - 
       // queryActiveWsCount cannot stop a real caller-supplied stand-in from
       // returning something else at runtime, which is exactly the scenario
       // this cast simulates.
-      const badQuery = (() => value) as unknown as (port: number, incusContainer?: string) => number
+      const badQuery = (() => value) as unknown as (port: string, incusContainer?: string) => number
 
       const permitVerdict = restartSessionGuardSync({
         ...baseGuard("luna-chat-server.service", READINESS_PORT),

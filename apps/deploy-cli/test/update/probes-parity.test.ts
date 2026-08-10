@@ -72,7 +72,7 @@ afterAll(cleanupTempDirs)
 const UPDATE_SERVER = join(repoRoot, "scripts/luna-update-server")
 
 const SERVICE = "luna-chat-server.service"
-const PORT = 4753
+const PORT = "4753"
 const CURL_MAX_TIME = "5"
 
 const scratch = (): string => makeTempDir("deploy-cli-probes-parity-")

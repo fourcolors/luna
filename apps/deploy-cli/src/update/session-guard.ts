@@ -105,7 +105,14 @@ export interface SessionGuardOptions {
   /** Non-empty means the operator explicitly overrode the guard (--operator-override). */
   readonly operatorOverrideReason?: string
   readonly serviceName: string
-  readonly readinessPort: number
+  /**
+   * `READINESS_PORT` as the RAW STRING config.ts holds (config.ts:186/:358).
+   * The value is interpolated into the ss(8) filter `( sport = :<port> )` and
+   * nowhere else - no arithmetic - so parsing it to a number would only give an
+   * operator's `--readiness-port 04753` a chance to reach ss(8) as a different
+   * filter than the bash engine builds.
+   */
+  readonly readinessPort: string
   /**
    * Non-empty means the target is an incus container (mirrors the
    * `[incus_container]` argument to luna_active_ws_count, scripts/lib/
@@ -133,7 +140,7 @@ export interface SessionGuardOptions {
    * dependency injection rather than an env-var seam. Called with this
    * options object's own readinessPort/incusContainer.
    */
-  readonly queryActiveWsCount?: (port: number, incusContainer?: string) => number
+  readonly queryActiveWsCount?: (port: string, incusContainer?: string) => number
   /**
    * Injected systemd is-active reader for the "count unknown" fallback.
    * Defaults to queryUnitStateSync (bare-host systemctl). restartServiceSync
@@ -183,7 +190,7 @@ const countWsLines = (strippedOut: string): number => (strippedOut === "" ? 0 : 
  * test seam of its own (LUNA_TEST_WS_COUNT is bash's seam, not this port's)
  * - see this module's header.
  */
-export const queryActiveWsCountSync = (port: number, incusContainer?: string): number => {
+export const queryActiveWsCountSync = (port: string, incusContainer?: string): number => {
   if (incusContainer) {
     const innerScript = `command -v ss >/dev/null 2>&1 || exit 9; ss -tnH state established '( sport = :${port} )' 2>/dev/null`
     const r = spawnSync("incus", ["exec", incusContainer, "--", "sh", "-c", innerScript], { encoding: "utf8" })
