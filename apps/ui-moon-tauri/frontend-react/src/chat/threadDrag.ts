@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * threadDrag.ts - the thread row's click-vs-drag-out gesture (stack23 S17f).
  *
@@ -26,15 +25,21 @@
  * not covered by behavioural tests. S17's hands-on detach/redock exercise is
  * still owed, and it is the gate that matters for this file.
  *
- * WHY @ts-nocheck, and why that is the honest choice here. The body is
- * untyped JS that has never been typechecked - it lived inside chat.html's
- * inline script, which sits outside every tsc program - so this flag preserves
- * exactly the status quo rather than hiding a regression. Typing it means
- * EDITING it: roughly thirty `: any` annotations threaded through pointer
- * handlers and closure state, each one a chance to slip in the one file where
- * a slip cannot be caught by a test. The typing is owed as a follow-up AFTER
- * the hands-on gate confirms the move preserved feel, when edits here are
- * cheap to validate again. TODO(#493): drop @ts-nocheck and type this module.
+ * THE TYPES BELOW ARE THE ONLY THING THAT CHANGED (#493). The module carried
+ * `@ts-nocheck` until now for the reason above: typing it means editing it, in
+ * the one file where a slip cannot be caught by a test. So the structural
+ * proof was carried forward rather than abandoned - every edit in this pass is
+ * TYPE-LEVEL ONLY (annotations, interfaces, `as` casts), and that claim is
+ * mechanically checked, not asserted: tsc emits byte-identical JavaScript from
+ * the pre-typing file and this one under `--removeComments`. Nothing that
+ * survives to runtime moved. No guard was added or removed, no `?.` or `??`
+ * was introduced where the original had a plain access (that would change
+ * behaviour on null, not just describe it), no constant or operator changed.
+ *
+ * Where a precise type would have forced a runtime edit, the type is
+ * deliberately the weaker one. `MaybeClosest` exists so the original
+ * `e.target && e.target.closest && e.target.closest(...)` ladder could stay
+ * exactly as written instead of becoming an `instanceof Element` narrowing.
  *
  * `engine` is the live ThreadDrawerEngine, passed rather than bound because
  * the body both reads and WRITES engine state (`self._ghost`,
@@ -44,44 +49,212 @@
  */
 
 /* eslint-disable */
-export interface ThreadDragDeps {
-  readonly State: any
-  readonly DOM: any
-  readonly Logger: any
-  readonly moonDragDebugNote: (...a: any[]) => void
-  readonly LunaThreadDrag: any
+/** A thread row as the strip hands it over: only these three fields are read. */
+export interface ThreadDragRow {
+  readonly id: string
+  readonly title?: string | null
+  readonly lastMessagePreview?: string | null
 }
 
-export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDeps): void {
+/** Redock chrome published to State for the Rust side and the insert gap. */
+export interface RedockPreview {
+  threadId: string
+  title: string | null
+  preview: string | null
+  yRatio: number
+  over: boolean
+  insertIndex: number
+}
+
+/** Last insert the drag committed to, read by the redock adopt path. */
+export interface RedockInsert {
+  threadId: string
+  insertIndex: number
+  yRatio: number | null
+}
+
+/** Strip geometry handed to the native pullout so AppKit can redock. */
+export interface StripMetrics {
+  readonly stripWidth: number
+  readonly stripTopInset: number
+  readonly stripHeight: number
+}
+
+/** `chat.html`'s State object, narrowed to the keys this gesture touches. */
+export interface ThreadDragState {
+  /** `true` before the floater label resolves, the label once it does. */
+  floatedThreadIds: Record<string, string | true>
+  activeThreadId: string | null
+  winLabel: string | null
+  threadDragActive: boolean
+  redockPreview: RedockPreview | null
+  _lastRedockInsert: RedockInsert | null
+}
+
+/** domMap.ts, narrowed to the two ids this gesture touches. */
+export interface ThreadDragDom {
+  readonly threadDrawer: HTMLElement | null
+  readonly threadDrawerList: HTMLElement | null
+}
+
+/** vendor/thread-drag-session.js pointerMove verdicts. */
+export type ThreadDragAction =
+  | 'none'
+  | 'enter_attached'
+  | 'stay_attached'
+  | 'detach'
+  | 'stay_detached'
+  | 'reenter_attached'
+
+/** vendor/thread-drag-session.js pointerUp verdicts. */
+export type ThreadDragOutcome =
+  | 'click'
+  | 'reorder'
+  | 'cancel_spawn'
+  | 'keep_floater'
+  | 'redock'
+  | 'noop'
+
+export interface ThreadDragSample {
+  readonly clientX: number
+  readonly clientY: number
+  readonly stripRect: DOMRect | null
+  readonly rowCount: number
+}
+
+export interface ThreadDragMove {
+  readonly action: ThreadDragAction
+  readonly insertIndex: number
+  readonly inStrip: boolean
+}
+
+export interface ThreadDragUp {
+  readonly outcome: ThreadDragOutcome
+  readonly insertIndex: number
+  readonly inStrip: boolean
+  readonly detachedOnce: boolean
+}
+
+export interface ThreadDragSessionEvent {
+  readonly kind: string
+  readonly session: Record<string, unknown>
+  readonly extra: Record<string, unknown> | null
+}
+
+export interface ThreadDragSession {
+  pointerMove(p: ThreadDragSample): ThreadDragMove
+  pointerUp(p: ThreadDragSample): ThreadDragUp
+  cancel(): void
+}
+
+export interface LunaThreadDragApi {
+  createSession(opts: {
+    readonly threadId: string
+    readonly startClientX: number
+    readonly startClientY: number
+    readonly rowCount: number
+    readonly onEvent?: (ev: ThreadDragSessionEvent) => void
+  }): ThreadDragSession
+}
+
+/**
+ * The live ThreadDrawerEngine, narrowed to what the gesture calls. `_ghost`
+ * and `_renderPendingDuringDrag` are writable on purpose: the body owns them
+ * for the duration of the drag, which is why the engine is passed rather than
+ * bound.
+ */
+export interface ThreadDragEngine {
+  _ghost: HTMLElement | null
+  _renderPendingDuringDrag: boolean
+  _visibleThreads(): readonly ThreadDragRow[]
+  _makeGhost(t: ThreadDragRow): HTMLElement
+  _seedFloaterCache(threadId: string): void
+  _closeFloater(label: string): void
+  _placeInsertGap(preview: RedockPreview): void
+  _markRedockSource(threadId: string): void
+  applyRedockPreview(opts: { readonly active: boolean }): void
+  adoptAtIndex(threadId: string, insertIndex: number): void
+  adoptRedockedThread(threadId: string, insertIndex: number | null): void
+  measureStripMetrics(): StripMetrics
+  onRowClick(threadId: string): void
+  openInNewWindow(
+    threadId: string,
+    x?: number,
+    y?: number,
+    opts?: { readonly focus: boolean },
+  ): Promise<string | null>
+  render(): void
+}
+
+/**
+ * `Event.target` is typed as the bare `EventTarget`, which has no `closest`.
+ * Casting to this instead of narrowing with `instanceof Element` is what keeps
+ * the original truthiness ladder intact - `closest` genuinely can be absent
+ * (a text node, the document), and the ladder already handles that.
+ */
+type MaybeClosest = EventTarget & { closest(selectors: string): Element | null }
+
+declare global {
+  interface Window {
+    /** Published by vendor/thread-drag-session.js, loaded by chat.html. */
+    LunaThreadDrag?: LunaThreadDragApi
+    __TAURI__?: {
+      core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> }
+    }
+  }
+}
+
+export interface ThreadDragDeps {
+  readonly State: ThreadDragState
+  readonly DOM: ThreadDragDom
+  readonly Logger: { warn(...args: unknown[]): void }
+  readonly moonDragDebugNote: (kind: string, data?: Record<string, unknown> | null) => void
+  /**
+   * Destructured and never read - the body reaches for `window.LunaThreadDrag`
+   * directly, exactly like the vanilla original did. Typed `unknown` and left
+   * in place rather than deleted: removing it would change the emitted
+   * destructuring, which is the one thing this module may not do.
+   */
+  readonly LunaThreadDrag: unknown
+}
+
+export function wireThreadRow(
+  engine: ThreadDragEngine,
+  row: HTMLElement,
+  t: ThreadDragRow,
+  deps: ThreadDragDeps,
+): void {
   const { State, DOM, Logger, moonDragDebugNote, LunaThreadDrag } = deps
   const self = engine
   // Cursor sits this far inside the floater top-left (logical points, y down).
   // Must match begin_native_pullout_drag grab defaults so the window sticks.
   const GRAB_OFF_X = 36;
   const GRAB_OFF_Y = 18;
-  const originOffset = (sx, sy) => ({
+  const originOffset = (sx: number, sy: number) => ({
     x: Math.round(sx - GRAB_OFF_X),
     y: Math.round(sy - GRAB_OFF_Y),
   });
-  let session = null;
-  let pid = null;
+  let session: ThreadDragSession | null = null;
+  let pid: number | null = null;
   let raf = 0;
   let lastX = 0, lastY = 0, lastSX = 0, lastSY = 0;
-  let floatedLabel = null;
-  let spawnPromise = null;
+  let floatedLabel: string | null = null;
+  let spawnPromise: Promise<string | null> | null = null;
   let cancelled = false;
   let attachedVisual = false;
   let lastInsertAt = -1;
   /** Sticky insert: require two consecutive samples at a new index. */
   let stickyPendingAt = -1;
   let stickyPendingCount = 0;
-  let pendingPos = null;
+  /** Reset on pointerdown and never read - kept because deleting it would be
+   * a runtime edit, not a type one. */
+  let pendingPos: unknown = null;
   /** First detach spawn start time (for open budget). */
   let detachStartedAt = 0;
   /** Hard promote: only one open_widget; OS owns free motion after. */
   let nativePulloutArmed = false;
 
-  const markFloatedAway = (label) => {
+  const markFloatedAway = (label: string | true | null) => {
     if (!State.floatedThreadIds) State.floatedThreadIds = Object.create(null);
     State.floatedThreadIds[t.id] = label || true;
     try { row.classList.add('floated-away'); } catch (_) {}
@@ -123,7 +296,7 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
    * @param {number} sx
    * @param {number} sy
    */
-  const hardPromoteFloater = (sx, sy) => {
+  const hardPromoteFloater = (sx: number, sy: number) => {
     if (floatedLabel || spawnPromise || nativePulloutArmed) return spawnPromise;
     const { x, y } = originOffset(sx, sy);
     try { self._seedFloaterCache(t.id); } catch (_) { /* best-effort */ }
@@ -198,7 +371,7 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
     return spawnPromise;
   };
 
-  const showAttachedChrome = (insertAt) => {
+  const showAttachedChrome = (insertAt: number) => {
     attachedVisual = true;
     row.classList.add('dragging');
     // Ghost only while still attached (or waiting for promote). After
@@ -257,7 +430,7 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
     try { self.applyRedockPreview({ active: false }); } catch (_) {}
   };
 
-  const onMove = (e) => {
+  const onMove = (e: PointerEvent) => {
     if (!session) return;
     lastX = e.clientX; lastY = e.clientY;
     lastSX = e.screenX; lastSY = e.screenY;
@@ -306,7 +479,7 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
     }
   };
 
-  const blockSelect = (ev) => {
+  const blockSelect = (ev: Event) => {
     try { ev.preventDefault(); } catch (_) {}
     return false;
   };
@@ -336,7 +509,7 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
     }
   };
 
-  const onUp = (e) => {
+  const onUp = (e: PointerEvent) => {
     if (!session) { teardown(); return; }
     const result = session.pointerUp({
       clientX: e.clientX,
@@ -442,7 +615,7 @@ export function wireThreadRow(engine: any, row: any, t: any, deps: ThreadDragDep
 
   row.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    if (e.target && e.target.closest && e.target.closest('.thread-row-pop')) return;
+    if (e.target && (e.target as MaybeClosest).closest && (e.target as MaybeClosest).closest('.thread-row-pop')) return;
     if (!(window.LunaThreadDrag && typeof window.LunaThreadDrag.createSession === 'function')) {
       Logger.warn('[ThreadDrawer] LunaThreadDrag missing; drag disabled');
       return;
