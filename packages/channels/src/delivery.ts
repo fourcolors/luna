@@ -41,7 +41,7 @@
  * This module does NOT create threads or modify ChatService - it is a
  * PURE DOWNSTREAM CONSUMER of chat.subscribe(), exactly as ui-ws is.
  */
-import { Effect, Fiber, Ref, Schedule, Scope, Stream } from "effect"
+import { Effect, Fiber, Ref, Scope, Stream } from "effect"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelAdapter, DeliveryTarget } from "./types.js"
 
@@ -591,8 +591,3 @@ export const subscribeAndDeliver = (
 
 export const streamEditThrottleMs = STREAM_EDIT_THROTTLE_MS
 
-/** A Schedule that retries delivery with exponential backoff capped at 30s. */
-export const deliveryRetrySchedule = Schedule.exponential("500 millis").pipe(
-  Schedule.union(Schedule.spaced("30 seconds")),
-  Schedule.upTo("5 minutes"),
-)

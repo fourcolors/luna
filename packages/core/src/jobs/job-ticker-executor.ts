@@ -20,7 +20,6 @@ import {
 } from "../doctor/doctor-enqueue.js"
 import type {
   JobRun,
-  JobRunTerminalStatus,
   JobsStoreApi,
   PersistedJob,
 } from "./jobs-store-types.js"
@@ -109,10 +108,6 @@ export const defaultRetryBackoffMs = (attempt: number): number => {
  */
 const MIN_RESOLVED_TIMEOUT_MS = 1_000
 
-const terminalStatusFrom = (
-  result: { _tag: "Right"; right: unknown } | { _tag: "Left"; left: unknown },
-): JobRunTerminalStatus =>
-  result._tag === "Right" ? "success" : "failed"
 
 /** Config + collaborators `makeExecutor` closes over. */
 export interface ExecutorDeps {

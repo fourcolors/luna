@@ -51,8 +51,6 @@ const CAPTURED_NOTIFY_ENV: SdNotifyEnv = {
 delete process.env["NOTIFY_SOCKET"]
 delete process.env["WATCHDOG_USEC"]
 
-/** The runtime notify env (captured pre-scrub). Tests pass their own env. */
-export const capturedNotifyEnv = (): SdNotifyEnv => CAPTURED_NOTIFY_ENV
 
 export type NotifySender = (state: string) => boolean
 

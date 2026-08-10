@@ -43,4 +43,3 @@ export interface AcceptForkResult {
 export const FORK_CHILD_TAG = "forked-from-parent"
 
 /** Tag applied briefly / for filtering; parent thread id stored as parentId. */
-export const FORK_ORIGIN_TAG_PREFIX = "fork-origin:"
