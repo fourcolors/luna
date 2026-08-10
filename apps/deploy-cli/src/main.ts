@@ -16,7 +16,7 @@
  */
 import { defineCommand, renderUsage, runMain } from "citty"
 import { EXIT_CODES } from "./exit-codes.js"
-import { UPDATE_USAGE, updateCommand } from "./update-command.js"
+import { UPDATE_USAGE, updateArgvWantsHelp, updateCommand } from "./update-command.js"
 import { VERSION } from "./version.js"
 
 /** One stub per bash entrypoint this binary will eventually fold in (S22/S24). */
@@ -77,7 +77,14 @@ if (!hasSubcommand && (rawArgs.includes("--help") || rawArgs.includes("-h"))) {
 // test, and handling it inside the command's own `run` is too late if citty
 // intercepts first. The text is scripts/luna-update-server's usage, whose
 // `Exit codes:` block operators read literally during an incident.
-if (rawArgs[firstTokenIndex] === "update" && (rawArgs.includes("--help") || rawArgs.includes("-h"))) {
+//
+// POSITIONAL, NOT A MEMBERSHIP TEST. This used to ask whether `-h` appeared
+// ANYWHERE after the token, which made `update --ref -h` print usage and exit
+// 0 where the bash engine's own `case` loop assigns `-h` as the ref value and
+// refuses it. `updateArgvWantsHelp` walks the argv the way that loop does; the
+// slice below is `forwardedFlags`' shape (delegate.ts:207-215), computed from
+// the SAME first-non-flag-token scan for the reason stated just above.
+if (rawArgs[firstTokenIndex] === "update" && updateArgvWantsHelp(rawArgs.slice(firstTokenIndex + 1))) {
   process.stdout.write(UPDATE_USAGE)
   process.exit(0)
 }

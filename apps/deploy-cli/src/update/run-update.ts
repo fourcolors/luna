@@ -260,7 +260,15 @@ export const runUpdate = (rawArgv: ReadonlyArray<string>, seams: RealSeams): num
   }
   if (parsed.kind === "missing-value" || parsed.kind === "error") {
     writeStderrLine(parsed.kind === "error" ? lunaDieLine(parsed.message) : parsed.message)
-    return parsed.exitCode
+    // THROUGH `exitCodeFor`, NOT `parsed.exitCode`. terminals.ts declares a
+    // `config-refused` arm for exactly this refusal (terminals.ts:70-74) and
+    // maps it to 1 in the same table that maps the other twelve; returning
+    // config.ts's own number instead left that arm constructed nowhere, so
+    // the one test that asserts the whole exit-code contract at once could
+    // not see this path and the arm read as dead code. `ParseOutcome` types
+    // `exitCode` as the literal 1 for both variants, so this is the same
+    // number by a route that keeps the contract in one table.
+    return exitCodeFor({ kind: "config-refused" })
   }
   const config = parsed.config
 

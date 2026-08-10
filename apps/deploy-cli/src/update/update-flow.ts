@@ -268,8 +268,11 @@ export const runUpdateFlowSync = (deps: UpdateFlowDeps): Terminal => {
   }
 
   // `NEW_HEAD=""` (:1915). Null rather than "" because the only consumer is
-  // `fail_forward`'s `${NEW_HEAD:-$REF}` (:1863), which rollback.ts spells
-  // `newHead ?? ref` - and "" would silently be a HEAD of nothing.
+  // `fail_forward`'s `${NEW_HEAD:-$REF}` (:1863), and null says "never read"
+  // at the type level. The two are NOT distinguished at the use site: bash's
+  // `:-` substitutes for unset OR empty, so rollback.ts's `headOrRef` maps
+  // both to `$REF` - `""` is a HEAD of nothing, which is exactly what `:-`
+  // exists to keep out of an operator line.
   let newHead: string | null = null
   // `FORWARD_RESTART_RAN` (:2063, :1938): whether service was already
   // interrupted, which is the single thing that decides whether a later

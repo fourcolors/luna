@@ -389,7 +389,12 @@ export interface ApplyInplaceOptions {
   /**
    * `write_transaction "checkout" || return 1` (:1195-1196). Returns false on a failed journal write, which fails the whole apply.
    * WHERE THE FALSE COMES FROM, which is concern 17: `journal.ts:96-106`'s writeTransactionSync returns void and THROWS on a failed atomic write, so `wiring.ts` builds this seam as a try/catch that returns true on a normal return and false on any throw.
-   * That is the whole derivation; nothing else in the tree may catch that throw, because every other journal write in this flow is one bash performs unguarded.
+   * That is the whole derivation.
+   * CORRECTED IN PHASE 2 (this sentence previously read "nothing else in the tree may catch that throw, because every other journal write in this flow is one bash performs unguarded", which is FALSE and produced a real defect).
+   * bash guards three of them: `write_transaction "rolling-back" || true` (:1816), `write_transaction "rollback-failed" || true` (:1856) and `write_transaction "forward-failed" || true` (:1865), plus the releases-layout trio at :1749, :1756 and :1789 that this binary delegates.
+   * Only :2002, :2043, :2045 and :2071 are bare, and only :1165/:1196 are `|| return 1`.
+   * So `wiring.ts` binds `rollback.ts`'s one-parameter `writeTransaction` seam - the seam ALL THREE guarded writes reach - inside a try/catch that swallows and prints nothing, exactly as `|| true` does; leaving it bare loses exit 2 on the CRITICAL path, which is the whole exit-code contract, on a full or read-only state dir.
+   * The two-parameter `writeTransaction` seam, which carries the four bare writes, still lets the throw escape: under `set -euo pipefail` an unguarded failure aborts the bash run.
    */
   readonly onCheckout: () => boolean
   /** `[[ -d <path> ]]` on the HOST, used only on the bare-host arm of step 5. */
@@ -734,7 +739,8 @@ Order, and every step of it is asserted by `exit-code-matrix.test.ts`:
 3. Wrap `bashLib.validateProfile` (which returns a `ValidateProfileResult`) into `config.ts`'s bare `(profile) => boolean` seam, forwarding the result's stderr bytes verbatim first.
    Provide `hasLaunchctl` as `seams.io.commandExists("launchctl")`, the PATH walk, never a `command -v` spawn.
 4. `parseUpdateConfig(flagArgv, seams.env, configSeams)`.
-   On `kind: "help"` print the usage text and return 0; on `kind: "missing-value"` or `kind: "error"` write the line the outcome carries and return its exit code.
+   On `kind: "help"` print the usage text and return 0; on `kind: "missing-value"` or `kind: "error"` write the line the outcome carries and return `exitCodeFor({ kind: "config-refused" })`.
+   CORRECTED IN PHASE 2: returning `parsed.exitCode` directly is the same number (`ParseOutcome` types it as the literal 1 for both variants) but leaves `terminals.ts`'s `config-refused` arm constructed nowhere, so the one table that holds the whole exit-code contract has an arm no run can reach and no test can observe.
    The help branch is UNREACHABLE in production because `main.ts`'s raw-argv preamble handles `update --help` before citty ever dispatches (concern 21); it is retained as a defensive return rather than deleted, and a comment says so.
 5. `delegationFor(config)`.
    Non-null means `delegateToBashSync({ flag: asDelegationFlag(d.flag), rawArgs: rawArgv, env: seams.env, writeStderr: lineWriter, runEngine: seams.io.runEngine, isExecutableFile: seams.io.isExecutable })` and return its exit code VERBATIM.
@@ -795,6 +801,9 @@ It also exports `realSeams()`, defined in full under INJECTED VERSUS REAL.
 `update --help` is NOT handled here, which is concern 27.
 `main.ts:58-67`'s raw-argv preamble runs BEFORE `runMain`, and putting the handling inside the command's `run` is too late if citty intercepts first; citty's own per-subcommand help goes silent under `NODE_ENV=test`, which is exactly the exit-0-no-output shape guardian's publish postcondition exists to catch.
 So the preamble gains one branch, and a comment records that its first-non-flag-token scan is the same computation `forwardedFlags` does (`delegate.ts:208`) and that the two must not drift.
+THAT BRANCH IS POSITIONAL, which is a phase-2 correction: it asks `updateArgvWantsHelp(rawArgs.slice(firstTokenIndex + 1))`, a walk exported from `config.ts` beside the parse loop it mirrors, NOT `rawArgs.includes("-h")`.
+A membership test answers "help" for `update --ref -h`, where bash's `case` loop assigns `-h` as the ref value (`:219`) and never reaches the usage arm, and for `update --bogus -h`, where bash dies at `--bogus` with exit 1.
+The walk consumes a value after each of the 18 value-taking flags, stops at anything outside the 23-flag vocabulary, and treats a missing or empty value as the refusal `${2:?...}` makes it; `assembly-fidelity.test.ts` asserts it agrees with `parseUpdateConfig` on every argv and derives value-taking-ness from that parser, so a 24th flag cannot drift out of the preamble.
 
 ## Edits to existing files
 
@@ -826,7 +835,11 @@ So `RestartServiceOptions` gains two seams, and `restart.ts` prints all eleven l
 The emission points, in `restartServiceSync`'s own order:
 
 1. After `restartSessionGuardSync` returns and BEFORE the `permitted` branch: `const l = guardVerdictLine(verdict, opts.guard.readinessPort); if (l !== null) opts.warn(l)`.
-2. Immediately after `settleAfterStopSync` returns, branching on its `SettleOutcome` kind, which `restart.ts:98-106` already produces and which nothing consumed before: `skipped-invalid` emits the `:1276` warn, `settled` emits the `:1279` info, `settled-sleep-failed` emits the `:1279` info AND then the `:1283` warn, and `skipped-dry-run` and `skipped-zero` emit nothing.
+2. Around `settleAfterStopSync`, and CORRECTED IN PHASE 2 as to where within that window each of the three lands.
+   The `:1279` settling info goes out through an optional `onSettling` callback on `SettleAfterStopOptions`, fired after the format check and BEFORE the sleep starts, because that is where bash prints it (`:1279`, then the sleep at `:1282`).
+   Revision 3 specified mapping all three from the returned `SettleOutcome`, which cannot be observed until the sleep is over, so the line announcing a six-second pause arrived six seconds after the pause began: invisible to a byte diff, visible to an operator tailing a live deploy and to anyone reading the tail of a run killed DURING the settle, where bash's last line is the settling line and the outcome-mapped port's is the stop.
+   The other two still branch on the outcome, which is when bash learns them too: `skipped-invalid` emits the `:1276` warn, `settled-sleep-failed` emits the `:1283` warn (its `:1279` line having already gone out through `onSettling`), and `settled`, `skipped-dry-run` and `skipped-zero` emit nothing further.
+   `restartServiceSync` always supplies `onSettling`, so the compile-time guarantee that a real wiring cannot forget the line is unchanged, and `settleAfterStopSync` stays callable without a writer.
    Note the ordering inside `settled-sleep-failed`: bash prints the settling line at `:1279` BEFORE attempting the sleep at `:1282`, so a failed sleep produces two lines, not one.
 3. Inside the start retry block, between `runStep(["is-failed", ...])` returning 0 and `runStep(["reset-failed", ...])`: the `:1375` start-limit warn.
    This is the exact position `sup_start` prints it, and it removes the need for the `startLimitLatched` outcome field to carry a printing obligation.
@@ -1003,6 +1016,9 @@ Then `writeTransaction("prepared", ...)`, which is the FIRST journal write (`:20
 `trackApply` true is passed ONLY here.
 On failure, call `failForward({ reason: "apply to " + ref + " errored", ref, prev, newHead: null, forwardRestartRan })` (`:2031`).
 `newHead` is `null` here, and `failForwardSync` resolves `${NEW_HEAD:-$REF}` to `ref` (`rollback.ts:209`), matching bash's `NEW_HEAD=""` initialisation at `:1915`.
+CORRECTED IN PHASE 2: that resolution is `headOrRef`, which maps BOTH `null` and the EMPTY STRING to `ref`, and not `newHead ?? ref`.
+Bash's `:-` substitutes for an unset variable or an empty one, and an empty `NEW_HEAD` is reachable at `:2040` in the same narrow "git exits 0 and prints nothing" window KNOWN DIVERGENCES carves out for `:1964` and `:1992`.
+With `??` the two engines print `HEAD=<ref>` and `HEAD=` for the same run, on the one path whose job is telling a human what the host is running.
 The releases-layout PRE-flip carve-outs at `:2022-2030` are out of scope and must not be ported; on the inplace layout an apply failure ALWAYS routes to `fail_forward`.
 
 **Post-apply (:2034-2045).**

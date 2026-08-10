@@ -205,13 +205,38 @@ export function doRollbackSync(options: RollbackOptions): RollbackOutcome {
 export interface FailForwardOptions extends RollbackOptions {
   /** `--no-rollback`: die at the new ref instead of rolling back. */
   readonly rollbackEnabled: boolean
-  /** `${NEW_HEAD:-$REF}` - the head actually checked out, when known. */
+  /**
+   * `${NEW_HEAD:-$REF}` - the head actually checked out, when known.
+   *
+   * Null is "not read yet" (`NEW_HEAD=""` at :1915, before the checkout).
+   * EMPTY STRING IS ALSO "not known", and that is bash's rule rather than a
+   * convenience: `:-` substitutes for an unset variable OR an empty one, so
+   * an empty NEW_HEAD makes bash print `HEAD=$REF`. See `headOrRef` below.
+   */
   readonly newHead: string | null
 }
 
 export type FailForwardOutcome =
   | { readonly kind: "died"; readonly exitCode: 1; readonly message: string }
   | { readonly kind: "rolled-back"; readonly outcome: RollbackOutcome }
+
+/**
+ * `${NEW_HEAD:-$REF}`, both occurrences (scripts/luna-update-server:1863 and
+ * :1866).
+ *
+ * BASH `:-` FIRES ON UNSET *OR* EMPTY, and the difference is reachable here.
+ * `NEW_HEAD="$(git_target_capture rev-parse HEAD)"` (:2040) is empty whenever
+ * git exits 0 and prints nothing - the same narrow window this spec's KNOWN
+ * DIVERGENCES already carves out for :1964 and :1992 - and `newHead` carries
+ * that empty string through update-flow.ts:377 unchanged. Spelling this
+ * `newHead ?? ref` substitutes only for null, so bash would print
+ * `HEAD=<the ref>` where the port printed `HEAD=` and, on the `--no-rollback`
+ * arm, `server left at <the ref>` where the port said `server left at `. Two
+ * operator lines that name no commit at all during a failed deploy, on the
+ * one path whose whole job is telling a human what the host is running.
+ */
+export const headOrRef = (newHead: string | null, ref: string): string =>
+  newHead === null || newHead === "" ? ref : newHead
 
 /**
  * `fail_forward` (scripts/luna-update-server:1861-1870).
@@ -222,7 +247,7 @@ export type FailForwardOutcome =
  * unhealthy build is still recorded as mid-transaction.
  */
 export function failForwardSync(reason: string, options: FailForwardOptions): FailForwardOutcome {
-  const head = options.newHead ?? options.ref
+  const head = headOrRef(options.newHead, options.ref)
   options.warn(`update to ${options.ref} failed: ${reason} (HEAD=${head})`)
 
   if (!options.rollbackEnabled) {

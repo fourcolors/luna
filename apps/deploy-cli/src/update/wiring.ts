@@ -658,8 +658,38 @@ export const buildFlowDeps = (args: BuildFlowDepsArgs): UpdateFlowDeps => {
     // rollback.ts types the phase as a bare string; the journal's own union is
     // narrower, and every value rollback.ts passes ("rolling-back",
     // "rollback-failed") is a member of it.
+    //
+    // THE SWALLOW IS BASH'S `|| true`, NOT A SHORTCUT. All three journal
+    // writes reachable through this seam are guarded in bash:
+    // `write_transaction "rolling-back" || true` (:1816),
+    // `write_transaction "rollback-failed" || true` (:1856) and
+    // `write_transaction "forward-failed" || true` (:1865). journal.ts's
+    // writer returns void and THROWS on a failed atomic write, so binding it
+    // bare here makes a full or read-only state dir escape out of
+    // runUpdateFlowSync, past run-update.ts's finally, and die with a stack
+    // trace and exit 1 - on the exact path where bash prints
+    // `ROLLED BACK to` / the CRITICAL line and exits 1 or 2. Losing the 2
+    // there is losing the whole exit-code contract at the worst possible
+    // moment: `packages/server-registry/src/driver/luna-chat-server.ts:164`
+    // and scripts/luna-autodeploy's rc `case` read that code to decide
+    // whether a human is paged for a server that may be DOWN.
+    //
+    // THE GUARD IS PER-SITE AND THIS SEAM REACHES ONLY GUARDED SITES.
+    // `write_transaction "checkout"` is `|| return 1` (:1165, :1196) and is
+    // wired separately as `onCheckout` above, which is why that one turns a
+    // throw into a FAILED apply rather than swallowing it. The four writes
+    // bash performs UNGUARDED - "prepared" (:2002), "applied" (:2043),
+    // "restarting" (:2045) and "verifying" (:2071) - go through the
+    // two-parameter `writeTransaction` seam above, which deliberately does
+    // NOT catch: under `set -euo pipefail` an unguarded failure aborts the
+    // bash run, so a throw is the faithful port there.
     writeTransaction: (phase) => {
-      writeTransactionPhaseOnly(phase as TxPhase)
+      try {
+        writeTransactionPhaseOnly(phase as TxPhase)
+      } catch {
+        // `|| true`: bash prints nothing and carries on, so neither does this.
+        // Anything written here would be a stdout/stderr byte GATE 1 diffs.
+      }
     },
     clearTransaction,
     warn,

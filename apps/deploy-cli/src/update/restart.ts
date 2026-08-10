@@ -123,6 +123,27 @@ export interface SettleAfterStopOptions {
   readonly settleSecs: string
   /** Defaults to spawning the real `sleep` binary - mirrors bash's `sleep "$RESTART_SETTLE_SECS"` byte-for-byte. Tests inject a fast stand-in so the settle knob is provably wired without paying real wall-clock time. */
   readonly sleepSync?: (seconds: string) => { readonly ok: boolean }
+  /**
+   * The `:1279` settling line, emitted at bash's own position: AFTER the
+   * format check (:1275-1278) and BEFORE the sleep starts (:1282).
+   *
+   * WHY IT IS A CALLBACK AND NOT A `SettleOutcome` ARM. The outcome does not
+   * exist until the sleep is over, so mapping the line from it - which is what
+   * this port did first - announces a six-second pause six seconds after it
+   * began. That is invisible to a byte diff (nothing else writes inside the
+   * window on either engine) and very visible to the two audiences this line
+   * has: an operator tailing a live deploy, who reads it as the explanation
+   * for a stalled terminal, and anyone reading the tail of a run that was
+   * killed DURING the settle, where bash's last line is the settling line and
+   * the outcome-mapped port's last line is the stop. This engine's whole
+   * subject is interrupted deploys, so the last line before an interrupt is
+   * not a cosmetic detail.
+   *
+   * OPTIONAL because this function stays callable without a writer (see its
+   * own doc); restartServiceSync always supplies it, so the compile-time
+   * guarantee that a real wiring cannot forget the line is unchanged.
+   */
+  readonly onSettling?: (settleSecs: string) => void
 }
 
 export type SettleOutcome =
@@ -141,13 +162,17 @@ const defaultSleepSync = (seconds: string): { readonly ok: boolean } => {
  * Behavioral port of settle_after_stop (scripts/luna-update-server:
  * 1256-1286): same branch structure and the verbatim regex/timing.
  *
- * IT STILL DOES NOT PRINT, and that is not a contradiction of this module's
- * header. The three settle lines ARE emitted, but by restartServiceSync from
- * the SettleOutcome this function returns, which is byte-identically the same
- * position in the output because restart_service is settle_after_stop's only
- * caller in bash (:1528). Keeping the decision pure and the printing in one
- * place means this function stays callable from a test that wants the branch
- * without a writer, and there is exactly one emitter to read.
+ * IT DOES NOT CHOOSE ANY PAYLOAD, and that is not a contradiction of this
+ * module's header. Two of the three settle lines are emitted by
+ * restartServiceSync from the SettleOutcome this function returns, which is
+ * byte-identically the same position in the output because restart_service is
+ * settle_after_stop's only caller in bash (:1528). The third, the `:1279`
+ * settling line, is signalled through the optional `onSettling` callback
+ * INSIDE the window, because bash prints it before it sleeps (:1279 then
+ * :1282) and an outcome cannot be observed until the sleep is over - see
+ * `onSettling`'s own doc for why that difference is worth a seam. The
+ * callback carries the raw seconds and nothing else: the payload is still
+ * built in one place, by the caller, from flow-lines.ts.
  *
  * ALWAYS returns a result, never throws: it sits unguarded between
  * restart_service's two `|| return 1` lines in bash, so a stray failure here
@@ -159,6 +184,9 @@ export const settleAfterStopSync = (opts: SettleAfterStopOptions): SettleOutcome
   if (opts.settleSecs === "0") return { kind: "skipped-zero" }
   if (!SETTLE_SECS_FORMAT.test(opts.settleSecs)) return { kind: "skipped-invalid", settleSecs: opts.settleSecs }
   const sleep = opts.sleepSync ?? defaultSleepSync
+  // :1279, BEFORE :1282's sleep. The order is bash's and it is the reason this
+  // is a callback at all - see onSettling's doc.
+  opts.onSettling?.(opts.settleSecs)
   const result = sleep(opts.settleSecs)
   if (!result.ok) return { kind: "settled-sleep-failed", settleSecs: opts.settleSecs }
   return { kind: "settled", settleSecs: opts.settleSecs }
@@ -298,28 +326,29 @@ export const restartServiceSync = (opts: RestartServiceOptions): RestartOutcome 
   if (runStep(["daemon-reload"]) !== 0) return { code: 1, step: "reload" }
   if (runStep(["stop", opts.serviceName]) !== 0) return { code: 1, step: "stop" }
 
+  // Emission point 2 (this module's header): settle_after_stop's own three
+  // lines, all between sup_stop and sup_start, at bash's positions WITHIN that
+  // window rather than merely inside it. The `:1279` info goes out through
+  // `onSettling` from inside the settle, before the sleep starts; the other
+  // two are mapped from the outcome below, which is when bash learns them
+  // too. `settled-sleep-failed` is TWO lines in bash and not one, in this
+  // order: :1279 prints before the sleep is attempted at :1282, and :1283 only
+  // after it fails. `skipped-dry-run` (:1267) and `skipped-zero` (:1268)
+  // return before bash reaches any line at all.
   const settle = settleAfterStopSync({
     dryRun: opts.dryRun,
     settleSecs: opts.settleSecs ?? String(RESTART_SETTLE_SECS_DEFAULT),
+    onSettling: (settleSecs) => opts.info(settlingLine(settleSecs)),
     ...(opts.sleepSync ? { sleepSync: opts.sleepSync } : {}),
   })
-  // Emission point 2 (this module's header): settle_after_stop's own three
-  // lines, mapped from the outcome it just returned, still between sup_stop
-  // and sup_start. `settled-sleep-failed` is TWO lines in bash and not one:
-  // :1279 prints BEFORE the sleep is attempted at :1282, and :1283 only after
-  // it fails. `skipped-dry-run` (:1267) and `skipped-zero` (:1268) return
-  // before bash reaches any warn at all.
   switch (settle.kind) {
     case "skipped-invalid":
       opts.warn(settleInvalidLine(settle.settleSecs))
       break
-    case "settled":
-      opts.info(settlingLine(settle.settleSecs))
-      break
     case "settled-sleep-failed":
-      opts.info(settlingLine(settle.settleSecs))
       opts.warn(settleSleepFailedLine(settle.settleSecs))
       break
+    case "settled":
     case "skipped-dry-run":
     case "skipped-zero":
       break

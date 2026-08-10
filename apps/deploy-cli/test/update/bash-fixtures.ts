@@ -194,13 +194,58 @@ export interface RunResult {
   readonly stderr: string
 }
 
+/**
+ * THE SPAWN ERROR MUST NEVER BE SWALLOWED, and this helper exists because it
+ * was, at all three drive sites, for the entire life of the harness.
+ *
+ * `spawnSync` reports a failure to START the process (EAGAIN under fork
+ * pressure, ENOENT, ENOEXEC, a maxBuffer overflow) in `r.error`, leaving
+ * `status` null and `stdout` empty. Every drive discarded that field, so such
+ * a failure arrived at the comparison as a run that produced no output and no
+ * exit code, and the parity diff then reported an arbitrary artifact
+ * divergence with no cause attached.
+ *
+ * That is not hypothetical: an intermittent GATE 1 failure was investigated
+ * twice, and both investigations dead-ended on exactly this - "cause not
+ * identified, no assertion text captured". Whatever the next occurrence turns
+ * out to be, it will now say so.
+ *
+ * IT THROWS RATHER THAN ANNOTATING, deliberately. The obvious alternative is
+ * to append a note to stderr, but GATE 1 compares stderr BYTE-EXACTLY between
+ * the two drives, so annotating would corrupt the very artifact the harness
+ * exists to compare, and would turn a harness fault into a fake parity
+ * failure. A process that never started has no behaviour to compare, so the
+ * only honest outcome is a loud harness error naming the drive and the cause.
+ */
+const okOrThrow = (
+  r: { error?: Error; status: number | null; signal: NodeJS.Signals | null; stdout?: string; stderr?: string },
+  drive: string,
+  cmd: string,
+): RunResult => {
+  if (r.error !== undefined) {
+    throw new Error(
+      `[harness] ${drive} FAILED TO SPAWN ${cmd}: ${r.error.message}\n` +
+        `This is a harness fault, not a parity failure: the process never ran, so there is nothing to compare. ` +
+        `Common causes are fork exhaustion under parallel load (EAGAIN), a missing interpreter (ENOENT), or a maxBuffer overflow.`,
+    )
+  }
+  return { status: r.status, signal: r.signal, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }
+}
+
 export const runUpdate = (args: ReadonlyArray<string>, env: Record<string, string | undefined>): RunResult => {
-  const r = spawnSync("bash", [join(repoRoot, "scripts/luna-update-server"), ...args], {
+  // resolveHostTool, NOT a bare "bash". A bare interpreter name resolves from
+  // whatever PATH the caller happens to have, while runBashDrive (the other
+  // oracle runner) resolves explicitly - so the two could run DIFFERENT bash
+  // binaries and their byte diff would then compare two things that can differ
+  // for reasons unrelated to the port. An audit raised exactly this, the fix
+  // landed on the newer drive, and this legacy runner kept its bare call.
+  const bash = resolveHostTool("bash")
+  const r = spawnSync(bash, [join(repoRoot, "scripts/luna-update-server"), ...args], {
     cwd: repoRoot,
     env: { ...process.env, LUNA_RESTART_SETTLE_SECS: "0", LUNA_TEST_WS_COUNT: "0", ...env },
     encoding: "utf8",
   })
-  return { status: r.status, signal: r.signal, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }
+  return okOrThrow(r, "legacy runUpdate (bash oracle)", bash)
 }
 
 // --- replacement stubs, layered into makeStubBin's bin dir -------------------
@@ -1140,12 +1185,13 @@ export const runBashDrive = (
   fixture: Fixture,
   opts: { readonly settleSecs?: string | undefined } = {},
 ): RunResult => {
-  const r = spawnSync(resolveHostTool("bash"), [join(repoRoot, "scripts/luna-update-server"), ...fixture.args], {
+  const bash = resolveHostTool("bash")
+  const r = spawnSync(bash, [join(repoRoot, "scripts/luna-update-server"), ...fixture.args], {
     cwd: repoRoot,
     env: driveEnv(fixture, opts),
     encoding: "utf8",
   })
-  return { status: r.status, signal: r.signal, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }
+  return okOrThrow(r, "Drive A (bash oracle)", bash)
 }
 
 /**
@@ -1177,7 +1223,7 @@ export const runBinaryUpdate = (
     env: driveEnv(fixture, opts),
     encoding: "utf8",
   })
-  return { status: r.status, signal: r.signal, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }
+  return okOrThrow(r, opts.exe === undefined ? "Drive B (binary, interpreted)" : "Drive B (COMPILED binary)", argv.cmd)
 }
 
 // --- the artifacts ------------------------------------------------------------
@@ -1280,7 +1326,16 @@ const listTree = (root: string): ReadonlyArray<string> => {
  */
 export const captureArtifacts = (fixture: Fixture, result: RunResult): Artifacts => {
   const gitBin = resolveHostTool("git")
-  const head = spawnSync(gitBin, ["-C", fixture.work, "rev-parse", "HEAD"], { encoding: "utf8" })
+  // Through okOrThrow for the same reason the drives are: a failed spawn here
+  // yields an empty HEAD, which reads downstream as a legitimately different
+  // checkout and produces a parity failure blaming the port for a fork that
+  // never happened. This capture runs once per drive per scenario, so under
+  // the same fork pressure that can break a drive it can break here too.
+  const head = okOrThrow(
+    spawnSync(gitBin, ["-C", fixture.work, "rev-parse", "HEAD"], { encoding: "utf8" }),
+    "captureArtifacts HEAD read",
+    gitBin,
+  )
   return {
     exitCode: result.status,
     stdout: result.stdout,
@@ -1513,11 +1568,14 @@ const takeBlock = (entries: ReadonlyArray<Entry>, start: number): { readonly end
  * relitigate it: normalisation collapses a dimension whose behaviour is
  * asserted somewhere else, whereas masking hides a difference that nothing
  * else checks. The retry behaviour is asserted in three places, none of which
- * relies on the byte diff - readiness-retry.test.ts's per-drive
- * `readyAfterCalls: 3` run, the exhaustion scenario's own per-drive
- * pre-collapse "at least two blocks" assertion, and readiness.ts's PR1 unit
- * suite against an injected clock. IF ANY OF THOSE THREE IS DELETED, THIS RULE
- * BECOMES MASKING AND MUST BE DELETED WITH IT.
+ * relies on the collapse - gate1-parity.test.ts's retry-to-SUCCESS row, which
+ * drives `readyAfterCalls: 3` and asserts exactly three `/healthz` entries in
+ * EACH drive's own curl.log under a STRICT diff (that row needs no
+ * normalisation, because the fixture's curl counts its own invocations rather
+ * than a clock); the exhaustion scenario's own per-drive pre-collapse "at least
+ * two blocks" assertion; and readiness.ts's PR1 unit suite against an injected
+ * clock. IF ANY OF THOSE THREE IS DELETED, THIS RULE BECOMES MASKING AND MUST
+ * BE DELETED WITH IT.
  */
 export const normalisePollBlocks = (log: string): string => {
   if (log === "") return log

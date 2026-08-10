@@ -39,6 +39,7 @@ import { accessSync, constants as fsConstants, statSync } from "node:fs"
 import { delimiter as pathDelimiter, sep as pathSeparator } from "node:path"
 import { defineCommand } from "citty"
 import { makeSpawnBashRunner } from "./update/bash-lib.js"
+import { updateArgvWantsHelp } from "./update/config.js"
 import { ENGINE_STDIO, type EngineRunResult } from "./update/delegate.js"
 import { processAliveSync, processFingerprintSync } from "./update/lock.js"
 import { makeMonotonicSeconds, sleepSecondsSync } from "./update/probes.js"
@@ -197,4 +198,11 @@ export const updateCommand = defineCommand({
   },
 })
 
-export { UPDATE_USAGE }
+/**
+ * Re-exported for main.ts's pre-`runMain` preamble, which decides whether an
+ * argv is a request for `update`'s usage text. main.ts imports only from THIS
+ * module, never from anything under ./update/ (see this file's header), and
+ * the decision itself has to live beside the parse loop it mirrors, which is
+ * config.ts's - so it travels the same route UPDATE_USAGE already does.
+ */
+export { UPDATE_USAGE, updateArgvWantsHelp }

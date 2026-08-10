@@ -212,21 +212,23 @@ describe("the settle triple, at the function level", () => {
     // bash calls settle_after_stop at :1528, between sup_stop and sup_start,
     // and the line lands in that window on both engines.
     //
-    // ONE DIVERGENCE INSIDE THAT WINDOW, RECORDED RATHER THAN HIDDEN. Bash
-    // prints :1279 BEFORE it sleeps (:1282); the port prints it after, because
-    // the spec's emission design maps the SettleOutcome that settleAfterStopSync
-    // returns, and that outcome does not exist until the sleep is over. Nothing
-    // else writes in between on either engine, so stdout, stderr and every GATE
-    // 1 artifact are byte-identical; what differs is only WHEN an operator
-    // watching a live 6-second deploy sees the explanation for the pause -
-    // bash explains it up front, the port explains it on the way out. Asserted
-    // here in its true order so the difference is visible in the suite instead
-    // of being discovered on a host.
+    // AND ITS POSITION *WITHIN* THAT WINDOW, which is the assertion that used
+    // to record a divergence and now pins the fix. bash prints :1279 BEFORE it
+    // sleeps at :1282; an earlier revision of this port mapped the line from
+    // the SettleOutcome instead, and that outcome does not exist until the
+    // sleep is over, so the line announcing a six-second pause arrived six
+    // seconds after the pause began. No byte diff could see it (nothing else
+    // writes inside the window on either engine) and both audiences for the
+    // line could: an operator tailing a live deploy, and anyone reading the
+    // tail of a run killed DURING the settle, where bash's last line is the
+    // settling line. restart.ts's `onSettling` seam puts it back in front of
+    // the sleep; the sleep token below sitting AFTER the info token is what
+    // proves it.
     expect(rig.events).toEqual([
       "systemctl:daemon-reload",
       `systemctl:stop`,
-      "sleep:6",
       `info:${settlingOracle("6")}`,
+      "sleep:6",
       "systemctl:start",
     ])
     // ... and the builder the module actually calls agrees with the oracle.
@@ -280,13 +282,14 @@ describe("the settle triple, at the function level", () => {
     // that matters for the byte diff: bash reaches :1283 only after having
     // already printed :1279, so a port that emitted just the failure line
     // would be one stdout line short of the oracle on this row.
-    // (Both land after the sleep here rather than around it, for the reason
-    // spelled out in the first test in this block.)
+    // The sleep sits BETWEEN them here, exactly as it does in bash, because
+    // the :1279 line is the announcement of the sleep that is about to be
+    // attempted and the :1283 line is the report of its failure.
     expect(rig.events).toEqual([
       "systemctl:daemon-reload",
       "systemctl:stop",
-      "sleep:6",
       `info:${settlingOracle("6")}`,
+      "sleep:6",
       `warn:${settleSleepFailedOracle("6")}`,
       "systemctl:start",
     ])
