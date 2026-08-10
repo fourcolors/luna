@@ -109,14 +109,22 @@ const restartVerbs = (log: string): ReadonlyArray<string> =>
     .filter((verb) => verb === "daemon-reload" || verb === "stop" || verb === "start" || verb === "settle")
 
 /**
- * restartServiceSync's `warn` seam is REQUIRED (restart.ts prints the two
- * MainPID postcondition warns through it, at bash's own positions inside
- * restart_service). No scenario in THIS file supplies a `mainPid` seam, so the
- * postcondition is skipped exactly as bash skips it on an unknown pre-PID and
- * nothing here can emit - the byte-exactness of those two lines is proven in
- * the MainPID suite, against both drives, not here.
+ * restartServiceSync's `warn` and `info` seams are both REQUIRED (restart.ts
+ * prints eleven operator lines through them, at bash's own positions inside
+ * restart_session_guard, settle_after_stop, sup_start and restart_service).
+ *
+ * Every scenario in THIS file discards them, and that is deliberate rather
+ * than an omission: these tests are about the primitive's CALL SHAPE and its
+ * decisions (which systemctl verbs, in which order, with which outcome), and
+ * they predate the printing. The byte-exactness and the POSITION of all eleven
+ * lines is proven in restart-mainpid-parity.test.ts, against a bash-derived
+ * oracle, so duplicating string assertions here would only add a second place
+ * to update. No scenario here supplies a `mainPid` seam either, so the MainPID
+ * postcondition is skipped exactly as bash skips it on an unknown pre-PID.
  */
 const noWarn = (): void => {}
+/** See noWarn. */
+const noInfo = (): void => {}
 
 const baseGuard = (serviceName: string, readinessPort: string): SessionGuardOptions => ({
   dryRun: false,
@@ -236,6 +244,7 @@ describe("restart primitive: call order and settle timing match the real bash pr
     const tsBefore = Date.now()
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: tsFixture.serviceName,
       dryRun: false,
       settleSecs: "1",
@@ -266,6 +275,7 @@ describe("restart primitive: call order and settle timing match the real bash pr
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: tsFixture.serviceName,
       dryRun: false,
       settleSecs: "0",
@@ -289,6 +299,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: true,
       settleSecs: "1",
@@ -326,6 +337,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -345,6 +357,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
     const seen: string[] = []
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       guard: { ...baseGuard("luna-chat-server.service", READINESS_PORT), queryActiveWsCount: () => 0 },
@@ -372,6 +385,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -402,6 +416,7 @@ describe("restart primitive: dry-run gating, guard/execution non-decoupling, and
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -425,6 +440,7 @@ describe("restart primitive: reload/stop failures short-circuit before start (FI
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -446,6 +462,7 @@ describe("restart primitive: reload/stop failures short-circuit before start (FI
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -470,6 +487,7 @@ describe("restart primitive: the guard's systemd fallback is routed through THIS
 
     const outcome = restartServiceSync({
       warn: noWarn,
+      info: noInfo,
       serviceName: "luna-chat-server.service",
       dryRun: false,
       settleSecs: "0",
@@ -518,6 +536,7 @@ describe("restart primitive: the guard's systemd fallback is routed through THIS
 
       const outcome = restartServiceSync({
         warn: noWarn,
+        info: noInfo,
         serviceName: "luna-chat-server.service",
         dryRun: false,
         settleSecs: "0",

@@ -66,7 +66,12 @@ d("deploy-cli main", () => {
     expect(r.stdout).toContain("guardian")
   })
 
-  for (const surface of ["update", "autodeploy", "guardian"] as const) {
+  // `update` is NO LONGER on this list, and that is the whole point of S22d.
+  // It was a stubSurface that exited CRITICAL saying "not implemented"; it is
+  // now the real command, so the assertion below would fail against it. The
+  // two remaining stubs stay here until their own slices land, which keeps
+  // this test honest about exactly how much of the bash engine is ported.
+  for (const surface of ["autodeploy", "guardian"] as const) {
     it(`${surface}: not implemented, exits CRITICAL (${EXIT_CODES.CRITICAL}), regardless of trailing args`, () => {
       const r = runCli([surface, "stable", "--some-flag", "value"])
       expect(r.status).toBe(EXIT_CODES.CRITICAL)
@@ -74,6 +79,23 @@ d("deploy-cli main", () => {
       expect(r.stdout).toBe("")
     })
   }
+
+  /**
+   * The inverse assertion, so "update is real" is pinned rather than merely
+   * un-asserted. Deleting a stub test without adding this would leave the
+   * surface untested in either direction, which is how a regression back to a
+   * stub could ship unnoticed.
+   *
+   * The refusal it must NOT produce is the stub's; the refusal it SHOULD
+   * produce is the engine's own, because no bash engine path is set in this
+   * bare environment. Both are exit-code-bearing, so the string is what
+   * distinguishes them.
+   */
+  it("update is the REAL command now, not a stub", () => {
+    const r = runCli(["update", "--profile", "stable"])
+    expect(r.stderr).not.toContain("deploy-cli update: not implemented")
+    expect(r.status, `stderr: ${r.stderr}`).not.toBe(EXIT_CODES.CRITICAL)
+  })
 
   it("an unknown top-level subcommand exits 1", () => {
     const r = runCli(["bogus"])

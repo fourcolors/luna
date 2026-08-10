@@ -49,9 +49,22 @@
  * (scripts/luna-update-server:1467-1469, the journalctl-of-the-invoking-
  * unit audit trail): operatorOverrideLogLine reproduces it byte-for-byte,
  * carried on the GuardVerdict as `auditLine` so a caller cannot grant the
- * bypass without the line in hand to log. The other bash warn lines inside
- * restart_session_guard are informational only; callers read
- * `reason`/`sessionCount`/`unitState` off the verdict instead.
+ * bypass without the line in hand to log.
+ *
+ * THE OTHER FOUR WARN LINES ARE NOW PORTED TOO, WHICH REVERSES THE REST OF
+ * THAT PARAGRAPH. It used to end "the other bash warn lines inside
+ * restart_session_guard are informational only; callers read `reason`/
+ * `sessionCount`/`unitState` off the verdict instead". A typed verdict is
+ * still what callers branch on, but "informational only" was never true of
+ * the BYTES: bash emits five luna_warn lines from inside
+ * restart_session_guard (:1468, :1477, :1491, :1494, :1497) and a port that
+ * returns a verdict and says nothing is silent exactly where an operator
+ * diagnosing a deferred deploy needs a line. guardVerdictLine below is the
+ * one place that maps the verdict union to those five payloads; it lives
+ * HERE rather than in flow-lines.ts precisely because only this module can
+ * map GuardVerdict exhaustively, so a new arm is a compile error instead of
+ * a silently-silent verdict. restart.ts emits it at bash's own position -
+ * restart_service's very first statement (:1509).
  */
 import { spawnSync } from "node:child_process"
 
@@ -153,6 +166,64 @@ export interface SessionGuardOptions {
 
 /** Byte-exact contract line (scripts/luna-update-server:1468's luna_warn payload). */
 export const operatorOverrideLogLine = (reason: string): string => `SESSION GUARD OVERRIDDEN by operator: ${reason}`
+
+/**
+ * The `luna_warn` PAYLOAD restart_session_guard emits for this verdict, or
+ * `null` for the four arms bash passes through in silence (:1462, :1463,
+ * :1466, :1480). No `warning: ` prefix - the caller owns it, as with every
+ * other line builder in this port.
+ *
+ * WHY A SWITCH WITH A `never` DEFAULT rather than a lookup table: a new
+ * GuardVerdict arm must be a COMPILE error here, not a silent `null` that
+ * makes the port quietly stop speaking where bash speaks. That is the whole
+ * reason this function lives in this module instead of flow-lines.ts, which
+ * cannot see the union.
+ *
+ * `readinessPort` is passed in rather than read off the verdict because the
+ * verdict does not carry it and bash interpolates `$READINESS_PORT` from the
+ * same global the count probe used; restart.ts passes its own guard options'
+ * value, so the port printed is always the port counted.
+ *
+ * THE `?? ""` FALLBACKS ARE BASH-FAITHFUL, NOT DEFENSIVE PADDING.
+ * `sessionCount` and `unitState` are optional on GuardVerdict because most
+ * arms have no such value; on the three arms below the one constructor in
+ * this file always sets them. If one were ever absent, bash's own `$n` /
+ * `$state` expansion of an unset variable is the EMPTY STRING, so an empty
+ * interpolation is what the oracle would print - never the JavaScript word
+ * "undefined", which is a string no bash line can produce and which an
+ * operator's grep would never match.
+ */
+export const guardVerdictLine = (verdict: GuardVerdict, readinessPort: string): string | null => {
+  switch (verdict.reason) {
+    // :1462 dry-run, :1463 guard-disabled, :1466 non-systemd-supervisor and
+    // :1480 zero-sessions are bare `return 0`/`return`s in bash with no warn.
+    case "dry-run":
+    case "guard-disabled":
+    case "non-systemd-supervisor":
+    case "zero-sessions":
+      return null
+    // :1468. Reuses the auditLine already minted onto the verdict so the
+    // logged bypass and the granted bypass cannot come apart (see above).
+    case "operator-override":
+      return verdict.auditLine ?? null
+    /** :1477. */
+    case "live-sessions":
+      return `session guard: ${verdict.sessionCount ?? ""} active session(s) on :${readinessPort} — deferring restart`
+    /** :1491, the only guard line that appears on a PERMITTED run. */
+    case "dead-server-exception":
+      return `session guard: ws count unknown but unit answered '${verdict.unitState ?? ""}' — no server process; restart permitted`
+    /** :1494. */
+    case "transport-unreachable":
+      return "session guard: transport never reached systemd — deferring (fail closed); a restart through the same transport could not succeed anyway"
+    /** :1497. */
+    case "unit-state-uncertain":
+      return `session guard: ws count unknown while unit answers '${verdict.unitState ?? ""}' — may be serving; deferring (fail closed)`
+    default: {
+      const unhandled: never = verdict
+      return unhandled
+    }
+  }
+}
 
 /**
  * Strips ONLY trailing newlines, mirroring bash's `$(...)` command

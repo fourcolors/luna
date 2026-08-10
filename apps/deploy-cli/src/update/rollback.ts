@@ -126,6 +126,14 @@ export interface RollbackOptions extends RemediationContext {
   readonly writeTransaction: (phase: string) => void
   readonly clearTransaction: () => void
   readonly warn: (line: string) => void
+  /**
+   * RAW stderr, no prefix and no added newline: the CRITICAL line is a bare
+   * `printf` in bash (scripts/luna-update-server:1854-1855), not a luna_warn,
+   * so it carries neither the `warning: ` prefix nor this module's warn
+   * routing. See the emission point at the bottom of doRollbackSync for why
+   * this function - and not its caller - is the one that prints it.
+   */
+  readonly writeStderrRaw: (text: string) => void
 }
 
 export interface RollbackOutcome {
@@ -182,6 +190,14 @@ export function doRollbackSync(options: RollbackOptions): RollbackOutcome {
     return { exitCode: EXIT_ROLLED_BACK, guardSessions }
   }
 
+  // THE ORDER OF THESE TWO STATEMENTS IS THE CONTRACT, and it is bash's:
+  // CRITICAL is printed FIRST (:1854-1855) and the phase is written SECOND
+  // (:1856). Leaving the print to the caller - as this function did before -
+  // reverses it, so a crash between the two steps leaves a different on-disk
+  // state than bash leaves, which no stderr-only diff can see. The hint is
+  // built here rather than passed in because RollbackOptions already extends
+  // RemediationContext, so this function has everything remediationHint needs.
+  options.writeStderrRaw(`${criticalLine(ref, prev, remediationHint(options))}\n`)
   writeTransaction("rollback-failed")
   return { exitCode: EXIT_CRITICAL, guardSessions }
 }
