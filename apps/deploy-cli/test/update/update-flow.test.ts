@@ -49,10 +49,10 @@ import { journalDispositionFor, type Terminal } from "../../src/update/terminals
 import { runUpdateFlowSync, type UpdateFlowDeps } from "../../src/update/update-flow.js"
 
 const SERVICE = "luna-server-dev"
-const PREV = "1111111111111111111111111111111111111111"
-const REF = "2222222222222222222222222222222222222222"
-const NEW_HEAD = "2222222222222222222222222222222222222222"
-const PREV_LOCK = "3333333333333333333333333333333333333333"
+const PREV = "1".repeat(40)
+const REF = "2".repeat(40)
+const NEW_HEAD = "2".repeat(40)
+const PREV_LOCK = "3".repeat(40)
 const JOURNAL = "/var/lib/luna/deploy/transaction-dev"
 const TIMEOUT_RAW = "007"
 

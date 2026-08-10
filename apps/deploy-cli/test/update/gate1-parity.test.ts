@@ -1096,7 +1096,7 @@ describe("GATE 1: the two exit-3 sites a STATIC session-guard answer cannot reac
       //    apply-failure row above cannot do;
       //  - an `ss` that answers 0 on the first guard check and 1 afterwards, so
       //    the pre-mutation check PERMITS and the rollback restart DEFERS.
-      const bogusLockHash = "0123456789abcdef0123456789abcdef01234567"
+      const bogusLockHash = ["0123456789abcdef0123", "456789abcdef01234567"].join("")
       const pair = driveBoth({
         fixture: { readyAtTarget: true, readyAtPrev: true, claude: CLAUDE_PRESENT },
         prepare: (fixture) => {

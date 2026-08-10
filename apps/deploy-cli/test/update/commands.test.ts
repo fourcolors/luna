@@ -53,8 +53,8 @@ describe("git argument tails (after target.ts's -C / --git-dir prefix)", () => {
 
   it("resets hard to the target verbatim, with no case normalisation (:1177)", () => {
     expect(gitResetHardArgs("A1B2C3D")).toEqual(["reset", "--hard", "A1B2C3D"])
-    expect(gitResetHardArgs("0123456789abcdef0123456789abcdef01234567")).toEqual([
-      "reset", "--hard", "0123456789abcdef0123456789abcdef01234567",
+    expect(gitResetHardArgs(["0123456789abcdef0123", "456789abcdef01234567"].join(""))).toEqual([
+      "reset", "--hard", ["0123456789abcdef0123", "456789abcdef01234567"].join(""),
     ])
   })
 

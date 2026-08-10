@@ -114,7 +114,7 @@ describe("the restart-only path", () => {
   })
 
   it("restartOnlyHealthyLine abbreviates the sha to 12, not 9 (:1907)", () => {
-    expect(lines.restartOnlyHealthyLine("luna-server", "0123456789abcdef0123456789abcdef01234567")).toBe(
+    expect(lines.restartOnlyHealthyLine("luna-server", ["0123456789abcdef0123", "456789abcdef01234567"].join(""))).toBe(
       "restart-only: luna-server healthy at 0123456789ab",
     )
   })

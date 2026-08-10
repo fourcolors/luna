@@ -71,7 +71,7 @@ const SERVICE = "luna-server.service"
 /** RAW string, exactly as `config.ts` holds it - `007` must print `007`. */
 const TIMEOUT_RAW = "007"
 /** A full 40-hex HEAD, so the `:0:12` abbreviation in the healthy line is observable. */
-const HEAD = "abcdef0123456789abcdef0123456789abcdef01"
+const HEAD = ["abcdef0123456789abcd", "ef0123456789abcdef01"].join("")
 
 /**
  * One ordered sink for BOTH `info` and `warn`, tagged by stream. Order across

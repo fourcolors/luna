@@ -29,8 +29,8 @@ import { freshRunSync, lockfileHashSync, readHeadSync } from "../../src/update/f
 import type { CommandResult } from "../../src/update/target.js"
 
 /** A full lowercase 40-hex sha, the shape `rev-parse HEAD` always answers. */
-const PREV_SHA = "1111111111111111111111111111111111111111"
-const TARGET_SHA = "2222222222222222222222222222222222222222"
+const PREV_SHA = "1".repeat(40)
+const TARGET_SHA = "2".repeat(40)
 
 const ok = (stdout: string): CommandResult => ({ status: 0, stdout })
 

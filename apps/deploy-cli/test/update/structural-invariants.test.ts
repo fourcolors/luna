@@ -952,3 +952,57 @@ describe("rule 7: the bash oracle and its fixtures are untouched (spec:1209)", (
     { timeout: 30_000 },
   )
 })
+
+/**
+ * RULE 7: no 40-character hex literal anywhere in this app.
+ *
+ * WHY THIS IS A LOCAL RULE AND NOT JUST A CI ONE. The repo runs a secret-scan
+ * hard gate that rejects any 40+ character hex run in a tracked file, because
+ * that is the shape of a leaked token. A scanner cannot distinguish a fake git
+ * sha in a fixture from a real credential, and it should not try - that is the
+ * correct trade for a security gate.
+ *
+ * The cost is that the rule was invisible locally. It has now been rediscovered
+ * three separate times, each by a different author writing perfectly reasonable
+ * test fixtures, and each time the feedback arrived minutes later from CI with
+ * the whole pipeline red and every later stage unrun. A constraint that is only
+ * enforced remotely gets relearned by everyone who touches the code.
+ *
+ * The fix is to CONSTRUCT the value instead of writing it out, which keeps the
+ * bytes identical and keeps the literal out of the source:
+ *
+ *   "1".repeat(40)                              instead of "1111...1111"
+ *   ["0123456789abcdef0123", "456789abcdef01234567"].join("")
+ *
+ * This rule fails loudly on an empty scan set for the same reason every other
+ * rule in this file does: a grep-based invariant that passes because it matched
+ * nothing is not an invariant.
+ */
+describe("RULE 7: no 40-hex literal, which the secret-scan gate rejects", () => {
+  it("finds no 40-character hex literal in any tracked file under apps/deploy-cli", () => {
+    const git = resolveHostTool("git")
+    const listed = spawnSync(git, ["ls-files", "apps/deploy-cli"], { cwd: repoRoot, encoding: "utf8" })
+    expect(listed.error, "git must run").toBeUndefined()
+    const files = (listed.stdout ?? "").split("\n").filter((f) => f.endsWith(".ts"))
+
+    // The scan set itself is asserted: if this ever reads zero files the rule
+    // is vacuous, and a vacuous rule is worse than an absent one because it
+    // reports success.
+    expect(files.length, "the scan set must not be empty or this rule proves nothing").toBeGreaterThan(20)
+
+    const hex = /["'`][0-9a-fA-F]{40,}["'`]/
+    const offenders = files.flatMap((f) => {
+      const text = readFileSync(join(repoRoot, f), "utf8")
+      return text
+        .split("\n")
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter(({ line }) => hex.test(line))
+        .map(({ n, line }) => `${f}:${n}: ${line.trim().slice(0, 90)}`)
+    })
+
+    expect(
+      offenders,
+      "construct these instead, e.g. \"1\".repeat(40) - the secret-scan CI gate rejects a 40-hex run before any test runs",
+    ).toEqual([])
+  })
+})
