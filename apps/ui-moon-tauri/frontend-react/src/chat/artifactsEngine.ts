@@ -31,7 +31,7 @@
  * `undefined is not a function` deep inside a handler.
  *
  * @ts-nocheck for the same reason as the other verbatim moves, tracked by the
- * same follow-up (#493).
+ * same follow-up (#525).
  */
 
 export interface ArtifactsEngineDeps {

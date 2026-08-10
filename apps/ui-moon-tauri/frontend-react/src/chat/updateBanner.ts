@@ -25,7 +25,7 @@
  * one has no outbound edges in the sense of the OUTBOUND-EDGE RULE.
  *
  * @ts-nocheck for the same reason as threadDrag.ts and tracked by the same
- * follow-up (#493): the body is untyped JS that never passed through a tsc
+ * follow-up (#525): the body is untyped JS that never passed through a tsc
  * program, and typing it means editing it, which would forfeit the verbatim
  * proof this move rests on.
  */
