@@ -272,17 +272,60 @@ luna_active_ws_count() {
     return
   fi
 
+  # A SERVER TALKING TO ITSELF IS NOT A SESSION, and counting it as one froze a
+  # channel for 154 commits while reporting success every three minutes.
+  #
+  # The chat server holds a loopback connection to its own port: both ends are
+  # owned by the unit's own MainPID. The old count was `established` sockets
+  # with `sport = :PORT`, which includes that self-pair, so the guard saw one
+  # phantom session forever, deferred every deploy, and exited 0 looking
+  # healthy. Nothing ever escalated, because deferring IS the correct answer to
+  # a real session; only the count was wrong.
+  #
+  # The discriminator is ownership, not address. A real client reaches the
+  # container through a forwarder, so the far end is a different process (and on
+  # a remote client, not in this namespace at all). A self-connection has the
+  # SAME pid on both ends. So: subtract only those established sockets that are
+  # connected TO the port and owned by the pid that owns the LISTENER.
+  #
+  # IT FAILS SAFE BY CONSTRUCTION. `ss -p` needs privileges to name a process;
+  # where it cannot, `lp` is empty, `self` stays 0, and the result is exactly
+  # the old count. Undercounting drops live users mid-conversation, so every
+  # uncertain path here must round UP, never down.
+  #
+  # ONE implementation, run either inside the container or on the host, because
+  # two copies of a rule this subtle will drift.
+  local probe='
+port="$1"
+command -v ss >/dev/null 2>&1 || exit 9
+# ss ITSELF must be run unpiped so its exit status is its own. Piping it into
+# grep or wc hands the pipeline grep exit status instead, and a FAILING ss then
+# reads as "zero sessions" - which authorizes a restart and drops live users.
+# That is the hole the original implementation was hardened against, and it is
+# easy to reintroduce while tidying, so the capture stays deliberately plain.
+out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || exit 1
+if [ -n "$out" ]; then total="$(printf "%s\n" "$out" | wc -l)"; else total=0; fi
+# The -p probes are BEST EFFORT by contract: they only ever subtract, so a
+# failure here must leave the count untouched rather than fail the whole call.
+lp="$(ss -tlnHp "( sport = :$port )" 2>/dev/null | grep -o "pid=[0-9]*" | head -1)" || lp=""
+self=0
+if [ -n "$lp" ]; then
+  selfout="$(ss -tnHp state established "( dport = :$port )" 2>/dev/null)" || selfout=""
+  if [ -n "$selfout" ]; then self="$(printf "%s\n" "$selfout" | grep -c "$lp," || true)"; fi
+fi
+[ -n "$self" ] || self=0
+n=$((total - self))
+[ "$n" -lt 0 ] && n=0
+printf "%s" "$n"
+'
+  local out
   if [[ -n "$incus" ]]; then
     command -v incus >/dev/null 2>&1 || return 1
-    local out
-    out="$(incus exec "$incus" -- sh -c "command -v ss >/dev/null 2>&1 || exit 9; ss -tnH state established '( sport = :$port )' 2>/dev/null" 2>/dev/null)" || return 1
-    if [[ -n "$out" ]]; then n="$(printf '%s\n' "$out" | wc -l)"; else n=0; fi
+    out="$(incus exec "$incus" -- sh -c "$probe" _ "$port" 2>/dev/null)" || return 1
   else
-    command -v ss >/dev/null 2>&1 || return 1
-    local out
-    out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || return 1
-    if [[ -n "$out" ]]; then n="$(printf '%s\n' "$out" | wc -l)"; else n=0; fi
+    out="$(sh -c "$probe" _ "$port" 2>/dev/null)" || return 1
   fi
+  n="$out"
   n="$(printf '%s' "$n" | tr -d '[:space:]')"
   [[ "$n" =~ ^[0-9]+$ ]] || return 1
   printf '%s' "$n"
