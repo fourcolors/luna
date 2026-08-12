@@ -293,20 +293,30 @@ luna_active_ws_count() {
   # the old count. Undercounting drops live users mid-conversation, so every
   # uncertain path here must round UP, never down.
   #
+  # THE SNIPPET CARRIES NO COMMENTS, deliberately. Its text is passed verbatim
+  # as an argument to `sh -c` (and to `incus exec ... -- sh -c` on a container),
+  # so it appears in the deploy engine's own command trace, and the TypeScript
+  # port must run the IDENTICAL text or the two engines diverge. Explanations
+  # therefore live out here, where they cost nothing. GATE 1's trace diff caught
+  # the first version of this fix precisely because its inline comments made the
+  # two engines' traced commands differ.
+  #
+  # ON THE UNPIPED ss CAPTURE, which is the subtle line: piping ss into grep or
+  # wc hands the pipeline grep's exit status instead of ss's, and a FAILING ss
+  # then reads as "zero sessions", which authorizes a restart and drops live
+  # users. That is the hole the original implementation was hardened against,
+  # and it is easy to reintroduce while tidying, so the capture stays plain.
+  #
+  # The -p probes are BEST EFFORT: they only ever subtract, so a failure there
+  # must leave the count untouched rather than fail the whole call.
+  #
   # ONE implementation, run either inside the container or on the host, because
   # two copies of a rule this subtle will drift.
   local probe='
 port="$1"
 command -v ss >/dev/null 2>&1 || exit 9
-# ss ITSELF must be run unpiped so its exit status is its own. Piping it into
-# grep or wc hands the pipeline grep exit status instead, and a FAILING ss then
-# reads as "zero sessions" - which authorizes a restart and drops live users.
-# That is the hole the original implementation was hardened against, and it is
-# easy to reintroduce while tidying, so the capture stays deliberately plain.
 out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || exit 1
 if [ -n "$out" ]; then total="$(printf "%s\n" "$out" | wc -l)"; else total=0; fi
-# The -p probes are BEST EFFORT by contract: they only ever subtract, so a
-# failure here must leave the count untouched rather than fail the whole call.
 lp="$(ss -tlnHp "( sport = :$port )" 2>/dev/null | grep -o "pid=[0-9]*" | head -1)" || lp=""
 self=0
 if [ -n "$lp" ]; then

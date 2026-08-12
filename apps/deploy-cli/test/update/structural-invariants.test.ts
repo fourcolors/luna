@@ -1006,3 +1006,53 @@ describe("RULE 7: no 40-hex literal, which the secret-scan gate rejects", () => 
     ).toEqual([])
   })
 })
+
+/**
+ * RULE 8: the ws-count probe text is IDENTICAL in both engines.
+ *
+ * The session guard decides whether a restart may proceed, and the two engines
+ * must never disagree about what counts as a live session - a disagreement
+ * there drops users mid-conversation.
+ *
+ * They used to disagree. The TypeScript side was a faithful re-implementation
+ * of the bash, which meant it also faithfully inherited a live production bug
+ * (the server's loopback connection to itself counted as a session, freezing a
+ * channel 154 commits behind while reporting success every three minutes).
+ * Fixing the bash did not fix the binary, and the two were observed giving
+ * different answers on the same container minutes apart.
+ *
+ * The fix was to share the probe TEXT rather than the algorithm. This rule is
+ * what keeps that true: the snippet is passed verbatim to `sh -c`, so any edit
+ * to one side that is not mirrored in the other is a silent divergence in the
+ * one place divergence is most expensive.
+ *
+ * GATE 1's trace diff catches this too, because the snippet appears in the
+ * command trace - but only on the container rows, only after a full parity run,
+ * and only in CI. This runs in milliseconds and names the fix.
+ */
+describe("RULE 8: both engines run the same session-count probe", () => {
+  it("bash's luna_active_ws_count probe and the port's WS_COUNT_PROBE are byte-identical", () => {
+    const sh = readFileSync(join(repoRoot, "scripts/lib/luna-deploy.sh"), "utf8")
+    const ts = readFileSync(join(repoRoot, "apps/deploy-cli/src/update/session-guard.ts"), "utf8")
+
+    const bashMatch = /local probe='\n([\s\S]*?)'\n/.exec(sh)
+    const tsMatch = /const WS_COUNT_PROBE = `\n([\s\S]*?)`\n/.exec(ts)
+
+    // Both anchors must still exist. If a refactor renames either, this rule
+    // would otherwise pass by matching nothing, which is the vacuous shape this
+    // whole file exists to avoid.
+    expect(bashMatch, "bash's `local probe='...'` snippet not found - did it move?").not.toBeNull()
+    expect(tsMatch, "the port's WS_COUNT_PROBE template not found - did it move?").not.toBeNull()
+
+    // The TS side is a template literal, so its source escapes `\n` one extra
+    // time; unescape before comparing what each actually sends to sh.
+    const bashProbe = bashMatch?.[1] ?? ""
+    const tsProbe = (tsMatch?.[1] ?? "").replace(/\\\\n/g, "\\n").replace(/\\`/g, "`")
+
+    expect(bashProbe.length, "the probe must not be empty or this proves nothing").toBeGreaterThan(100)
+    expect(
+      tsProbe,
+      "the two engines must send sh the SAME text; edit both or neither",
+    ).toBe(bashProbe)
+  })
+})
