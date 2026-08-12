@@ -128,13 +128,13 @@ const runTs = (s: Scenario): Trace & { readonly stderr: string[]; readonly guard
     writeTransaction: (p) => { phases.push(p) },
     clearTransaction: () => { phases.push("cleared") },
     warn: (l) => { warnings.push(l) },
+    // The CRITICAL line is now emitted BY doRollbackSync (bash prints it at
+    // :1854-1855 BEFORE the :1856 phase write), so this drive CAPTURES it
+    // instead of reconstructing it after the fact. The trailing newline the
+    // raw writer receives is stripped here so the assertions below still
+    // compare one payload per entry.
+    writeStderrRaw: (text) => { stderr.push(text.replace(/\n$/, "")) },
   })
-  if (outcome.exitCode === EXIT_CRITICAL) {
-    stderr.push(criticalLine(REF, PREV, remediationHint({
-      supervisor: "systemd", systemdUser: false, uid: "0",
-      launchdLabel: "ai.luna.chat-server", serviceName: SERVICE,
-    })))
-  }
   return { exitCode: outcome.exitCode, warnings, phases, stderr, guardPassedToRestart }
 }
 
@@ -203,6 +203,38 @@ describe("do_rollback: golden parity with scripts/luna-update-server", () => {
     })
   })
 
+  describe("the CRITICAL line", () => {
+    it("is emitted BY doRollbackSync, byte-exact and raw (no `warning: ` prefix)", () => {
+      const ts = runTs({ forwardRestartRan: true, applyOk: false, restartRc: 0, readinessOk: true })
+      expect(ts.exitCode).toBe(EXIT_CRITICAL)
+      expect(ts.stderr).toEqual([
+        criticalLine(REF, PREV, remediationHint({
+          supervisor: "systemd", systemdUser: false, uid: "0",
+          launchdLabel: "ai.luna.chat-server", serviceName: SERVICE,
+        })),
+      ])
+      // It is NOT a luna_warn, so it must never appear on the warn channel.
+      expect(ts.warnings.some((w) => w.startsWith("CRITICAL:"))).toBe(false)
+    })
+
+    it("is printed BEFORE the rollback-failed phase write, as bash prints it", () => {
+      // scripts/luna-update-server:1854-1855 printf, THEN :1856 write_transaction.
+      // A crash between the two steps must leave the same on-disk state the bash
+      // leaves, which only an INTERLEAVED trace can prove - two separate arrays
+      // would each be in the right order and still hide a swap.
+      const trace: string[] = []
+      doRollbackSync({
+        ref: REF, prev: PREV, serviceName: SERVICE, layout: "bare", forwardRestartRan: true,
+        supervisor: "systemd", systemdUser: false, uid: "0", launchdLabel: "l",
+        applyRef: () => false, restartService: () => 0, runReadiness: () => true,
+        writeTransaction: (p) => { trace.push(`PHASE:${p}`) },
+        clearTransaction: () => {}, warn: () => {},
+        writeStderrRaw: () => { trace.push("STDERR:critical") },
+      })
+      expect(trace).toEqual(["PHASE:rolling-back", "STDERR:critical", "PHASE:rollback-failed"])
+    })
+  })
+
   describe("the scoped guard exemption", () => {
     it("exempts the guard ONLY when the forward restart already interrupted service", () => {
       const exempted = runTs({ forwardRestartRan: true, applyOk: true, restartRc: 0, readinessOk: true })
@@ -239,7 +271,7 @@ describe("do_rollback: golden parity with scripts/luna-update-server", () => {
         supervisor: "systemd", systemdUser: false, uid: "0", launchdLabel: "l",
         applyRef: () => true, restartService: () => 0,
         runReadiness: (r) => { seen = r; return true },
-        writeTransaction: () => {}, clearTransaction: () => {}, warn: () => {},
+        writeTransaction: () => {}, clearTransaction: () => {}, warn: () => {}, writeStderrRaw: () => {},
       })
       expect(seen).toEqual({ expectedBuildSha: PREV, allowMissingBuildSha: true })
     })
@@ -252,7 +284,7 @@ describe("do_rollback: golden parity with scripts/luna-update-server", () => {
           ref: REF, prev: PREV, serviceName: SERVICE, layout: "releases", forwardRestartRan: true,
           supervisor: "systemd", systemdUser: false, uid: "0", launchdLabel: "l",
           applyRef: () => true, restartService: () => 0, runReadiness: () => true,
-          writeTransaction: () => {}, clearTransaction: () => {}, warn: () => {},
+          writeTransaction: () => {}, clearTransaction: () => {}, warn: () => {}, writeStderrRaw: () => {},
         }),
       ).toThrow(/releases layout/)
     })
@@ -284,7 +316,7 @@ describe("fail_forward", () => {
     ref: REF, prev: PREV, serviceName: SERVICE, layout: "bare" as const, forwardRestartRan: true,
     supervisor: "systemd" as const, systemdUser: false, uid: "0", launchdLabel: "l",
     applyRef: () => true, restartService: () => 0, runReadiness: () => true,
-    writeTransaction: () => {}, clearTransaction: () => {}, warn: () => {},
+    writeTransaction: () => {}, clearTransaction: () => {}, warn: () => {}, writeStderrRaw: () => {},
   }
 
   it("with --no-rollback: records forward-failed and dies at the new ref", () => {

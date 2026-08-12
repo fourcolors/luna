@@ -80,7 +80,15 @@ export type ReadyzCapture = string
 
 export interface ReadinessProbeOptions {
   readonly serviceName: string
-  readonly readinessPort: number
+  /**
+   * `READINESS_PORT` as the RAW STRING config.ts holds (config.ts:186/:358),
+   * never a parsed number: its only uses are the two curl argv builders and the
+   * `/healthz did not return 200 on :<port>` detail below, all three of which
+   * are operator-visible bytes. Converting would silently renormalise an
+   * operator's `--readiness-port 04753` and diverge from the bash engine on
+   * both the argv and the failure line.
+   */
+  readonly readinessPort: string
   readonly timeoutSecs: number
   readonly intervalSecs: number
   /** "" when no sha is expected - bash's `EXPECTED_BUILD_SHA=""` initial state. */
@@ -197,10 +205,16 @@ export function readinessOkSync(options: ReadinessProbeOptions): ReadinessResult
 
 /**
  * The give-up line `readiness_ok` emits before returning 1
- * (scripts/luna-update-server:1129). Byte-exact including the trailing detail,
+ * (scripts/luna-update-server:1124). Byte-exact including the trailing detail,
  * because an operator reading a rolled-back deploy has only this string and
  * the `ROLLED BACK to` marker to work from.
+ *
+ * `timeoutRaw` is the value AS THE OPERATOR WROTE IT, not the parsed number the
+ * deadline arithmetic uses: bash interpolates `${READINESS_TIMEOUT}` raw, so
+ * `--readiness-timeout 007` prints `007` here while still counting 7 seconds.
+ * The caller threads the raw string through beside the parsed one rather than
+ * re-deriving it from the number, which cannot be done.
  */
-export function readinessGaveUpLine(timeoutSecs: number, detail: string): string {
-  return `readiness gave up after ${timeoutSecs}s: ${detail}`
+export function readinessGaveUpLine(timeoutRaw: string, detail: string): string {
+  return `readiness gave up after ${timeoutRaw}s: ${detail}`
 }

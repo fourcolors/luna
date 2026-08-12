@@ -9,7 +9,6 @@ import { homedir } from "node:os"
 import type {
   DoctorBackupManifest,
   DoctorFinding,
-  DoctorPatient,
   RemedyClass,
 } from "./types.js"
 
@@ -177,4 +176,3 @@ export class DoctorBackupStore {
   }
 }
 
-export const patientKey = (p: DoctorPatient): string => `${p.kind}:${p.id}`

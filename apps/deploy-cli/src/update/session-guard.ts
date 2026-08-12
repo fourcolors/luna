@@ -49,9 +49,22 @@
  * (scripts/luna-update-server:1467-1469, the journalctl-of-the-invoking-
  * unit audit trail): operatorOverrideLogLine reproduces it byte-for-byte,
  * carried on the GuardVerdict as `auditLine` so a caller cannot grant the
- * bypass without the line in hand to log. The other bash warn lines inside
- * restart_session_guard are informational only; callers read
- * `reason`/`sessionCount`/`unitState` off the verdict instead.
+ * bypass without the line in hand to log.
+ *
+ * THE OTHER FOUR WARN LINES ARE NOW PORTED TOO, WHICH REVERSES THE REST OF
+ * THAT PARAGRAPH. It used to end "the other bash warn lines inside
+ * restart_session_guard are informational only; callers read `reason`/
+ * `sessionCount`/`unitState` off the verdict instead". A typed verdict is
+ * still what callers branch on, but "informational only" was never true of
+ * the BYTES: bash emits five luna_warn lines from inside
+ * restart_session_guard (:1468, :1477, :1491, :1494, :1497) and a port that
+ * returns a verdict and says nothing is silent exactly where an operator
+ * diagnosing a deferred deploy needs a line. guardVerdictLine below is the
+ * one place that maps the verdict union to those five payloads; it lives
+ * HERE rather than in flow-lines.ts precisely because only this module can
+ * map GuardVerdict exhaustively, so a new arm is a compile error instead of
+ * a silently-silent verdict. restart.ts emits it at bash's own position -
+ * restart_service's very first statement (:1509).
  */
 import { spawnSync } from "node:child_process"
 
@@ -105,7 +118,14 @@ export interface SessionGuardOptions {
   /** Non-empty means the operator explicitly overrode the guard (--operator-override). */
   readonly operatorOverrideReason?: string
   readonly serviceName: string
-  readonly readinessPort: number
+  /**
+   * `READINESS_PORT` as the RAW STRING config.ts holds (config.ts:186/:358).
+   * The value is interpolated into the ss(8) filter `( sport = :<port> )` and
+   * nowhere else - no arithmetic - so parsing it to a number would only give an
+   * operator's `--readiness-port 04753` a chance to reach ss(8) as a different
+   * filter than the bash engine builds.
+   */
+  readonly readinessPort: string
   /**
    * Non-empty means the target is an incus container (mirrors the
    * `[incus_container]` argument to luna_active_ws_count, scripts/lib/
@@ -133,7 +153,7 @@ export interface SessionGuardOptions {
    * dependency injection rather than an env-var seam. Called with this
    * options object's own readinessPort/incusContainer.
    */
-  readonly queryActiveWsCount?: (port: number, incusContainer?: string) => number
+  readonly queryActiveWsCount?: (port: string, incusContainer?: string) => number
   /**
    * Injected systemd is-active reader for the "count unknown" fallback.
    * Defaults to queryUnitStateSync (bare-host systemctl). restartServiceSync
@@ -146,6 +166,64 @@ export interface SessionGuardOptions {
 
 /** Byte-exact contract line (scripts/luna-update-server:1468's luna_warn payload). */
 export const operatorOverrideLogLine = (reason: string): string => `SESSION GUARD OVERRIDDEN by operator: ${reason}`
+
+/**
+ * The `luna_warn` PAYLOAD restart_session_guard emits for this verdict, or
+ * `null` for the four arms bash passes through in silence (:1462, :1463,
+ * :1466, :1480). No `warning: ` prefix - the caller owns it, as with every
+ * other line builder in this port.
+ *
+ * WHY A SWITCH WITH A `never` DEFAULT rather than a lookup table: a new
+ * GuardVerdict arm must be a COMPILE error here, not a silent `null` that
+ * makes the port quietly stop speaking where bash speaks. That is the whole
+ * reason this function lives in this module instead of flow-lines.ts, which
+ * cannot see the union.
+ *
+ * `readinessPort` is passed in rather than read off the verdict because the
+ * verdict does not carry it and bash interpolates `$READINESS_PORT` from the
+ * same global the count probe used; restart.ts passes its own guard options'
+ * value, so the port printed is always the port counted.
+ *
+ * THE `?? ""` FALLBACKS ARE BASH-FAITHFUL, NOT DEFENSIVE PADDING.
+ * `sessionCount` and `unitState` are optional on GuardVerdict because most
+ * arms have no such value; on the three arms below the one constructor in
+ * this file always sets them. If one were ever absent, bash's own `$n` /
+ * `$state` expansion of an unset variable is the EMPTY STRING, so an empty
+ * interpolation is what the oracle would print - never the JavaScript word
+ * "undefined", which is a string no bash line can produce and which an
+ * operator's grep would never match.
+ */
+export const guardVerdictLine = (verdict: GuardVerdict, readinessPort: string): string | null => {
+  switch (verdict.reason) {
+    // :1462 dry-run, :1463 guard-disabled, :1466 non-systemd-supervisor and
+    // :1480 zero-sessions are bare `return 0`/`return`s in bash with no warn.
+    case "dry-run":
+    case "guard-disabled":
+    case "non-systemd-supervisor":
+    case "zero-sessions":
+      return null
+    // :1468. Reuses the auditLine already minted onto the verdict so the
+    // logged bypass and the granted bypass cannot come apart (see above).
+    case "operator-override":
+      return verdict.auditLine ?? null
+    /** :1477. */
+    case "live-sessions":
+      return `session guard: ${verdict.sessionCount ?? ""} active session(s) on :${readinessPort} — deferring restart`
+    /** :1491, the only guard line that appears on a PERMITTED run. */
+    case "dead-server-exception":
+      return `session guard: ws count unknown but unit answered '${verdict.unitState ?? ""}' — no server process; restart permitted`
+    /** :1494. */
+    case "transport-unreachable":
+      return "session guard: transport never reached systemd — deferring (fail closed); a restart through the same transport could not succeed anyway"
+    /** :1497. */
+    case "unit-state-uncertain":
+      return `session guard: ws count unknown while unit answers '${verdict.unitState ?? ""}' — may be serving; deferring (fail closed)`
+    default: {
+      const unhandled: never = verdict
+      return unhandled
+    }
+  }
+}
 
 /**
  * Strips ONLY trailing newlines, mirroring bash's `$(...)` command
@@ -164,8 +242,11 @@ export const operatorOverrideLogLine = (reason: string): string => `SESSION GUAR
  */
 export const stripTrailingNewlines = (s: string): string => s.replace(/\n+$/, "")
 
-/** Mirrors `[[ -n "$out" ]] && printf '%s\n' "$out" | wc -l || n=0` (scripts/lib/luna-deploy.sh:279/284) against output already stripped of trailing newlines by stripTrailingNewlines. */
-const countWsLines = (strippedOut: string): number => (strippedOut === "" ? 0 : strippedOut.split("\n").length)
+// countWsLines lived here and counted the probe's OUTPUT LINES. It is gone
+// because the shared shell probe now does its own counting and prints a single
+// decimal, so line-counting on this side would be a second, divergent notion of
+// what a session is - which is the exact class of drift that shared probe text
+// exists to prevent.
 
 /**
  * Real ss(8)/incus-exec probe: a faithful port of BOTH of
@@ -183,20 +264,56 @@ const countWsLines = (strippedOut: string): number => (strippedOut === "" ? 0 : 
  * test seam of its own (LUNA_TEST_WS_COUNT is bash's seam, not this port's)
  * - see this module's header.
  */
-export const queryActiveWsCountSync = (port: number, incusContainer?: string): number => {
-  if (incusContainer) {
-    const innerScript = `command -v ss >/dev/null 2>&1 || exit 9; ss -tnH state established '( sport = :${port} )' 2>/dev/null`
-    const r = spawnSync("incus", ["exec", incusContainer, "--", "sh", "-c", innerScript], { encoding: "utf8" })
-    if (r.error || r.status !== 0) {
-      throw new Error(`incus exec ss failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
-    }
-    return countWsLines(stripTrailingNewlines(r.stdout ?? ""))
-  }
-  const r = spawnSync("ss", ["-tnH", "state", "established", `( sport = :${port} )`], { encoding: "utf8" })
+/**
+ * BYTE-FOR-BYTE THE SAME SHELL PROBE `luna_active_ws_count` RUNS
+ * (scripts/lib/luna-deploy.sh). Not a re-implementation of it - the same text.
+ *
+ * WHY THE SAME TEXT AND NOT A TYPESCRIPT PORT. This function previously WAS a
+ * faithful port, and that is exactly how it inherited a live production bug:
+ * the chat server holds a loopback connection to its own port, both ends owned
+ * by the unit's own MainPID, and counting that self-pair as a user session made
+ * the guard defer every deploy forever while exiting 0. One channel sat 154
+ * commits behind, reporting success every three minutes.
+ *
+ * Fixing the bash did NOT fix this, because parity means the port reproduces
+ * whatever bash does, including its defects - so a behavioural fix has to land
+ * in two places, and the second one is easy to forget. It was forgotten: the
+ * binary went on deferring on a host where the bash engine no longer did.
+ *
+ * Sharing the probe text removes the second place. The two engines cannot
+ * disagree about what counts as a session, which is the one question where a
+ * disagreement drops live users.
+ */
+const WS_COUNT_PROBE = `
+port="$1"
+command -v ss >/dev/null 2>&1 || exit 9
+out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || exit 1
+if [ -n "$out" ]; then total="$(printf "%s\\n" "$out" | wc -l)"; else total=0; fi
+lp="$(ss -tlnHp "( sport = :$port )" 2>/dev/null | grep -o "pid=[0-9]*" | head -1)" || lp=""
+self=0
+if [ -n "$lp" ]; then
+  selfout="$(ss -tnHp state established "( dport = :$port )" 2>/dev/null)" || selfout=""
+  if [ -n "$selfout" ]; then self="$(printf "%s\\n" "$selfout" | grep -c "$lp," || true)"; fi
+fi
+[ -n "$self" ] || self=0
+n=$((total - self))
+[ "$n" -lt 0 ] && n=0
+printf "%s" "$n"
+`
+
+export const queryActiveWsCountSync = (port: string, incusContainer?: string): number => {
+  const r = incusContainer
+    ? spawnSync("incus", ["exec", incusContainer, "--", "sh", "-c", WS_COUNT_PROBE, "_", port], { encoding: "utf8" })
+    : spawnSync("sh", ["-c", WS_COUNT_PROBE, "_", port], { encoding: "utf8" })
   if (r.error || r.status !== 0) {
-    throw new Error(`ss failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
+    const how = incusContainer ? "incus exec ss" : "ss"
+    throw new Error(`${how} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
   }
-  return countWsLines(stripTrailingNewlines(r.stdout ?? ""))
+  // The probe prints a single decimal. Anything else is a probe that did not
+  // run correctly, and UNKNOWN must never degrade to "zero sessions".
+  const text = stripTrailingNewlines(r.stdout ?? "")
+  if (!/^[0-9]+$/.test(text)) throw new Error(`ss probe returned a non-numeric count: ${JSON.stringify(text)}`)
+  return Number(text)
 }
 
 /**

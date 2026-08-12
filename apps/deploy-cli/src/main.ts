@@ -16,6 +16,7 @@
  */
 import { defineCommand, renderUsage, runMain } from "citty"
 import { EXIT_CODES } from "./exit-codes.js"
+import { UPDATE_USAGE, updateArgvWantsHelp, updateCommand } from "./update-command.js"
 import { VERSION } from "./version.js"
 
 /** One stub per bash entrypoint this binary will eventually fold in (S22/S24). */
@@ -36,8 +37,12 @@ const main = defineCommand({
       "Luna deploy engine (scaffold - state machine not yet ported from the bash scripts it will replace)",
   },
   subCommands: {
-    // Mirrors scripts/luna-update-server's flag-only surface.
-    update: stubSurface("update", "Update an installed Luna server to a target ref (scripts/luna-update-server)"),
+    // The real thing as of S22d: the inplace-on-systemd update transaction,
+    // with every other topology delegated whole to the co-pinned bash engine.
+    // Imported from the SIBLING module, never from anything under ./update/ -
+    // that directory is the pure-and-injected side of the process boundary and
+    // this is the far side of it. See update-command.ts's header.
+    update: updateCommand,
     // Mirrors scripts/luna-autodeploy's <profile>/install-timer/uninstall-timer surface.
     autodeploy: stubSurface("autodeploy", "Deploy a channel when its upstream branch has moved (scripts/luna-autodeploy)"),
     // Mirrors scripts/luna-guardian's check|diagnose|adopt|install|accept|uninstall surface.
@@ -52,13 +57,35 @@ const main = defineCommand({
 // exists to catch. Handling the top-level case here first, writing directly
 // to stdout, makes it independent of the caller's environment. `resolveSub
 // Command` (which per-subcommand --help would need) is not part of citty's
-// public API, so `deploy-cli <subcommand> --help` still falls through to
-// citty's own (env-sensitive) handling below - untested and undocumented,
-// left for S22+ when a subcommand's real argv surface is ported.
+// public API, so every OTHER subcommand's `--help` still falls through to
+// citty's own (env-sensitive) handling below.
+//
+// THE FIRST-NON-FLAG-TOKEN SCAN BELOW IS THE SAME COMPUTATION delegate.ts's
+// `forwardedFlags` performs (delegate.ts:208), and the two must not drift: one
+// decides whether this preamble owns the invocation, the other decides which
+// flags are forwarded to the bash engine, and a disagreement between them
+// means a run that prints help AND deploys, or neither.
 const rawArgs = process.argv.slice(2)
-const hasSubcommand = rawArgs.some((arg) => !arg.startsWith("-"))
+const firstTokenIndex = rawArgs.findIndex((arg) => !arg.startsWith("-"))
+const hasSubcommand = firstTokenIndex !== -1
 if (!hasSubcommand && (rawArgs.includes("--help") || rawArgs.includes("-h"))) {
   process.stdout.write(`${await renderUsage(main)}\n`)
+  process.exit(0)
+}
+// `update --help` is handled HERE, before runMain, for the same reason the
+// top-level case is: citty's per-subcommand help goes silent under NODE_ENV=
+// test, and handling it inside the command's own `run` is too late if citty
+// intercepts first. The text is scripts/luna-update-server's usage, whose
+// `Exit codes:` block operators read literally during an incident.
+//
+// POSITIONAL, NOT A MEMBERSHIP TEST. This used to ask whether `-h` appeared
+// ANYWHERE after the token, which made `update --ref -h` print usage and exit
+// 0 where the bash engine's own `case` loop assigns `-h` as the ref value and
+// refuses it. `updateArgvWantsHelp` walks the argv the way that loop does; the
+// slice below is `forwardedFlags`' shape (delegate.ts:207-215), computed from
+// the SAME first-non-flag-token scan for the reason stated just above.
+if (rawArgs[firstTokenIndex] === "update" && updateArgvWantsHelp(rawArgs.slice(firstTokenIndex + 1))) {
+  process.stdout.write(UPDATE_USAGE)
   process.exit(0)
 }
 if (rawArgs.length === 1 && rawArgs[0] === "--version") {

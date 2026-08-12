@@ -8,7 +8,7 @@
  * suitable for tests and the first few milestones. The SQLite-backed layer
  * per §5.1 lands in Phase 5 alongside the memory backends (same driver).
  */
-import { Effect, Layer, Ref, Stream } from "effect"
+import { Effect, Ref, Stream } from "effect"
 import type {
   SessionOptions,
   SessionQuery,
@@ -389,8 +389,3 @@ export class SessionStore extends Effect.Service<SessionStore>()(
   },
 ) {}
 
-/**
- * Explicit named alias for the default in-memory layer.
- * Phase 5 will add `SessionStore.Sqlite` alongside this.
- */
-export const SessionStoreMemory: Layer.Layer<SessionStore> = SessionStore.Default

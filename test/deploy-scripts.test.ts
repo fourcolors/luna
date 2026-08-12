@@ -3208,6 +3208,55 @@ esac
       expect(result.status, result.stderr).toBe(0)
       expect(result.stdout.trim()).toBe("0")
     })
+
+    /**
+     * THE SELF-CONNECTION CASE, which froze a live channel for 154 commits.
+     *
+     * The chat server holds a loopback connection to its own port, so both ends
+     * are owned by the unit's own MainPID. The old count included that pair, so
+     * the guard reported one phantom session forever, deferred every deploy,
+     * and exited 0 looking healthy. Nothing escalated, because deferring IS the
+     * right answer to a real session - only the count was wrong.
+     *
+     * The stub below reproduces the exact shapes observed on the live host:
+     * the listener owned by pid 220, the server side of the self-pair, and the
+     * client side ALSO owned by pid 220.
+     */
+    const selfConnStub = (extraEstablished = "", listenerPid = "220") => `
+case "$*" in
+  *-tlnHp*)  printf 'LISTEN 0 511 127.0.0.1:4753 0.0.0.0:* users:(("bun",pid=${listenerPid},fd=70))\\n' ;;
+  *dport*)   printf 'ESTAB 0 0 127.0.0.1:41430 127.0.0.1:4753 users:(("bun",pid=220,fd=71))\\n' ;;
+  *)         printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:41430\\n'${extraEstablished} ;;
+esac`
+
+    it("does NOT count the server talking to itself", () => {
+      const result = runWsCountWithSs(selfConnStub())
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim(), "a self-pair is not a user session").toBe("0")
+    })
+
+    it("still counts a REAL client alongside the self-connection", () => {
+      // One genuine session plus the phantom: the answer must be 1, not 0 and
+      // not 2. Undercounting here drops a live user mid-conversation.
+      const result = runWsCountWithSs(selfConnStub(`"ESTAB 0 0 127.0.0.1:4753 10.0.0.5:52001\\n"`))
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe("1")
+    })
+
+    it("falls back to the RAW count when ss cannot name the listener's process", () => {
+      // `ss -p` needs privileges. Where it cannot name a process the exclusion
+      // is unprovable, and the only safe direction is to round UP: report the
+      // old count and defer, rather than authorize a restart on a guess.
+      const noPid = `
+case "$*" in
+  *-tlnHp*)  printf 'LISTEN 0 511 127.0.0.1:4753 0.0.0.0:*\\n' ;;
+  *dport*)   printf 'ESTAB 0 0 127.0.0.1:41430 127.0.0.1:4753\\n' ;;
+  *)         printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:41430\\n' ;;
+esac`
+      const result = runWsCountWithSs(noPid)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim(), "unprovable means defer, never authorize").toBe("1")
+    })
   })
 
   // ── phase 2: luna-autodeploy --force gating (human-only, reason-gated) ─────

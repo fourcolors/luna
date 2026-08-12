@@ -324,6 +324,82 @@ const configError = (message: string): ParseOutcome => ({
 const DIGITS = /^[0-9]+$/
 
 /**
+ * The 18 parse-loop flags that consume the NEXT argv word (`shift 2` in bash).
+ * Kept beside the loop, and `config-flag-vocabulary` in
+ * assembly-fidelity.test.ts reads every `case "-..."` label out of THIS file
+ * and fails if one is missing from here or from BOOLEAN_FLAGS, so the two
+ * cannot drift apart silently.
+ */
+const VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--profile",
+  "--repo-dir",
+  "--luna-home",
+  "--ref",
+  "--service-dir",
+  "--service-name",
+  "--incus",
+  "--readiness-timeout",
+  "--readiness-interval",
+  "--readiness-port",
+  "--restart-settle",
+  "--operator-override",
+  "--layout",
+  "--deploy-root",
+  "--releases-keep",
+  "--supervisor",
+  "--launchd-label",
+  "--launchd-plist",
+])
+
+/** The 5 parse-loop flags that take no value (`shift` in bash). */
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  "--no-rollback",
+  "--restart-only",
+  "--materialize",
+  "--dry-run",
+  "--user",
+])
+
+/**
+ * Does this argv reach `-h`/`--help` in an OPTION position?
+ *
+ * WHY THIS IS NOT `argv.includes("-h")`. bash's parse loop is positional: at
+ * `--ref -h` the `--ref)` arm assigns `REF="-h"` and shifts past it (:219), so
+ * `-h` is a VALUE and the usage arm at :238 is never reached. A whole-argv
+ * membership test - which is what main.ts's pre-`runMain` preamble used to
+ * perform - prints usage and exits 0 for `update --ref -h`, where the bash
+ * engine deploys the ref literally named `-h` and fails to resolve it. It also
+ * printed usage for `update --bogus -h`, where bash dies at `--bogus` with
+ * exit 1; the walk below stops at any word that is not one of the 23 known
+ * flags, so that argv falls through to the real parse and its refusal.
+ *
+ * `argv` is the flags AFTER the `update` token (delegate.ts's `forwardedFlags`
+ * shape), which is exactly what parseUpdateConfig consumes.
+ */
+export const updateArgvWantsHelp = (argv: ReadonlyArray<string>): boolean => {
+  let i = 0
+  while (i < argv.length) {
+    const arg = argv[i]
+    if (arg === undefined) break
+    if (arg === "-h" || arg === "--help") return true
+    if (VALUE_FLAGS.has(arg)) {
+      // `${2:?...}` refuses a MISSING or EMPTY value (the same rule `valueAt`
+      // below encodes), and that refusal happens before any later `-h` is
+      // read, so `update --ref '' -h` is exit 1 in bash and must not be help.
+      const value = argv[i + 1]
+      if (value === undefined || value === "") return false
+      i += 2
+      continue
+    }
+    // A no-value flag advances one; anything else is `*) luna_die "unknown
+    // option: $1"` (:240) or a stray positional, and bash never gets past it.
+    if (!BOOLEAN_FLAGS.has(arg)) return false
+    i += 1
+  }
+  return false
+}
+
+/**
  * Parse `argv` (the flags AFTER the `update` subcommand token), validate it in
  * bash's order, and derive every path the rest of the run reads.
  *

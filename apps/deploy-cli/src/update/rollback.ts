@@ -126,6 +126,14 @@ export interface RollbackOptions extends RemediationContext {
   readonly writeTransaction: (phase: string) => void
   readonly clearTransaction: () => void
   readonly warn: (line: string) => void
+  /**
+   * RAW stderr, no prefix and no added newline: the CRITICAL line is a bare
+   * `printf` in bash (scripts/luna-update-server:1854-1855), not a luna_warn,
+   * so it carries neither the `warning: ` prefix nor this module's warn
+   * routing. See the emission point at the bottom of doRollbackSync for why
+   * this function - and not its caller - is the one that prints it.
+   */
+  readonly writeStderrRaw: (text: string) => void
 }
 
 export interface RollbackOutcome {
@@ -182,6 +190,14 @@ export function doRollbackSync(options: RollbackOptions): RollbackOutcome {
     return { exitCode: EXIT_ROLLED_BACK, guardSessions }
   }
 
+  // THE ORDER OF THESE TWO STATEMENTS IS THE CONTRACT, and it is bash's:
+  // CRITICAL is printed FIRST (:1854-1855) and the phase is written SECOND
+  // (:1856). Leaving the print to the caller - as this function did before -
+  // reverses it, so a crash between the two steps leaves a different on-disk
+  // state than bash leaves, which no stderr-only diff can see. The hint is
+  // built here rather than passed in because RollbackOptions already extends
+  // RemediationContext, so this function has everything remediationHint needs.
+  options.writeStderrRaw(`${criticalLine(ref, prev, remediationHint(options))}\n`)
   writeTransaction("rollback-failed")
   return { exitCode: EXIT_CRITICAL, guardSessions }
 }
@@ -189,13 +205,38 @@ export function doRollbackSync(options: RollbackOptions): RollbackOutcome {
 export interface FailForwardOptions extends RollbackOptions {
   /** `--no-rollback`: die at the new ref instead of rolling back. */
   readonly rollbackEnabled: boolean
-  /** `${NEW_HEAD:-$REF}` - the head actually checked out, when known. */
+  /**
+   * `${NEW_HEAD:-$REF}` - the head actually checked out, when known.
+   *
+   * Null is "not read yet" (`NEW_HEAD=""` at :1915, before the checkout).
+   * EMPTY STRING IS ALSO "not known", and that is bash's rule rather than a
+   * convenience: `:-` substitutes for an unset variable OR an empty one, so
+   * an empty NEW_HEAD makes bash print `HEAD=$REF`. See `headOrRef` below.
+   */
   readonly newHead: string | null
 }
 
 export type FailForwardOutcome =
   | { readonly kind: "died"; readonly exitCode: 1; readonly message: string }
   | { readonly kind: "rolled-back"; readonly outcome: RollbackOutcome }
+
+/**
+ * `${NEW_HEAD:-$REF}`, both occurrences (scripts/luna-update-server:1863 and
+ * :1866).
+ *
+ * BASH `:-` FIRES ON UNSET *OR* EMPTY, and the difference is reachable here.
+ * `NEW_HEAD="$(git_target_capture rev-parse HEAD)"` (:2040) is empty whenever
+ * git exits 0 and prints nothing - the same narrow window this spec's KNOWN
+ * DIVERGENCES already carves out for :1964 and :1992 - and `newHead` carries
+ * that empty string through update-flow.ts:377 unchanged. Spelling this
+ * `newHead ?? ref` substitutes only for null, so bash would print
+ * `HEAD=<the ref>` where the port printed `HEAD=` and, on the `--no-rollback`
+ * arm, `server left at <the ref>` where the port said `server left at `. Two
+ * operator lines that name no commit at all during a failed deploy, on the
+ * one path whose whole job is telling a human what the host is running.
+ */
+export const headOrRef = (newHead: string | null, ref: string): string =>
+  newHead === null || newHead === "" ? ref : newHead
 
 /**
  * `fail_forward` (scripts/luna-update-server:1861-1870).
@@ -206,7 +247,7 @@ export type FailForwardOutcome =
  * unhealthy build is still recorded as mid-transaction.
  */
 export function failForwardSync(reason: string, options: FailForwardOptions): FailForwardOutcome {
-  const head = options.newHead ?? options.ref
+  const head = headOrRef(options.newHead, options.ref)
   options.warn(`update to ${options.ref} failed: ${reason} (HEAD=${head})`)
 
   if (!options.rollbackEnabled) {

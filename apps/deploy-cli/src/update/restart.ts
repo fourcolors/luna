@@ -1,22 +1,56 @@
 /**
  * Stop -> settle -> start restart primitive: a behavioral port of
  * restart_service's core sequence (scripts/luna-update-server:1509 the
- * session guard, 1526-1528 sup_reload/sup_stop/settle_after_stop, 1549
- * sup_start) and settle_after_stop itself (scripts/luna-update-server:
- * 1256-1286). "Behavioral", not byte-exact: the bash `luna_info`/`luna_warn`
- * lines inside restart_service and settle_after_stop are not reproduced here
- * by design (this module returns typed outcomes instead) -
- * operatorOverrideLogLine in session-guard.ts is the one genuinely
- * byte-exact artifact this slice ships.
+ * session guard, 1519-1522 the MainPID pre-read, 1526-1528 sup_reload/
+ * sup_stop/settle_after_stop, 1549 sup_start, 1550-1568 the MainPID
+ * postcondition) and settle_after_stop itself (scripts/luna-update-server:
+ * 1256-1286).
+ *
+ * THIS MODULE PRINTS ELEVEN OPERATOR LINES, WHICH REVERSES PART OF ITS OWN
+ * S22c HEADER. That header said the bash `luna_info`/`luna_warn` lines inside
+ * restart_service and settle_after_stop were "not reproduced here by design
+ * (this module returns typed outcomes instead)". The typed outcomes are still
+ * returned, but the strings must ALSO be emitted, byte-exact, and from HERE.
+ *
+ * WHY FROM HERE AND NOT FROM THE CALLER. Bash emits all eleven from INSIDE the
+ * two functions this module ports, and restart_service has three in-scope
+ * callers (:1894 restart-only, :2056 the forward restart, :1824 the rollback
+ * restart). A caller-side printer would be one copy per caller, would drift,
+ * and two of the three could not print at all: restart-only never runs through
+ * the orchestrator, and rollback.ts sees the primitive only through a
+ * `restartService: (guardSessions: boolean) => number` seam. It is also the
+ * wrong ORDER even where it works - the warns are interleaved with the
+ * restart's own steps (between the is-failed probe and reset-failed, between
+ * stop and start, between start and the return), not appended after the
+ * primitive returns. So all eleven payloads go out through the injected
+ * `info`/`warn` seams below (the caller owns the `-> ` / `warning: ` prefix,
+ * exactly as rollback.ts/lock.ts/preflight.ts draw that line), at the four
+ * positions bash prints them:
+ *
+ *   1. restart_session_guard's five verdict lines (:1468, :1477, :1491,
+ *      :1494, :1497), emitted at restart_service's very FIRST statement
+ *      (:1509) and therefore before anything the restart itself prints;
+ *   2. settle_after_stop's invalid-value warn (:1276), settling info (:1279)
+ *      and sleep-failed warn (:1283), between sup_stop and sup_start (:1528);
+ *   3. sup_start's start-limit warn (:1375), between its is-failed probe
+ *      (:1374) and the reset-failed that clears the latch (:1376);
+ *   4. restart_service's two MainPID warns (:1559, :1563), between sup_start
+ *      (:1549) and the function's return (:1569).
+ *
+ * The payloads themselves are NOT declared here. The six restart-owned ones
+ * come from flow-lines.ts, so a reviewer diffing a changed bash string has one
+ * file to open rather than two; the five guard ones come from session-guard.ts's
+ * guardVerdictLine, which is the only place that can map GuardVerdict
+ * exhaustively. A PR1 primitive importing a PR2 constants file is acceptable
+ * because the dependency is on data, is acyclic, and flow-lines.ts imports
+ * nothing itself.
  *
  * Bare-host / systemd-supervisor scope only, matching session-guard.ts:
  * sup_reload/sup_stop/sup_start's launchd branches, the --user systemd flag,
  * and the incus run_target routing are all out of scope for this port.
  *
- * DELIBERATELY EXCLUDED from this port: the MainPID pre/post postcondition
- * and RESTART_PRESTART_HOOK, both layered on top of the same
- * reload/stop/settle/start core this module owns - see docs/deploy-binary.md
- * (the S22b section) for the S22c scoping rationale.
+ * STILL EXCLUDED: RESTART_PRESTART_HOOK (releases-only, and the releases
+ * layout is delegated whole to the bash engine by config.ts's delegationFor).
  *
  * DRY-RUN mirrors bash's `luna_run` (scripts/lib/luna-deploy.sh:8-18): under
  * dry-run, `run_target`/`luna_run` PRINT the would-be command and return
@@ -58,7 +92,21 @@
  * start act on, never a second, independently-resolved transport.
  */
 import { spawnSync } from "node:child_process"
-import { type GuardVerdict, type SessionGuardOptions, restartSessionGuardSync, stripTrailingNewlines } from "./session-guard.js"
+import {
+  mainPidInconclusiveLine,
+  mainPidUnchangedLine,
+  settleInvalidLine,
+  settleSleepFailedLine,
+  settlingLine,
+  startLimitLatchedLine,
+} from "./flow-lines.js"
+import {
+  type GuardVerdict,
+  type SessionGuardOptions,
+  guardVerdictLine,
+  restartSessionGuardSync,
+  stripTrailingNewlines,
+} from "./session-guard.js"
 
 /** Verbatim port of RESTART_SETTLE_SECS's default (scripts/luna-update-server:99, `LUNA_RESTART_SETTLE_SECS:-6`). See this module's header for the SQLITE_CANTOPEN rationale. */
 export const RESTART_SETTLE_SECS_DEFAULT = 6
@@ -66,12 +114,36 @@ export const RESTART_SETTLE_SECS_DEFAULT = 6
 /** `^[0-9]+(\.[0-9]+)?$` - byte-exact port of settle_after_stop's own validation regex (scripts/luna-update-server:1275). */
 const SETTLE_SECS_FORMAT = /^[0-9]+(\.[0-9]+)?$/
 
+/** `[[ "$pre_pid" =~ ^[0-9]+$ ]]` / `[[ ! "$post_pid" =~ ^[0-9]+$ ]]` - the validation restart_service applies to its OWN two reads (scripts/luna-update-server:1551, :1553), separate bash statements from sup_main_pid's own normalisation, which probes.ts ports. */
+const MAIN_PID_FORMAT = /^[0-9]+$/
+
 export interface SettleAfterStopOptions {
   readonly dryRun: boolean
   /** Raw string form, mirroring RESTART_SETTLE_SECS/--restart-settle/LUNA_RESTART_SETTLE_SECS: a STRING, not a parsed number, so an invalid value (e.g. "not-a-number") is representable and validated exactly as settle_after_stop's own regex does. */
   readonly settleSecs: string
   /** Defaults to spawning the real `sleep` binary - mirrors bash's `sleep "$RESTART_SETTLE_SECS"` byte-for-byte. Tests inject a fast stand-in so the settle knob is provably wired without paying real wall-clock time. */
   readonly sleepSync?: (seconds: string) => { readonly ok: boolean }
+  /**
+   * The `:1279` settling line, emitted at bash's own position: AFTER the
+   * format check (:1275-1278) and BEFORE the sleep starts (:1282).
+   *
+   * WHY IT IS A CALLBACK AND NOT A `SettleOutcome` ARM. The outcome does not
+   * exist until the sleep is over, so mapping the line from it - which is what
+   * this port did first - announces a six-second pause six seconds after it
+   * began. That is invisible to a byte diff (nothing else writes inside the
+   * window on either engine) and very visible to the two audiences this line
+   * has: an operator tailing a live deploy, who reads it as the explanation
+   * for a stalled terminal, and anyone reading the tail of a run that was
+   * killed DURING the settle, where bash's last line is the settling line and
+   * the outcome-mapped port's last line is the stop. This engine's whole
+   * subject is interrupted deploys, so the last line before an interrupt is
+   * not a cosmetic detail.
+   *
+   * OPTIONAL because this function stays callable without a writer (see its
+   * own doc); restartServiceSync always supplies it, so the compile-time
+   * guarantee that a real wiring cannot forget the line is unchanged.
+   */
+  readonly onSettling?: (settleSecs: string) => void
 }
 
 export type SettleOutcome =
@@ -88,9 +160,21 @@ const defaultSleepSync = (seconds: string): { readonly ok: boolean } => {
 
 /**
  * Behavioral port of settle_after_stop (scripts/luna-update-server:
- * 1256-1286): same branch structure and the verbatim regex/timing, but the
- * bash `luna_info`/`luna_warn` lines are not reproduced - see this module's
- * header. ALWAYS returns a result, never throws: it sits unguarded between
+ * 1256-1286): same branch structure and the verbatim regex/timing.
+ *
+ * IT DOES NOT CHOOSE ANY PAYLOAD, and that is not a contradiction of this
+ * module's header. Two of the three settle lines are emitted by
+ * restartServiceSync from the SettleOutcome this function returns, which is
+ * byte-identically the same position in the output because restart_service is
+ * settle_after_stop's only caller in bash (:1528). The third, the `:1279`
+ * settling line, is signalled through the optional `onSettling` callback
+ * INSIDE the window, because bash prints it before it sleeps (:1279 then
+ * :1282) and an outcome cannot be observed until the sleep is over - see
+ * `onSettling`'s own doc for why that difference is worth a seam. The
+ * callback carries the raw seconds and nothing else: the payload is still
+ * built in one place, by the caller, from flow-lines.ts.
+ *
+ * ALWAYS returns a result, never throws: it sits unguarded between
  * restart_service's two `|| return 1` lines in bash, so a stray failure here
  * must never trip the rollback path - mirrored here by every branch
  * returning a normal SettleOutcome, including "the sleep itself failed".
@@ -100,6 +184,9 @@ export const settleAfterStopSync = (opts: SettleAfterStopOptions): SettleOutcome
   if (opts.settleSecs === "0") return { kind: "skipped-zero" }
   if (!SETTLE_SECS_FORMAT.test(opts.settleSecs)) return { kind: "skipped-invalid", settleSecs: opts.settleSecs }
   const sleep = opts.sleepSync ?? defaultSleepSync
+  // :1279, BEFORE :1282's sleep. The order is bash's and it is the reason this
+  // is a callback at all - see onSettling's doc.
+  opts.onSettling?.(opts.settleSecs)
   const result = sleep(opts.settleSecs)
   if (!result.ok) return { kind: "settled-sleep-failed", settleSecs: opts.settleSecs }
   return { kind: "settled", settleSecs: opts.settleSecs }
@@ -130,23 +217,62 @@ export interface RestartServiceOptions {
    * caller that only cares about exit status may omit it.
    */
   readonly runSystemctl: (args: ReadonlyArray<string>) => { readonly status: number | null; readonly stdout?: string }
+  /**
+   * `sup_main_pid` (scripts/luna-update-server:1423-1430), for the MainPID
+   * postcondition. Production wiring passes probes.ts's supMainPidSync, which
+   * routes the read through the SAME run_target_capture waist as the readiness
+   * probes - so on an incus target the PID compared is the container's, which
+   * is what bash's own `run_target_capture` read (:1426) yields.
+   *
+   * OPTIONAL, and omitting it SKIPS the postcondition entirely rather than
+   * failing it. That is the same fail-only-on-positive-proof rule bash applies
+   * to an unreadable pre-PID (:1516-1518): a caller with no MainPID transport
+   * has no evidence the stop failed, and readiness_ok still gates. It is
+   * expressed as an absent seam rather than a stubbed-out reader so that a
+   * test asserting "no MainPID call was made" is possible at all.
+   */
+  readonly mainPid?: () => string
+  /**
+   * `luna_info` PAYLOAD, no `-> ` prefix - the caller owns the prefix, as in
+   * rollback.ts/lock.ts/preflight.ts. REQUIRED for the same reason `warn` is:
+   * the `:1279` settling line fires on EVERY production deploy (the default
+   * RESTART_SETTLE_SECS is 6, not 0), so a wiring that forgets it is a visible
+   * divergence from the bash engine on every single run, and that must be a
+   * compile error rather than a quiet gap.
+   */
+  readonly info: (line: string) => void
+  /**
+   * `luna_warn` PAYLOAD, no `warning: ` prefix - the caller owns the prefix,
+   * as in rollback.ts/lock.ts/preflight.ts. REQUIRED, not optional: the two
+   * MainPID warns are the only diagnosis an operator gets for a silently
+   * failed stop, and the guard verdict line is the only diagnosis for a
+   * deferred deploy, so a wiring that forgets them must be a compile error
+   * rather than a silent behaviour difference from the bash engine.
+   */
+  readonly warn: (line: string) => void
 }
 
 export type RestartOutcome =
   | { readonly code: 3; readonly verdict: Extract<GuardVerdict, { readonly permitted: false }> }
-  | { readonly code: 1; readonly step: "reload" | "stop" | "start" }
-  | { readonly code: 0; readonly settle: SettleOutcome }
+  /** `startLimitLatched` records that sup_start's is-failed probe agreed the unit was latched (:1374), so the reset-failed/retry cycle ran. Machine-readable only: the `:1375` warn is printed in place, not by the caller. */
+  | { readonly code: 1; readonly step: "reload" | "stop" | "start"; readonly startLimitLatched?: boolean }
+  /** The MainPID postcondition's ONE failing shape (:1560-1564): systemd answered, and the answer is the old, non-zero PID. Both PIDs travel so a caller can log them without re-reading. */
+  | { readonly code: 1; readonly step: "mainpid"; readonly prePid: string; readonly postPid: string }
+  /** `mainPidInconclusive` marks the :1553-1559 arm: the post-restart read was unanswerable, the check was SKIPPED, and the primitive passed. */
+  | { readonly code: 0; readonly settle: SettleOutcome; readonly mainPidInconclusive?: boolean; readonly startLimitLatched?: boolean }
 
 /**
  * Behavioral port of restart_service's core sequence (scripts/
- * luna-update-server:1509 the session guard, 1526-1528 sup_reload/sup_stop/
- * settle_after_stop, 1549 sup_start), minus the MainPID postcondition and
- * the releases-layout RESTART_PRESTART_HOOK sitting between them - see this
- * module's header. Exit codes mirror the bash primitive's own contract:
- * 3 = guard deferred (restart_session_guard || return 3), 1 = a supervisor
- * step failed (sup_reload/sup_stop/sup_start's `|| return 1`), 0 = the full
- * sequence completed (settle_after_stop never fails the primitive - see its
- * own doc). The start step includes sup_start's own start-limit-latched
+ * luna-update-server:1509 the session guard, 1519-1522 the MainPID pre-read,
+ * 1526-1528 sup_reload/sup_stop/settle_after_stop, 1549 sup_start, 1550-1568
+ * the MainPID postcondition), minus the releases-layout RESTART_PRESTART_HOOK
+ * sitting between them - see this module's header. Exit codes mirror the bash
+ * primitive's own contract: 3 = guard deferred (restart_session_guard ||
+ * return 3), 1 = a supervisor step failed (sup_reload/sup_stop/sup_start's
+ * `|| return 1`) OR the MainPID postcondition proved the stop failed
+ * (:1564's `return 1`), 0 = the full sequence completed (settle_after_stop
+ * never fails the primitive - see its own doc). The start step includes
+ * sup_start's own start-limit-latched
  * recovery (scripts/luna-update-server:1371-1381): a unit refused by
  * systemd's StartLimitIntervalSec/StartLimitBurst latch (scripts/
  * luna-server-install:280-281) gets exactly one is-failed -> reset-failed ->
@@ -174,7 +300,24 @@ export const restartServiceSync = (opts: RestartServiceOptions): RestartOutcome 
     // its fail-closed default and defers.
     readUnitState: (name) => stripTrailingNewlines(opts.runSystemctl(["is-active", name]).stdout ?? ""),
   })
+  // Emission point 1 (this module's header): bash warns from INSIDE
+  // restart_session_guard, so the line lands before the `|| return 3` at
+  // :1509 decides anything - which means it is printed on the PERMITTED arms
+  // too (the dead-server exception at :1491 is the guard line an operator
+  // sees on an otherwise successful deploy). Printing after the branch below
+  // would silence exactly that one.
+  const verdictLine = guardVerdictLine(verdict, opts.guard.readinessPort)
+  if (verdictLine !== null) opts.warn(verdictLine)
   if (!verdict.permitted) return { code: 3, verdict }
+
+  // :1519-1522 - the pre-read sits between the guard and sup_reload, never
+  // under dry-run (bash's own condition; `run_target_capture` would execute
+  // even there, which is why bash guards it explicitly), and systemd-only,
+  // which is structural here since this primitive implements no other arm.
+  // An absent seam reads as "" and takes exactly the same skip path bash's
+  // unknown pre-PID takes at :1551 - see mainPid's own doc.
+  const readMainPid = opts.mainPid
+  const prePid = !opts.dryRun && readMainPid ? readMainPid() : ""
 
   // Mirrors luna_run: under dry-run, print-only, never invoke, always
   // "succeed" - see this module's header.
@@ -183,18 +326,74 @@ export const restartServiceSync = (opts: RestartServiceOptions): RestartOutcome 
   if (runStep(["daemon-reload"]) !== 0) return { code: 1, step: "reload" }
   if (runStep(["stop", opts.serviceName]) !== 0) return { code: 1, step: "stop" }
 
+  // Emission point 2 (this module's header): settle_after_stop's own three
+  // lines, all between sup_stop and sup_start, at bash's positions WITHIN that
+  // window rather than merely inside it. The `:1279` info goes out through
+  // `onSettling` from inside the settle, before the sleep starts; the other
+  // two are mapped from the outcome below, which is when bash learns them
+  // too. `settled-sleep-failed` is TWO lines in bash and not one, in this
+  // order: :1279 prints before the sleep is attempted at :1282, and :1283 only
+  // after it fails. `skipped-dry-run` (:1267) and `skipped-zero` (:1268)
+  // return before bash reaches any line at all.
   const settle = settleAfterStopSync({
     dryRun: opts.dryRun,
     settleSecs: opts.settleSecs ?? String(RESTART_SETTLE_SECS_DEFAULT),
+    onSettling: (settleSecs) => opts.info(settlingLine(settleSecs)),
     ...(opts.sleepSync ? { sleepSync: opts.sleepSync } : {}),
   })
-
-  const startArgs = ["start", opts.serviceName]
-  if (runStep(startArgs) !== 0) {
-    if (runStep(["is-failed", opts.serviceName]) !== 0) return { code: 1, step: "start" }
-    runStep(["reset-failed", opts.serviceName])
-    if (runStep(startArgs) !== 0) return { code: 1, step: "start" }
+  switch (settle.kind) {
+    case "skipped-invalid":
+      opts.warn(settleInvalidLine(settle.settleSecs))
+      break
+    case "settled-sleep-failed":
+      opts.warn(settleSleepFailedLine(settle.settleSecs))
+      break
+    case "settled":
+    case "skipped-dry-run":
+    case "skipped-zero":
+      break
   }
 
-  return { code: 0, settle }
+  const startArgs = ["start", opts.serviceName]
+  let startLimitLatched = false
+  if (runStep(startArgs) !== 0) {
+    if (runStep(["is-failed", opts.serviceName]) !== 0) return { code: 1, step: "start" }
+    // Emission point 3 (this module's header): sup_start prints :1375 between
+    // the is-failed probe it just agreed with (:1374) and the reset-failed
+    // below (:1376), so an operator reading systemctl.log beside stderr sees
+    // the warn land between those two calls. The flag stays on the outcome as
+    // a MACHINE-READABLE signal (a parity test asserts the latch without
+    // string-matching stderr), not as a printing obligation on the caller.
+    opts.warn(startLimitLatchedLine(opts.serviceName))
+    startLimitLatched = true
+    runStep(["reset-failed", opts.serviceName])
+    if (runStep(startArgs) !== 0) return { code: 1, step: "start", startLimitLatched }
+  }
+  const latched = startLimitLatched ? { startLimitLatched: true } : {}
+
+  // :1550-1568, THE RULE IS FAIL ONLY ON POSITIVE PROOF, and emission point 4
+  // (this module's header) sits inside it. prePid is "" under
+  // dry-run and whenever no mainPid seam was supplied, so both skip here on
+  // the same condition bash uses for an unknown pre-PID, with no second test.
+  if (readMainPid && MAIN_PID_FORMAT.test(prePid) && prePid !== "0") {
+    const postPid = readMainPid()
+    if (!MAIN_PID_FORMAT.test(postPid)) {
+      // :1553-1559. A transport failure is not evidence the old process
+      // survived; failing here would route a healthy deploy into rollback on a
+      // read blip, and readiness_ok still gates the build that is serving.
+      opts.warn(mainPidInconclusiveLine)
+      return { code: 0, settle, mainPidInconclusive: true, ...latched }
+    }
+    if (postPid === prePid) {
+      // :1560-1564. The one positive proof: systemd answered, and the answer is
+      // the OLD pid, so the stop silently failed.
+      opts.warn(mainPidUnchangedLine(prePid, postPid))
+      return { code: 1, step: "mainpid", prePid, postPid }
+    }
+    // postPid === "0" PASSES (:1566-1567): systemd answered "no main process",
+    // which disproves "the old process is still serving". A failed START is
+    // readiness_ok's job, not this postcondition's.
+  }
+
+  return { code: 0, settle, ...latched }
 }
