@@ -242,8 +242,11 @@ export const guardVerdictLine = (verdict: GuardVerdict, readinessPort: string): 
  */
 export const stripTrailingNewlines = (s: string): string => s.replace(/\n+$/, "")
 
-/** Mirrors `[[ -n "$out" ]] && printf '%s\n' "$out" | wc -l || n=0` (scripts/lib/luna-deploy.sh:279/284) against output already stripped of trailing newlines by stripTrailingNewlines. */
-const countWsLines = (strippedOut: string): number => (strippedOut === "" ? 0 : strippedOut.split("\n").length)
+// countWsLines lived here and counted the probe's OUTPUT LINES. It is gone
+// because the shared shell probe now does its own counting and prints a single
+// decimal, so line-counting on this side would be a second, divergent notion of
+// what a session is - which is the exact class of drift that shared probe text
+// exists to prevent.
 
 /**
  * Real ss(8)/incus-exec probe: a faithful port of BOTH of
@@ -261,20 +264,56 @@ const countWsLines = (strippedOut: string): number => (strippedOut === "" ? 0 : 
  * test seam of its own (LUNA_TEST_WS_COUNT is bash's seam, not this port's)
  * - see this module's header.
  */
+/**
+ * BYTE-FOR-BYTE THE SAME SHELL PROBE `luna_active_ws_count` RUNS
+ * (scripts/lib/luna-deploy.sh). Not a re-implementation of it - the same text.
+ *
+ * WHY THE SAME TEXT AND NOT A TYPESCRIPT PORT. This function previously WAS a
+ * faithful port, and that is exactly how it inherited a live production bug:
+ * the chat server holds a loopback connection to its own port, both ends owned
+ * by the unit's own MainPID, and counting that self-pair as a user session made
+ * the guard defer every deploy forever while exiting 0. One channel sat 154
+ * commits behind, reporting success every three minutes.
+ *
+ * Fixing the bash did NOT fix this, because parity means the port reproduces
+ * whatever bash does, including its defects - so a behavioural fix has to land
+ * in two places, and the second one is easy to forget. It was forgotten: the
+ * binary went on deferring on a host where the bash engine no longer did.
+ *
+ * Sharing the probe text removes the second place. The two engines cannot
+ * disagree about what counts as a session, which is the one question where a
+ * disagreement drops live users.
+ */
+const WS_COUNT_PROBE = `
+port="$1"
+command -v ss >/dev/null 2>&1 || exit 9
+out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || exit 1
+if [ -n "$out" ]; then total="$(printf "%s\\n" "$out" | wc -l)"; else total=0; fi
+lp="$(ss -tlnHp "( sport = :$port )" 2>/dev/null | grep -o "pid=[0-9]*" | head -1)" || lp=""
+self=0
+if [ -n "$lp" ]; then
+  selfout="$(ss -tnHp state established "( dport = :$port )" 2>/dev/null)" || selfout=""
+  if [ -n "$selfout" ]; then self="$(printf "%s\\n" "$selfout" | grep -c "$lp," || true)"; fi
+fi
+[ -n "$self" ] || self=0
+n=$((total - self))
+[ "$n" -lt 0 ] && n=0
+printf "%s" "$n"
+`
+
 export const queryActiveWsCountSync = (port: string, incusContainer?: string): number => {
-  if (incusContainer) {
-    const innerScript = `command -v ss >/dev/null 2>&1 || exit 9; ss -tnH state established '( sport = :${port} )' 2>/dev/null`
-    const r = spawnSync("incus", ["exec", incusContainer, "--", "sh", "-c", innerScript], { encoding: "utf8" })
-    if (r.error || r.status !== 0) {
-      throw new Error(`incus exec ss failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
-    }
-    return countWsLines(stripTrailingNewlines(r.stdout ?? ""))
-  }
-  const r = spawnSync("ss", ["-tnH", "state", "established", `( sport = :${port} )`], { encoding: "utf8" })
+  const r = incusContainer
+    ? spawnSync("incus", ["exec", incusContainer, "--", "sh", "-c", WS_COUNT_PROBE, "_", port], { encoding: "utf8" })
+    : spawnSync("sh", ["-c", WS_COUNT_PROBE, "_", port], { encoding: "utf8" })
   if (r.error || r.status !== 0) {
-    throw new Error(`ss failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
+    const how = incusContainer ? "incus exec ss" : "ss"
+    throw new Error(`${how} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
   }
-  return countWsLines(stripTrailingNewlines(r.stdout ?? ""))
+  // The probe prints a single decimal. Anything else is a probe that did not
+  // run correctly, and UNKNOWN must never degrade to "zero sessions".
+  const text = stripTrailingNewlines(r.stdout ?? "")
+  if (!/^[0-9]+$/.test(text)) throw new Error(`ss probe returned a non-numeric count: ${JSON.stringify(text)}`)
+  return Number(text)
 }
 
 /**
