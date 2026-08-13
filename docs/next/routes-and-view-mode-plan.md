@@ -497,6 +497,7 @@ ACT, test first: the unresolvable-route refusal at the Rust seam (`with_tmp_luna
 Implementation: all three connect paths resolve through the same route-keyed resolution; the false comment at `wire.ts:748-760` is corrected in the same change.
 Reversing evidence: none expected; Gate 0.2 already proved the sentinel reaches the wire.
 LOOP-BACK: if the resolver's signature change alters what `load_connection` returns to the main path, RETURN TO Step 1a and re-run its assertions.
+STATUS: SHIPPED in PR #533 (two adversarial rounds, five findings fixed with red-run proof; closes #529; the loop-back did not fire - `load_connection` untouched); an absent or malformed credential store under a legacy sentinel is not-paired, never retryable; the corrupt-store re-pair blast radius is #532.
 
 **Step 1c. The panel path, the fan-out, and the live sinks.**
 OBSERVE: confirm the three connect paths still read as described (`wire.ts:1271-1297`, `panel.html:207-230`, `hubEngines.ts:425-462`); re-run Gate 0.3 and Gate 0.4.
