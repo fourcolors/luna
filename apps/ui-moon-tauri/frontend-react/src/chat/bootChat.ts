@@ -139,7 +139,8 @@ function assignBridge(
     | "FeedbackEngine"
     | "ArtifactsEngine"
     | "ChatState"
-    | "ChatLoop",
+    | "ChatLoop"
+    | "loadConnectionAndConnect",
   value: unknown,
 ): void {
   const w = window as unknown as Record<string, unknown> & { __MoonInternals?: Record<string, unknown> }
@@ -716,6 +717,24 @@ export function bootChat() {
   assignBridge("WebSocketEngine", wire.WebSocketEngine)
   assignBridge("PoolEngine", wire.PoolEngine)
   assignBridge("USE_POOL_ENGINE", wire.USE_POOL_ENGINE)
+  // wiring.ts's hub-event listener (installed BEFORE this function runs, so
+  // it cannot receive loadConnectionAndConnect as a constructor param) looks
+  // this up late via window.__MoonInternals.loadConnectionAndConnect on a
+  // profile-changed/connection-changed event - see wire.ts's doc comment on
+  // the returned loadConnectionAndConnect field.
+  //
+  // INVARIANT (F2, opus review on Step 1c): bootChat() stays SYNCHRONOUS
+  // from installWiring() through this assignBridge call. wiring.ts's
+  // hub-event handler cannot fire until AFTER this function returns (event
+  // listeners only run on a later microtask/macrotask), so this bridge is
+  // always populated by the time it's read - THAT is what makes the
+  // "install before construct" ordering safe. If bootChat() is ever made
+  // async, or ANY `await` is introduced between installWiring() and this
+  // line, that guarantee breaks: an event could fire while the bridge is
+  // still unset, silently stranding a window on stale credentials (the
+  // wiring.ts F2 guard makes that failure loud, but the right fix is to
+  // never let it happen). Keep this span synchronous.
+  assignBridge("loadConnectionAndConnect", wire.loadConnectionAndConnect)
 
   // Never retain a typed secret across a socket drop. Clear the VALUE only - do
   // NOT hide the panel, so the success flow's brief "saved" message (server

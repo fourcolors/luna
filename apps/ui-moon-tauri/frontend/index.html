@@ -2878,21 +2878,34 @@
     // Token priority: if a token is already stored (a previous run, or one
     // entered via the settings.connection panel), we don't overwrite it — the
     // user's explicit choice takes precedence over the auto-seeded value.
+    //
+    // F3 (opus review, rework round on plan Step 1c): main.rs now seeds
+    // ~/.luna/moon-connection.json DIRECTLY (Rust-side) when it finds a .env
+    // token and this profile lacks credentials, BEFORE emitting this event -
+    // the payload carries ONLY wsUrl (plus a seeded flag), never wsToken,
+    // since no URL redactor can reach a sibling JSON field. The old
+    // `payload.wsToken` gate below was silently inert the moment that
+    // shipped (the field never arrives) - the no-drift discipline every
+    // other consumer of this event honored was skipped in this file until
+    // now. Re-read the now-seeded store via load_connection instead, the
+    // same source every other connect path uses, mirroring the React
+    // consumer (MoonHubApp.tsx) exactly.
     if (window.__TAURI__ && window.__TAURI__.event) {
       window.__TAURI__.event.listen('luna-config', async ({ payload }) => {
         // Wait for the (now async) settings load to finish populating
         // State.wsToken before checking the precedence guard, so a token
         // restored from the secure file is not clobbered by the .env seed.
         await settingsLoaded
-        if (payload.wsToken && !State.wsToken) {
-          State.wsToken = payload.wsToken
-          State.wsUrl = payload.wsUrl || State.wsUrl
-          // Persist the seeded token to the mode-600 secure file (NOT
-          // localStorage) so re-launches don't need a re-emit. URL is a
-          // non-secret convenience cache.
-          await SettingsEngine.persistConnection(State.wsUrl, State.wsToken)
-          // C2: removed bare luna_ws_url write; URL authority is now the
-          // route (MoonSession.resolveBootRoute) or moon-connection.json.
+        if (State.wsToken) return // already connected - no-op
+        // `?.` parity with the React consumer's getCore(): the outer guard
+        // only proves `.event` exists, and a missing `.core` here would be an
+        // unhandled rejection inside an async listener with no catch.
+        const creds = await window.__TAURI__.core?.invoke('load_connection').catch(() => null)
+        if (creds && creds.wsToken) {
+          State.wsToken = creds.wsToken
+          State.wsUrl = creds.wsUrl || payload.wsUrl || State.wsUrl
+          // No persistConnection() call here - Rust already wrote the store
+          // before emitting; re-persisting the same creds is redundant.
           Logger.info('luna-config: token seeded from ~/.luna/.env, connecting...')
           // Reconnect unconditionally so the freshly-seeded token is applied to
           // the live connection. connect() disconnects-first, cleanly tearing

@@ -420,17 +420,41 @@ fn main() {
                                     .map(|s| s.to_string())
                                     .filter(|s| !s.is_empty())
                             })
-                            .or(seed_url_from_env)
+                            .or_else(|| seed_url_from_env.clone())
                             .unwrap_or_else(|| "ws://127.0.0.1:4753/ui".to_string());
 
+                        // Step 1c Part 3d: write the store DIRECTLY when this
+                        // profile lacks credentials, instead of sending the raw
+                        // token across the webview boundary - no URL redactor
+                        // can reach a sibling JSON field, so wsToken must never
+                        // be a field on the emitted event at all.
+                        let luna_dir = std::path::PathBuf::from(&home).join(".luna");
+                        match connection::seed_connection_from_env_in(
+                            &luna_dir,
+                            &active_profile,
+                            &seed_url,
+                            &token,
+                        ) {
+                            Ok(true) => eprintln!(
+                                "info: [luna] seeded moon-connection.json for profile {active_profile:?} from ~/.luna/.env"
+                            ),
+                            Ok(false) => { /* already credentialed - nothing to seed */ }
+                            Err(e) => eprintln!(
+                                "warn: [luna] failed to seed connection from ~/.luna/.env: {e}"
+                            ),
+                        }
+
                         // Using emit_to so only the main window receives it;
-                        // emit() would broadcast to all windows.
+                        // emit() would broadcast to all windows. The payload
+                        // carries ONLY wsUrl (plus a seeded flag) - the
+                        // consumer re-reads the now-seeded store via
+                        // load_connection, matching every other connect path.
                         let _ = app.emit_to(
                             tauri::EventTarget::labeled("main"),
                             "luna-config",
                             serde_json::json!({
-                                "wsToken": token,
-                                "wsUrl": seed_url
+                                "wsUrl": seed_url,
+                                "seeded": true
                             }),
                         );
                     }

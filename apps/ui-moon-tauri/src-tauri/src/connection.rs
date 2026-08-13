@@ -227,25 +227,68 @@ fn persist_profiles(
     write_atomic_0600(&path, &body)
 }
 
-#[tauri::command]
-pub(crate) fn save_connection(
-    url: String,
-    token: String,
-    profile: Option<String>,
+/// Inner implementation of `save_connection` that accepts an explicit
+/// `luna_dir` so tests can drive a tempdir without mutating `$HOME`.
+///
+/// #532 fold-in: when moon-connection.json exists but is UNPARSEABLE (as
+/// opposed to simply absent), `normalize_profiles` on garbage starts from an
+/// empty profile set - a plain save would silently DISCARD every other
+/// profile's credentials with no trace they ever existed. Back the corrupt
+/// file up (mode 0600, same atomic-write discipline as the store itself)
+/// BEFORE persisting the fresh store, and log to stderr, so pairing genuinely
+/// fixes a garbled store instead of quietly destroying data alongside it.
+/// This closes #532's data-loss half; the distinct-pill half stays open.
+fn save_connection_in(
+    luna_dir: &std::path::Path,
+    url: &str,
+    token: &str,
+    profile: Option<&str>,
 ) -> Result<(), String> {
+    let path = luna_dir.join("moon-connection.json");
+
     // Read + migrate the existing file so other profiles are PRESERVED. A
-    // legacy flat file becomes profiles.stable transparently. Missing/garbage
-    // starts from an empty profile set.
-    let existing = read_connection_value();
-    let (active, mut profiles) = match &existing {
-        Some(v) => normalize_profiles(v),
+    // legacy flat file becomes profiles.stable transparently. Absent starts
+    // from an empty profile set. Present-but-unparseable ALSO starts from an
+    // empty profile set, but only after backing the original bytes up.
+    let raw_contents = std::fs::read_to_string(&path).ok();
+    let (active, mut profiles) = match &raw_contents {
         None => (DEFAULT_PROFILE.to_string(), serde_json::Map::new()),
+        Some(contents) => match serde_json::from_str::<serde_json::Value>(contents) {
+            Ok(v) => normalize_profiles(&v),
+            Err(parse_err) => {
+                // F4 (opus review): nanos, not seconds - two corrupt saves
+                // landing within the same second would otherwise collide and
+                // the second backup would silently overwrite the first,
+                // destroying evidence of the FIRST garbled store. Reuses
+                // write_atomic_0600's own pid+nanos temp-name idiom above.
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let backup_path = luna_dir.join(format!(
+                    "moon-connection.json.corrupt-{}-{}",
+                    std::process::id(),
+                    nanos
+                ));
+                match write_atomic_0600(&backup_path, contents) {
+                    Ok(()) => eprintln!(
+                        "warn: [luna] moon-connection.json was unparseable ({parse_err}); backed up the original to {}",
+                        backup_path.display()
+                    ),
+                    Err(backup_err) => eprintln!(
+                        "warn: [luna] moon-connection.json was unparseable ({parse_err}) AND its backup failed ({backup_err}); proceeding anyway (Save must not be blocked by a garbled store)"
+                    ),
+                }
+                (DEFAULT_PROFILE.to_string(), serde_json::Map::new())
+            }
+        },
     };
 
     // Target slot: explicit profile arg, else the active profile (so the
     // settings panel "Save" updates whatever channel is currently selected).
     let target = profile
         .filter(|p| !p.trim().is_empty())
+        .map(|p| p.to_string())
         .unwrap_or_else(|| active.clone());
 
     profiles.insert(
@@ -255,7 +298,64 @@ pub(crate) fn save_connection(
 
     // Always write the NEW format. activeProfile is unchanged here (saving creds
     // for a channel does not switch the active channel).
-    persist_profiles(&active, &profiles)
+    let body = serde_json::to_string(&serde_json::json!({
+        "activeProfile": active,
+        "profiles": serde_json::Value::Object(profiles),
+    }))
+    .map_err(|e| format!("serialize failed: {}", e))?;
+    write_atomic_0600(&path, &body)
+}
+
+#[tauri::command]
+pub(crate) fn save_connection(
+    url: String,
+    token: String,
+    profile: Option<String>,
+) -> Result<(), String> {
+    let luna_dir = std::env::var("HOME")
+        .map_err(|e| format!("HOME not set: {e}"))
+        .map(|h| std::path::PathBuf::from(h).join(".luna"))?;
+    save_connection_in(&luna_dir, &url, &token, profile.as_deref())
+}
+
+/// Step 1c Part 3d: seed `moon-connection.json` directly from a `~/.luna/.env`
+/// `UI_WS_TOKEN`, INSTEAD of sending the raw token across the webview
+/// boundary via the `luna-config` event (no URL redactor can reach a sibling
+/// JSON field, so that field is a live sink for as long as it exists - see
+/// docs/next/routes-and-view-mode-plan.md's "The security invariant, which is
+/// not deferrable"). Called from main.rs's setup, BEFORE the event fires.
+///
+/// Only writes when `active_profile` genuinely LACKS credentials (no entry,
+/// or an entry with an empty/missing `wsToken`) - never overwrites a
+/// genuinely-paired profile with a stale or wrong .env seed. Returns whether
+/// it actually seeded, so the caller can log accordingly; the write itself
+/// reuses `save_connection_in`'s atomic-0600 + corrupt-store-backup machinery
+/// (#532 fold-in), so a garbled store gets the same protection here.
+pub(crate) fn seed_connection_from_env_in(
+    luna_dir: &std::path::Path,
+    active_profile: &str,
+    url: &str,
+    token: &str,
+) -> Result<bool, String> {
+    let existing = read_connection_value_in(luna_dir);
+    let profiles = match &existing {
+        Some(v) => normalize_profiles(v).1,
+        None => serde_json::Map::new(),
+    };
+
+    let already_credentialed = profile_connection(&profiles, active_profile)
+        .and_then(|c| {
+            c.get("wsToken")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+        })
+        .unwrap_or(false);
+    if already_credentialed {
+        return Ok(false);
+    }
+
+    save_connection_in(luna_dir, url, token, Some(active_profile))?;
+    Ok(true)
 }
 
 /// Inner implementation of `load_connection` that operates on an explicit
@@ -724,6 +824,208 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #532 fold-in: a corrupt (unparseable) moon-connection.json must be
+    /// backed up before save_connection_in overwrites it - otherwise pairing
+    /// a route through a garbled store silently destroys every other
+    /// profile's credentials with no trace they ever existed.
+    #[test]
+    fn save_connection_in_backs_up_a_corrupt_store_before_overwriting_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna).expect("mkdir .luna");
+
+        let garbage = "{ this is not valid json, and it used to hold real creds";
+        std::fs::write(luna.join("moon-connection.json"), garbage).expect("seed corrupt file");
+
+        save_connection_in(&luna, "ws://canary:4753/ui", "canary-tok", Some("canary"))
+            .expect("save must succeed even against a corrupt store");
+
+        // The fresh store parses and carries the new save.
+        let fresh = std::fs::read_to_string(luna.join("moon-connection.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&fresh).expect("new store parses");
+        assert_eq!(value["profiles"]["canary"]["wsToken"], json!("canary-tok"));
+
+        // Exactly one backup exists, named
+        // moon-connection.json.corrupt-<pid>-<nanos>, and its bytes are the
+        // ORIGINAL garbage, byte-for-byte.
+        let backups: Vec<_> = std::fs::read_dir(&luna)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("moon-connection.json.corrupt-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one corrupt-store backup");
+        let backup_contents = std::fs::read_to_string(backups[0].path()).unwrap();
+        assert_eq!(backup_contents, garbage, "backup preserves the original bytes exactly");
+
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(backups[0].path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "backup is mode 0600, same as the store itself");
+    }
+
+    /// F4 (opus review): two corrupt saves landing within the same SECOND
+    /// must produce TWO distinct backups, not one silently overwriting the
+    /// other. A second-precision filename would collide here; nanos does not.
+    #[test]
+    fn save_connection_in_never_collides_two_corrupt_backups_in_the_same_second() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna).expect("mkdir .luna");
+
+        let garbage_one = "{ first corrupt write, garbage-one";
+        std::fs::write(luna.join("moon-connection.json"), garbage_one).expect("seed first corrupt file");
+        save_connection_in(&luna, "ws://canary:4753/ui", "tok-1", Some("canary")).expect("save #1");
+
+        // Corrupt the FRESH store again immediately (well within the same
+        // wall-clock second on any real machine) and save again.
+        let garbage_two = "{ second corrupt write, garbage-two";
+        std::fs::write(luna.join("moon-connection.json"), garbage_two).expect("seed second corrupt file");
+        save_connection_in(&luna, "ws://canary:4753/ui", "tok-2", Some("canary")).expect("save #2");
+
+        let mut backups: Vec<_> = std::fs::read_dir(&luna)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("moon-connection.json.corrupt-")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            2,
+            "two distinct backups, not one overwritten by the other"
+        );
+
+        backups.sort_by_key(|e| e.file_name());
+        let contents: Vec<String> = backups
+            .iter()
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(
+            contents.contains(&garbage_one.to_string()),
+            "the FIRST corrupt store's bytes must survive"
+        );
+        assert!(
+            contents.contains(&garbage_two.to_string()),
+            "the SECOND corrupt store's bytes must survive"
+        );
+    }
+
+    /// The common case (file absent, or already valid) must NOT create a
+    /// backup - only a genuinely corrupt file triggers one.
+    #[test]
+    fn save_connection_in_creates_no_backup_when_the_store_is_absent_or_valid() {
+        with_tmp_luna_dir(|luna_dir| {
+            // Absent case.
+            save_connection_in(&luna_dir, "ws://stable:4753/ui", "tok1", None)
+                .expect("save against an absent store");
+            let no_backup = std::fs::read_dir(&luna_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+            assert!(!no_backup, "an absent store must never produce a backup");
+
+            // Valid case: save again against the now-valid store.
+            save_connection_in(&luna_dir, "ws://stable:4753/ui", "tok2", None)
+                .expect("save against a valid store");
+            let still_no_backup = std::fs::read_dir(&luna_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+            assert!(!still_no_backup, "a valid store must never produce a backup");
+        });
+    }
+
+    /// Step 1c Part 3d seeding DECISION, scenario one: a fresh install has
+    /// the token ONLY in ~/.luna/.env (load_connection has nothing to
+    /// return) - the store must be CREATED with it.
+    #[test]
+    fn seed_connection_from_env_in_creates_the_store_when_absent() {
+        with_tmp_luna_dir(|luna_dir| {
+            let seeded = seed_connection_from_env_in(
+                &luna_dir,
+                "stable",
+                "ws://127.0.0.1:4753/ui",
+                "env-seed-tok",
+            )
+            .expect("seeding an absent store must succeed");
+            assert!(seeded, "an absent store has no creds - must seed");
+
+            let value = read_connection_value_in(&luna_dir).expect("store now exists");
+            let (_, profiles) = normalize_profiles(&value);
+            let creds = profile_connection(&profiles, "stable").expect("stable profile written");
+            assert_eq!(creds["wsToken"], json!("env-seed-tok"));
+            assert_eq!(creds["wsUrl"], json!("ws://127.0.0.1:4753/ui"));
+        });
+    }
+
+    /// Step 1c Part 3d seeding DECISION, scenario two: the active profile
+    /// already has creds - the store must be left UNTOUCHED (never clobber a
+    /// genuinely-paired profile with a stale or wrong .env value).
+    #[test]
+    fn seed_connection_from_env_in_leaves_an_already_credentialed_profile_untouched() {
+        with_tmp_luna_dir(|luna_dir| {
+            save_connection_in(&luna_dir, "ws://paired.host:4753/ui", "real-paired-tok", Some("stable"))
+                .expect("seed a real pairing first");
+
+            let seeded = seed_connection_from_env_in(
+                &luna_dir,
+                "stable",
+                "ws://127.0.0.1:4753/ui",
+                "env-seed-tok-should-not-land",
+            )
+            .expect("must not error even though it declines to write");
+            assert!(!seeded, "an already-credentialed profile must not be re-seeded");
+
+            let value = read_connection_value_in(&luna_dir).expect("store still exists");
+            let (_, profiles) = normalize_profiles(&value);
+            let creds = profile_connection(&profiles, "stable").expect("stable profile still present");
+            assert_eq!(
+                creds["wsToken"],
+                json!("real-paired-tok"),
+                "the real pairing must survive untouched"
+            );
+            assert_eq!(creds["wsUrl"], json!("ws://paired.host:4753/ui"));
+        });
+    }
+
+    /// The seeding decision is keyed by PROFILE, not by "the store has any
+    /// content at all" - a store with OTHER profiles paired but NOT this one
+    /// must still seed this one.
+    #[test]
+    fn seed_connection_from_env_in_seeds_a_specific_unpaired_profile_even_when_others_exist() {
+        with_tmp_luna_dir(|luna_dir| {
+            save_connection_in(&luna_dir, "ws://stable.host:4753/ui", "stable-tok", Some("stable"))
+                .expect("seed stable first");
+
+            let seeded = seed_connection_from_env_in(
+                &luna_dir,
+                "canary",
+                "ws://canary.host:4753/ui",
+                "env-seed-for-canary",
+            )
+            .expect("seeding a different, unpaired profile must succeed");
+            assert!(seeded);
+
+            let value = read_connection_value_in(&luna_dir).unwrap();
+            let (_, profiles) = normalize_profiles(&value);
+            assert_eq!(
+                profile_connection(&profiles, "stable").unwrap()["wsToken"],
+                json!("stable-tok"),
+                "stable's existing pairing must survive"
+            );
+            assert_eq!(
+                profile_connection(&profiles, "canary").unwrap()["wsToken"],
+                json!("env-seed-for-canary"),
+                "canary must now be seeded"
+            );
+        });
     }
 
     #[test]

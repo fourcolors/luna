@@ -339,13 +339,6 @@ fn load_session() -> MoonSession {
     }
 }
 
-fn save_session(session: &MoonSession) -> Result<(), String> {
-    let path = moon_session_path()?;
-    let body = serde_json::to_string_pretty(session)
-        .map_err(|e| format!("moon-session.json serialize error: {e}"))?;
-    write_atomic_0600(&path, &body)
-}
-
 /// Retrieve the route key assigned to a panel (returns `null` / `None` when
 /// the panel hasn't been assigned one yet; the caller then uses the default).
 #[tauri::command]
@@ -354,12 +347,45 @@ pub fn get_panel_route(panel_id: String) -> Option<String> {
     session.panels.get(&panel_id).and_then(|p| p.route.clone())
 }
 
+/// Inner implementation of `set_panel_route` that accepts an explicit
+/// `luna_dir` so tests can pass a tempdir without mutating `HOME` - mirrors
+/// `set_panel_last_thread_in`'s pattern (Step 1c: `set_panel_route` had zero
+/// Rust tests despite this plan promoting it into the write path - a panel's
+/// bound route is now read on every connect, not just at pairing time).
+///
+/// Preserves every OTHER panel's entry and this panel's own `last_thread`
+/// (the plan's round-trip scenario: writing a route for panel A must not
+/// disturb A's last-thread pointer or any other panel's slot).
+fn set_panel_route_in(
+    luna_dir: &std::path::Path,
+    panel_id: &str,
+    route_key: &str,
+) -> Result<(), String> {
+    let session_path = luna_dir.join("moon-session.json");
+
+    let mut session: MoonSession = std::fs::read_to_string(&session_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    session
+        .panels
+        .entry(panel_id.to_string())
+        .or_default()
+        .route = Some(route_key.to_string());
+
+    let body = serde_json::to_string_pretty(&session)
+        .map_err(|e| format!("moon-session.json serialize error: {e}"))?;
+    write_atomic_0600(&session_path, &body)
+}
+
 /// Persist `route_key` as the route for `panel_id` in `moon-session.json`.
+///
+/// Delegates to `set_panel_route_in` with the real `~/.luna` directory.
 #[tauri::command]
 pub fn set_panel_route(panel_id: String, route_key: String) -> Result<(), String> {
-    let mut session = load_session();
-    session.panels.entry(panel_id).or_default().route = Some(route_key);
-    save_session(&session)
+    let dir = luna_dir()?;
+    set_panel_route_in(&dir, &panel_id, &route_key)
 }
 
 // ── Phase-2 last-thread (per-panel) ──────────────────────────────────────────
@@ -1482,6 +1508,44 @@ tokenRef  = "env:ALPHA_TOKEN"
                 secondary.as_deref(),
                 Some("secondary-thread"),
                 "panel-secondary must be untouched"
+            );
+        });
+    }
+
+    /// Step 1c round-trip scenario (plan's "a panel route write preserves the
+    /// rest of the session"): writing panel-chat's route must preserve its
+    /// own last_thread AND every other panel's entry untouched.
+    #[test]
+    fn set_panel_route_in_preserves_last_thread_and_other_panels() {
+        with_tmp_luna(|luna_dir| {
+            set_panel_route_in(&luna_dir, "panel-chat", "stable").expect("set initial route");
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "t-1").expect("set last thread");
+            set_panel_route_in(&luna_dir, "panel-secondary", "canary")
+                .expect("set panel-secondary route");
+
+            // The scenario: set_panel_route("panel-chat", "canary") is called.
+            set_panel_route_in(&luna_dir, "panel-chat", "canary").expect("switch route");
+
+            let session_path = luna_dir.join("moon-session.json");
+            let session: MoonSession =
+                serde_json::from_str(&std::fs::read_to_string(&session_path).unwrap()).unwrap();
+
+            let chat = session.panels.get("panel-chat").expect("panel-chat entry");
+            assert_eq!(chat.route.as_deref(), Some("canary"), "route must be updated");
+            assert_eq!(
+                chat.last_thread.as_deref(),
+                Some("t-1"),
+                "last_thread must survive the route write"
+            );
+
+            let secondary = session
+                .panels
+                .get("panel-secondary")
+                .expect("panel-secondary entry");
+            assert_eq!(
+                secondary.route.as_deref(),
+                Some("canary"),
+                "every other panel's entry must be unchanged"
             );
         });
     }

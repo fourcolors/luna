@@ -855,6 +855,18 @@ export function installWiring(ctx: WiringCtx) {
           // window owns the THREAD socket — re-read the secure file and
           // reconnect, resetting thread state exactly like the hub's
           // switchChannel did (thread ids are scoped to a server's DB).
+          //
+          // loadConnectionAndConnect lives inside wire.ts's createWire()
+          // closure, and installWiring() (this function) runs BEFORE
+          // createWire() in bootChat.ts's construction order, so it cannot
+          // be received as a constructor param here. bootChat.ts bridges it
+          // onto window.__MoonInternals.loadConnectionAndConnect right after
+          // createWire() returns - by the time this handler actually FIRES
+          // (an event arriving well after boot completes), that bridge is
+          // always populated. A bare reference here would be a
+          // ReferenceError, silently swallowed by the .catch below, which
+          // is exactly the bug Step 1c's fan-out testing caught: the chat
+          // window never actually reconnected on a real profile switch.
           Promise.resolve()
             .then(async () => {
               State.activeThreadId = null;
@@ -863,7 +875,27 @@ export function installWiring(ctx: WiringCtx) {
               State.skipLastThreadFile = true;
               ChatState.reset();
               ChatLoop.flush();
-              await loadConnectionAndConnect();
+              const bridge = window.__MoonInternals && window.__MoonInternals.loadConnectionAndConnect;
+              if (typeof bridge !== 'function') {
+                // F2 (opus review): this must NEVER be a silent no-op - the
+                // exact same swallow shape as the ReferenceError bug this
+                // bridge fixed. If bootChat.ts's assignBridge ordering (see
+                // its invariant comment) or this file's construction-order
+                // assumption ever breaks, the window is left holding OLD
+                // credentials after a profile switch with no visible signal
+                // at all - Logger.error names the consequence explicitly so
+                // a real user (not just a console reader) can tell.
+                Logger.error(
+                  `hub-event ${p.name}: window.__MoonInternals.loadConnectionAndConnect is unavailable - `
+                    + 'this window keeps OLD credentials after a profile switch',
+                );
+                const engine = window.__MoonInternals && window.__MoonInternals.WebSocketEngine;
+                if (engine && typeof engine.updateStatus === 'function') {
+                  engine.updateStatus('disconnected', 'Reconnect failed');
+                }
+                return;
+              }
+              await bridge();
             })
             .catch((err) => Logger.warn(`hub-event ${p.name} failed:`, err));
         }
