@@ -488,6 +488,7 @@ ORIENT on ordering: one click writes two files through two unlocked commands and
 The display path is quarantined in the same step: when `client.toml` is present the selector's value is `list_routes().default` and nothing else, which means severing BOTH reducer paths (`profile-loaded` and `routes-loaded`, `connectionReducer.ts:171-195`) and INVERTING the two fence tests that pin the stale preference (`settings-connection-panel.test.tsx:528-553` and its vanilla twin `panel-connection.test.ts:528-551`), not adding alongside them.
 The vanilla settings panel must move in the same commit or be retired; a third writer is how this bug was born.
 LOOP-BACK: if key and profile name cannot move together without changing `set_active_profile`'s return shape, stop and re-scope THIS step (the reducer and API question), because Settings' displayed state depends on that shape (`SettingsConnectionPanel.tsx:136-143`).
+STATUS: SHIPPED in PR #531 (two adversarial rounds: four findings fixed with per-finding red-run proof, then approved); the guard's token-resolvability check is a frontend mirror of `connection.rs` resolution, explicitly temporary until Step 1b's Result command.
 
 **Step 1b. Token resolution is keyed by the route being connected.**
 OBSERVE: `grep -n 'tokenRef' ~/.luna/client.toml`; re-read `wire.ts:748-760` against `client_config.rs:599`; confirm #528's fence is green.
