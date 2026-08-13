@@ -723,7 +723,8 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       setDefaultRoute,
     }
     const { ctx, invoke } = makeCtx((cmd) => {
-      if (cmd === 'load_route') return { key: 'canary', token_ref: 'literal-tok-abc', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') return 'TOK-CANARY-RESOLVED'
       if (cmd === 'set_active_profile') {
         callOrder.push('set_active_profile:canary')
         return { wsUrl: 'ws://canary:4753/ui', wsToken: 'TOK-CANARY' }
@@ -751,7 +752,8 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       setDefaultRoute: vi.fn().mockResolvedValue(false),
     }
     const { ctx, invoke } = makeCtx((cmd) => {
-      if (cmd === 'load_route') return { key: 'canary', token_ref: 'literal-tok-abc', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') return 'TOK-CANARY-RESOLVED'
       if (cmd === 'set_active_profile') return { wsUrl: 'ws://canary:4753/ui', wsToken: 'TOK-CANARY' }
       return null
     })
@@ -811,9 +813,9 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       setDefaultRoute,
     }
     const { ctx, invoke } = makeCtx((cmd) => {
-      if (cmd === 'load_route') return { key: 'canary', token_ref: 'legacy', endpoints: ['ws://canary:4753/ui'] }
-      if (cmd === 'load_profiles') {
-        return { activeProfile: 'stable', profiles: { stable: { wsUrl: 'ws://stable:4753/ui', wsToken: 'TOK-STABLE' } } }
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('not-paired: route "canary" has no token paired in moon-connection.json')
       }
       return null
     })
@@ -839,6 +841,104 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
     expect(tokenInput().value).toBe('')
   })
 
+  it('#F1: a missing moon-connection.json store (not just an unpaired profile) still fires the pairing prompt, not the revert', async () => {
+    // The exact message shape connection.rs's resolve_route_token now emits
+    // for an ABSENT store (F1, opus review on plan Step 1b) - distinct from
+    // the "no matching profile token" wording the other not-paired tests use.
+    // Before the fix this path returned "store-read:" (a RETRYABLE class),
+    // which never reaches this branch at all and instead reverts the
+    // selector; this pins that the whole-store-missing case is durable and
+    // pairing-prompted, exactly like the no-matching-profile case.
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('not-paired: route "canary" has no credential store yet - pair it to create one')
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('canary') // pairing UX: refused selections stay selected, NOT reverted
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('canary')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+    expect(urlInput().value).toBe('ws://canary:4753/ui')
+    expect(tokenInput().value).toBe('')
+  })
+
+  it('#F4: a BARE STRING rejection from resolve_route_token (real Tauri Err(String) shape, not an Error wrapper) still routes to the pairing prompt', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        // eslint-disable-next-line no-throw-literal
+        throw 'not-paired: route "canary" has no token paired in moon-connection.json'
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('canary') // pairing UX: refused selections stay selected
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('canary')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+    expect(urlInput().value).toBe('ws://canary:4753/ui')
+    expect(tokenInput().value).toBe('')
+  })
+
+  it('a non-"not-paired:" resolve_route_token error (e.g. route-missing) reverts the selector, unlike the pairing case', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('route-missing: no route named "canary"')
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    // F2(b), not F2(a): this is NOT the pairing case, so the selector
+    // REVERTS - unlike a "not-paired:" refusal, which keeps the selection.
+    expect(channelSelect().value).toBe('stable')
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('route-missing:')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+  })
+
   it('pairing: a refused unpaired route stays selected, Save targets it, and a retried switch succeeds once paired', async () => {
     const setDefaultRoute = vi.fn().mockResolvedValue(true)
     let profiles: Record<string, { wsUrl: string; wsToken: string }> = {
@@ -849,8 +949,12 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       setDefaultRoute,
     }
     const { ctx, invoke } = makeCtx((cmd, args) => {
-      if (cmd === 'load_route') return { key: 'canary', token_ref: 'legacy', endpoints: ['ws://canary:4753/ui'] }
-      if (cmd === 'load_profiles') return { activeProfile: 'stable', profiles }
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        const p = profiles[args.routeKey]
+        if (p && p.wsToken) return p.wsToken
+        throw new Error(`not-paired: route "${args.routeKey}" has no token paired in moon-connection.json`)
+      }
       if (cmd === 'set_active_profile') {
         const p = profiles[args.name]
         return { wsUrl: p?.wsUrl ?? '', wsToken: p?.wsToken ?? '' }
@@ -907,7 +1011,8 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       setDefaultRoute: vi.fn().mockResolvedValue(true),
     }
     const { ctx, invoke } = makeCtx((cmd) => {
-      if (cmd === 'load_route') return { key: 'canary', token_ref: 'literal-tok-abc', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') return 'TOK-CANARY-RESOLVED'
       if (cmd === 'set_active_profile') return { wsUrl: 'ws://canary:4753/ui', wsToken: 'TOK-CANARY' }
       return null
     })
@@ -969,8 +1074,9 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
     const gate = new Promise((resolve) => { resolveSetActiveProfile = resolve })
     const { ctx, invoke } = makeCtx((cmd, args) => {
       if (cmd === 'load_route') {
-        return { key: args.routeKey, token_ref: 'literal-tok', endpoints: ['ws://' + args.routeKey + ':4753/ui'] }
+        return { key: args.routeKey, endpoints: ['ws://' + args.routeKey + ':4753/ui'] }
       }
+      if (cmd === 'resolve_route_token') return 'TOK-RESOLVED-' + args.routeKey
       if (cmd === 'set_active_profile') {
         return gate.then(() => ({ wsUrl: 'ws://' + args.name + ':4753/ui', wsToken: 'TOK-' + args.name }))
       }

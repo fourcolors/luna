@@ -129,6 +129,9 @@ fn main() {
         connection::load_connection,
         connection::load_profiles,
         connection::set_active_profile,
+        // Step 1b: route-keyed token resolution, the ONE place it happens
+        // (docs/next/routes-and-view-mode-plan.md, closes #529).
+        connection::resolve_route_token,
         // Phase-2 C3: route config + panel session state.
         client_config::load_route,
         client_config::list_routes,
@@ -182,6 +185,9 @@ fn main() {
         connection::load_connection,
         connection::load_profiles,
         connection::set_active_profile,
+        // Step 1b: route-keyed token resolution, the ONE place it happens
+        // (docs/next/routes-and-view-mode-plan.md, closes #529).
+        connection::resolve_route_token,
         // Phase-2 C3: route config + panel session state.
         client_config::load_route,
         client_config::list_routes,

@@ -665,6 +665,15 @@ export function createWire(ctx: WireCtx) {
 
       this.clearSubscribeTimeout();
       this.clearTurnTimeout();
+      // F5 (opus review): a pending top-level retry (_scheduleRetry, from a
+      // PRIOR failed attempt - e.g. an earlier "not-paired:" refusal) must not
+      // survive into this fresh connect(). loadConnectionAndConnect() calls
+      // connect() directly, never disconnect() first, so without this clear a
+      // user who just paired the route in Settings (hub_event('profile-changed')
+      // -> loadConnectionAndConnect() -> connect() establishes the connection)
+      // can have the STALE timer fire moments later, calling connect() a
+      // second time and tearing down the connection their pairing just built.
+      if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
       // (4) Fresh connect resets the bounded stall self-heal budget (mirrors
       // WebSocketEngine.connect — refresh reattachRound + the tombstone set so
       // a reconnect gets a full recovery budget, not a stale one).
@@ -690,37 +699,29 @@ export function createWire(ctx: WireCtx) {
 
       // Resolve the route via MoonSession (C2) → build a ConnectionManager
       // route entry from State.wsUrl / State.wsToken as fallback.
-      let routeKey, endpoints, tokenRef;
+      let routeKey, endpoints, tokenRef, tokenResolveError;
       try {
         // Prefer the C2 route system when available
         const bootRoute = await MoonSession.resolveBootRoute(null);
         if (bootRoute && Array.isArray(bootRoute.endpoints) && bootRoute.endpoints.length > 0) {
           routeKey = bootRoute.key || bootRoute.routeKey || 'default';
           endpoints = bootRoute.endpoints;
-          tokenRef = bootRoute.token_ref || bootRoute.tokenRef || '';
 
-          // Migrated routes carry the "legacy" sentinel (client_config.rs),
-          // not a resolved token or a scheme ref (#528). load_connection
-          // already resolved the real token into State.wsToken BEFORE
-          // connect() runs (see loadConnectionAndConnect below), so
-          // substitute it here rather than dialing the sentinel verbatim as
-          // the bearer. If State.wsToken is itself unresolved (the Rust side
-          // returns the sentinel as-is when the profile is missing -
-          // connection.rs), there is no valid substitute; tokenRef stays the
-          // sentinel and the guard below refuses to dial it.
-          //
-          // INSURANCE, NOT A GENERAL SOLUTION: this substitution is only
-          // correct because connect() always resolves the boot route with
-          // panelId=null (the DEFAULT route, a few lines up), the same route
-          // key loadConnectionAndConnect resolved State.wsToken for. It would
-          // be WRONG the moment a real panelId is passed here - a per-panel
-          // route can differ from the default one, so State.wsToken would be
-          // the wrong profile's token. Step 1b (route-keyed resolution,
-          // docs/next/routes-and-view-mode-plan.md) replaces this stand-in
-          // with a resolver keyed off the route actually being connected
-          // before that happens.
-          if (tokenRef === 'legacy' && State.wsToken && State.wsToken !== 'legacy') {
-            tokenRef = State.wsToken;
+          // Step 1b (docs/next/routes-and-view-mode-plan.md): token
+          // resolution is keyed by the route being connected, in ONE place
+          // (connection.rs's resolve_route_token) - retiring the 1b0
+          // stand-in that substituted State.wsToken for the "legacy"
+          // sentinel. That stand-in only worked because connect() always
+          // resolves with panelId=null (the default route), the same key
+          // State.wsToken happened to already be resolved for; a real
+          // per-panel route would have silently used the WRONG profile's
+          // token. resolve_route_token resolves EXACTLY this route's token,
+          // whichever route that is - and returns a Result, so an
+          // unresolved sentinel is a real Err, not a client-side guess.
+          try {
+            tokenRef = await window.__TAURI__.core.invoke('resolve_route_token', { routeKey });
+          } catch (e) {
+            tokenResolveError = e instanceof Error ? e.message : String(e);
           }
         } else {
           // Fallback: synthesize a route from the legacy State.wsUrl/wsToken
@@ -741,35 +742,73 @@ export function createWire(ctx: WireCtx) {
         return;
       }
 
-      // An unresolved sentinel must never reach the wire as a literal bearer
-      // (?token=legacy, #528). Refuse to dial rather than ship broken auth
-      // for a migrated user whose profile could not be resolved - and refuse
-      // HONESTLY, not by leaving a stale adapter attached. send() below gates
-      // only on `this._adapter && this._isConnected`; if either were left set
-      // from a prior successful connect, a message typed here would still go
-      // out over that OLD adapter while every reply came back on the OLD gen
-      // - which the frame-dispatch gate (myGen, bumped above) now rejects.
-      // That is a zombie half-connection: messages vanish, the turn hangs at
+      // resolve_route_token rejected: refuse to dial rather than ship broken
+      // auth (#528), and refuse HONESTLY, not by leaving a stale adapter
+      // attached. send() below gates only on `this._adapter &&
+      // this._isConnected`; if either were left set from a prior successful
+      // connect, a message typed here would still go out over that OLD
+      // adapter while every reply came back on the OLD gen - which the
+      // frame-dispatch gate (myGen, bumped above) now rejects. That is a
+      // zombie half-connection: messages vanish, the turn hangs at
       // "thinking" forever, and the status pill claims disconnected. Tearing
       // the adapter down and reporting disconnected is the only state that
       // is not a lie about what just happened.
-      //
-      // Deliberately NO auto-retry here. A bare retry cannot recover on its
-      // own: State.wsToken only refreshes via loadConnectionAndConnect, which
-      // is re-entered by the hub-event ('profile-changed' / 'connection-changed')
-      // handler for the window that owns it (wiring.ts) once the user re-pairs
-      // in Settings. A parallel window that never receives that hub-event is a
-      // pre-existing fan-out gap - Step 1c of
-      // docs/next/routes-and-view-mode-plan.md widens the fan-out to close it;
-      // it is not something a retry loop here could paper over.
-      if (tokenRef === 'legacy') {
-        Logger.error('[PoolEngine] route token unresolved (sentinel); refusing to dial - pair this route in Settings');
+      if (tokenResolveError) {
+        // #529: the error taxonomy's prefix decides whether a retry can
+        // help. "store-read:" means client.toml or moon-connection.json
+        // could not be read THIS attempt (transient I/O, or a concurrent
+        // pairing flow mid-write) - a fresh read on the NEXT connect() can
+        // succeed, so schedule the existing top-level backoff instead of a
+        // terminal refusal. Every other cause (route-missing, not-paired,
+        // unresolvable-scheme, route-config-invalid) is a durable problem a
+        // bare retry cannot fix - the user (or Settings) has to act first.
+        const retryable = tokenResolveError.startsWith('store-read:');
+        const notPaired = tokenResolveError.startsWith('not-paired:');
+        Logger.error(
+          '[PoolEngine] route token resolution failed; refusing to dial - '
+            + (retryable ? 'will retry' : 'pair this route in Settings'),
+        );
+        this._teardownAdapter();
+        this._isConnected = false;
+        this._fireDisconnect('route-unresolved');
+        this._updateObservability();
+        if (retryable) {
+          this.updateStatus('connecting', 'Reconnecting…');
+          this._scheduleRetry();
+        } else {
+          State.reconnectAttempts = 0;
+          this.updateStatus('disconnected', notPaired ? 'Route not paired' : 'Route unavailable');
+        }
+        return;
+      }
+
+      // F2 (opus review): defense in depth for the FALLBACK branches above
+      // (bootRoute null - either no client.toml at all, or resolveBootRoute
+      // itself failed). Those branches take tokenRef straight from
+      // State.wsToken with NO resolver in between - the Rust resolver above
+      // can never return a sentinel or scheme ref, but connection.rs's
+      // load_connection_in (which populates State.wsToken, in
+      // loadConnectionAndConnect, BEFORE connect() runs) returns its own
+      // tokenRef VERBATIM when ITS resolution fails, so State.wsToken can
+      // legitimately BE the raw "legacy" sentinel or an unresolved
+      // env:/file:/op:// ref here. This is the same #528 bug class reached
+      // through a different door - a value-based guard, not a route-based
+      // one, since this path never went through the resolver at all.
+      const isSentinel = tokenRef === 'legacy';
+      const isSchemeRef = typeof tokenRef === 'string'
+        && (tokenRef.startsWith('env:') || tokenRef.startsWith('file:') || tokenRef.startsWith('op://'));
+      if (isSentinel || isSchemeRef) {
+        Logger.error(
+          '[PoolEngine] fallback route token is unresolved ('
+            + (isSentinel ? 'sentinel' : 'scheme ref')
+            + '); refusing to dial - pair this route in Settings',
+        );
         this._teardownAdapter();
         this._isConnected = false;
         this._fireDisconnect('route-unresolved');
         this._updateObservability();
         State.reconnectAttempts = 0;
-        this.updateStatus('disconnected', 'Route not paired');
+        this.updateStatus('disconnected', isSentinel ? 'Route not paired' : 'Route unavailable');
         return;
       }
 
@@ -801,24 +840,22 @@ export function createWire(ctx: WireCtx) {
 
       // Build a single-route ConnectionManager for this window's route.
       //
-      // No TokenResolver is injected here yet, so the adapter uses the
-      // LITERAL tokenRef as the bearer. Migrated routes carry the "legacy"
-      // sentinel (client_config.rs), not a resolved token or a scheme ref;
-      // the guard above substitutes the token load_connection already
-      // resolved (State.wsToken) and refuses to dial when no valid
-      // substitute exists (#528), so a sentinel never reaches the wire as a
-      // literal bearer. Un-migrated routes still carry an already-resolved
-      // literal token (from the secure moon-connection.json) or "none" - NOT
-      // a scheme ref, and pass through unchanged. We do NOT inject
-      // LT.unconfiguredBrowserTokenResolver here: that stub throws on EVERY
-      // ref (including a valid literal token), which would break the live
-      // connection. The throwing stub only makes sense once the real
-      // Tauri-backed resolver is wired AND routes start carrying scheme refs
-      // (env:/file:/op://) instead of literal tokens - full route-keyed
-      // resolution is Step 1b of docs/next/routes-and-view-mode-plan.md.
-      // Until then a scheme-prefixed tokenRef would (incorrectly) be used as
-      // the literal bearer; this is tracked as the host-side resolver-wiring
-      // follow-up and is out of scope for the seam-only token-resolver slice.
+      // No TokenResolver is injected here, and none is needed: by this point
+      // `tokenRef` is ALREADY the fully-resolved bearer (a literal token, or
+      // "" for tokenRef "none") - connection.rs's resolve_route_token (Step
+      // 1b, docs/next/routes-and-view-mode-plan.md) did the resolving above,
+      // in the ONE place it happens, and returned an Err (handled above,
+      // before this line is ever reached) for anything it could not resolve
+      // - including the "legacy" sentinel (#528) and env:/file:/op:// scheme
+      // refs, which Phase 3 will resolve server-side rather than client-side.
+      // What remains for Phase 3 is NOT this seam: it's giving the Rust side
+      // the ability to resolve scheme refs at all (today they hit
+      // "unresolvable-scheme:" unconditionally) and, if a client-side
+      // resolver ever becomes the right shape for that, wiring an adapter-
+      // level TokenResolver here. Until then this seam stays unused on
+      // purpose - injecting LT.unconfiguredBrowserTokenResolver would throw
+      // on the already-resolved literal tokenRef this code now always hands
+      // the adapter, breaking every live connection for no benefit.
       const routeMap = new Map([[routeKey, { routeKey, endpoints, tokenRef }]]);
       // Custom adapter factory rather than the bare LT.selectAdapter, which
       // hardcodes reconnectOpts to undefined and so would leave the adapter

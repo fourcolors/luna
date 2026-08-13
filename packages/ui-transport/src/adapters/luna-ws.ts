@@ -195,6 +195,23 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   }
 
   /**
+   * Append the resolved bearer token to `url` as a `token` query param -
+   * mirrors moon-protocol.js's buildWsUrl EXACTLY, including its falsy-token
+   * short-circuit (F3, opus review on plan Step 1b): a route whose tokenRef
+   * is "none" resolves to "" (connection.rs's resolve_route_token - the ONE
+   * intentional empty result, per packages/ui-transport/src/token-resolver.ts's
+   * doc comment), and that empty token must dial a URL with NO token
+   * parameter at all - not `?token=` with an empty value. The two builders
+   * must never diverge: a consumer reading buildWsUrl's documented contract
+   * elsewhere in the app must see the SAME wire shape this adapter produces.
+   */
+  #tokenizeUrl(url: string, token: string): string {
+    if (!token) return url
+    const sep = url.includes("?") ? "&" : "?"
+    return `${url}${sep}token=${encodeURIComponent(token)}`
+  }
+
+  /**
    * Register a callback to receive ALL raw server frames (including hello).
    * Returns an unsubscribe function. Safe to call before attach().
    *
@@ -254,8 +271,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       this.#publishConnectionState({ status: "down", reason })
       throw err
     }
-    const sep = url.includes("?") ? "&" : "?"
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`
+    const tokenizedUrl = this.#tokenizeUrl(url, token)
 
     const result = await this.#connectWs(tokenizedUrl)
     this.#lastAttach = result
@@ -602,8 +618,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     // Reuse the cached token from the initial attach (resolved once). On the
     // off-chance it is not yet cached (defensive), resolve again.
     const token = await this.#resolveToken()
-    const sep = url.includes("?") ? "&" : "?"
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`
+    const tokenizedUrl = this.#tokenizeUrl(url, token)
 
     this.#ws = null
 
