@@ -516,6 +516,7 @@ DECIDE: the indicator's SOURCE OF TRUTH is the window's own connection state, ca
 What Gate 0.3 decides is only the update TRANSPORT: if the widened fan-out reliably reaches every window, route changes propagate by event; if not, the payload extension at `windows.rs:331` is moot and each window re-resolves on its own reconnect.
 ACT, test first: the five indicator scenarios; drive the drop through the pooled-connection seam, and do NOT extend `live-reconnect.test.ts`, which is opt-in behind `LUNA_LIVE_WS` and needs a human.
 LOOP-BACK: if the route a window displays can disagree with the route its socket is on, RETURN TO Step 1c; the indicator is not allowed to be the thing that papers over a substrate disagreement.
+STATUS: SHIPPED in PR #535 (two adversarial rounds; the blocker lived exactly in a test the first pass skipped as redundant - the paint ordering that would have let a live socket wear a refused route's label; failure states LATCH by construction; real-browser screenshot gated).
 
 **Step 3. The view-mode seam plus its redaction boundary.**
 OBSERVE: re-run Gate 0.4; every credential string a surface could render is either produced by `describeWsUrl` or listed as a named sink with a fix.
