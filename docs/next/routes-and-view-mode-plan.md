@@ -476,6 +476,7 @@ The Step 0 gates run once before any of this.
 The sentinel-as-bearer fix is a release blocker independent of this plan and lands as its own commit, either before this plan starts or as Step 1b's opening move.
 Its regression fence is the Gate 0.2 probe recipe (issue #528): no `FakeWebSocket.instances[].url` may contain `token=legacy`.
 Everything after this line assumes the default engine dials real tokens.
+STATUS: SHIPPED in PR #530 (fence: `pool-engine-token-resolution.test.ts`, 4 tests including refusal-while-connected); the transient-vs-unpaired refusal split is #529 and folds into Step 1b.
 
 **Step 1a. The switch writes the route key, guarded.**
 OBSERVE: re-run Gate 0.1; confirm `handleChannelChange` still calls only `set_active_profile` (`SettingsConnectionPanel.tsx:134-148`).
