@@ -150,8 +150,14 @@ describe('View mode (plan Step 3) - chat window', () => {
     viewMode().enable()
 
     expect(viewMode().isEnabled()).toBe(true)
-    // The route is untouched: same label, still connected.
-    expect(indicator().textContent).toBe('Stable Prod')
+    // The ROUTE is untouched: same label, still connected - the chip's
+    // TEXT does change (Step 4 renders the verbose form the instant
+    // viewMode flips, via the same _paintRouteIndicator writer), which is
+    // exactly the point of this step; route-indicator.test.ts's "verbose
+    // form" describe block pins the exact string. Here, assert only what
+    // "untouched" actually means: still the SAME route, still connected,
+    // no new socket.
+    expect(indicator().textContent).toContain('Stable Prod')
     expect(indicator().className).toContain('connected')
     // No reconnection occurred: not one extra socket was constructed.
     expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
@@ -285,5 +291,29 @@ describe('View mode (plan Step 3) - chat window', () => {
 
     indicator().dispatchEvent(new Event('click', { bubbles: true }))
     expect(viewMode().isEnabled()).toBe(false)
+  })
+
+  // F1 (opus review on plan Step 3): role="button" alone does not make
+  // Enter/Space activate a <span> - only a real <button> synthesizes click
+  // from keys, and a span never does (WCAG 2.1.1).
+  it('Keyboard affordance: Enter toggles view mode', async () => {
+    bootWindow(ROUTE_STABLE)
+    await bringUp()
+    expect(viewMode().isEnabled()).toBe(false)
+
+    indicator().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(viewMode().isEnabled()).toBe(true)
+  })
+
+  it('Keyboard affordance: Space toggles view mode and prevents the page-scroll default', async () => {
+    bootWindow(ROUTE_STABLE)
+    await bringUp()
+    expect(viewMode().isEnabled()).toBe(false)
+
+    const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    indicator().dispatchEvent(event)
+
+    expect(viewMode().isEnabled()).toBe(true)
+    expect(event.defaultPrevented).toBe(true)
   })
 })

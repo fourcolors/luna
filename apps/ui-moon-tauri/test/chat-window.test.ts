@@ -23,6 +23,7 @@ import {
   mountChatDomFromHtml,
   readChatHtml,
 } from './helpers/chat-harness'
+import { FakeWebSocket } from './helpers/FakeWebSocket'
 
 /**
  * Set the page's socket stub AND the ACTIVE engine's connected flag.
@@ -5486,6 +5487,67 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.ViewMode.isEnabled()).toBe(true)
     })
 
+    // Plan Step 4: a redock arrival with viewMode:true must render the
+    // verbose form IMMEDIATELY on the owner window's chip - not merely flip
+    // a state flag that happens to show up on the NEXT unrelated repaint.
+    // This window's default beforeEach boot never loads moon-session.js
+    // (several other scenarios in this file assert the no-MoonSession
+    // fallback), so its chip has no label to render verbosely - re-boot
+    // here with a real client.toml route (mirrors route-indicator.test.ts's
+    // harness) so there is real label/endpoint/state to prove against.
+    it('Scenario 5: a redocked verbose arrival renders the verbose form on THIS (owner) window immediately', async () => {
+      const invoke = vi.fn(async (cmd: string) => {
+        switch (cmd) {
+          case 'load_connection':
+            return { wsUrl: 'ws://owner-host:4753/ui', wsToken: 'legacy' }
+          case 'list_routes':
+            return { default: 'owner-route', routes: [{ key: 'owner-route', label: 'Owner Route' }] }
+          case 'load_route':
+            return {
+              key: 'owner-route', label: 'Owner Route',
+              endpoints: ['ws://owner-host:4753/ui'], token_ref: 'legacy', transport: 'luna-ws',
+            }
+          case 'resolve_route_token':
+            return 'RESOLVED-TOK-owner'
+          default:
+            return null
+        }
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      loadVendorInto(window, 'moon-session.js')
+      FakeWebSocket.reset()
+      vi.stubGlobal('WebSocket', FakeWebSocket)
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+
+      const settle = async (steps = 8, ms = 50) => {
+        for (let i = 0; i < steps; i++) await vi.advanceTimersByTimeAsync(ms)
+      }
+      await settle()
+      const sock = FakeWebSocket.latest()!
+      sock.simulateOpen()
+      sock.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      await settle()
+
+      const indicatorEl = document.getElementById('route-indicator')!
+      expect(indicatorEl.textContent).toBe('Owner Route')
+      const m = M()
+      expect(m.ViewMode.isEnabled()).toBe(false)
+
+      windowEventHandlers['redock-thread']({
+        payload: { threadId: 'thr-1', draft: null, from: 'widget-abc', yRatio: null, viewMode: true },
+      })
+
+      // No await, no further settle: the verbose form must already be
+      // painted synchronously inside the redock-thread handler, via
+      // ViewMode.enable()'s own repaint (see wire.ts's _repaintRouteIndicator).
+      expect(m.ViewMode.isEnabled()).toBe(true)
+      expect(indicatorEl.textContent).toContain('Owner Route')
+      expect(indicatorEl.textContent).toContain('owner-host:4753/ui')
+      expect(indicatorEl.textContent).toContain('Connected')
+    })
+
     it('Scenario 5: the Redock button stamps viewMode:true when THIS (floater) window is verbose', () => {
       window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner')
       mountChatDomFromHtml(htmlContent)
@@ -5529,6 +5591,59 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         kind: 'chat',
         params: { thread: 'thr-99', redockTo: 'panel-chat', viewMode: true },
       })
+    })
+
+    // Plan Step 4, the detach-arrival half: the NEW floater window boots
+    // off ?viewMode=true (stamped by Scenario 6 above) - wiring.ts reads
+    // that back as INITIAL_VIEW_MODE and bootChat.ts calls
+    // wire.ViewMode.enable() BEFORE wire.boot() ever runs, so the FIRST
+    // successful connect's own paint call already renders verbose - no
+    // separate "apply it after boot" step is needed, and none exists.
+    it('Scenario 6: a floater booted from ?viewMode=true renders the verbose form on its FIRST successful connect', async () => {
+      window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner&viewMode=true')
+      const invoke = vi.fn(async (cmd: string) => {
+        switch (cmd) {
+          case 'load_connection':
+            return { wsUrl: 'ws://floater-host:4753/ui', wsToken: 'legacy' }
+          case 'list_routes':
+            return { default: 'floater-route', routes: [{ key: 'floater-route', label: 'Floater Route' }] }
+          case 'load_route':
+            return {
+              key: 'floater-route', label: 'Floater Route',
+              endpoints: ['ws://floater-host:4753/ui'], token_ref: 'legacy', transport: 'luna-ws',
+            }
+          case 'resolve_route_token':
+            return 'RESOLVED-TOK-floater'
+          default:
+            return null
+        }
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      loadVendorInto(window, 'moon-session.js')
+      FakeWebSocket.reset()
+      vi.stubGlobal('WebSocket', FakeWebSocket)
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+
+      const m = M()
+      expect(m.ViewMode.isEnabled(), 'INITIAL_VIEW_MODE must have been applied before the first connect').toBe(true)
+
+      const settle = async (steps = 8, ms = 50) => {
+        for (let i = 0; i < steps; i++) await vi.advanceTimersByTimeAsync(ms)
+      }
+      await settle()
+      const sock = FakeWebSocket.latest()!
+      sock.simulateOpen()
+      sock.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      await settle()
+
+      const indicatorEl = document.getElementById('route-indicator')!
+      expect(indicatorEl.textContent).toContain('Floater Route')
+      expect(indicatorEl.textContent).toContain('floater-host:4753/ui')
+      expect(indicatorEl.textContent).toContain('Connected')
+
+      window.history.replaceState({}, '', '/')
     })
 
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {

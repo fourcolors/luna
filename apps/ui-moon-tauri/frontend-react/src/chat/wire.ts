@@ -659,6 +659,14 @@ export function createWire(ctx: WireCtx) {
     _unsubFrames: null,   // unsubscribe fn from adapter.subscribeFrames
     _unsubConn: null,     // unsubscribe fn from adapter.subscribeConnection
     _isConnected: false,  // true once adapter reaches 'ready'
+    // STRUCTURAL FIX (plan Step 4 review, chat-only blocker): the last
+    // `connected` value _paintRouteIndicator actually PAINTED - mutated
+    // ONLY inside that function, never anywhere else. _repaintRouteIndicator
+    // (below, in the ViewMode block) reads THIS instead of _isConnected, so
+    // a toggle can never disagree with what the chip is already showing,
+    // no matter what future staleness _isConnected develops (the root fix
+    // above closes the ONE known cause; this closes the whole class).
+    _lastPaintedConnected: false,
     _closeHooks: [],      // mirrors WebSocketEngine._closeHooks seam
     _hooksArmed: false,   // true after first 'ready'; cleared by _fireDisconnect
 
@@ -852,6 +860,16 @@ export function createWire(ctx: WireCtx) {
       // sees the raw value again, only this already-redacted string.
       this._routeEndpointDisplay = (endpoints && endpoints[0])
         ? LunaProtocol.describeWsUrl(endpoints[0]) : null;
+      // ROOT FIX (plan Step 4 review, chat-only blocker): _teardownAdapter()
+      // above does not touch _isConnected (the staleness flagged since Step
+      // 1b) - without this line, _isConnected still held the PREVIOUS
+      // route's `true` all the way from here until acquire() resolves or
+      // fails below. Any reader consulting _isConnected during that window
+      // (not just the repaint helper further down this file) would see a
+      // live connection that no longer exists. Setting it here, at the
+      // exact point the new route's identity is claimed, retires that for
+      // every reader, not only the one this review found.
+      this._isConnected = false;
       // Step 2 (plan's route indicator): paint the NEW route's label with a
       // disconnected mark BEFORE dialing - this is the point that satisfies
       // "switching to a route whose endpoint never accepts a connection...
@@ -1190,10 +1208,46 @@ export function createWire(ctx: WireCtx) {
     // label (no route model resolved) hides the chip entirely - "just the
     // connection state" per the plan, which the existing #connection-status
     // pill already carries; this chip adds nothing to show in that case.
+    // VERBOSE FORM (plan Step 4): when ViewMode is enabled, the SAME writer
+    // additionally renders the seam's endpointDisplay (already redacted -
+    // never a raw URL, see ViewMode.seam()'s own doc comment) alongside the
+    // label and the connected/disconnected word this call is ALREADY
+    // painting via `connected` - never re-derived from anywhere else, so
+    // verbose text and the className it sits beside can never disagree.
+    // This is still the ONLY writer of DOM.routeIndicator; ViewMode's
+    // toggle()/enable()/disable() (below) call THIS function again with the
+    // CURRENT _routeLabel/_isConnected to force an immediate re-render on a
+    // toggle or a redock-applied enable() - they never invent a new
+    // connected value, so the latch (only a genuine reconnect may claim
+    // `connected: true`) holds exactly as it did before this step: toggling
+    // verbose mode changes how the current truth is DISPLAYED, never what
+    // that truth IS.
+    //
+    // TEXT WRITES DOM.routeIndicatorText, NOT DOM.routeIndicator, ITSELF:
+    // #route-indicator is display:flex (it inherits .chat-meta span's
+    // flex+::before-dot layout), and text-overflow:ellipsis does not
+    // reliably render on a flex container's own text in WebKit - confirmed
+    // live via a real headless render during this step's screenshot gate
+    // (the box clipped correctly at max-width but showed no "…" at all).
+    // #route-indicator-text is a plain (non-flex) inline child the ellipsis
+    // rule actually applies to; see chat.html's CSS comment on it.
     _paintRouteIndicator(label, connected) {
+      // Set BEFORE the DOM-existence guard, mirroring panel.html's
+      // currentConnected - "last painted" tracks the truth this call is
+      // communicating, not whether a DOM write happened to succeed.
+      this._lastPaintedConnected = connected;
       if (!DOM.routeIndicator) return;
       DOM.routeIndicator.hidden = !label;
-      DOM.routeIndicator.textContent = label || '';
+      const textEl = DOM.routeIndicatorText || DOM.routeIndicator;
+      if (label && ViewMode.isEnabled()) {
+        const endpointDisplay = this._routeEndpointDisplay;
+        const parts = [label];
+        if (endpointDisplay) parts.push(endpointDisplay);
+        parts.push(connected ? 'Connected' : 'Disconnected');
+        textEl.textContent = parts.join(' - ');
+      } else {
+        textEl.textContent = label || '';
+      }
       DOM.routeIndicator.className = connected ? 'connected' : 'disconnected';
     },
 
@@ -1415,11 +1469,36 @@ export function createWire(ctx: WireCtx) {
   // occurs" also holds by construction, not by omission.
   let _viewModeEnabled = false;
 
+  // Step 4: every state change re-invokes PoolEngine._paintRouteIndicator
+  // (the ONLY writer of DOM.routeIndicator) with the CURRENT
+  // _routeLabel/_lastPaintedConnected - never a new value this function
+  // invents - so a click-to-toggle or a redock-applied enable() re-renders
+  // the ALREADY-painted chip immediately, without becoming a second writer
+  // and without ever moving the latch itself (see _paintRouteIndicator's
+  // own doc comment for why passing through the current painted state
+  // cannot fake a reconnect).
+  //
+  // READS _lastPaintedConnected, NOT _isConnected (review finding, chat-only
+  // blocker): _isConnected can be STALE during the pre-dial window -
+  // _teardownAdapter() does not reset it, so from the moment a new route's
+  // identity is claimed until acquire() resolves or fails, it still holds
+  // the PREVIOUS route's true. Toggling verbose (or a redock's enable())
+  // during exactly that window - scenario 5's hung-switch case - would
+  // repaint (newLabel, stale true): "Connected" over a route this window's
+  // socket was never actually on. _lastPaintedConnected cannot go stale the
+  // same way: it is set INSIDE _paintRouteIndicator itself, at the same
+  // instant as every real paint, so it is structurally never behind what
+  // the chip is currently showing - independent of whatever _isConnected
+  // is doing.
+  function _repaintRouteIndicator() {
+    PoolEngine._paintRouteIndicator(PoolEngine._routeLabel, PoolEngine._lastPaintedConnected);
+  }
+
   const ViewMode = {
     isEnabled() { return _viewModeEnabled; },
-    enable() { _viewModeEnabled = true; },
-    disable() { _viewModeEnabled = false; },
-    toggle() { _viewModeEnabled = !_viewModeEnabled; return _viewModeEnabled; },
+    enable() { _viewModeEnabled = true; _repaintRouteIndicator(); },
+    disable() { _viewModeEnabled = false; _repaintRouteIndicator(); },
+    toggle() { _viewModeEnabled = !_viewModeEnabled; _repaintRouteIndicator(); return _viewModeEnabled; },
 
     // THE SEAM (plan Step 3): the ONLY surface a display consumer (Step 4's
     // verbose indicator form) may read route/connection state through.

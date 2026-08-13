@@ -1,20 +1,27 @@
 // @vitest-environment jsdom
 /**
  * route-indicator.test.ts - the plan's five indicator scenarios plus the
- * latch, for the CHAT window (PoolEngine). Panel coverage lives in
+ * latch, for the CHAT window (PoolEngine), and (below, same describe block)
+ * Step 4's verbose form of that same chip. Panel coverage lives in
  * panel-route-binding.test.ts, per this suite's seam split.
  *
  * FIXTURE TRAP (mandatory, from the plan review): every route fixture below
  * uses label != key ('stable' -> 'Stable Prod', 'canary' -> 'Canary Test').
  * A route-indicator implementation that renders routeKey instead of
  * route.label fails EVERY assertion in this file red, by construction.
+ * ROUTE_TOKEN_BEARING extends the trap for Step 4: its endpoint URL is
+ * deliberately credential-shaped (query string + fragment), proving the
+ * verbose form renders describeWsUrl's OUTPUT, never the raw endpoint.
  *
  * SOURCE OF TRUTH: PoolEngine._paintRouteIndicator is called ONLY from real
  * connect()/onConnectionState transitions of THIS window's own socket -
  * never from the hub-event broadcast, never generically from updateStatus.
  * These tests drive that seam directly (pool().connect(), FakeWebSocket,
  * pool().updateStatus() for the latch's "unrelated write" arm) rather than
- * the hub-event wiring, matching this file's stated seam.
+ * the hub-event wiring, matching this file's stated seam. The redock/detach
+ * "verbose renders immediately on arrival" scenarios live in
+ * chat-window.test.ts instead, beside Step 3's redock/detach tests - this
+ * file's harness never captures windowEventHandlers, that one already does.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as LunaTransport from '@luna/ui-transport'
@@ -34,6 +41,14 @@ const ROUTE_CANARY = { key: 'canary', label: 'Canary Test', url: 'ws://canary-ho
  *  connection" (scenario 5's requirement is about timing, not a real
  *  network refusal, so a socket that just never opens is the correct fake). */
 const ROUTE_NEVER_ACCEPTS = { key: 'blackhole', label: 'Blackhole Route', url: 'ws://blackhole-host:4753/ui' }
+/** Step 4 fixture: deliberately credential-shaped (query string + fragment) -
+ *  a real client.toml endpoint would not carry this, but the verbose form's
+ *  redaction must strip it regardless of what it is given. */
+const ROUTE_TOKEN_BEARING = {
+  key: 'secure',
+  label: 'Secure Route',
+  url: 'ws://secure-host:4753/ui?token=TOK-SUPER-SECRET&x=1#frag',
+}
 
 /** Switchable invoke stub: list_routes/load_route report whichever route is
  *  `current` at call time, so a test can simulate a route switch by
@@ -69,6 +84,7 @@ function makeInvokeStub(state: { current: typeof ROUTE_STABLE; tokenRejects?: bo
 describe('Route indicator (plan Step 2) - chat window', () => {
   const internals = () => (window as any).__MoonInternals
   const pool = () => internals().PoolEngine
+  const viewMode = () => internals().ViewMode
   const indicator = () => document.getElementById('route-indicator')!
 
   let invokeState: { current: typeof ROUTE_STABLE; tokenRejects?: boolean }
@@ -222,12 +238,16 @@ describe('Route indicator (plan Step 2) - chat window', () => {
     // label here and fail this assertion.
     expect(indicator().textContent).toBe('Blackhole Route')
     expect(indicator().className).toContain('disconnected')
-    // NOT asserting pool().isConnected() here: PoolEngine's _isConnected is
-    // a pre-existing, unrelated gap - _teardownAdapter() never resets it, so
-    // it stays stale-true from the PRIOR successful connect until the new
-    // adapter's own state machine explicitly flips it. That is out of scope
-    // for the route indicator (which has its OWN, correctly-updated state,
-    // asserted above) and not something this slice touches.
+    // pool().isConnected() USED TO be a known-stale read here: connect()
+    // never reset _isConnected at the pre-dial point, so it stayed
+    // true from the PRIOR successful connect until the new adapter's own
+    // state machine explicitly flipped it - closed by the plan Step 4
+    // review's chat-only blocker fix (connect() now sets _isConnected =
+    // false at the same point it claims the new route's identity, right
+    // before this pre-dial paint). Asserting it here now, where it used to
+    // be deliberately skipped, pins that the fix holds beyond just the
+    // route indicator's own state.
+    expect(pool().isConnected()).toBe(false)
     expect(FakeWebSocket.instances.some((s) => s.readyState === FakeWebSocket.OPEN)).toBe(false)
   })
 
@@ -259,5 +279,166 @@ describe('Route indicator (plan Step 2) - chat window', () => {
     await bringUp()
     expect(indicator().className).toContain('connected')
     expect(indicator().textContent).toBe('Canary Test')
+  })
+
+  // ── Verbose form (plan Step 4) ────────────────────────────────────────
+
+  describe('Verbose form (plan Step 4)', () => {
+    it('KEY TEST: the verbose text is DERIVED from describeWsUrl(fixture) - proving the consumer sits behind the seam, not beside it', async () => {
+      invokeState.current = ROUTE_TOKEN_BEARING
+      evalChatInlineScriptWithBridge()
+      await bringUp()
+
+      viewMode().enable()
+
+      const expectedEndpoint = (window as any).LunaProtocol.describeWsUrl(ROUTE_TOKEN_BEARING.url)
+      expect(expectedEndpoint).toBeTruthy()
+      expect(indicator().textContent).toContain(expectedEndpoint)
+      expect(indicator().textContent).toContain('Secure Route')
+      expect(indicator().textContent).toContain('Connected')
+    })
+
+    it('toggle on: the verbose form appears, showing endpoint + state alongside the label', async () => {
+      evalChatInlineScriptWithBridge()
+      await bringUp()
+      const baseline = indicator().textContent
+      expect(baseline).toBe('Stable Prod')
+
+      viewMode().enable()
+
+      expect(indicator().textContent).not.toBe(baseline)
+      expect(indicator().textContent).toContain('Stable Prod')
+      expect(indicator().textContent).toContain('stable-host:4753/ui')
+      expect(indicator().textContent).toContain('Connected')
+    })
+
+    it('toggle off: EXACT Step 2 rendering is restored - equal to the non-verbose baseline, not just missing the verbose bits', async () => {
+      evalChatInlineScriptWithBridge()
+      await bringUp()
+      const baseline = indicator().textContent
+      const baselineClass = indicator().className
+
+      viewMode().enable()
+      expect(indicator().textContent).not.toBe(baseline)
+
+      viewMode().disable()
+
+      expect(indicator().textContent).toBe(baseline)
+      expect(indicator().className).toBe(baselineClass)
+    })
+
+    it('verbose form NEVER contains "?", "#", "token", or the fixture credential anywhere in the chip text', async () => {
+      invokeState.current = ROUTE_TOKEN_BEARING
+      evalChatInlineScriptWithBridge()
+      await bringUp()
+
+      viewMode().enable()
+
+      const text = indicator().textContent || ''
+      expect(text).not.toContain('?')
+      expect(text).not.toContain('#')
+      expect(text.toLowerCase()).not.toContain('token')
+      expect(text).not.toContain('TOK-SUPER-SECRET')
+      expect(text).not.toContain('RESOLVED-TOK-secure')
+      expect(text).not.toContain(ROUTE_TOKEN_BEARING.url)
+    })
+
+    it('the latch survives verbose mode: a latched failure renders verbose too, and only a genuine reconnect clears it', async () => {
+      invokeState.current = ROUTE_CANARY
+      evalChatInlineScriptWithBridge()
+      const sock = await bringUp()
+      viewMode().enable()
+      expect(indicator().textContent).toContain('Canary Test')
+      expect(indicator().textContent).toContain('Connected')
+
+      sock.simulateDrop()
+      await settle()
+
+      // Latched failure, rendered verbose: still names the route, still
+      // shows its endpoint, now says Disconnected - never blank, never the
+      // plain (non-verbose) form just because the socket dropped.
+      expect(indicator().className).toContain('disconnected')
+      expect(indicator().textContent).toContain('Canary Test')
+      expect(indicator().textContent).toContain('canary-host:4753/ui')
+      expect(indicator().textContent).toContain('Disconnected')
+
+      // Unrelated status write still cannot clear it, verbose or not.
+      pool().updateStatus('connected', 'Connected')
+      expect(indicator().className, 'latch holds against the unrelated write').toContain('disconnected')
+      expect(indicator().textContent).toContain('Disconnected')
+
+      // Genuine reconnect clears the latch, verbose form updates in place.
+      void pool().connect()
+      await bringUp()
+      expect(indicator().className).toContain('connected')
+      expect(indicator().textContent).toContain('Connected')
+      expect(indicator().textContent).toContain('Canary Test')
+    })
+
+    // ── Pre-dial window (reviewer-identified gap, mandatory) ──────────────
+    //
+    // connect()'s pre-dial paint fires BEFORE manager.acquire() ever
+    // resolves - the window between "new route claimed, chip painted
+    // disconnected" and "adapter acquired". Gate acquire() so it NEVER
+    // resolves, reproducing that window indefinitely so a toggle fired
+    // DURING it can be observed, not raced.
+    function gateConnectionManager() {
+      const real = (window as any).LunaTransport
+      ;(window as any).LunaTransport = Object.assign({}, real, {
+        ConnectionManager: class {
+          constructor(_routeMap: unknown, _factory: unknown) {}
+          acquire(_routeKey: string) {
+            return new Promise(() => {}) // deliberately never resolves
+          }
+        },
+      })
+    }
+
+    it('Pre-dial hang + click toggle: verbose mode toggled during a hung switch never claims Connected', async () => {
+      evalChatInlineScriptWithBridge()
+      await bringUp()
+      expect(indicator().textContent).toBe('Stable Prod')
+
+      gateConnectionManager()
+      invokeState.current = ROUTE_NEVER_ACCEPTS // 'Blackhole Route' - reused as route B
+      void pool().connect()
+      await settle()
+
+      // The pre-dial paint fired: chip already reads B's label, disconnected.
+      expect(indicator().textContent).toBe('Blackhole Route')
+      expect(indicator().className).toContain('disconnected')
+
+      // Toggle verbose WHILE acquire() is still hung.
+      viewMode().enable()
+
+      // Must still read disconnected - never "Connected" over a route this
+      // window's socket was never actually on.
+      expect(indicator().className).toContain('disconnected')
+      expect(indicator().textContent).toMatch(/Disconnected$/)
+      expect(indicator().textContent).not.toContain('Connected')
+    })
+
+    it('Pre-dial hang + redock-applied enable(): the arrival path never claims Connected either', async () => {
+      evalChatInlineScriptWithBridge()
+      await bringUp()
+      expect(indicator().textContent).toBe('Stable Prod')
+
+      gateConnectionManager()
+      invokeState.current = ROUTE_NEVER_ACCEPTS
+      void pool().connect()
+      await settle()
+
+      expect(indicator().textContent).toBe('Blackhole Route')
+      expect(indicator().className).toContain('disconnected')
+
+      // wiring.ts's redock-thread listener calls ViewMode.enable() directly
+      // (never .toggle()) on a positive viewMode:true payload - drive that
+      // exact entry point, not the click handler.
+      viewMode().enable()
+
+      expect(indicator().className).toContain('disconnected')
+      expect(indicator().textContent).toMatch(/Disconnected$/)
+      expect(indicator().textContent).not.toContain('Connected')
+    })
   })
 })

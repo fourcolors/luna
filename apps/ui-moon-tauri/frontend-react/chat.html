@@ -382,6 +382,29 @@
        tabindex; this is the visual half of that minimal affordance. */
     #route-indicator {
       cursor: pointer;
+      min-width: 0;
+    }
+    /* Verbose text truncation (plan Step 4): the "label - endpoint - state"
+       text is longer than the plain label - .chat-status-row is a nowrap
+       flex row with no width constraint of its own, so without this the
+       verbose chip would overflow the header horizontally instead of
+       truncating. The ellipsis/max-width lives on THIS inner span, not on
+       #route-indicator itself: #route-indicator is display:flex (it
+       inherits .chat-meta span's flex+::before-dot layout, see below),
+       and text-overflow:ellipsis does not reliably render on a flex
+       container's own text in WebKit - confirmed live via a real headless
+       render (the box clipped correctly but showed no "…" at all). Wrapping
+       the truncatable text in a plain (non-flex) child span is the
+       standard fix: the child gets to be an ordinary inline box the
+       ellipsis rule actually applies to, while the dot stays on the outer
+       flex row exactly as it did before this step. */
+    #route-indicator-text {
+      display: inline-block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
+      vertical-align: bottom;
     }
 
     .chat-meta span.connecting {
@@ -2185,8 +2208,12 @@
                  SAME .chat-meta span.connected/.disconnected dot styling as
                  #connection-status above, extended rather than duplicated.
                  Hidden until a real route model resolves (no route model ->
-                 no chip, per the plan's "shows NO route name" constraint). -->
-            <span id="route-indicator" class="disconnected" hidden></span>
+                 no chip, per the plan's "shows NO route name" constraint).
+                 The inner #route-indicator-text span (plan Step 4) is where
+                 _paintRouteIndicator writes the actual text - see its own
+                 CSS comment for why the ellipsis rule lives there and not
+                 on this flex/dot-owning outer span. -->
+            <span id="route-indicator" class="disconnected" hidden><span id="route-indicator-text"></span></span>
             <!-- Build identity from the server's hello frame (additive). Kept as a
                  <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
                  doesn't draw a status dot next to it. Hidden until populated. -->

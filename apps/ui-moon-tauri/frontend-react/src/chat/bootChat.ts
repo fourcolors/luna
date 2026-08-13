@@ -696,6 +696,10 @@ export function bootChat() {
     DOM: {
       connectionStatus: document.getElementById("connection-status"),
       routeIndicator: document.getElementById("route-indicator"),
+      // Step 4: the inner span _paintRouteIndicator writes text into - see
+      // chat.html's CSS comment on #route-indicator-text for why the
+      // ellipsis rule cannot live on the flex/dot-owning outer element.
+      routeIndicatorText: document.getElementById("route-indicator-text"),
       buildSha: document.getElementById("build-sha"),
       modelSelect: document.getElementById("model-select"),
       secretPromptInput: document.getElementById("secret-prompt-input"),
@@ -732,6 +736,15 @@ export function bootChat() {
   // model, or the legacy WebSocketEngine escape hatch) has nothing to
   // click, and that is by design, not an oversight: there is no separate
   // toggle affordance to hide alongside it.
+  //
+  // KEYBOARD (F1, opus review on plan Step 3): role="button" alone does not
+  // make Enter/Space activate a <span> - only a real <button> element
+  // synthesizes click from keys, and a span never does (WCAG 2.1.1). The
+  // role/tabindex without this handler was decorative: focusable and
+  // announced as a button, but silently inert from the keyboard. Space
+  // additionally gets preventDefault() so it toggles instead of scrolling
+  // the page (the browser's default action for Space on a non-form,
+  // non-naturally-interactive element).
   {
     const routeIndicatorEl = document.getElementById("route-indicator")
     if (routeIndicatorEl) {
@@ -739,6 +752,12 @@ export function bootChat() {
       routeIndicatorEl.setAttribute("tabindex", "0")
       routeIndicatorEl.addEventListener("click", () => {
         wire.ViewMode.toggle()
+      })
+      routeIndicatorEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          if (e.key !== "Enter") e.preventDefault()
+          wire.ViewMode.toggle()
+        }
       })
     }
   }

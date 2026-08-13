@@ -167,11 +167,48 @@
   // right now - label, connection state, and (Step 3) the redacted endpoint
   // string. Hoisted to this outer scope (not connectWs's own closure) so the
   // view-mode seam below can read the SAME truth the chip paints, rather
-  // than a second, possibly-stale copy. connectWs's paintRouteIndicator
-  // (further down) is still the ONLY writer.
+  // than a second, possibly-stale copy. paintRouteIndicator (below) is
+  // still the ONLY writer.
   var currentRouteLabel = null;
   var currentConnected = false;
   var currentEndpointDisplay = null;
+
+  // The ONLY writer of routeIndicatorEl (plan Step 2), hoisted here (Step 4)
+  // from inside connectWs so setViewMode below can call it too - it never
+  // referenced anything connectWs-local in the first place (only the
+  // outer-scope current*/routeIndicatorEl variables), so this is a pure
+  // relocation, not a behavior change for connectWs's own three call sites.
+  //
+  // VERBOSE FORM (plan Step 4): when viewModeEnabled, additionally renders
+  // the redacted endpointDisplay alongside the label and the
+  // connected/disconnected word this call is ALREADY painting via
+  // `connected` - never re-derived from anywhere else, so the verbose text
+  // and the className it sits beside can never disagree. setViewMode
+  // (below) calls this function again with the CURRENT
+  // currentRouteLabel/currentConnected/currentEndpointDisplay to force an
+  // immediate re-render on toggle - it never invents a new connected value,
+  // so the latch (only a genuine reconnect may claim `connected: true`)
+  // holds exactly as before: toggling verbose mode changes how the current
+  // truth is DISPLAYED, never what that truth IS.
+  function paintRouteIndicator(label, connected, endpointDisplay) {
+    currentRouteLabel = label;
+    currentConnected = connected;
+    // Step 3: only ever set from a value ALREADY redacted by the caller
+    // (describeUrlSafe, in connectWs below) - never a raw URL. Omitted
+    // entirely on the no-route-model paths, which correctly leaves it null.
+    currentEndpointDisplay = endpointDisplay || null;
+    if (!routeIndicatorEl) return;
+    routeIndicatorEl.hidden = !label;
+    if (label && viewModeEnabled) {
+      var parts = [label];
+      if (currentEndpointDisplay) parts.push(currentEndpointDisplay);
+      parts.push(connected ? 'Connected' : 'Disconnected');
+      routeIndicatorEl.textContent = parts.join(' - ');
+    } else {
+      routeIndicatorEl.textContent = label || '';
+    }
+    routeIndicatorEl.className = 'route-indicator ' + (connected ? 'connected' : 'disconnected');
+  }
 
   // View mode (plan Step 3): per-window, ephemeral, in-memory only - see
   // wire.ts's ViewMode (the twin chat-window implementation) for the full
@@ -184,6 +221,11 @@
   var viewModeEnabled = false;
   function setViewMode(enabled) {
     viewModeEnabled = !!enabled;
+    // Step 4: force an immediate re-render with the CURRENT truth (see
+    // paintRouteIndicator's own doc comment above for why this cannot fake
+    // a reconnect) - needed for both the click-to-toggle affordance and a
+    // redock-applied enable arriving on an already-connected panel.
+    paintRouteIndicator(currentRouteLabel, currentConnected, currentEndpointDisplay);
   }
   // THE SEAM (plan Step 3): the ONLY pre-redacted, display-safe read surface
   // a future consumer (Step 4's verbose indicator form) may use. Every field
@@ -202,6 +244,16 @@
   if (routeIndicatorEl) {
     routeIndicatorEl.addEventListener('click', function () {
       setViewMode(!viewModeEnabled);
+    });
+    // KEYBOARD (F1, opus review on plan Step 3): role="button" alone does
+    // not make Enter/Space activate a <span> - only a real <button> element
+    // synthesizes click from keys (WCAG 2.1.1). Space also gets
+    // preventDefault() so it toggles instead of scrolling the page.
+    routeIndicatorEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        if (e.key !== 'Enter') e.preventDefault();
+        setViewMode(!viewModeEnabled);
+      }
     });
   }
 
@@ -288,12 +340,12 @@
       // review, blocker; endpointDisplay added Step 3): the label/state/
       // redacted-endpoint of whatever route THIS window's socket genuinely
       // holds right now - all three live in the outer IIFE scope (declared
-      // near routeIndicatorEl, above) so the Step 3 view-mode seam can read
-      // the SAME truth this chip paints, and all three only ever mutate
-      // through paintRouteIndicator, which is called for a NEW route ONLY
-      // after resolve_route_token has ALREADY succeeded (below), never
-      // before. moon-ws.js's client.connect() is the ONLY thing that tears a
-      // prior socket down - a token-resolution refusal never calls it - so
+      // near routeIndicatorEl, above), and only ever mutate through
+      // paintRouteIndicator (also hoisted to that outer scope, Step 4 - see
+      // its own doc comment), which is called for a NEW route ONLY after
+      // resolve_route_token has ALREADY succeeded (below), never before.
+      // moon-ws.js's client.connect() is the ONLY thing that tears a prior
+      // socket down - a token-resolution refusal never calls it - so
       // painting the new label BEFORE knowing resolve_route_token would
       // succeed used to leave the chip claiming a route this window's socket
       // was never actually on, while the OLD socket sat genuinely still
@@ -301,23 +353,10 @@
       // once the old socket's own eventual onClose repainted using the wrong
       // captured label). Reset explicitly here (rather than relying on the
       // outer scope's initial null/false/null) so a hypothetical second
-      // connectWs() call on the same page starts from a clean slate, same as
-      // before these three variables were hoisted out of this closure.
+      // connectWs() call on the same page starts from a clean slate.
       currentRouteLabel = null;
       currentConnected = false;
       currentEndpointDisplay = null;
-      function paintRouteIndicator(label, connected, endpointDisplay) {
-        currentRouteLabel = label;
-        currentConnected = connected;
-        // Step 3: only ever set from a value ALREADY redacted by the caller
-        // (describeUrlSafe, below) - never a raw URL. Omitted entirely on
-        // the no-route-model paths, which correctly leaves it null.
-        currentEndpointDisplay = endpointDisplay || null;
-        if (!routeIndicatorEl) return;
-        routeIndicatorEl.hidden = !label;
-        routeIndicatorEl.textContent = label || '';
-        routeIndicatorEl.className = 'route-indicator ' + (connected ? 'connected' : 'disconnected');
-      }
 
       // Wrap the CALLER's own onOpen/onClose (e.g. the Workflows panel's
       // liveness hint) rather than replace them - both fire.
