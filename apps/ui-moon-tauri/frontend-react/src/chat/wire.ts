@@ -745,6 +745,12 @@ export function createWire(ctx: WireCtx) {
 
       // Build a single-route ConnectionManager for this window's route.
       //
+      // TODO(#528): the premise below is FALSE for migrated users - migration
+      // writes tokenRef = "legacy" (client_config.rs:599) and this path dials
+      // it verbatim as the bearer (?token=legacy, reproduced in #528). Fix by
+      // keying token resolution off the route being connected; until then this
+      // engine ships broken auth for every migrated user.
+      //
       // NOTE (Phase 3 seam): no TokenResolver is injected here yet, so the
       // adapter falls back to the LITERAL tokenRef. That is correct TODAY
       // because Moon routes carry an already-resolved literal token (from the
