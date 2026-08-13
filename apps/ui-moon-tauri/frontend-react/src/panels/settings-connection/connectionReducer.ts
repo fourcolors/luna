@@ -11,16 +11,22 @@
  * source of truth and it can never desync from a stray imperative DOM write
  * inside a transport callback (the pattern the vanilla module used).
  *
- * Mirrors the vanilla module's behavior 1:1:
+ * Mirrors the vanilla module's behavior 1:1 in the UN-MIGRATED world only
+ * (routesKnown resolves to "none" there, never "routes" - see its doc
+ * comment; it starts "unknown" at boot and the switch handler treats
+ * "unknown" as a refusal, never as un-migrated, until it resolves):
  *  - `channelOptions`/`channel` start as the hardcoded ['stable','dev']
  *    fallback (C8: real routes replace them once MoonSession.listRoutes()
  *    resolves - see "routes-loaded").
  *  - `pendingActiveProfile` is the reducer-state equivalent of the vanilla
- *    module's `channelSelect._activeProfile` DOM stash: load_profiles may
- *    resolve before or after listRoutes, so "routes-loaded" reads it back
- *    off state instead of a side channel to decide whether the active
- *    profile must be appended as a dynamic option (C8's route-key/
- *    profile-name divergence case).
+ *    module's `channelSelect._activeProfile` DOM stash.
+ * Step 1a (docs/next/routes-and-view-mode-plan.md) QUARANTINES this once
+ * client.toml routes exist: "routes-loaded" alone decides `channel`/
+ * `channelOptions` from then on, in EITHER arrival order relative to
+ * "profile-loaded" - see `routesKnown`'s doc comment on ConnectionPanelState
+ * for the mechanism. This inverts the old C8 divergence behavior (a stale
+ * `activeProfile` no longer gets appended as a selectable option once routes
+ * are known) - see the inverted fence test in settings-connection-panel.test.tsx.
  *  - `models`/`modelOptions` are computed once at construction from
  *    localStorage (`luna_available_models` + `luna_model`), exactly like the
  *    vanilla module's synchronous DOM build; `model-selected` recomputes
@@ -54,6 +60,35 @@ export interface ConnectionPanelState {
   /** Reducer-state equivalent of the vanilla module's DOM-stashed
    *  `channelSelect._activeProfile` - see module doc. */
   readonly pendingActiveProfile: string | null
+  /**
+   * Step 1a quarantine flag (docs/next/routes-and-view-mode-plan.md),
+   * TRI-STATE (opus review finding F3): boot starts in "unknown" - neither
+   * confirmed migrated nor confirmed un-migrated - and the switch handler
+   * treats "unknown" as a refusal (defense in depth: a change event that
+   * somehow reaches the handler before boot's listRoutes settles must never
+   * fall through to the un-guarded legacy branch on an unconfirmed
+   * assumption). It resolves to exactly one of:
+   *   "routes" - client.toml routes exist; "routes-loaded" alone decides
+   *     `channel`/`channelOptions` from then on, in EITHER arrival order
+   *     relative to "profile-loaded" (moon-connection.json's activeProfile,
+   *     which can name a route-less or stale profile, is INERT once here).
+   *   "none"   - confirmed un-migrated (listRoutes absent, returned nothing
+   *     useful, or rejected); the legacy profile-loaded/switch behavior
+   *     applies, byte-compatible with pre-Step-1a.
+   * The select is disabled in the UI while "unknown" - see SettingsConnectionPanel.tsx.
+   */
+  readonly routesKnown: "unknown" | "routes" | "none"
+  /**
+   * True while a guarded route switch (routesKnown === "routes") is
+   * in-flight. Disables the selector in the UI so a genuine second user
+   * interaction cannot start a concurrent switch (F4) - reaching a
+   * concurrent attempt requires a programmatic driver (a race, or a test),
+   * which is exactly what the in-flight generation guard in
+   * SettingsConnectionPanel.tsx protects against regardless. The un-migrated
+   * legacy path does not use this: it is a single un-guarded write with no
+   * dual-store half-move for a race to exploit.
+   */
+  readonly switching: boolean
   readonly models: readonly ModelEntry[]
   readonly modelOptions: readonly ChannelOption[]
   readonly model: string
@@ -69,9 +104,33 @@ export type ConnectionPanelAction =
   | { readonly type: "connection-loaded"; readonly wsUrl: string | null; readonly wsToken: string | null }
   | { readonly type: "profile-loaded"; readonly activeProfile: string }
   | { readonly type: "routes-loaded"; readonly options: readonly ChannelOption[]; readonly defaultKey: string | null }
+  /** F3: listRoutes confirmed there is nothing usable (absent, empty result,
+   *  or rejected) - resolves routesKnown from "unknown" to "none". */
+  | { readonly type: "routes-unavailable" }
   | { readonly type: "channel-selected"; readonly channel: string }
   | { readonly type: "profile-switch-succeeded"; readonly wsUrl: string; readonly wsToken: string }
-  | { readonly type: "profile-switch-failed"; readonly message: string }
+  /**
+   * F2(b): a refusal that is NOT the pairing case. `revertTo`, when given,
+   * restores `channel` to what it was before the optimistic
+   * "channel-selected" dispatch - the switch never happened, so the
+   * selector must not keep claiming it did. Omitted for the un-migrated
+   * legacy path, which never reverts (byte-compatible with pre-Step-1a).
+   */
+  | { readonly type: "profile-switch-failed"; readonly message: string; readonly revertTo?: string }
+  /**
+   * F2(a): the UNPAIRED-route refusal (guard 2). Deliberately its own action,
+   * not a reuse of profile-switch-succeeded or -failed: the selection stays
+   * on the target route (this is the pairing UX - see the module doc), but
+   * the displayed creds must be HONEST about what that means - the target
+   * route's real endpoint, and an EMPTY token (never the previous channel's
+   * stale creds, which would describe the wrong server).
+   */
+  | { readonly type: "pairing-prompted"; readonly message: string; readonly wsUrl: string }
+  /** F4: in-flight marker for a guarded switch, drives the selector's
+   *  `disabled` state so a second user interaction cannot start a
+   *  concurrent switch (see routesKnown/switching's doc comments). */
+  | { readonly type: "switch-started" }
+  | { readonly type: "switch-settled" }
   | { readonly type: "model-selected"; readonly model: string; readonly effortOptions: readonly string[]; readonly effort: string }
   | { readonly type: "effort-selected"; readonly effort: string }
   | { readonly type: "url-changed"; readonly value: string }
@@ -144,6 +203,8 @@ export function initialConnectionPanelState(): ConnectionPanelState {
     channel: FALLBACK_CHANNEL_OPTIONS[0]!.value,
     channelError: null,
     pendingActiveProfile: null,
+    routesKnown: "unknown",
+    switching: false,
     models,
     modelOptions,
     model: savedModel,
@@ -170,6 +231,17 @@ export function reduceConnectionPanel(
     }
     case "profile-loaded": {
       const active = action.activeProfile
+      if (state.routesKnown === "routes") {
+        // Step 1a quarantine (see routesKnown's doc comment): routes-loaded
+        // already owns channel/channelOptions - stash the profile pointer
+        // for callers that inspect pendingActiveProfile, but do not let a
+        // possibly-stale/divergent moon-connection.json name reappend an
+        // option or move the selection.
+        return { ...state, pendingActiveProfile: active }
+      }
+      // routesKnown is "unknown" or "none": legacy behavior, still required
+      // for the un-migrated world (and safe pre-boot-settle too, since a
+      // real un-migrated user never later flips to "routes").
       const hasOpt = state.channelOptions.some((o) => o.value === active)
       const channelOptions = hasOpt
         ? state.channelOptions
@@ -177,28 +249,41 @@ export function reduceConnectionPanel(
       return { ...state, channelOptions, channel: active, pendingActiveProfile: active }
     }
     case "routes-loaded": {
-      let options = action.options
-      let channel = state.channel
-      const active = state.pendingActiveProfile
-      if (active) {
-        // C8: client.toml route keys can diverge from profile names - keep
-        // the active profile selectable even if listRoutes() didn't return it.
-        if (!options.some((o) => o.value === active)) {
-          options = [...options, { value: active, label: capitalize(active) }]
-        }
-        channel = active
-      } else {
-        const def = options.find((o) => o.value === action.defaultKey)
-        channel = def ? def.value : (options[0]?.value ?? state.channel)
-      }
-      return { ...state, channelOptions: options, channel }
+      // Step 1a quarantine, INVERTED from the pre-Step-1a C8 behavior this
+      // replaces (docs/next/routes-and-view-mode-plan.md): channelOptions is
+      // EXACTLY the route keys client.toml reports - no dynamic append of
+      // pendingActiveProfile - and channel is action.defaultKey, regardless
+      // of arrival order relative to "profile-loaded". This is what makes
+      // the selector's value and options come from client.toml alone once
+      // routes exist.
+      //
+      // F1 (opus review): defaultKey must be validated as an ACTUAL member
+      // of `options` via `.find`, not taken on faith with a bare `??`. A
+      // dangling default (Gate 0.1 world (c)) or an empty-string default
+      // must fall through to the first real option instead of becoming the
+      // selector's value outright - a bare `defaultKey ?? options[0]` lets
+      // a non-null-but-invalid key (including "") through unchanged, which
+      // renders as a BLANK selector (no matching <option>, selectedIndex
+      // -1) rather than a sane default.
+      const options = action.options
+      const channel = options.find((o) => o.value === action.defaultKey)?.value
+        ?? (options[0]?.value ?? state.channel)
+      return { ...state, channelOptions: options, channel, routesKnown: "routes" }
     }
+    case "routes-unavailable":
+      return { ...state, routesKnown: "none" }
     case "channel-selected":
       return { ...state, channel: action.channel, channelError: null }
     case "profile-switch-succeeded":
       return { ...state, channelError: null, wsUrl: action.wsUrl, wsToken: action.wsToken }
     case "profile-switch-failed":
-      return { ...state, channelError: action.message }
+      return { ...state, channelError: action.message, channel: action.revertTo ?? state.channel }
+    case "pairing-prompted":
+      return { ...state, channelError: action.message, wsUrl: action.wsUrl, wsToken: "" }
+    case "switch-started":
+      return { ...state, switching: true }
+    case "switch-settled":
+      return { ...state, switching: false }
     case "model-selected":
       return { ...state, model: action.model, effortOptions: action.effortOptions, effort: action.effort }
     case "effort-selected":
