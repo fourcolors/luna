@@ -399,6 +399,199 @@ pub(crate) fn set_active_profile(name: String) -> Result<serde_json::Value, Stri
         .unwrap_or_else(|| serde_json::json!({ "wsUrl": "", "wsToken": "" })))
 }
 
+/// Pure resolution logic once the caller already has `token_ref` for the
+/// route and (lazily, only when `token_ref == "legacy"`) the parsed
+/// moon-connection.json profiles. Split out from `resolve_route_token_in` so
+/// every arm of the error taxonomy below is unit-testable without touching a
+/// filesystem - the same pattern `normalize_profiles`/`profile_connection`
+/// already use in this module.
+///
+/// # Error taxonomy (stable prefixes so callers can branch - closes #529)
+/// - "not-paired:" - `token_ref == "legacy"` but `profiles` has no entry for
+///   `route_key`, or that entry's `wsToken` is empty.
+/// - "unresolvable-scheme:" - `token_ref` starts with "env:", "file:", or
+///   "op://" (Phase 3 resolves these; dialing them as a literal bearer is
+///   the #528 bug class - see packages/ui-transport/src/token-resolver.ts).
+/// - "route-config-invalid:" - `token_ref` is empty. `parse_client_config`
+///   already rejects an empty-after-trim `tokenRef` at parse time (see
+///   client_config.rs), so this arm is unreachable through the normal
+///   file-reading path today; it stays as defense in depth against a
+///   `ClientConfig` ever being constructed some other way, and is
+///   unit-tested directly here rather than via a file fixture.
+///
+/// # "none" and literal tokens (token-resolver.ts:43-48)
+/// `token_ref == "none"` resolves to `Ok("")` - the ONE intentional empty
+/// result, matching the documented transport contract. Any other non-empty,
+/// non-scheme-prefixed `token_ref` is returned as-is (backward compat: some
+/// migrated routes carry an already-resolved literal token).
+///
+/// # No trimming, deliberately
+/// Neither this function nor `profile_connection` trims whitespace from a
+/// resolved token - a route paired with a whitespace-only `wsToken` resolves
+/// `Ok` here (see the parity test below). This is existing behavior
+/// preserved, not endorsed.
+fn resolve_token_ref(
+    token_ref: &str,
+    route_key: &str,
+    profiles: &serde_json::Map<String, serde_json::Value>,
+) -> Result<String, String> {
+    if token_ref.is_empty() {
+        return Err(format!(
+            "route-config-invalid: route {route_key:?} has an empty tokenRef"
+        ));
+    }
+    if token_ref == "legacy" {
+        let token = profile_connection(profiles, route_key).and_then(|c| {
+            c["wsToken"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string())
+        });
+        return token.ok_or_else(|| {
+            format!("not-paired: route {route_key:?} has no token paired in moon-connection.json")
+        });
+    }
+    if token_ref == "none" {
+        return Ok(String::new());
+    }
+    if token_ref.starts_with("env:") || token_ref.starts_with("file:") || token_ref.starts_with("op://") {
+        return Err(format!(
+            "unresolvable-scheme: route {route_key:?} uses tokenRef {token_ref:?} (Phase 3 resolves scheme refs)"
+        ));
+    }
+    // Backward compat: any other non-empty tokenRef is an already-resolved
+    // literal token, returned verbatim.
+    Ok(token_ref.to_string())
+}
+
+/// Outcome of reading `<luna_dir>/moon-connection.json` for the "legacy"
+/// sentinel resolution path, distinguishing WHY a read failed (F1, opus
+/// review on plan Step 1b) - mirrors `load_client_config_in`'s
+/// `Option<Result<_, String>>` shape one level finer, because two of the
+/// three failure modes here mean something DIFFERENT to a caller than a
+/// generic read error does:
+///   - `Absent` (`io::ErrorKind::NotFound`): no credential store exists at
+///     all, so the route CANNOT have a paired token - this is a "not-paired:"
+///     fact about pairing state, not a transient I/O condition. Every write
+///     to this file goes through `write_atomic_0600` (temp file + atomic
+///     rename), so there is no half-written or transiently-absent window a
+///     retry could cross; an absent file stays absent until pairing writes
+///     it, and no retry changes that.
+///   - `Invalid` (JSON parse failure): the store exists but is garbage.
+///     Also "not-paired:", not "store-read:" - `save_connection` starts
+///     from an EMPTY profile set when the existing file fails to parse (see
+///     its call through `read_connection_value`/`normalize_profiles`), so
+///     pairing genuinely FIXES this by rewriting the file, exactly like the
+///     absent case; a retry with no user action in between would not.
+///   - `Io` (a real `std::io::Error` other than `NotFound` - permissions,
+///     a transient filesystem failure): THIS is "store-read:", the
+///     RETRYABLE class - a fresh read on the next attempt can succeed with
+///     no user action, unlike the two cases above.
+/// Does NOT change `read_connection_value_in`'s public contract - every
+/// other caller (`load_connection_in`, `load_profiles`, `set_active_profile`)
+/// keeps using it unchanged; this is a sibling read added alongside for the
+/// one call site that needs the finer distinction.
+enum MoonConnectionRead {
+    Ok(serde_json::Value),
+    Absent,
+    Invalid(String),
+    Io(String),
+}
+
+fn read_moon_connection_for_route_resolution(luna_dir: &std::path::Path) -> MoonConnectionRead {
+    let path = luna_dir.join("moon-connection.json");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MoonConnectionRead::Absent,
+        Err(e) => return MoonConnectionRead::Io(format!("cannot read moon-connection.json: {e}")),
+    };
+    match serde_json::from_str::<serde_json::Value>(&contents) {
+        Ok(v) => MoonConnectionRead::Ok(v),
+        Err(e) => MoonConnectionRead::Invalid(format!("moon-connection.json parse error: {e}")),
+    }
+}
+
+/// Inner implementation of `resolve_route_token` that operates on an
+/// explicit `luna_dir` so the integration tests can drive a tempdir without
+/// mutating `$HOME` - the same `_in` pattern `load_connection_in` uses.
+///
+/// # Error taxonomy, file-reading arms (see `resolve_token_ref` for the rest)
+/// - "store-read:" - `client.toml` absent or unparseable, or a GENUINE I/O
+///   error (not absence, not a parse failure) reading `moon-connection.json`
+///   - see `MoonConnectionRead`'s doc comment for why an absent or garbled
+///   moon-connection.json is "not-paired:" instead. Only the genuine-I/O arm
+///   is truly retryable-without-user-action. The client.toml-absent arm keeps
+///   this classification NOT because a retry fixes it (it does not - the same
+///   reasoning that moved the sibling file's absent arm to "not-paired:")
+///   but because no caller can reach it in that state: PoolEngine only
+///   invokes this command after resolveBootRoute returned a route, which
+///   requires a readable client.toml, and Settings requires listRoutes.
+///   A mid-session deletion race is the only path here, and for that a
+///   retry after the file returns IS the right behavior.
+/// - "route-missing:" - `route_key` is not a `[route.*]` table in
+///   `client.toml`.
+///
+/// Resolution is keyed by `route_key` - the route actually being connected -
+/// NEVER by moon-connection.json's `activeProfile` (see the parity test
+/// below). Reusing `activeProfile` for token lookup is the #528/#529 bug
+/// class this command retires: two profiles can carry different tokens, and
+/// only the ROUTE's own key names the right one.
+pub(crate) fn resolve_route_token_in(
+    luna_dir: &std::path::Path,
+    route_key: &str,
+) -> Result<String, String> {
+    let cfg = match load_client_config_in(luna_dir) {
+        None => {
+            return Err(format!(
+                "store-read: client.toml not found under {}",
+                luna_dir.display()
+            ))
+        }
+        Some(Err(reason)) => return Err(format!("store-read: {reason}")),
+        Some(Ok(cfg)) => cfg,
+    };
+
+    let entry = cfg
+        .route
+        .get(route_key)
+        .ok_or_else(|| format!("route-missing: no route named {route_key:?}"))?;
+
+    if entry.token_ref != "legacy" {
+        // none/scheme/literal/empty never need moon-connection.json.
+        return resolve_token_ref(&entry.token_ref, route_key, &serde_json::Map::new());
+    }
+
+    let value = match read_moon_connection_for_route_resolution(luna_dir) {
+        MoonConnectionRead::Ok(v) => v,
+        MoonConnectionRead::Absent => {
+            return Err(format!(
+                "not-paired: route {route_key:?} has no credential store yet - pair it to create one"
+            ));
+        }
+        MoonConnectionRead::Invalid(reason) => {
+            return Err(format!(
+                "not-paired: route {route_key:?}'s credential store is unreadable ({reason}) - pairing will rewrite it"
+            ));
+        }
+        MoonConnectionRead::Io(reason) => return Err(format!("store-read: {reason}")),
+    };
+    let (_, profiles) = normalize_profiles(&value);
+    resolve_token_ref(&entry.token_ref, route_key, &profiles)
+}
+
+/// Resolve the bearer token for `route_key` - the Tauri command wrapper
+/// around `resolve_route_token_in`. Step 1b
+/// (docs/next/routes-and-view-mode-plan.md): route-keyed token resolution
+/// now lives in exactly ONE place, retiring the frontend mirrors in
+/// wire.ts's PoolEngine and the Settings connection panel (both surfaces).
+#[tauri::command]
+pub(crate) fn resolve_route_token(route_key: String) -> Result<String, String> {
+    let luna_dir = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".luna"))
+        .map_err(|e| format!("store-read: HOME not set: {e}"))?;
+    resolve_route_token_in(&luna_dir, &route_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,6 +895,261 @@ tokenRef = "legacy"
             );
             // wsUrl still comes from client.toml.
             assert_eq!(result["wsUrl"].as_str(), Some("ws://host:4753/ui"));
+        });
+    }
+
+    // ── resolve_route_token_in - Step 1b route-keyed token resolution ──────
+    // (docs/next/routes-and-view-mode-plan.md, closes #529's error taxonomy)
+
+    fn write_route_client_toml(
+        luna_dir: &std::path::Path,
+        default_key: &str,
+        route_key: &str,
+        token_ref: &str,
+        endpoint: &str,
+    ) {
+        let toml = format!(
+            "kind = \"bootstrap\"\nfileFormatVersion = 3\ndefault = {default_key:?}\n\n[route.{route_key}]\nendpoints = [{endpoint:?}]\nlabel = {route_key:?}\ntokenRef = {token_ref:?}\n"
+        );
+        std::fs::write(luna_dir.join("client.toml"), toml).expect("write client.toml");
+    }
+
+    #[test]
+    fn resolve_route_token_none_resolves_to_empty_string() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "stable", "none", "ws://host:4753/ui");
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            assert_eq!(
+                result,
+                Ok(String::new()),
+                "\"none\" is the one intentional empty-string result (token-resolver.ts:43-48)"
+            );
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_literal_passes_through() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(
+                &luna_dir,
+                "stable",
+                "stable",
+                "already-resolved-literal-tok",
+                "ws://host:4753/ui",
+            );
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            assert_eq!(
+                result,
+                Ok("already-resolved-literal-tok".to_string()),
+                "a non-legacy, non-none, non-scheme tokenRef is a backward-compat literal token"
+            );
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_scheme_refs_are_unresolvable() {
+        for scheme_ref in ["env:LUNA_TOKEN", "file:/abs/path", "op://vault/item/field"] {
+            with_tmp_luna_dir(|luna_dir| {
+                write_route_client_toml(&luna_dir, "stable", "stable", scheme_ref, "ws://host:4753/ui");
+                let result = resolve_route_token_in(&luna_dir, "stable");
+                let err = result.expect_err(&format!("{scheme_ref} must be unresolvable"));
+                assert!(
+                    err.starts_with("unresolvable-scheme:"),
+                    "expected an unresolvable-scheme: prefix for {scheme_ref}, got {err:?}"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn resolve_route_token_legacy_sentinel_resolves_from_moon_connection() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "stable", "legacy", "ws://host:4753/ui");
+            let moon_conn = serde_json::json!({
+                "activeProfile": "stable",
+                "profiles": { "stable": { "wsUrl": "ws://host:4753/ui", "wsToken": "real-paired-token" } }
+            })
+            .to_string();
+            std::fs::write(luna_dir.join("moon-connection.json"), moon_conn).expect("write moon-connection.json");
+
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            assert_eq!(result, Ok("real-paired-token".to_string()));
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_legacy_sentinel_not_paired_when_profile_missing() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "canary", "legacy", "ws://canary:4753/ui");
+            let moon_conn = serde_json::json!({
+                "activeProfile": "stable",
+                "profiles": { "stable": { "wsUrl": "ws://host:4753/ui", "wsToken": "stable-token" } }
+            })
+            .to_string();
+            std::fs::write(luna_dir.join("moon-connection.json"), moon_conn).expect("write moon-connection.json");
+
+            // "canary" has NO profile at all in moon-connection.json.
+            let result = resolve_route_token_in(&luna_dir, "canary");
+            let err = result.expect_err("an unpaired route must refuse, not fall back to another profile");
+            assert!(err.starts_with("not-paired:"), "got {err:?}");
+            assert!(err.contains("canary"), "the error must name the route key, got {err:?}");
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_legacy_sentinel_not_paired_when_token_empty() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "canary", "legacy", "ws://canary:4753/ui");
+            let moon_conn = serde_json::json!({
+                "activeProfile": "stable",
+                "profiles": { "canary": { "wsUrl": "ws://canary:4753/ui", "wsToken": "" } }
+            })
+            .to_string();
+            std::fs::write(luna_dir.join("moon-connection.json"), moon_conn).expect("write moon-connection.json");
+
+            let result = resolve_route_token_in(&luna_dir, "canary");
+            let err = result.expect_err("an empty paired token must refuse, not resolve to \"\"");
+            assert!(err.starts_with("not-paired:"), "got {err:?}");
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_route_missing() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "stable", "none", "ws://host:4753/ui");
+            let result = resolve_route_token_in(&luna_dir, "ghost-route");
+            let err = result.expect_err("a route absent from client.toml must refuse");
+            assert!(err.starts_with("route-missing:"), "got {err:?}");
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_client_toml_absent_is_store_read() {
+        with_tmp_luna_dir(|luna_dir| {
+            // No client.toml written at all.
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            let err = result.expect_err("an absent client.toml must be RETRYABLE, not a permanent refusal");
+            assert!(err.starts_with("store-read:"), "got {err:?}");
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_client_toml_unparseable_is_store_read() {
+        with_tmp_luna_dir(|luna_dir| {
+            std::fs::write(luna_dir.join("client.toml"), "this is not valid toml {{{")
+                .expect("write garbage client.toml");
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            let err = result.expect_err("unparseable client.toml must be RETRYABLE");
+            assert!(err.starts_with("store-read:"), "got {err:?}");
+        });
+    }
+
+    /// F1 (opus review): FLIPS the pre-fix pin. An absent moon-connection.json
+    /// is "not-paired:", not "store-read:" - write_atomic_0600 (temp file +
+    /// atomic rename) leaves no half-written or transiently-absent window a
+    /// retry could cross, so "the file doesn't exist" is a durable fact about
+    /// pairing state (no credential store has ever been written for this
+    /// route), not a transient I/O condition. See MoonConnectionRead's doc
+    /// comment for the full reasoning.
+    #[test]
+    fn resolve_route_token_moon_connection_absent_for_legacy_is_not_paired() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "stable", "legacy", "ws://host:4753/ui");
+            // No moon-connection.json at all.
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            let err = result.expect_err("an absent moon-connection.json means nothing is paired");
+            assert!(err.starts_with("not-paired:"), "got {err:?}");
+            assert!(err.contains("stable"), "the error must name the route key, got {err:?}");
+        });
+    }
+
+    /// F1 (opus review): a moon-connection.json that EXISTS but fails to
+    /// parse is ALSO "not-paired:" - save_connection starts from an empty
+    /// profile set when the existing file is unparseable (see
+    /// normalize_profiles's "empty / unrecognized object" arm reached via a
+    /// parse failure upstream), so pairing genuinely FIXES this by
+    /// rewriting the file, exactly like the absent case. A bare retry with
+    /// no user action would not.
+    #[test]
+    fn resolve_route_token_moon_connection_malformed_for_legacy_is_not_paired() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "stable", "legacy", "ws://host:4753/ui");
+            std::fs::write(luna_dir.join("moon-connection.json"), "{ this is not valid json")
+                .expect("write garbage moon-connection.json");
+
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            let err = result.expect_err("a malformed moon-connection.json means nothing is paired");
+            assert!(err.starts_with("not-paired:"), "got {err:?}");
+            assert!(err.contains("stable"), "the error must name the route key, got {err:?}");
+        });
+    }
+
+    #[test]
+    fn resolve_route_token_empty_token_ref_is_route_config_invalid() {
+        // Unit-tested directly against the pure helper (see its doc comment):
+        // parse_client_config already rejects an empty tokenRef at parse
+        // time, so this arm is unreachable through the file-reading path
+        // today and stays as defense in depth.
+        let empty_profiles = serde_json::Map::new();
+        let result = resolve_token_ref("", "stable", &empty_profiles);
+        let err = result.expect_err("an empty tokenRef must be refused, not treated as a literal");
+        assert!(err.starts_with("route-config-invalid:"), "got {err:?}");
+    }
+
+    #[test]
+    fn resolve_route_token_whitespace_only_token_resolves_ok_no_trim_parity() {
+        // Documents the deliberate no-trim behavior: neither this function
+        // nor profile_connection trims whitespace, matching every other
+        // token-touching path in this module.
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "stable", "legacy", "ws://host:4753/ui");
+            let moon_conn = serde_json::json!({
+                "activeProfile": "stable",
+                "profiles": { "stable": { "wsUrl": "ws://host:4753/ui", "wsToken": "   " } }
+            })
+            .to_string();
+            std::fs::write(luna_dir.join("moon-connection.json"), moon_conn).expect("write moon-connection.json");
+
+            let result = resolve_route_token_in(&luna_dir, "stable");
+            assert_eq!(
+                result,
+                Ok("   ".to_string()),
+                "a whitespace-only paired token resolves Ok verbatim (no trim), matching profile_connection's non-empty-only check"
+            );
+        });
+    }
+
+    /// THE regression test for the #528/#529 bug class: resolution must key
+    /// off the ROUTE being connected, never moon-connection.json's
+    /// activeProfile. Fixture: activeProfile is "stable", but we resolve
+    /// "canary" - a DIFFERENT route with its OWN, different token. If
+    /// resolution ever again keys by activeProfile instead of route_key,
+    /// this test catches it by asserting the WRONG (stable's) token is
+    /// never returned.
+    #[test]
+    fn resolve_route_token_legacy_sentinel_keys_by_route_key_not_active_profile() {
+        with_tmp_luna_dir(|luna_dir| {
+            write_route_client_toml(&luna_dir, "stable", "canary", "legacy", "ws://canary:4753/ui");
+            let moon_conn = serde_json::json!({
+                "activeProfile": "stable",
+                "profiles": {
+                    "stable": { "wsUrl": "ws://stable:4753/ui", "wsToken": "stable-token-WRONG-for-canary" },
+                    "canary": { "wsUrl": "ws://canary:4753/ui", "wsToken": "canary-token-RIGHT" }
+                }
+            })
+            .to_string();
+            std::fs::write(luna_dir.join("moon-connection.json"), moon_conn).expect("write moon-connection.json");
+
+            let result = resolve_route_token_in(&luna_dir, "canary")
+                .expect("canary is paired and must resolve");
+            assert_eq!(
+                result, "canary-token-RIGHT",
+                "must resolve canary's OWN token, not activeProfile (stable)'s"
+            );
+            assert_ne!(
+                result, "stable-token-WRONG-for-canary",
+                "REGRESSION: resolved the active profile's token instead of the route's own"
+            );
         });
     }
 }

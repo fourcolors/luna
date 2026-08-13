@@ -460,9 +460,11 @@
         }
 
         // GUARD 2: the route's token must be resolvable before committing to
-        // it. Mirrors connection.rs's load_connection_in sentinel resolution
-        // on the frontend - a TEMPORARY duplication; Step 1b replaces it with
-        // a single Result-returning Rust command.
+        // it. Resolution now lives in ONE place: connection.rs's
+        // resolve_route_token (Step 1b, docs/next/routes-and-view-mode-plan.md)
+        // - no more mirroring connection.rs's sentinel logic on the
+        // frontend. load_route is still needed here for `endpoints[0]`,
+        // which the pairing prompt (F2a) shows.
         var route;
         try {
           route = await ctx.invoke('load_route', { routeKey: next });
@@ -480,18 +482,12 @@
           ? route.endpoints[0]
           : '';
 
-        if (route && route.token_ref === 'legacy') {
-          // Non-legacy refs (env:/file:/op://) pass through unresolved - Phase 3 scope.
-          var resolvable = false;
-          try {
-            var prof = await ctx.invoke('load_profiles');
-            var tok = prof && prof.profiles && prof.profiles[next] && prof.profiles[next].wsToken;
-            resolvable = typeof tok === 'string' && tok.length > 0;
-          } catch (_e) {
-            resolvable = false;
-          }
+        try {
+          await ctx.invoke('resolve_route_token', { routeKey: next });
+        } catch (e) {
           if (superseded()) return;
-          if (!resolvable) {
+          var resolveReason = (e && e.message) ? e.message : String(e);
+          if (resolveReason.indexOf('not-paired:') === 0) {
             // F2(a): UNPAIRED refusal. Selection stays on `next`; the fields
             // shown are the TARGET route's real endpoint and an EMPTY
             // token - never the previous channel's creds, which would
@@ -500,10 +496,17 @@
             wsTokenInput.value = '';
             setChannelError('"' + next + '" is not paired yet - paste a token and save to pair it');
             channelSelect._currentChannel = next;
-            setSwitchLock(false);
-            return;
+          } else {
+            // Every other cause (store-read, route-missing,
+            // unresolvable-scheme, route-config-invalid) is a durable
+            // refusal a retry from here cannot fix - F2(b): revert.
+            channelSelect.value = previous;
+            setChannelError('Couldn\'t switch to "' + next + '": ' + resolveReason);
           }
+          setSwitchLock(false);
+          return;
         }
+        if (superseded()) return;
 
         // ORDER IS LOAD-BEARING (plan Step 1a). One click writes two files
         // through two unlocked commands and cannot be atomic across files, so

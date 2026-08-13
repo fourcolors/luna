@@ -37,6 +37,11 @@ interface TestServer {
   dropClients(): void
   lastNewThreadFrame?: Record<string, unknown>
   sessionFrames: Array<Record<string, unknown>>
+  /** Every raw `req.url` this server has seen a client connect with, in
+   *  order - F3 (opus review): distinguishes "no token param" from "token
+   *  param with an empty value", which server-side auth matching alone
+   *  cannot (both normalize to the same empty comparison string). */
+  capturedUrls: string[]
 }
 
 async function startTestServer(opts: {
@@ -64,6 +69,8 @@ async function startTestServer(opts: {
 
 
       wss.on("connection", (ws, req) => {
+        serverHandle.capturedUrls.push(req.url ?? "")
+
         if (opts.rejectAuth) {
           ws.close(1008, "Unauthorized")
           return
@@ -172,6 +179,7 @@ async function startTestServer(opts: {
         port,
         lastNewThreadFrame: undefined,
         sessionFrames: [],
+        capturedUrls: [],
         dropClients: () => {
           for (const client of wss.clients) {
             client.close(1001, "drop")
@@ -332,6 +340,32 @@ describe("LunaWsAdapter", () => {
       expect(states).toEqual(["connecting", "down"])
       // Fail-closed: no token reached the wire — the WS factory was never invoked.
       expect(wsFactoryCalled).toBe(false)
+
+      await adapter.dispose()
+    })
+  })
+
+  // ── F3 (opus review, plan Step 1b) ────────────────────────────────────────
+  // A route whose tokenRef is "none" resolves to "" (connection.rs's
+  // resolve_route_token). moon-protocol.js's buildWsUrl skips the token
+  // param entirely for a falsy token; the adapter must match that EXACTLY,
+  // not append `?token=` with an empty value.
+  describe("empty resolved token (route tokenRef \"none\")", () => {
+    it("dials a URL with NO token parameter at all", async () => {
+      server = await startTestServer({ token: "", sendDescriptor: true })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "none-token-route", endpoints: [server.url], tokenRef: "" },
+        makeNodeWsFactory(),
+      )
+
+      await adapter.attach()
+
+      // >= 1 rather than exactly 1: a stray reconnect from a neighboring
+      // timing test must not fail this fence, whose invariant is about the
+      // URL SHAPE of every dial, not the dial count.
+      expect(server.capturedUrls.length).toBeGreaterThanOrEqual(1)
+      for (const u of server.capturedUrls) expect(u).not.toContain("token=")
 
       await adapter.dispose()
     })

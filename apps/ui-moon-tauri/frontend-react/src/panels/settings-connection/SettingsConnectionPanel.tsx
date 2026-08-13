@@ -83,18 +83,12 @@ interface ListedRoute {
 }
 
 /** Shape of `load_route`'s RouteInfo (client_config.rs), narrowed to the
- *  two fields the Step 1a guards need: `token_ref` for resolvability
- *  (guard 2) and `endpoints[0]` for the honest URL shown on an unpaired
- *  refusal (F2a - see handleChannelChange). */
+ *  one field guard 2 still needs directly: `endpoints[0]`, for the honest
+ *  URL shown on an unpaired refusal (F2a - see handleChannelChange).
+ *  Resolvability itself is no longer inspected here - `resolve_route_token`
+ *  (Step 1b) decides that server-side, in the ONE place it happens. */
 interface LoadedRouteInfo {
-  token_ref?: unknown
   endpoints?: unknown
-}
-
-/** Shape of `load_profiles`'s {activeProfile, profiles} (connection.rs),
- *  narrowed to the one field the Step 1a resolvability guard needs. */
-interface LoadedProfiles {
-  profiles?: Record<string, { wsToken?: unknown } | undefined>
 }
 
 function routesToOptions(routes: unknown[]): ChannelOption[] {
@@ -258,10 +252,10 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
     }
 
     // GUARD 2, the route's token must be resolvable before committing to it.
-    // This mirrors connection.rs's load_connection_in sentinel resolution on
-    // the frontend - a TEMPORARY duplication. Step 1b replaces it with a
-    // single Result-returning Rust command so this check stops living in two
-    // places (docs/next/routes-and-view-mode-plan.md's Step 1b).
+    // Resolution now lives in ONE place: connection.rs's resolve_route_token
+    // (Step 1b, docs/next/routes-and-view-mode-plan.md) - no more mirroring
+    // connection.rs's sentinel logic on the frontend. load_route is still
+    // needed here for `endpoints[0]`, which the pairing prompt (F2a) shows.
     let route: LoadedRouteInfo | null
     try {
       route = (await ctx.invoke("load_route", { routeKey: next })) as LoadedRouteInfo | null
@@ -278,18 +272,12 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
       ? route.endpoints[0]
       : ""
 
-    if (route && route.token_ref === "legacy") {
-      // Non-legacy refs (env:/file:/op://) pass through unresolved - Phase 3 scope.
-      let resolvable = false
-      try {
-        const prof = (await ctx.invoke("load_profiles")) as LoadedProfiles | null
-        const token = prof?.profiles?.[next]?.wsToken
-        resolvable = typeof token === "string" && token.length > 0
-      } catch {
-        resolvable = false
-      }
+    try {
+      await ctx.invoke("resolve_route_token", { routeKey: next })
+    } catch (e) {
       if (superseded()) return
-      if (!resolvable) {
+      const reason = e instanceof Error ? e.message : String(e)
+      if (reason.startsWith("not-paired:")) {
         // F2(a): UNPAIRED refusal. Selection stays on `next` (already
         // dispatched above); the fields shown are the TARGET route's real
         // endpoint and an EMPTY token - never the previous channel's creds,
@@ -299,10 +287,16 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           message: `"${next}" is not paired yet - paste a token and save to pair it`,
           wsUrl: routeEndpoint,
         })
-        store.dispatch({ type: "switch-settled" })
-        return
+      } else {
+        // Every other cause (store-read, route-missing, unresolvable-scheme,
+        // route-config-invalid) is a durable refusal a retry from here
+        // cannot fix - F2(b): the selector reverts.
+        store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}`, revertTo: previousChannel })
       }
+      store.dispatch({ type: "switch-settled" })
+      return
     }
+    if (superseded()) return
 
     // ORDER IS LOAD-BEARING (plan Step 1a). One click writes two files
     // through two unlocked commands and cannot be atomic across files, so
