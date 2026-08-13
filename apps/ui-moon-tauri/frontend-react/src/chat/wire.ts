@@ -651,6 +651,7 @@ export function createWire(ctx: WireCtx) {
     _adapter: null,       // LunaWsAdapter instance (acquired from ConnectionManager)
     _handle: null,        // ConnectionManager RouteHandle (for release)
     _routeKey: null,      // route key this engine is bound to
+    _routeLabel: null,    // route LABEL this engine is bound to (Step 2 indicator - never the key)
     _dispatch: null,      // gated dispatch fn for this routeKey
     _unsubFrames: null,   // unsubscribe fn from adapter.subscribeFrames
     _unsubConn: null,     // unsubscribe fn from adapter.subscribeConnection
@@ -706,12 +707,20 @@ export function createWire(ctx: WireCtx) {
 
       // Resolve the route via MoonSession (C2) → build a ConnectionManager
       // route entry from State.wsUrl / State.wsToken as fallback.
-      let routeKey, endpoints, tokenRef, tokenResolveError;
+      // routeLabel (Step 2, plan's route indicator): captured ONLY when a
+      // real client.toml route resolved - stays undefined on the fallback
+      // paths below, which fabricate routeKey = 'legacy' with no real route
+      // model behind it. The indicator renders THIS, never routeKey - a
+      // synthesized key is not a label, and rendering it would violate the
+      // plan's "never render a raw routeKey" constraint the moment a window
+      // fell back to the legacy path.
+      let routeKey, routeLabel, endpoints, tokenRef, tokenResolveError;
       try {
         // Prefer the C2 route system when available
         const bootRoute = await MoonSession.resolveBootRoute(null);
         if (bootRoute && Array.isArray(bootRoute.endpoints) && bootRoute.endpoints.length > 0) {
           routeKey = bootRoute.key || bootRoute.routeKey || 'default';
+          routeLabel = bootRoute.label || null;
           endpoints = bootRoute.endpoints;
 
           // Step 1b (docs/next/routes-and-view-mode-plan.md): token
@@ -777,6 +786,12 @@ export function createWire(ctx: WireCtx) {
         );
         this._teardownAdapter();
         this._isConnected = false;
+        // Step 2: this ATTEMPT failed before this._routeLabel/_paintRouteIndicator's
+        // usual assignment point below ever ran - repaint with the OLD label
+        // (whatever this window's socket actually held before this attempt,
+        // possibly none) so a re-resolution failure never blanks the
+        // indicator or invents the never-reached NEW route's label.
+        this._paintRouteIndicator(this._routeLabel, false);
         this._fireDisconnect('route-unresolved');
         this._updateObservability();
         if (retryable) {
@@ -812,6 +827,8 @@ export function createWire(ctx: WireCtx) {
         );
         this._teardownAdapter();
         this._isConnected = false;
+        // Step 2: same reasoning as the tokenResolveError branch above.
+        this._paintRouteIndicator(this._routeLabel, false);
         this._fireDisconnect('route-unresolved');
         this._updateObservability();
         State.reconnectAttempts = 0;
@@ -823,6 +840,14 @@ export function createWire(ctx: WireCtx) {
       this._teardownAdapter();
 
       this._routeKey = routeKey;
+      this._routeLabel = routeLabel || null;
+      // Step 2 (plan's route indicator): paint the NEW route's label with a
+      // disconnected mark BEFORE dialing - this is the point that satisfies
+      // "switching to a route whose endpoint never accepts a connection...
+      // reads exactly [the new label] before any connection has succeeded":
+      // we are past route resolution and the refusal guards above, but the
+      // adapter has not been acquired yet (that happens below).
+      this._paintRouteIndicator(this._routeLabel, false);
       // Build a gated dispatch function for this routeKey (C9-partial)
       this._dispatch = PoolEngineHelper.makeGatedDispatch(routeKey, (tagged) => {
         // Strip the __routeKey tag before handing to MoonFrames so
@@ -942,6 +967,9 @@ export function createWire(ctx: WireCtx) {
       this._hooksArmed = true;   // arm close hooks — we're now connected
       State.reconnectAttempts = 0;
       this.updateStatus('connected', 'Connected');
+      // Step 2: a GENUINE connect success for THIS window's socket - the
+      // only thing that may clear a latched failure (see _paintRouteIndicator).
+      this._paintRouteIndicator(this._routeLabel, true);
 
       // (6) Trigger thread synchronization on connect (same as WebSocketEngine)
       this.syncThread();
@@ -961,6 +989,8 @@ export function createWire(ctx: WireCtx) {
         this._hooksArmed = true;   // re-arm close hooks on reconnect
         State.reconnectAttempts = 0;
         this.updateStatus('connected', 'Connected');
+        // Step 2: genuine reconnect success - clears a latched failure.
+        this._paintRouteIndicator(this._routeLabel, true);
         // (6) Snapshot-on-reconnect: re-sync the thread whenever the
         // adapter transitions back to 'ready' after a reconnect. NOTE: this
         // relies on subscribeConnection having NO state-replay and attach()
@@ -980,6 +1010,9 @@ export function createWire(ctx: WireCtx) {
         this.clearTurnTimeout();      // fix-3 equivalent
         MoonFace.setBusy(false);
         this.updateStatus('connecting', 'Reconnecting…');
+        // Step 2: the socket dropped - the indicator LATCHES to disconnected
+        // (still naming the same route) until a genuine reconnect succeeds.
+        this._paintRouteIndicator(this._routeLabel, false);
         this._fireDisconnect('recovering');
 
       } else if (connState.status === 'down') {
@@ -987,6 +1020,7 @@ export function createWire(ctx: WireCtx) {
         // dead state; offer a manual retry by re-calling connect().
         this._isConnected = false;
         this.updateStatus('disconnected', mapped.text);
+        this._paintRouteIndicator(this._routeLabel, false);
         this.clearSubscribeTimeout();
         this.clearTurnTimeout();
         MoonFace.setBusy(false);
@@ -999,6 +1033,7 @@ export function createWire(ctx: WireCtx) {
       } else if (connState.status === 'auth-failed') {
         this._isConnected = false;
         this.updateStatus('disconnected', 'Auth failed');
+        this._paintRouteIndicator(this._routeLabel, false);
         this._fireDisconnect('auth-failed');
 
       } else {
@@ -1056,6 +1091,12 @@ export function createWire(ctx: WireCtx) {
       if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
       this._teardownAdapter();
       this._isConnected = false;
+      // F3 (opus review): a deliberate disconnect() tears the socket down
+      // without going through _onConnectionState, so without this the chip
+      // could stay green over a socket this engine itself just closed - the
+      // route LABEL is unchanged (still this window's last route), only the
+      // state flips.
+      this._paintRouteIndicator(this._routeLabel, false);
       this._updateObservability();
     },
 
@@ -1097,6 +1138,52 @@ export function createWire(ctx: WireCtx) {
       // instead of silently no-opping.
       MoonFace?.setConnection(statusClass);
       MoonBar?.setConnection(statusClass);
+    },
+
+    // ── Route indicator (plan Step 2) ───────────────────────────────────
+    //
+    // F2 (opus review): implemented on PoolEngine ONLY. WebSocketEngine
+    // (the legacy raw-socket engine, forced on with luna_pool_engine='0')
+    // has no _paintRouteIndicator and never touches DOM.routeIndicator - the
+    // chip stays permanently hidden under that flag. This is deliberate,
+    // not a gap that slipped through: the flag is an escape hatch that
+    // predates the route model entirely (it exists to bypass PoolEngine
+    // wholesale, not to opt out of one feature of it), and it is not the
+    // default or a shipped user-facing toggle. A permanently hidden chip
+    // under the legacy engine is expected behavior, not a bug.
+    //
+    // SOURCE OF TRUTH: this window's OWN connection state, captured at
+    // connect time - never the hub-event broadcast. This function is called
+    // ONLY from the small set of deliberate call sites above that represent
+    // a REAL transition of THIS window's own socket (route resolved and
+    // about to dial, genuine open/hello success, genuine drop/down/
+    // auth-failed) - it is DELIBERATELY NEVER wired into updateStatus's
+    // general-purpose status-pill writes above. That is what makes the
+    // latch requirement hold by construction rather than by policing every
+    // updateStatus call site: an unrelated updateStatus('connected', ...)
+    // write from anywhere else in this file cannot repaint the indicator,
+    // because nothing routes it here.
+    //
+    // LATCH: `connected: false` always applies immediately (a failure must
+    // always be visible - an indicator that vanishes on disconnect is worse
+    // than none). `connected: true` is the ONLY thing that can move the
+    // indicator OUT of a disconnected/failed state - so once a failure
+    // paints, only a genuine reconnect of THIS socket (this function called
+    // again with connected: true, from one of the real-success call sites
+    // above) clears it.
+    //
+    // LABEL, NEVER KEY: `label` is the route's LABEL (bootRoute.label),
+    // never routeKey - the fallback path fabricates routeKey = 'legacy'
+    // with no real route model behind it, and rendering that key would be
+    // exactly the raw-routeKey leak the plan's ground truth forbids. A null
+    // label (no route model resolved) hides the chip entirely - "just the
+    // connection state" per the plan, which the existing #connection-status
+    // pill already carries; this chip adds nothing to show in that case.
+    _paintRouteIndicator(label, connected) {
+      if (!DOM.routeIndicator) return;
+      DOM.routeIndicator.hidden = !label;
+      DOM.routeIndicator.textContent = label || '';
+      DOM.routeIndicator.className = connected ? 'connected' : 'disconnected';
     },
 
     // ── Turn watchdog (behavior 5) ─────────────────────────────────────

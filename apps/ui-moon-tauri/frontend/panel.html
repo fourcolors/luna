@@ -62,6 +62,21 @@
       font-style: italic;
     }
 
+    /* Route indicator (plan Step 2): small + muted + italic like .notice
+       above, colored by connection state - no dot (panels have no existing
+       pill idiom to extend the way chat.html's #connection-status does). */
+    .route-indicator {
+      font-size: 0.68rem;
+      font-style: italic;
+      margin-left: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 90px;
+    }
+    .route-indicator.connected { color: #34d399; }
+    .route-indicator.disconnected { color: #f87171; }
+
     /* ── Panel form chrome (settings panels) ─────────────────────────────── */
     /* display:flex would beat the [hidden] attribute's UA display:none —
        pin it (caught live: the install row showed while hidden). */
@@ -100,6 +115,13 @@
   <div class="title-bar" id="title-bar">
     <div class="bar-start" aria-hidden="true"></div>
     <span class="bar-title" id="bar-title">Loading…</span>
+    <!-- Route indicator (plan Step 2): names the route THIS panel's socket
+         is on (its LABEL, never a routeKey), painted by connectWs's
+         runConnectWaterfall + onOpen/onClose. Small + muted, matching
+         .notice's idiom (panels have no existing status pill to extend,
+         unlike chat.html's #connection-status). Hidden until a real route
+         model resolves. -->
+    <span class="route-indicator disconnected" id="route-indicator" hidden></span>
     <!-- Right cluster balances the lights so the title stays centered; also
          houses the collapse-to-moon glyph (on the right, clear of native
          traffic lights which sit top-left). -->
@@ -135,6 +157,7 @@
 
   var contentArea = document.getElementById('content-area');
   var barTitle = document.getElementById('bar-title');
+  var routeIndicatorEl = document.getElementById('route-indicator');
   // Collapse-into-moon is a Luna-specific workspace action, intentionally
   // separate from the native yellow button's per-window minimize behavior.
   var collapseMoonBtn = document.getElementById('collapse-moon-btn');
@@ -208,7 +231,55 @@
     // waterfall must never drift into two parallel implementations.
     connectWs: function (registry, opts) {
       var hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-      var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
+
+      // Route indicator (plan Step 2). SOURCE OF TRUTH: this window's OWN
+      // socket state, captured at connect time - never a broadcast. LATCH:
+      // `connected: false` always applies immediately (a failure must
+      // always stay visible); `connected: true` only fires from a REAL
+      // socket 'open' (wired below via onOpen/onClose, the same raw-socket
+      // signal the Workflows panel's own liveness hint already uses - panels
+      // have no hello-frame handshake to gate on the way chat.html does).
+      // Never renders routeKey - only route.label, or nothing when no route
+      // model resolved (the legacy/fallback branches below never call this).
+      //
+      // currentRouteLabel/currentConnected (F1, opus review, blocker): the
+      // label/state of whatever route THIS window's socket genuinely holds
+      // right now - both only ever mutate through paintRouteIndicator, and
+      // that is called for a NEW route ONLY after resolve_route_token has
+      // ALREADY succeeded (below), never before. moon-ws.js's client.connect()
+      // is the ONLY thing that tears a prior socket down - a token-resolution
+      // refusal never calls it - so painting the new label BEFORE knowing
+      // resolve_route_token would succeed used to leave the chip claiming a
+      // route this window's socket was never actually on, while the OLD
+      // socket sat genuinely still connected underneath it (wrong name AND
+      // wrong state, and permanent once the old socket's own eventual
+      // onClose repainted using the wrong captured label).
+      var currentRouteLabel = null;
+      var currentConnected = false;
+      function paintRouteIndicator(label, connected) {
+        currentRouteLabel = label;
+        currentConnected = connected;
+        if (!routeIndicatorEl) return;
+        routeIndicatorEl.hidden = !label;
+        routeIndicatorEl.textContent = label || '';
+        routeIndicatorEl.className = 'route-indicator ' + (connected ? 'connected' : 'disconnected');
+      }
+
+      // Wrap the CALLER's own onOpen/onClose (e.g. the Workflows panel's
+      // liveness hint) rather than replace them - both fire.
+      var callerOnOpen = opts && opts.onOpen;
+      var callerOnClose = opts && opts.onClose;
+      var mergedOpts = Object.assign({ registry: registry, autoPong: true }, opts || {}, {
+        onOpen: function () {
+          paintRouteIndicator(currentRouteLabel, true);
+          if (callerOnOpen) callerOnOpen();
+        },
+        onClose: function () {
+          paintRouteIndicator(currentRouteLabel, false);
+          if (callerOnClose) callerOnClose();
+        },
+      });
+      var client = LunaWS.createClient(mergedOpts);
 
       // Resolve the effective panel identifier (window label, populated from
       // Tauri when running inside the app; null in browser / test environments).
@@ -261,9 +332,21 @@
               // Expose for observability (agent-browser smoke + future C8 hub).
               if (window.__PanelInternals) {
                 window.__PanelInternals.resolvedRouteKey = route.key || null;
+                window.__PanelInternals.resolvedRouteLabel = route.label || null;
               }
               ctx.invoke('resolve_route_token', { routeKey: route.key }).then(function (token) {
                 if (myGen !== waterfallGen) return; // superseded during resolve_route_token
+                // F1 (opus review, blocker): paint the NEW route's label with
+                // a disconnected mark ONLY NOW that token resolution has
+                // ACTUALLY succeeded - still before dialing (client.connect()
+                // is the next line), so scenario 5 ("switching to a route
+                // whose endpoint never accepts a connection... reads exactly
+                // [the new label] before any connection has succeeded")
+                // still holds. Painting any earlier (before this .then) would
+                // claim this route before this window's socket could ever
+                // possibly reach it, including on a refusal that never calls
+                // client.connect() at all.
+                paintRouteIndicator(route.label || null, false);
                 // Ok('') is the intentional "none"-tokenRef result
                 // (connection.rs's resolve_route_token). moon-ws.js's
                 // connect() -> LunaProtocol.buildWsUrl already skips the
@@ -283,12 +366,27 @@
                 } else {
                   showNotice('Panel connection failed: could not resolve credentials for ' + describeUrlSafe(wsUrl));
                 }
+                // F1 (opus review, blocker): resolve_route_token failed
+                // BEFORE client.connect() ever ran - the OLD socket (if any)
+                // was NEVER torn down (moon-ws.js's client.connect() is the
+                // ONLY teardown mechanism, and it never fired for this
+                // attempt), so it is STILL genuinely in whatever state it was
+                // before this attempt started. Repaint with the OLD label +
+                // the CURRENT REAL state (never a hardcoded 'disconnected',
+                // never this failed attempt's label) - a first-ever run has
+                // no old label, so this hides the chip, same as chat.
+                paintRouteIndicator(currentRouteLabel, currentConnected);
               });
             } else {
               // No client.toml route configured - legacy load_connection
               // path, UNCHANGED (Step 1c Part 1 only retargets the route
               // branch above; this fallback keeps its existing credential
               // source).
+              // Review residual (same family as the F1 blocker): entering the
+              // fallback with a stale currentRouteLabel would let the legacy
+              // socket's onOpen paint a route this socket is NOT on. No route
+              // model here means no route name - hide the chip before dialing.
+              paintRouteIndicator(null, false);
               ctx.invoke('load_connection').then(function (creds) {
                 if (myGen !== waterfallGen) return; // superseded during load_connection
                 if (creds && creds.wsUrl) {
@@ -308,6 +406,9 @@
             if (myGen !== waterfallGen) return; // superseded while resolveBootRoute rejected
             // resolveBootRoute itself rejected (shouldn't happen - MoonSession
             // catches internally, but belt-and-suspenders). Fall back to legacy.
+            // Same no-route-model rule as the fallback above: hide the chip so
+            // the legacy socket's onOpen cannot assert a stale route label.
+            paintRouteIndicator(null, false);
             ctx.invoke('load_connection').then(function (creds) {
               if (myGen !== waterfallGen) return; // superseded during load_connection (fallback)
               if (creds && creds.wsUrl) {
@@ -376,7 +477,7 @@
     // Expose observability fields for agent-browser smoke and tests.
     // resolvedRouteKey: set by connectWs when a client.toml route is used.
     // lastNotice: set by showNotice — truthy means an error was surfaced.
-    window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, lastNotice: null };
+    window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, resolvedRouteLabel: null, lastNotice: null };
   }
 
   var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];

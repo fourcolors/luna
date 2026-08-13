@@ -694,6 +694,7 @@ export function bootChat() {
     Logger,
     DOM: {
       connectionStatus: document.getElementById("connection-status"),
+      routeIndicator: document.getElementById("route-indicator"),
       buildSha: document.getElementById("build-sha"),
       modelSelect: document.getElementById("model-select"),
       secretPromptInput: document.getElementById("secret-prompt-input"),

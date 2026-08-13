@@ -2172,6 +2172,14 @@
           <h2>Luna Companion</h2>
           <div class="chat-status-row">
             <span id="connection-status" class="disconnected">Disconnected</span>
+            <!-- Route indicator (plan Step 2): names the route THIS window's
+                 socket is on (its LABEL, never a routeKey), painted by
+                 PoolEngine._paintRouteIndicator - a <span> so it picks up the
+                 SAME .chat-meta span.connected/.disconnected dot styling as
+                 #connection-status above, extended rather than duplicated.
+                 Hidden until a real route model resolves (no route model ->
+                 no chip, per the plan's "shows NO route name" constraint). -->
+            <span id="route-indicator" class="disconnected" hidden></span>
             <!-- Build identity from the server's hello frame (additive). Kept as a
                  <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
                  doesn't draw a status dot next to it. Hidden until populated. -->
