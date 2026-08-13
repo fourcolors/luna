@@ -1,5 +1,9 @@
 # Separating "which server" from "how much I see"
 
+Status: COMPLETE. Every step shipped: 1b0 (#530), 1a (#531), 1b (#533), 1c (#534), 2 (#535), 3+4 (#536), all merged to luna-next by 2026-08-13.
+The final ship gate's parting gift: retiring the long-deferred `_isConnected` pre-dial staleness closed a silent message-loss class (composer cleared while frames dropped) that three review rounds had scoped out as indicator-only.
+Original planning status preserved below for the record.
+
 Status: plan, revision 4. Not yet implemented.
 Revision 1 was reviewed adversarially by codex and sent back; its central claim was wrong.
 Revision 2 fixed the claim but kept the structure that produced it: steps opened with assertions about the world instead of commands that re-derive it.
