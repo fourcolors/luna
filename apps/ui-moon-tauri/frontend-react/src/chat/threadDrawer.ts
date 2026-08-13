@@ -758,6 +758,18 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       // Prefer State.winLabel (set at boot); fall back for early calls.
       const owner = State.winLabel || null;
       if (owner) params.redockTo = owner;
+      // View mode (plan Step 3), the detach direction: a verbose SOURCE
+      // window's thread, dragged out into a new floating window, boots that
+      // floater verbose too - wiring.ts reads this back as INITIAL_VIEW_MODE.
+      // Read the BARE window.ViewMode global (assignBridge always sets it,
+      // production included), not window.__MoonInternals.ViewMode - see
+      // wiring.ts's currentViewModeEnabled doc for why that distinction is
+      // load-bearing here. Omitted entirely when not verbose, so the
+      // existing param-set pins below stay exactly as they were.
+      const vm = window.ViewMode;
+      if (vm && typeof vm.isEnabled === 'function' && vm.isEnabled()) {
+        params.viewMode = true;
+      }
       const args = { kind: 'chat', params };
       if (typeof screenX === 'number' && Number.isFinite(screenX)) {
         args.x = Math.round(screenX);

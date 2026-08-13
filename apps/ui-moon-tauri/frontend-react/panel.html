@@ -64,7 +64,9 @@
 
     /* Route indicator (plan Step 2): small + muted + italic like .notice
        above, colored by connection state - no dot (panels have no existing
-       pill idiom to extend the way chat.html's #connection-status does). */
+       pill idiom to extend the way chat.html's #connection-status does).
+       cursor: pointer (plan Step 3) - the chip doubles as the view-mode
+       toggle affordance; role/tabindex are set in the markup below. */
     .route-indicator {
       font-size: 0.68rem;
       font-style: italic;
@@ -73,6 +75,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       max-width: 90px;
+      cursor: pointer;
     }
     .route-indicator.connected { color: #34d399; }
     .route-indicator.disconnected { color: #f87171; }
@@ -120,8 +123,9 @@
          runConnectWaterfall + onOpen/onClose. Small + muted, matching
          .notice's idiom (panels have no existing status pill to extend,
          unlike chat.html's #connection-status). Hidden until a real route
-         model resolves. -->
-    <span class="route-indicator disconnected" id="route-indicator" hidden></span>
+         model resolves. role/tabindex (plan Step 3): the chip also toggles
+         this window's view mode on click - wired below, near routeIndicatorEl. -->
+    <span class="route-indicator disconnected" id="route-indicator" hidden role="button" tabindex="0"></span>
     <!-- Right cluster balances the lights so the title stays centered; also
          houses the collapse-to-moon glyph (on the right, clear of native
          traffic lights which sit top-left). -->
@@ -158,6 +162,49 @@
   var contentArea = document.getElementById('content-area');
   var barTitle = document.getElementById('bar-title');
   var routeIndicatorEl = document.getElementById('route-indicator');
+
+  // Route truth (plan Step 2/3): what THIS window's socket genuinely holds
+  // right now - label, connection state, and (Step 3) the redacted endpoint
+  // string. Hoisted to this outer scope (not connectWs's own closure) so the
+  // view-mode seam below can read the SAME truth the chip paints, rather
+  // than a second, possibly-stale copy. connectWs's paintRouteIndicator
+  // (further down) is still the ONLY writer.
+  var currentRouteLabel = null;
+  var currentConnected = false;
+  var currentEndpointDisplay = null;
+
+  // View mode (plan Step 3): per-window, ephemeral, in-memory only - see
+  // wire.ts's ViewMode (the twin chat-window implementation) for the full
+  // rationale against persisting this anywhere (client.toml,
+  // moon-session.json, or localStorage - the codebase's habitual trap for
+  // exactly this shape of flag). Declared here, outside connectWs, so the
+  // toggle survives independent of which panel type's connectWs call is in
+  // flight (and works even for panels that never call connectWs at all -
+  // the chip is simply hidden then, so there is nothing to click).
+  var viewModeEnabled = false;
+  function setViewMode(enabled) {
+    viewModeEnabled = !!enabled;
+  }
+  // THE SEAM (plan Step 3): the ONLY pre-redacted, display-safe read surface
+  // a future consumer (Step 4's verbose indicator form) may use. Every field
+  // is either a plain boolean/string with no credential shape, or a value
+  // ALREADY redacted at capture time (endpointDisplay - see describeUrlSafe
+  // below, never a raw URL). No raw-URL field exists on the returned object,
+  // so a consumer cannot bypass redaction by omission.
+  function viewModeSeam() {
+    return {
+      enabled: viewModeEnabled,
+      routeLabel: currentRouteLabel,
+      connectionState: currentConnected,
+      endpointDisplay: currentEndpointDisplay,
+    };
+  }
+  if (routeIndicatorEl) {
+    routeIndicatorEl.addEventListener('click', function () {
+      setViewMode(!viewModeEnabled);
+    });
+  }
+
   // Collapse-into-moon is a Luna-specific workspace action, intentionally
   // separate from the native yellow button's per-window minimize behavior.
   var collapseMoonBtn = document.getElementById('collapse-moon-btn');
@@ -237,23 +284,35 @@
       // Never renders routeKey - only route.label, or nothing when no route
       // model resolved (the legacy/fallback branches below never call this).
       //
-      // currentRouteLabel/currentConnected (F1, opus review, blocker): the
-      // label/state of whatever route THIS window's socket genuinely holds
-      // right now - both only ever mutate through paintRouteIndicator, and
-      // that is called for a NEW route ONLY after resolve_route_token has
-      // ALREADY succeeded (below), never before. moon-ws.js's client.connect()
-      // is the ONLY thing that tears a prior socket down - a token-resolution
-      // refusal never calls it - so painting the new label BEFORE knowing
-      // resolve_route_token would succeed used to leave the chip claiming a
-      // route this window's socket was never actually on, while the OLD
-      // socket sat genuinely still connected underneath it (wrong name AND
-      // wrong state, and permanent once the old socket's own eventual
-      // onClose repainted using the wrong captured label).
-      var currentRouteLabel = null;
-      var currentConnected = false;
-      function paintRouteIndicator(label, connected) {
+      // currentRouteLabel/currentConnected/currentEndpointDisplay (F1, opus
+      // review, blocker; endpointDisplay added Step 3): the label/state/
+      // redacted-endpoint of whatever route THIS window's socket genuinely
+      // holds right now - all three live in the outer IIFE scope (declared
+      // near routeIndicatorEl, above) so the Step 3 view-mode seam can read
+      // the SAME truth this chip paints, and all three only ever mutate
+      // through paintRouteIndicator, which is called for a NEW route ONLY
+      // after resolve_route_token has ALREADY succeeded (below), never
+      // before. moon-ws.js's client.connect() is the ONLY thing that tears a
+      // prior socket down - a token-resolution refusal never calls it - so
+      // painting the new label BEFORE knowing resolve_route_token would
+      // succeed used to leave the chip claiming a route this window's socket
+      // was never actually on, while the OLD socket sat genuinely still
+      // connected underneath it (wrong name AND wrong state, and permanent
+      // once the old socket's own eventual onClose repainted using the wrong
+      // captured label). Reset explicitly here (rather than relying on the
+      // outer scope's initial null/false/null) so a hypothetical second
+      // connectWs() call on the same page starts from a clean slate, same as
+      // before these three variables were hoisted out of this closure.
+      currentRouteLabel = null;
+      currentConnected = false;
+      currentEndpointDisplay = null;
+      function paintRouteIndicator(label, connected, endpointDisplay) {
         currentRouteLabel = label;
         currentConnected = connected;
+        // Step 3: only ever set from a value ALREADY redacted by the caller
+        // (describeUrlSafe, below) - never a raw URL. Omitted entirely on
+        // the no-route-model paths, which correctly leaves it null.
+        currentEndpointDisplay = endpointDisplay || null;
         if (!routeIndicatorEl) return;
         routeIndicatorEl.hidden = !label;
         routeIndicatorEl.textContent = label || '';
@@ -266,11 +325,11 @@
       var callerOnClose = opts && opts.onClose;
       var mergedOpts = Object.assign({ registry: registry, autoPong: true }, opts || {}, {
         onOpen: function () {
-          paintRouteIndicator(currentRouteLabel, true);
+          paintRouteIndicator(currentRouteLabel, true, currentEndpointDisplay);
           if (callerOnOpen) callerOnOpen();
         },
         onClose: function () {
-          paintRouteIndicator(currentRouteLabel, false);
+          paintRouteIndicator(currentRouteLabel, false, currentEndpointDisplay);
           if (callerOnClose) callerOnClose();
         },
       });
@@ -340,8 +399,11 @@
                 // still holds. Painting any earlier (before this .then) would
                 // claim this route before this window's socket could ever
                 // possibly reach it, including on a refusal that never calls
-                // client.connect() at all.
-                paintRouteIndicator(route.label || null, false);
+                // client.connect() at all. Step 3: redact wsUrl HERE, at the
+                // same capture moment as the label - describeUrlSafe is
+                // already declared above; nothing downstream ever sees the
+                // raw wsUrl again through this variable.
+                paintRouteIndicator(route.label || null, false, describeUrlSafe(wsUrl));
                 // Ok('') is the intentional "none"-tokenRef result
                 // (connection.rs's resolve_route_token). moon-ws.js's
                 // connect() -> LunaProtocol.buildWsUrl already skips the
@@ -370,7 +432,7 @@
                 // the CURRENT REAL state (never a hardcoded 'disconnected',
                 // never this failed attempt's label) - a first-ever run has
                 // no old label, so this hides the chip, same as chat.
-                paintRouteIndicator(currentRouteLabel, currentConnected);
+                paintRouteIndicator(currentRouteLabel, currentConnected, currentEndpointDisplay);
               });
             } else {
               // No client.toml route configured - legacy load_connection
@@ -477,7 +539,19 @@
     // Expose observability fields for agent-browser smoke and tests.
     // resolvedRouteKey: set by connectWs when a client.toml route is used.
     // lastNotice: set by showNotice - truthy means an error was surfaced.
-    window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, resolvedRouteLabel: null, lastNotice: null };
+    // viewMode (plan Step 3): LIVE accessors, not a snapshot - each method
+    // closes over the real outer-scope state (declared near routeIndicatorEl,
+    // above this IIFE's connectWs), so calling them after this object is
+    // built keeps reading current truth even though this whole object is
+    // itself a one-time snapshot assigned once, here.
+    window.__PanelInternals = {
+      type: type, hasModule: !!mod, resolvedRouteKey: null, resolvedRouteLabel: null, lastNotice: null,
+      viewMode: {
+        isEnabled: function () { return viewModeEnabled; },
+        toggle: function () { setViewMode(!viewModeEnabled); return viewModeEnabled; },
+        seam: viewModeSeam,
+      },
+    };
   }
 
   // React-owned panel types: rendered entirely by the deferred React module

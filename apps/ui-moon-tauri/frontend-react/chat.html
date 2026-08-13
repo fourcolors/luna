@@ -376,7 +376,14 @@
       background: #ef4444;
       box-shadow: 0 0 5px #ef4444;
     }
-    
+
+    /* View mode toggle (plan Step 3): the route indicator chip doubles as
+       the toggle affordance - bootChat.ts wires the click, role and
+       tabindex; this is the visual half of that minimal affordance. */
+    #route-indicator {
+      cursor: pointer;
+    }
+
     .chat-meta span.connecting {
       color: #fbbf24;
       animation: pulseConnecting 1s infinite alternate;

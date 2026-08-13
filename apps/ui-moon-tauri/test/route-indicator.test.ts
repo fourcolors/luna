@@ -110,7 +110,7 @@ describe('Route indicator (plan Step 2) - chat window', () => {
 
   afterEach(() => {
     document.body.innerHTML = ''
-    for (const k of ['__TAURI__', '__MoonInternals', 'LunaChatHost', 'LunaTransport', 'ChatState', 'ChatLoop']) {
+    for (const k of ['__TAURI__', '__MoonInternals', 'LunaChatHost', 'LunaTransport', 'ChatState', 'ChatLoop', 'ViewMode']) {
       delete (window as any)[k]
     }
     vi.restoreAllMocks()

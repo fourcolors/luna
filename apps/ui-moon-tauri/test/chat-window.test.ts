@@ -192,6 +192,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     delete (window as any).LunaChatHost
     delete (window as any).ChatState
     delete (window as any).ChatLoop
+    // ViewMode (plan Step 3): bootChat's assignBridge always sets this bare
+    // global (production too - see wiring.ts's currentViewModeEnabled doc),
+    // so it must be cleared per-test same as every other bridged global above.
+    delete (window as any).ViewMode
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -3822,18 +3826,23 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     // F2 (opus review, rework round on plan Step 1c): if the
-    // window.__MoonInternals.loadConnectionAndConnect bridge is ever
-    // missing at fire time (the same swallow shape as the ReferenceError
-    // bug this bridge fixed), the handler must NEVER be a silent warn-only
-    // no-op - it logs an ERROR naming the consequence and drives the status
-    // pill to a visible failure.
+    // window.loadConnectionAndConnect bridge is ever missing at fire time
+    // (the same swallow shape as the ReferenceError bug this bridge fixed),
+    // the handler must NEVER be a silent warn-only no-op - it logs an ERROR
+    // naming the consequence and drives the status pill to a visible
+    // failure.
     it("hub-event 'profile-changed' with the loadConnectionAndConnect bridge missing logs an ERROR naming the consequence and drives the status pill to 'Reconnect failed'", async () => {
       const m = M()
       m.State.activeThreadId = 'th-should-still-clear'
       const errorSpy = vi.spyOn(console, 'error')
-      // Simulate the bridge being unavailable at fire time - bootChat.ts's
-      // assignBridge normally populates this synchronously during boot.
-      delete (window as any).__MoonInternals.loadConnectionAndConnect
+      // Simulate the bridge being unavailable at fire time by deleting the
+      // BARE global wiring.ts actually reads (assignBridge normally
+      // populates it synchronously during boot). Deleting the
+      // __MoonInternals mirror instead (as this test used to) would not
+      // simulate production at all - production never populates that
+      // mirror in the first place (see wiring.ts's read-site comment), so
+      // this branch always fires there regardless of what this test deletes.
+      delete (window as any).loadConnectionAndConnect
 
       windowEventHandlers['hub-event']({ payload: { for: 'chat-test', name: 'profile-changed' } })
       await Promise.resolve()
@@ -3876,6 +3885,21 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await Promise.resolve()
       await Promise.resolve()
 
+      // MODEL PRODUCTION, NOT THE HARNESS (found auditing plan Step 3): this
+      // is the SECOND boot in this test, so window.__MoonInternals already
+      // exists from the FIRST boot (beforeEach's own
+      // evalChatInlineScriptWithBridge call) - which means THIS boot's
+      // internal assignBridge call mirrors loadConnectionAndConnect onto it
+      // too, purely as a side effect of the double-boot shape. A real
+      // window only ever boots ONCE, and production never creates
+      // __MoonInternals at all, so that mirror never exists there. Deleting
+      // it here (while the BARE window.loadConnectionAndConnect global -
+      // the one assignBridge sets unconditionally - stays present) is what
+      // actually reproduces the single-boot production shape; without this
+      // line the assertions below would pass even if wiring.ts regressed to
+      // reading the __MoonInternals mirror again.
+      delete (window as any).__MoonInternals.loadConnectionAndConnect
+
       const m = M()
       m.State.activeThreadId = 'th-old-on-parallel-instance'
       invoke.mockClear()
@@ -3893,6 +3917,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.activeThreadId).toBeNull()
       // ... and the connect waterfall actually re-ran (loadConnectionAndConnect
       // invokes load_connection fresh) - not a no-op that merely reset state.
+      // This is the load-bearing assertion: it only passes if the handler
+      // reached window.loadConnectionAndConnect WITHOUT going through the
+      // now-deleted __MoonInternals mirror.
       expect(invoke).toHaveBeenCalledWith('load_connection')
     })
 
@@ -5195,6 +5222,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.ThreadCache.isBusy('bg')).toBe(false)
     })
 
+    // These three EXTEND (plan Step 3), not invert: window.ViewMode is not
+    // verbose in any of them (a fresh boot's default), so params carries no
+    // 'viewMode' key at all - openInNewWindow only ever ADDS the key, never
+    // adds it as false/undefined. Together with Scenario 6 below (a verbose
+    // source window), these three now also pin the omitted-when-disabled
+    // shape: a regression that always stamped viewMode would fail these.
     it('Scenario: openInNewWindow invokes open_widget with the thread param', async () => {
       const m = M()
       m.State.winLabel = null // no owner stamp in this baseline case
@@ -5425,6 +5458,77 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         'a',
         'b',
       ])
+    })
+
+    // ── View mode rides redock (plan Step 3, both directions) ────────────────
+    //
+    // Owner side (this describe's default beforeEach boot is a non-pinned
+    // window - exactly the branch that installs the 'redock-thread' listener,
+    // see wiring.ts). The floater side needs its OWN pinned+redockTo boot,
+    // driven the same way the existing "?thread=<id> boot" tests above do.
+
+    it('Scenario 5: a verbose floater redocking here makes THIS (owner) window verbose', () => {
+      const m = M()
+      expect(m.ViewMode.isEnabled()).toBe(false)
+      windowEventHandlers['redock-thread']({
+        payload: { threadId: 'thr-1', draft: null, from: 'widget-abc', yRatio: null, viewMode: true },
+      })
+      expect(m.ViewMode.isEnabled()).toBe(true)
+    })
+
+    it('Scenario 5 (negative): a non-verbose floater redocking here must not silently quiet an already-verbose owner', () => {
+      const m = M()
+      m.ViewMode.enable()
+      windowEventHandlers['redock-thread']({
+        payload: { threadId: 'thr-1', draft: null, from: 'widget-abc', yRatio: null, viewMode: false },
+      })
+      // Only ENABLE, never disable: the payload is a positive assertion only.
+      expect(m.ViewMode.isEnabled()).toBe(true)
+    })
+
+    it('Scenario 5: the Redock button stamps viewMode:true when THIS (floater) window is verbose', () => {
+      window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner')
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      const m = M()
+      const invoke = vi.fn().mockResolvedValue(true)
+      ;(window as any).__TAURI__ = { core: { invoke } }
+      m.ViewMode.enable()
+
+      document.getElementById('redock-btn')!.click()
+
+      expect(invoke).toHaveBeenCalledWith('redock_thread', expect.objectContaining({ viewMode: true }))
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('Scenario 5: the Redock button stamps viewMode:false when THIS (floater) window is not verbose', () => {
+      window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner')
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      const m = M()
+      const invoke = vi.fn().mockResolvedValue(true)
+      ;(window as any).__TAURI__ = { core: { invoke } }
+      expect(m.ViewMode.isEnabled()).toBe(false)
+
+      document.getElementById('redock-btn')!.click()
+
+      expect(invoke).toHaveBeenCalledWith('redock_thread', expect.objectContaining({ viewMode: false }))
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('Scenario 6: a verbose SOURCE window detaching a thread stamps open_widget params.viewMode:true', async () => {
+      const m = M()
+      m.State.winLabel = 'panel-chat'
+      m.ViewMode.enable()
+      const invoke = vi.fn().mockResolvedValue('panel-chat-xyz')
+      ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
+        core: { invoke },
+      }
+      await m.ThreadDrawerEngine.openInNewWindow('thr-99')
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'thr-99', redockTo: 'panel-chat', viewMode: true },
+      })
     })
 
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {

@@ -659,6 +659,13 @@ export function installWiring(ctx: WiringCtx) {
   // Owner label for a drag-out floater (#380). When set, the Redock button
   // folds this window back into that owner via redock_thread.
   const REDOCK_TO = new URLSearchParams(location.search).get('redockTo') || null;
+  // View mode (plan Step 3): a detached floater's open_widget params carry
+  // 'viewMode' when its SOURCE window was verbose at the moment of detach
+  // (see threadDrawer.ts's openInNewWindow) - this window boots verbose
+  // from it. Read once, here, alongside every other `?`-derived boot param;
+  // applied later in bootChat.ts once wire.ViewMode exists (installWiring
+  // runs before createWire - see this file's module doc on ordering).
+  const INITIAL_VIEW_MODE = new URLSearchParams(location.search).get('viewMode') === 'true';
   // Max stall-recovery rounds before we give up and surface "Reattach stalled".
   // 3 rounds covers: one tombstone advance + one validation miss + one final retry.
   const MAX_REATTACH_ROUNDS = 3;
@@ -710,6 +717,21 @@ export function installWiring(ctx: WiringCtx) {
     });
   }
 
+  // View mode (plan Step 3) rides BOTH redock call sites below. Read the
+  // BARE window.ViewMode global at call time, not window.__MoonInternals.
+  // ViewMode: __MoonInternals is a TEST-ONLY bridge object - bootChat.ts's
+  // assignBridge only copies onto it when it already exists (chat-harness.ts
+  // pre-creates the empty object; production never does), while
+  // `window.<Name>` is the one assignBridge ALWAYS sets, production
+  // included. The hub-event handler further down this file reads the
+  // __MoonInternals copy and is consequently a no-op in production (a
+  // pre-existing, separately tracked gap - #525) - this deliberately does
+  // not repeat that mistake.
+  function currentViewModeEnabled() {
+    const vm = window.ViewMode;
+    return !!(vm && typeof vm.isEnabled === 'function' && vm.isEnabled());
+  }
+
   // Redock button (#380) — only on pinned floaters that know their owner.
   const redockBtn = document.getElementById('redock-btn');
   if (redockBtn) {
@@ -724,6 +746,7 @@ export function installWiring(ctx: WiringCtx) {
             threadId: State.pinnedThread,
             ownerLabel: REDOCK_TO,
             draft: draft || null,
+            viewMode: currentViewModeEnabled(),
           })
           .then((ok) => {
             // If owner is gone, just close this floater so the user is not stuck.
@@ -756,6 +779,7 @@ export function installWiring(ctx: WiringCtx) {
               ownerLabel: REDOCK_TO || p.ownerLabel,
               draft: draft || null,
               yRatio: typeof p.yRatio === 'number' ? p.yRatio : null,
+              viewMode: currentViewModeEnabled(),
             })
             .then((ok) => {
               if (!ok && W && typeof W.close === 'function') W.close().catch(() => {});
@@ -796,6 +820,18 @@ export function installWiring(ctx: WiringCtx) {
           if (draft && DOM.messageInput && !DOM.messageInput.value) {
             DOM.messageInput.value = draft;
             try { ChatEngine.autoGrowMessageInput(); } catch (_) {}
+          }
+          // View mode (plan Step 3): a verbose floater redocking here makes
+          // THIS (owner) window verbose - the accepted per-window trade
+          // named in the plan's "per-window decision, refined" (the owner's
+          // OTHER threads go verbose too; per-thread scope is the documented
+          // fallback if that proves wrong in use). Only ENABLE, never
+          // disable: a non-verbose floater redocking into an already-verbose
+          // owner must not silently quiet it - the payload only ever carries
+          // a positive assertion, never an explicit "turn it off".
+          if (p.viewMode) {
+            const vm = window.ViewMode; // bare global - see currentViewModeEnabled's doc above
+            if (vm && typeof vm.enable === 'function') vm.enable();
           }
         }).catch(() => {});
         // Live drag preview from a redock-capable floater (Rust NSEvent path).
@@ -860,13 +896,33 @@ export function installWiring(ctx: WiringCtx) {
           // closure, and installWiring() (this function) runs BEFORE
           // createWire() in bootChat.ts's construction order, so it cannot
           // be received as a constructor param here. bootChat.ts bridges it
-          // onto window.__MoonInternals.loadConnectionAndConnect right after
+          // onto the BARE window.loadConnectionAndConnect global (assignBridge
+          // sets that UNCONDITIONALLY, production included) right after
           // createWire() returns - by the time this handler actually FIRES
-          // (an event arriving well after boot completes), that bridge is
+          // (an event arriving well after boot completes), that global is
           // always populated. A bare reference here would be a
           // ReferenceError, silently swallowed by the .catch below, which
           // is exactly the bug Step 1c's fan-out testing caught: the chat
           // window never actually reconnected on a real profile switch.
+          //
+          // CORRECTNESS FIX (found reviewing plan Step 3): this used to read
+          // window.__MoonInternals.loadConnectionAndConnect instead of the
+          // bare global. __MoonInternals is a TEST-ONLY observability mirror
+          // - chat-harness.ts pre-creates it before bootChat() runs so
+          // assignBridge's `if (w.__MoonInternals)` branch also mirrors onto
+          // it; production never creates that object at all, so the mirror
+          // read was ALWAYS undefined outside tests. The one existing test
+          // that looked like it proved the happy path only passed because it
+          // calls evalChatInlineScriptWithBridge() TWICE in one test (a
+          // second boot, whose assignBridge call finds __MoonInternals
+          // already populated by the first boot's harness setup) - a shape
+          // that cannot occur in a real, single-boot window. In production
+          // this meant EVERY profile switch hit the "unavailable" branch
+          // below and silently kept the window on its OLD credentials with
+          // the status pill claiming "Reconnect failed" - the exact failure
+          // this bridge was built to prevent, just relocated one field over.
+          // Production code must never read through __MoonInternals; it is
+          // written to, never read from, outside tests.
           Promise.resolve()
             .then(async () => {
               State.activeThreadId = null;
@@ -875,7 +931,7 @@ export function installWiring(ctx: WiringCtx) {
               State.skipLastThreadFile = true;
               ChatState.reset();
               ChatLoop.flush();
-              const bridge = window.__MoonInternals && window.__MoonInternals.loadConnectionAndConnect;
+              const bridge = window.loadConnectionAndConnect;
               if (typeof bridge !== 'function') {
                 // F2 (opus review): this must NEVER be a silent no-op - the
                 // exact same swallow shape as the ReferenceError bug this
@@ -886,10 +942,10 @@ export function installWiring(ctx: WiringCtx) {
                 // at all - Logger.error names the consequence explicitly so
                 // a real user (not just a console reader) can tell.
                 Logger.error(
-                  `hub-event ${p.name}: window.__MoonInternals.loadConnectionAndConnect is unavailable - `
+                  `hub-event ${p.name}: window.loadConnectionAndConnect is unavailable - `
                     + 'this window keeps OLD credentials after a profile switch',
                 );
-                const engine = window.__MoonInternals && window.__MoonInternals.WebSocketEngine;
+                const engine = window.WebSocketEngine;
                 if (engine && typeof engine.updateStatus === 'function') {
                   engine.updateStatus('disconnected', 'Reconnect failed');
                 }
@@ -914,5 +970,5 @@ export function installWiring(ctx: WiringCtx) {
   // (The connection boot moved to src/chat/wire.ts and is ignited by
   // main-chat.tsx - stack23 S20a. See the note on `var WebSocketEngine`.)
 
-  return { SPAWN_FRESH, PINNED_THREAD, REDOCK_TO }
+  return { SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE }
 }
