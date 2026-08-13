@@ -652,10 +652,21 @@ export function createWire(ctx: WireCtx) {
     _handle: null,        // ConnectionManager RouteHandle (for release)
     _routeKey: null,      // route key this engine is bound to
     _routeLabel: null,    // route LABEL this engine is bound to (Step 2 indicator - never the key)
+    _routeEndpointDisplay: null, // Step 3: LunaProtocol.describeWsUrl(endpoint), captured
+                                  // ONCE at the same point as _routeLabel below - the view-mode
+                                  // seam's endpointDisplay field reads THIS, never a raw URL.
     _dispatch: null,      // gated dispatch fn for this routeKey
     _unsubFrames: null,   // unsubscribe fn from adapter.subscribeFrames
     _unsubConn: null,     // unsubscribe fn from adapter.subscribeConnection
     _isConnected: false,  // true once adapter reaches 'ready'
+    // STRUCTURAL FIX (plan Step 4 review, chat-only blocker): the last
+    // `connected` value _paintRouteIndicator actually PAINTED - mutated
+    // ONLY inside that function, never anywhere else. _repaintRouteIndicator
+    // (below, in the ViewMode block) reads THIS instead of _isConnected, so
+    // a toggle can never disagree with what the chip is already showing,
+    // no matter what future staleness _isConnected develops (the root fix
+    // above closes the ONE known cause; this closes the whole class).
+    _lastPaintedConnected: false,
     _closeHooks: [],      // mirrors WebSocketEngine._closeHooks seam
     _hooksArmed: false,   // true after first 'ready'; cleared by _fireDisconnect
 
@@ -841,6 +852,24 @@ export function createWire(ctx: WireCtx) {
 
       this._routeKey = routeKey;
       this._routeLabel = routeLabel || null;
+      // Step 3 (plan's view-mode seam): redact the endpoint HERE, at capture
+      // time, from the raw `endpoints[0]` this attempt is about to dial -
+      // never later, and never from a raw URL held anywhere else. This is
+      // what makes the seam's endpointDisplay field structurally incapable
+      // of leaking a token-bearing URL: nothing downstream of this line ever
+      // sees the raw value again, only this already-redacted string.
+      this._routeEndpointDisplay = (endpoints && endpoints[0])
+        ? LunaProtocol.describeWsUrl(endpoints[0]) : null;
+      // ROOT FIX (plan Step 4 review, chat-only blocker): _teardownAdapter()
+      // above does not touch _isConnected (the staleness flagged since Step
+      // 1b) - without this line, _isConnected still held the PREVIOUS
+      // route's `true` all the way from here until acquire() resolves or
+      // fails below. Any reader consulting _isConnected during that window
+      // (not just the repaint helper further down this file) would see a
+      // live connection that no longer exists. Setting it here, at the
+      // exact point the new route's identity is claimed, retires that for
+      // every reader, not only the one this review found.
+      this._isConnected = false;
       // Step 2 (plan's route indicator): paint the NEW route's label with a
       // disconnected mark BEFORE dialing - this is the point that satisfies
       // "switching to a route whose endpoint never accepts a connection...
@@ -1179,10 +1208,46 @@ export function createWire(ctx: WireCtx) {
     // label (no route model resolved) hides the chip entirely - "just the
     // connection state" per the plan, which the existing #connection-status
     // pill already carries; this chip adds nothing to show in that case.
+    // VERBOSE FORM (plan Step 4): when ViewMode is enabled, the SAME writer
+    // additionally renders the seam's endpointDisplay (already redacted -
+    // never a raw URL, see ViewMode.seam()'s own doc comment) alongside the
+    // label and the connected/disconnected word this call is ALREADY
+    // painting via `connected` - never re-derived from anywhere else, so
+    // verbose text and the className it sits beside can never disagree.
+    // This is still the ONLY writer of DOM.routeIndicator; ViewMode's
+    // toggle()/enable()/disable() (below) call THIS function again with the
+    // CURRENT _routeLabel/_isConnected to force an immediate re-render on a
+    // toggle or a redock-applied enable() - they never invent a new
+    // connected value, so the latch (only a genuine reconnect may claim
+    // `connected: true`) holds exactly as it did before this step: toggling
+    // verbose mode changes how the current truth is DISPLAYED, never what
+    // that truth IS.
+    //
+    // TEXT WRITES DOM.routeIndicatorText, NOT DOM.routeIndicator, ITSELF:
+    // #route-indicator is display:flex (it inherits .chat-meta span's
+    // flex+::before-dot layout), and text-overflow:ellipsis does not
+    // reliably render on a flex container's own text in WebKit - confirmed
+    // live via a real headless render during this step's screenshot gate
+    // (the box clipped correctly at max-width but showed no "…" at all).
+    // #route-indicator-text is a plain (non-flex) inline child the ellipsis
+    // rule actually applies to; see chat.html's CSS comment on it.
     _paintRouteIndicator(label, connected) {
+      // Set BEFORE the DOM-existence guard, mirroring panel.html's
+      // currentConnected - "last painted" tracks the truth this call is
+      // communicating, not whether a DOM write happened to succeed.
+      this._lastPaintedConnected = connected;
       if (!DOM.routeIndicator) return;
       DOM.routeIndicator.hidden = !label;
-      DOM.routeIndicator.textContent = label || '';
+      const textEl = DOM.routeIndicatorText || DOM.routeIndicator;
+      if (label && ViewMode.isEnabled()) {
+        const endpointDisplay = this._routeEndpointDisplay;
+        const parts = [label];
+        if (endpointDisplay) parts.push(endpointDisplay);
+        parts.push(connected ? 'Connected' : 'Disconnected');
+        textEl.textContent = parts.join(' - ');
+      } else {
+        textEl.textContent = label || '';
+      }
       DOM.routeIndicator.className = connected ? 'connected' : 'disconnected';
     },
 
@@ -1385,6 +1450,76 @@ export function createWire(ctx: WireCtx) {
     },
   }
 
+  // ── View mode (plan Step 3): per-window, ephemeral, in-memory only ─────
+  //
+  // NEVER persisted - no client.toml key, no moon-session.json key, no
+  // localStorage key. localStorage is this codebase's habitual trap for
+  // exactly this shape of flag (see the luna_model/luna_effort writes at
+  // wire.ts:349,381,386,1157,1160 above): every Moon window shares one
+  // `tauri://` origin, so a one-line localStorage.setItem would make this
+  // global AND persistent, silently failing the per-window and
+  // reopen-resets scenarios while passing every scenario that only names
+  // the JSON stores. `_enabled` is a plain closure variable instead - reset
+  // to false on every fresh createWire() call (one per window boot), which
+  // is what makes "close and reopen -> off" true by construction rather
+  // than by any explicit clear.
+  //
+  // Toggling never touches the socket - neither enable() nor disable() nor
+  // toggle() calls PoolEngine.connect()/disconnect(), so "no reconnection
+  // occurs" also holds by construction, not by omission.
+  let _viewModeEnabled = false;
+
+  // Step 4: every state change re-invokes PoolEngine._paintRouteIndicator
+  // (the ONLY writer of DOM.routeIndicator) with the CURRENT
+  // _routeLabel/_lastPaintedConnected - never a new value this function
+  // invents - so a click-to-toggle or a redock-applied enable() re-renders
+  // the ALREADY-painted chip immediately, without becoming a second writer
+  // and without ever moving the latch itself (see _paintRouteIndicator's
+  // own doc comment for why passing through the current painted state
+  // cannot fake a reconnect).
+  //
+  // READS _lastPaintedConnected, NOT _isConnected (review finding, chat-only
+  // blocker): _isConnected can be STALE during the pre-dial window -
+  // _teardownAdapter() does not reset it, so from the moment a new route's
+  // identity is claimed until acquire() resolves or fails, it still holds
+  // the PREVIOUS route's true. Toggling verbose (or a redock's enable())
+  // during exactly that window - scenario 5's hung-switch case - would
+  // repaint (newLabel, stale true): "Connected" over a route this window's
+  // socket was never actually on. _lastPaintedConnected cannot go stale the
+  // same way: it is set INSIDE _paintRouteIndicator itself, at the same
+  // instant as every real paint, so it is structurally never behind what
+  // the chip is currently showing - independent of whatever _isConnected
+  // is doing.
+  function _repaintRouteIndicator() {
+    PoolEngine._paintRouteIndicator(PoolEngine._routeLabel, PoolEngine._lastPaintedConnected);
+  }
+
+  const ViewMode = {
+    isEnabled() { return _viewModeEnabled; },
+    enable() { _viewModeEnabled = true; _repaintRouteIndicator(); },
+    disable() { _viewModeEnabled = false; _repaintRouteIndicator(); },
+    toggle() { _viewModeEnabled = !_viewModeEnabled; _repaintRouteIndicator(); return _viewModeEnabled; },
+
+    // THE SEAM (plan Step 3): the ONLY surface a display consumer (Step 4's
+    // verbose indicator form) may read route/connection state through.
+    // Every field here is either a plain boolean/string with no credential
+    // shape (`enabled`, `connectionState`) or a value ALREADY redacted at
+    // capture time inside PoolEngine.connect() (`endpointDisplay`, via
+    // LunaProtocol.describeWsUrl - see the _routeEndpointDisplay capture
+    // site above), never redacted here and never read from a raw URL. There
+    // is no raw-URL field on the object this returns, so a consumer cannot
+    // bypass redaction by omission - the seam is structurally incapable of
+    // handing back the thing it is supposed to hide.
+    seam() {
+      return {
+        enabled: _viewModeEnabled,
+        routeLabel: PoolEngine._routeLabel,
+        connectionState: PoolEngine._isConnected,
+        endpointDisplay: PoolEngine._routeEndpointDisplay,
+      };
+    },
+  }
+
   const FORCE_LEGACY_WS_ENGINE = (() => {
     try {
       if (typeof window !== 'undefined' && window.__LUNA_POOL_ENGINE === false) return true;
@@ -1511,6 +1646,7 @@ export function createWire(ctx: WireCtx) {
     WebSocketEngine,
     PoolEngine,
     USE_POOL_ENGINE,
+    ViewMode,
     /** Ignition. Called by main-chat.tsx AFTER every collaborator exists -
      *  which is the whole reason it is a function here and a bare statement
      *  in chat.html before this slice. */
@@ -1520,12 +1656,17 @@ export function createWire(ctx: WireCtx) {
      * connection-changed) can re-read the secure connection file and
      * reconnect on a route switch. wiring.ts's installWiring() runs BEFORE
      * this function does (bootChat.ts's construction order), so it cannot
-     * receive this as a constructor param - it looks it up late via
-     * window.__MoonInternals.loadConnectionAndConnect instead, bridged by
-     * bootChat.ts right after this object is returned. Without this, a real
-     * profile switch left the chat window's hub-event handler calling a
-     * bare, unresolvable identifier (ReferenceError, silently swallowed by
-     * its own .catch) - the window never actually reconnected.
+     * receive this as a constructor param - it looks it up late via the
+     * BARE window.loadConnectionAndConnect global instead (assignBridge sets
+     * that unconditionally, production included), bridged by bootChat.ts
+     * right after this object is returned. Without this, a real profile
+     * switch left the chat window's hub-event handler calling a bare,
+     * unresolvable identifier (ReferenceError, silently swallowed by its own
+     * .catch) - the window never actually reconnected. NEVER read this back
+     * through window.__MoonInternals.loadConnectionAndConnect - that object
+     * is a test-only observability mirror (chat-harness.ts pre-creates it;
+     * production never does), and reading through it here was itself a
+     * production-breaking bug found while auditing plan Step 3.
      */
     loadConnectionAndConnect,
   }

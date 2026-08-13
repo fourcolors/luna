@@ -501,13 +501,34 @@ fn is_closable_widget_label(label: &str) -> bool {
     is_dock_label(label)
 }
 
+/// Pure `redock-thread` payload builder (testable without a webview).
+/// `view_mode` (plan Step 3): `Some(true)` when the redocking floater had
+/// the verbose view enabled - the owner window's JS listener applies it
+/// (enable-only, never disables an already-verbose owner). `None`/`Some(false)`
+/// are both omitted-equivalent on the JS side, which only ever checks truthiness.
+fn build_redock_thread_payload(
+    thread_id: &str,
+    draft: Option<&str>,
+    from: &str,
+    y_ratio: Option<f64>,
+    view_mode: Option<bool>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "draft": draft,
+        "from": from,
+        "yRatio": y_ratio,
+        "viewMode": view_mode,
+    })
+}
+
 /// Redock a pinned chat floater into its owner window (issue #380).
 ///
 /// Used by the explicit Redock button and by live drag-release when the floater
 /// center is over the owner's left dock strip. Focuses the owner, emits
-/// `redock-thread` with thread id + optional draft + insert hint, then closes
-/// the caller. Returns false (no error) when the call is invalid so the page
-/// can fall back to just closing.
+/// `redock-thread` with thread id + optional draft + insert hint + view mode
+/// (plan Step 3), then closes the caller. Returns false (no error) when the
+/// call is invalid so the page can fall back to just closing.
 #[tauri::command]
 pub(crate) async fn redock_thread(
     window: tauri::WebviewWindow,
@@ -515,6 +536,7 @@ pub(crate) async fn redock_thread(
     owner_label: String,
     draft: Option<String>,
     y_ratio: Option<f64>,
+    view_mode: Option<bool>,
 ) -> Result<bool, String> {
     let app = window.app_handle().clone();
     let caller_label = window.label().to_string();
@@ -546,12 +568,7 @@ pub(crate) async fn redock_thread(
     app.emit_to(
         tauri::EventTarget::labeled(&owner_label),
         "redock-thread",
-        serde_json::json!({
-            "threadId": thread_id,
-            "draft": draft,
-            "from": caller_label,
-            "yRatio": y_ratio,
-        }),
+        build_redock_thread_payload(&thread_id, draft.as_deref(), &caller_label, y_ratio, view_mode),
     )
     .map_err(|e| e.to_string())?;
     window.close().map_err(|e| e.to_string())?;
@@ -1952,5 +1969,46 @@ mod tests {
         assert!(!is_closable_widget_label("main"));
         assert!(!is_closable_widget_label("setup"));
         assert!(!is_closable_widget_label(""));
+    }
+
+    // ── build_redock_thread_payload (plan Step 3: view mode rides redock) ───
+
+    #[test]
+    fn redock_thread_payload_carries_view_mode_true() {
+        let payload = build_redock_thread_payload("t-1", Some("draft text"), "widget-abc", Some(0.5), Some(true));
+        assert_eq!(payload["threadId"], "t-1");
+        assert_eq!(payload["draft"], "draft text");
+        assert_eq!(payload["from"], "widget-abc");
+        assert_eq!(payload["yRatio"], 0.5);
+        assert_eq!(payload["viewMode"], true);
+    }
+
+    #[test]
+    fn redock_thread_payload_carries_view_mode_false_and_none_distinctly_but_both_falsy() {
+        let explicit_false = build_redock_thread_payload("t-2", None, "widget-def", None, Some(false));
+        assert_eq!(explicit_false["viewMode"], false);
+
+        let absent = build_redock_thread_payload("t-3", None, "widget-ghi", None, None);
+        assert!(absent["viewMode"].is_null());
+        // Both are JSON-falsy - the JS listener's `if (p.viewMode)` check treats
+        // them identically (never enables), which is the whole point: an
+        // explicit false and "the floater never said" must behave the same.
+    }
+
+    #[test]
+    fn redock_thread_payload_omits_nothing_present_before_view_mode_was_added() {
+        // Regression fence: adding viewMode must never disturb the four
+        // pre-existing fields' shape or values.
+        let payload = build_redock_thread_payload("t-4", Some("hi"), "widget-jkl", Some(0.25), None);
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "threadId": "t-4",
+                "draft": "hi",
+                "from": "widget-jkl",
+                "yRatio": 0.25,
+                "viewMode": null,
+            })
+        );
     }
 }

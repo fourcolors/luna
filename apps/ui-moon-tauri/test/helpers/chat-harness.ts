@@ -256,6 +256,7 @@ export function evalChatInlineScriptWithBridge(_htmlContent?: string, _mount?: u
   M.WebSocketEngine = boot.wire.WebSocketEngine
   M.PoolEngine = boot.wire.PoolEngine
   M.USE_POOL_ENGINE = boot.wire.USE_POOL_ENGINE
+  M.ViewMode = boot.wire.ViewMode
   M.MoonFrames = boot.frames.MoonFrames
   M.frames = boot.frames
   M.ThreadDrawerEngine = boot.threadDrawer.ThreadDrawerEngine

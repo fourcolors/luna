@@ -130,6 +130,7 @@ function assignBridge(
     | "WebSocketEngine"
     | "PoolEngine"
     | "USE_POOL_ENGINE"
+    | "ViewMode"
     | "SurveyEngine"
     | "SecretPromptEngine"
     | "SuggestedActionsEngine"
@@ -647,7 +648,7 @@ export function bootChat() {
   // AFTER every engine (its 33 listeners call them) and BEFORE the wire (which
   // needs the params, and whose boot reads the State.pinnedThread this sets).
   // Nothing here touches the wire, which is what makes that slot available.
-  const { SPAWN_FRESH, PINNED_THREAD } = installWiring({
+  const { SPAWN_FRESH, PINNED_THREAD, INITIAL_VIEW_MODE } = installWiring({
     Logger,
     DOM: DOM as never,
     State: getChatHost()?.state() as never,
@@ -695,6 +696,10 @@ export function bootChat() {
     DOM: {
       connectionStatus: document.getElementById("connection-status"),
       routeIndicator: document.getElementById("route-indicator"),
+      // Step 4: the inner span _paintRouteIndicator writes text into - see
+      // chat.html's CSS comment on #route-indicator-text for why the
+      // ellipsis rule cannot live on the flex/dot-owning outer element.
+      routeIndicatorText: document.getElementById("route-indicator-text"),
       buildSha: document.getElementById("build-sha"),
       modelSelect: document.getElementById("model-select"),
       secretPromptInput: document.getElementById("secret-prompt-input"),
@@ -718,11 +723,51 @@ export function bootChat() {
   assignBridge("WebSocketEngine", wire.WebSocketEngine)
   assignBridge("PoolEngine", wire.PoolEngine)
   assignBridge("USE_POOL_ENGINE", wire.USE_POOL_ENGINE)
+  assignBridge("ViewMode", wire.ViewMode)
+  // View mode (plan Step 3): a detached floater boots verbose when its
+  // source window was verbose at drag-out time (threadDrawer.ts stamps
+  // ?viewMode= into open_widget's params; wiring.ts reads it back as
+  // INITIAL_VIEW_MODE). Applied here, once, right after ViewMode exists -
+  // never touches the socket, so it cannot race or interact with connect().
+  if (INITIAL_VIEW_MODE) wire.ViewMode.enable()
+  // View mode toggle: clicking the route indicator chip flips this window's
+  // verbose view. The chip only ever appears when PoolEngine paints it
+  // (see wire.ts's F2 comment) - a window whose chip stays hidden (no route
+  // model, or the legacy WebSocketEngine escape hatch) has nothing to
+  // click, and that is by design, not an oversight: there is no separate
+  // toggle affordance to hide alongside it.
+  //
+  // KEYBOARD (F1, opus review on plan Step 3): role="button" alone does not
+  // make Enter/Space activate a <span> - only a real <button> element
+  // synthesizes click from keys, and a span never does (WCAG 2.1.1). The
+  // role/tabindex without this handler was decorative: focusable and
+  // announced as a button, but silently inert from the keyboard. Space
+  // additionally gets preventDefault() so it toggles instead of scrolling
+  // the page (the browser's default action for Space on a non-form,
+  // non-naturally-interactive element).
+  {
+    const routeIndicatorEl = document.getElementById("route-indicator")
+    if (routeIndicatorEl) {
+      routeIndicatorEl.setAttribute("role", "button")
+      routeIndicatorEl.setAttribute("tabindex", "0")
+      routeIndicatorEl.addEventListener("click", () => {
+        wire.ViewMode.toggle()
+      })
+      routeIndicatorEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          if (e.key !== "Enter") e.preventDefault()
+          wire.ViewMode.toggle()
+        }
+      })
+    }
+  }
   // wiring.ts's hub-event listener (installed BEFORE this function runs, so
   // it cannot receive loadConnectionAndConnect as a constructor param) looks
-  // this up late via window.__MoonInternals.loadConnectionAndConnect on a
-  // profile-changed/connection-changed event - see wire.ts's doc comment on
-  // the returned loadConnectionAndConnect field.
+  // this up late via the BARE window.loadConnectionAndConnect global (never
+  // window.__MoonInternals.loadConnectionAndConnect - see wire.ts's doc
+  // comment on the returned loadConnectionAndConnect field for why reading
+  // through the test-only mirror was itself a production bug) on a
+  // profile-changed/connection-changed event.
   //
   // INVARIANT (F2, opus review on Step 1c): bootChat() stays SYNCHRONOUS
   // from installWiring() through this assignBridge call. wiring.ts's

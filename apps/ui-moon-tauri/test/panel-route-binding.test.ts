@@ -774,3 +774,367 @@ describe('Step 2 — route indicator (panel surface)', () => {
     expect(document.body.textContent).not.toContain('Beta Test')
   })
 })
+
+// ── Step 3 - view mode seam (panel surface) ─────────────────────────────────
+//
+// The twin of test/view-mode.test.ts's chat-window suite, for panels.
+// window.__PanelInternals.viewMode is the observability bridge bootModule()
+// attaches (vanilla panels only - see panel.html's bootModule doc comment
+// and the mount-file gap this file's own module doc does not claim to fix
+// for React-owned panel kinds). Reused per-test via the SAME `stub.ws` type
+// every other test in this file already boots through bootPanel().
+
+const ROUTE_TOKEN_BEARING = {
+  label: 'Secure Route',
+  key: 'secure-route',
+  // Deliberately credential-shaped (query string + fragment) - the seam
+  // fixture trap, same rationale as view-mode.test.ts's chat-window twin:
+  // a real client.toml endpoint would not carry this, but the redaction
+  // seam must strip it regardless of what it is given.
+  endpoints: ['ws://secure-host:4753/ui?token=TOK-SUPER-SECRET&x=1#frag'],
+  token_ref: 'env:LUNA_WS_TOKEN',
+  transport: 'websocket',
+}
+
+describe('Step 3 - view mode seam (panel surface)', () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const indicator = () => document.getElementById('route-indicator')!
+  const viewMode = () => (window as any).__PanelInternals.viewMode
+
+  it('Scenario 1: enabling verbose leaves the route untouched and reconnects nothing', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    expect(indicator().textContent).toBe('Local')
+    const socketCountBefore = FakeWebSocket.instances.length
+    expect(viewMode().isEnabled()).toBe(false)
+
+    viewMode().toggle()
+
+    expect(viewMode().isEnabled()).toBe(true)
+    // The ROUTE is untouched: same label, still connected - the chip's TEXT
+    // does change (Step 4 renders the verbose form the instant viewMode
+    // flips, via the same paintRouteIndicator writer), which is exactly
+    // the point of this step; the "Step 4 - verbose route indicator"
+    // describe block below pins the exact string. Here, assert only what
+    // "untouched" actually means.
+    expect(indicator().textContent).toContain('Local')
+    expect(indicator().className).toContain('connected')
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+  })
+
+  it('Scenario 2/3: verbose is per window - a second panel boot never inherits it, and the first is unaffected', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    const panelAViewMode = viewMode()
+    panelAViewMode.toggle()
+    expect(panelAViewMode.isEnabled()).toBe(true)
+
+    // A second, independent panel boot - bootPanel() re-mounts the DOM and
+    // re-evaluates panel.html's inline script fresh, exactly like a second
+    // real panel window.
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    expect(viewMode().isEnabled(), 'a fresh panel must not inherit another panel\'s verbose flag').toBe(false)
+    expect(panelAViewMode.isEnabled(), 'panel A must be unaffected by panel B booting').toBe(true)
+  })
+
+  it('Scenario 4: view mode does not survive a panel reopen, and never touches storage', async () => {
+    const invoke = vi.fn(async (cmd: string) => (cmd === 'resolve_route_token' ? 'TOK' : null))
+    bootPanel({
+      invoke,
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    viewMode().toggle()
+    expect(viewMode().isEnabled()).toBe(true)
+
+    // TEST-HYGIENE (plan-mandated): no localStorage.clear() between these
+    // two boots - bootPanel() itself never clears storage, matching
+    // view-mode.test.ts's chat-window twin.
+    bootPanel({
+      invoke,
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    expect(viewMode().isEnabled(), 'reopening must not resurrect the prior panel\'s verbose flag').toBe(false)
+
+    const viewModeKeyPattern = /view.?mode/i
+    const localStorageKeys = Object.keys(localStorage)
+    expect(
+      localStorageKeys.some((k) => viewModeKeyPattern.test(k)),
+      `localStorage must carry no view-mode key; saw keys: ${JSON.stringify(localStorageKeys)}`,
+    ).toBe(false)
+    const viewModeInvokeCalls = (invoke as any).mock.calls.filter(([, args]: [string, Record<string, unknown> | undefined]) =>
+      args && Object.keys(args).some((k) => viewModeKeyPattern.test(k)))
+    expect(viewModeInvokeCalls, 'no Tauri command was ever called with a view-mode-shaped argument').toEqual([])
+  })
+
+  it('Seam: endpointDisplay is redacted even for a deliberately credential-shaped fixture URL', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_TOKEN_BEARING },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    const seam = viewMode().seam()
+    expect(seam.endpointDisplay).toBeTruthy()
+    expect(seam.endpointDisplay).not.toContain('?')
+    expect(seam.endpointDisplay).not.toContain('#')
+    expect(seam.endpointDisplay).not.toContain('TOK-SUPER-SECRET')
+    expect(seam.endpointDisplay).toContain('secure-host:4753/ui')
+  })
+
+  it('Seam: the returned object exposes no property containing the raw URL or the resolved token, and enumerates to exactly the four documented keys', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK-PANEL-SECRET' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_TOKEN_BEARING },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    const seam = viewMode().seam()
+    for (const [key, value] of Object.entries(seam)) {
+      if (typeof value !== 'string') continue
+      expect(value, `seam.${key} must not contain the raw endpoint URL`).not.toContain(ROUTE_TOKEN_BEARING.endpoints[0])
+      expect(value, `seam.${key} must not contain '?' (the raw URL's query string)`).not.toContain('?')
+      expect(value, `seam.${key} must not contain the resolved token`).not.toContain('TOK-PANEL-SECRET')
+    }
+    expect(Object.keys(seam).sort()).toEqual(['connectionState', 'enabled', 'endpointDisplay', 'routeLabel'])
+  })
+
+  it('Seam: toggling flips only enabled - routeLabel/connectionState/endpointDisplay are untouched', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_TOKEN_BEARING },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    const before = viewMode().seam()
+    expect(before.enabled).toBe(false)
+
+    viewMode().toggle()
+
+    const after = viewMode().seam()
+    expect(after.enabled).toBe(true)
+    expect(after.routeLabel).toBe(before.routeLabel)
+    expect(after.connectionState).toBe(before.connectionState)
+    expect(after.endpointDisplay).toBe(before.endpointDisplay)
+  })
+
+  it('Toggle affordance: clicking the route indicator chip toggles view mode', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    expect(viewMode().isEnabled()).toBe(false)
+    expect(indicator().getAttribute('role')).toBe('button')
+    expect(indicator().getAttribute('tabindex')).toBe('0')
+
+    indicator().dispatchEvent(new Event('click', { bubbles: true }))
+    expect(viewMode().isEnabled()).toBe(true)
+
+    indicator().dispatchEvent(new Event('click', { bubbles: true }))
+    expect(viewMode().isEnabled()).toBe(false)
+  })
+
+  // F1 (opus review on plan Step 3): role="button" alone does not make
+  // Enter/Space activate a <span> - only a real <button> synthesizes click
+  // from keys, and a span never does (WCAG 2.1.1).
+  it('Keyboard affordance: Enter toggles view mode', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    expect(viewMode().isEnabled()).toBe(false)
+
+    indicator().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(viewMode().isEnabled()).toBe(true)
+  })
+
+  it('Keyboard affordance: Space toggles view mode and prevents the page-scroll default', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    expect(viewMode().isEnabled()).toBe(false)
+
+    const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    indicator().dispatchEvent(event)
+
+    expect(viewMode().isEnabled()).toBe(true)
+    expect(event.defaultPrevented).toBe(true)
+  })
+})
+
+// ── Step 4 - verbose route indicator (panel surface) ────────────────────────
+//
+// The twin of route-indicator.test.ts's "Verbose form" describe block, for
+// panels. Reuses ROUTE_LOCAL/ROUTE_TOKEN_BEARING/bootPanel/flush from above.
+
+describe('Step 4 - verbose route indicator (panel surface)', () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const indicator = () => document.getElementById('route-indicator')!
+  const viewMode = () => (window as any).__PanelInternals.viewMode
+
+  it('KEY TEST: the verbose text is DERIVED from describeWsUrl(fixture) - proving the consumer sits behind the seam, not beside it', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_TOKEN_BEARING },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    viewMode().toggle()
+
+    const expectedEndpoint = (window as any).LunaProtocol.describeWsUrl(ROUTE_TOKEN_BEARING.endpoints[0])
+    expect(expectedEndpoint).toBeTruthy()
+    expect(indicator().textContent).toContain(expectedEndpoint)
+    expect(indicator().textContent).toContain('Secure Route')
+    expect(indicator().textContent).toContain('Connected')
+  })
+
+  it('toggle on: the verbose form appears, showing endpoint + state alongside the label', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    const baseline = indicator().textContent
+    expect(baseline).toBe('Local')
+
+    viewMode().toggle()
+
+    expect(indicator().textContent).not.toBe(baseline)
+    expect(indicator().textContent).toContain('Local')
+    expect(indicator().textContent).toContain('127.0.0.1:4753/ui')
+    expect(indicator().textContent).toContain('Connected')
+  })
+
+  it('toggle off: EXACT Step 2 rendering is restored - equal to the non-verbose baseline, not just missing the verbose bits', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    const baseline = indicator().textContent
+    const baselineClass = indicator().className
+
+    viewMode().toggle()
+    expect(indicator().textContent).not.toBe(baseline)
+
+    viewMode().toggle()
+
+    expect(indicator().textContent).toBe(baseline)
+    expect(indicator().className).toBe(baselineClass)
+  })
+
+  it('verbose form NEVER contains "?", "#", "token", or the fixture credential anywhere in the chip text', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK-PANEL-SECRET' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_TOKEN_BEARING },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+
+    viewMode().toggle()
+
+    const text = indicator().textContent || ''
+    expect(text).not.toContain('?')
+    expect(text).not.toContain('#')
+    expect(text.toLowerCase()).not.toContain('token')
+    expect(text).not.toContain('TOK-SUPER-SECRET')
+    expect(text).not.toContain('TOK-PANEL-SECRET')
+    expect(text).not.toContain(ROUTE_TOKEN_BEARING.endpoints[0])
+  })
+
+  it('the latch survives verbose mode: a latched failure renders verbose too, and only a genuine reconnect clears it', async () => {
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_CANARY },
+    })
+    await flush()
+    const sock = FakeWebSocket.latest()!
+    sock.simulateOpen()
+    await flush()
+    viewMode().toggle()
+    expect(indicator().textContent).toContain('Canary Backup')
+    expect(indicator().textContent).toContain('Connected')
+
+    sock.simulateDrop()
+    await flush()
+
+    expect(indicator().className).toContain('disconnected')
+    expect(indicator().textContent).toContain('Canary Backup')
+    expect(indicator().textContent).toContain('canary-host:4753/ui')
+    expect(indicator().textContent).toContain('Disconnected')
+
+    // Genuine reconnect (mirrors the panel Scenario 3/latch test above).
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+    const sock2 = FakeWebSocket.latest()!
+    expect(sock2).not.toBe(sock)
+    sock2.simulateOpen()
+    await flush()
+
+    expect(indicator().className).toContain('connected')
+    expect(indicator().textContent).toContain('Connected')
+    expect(indicator().textContent).toContain('Canary Backup')
+  })
+})
