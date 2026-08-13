@@ -51,6 +51,17 @@ const ROUTE_LOCAL = {
   transport: 'websocket',
 }
 
+// Step 2 (route indicator) fixture: label deliberately, obviously distinct
+// from key (the fixture trap) - a key-rendering implementation shows
+// 'canary-route', a label-rendering one shows 'Canary Backup'.
+const ROUTE_CANARY = {
+  label: 'Canary Backup',
+  key: 'canary-route',
+  endpoints: ['ws://canary-host:4753/ui'],
+  token_ref: 'env:LUNA_WS_TOKEN',
+  transport: 'websocket',
+}
+
 // ── Boot harness ──────────────────────────────────────────────────────────────
 
 /**
@@ -587,5 +598,179 @@ describe('Step 1c Part 2 — non-chat panel hub-event listener', () => {
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(FakeWebSocket.instances[0]!.url).toContain('token=TOKEN-B')
     expect(FakeWebSocket.instances.some((s) => s.url.includes('token=TOKEN-A'))).toBe(false)
+  })
+})
+
+// ── Step 2: the route indicator, panel surface ────────────────────────────
+// SOURCE OF TRUTH: this panel window's OWN socket, via onOpen/onClose (raw
+// socket state - panels have no hello-frame handshake to gate on, the same
+// signal the Workflows panel's own liveness hint already uses). FIXTURE
+// TRAP: ROUTE_LOCAL/ROUTE_CANARY's labels are obviously distinct from their
+// keys - a key-rendering implementation fails every assertion below red.
+describe('Step 2 — route indicator (panel surface)', () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const indicator = () => document.getElementById('route-indicator')!
+
+  it('Scenario 1: the panel names the route its socket is on', async () => {
+    bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    const sock = FakeWebSocket.latest()!
+    sock.simulateOpen()
+    await flush()
+
+    expect(indicator().hidden).toBe(false)
+    expect(indicator().textContent).toBe('Local')
+    expect(indicator().className).toContain('connected')
+    expect(sock.url.startsWith(ROUTE_LOCAL.endpoints[0])).toBe(true)
+  })
+
+  it('Scenario 2: the indicator follows a route switch', async () => {
+    let currentRoute: typeof ROUTE_LOCAL = ROUTE_LOCAL
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => currentRoute },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    expect(indicator().textContent).toBe('Local')
+
+    currentRoute = ROUTE_CANARY
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+    const sock2 = FakeWebSocket.latest()!
+    sock2.simulateOpen()
+    await flush()
+
+    expect(indicator().textContent).toBe('Canary Backup')
+    expect(indicator().className).toContain('connected')
+    expect(sock2.url.startsWith(ROUTE_CANARY.endpoints[0])).toBe(true)
+  })
+
+  it('Scenario 3 / latch: a disconnected panel still names its route, and only a genuine reconnect clears the failure', async () => {
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_CANARY },
+    })
+    await flush()
+    const sock = FakeWebSocket.latest()!
+    sock.simulateOpen()
+    await flush()
+    expect(indicator().textContent).toBe('Canary Backup')
+    expect(indicator().className).toContain('connected')
+
+    sock.simulateDrop()
+    await flush()
+
+    // Present, not vanished - and marked disconnected.
+    expect(indicator().hidden).toBe(false)
+    expect(indicator().textContent).toBe('Canary Backup')
+    expect(indicator().className).toContain('disconnected')
+
+    // A genuine reconnect of THIS panel's socket - the only thing that may
+    // clear the failure. Drives the same path the hub-event listener would.
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+    const sock2 = FakeWebSocket.latest()!
+    expect(sock2).not.toBe(sock)
+    sock2.simulateOpen()
+    await flush()
+
+    expect(indicator().textContent).toBe('Canary Backup')
+    expect(indicator().className).toContain('connected')
+  })
+
+  it('Scenario 5: switching to a route whose endpoint never accepts a connection shows the NEW label before any connection succeeds', async () => {
+    let currentRoute: typeof ROUTE_LOCAL = ROUTE_LOCAL
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => currentRoute },
+    })
+    await flush()
+    FakeWebSocket.latest()!.simulateOpen()
+    await flush()
+    expect(indicator().textContent).toBe('Local')
+
+    currentRoute = ROUTE_CANARY
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+
+    // The load-bearing clause: BEFORE simulateOpen on the new socket, the
+    // indicator already reads the NEW label and is marked disconnected.
+    expect(indicator().textContent).toBe('Canary Backup')
+    expect(indicator().className).toContain('disconnected')
+  })
+
+  // ── F1 (opus review, blocker): the ordering bug the skipped test would
+  // have caught. panel.html used to paint the NEW route's label BEFORE
+  // resolve_route_token even ran, and its refusal .catch neither repainted
+  // nor called client.connect() (the ONLY thing that tears a prior socket
+  // down in moon-ws.js) - so a refused re-resolution left the panel
+  // GENUINELY still connected to the OLD route while the chip claimed the
+  // NEW route, disconnected. Wrong name AND wrong state, and permanent
+  // (paintRouteIndicator's currentRouteLabel capture means the OLD socket's
+  // eventual onClose would even repaint using the wrong label).
+  it('Scenario 4: a re-resolution whose token is refused leaves the OLD socket open and the chip still naming the OLD route - never the failed attempt', async () => {
+    const ROUTE_ALPHA = {
+      label: 'Alpha Prod',
+      key: 'alpha-route',
+      endpoints: ['ws://alpha-host:4753/ui'],
+      token_ref: 'env:LUNA_WS_TOKEN',
+      transport: 'websocket',
+    }
+    const ROUTE_BETA = {
+      label: 'Beta Test',
+      key: 'beta-route',
+      endpoints: ['ws://beta-host:4753/ui'],
+      token_ref: 'env:LUNA_WS_TOKEN',
+      transport: 'websocket',
+    }
+
+    let currentRoute: typeof ROUTE_ALPHA = ROUTE_ALPHA
+    let tokenRejectsForBeta = false
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd, args) => {
+        if (cmd === 'resolve_route_token') {
+          if (tokenRejectsForBeta && args?.routeKey === ROUTE_BETA.key) {
+            throw new Error('not-paired: route "' + ROUTE_BETA.key + '" has no token paired in moon-connection.json')
+          }
+          return 'TOK'
+        }
+        return null
+      },
+      moonSession: { resolveBootRoute: async () => currentRoute },
+    })
+    await flush()
+    const sockA = FakeWebSocket.latest()!
+    sockA.simulateOpen()
+    await flush()
+    expect(indicator().textContent).toBe('Alpha Prod')
+    expect(indicator().className).toContain('connected')
+
+    // Re-resolve to Beta, but its token resolution is REFUSED (not-paired).
+    currentRoute = ROUTE_BETA
+    tokenRejectsForBeta = true
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+
+    // The A socket is STILL OPEN - client.connect() was never called for
+    // the refused Beta attempt, so no teardown ever ran and no second
+    // socket was ever dialed.
+    expect(sockA.readyState).toBe(FakeWebSocket.OPEN)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(indicator().textContent).toBe('Alpha Prod')
+    expect(indicator().className).toContain('connected')
+    expect(document.body.textContent).not.toContain('Beta Test')
   })
 })
