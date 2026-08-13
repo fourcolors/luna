@@ -62,9 +62,39 @@
     return wsUrl + sep + 'token=' + encodeURIComponent(wsToken);
   }
 
+  /**
+   * Rebuild a DISPLAY-SAFE version of a WS URL from its parsed components
+   * ONLY - scheme, host, port, and path - discarding the query string,
+   * fragment, and any userinfo wholesale. Never returns any part of the
+   * input on failure.
+   *
+   * This is the security invariant from docs/next/routes-and-view-mode-plan.md
+   * ("The security invariant, which is not deferrable"): buildWsUrl embeds
+   * the bearer token in the query string (`?token=...`), so any surface that
+   * wants to SHOW a WS url must call this instead of rendering the raw
+   * string - a token-parameter strip would be a denylist, wrong by default
+   * for the next credential-bearing parameter and blind to
+   * `wss://user:pass@host`. Rebuilding from parsed components is right by
+   * default: the output structurally cannot contain '?', '#', or userinfo,
+   * regardless of what producer supplied the input.
+   *
+   * Unparseable input returns a FIXED placeholder, never the input itself -
+   * a malformed URL is exactly the case a naive string-strip would get wrong.
+   */
+  function describeWsUrl(wsUrl) {
+    try {
+      var u = new URL(wsUrl);
+      var port = u.port ? (':' + u.port) : '';
+      return u.protocol + '//' + u.hostname + port + u.pathname;
+    } catch (_) {
+      return '<unparseable url>';
+    }
+  }
+
   g.LunaProtocol = {
     PROTOCOL_VERSION: PROTOCOL_VERSION,
     parseHelloCapabilities: parseHelloCapabilities,
     buildWsUrl: buildWsUrl,
+    describeWsUrl: describeWsUrl,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

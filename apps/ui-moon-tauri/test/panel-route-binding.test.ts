@@ -27,9 +27,10 @@
 // registers (`stub.ws`) is never React-owned, so it always takes the
 // still-vanilla bootModule() path panel.html's inline script has always had.
 
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { FakeWebSocket } from './helpers/FakeWebSocket'
 
 // ── File fixtures ─────────────────────────────────────────────────────────────
 
@@ -81,9 +82,16 @@ function bootPanel(opts: {
     ? vi.fn(async (cmd: string, args?: any) => opts.invoke!(cmd, args))
     : null
 
+  // Window-targeted event handlers captured from getCurrentWindow().listen -
+  // Step 1c Part 2's hub-event listener (mirrors chat-window.test.ts's
+  // windowEventHandlers pattern) so a test can drive it directly.
+  const windowEventHandlers: Record<string, (e: { payload: any }) => void> = {}
   const me = {
     label: 'panel-' + type.replace(/\./g, '-'),
-    listen: vi.fn(async () => () => {}),
+    listen: vi.fn(async (name: string, cb: (e: { payload: any }) => void) => {
+      windowEventHandlers[name] = cb
+      return () => {}
+    }),
     onMoved: vi.fn(async () => () => {}),
     outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
     outerSize: vi.fn(async () => ({ width: 360, height: 400 })),
@@ -145,7 +153,7 @@ function bootPanel(opts: {
   expect(inline).toHaveLength(1)
   new Function(inline[0])()
 
-  return { invoke }
+  return { invoke, windowEventHandlers }
 }
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
@@ -173,12 +181,23 @@ describe('C7 — panel route binding', () => {
 
   // ── A: panel-specific route → use endpoints[0] as wsUrl ──────────────────
 
-  it('A: panel route present → connects with route endpoint, token from load_connection', async () => {
+  it('A: panel route present → connects with route endpoint, token from resolve_route_token (Step 1c Part 1 inversion)', async () => {
     let connectSpy = vi.fn()
+    let resolveTokenArgs: any = null
 
+    // INVERSION (plan Step 1c): this used to pin the URL/token split -
+    // route's endpoint but a panel-id-BLIND load_connection token, always
+    // keyed off cfg.default. load_connection's stub below returns a
+    // DELIBERATELY DIFFERENT token from resolve_route_token's, so an
+    // implementation that still reads load_connection on this branch fails
+    // the assertion below instead of coincidentally passing.
     bootPanel({
-      invoke: (cmd) => {
+      invoke: (cmd, args) => {
         if (cmd === 'load_connection') return { wsUrl: 'ws://legacy:4753/ui', wsToken: 'legacy-tok' }
+        if (cmd === 'resolve_route_token') {
+          resolveTokenArgs = args
+          return 'RESOLVED-FOR-LOCAL'
+        }
         return null
       },
       moonSession: {
@@ -194,8 +213,10 @@ describe('C7 — panel route binding', () => {
 
     await flush()
 
-    // Must use the route's endpoint, NOT the legacy wsUrl
-    expect(connectSpy).toHaveBeenCalledWith('ws://127.0.0.1:4753/ui', 'legacy-tok')
+    // Must use the route's endpoint AND the token resolve_route_token
+    // resolved for THIS route key - not load_connection's.
+    expect(connectSpy).toHaveBeenCalledWith('ws://127.0.0.1:4753/ui', 'RESOLVED-FOR-LOCAL')
+    expect(resolveTokenArgs).toEqual({ routeKey: 'local' })
     // resolvedRouteKey must be populated on __PanelInternals
     expect((window as any).__PanelInternals.resolvedRouteKey).toBe('local')
     // No error notice
@@ -248,12 +269,50 @@ describe('C7 — panel route binding', () => {
     expect(document.querySelector('.notice')).toBeNull()
   })
 
-  // ── C: route resolved but load_connection rejects → surface error ─────────
+  // ── C: route resolved but resolve_route_token rejects → surface error ─────
+  // Step 1c Part 1/3b: every notice below is a FIXED reason, never e.message
+  // or the raw exception - see docs/next/routes-and-view-mode-plan.md, "The
+  // security invariant, which is not deferrable".
 
-  it('C: route resolved but load_connection rejects → showNotice with reason', async () => {
+  it('C: route resolved but resolve_route_token rejects "not-paired:" → fixed reason naming the route, no socket, no token anywhere in the DOM', async () => {
+    let connectSpy = vi.fn()
     bootPanel({
       invoke: (cmd) => {
-        if (cmd === 'load_connection') throw new Error('token vault locked')
+        if (cmd === 'resolve_route_token') {
+          throw new Error('not-paired: route "local" has no token paired in moon-connection.json')
+        }
+        return null
+      },
+      moonSession: {
+        resolveBootRoute: async () => ROUTE_LOCAL,
+      },
+      onVendorsLoaded: () => {
+        connectSpy = vi.fn()
+        ;(window as any).LunaWS = { createClient: () => ({ connect: connectSpy }) }
+      },
+    })
+
+    await flush()
+
+    // Refused durably - no socket attempt at all.
+    expect(connectSpy).not.toHaveBeenCalled()
+    const notice = document.querySelector('.notice')
+    expect(notice).not.toBeNull()
+    expect(notice!.textContent).toContain('Panel connection failed:')
+    expect(notice!.textContent).toContain('local') // names the route
+    // e.message is NEVER rendered raw - the fixed reason replaces it.
+    expect(notice!.textContent).not.toContain('has no token paired')
+    // No token (or a URL carrying one) anywhere in the rendered DOM.
+    expect(document.body.textContent).not.toContain('token=')
+    expect((window as any).__PanelInternals.lastNotice).toContain('local')
+  })
+
+  it('C: route resolved but resolve_route_token rejects with a non-not-paired reason → fixed reason + describeWsUrl(endpoint), e.message never rendered', async () => {
+    bootPanel({
+      invoke: (cmd) => {
+        if (cmd === 'resolve_route_token') {
+          throw new Error('store-read: moon-connection.json not found or unreadable')
+        }
         return null
       },
       moonSession: {
@@ -269,12 +328,13 @@ describe('C7 — panel route binding', () => {
     const notice = document.querySelector('.notice')
     expect(notice).not.toBeNull()
     expect(notice!.textContent).toContain('Panel connection failed:')
-    expect(notice!.textContent).toContain('token vault locked')
-    // Also reflected on __PanelInternals
-    expect((window as any).__PanelInternals.lastNotice).toContain('token vault locked')
+    // e.message is NEVER rendered raw.
+    expect(notice!.textContent).not.toContain('moon-connection.json not found or unreadable')
+    // describeWsUrl(endpoint) - a url adds value here (which endpoint failed).
+    expect(notice!.textContent).toContain('ws://127.0.0.1:4753/ui')
   })
 
-  it('C: legacy load_connection rejects with Tauri present → showNotice', async () => {
+  it('C: legacy load_connection rejects with Tauri present → fixed reason, e.message never rendered', async () => {
     bootPanel({
       invoke: (cmd) => {
         if (cmd === 'load_connection') throw new Error('not configured')
@@ -293,7 +353,9 @@ describe('C7 — panel route binding', () => {
     const notice = document.querySelector('.notice')
     expect(notice).not.toBeNull()
     expect(notice!.textContent).toContain('Panel connection failed:')
-    expect(notice!.textContent).toContain('not configured')
+    // e.message is NEVER rendered raw - no url is in scope on this branch
+    // either (load_connection itself rejected, so there is no creds.wsUrl).
+    expect(notice!.textContent).not.toContain('not configured')
   })
 
   // ── D: off-Tauri (no __TAURI__) → silent, no notice ─────────────────────
@@ -322,15 +384,18 @@ describe('C7 — panel route binding', () => {
 
   // ── E: child/settings panels without explicit route → default (documented C8) ──
 
-  it('E: child panel with no explicit route binding uses default (C8 follow-up documented)', async () => {
+  it('E: child panel with no explicit route binding uses default (C8 follow-up documented), token from resolve_route_token', async () => {
     let connectSpy = vi.fn()
 
     // A child panel is just another panel window — same code path. Without a
     // set_panel_route call for this panelId, resolveBootRoute falls back to the
     // default route. Here MoonSession returns the default route directly.
+    // load_connection's stub returns a DIFFERENT token from resolve_route_token's
+    // (same inversion rationale as test A) so a wrong-source implementation fails.
     bootPanel({
-      invoke: (cmd) => {
+      invoke: (cmd, args) => {
         if (cmd === 'load_connection') return { wsUrl: 'ws://legacy/ui', wsToken: 'child-tok' }
+        if (cmd === 'resolve_route_token' && args?.routeKey === 'default') return 'RESOLVED-FOR-DEFAULT'
         return null
       },
       moonSession: {
@@ -349,9 +414,178 @@ describe('C7 — panel route binding', () => {
 
     await flush()
 
-    // Child uses the default route endpoint (not the legacy URL)
-    expect(connectSpy).toHaveBeenCalledWith('ws://default.host/ui', 'child-tok')
+    // Child uses the default route endpoint and its resolved token (not the
+    // legacy URL, not load_connection's token).
+    expect(connectSpy).toHaveBeenCalledWith('ws://default.host/ui', 'RESOLVED-FOR-DEFAULT')
     expect((window as any).__PanelInternals.resolvedRouteKey).toBe('default')
   })
 
+})
+
+// ── Step 1c Part 2: hub_event fan-out reaches non-chat panels ────────────────
+// Rust now fans profile-changed/connection-changed out to every open window
+// (windows.rs's hub_event_targets), not just main+panel-chat. Chat windows
+// already reacted via wiring.ts's guarded listener; this is the previously-
+// missing half - a non-chat panel (this suite's stub.ws type) must react the
+// same way: tear the existing socket down and re-run the connect waterfall.
+describe('Step 1c Part 2 — non-chat panel hub-event listener', () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('profile-changed addressed to THIS window tears the old socket down and reconnects with a freshly-resolved token', async () => {
+    let resolveTokenCallCount = 0
+
+    // Deliberately do NOT override LunaWS.createClient here - the REAL
+    // vendor implementation is what actually tears the old socket down
+    // (moon-ws.js's connect() calls the prior ws.close() internally), so
+    // this fence drives the real client against FakeWebSocket to observe it.
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => {
+        if (cmd === 'resolve_route_token') {
+          resolveTokenCallCount++
+          return resolveTokenCallCount === 1 ? 'FIRST-TOKEN' : 'SECOND-TOKEN'
+        }
+        return null
+      },
+      moonSession: {
+        resolveBootRoute: async () => ROUTE_LOCAL,
+      },
+    })
+
+    await flush()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    const firstSocket = FakeWebSocket.instances[0]!
+    expect(firstSocket.url).toContain('token=FIRST-TOKEN')
+
+    expect(windowEventHandlers['hub-event']).toBeTypeOf('function')
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+
+    // The OLD socket was torn down cleanly (moon-ws.js's own connect()
+    // teardown)...
+    expect(firstSocket.readyState).toBe(FakeWebSocket.CLOSED)
+    // ...and exactly ONE new socket was dialed, with the freshly-resolved
+    // token - not a cached one.
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(FakeWebSocket.instances[1]!.url).toContain('token=SECOND-TOKEN')
+  })
+
+  it('connection-changed addressed to THIS window also reconnects (not just profile-changed)', async () => {
+    let resolveTokenCallCount = 0
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => {
+        if (cmd === 'resolve_route_token') {
+          resolveTokenCallCount++
+          return resolveTokenCallCount === 1 ? 'FIRST-TOKEN' : 'SECOND-TOKEN'
+        }
+        return null
+      },
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'connection-changed' } })
+    await flush()
+
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(FakeWebSocket.instances[1]!.url).toContain('token=SECOND-TOKEN')
+  })
+
+  it('hub-events addressed to OTHER windows are ignored (for-discipline)', async () => {
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    windowEventHandlers['hub-event']({ payload: { for: 'some-other-window', name: 'profile-changed' } })
+    await flush()
+
+    expect(FakeWebSocket.instances).toHaveLength(1) // unchanged - not addressed to this window
+  })
+
+  it('an unrelated hub-event name (fresh-thread) addressed to this window is ignored (only profile-changed/connection-changed reconnect)', async () => {
+    const { windowEventHandlers } = bootPanel({
+      invoke: (cmd) => (cmd === 'resolve_route_token' ? 'TOK' : null),
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+    await flush()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'fresh-thread' } })
+    await flush()
+
+    expect(FakeWebSocket.instances).toHaveLength(1) // fresh-thread is chat-owned, not a panel concern
+  })
+
+  // ── F1 (opus review, blocker): the waterfall generation guard ────────────
+  // moon-ws's own socket-level gen protects the SOCKET, not the WATERFALL.
+  // Settings fires connection-changed on every save, and the hub-event
+  // listener re-runs the waterfall on every one - two overlapping runs race
+  // their two awaits (resolveBootRoute, resolve_route_token). Without a
+  // waterfall-level guard, the OLDER run's invokes resolving LAST wins,
+  // because ITS client.connect() call is what bumps moon-ws's gen when it
+  // finally fires - the socket layer cannot protect against that.
+  it('F1: an OLDER waterfall run whose resolve_route_token resolves LAST must never win over a newer, already-completed run', async () => {
+    let resolveTokenCallCount = 0
+    let releaseA: ((token: string) => void) | null = null
+
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'resolve_route_token') {
+        resolveTokenCallCount++
+        if (resolveTokenCallCount === 1) {
+          // Waterfall A (the initial boot-time run) - gated until the test
+          // explicitly releases it, simulating it resolving LAST.
+          return new Promise<string>((resolve) => {
+            releaseA = resolve
+          })
+        }
+        return 'TOKEN-B'
+      }
+      return null
+    })
+
+    const { windowEventHandlers } = bootPanel({
+      invoke,
+      moonSession: { resolveBootRoute: async () => ROUTE_LOCAL },
+    })
+
+    // Waterfall A started automatically inside bootPanel (connectWs() runs
+    // the waterfall once at construction); its resolve_route_token call is
+    // now gated on releaseA, mid-flight.
+    await flush()
+    expect(resolveTokenCallCount).toBe(1)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+
+    // Fire the hub-event to start waterfall B WHILE A is still pending -
+    // the exact overlap Settings' every-save connection-changed produces.
+    expect(windowEventHandlers['hub-event']).toBeTypeOf('function')
+    windowEventHandlers['hub-event']({ payload: { for: 'panel-stub-ws', name: 'profile-changed' } })
+    await flush()
+    await flush()
+
+    // B completed FULLY before A does: exactly one socket, B's token.
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]!.url).toContain('token=TOKEN-B')
+
+    // NOW release A - the OLDER run's invoke resolves LAST.
+    expect(releaseA).toBeTypeOf('function')
+    releaseA!('TOKEN-A')
+    await flush()
+    await flush()
+
+    // A must never have dialed: still exactly one socket, still B's token -
+    // never a second, stale connect() call landing the panel back on A.
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]!.url).toContain('token=TOKEN-B')
+    expect(FakeWebSocket.instances.some((s) => s.url.includes('token=TOKEN-A'))).toBe(false)
+  })
 })

@@ -304,29 +304,47 @@ const HUB_EVENT_NAMES: &[&str] = &[
     "open-wizard",
 ];
 
-/// Forward an allowlisted action to the window that owns it (`hub-event`
+/// Pure targeting decision for `hub_event`, unit-testable without a live
+/// `AppHandle`. `open_labels` is every currently-open window label
+/// (`app.webview_windows()`'s keys — see `write_panel_layout` above for the
+/// same enumeration precedent).
+///
+/// Step 1c (plan): ONLY the connection-affecting events widen.
+///   - "profile-changed" / "connection-changed": every window holds its OWN
+///     socket and credential, so a route switch must reach every open
+///     window, not just main+panel-chat (the fan-out gap this plan closes -
+///     parallel chat panels and the twelve panel kinds never heard it).
+///   - "fresh-thread": UNCHANGED targeting. The chat window owns the thread
+///     (Phase 4); the hub is the fallback opener when chat is closed. This
+///     semantics must not move.
+///   - anything else (today: "open-wizard"): UNCHANGED, hub-owned, "main" only.
+fn hub_event_targets(name: &str, chat_open: bool, open_labels: &[String]) -> Vec<String> {
+    match name {
+        "fresh-thread" if chat_open => vec!["panel-chat".to_string()],
+        "profile-changed" | "connection-changed" => open_labels.to_vec(),
+        _ => vec!["main".to_string()],
+    }
+}
+
+/// Forward an allowlisted action to the window(s) that own it (`hub-event`
 /// with a `for:` payload — the same targeted-event discipline as dock-group).
 /// Most actions are hub-owned; `fresh-thread` belongs to the CHAT widget
 /// (Phase 4: the chat window owns the thread). When the chat window is
 /// closed, fresh-thread falls back to the hub, whose handler opens it (a
-/// fresh boot lands on the thread bootstrap).
+/// fresh boot lands on the thread bootstrap). `profile-changed` and
+/// `connection-changed` fan out to EVERY open window (Step 1c) — see
+/// `hub_event_targets`'s doc comment for the full targeting rules.
 #[tauri::command]
 pub(crate) fn hub_event(app: tauri::AppHandle, name: String) -> Result<(), String> {
     if !HUB_EVENT_NAMES.contains(&name.as_str()) {
         return Err(format!("unknown hub event: {name}"));
     }
     let chat_open = app.get_webview_window("panel-chat").is_some();
-    let targets: &[&str] = match name.as_str() {
-        // The chat window owns the thread; the hub is the fallback opener.
-        "fresh-thread" if chat_open => &["panel-chat"],
-        // Both sockets react to a credential/channel swap: the hub rebuilds
-        // its hello-only connection, the chat window its thread connection.
-        "profile-changed" | "connection-changed" if chat_open => &["main", "panel-chat"],
-        _ => &["main"],
-    };
-    for target in targets {
+    let open_labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let targets = hub_event_targets(&name, chat_open, &open_labels);
+    for target in &targets {
         app.emit_to(
-            tauri::EventTarget::labeled(*target),
+            tauri::EventTarget::labeled(target),
             "hub-event",
             serde_json::json!({ "for": target, "name": name }),
         )
@@ -1799,6 +1817,84 @@ mod tests {
     fn unknown_kind_is_rejected() {
         assert!(registry_lookup("settings.nope").is_none());
         assert!(registry_lookup("widget-abc").is_none());
+    }
+
+    // ── hub_event_targets (Step 1c fan-out) ──────────────────────────────────
+    // The four HUB_EVENT_NAMES x chat_open true/false x a label set spanning
+    // main, panel-chat, a parallel chat instance (panel-chat-abc123), and a
+    // non-chat panel (panel-vault) - the exact gap this plan closes (Step 0's
+    // "What is missing" #2: parallel chat panels and the twelve panel kinds
+    // never heard hub_event at all).
+
+    fn open_label_set() -> Vec<String> {
+        vec![
+            "main".to_string(),
+            "panel-chat".to_string(),
+            "panel-chat-abc123".to_string(),
+            "panel-vault".to_string(),
+        ]
+    }
+
+    #[test]
+    fn hub_event_targets_profile_changed_reaches_every_open_window_regardless_of_chat_open() {
+        let labels = open_label_set();
+        for chat_open in [true, false] {
+            let targets = hub_event_targets("profile-changed", chat_open, &labels);
+            assert_eq!(
+                targets, labels,
+                "profile-changed must fan out to every open window (chat_open={chat_open})"
+            );
+        }
+    }
+
+    #[test]
+    fn hub_event_targets_connection_changed_reaches_every_open_window_regardless_of_chat_open() {
+        let labels = open_label_set();
+        for chat_open in [true, false] {
+            let targets = hub_event_targets("connection-changed", chat_open, &labels);
+            assert_eq!(
+                targets, labels,
+                "connection-changed must fan out to every open window (chat_open={chat_open})"
+            );
+        }
+    }
+
+    #[test]
+    fn hub_event_targets_fresh_thread_targeting_is_unchanged_by_the_fan_out_widen() {
+        let labels = open_label_set();
+        // Chat open: goes to panel-chat ONLY (never the parallel instance or
+        // any other window) - this semantics must NOT move.
+        assert_eq!(
+            hub_event_targets("fresh-thread", true, &labels),
+            vec!["panel-chat".to_string()]
+        );
+        // Chat closed: falls back to the hub, same as before Step 1c.
+        assert_eq!(
+            hub_event_targets("fresh-thread", false, &labels),
+            vec!["main".to_string()]
+        );
+    }
+
+    #[test]
+    fn hub_event_targets_open_wizard_targeting_is_unchanged_by_the_fan_out_widen() {
+        let labels = open_label_set();
+        for chat_open in [true, false] {
+            assert_eq!(
+                hub_event_targets("open-wizard", chat_open, &labels),
+                vec!["main".to_string()],
+                "open-wizard stays hub-owned, main only (chat_open={chat_open})"
+            );
+        }
+    }
+
+    #[test]
+    fn hub_event_targets_widens_correctly_even_with_only_main_open() {
+        // No panels open at all - profile-changed/connection-changed must
+        // still just target whatever IS open (main alone), never invent a
+        // window that doesn't exist.
+        let labels = vec!["main".to_string()];
+        assert_eq!(hub_event_targets("profile-changed", false, &labels), labels);
+        assert_eq!(hub_event_targets("connection-changed", false, &labels), labels);
     }
 
     #[test]

@@ -104,7 +104,14 @@ export function createWire(ctx: WireCtx) {
       try {
         State.ws = new WebSocket(fullUrl);
       } catch (e) {
-        Logger.error("WebSocket creation error:", e);
+        // Step 1c Part 3c (opus review, plan Step 1c): NEVER log the raw
+        // exception or e.message here - new WebSocket(fullUrl) embeds the
+        // token-bearing URL verbatim in its thrown message (proven live by a
+        // jsdom probe, see docs/next/routes-and-view-mode-plan.md's "The
+        // security invariant, which is not deferrable"). Log the error NAME
+        // and a redacted describeWsUrl(url) only.
+        const errName = (e && e.name) ? e.name : 'Error';
+        Logger.error("WebSocket creation error:", errName, LunaProtocol.describeWsUrl(State.wsUrl));
         this.updateStatus('disconnected', 'Connection Error');
         this.scheduleReconnect();
         return;
@@ -1421,5 +1428,18 @@ export function createWire(ctx: WireCtx) {
      *  which is the whole reason it is a function here and a bare statement
      *  in chat.html before this slice. */
     boot: () => loadConnectionAndConnect(),
+    /**
+     * Exposed so wiring.ts's hub-event listener (profile-changed /
+     * connection-changed) can re-read the secure connection file and
+     * reconnect on a route switch. wiring.ts's installWiring() runs BEFORE
+     * this function does (bootChat.ts's construction order), so it cannot
+     * receive this as a constructor param - it looks it up late via
+     * window.__MoonInternals.loadConnectionAndConnect instead, bridged by
+     * bootChat.ts right after this object is returned. Without this, a real
+     * profile switch left the chat window's hub-event handler calling a
+     * bare, unresolvable identifier (ReferenceError, silently swallowed by
+     * its own .catch) - the window never actually reconnected.
+     */
+    loadConnectionAndConnect,
   }
 }

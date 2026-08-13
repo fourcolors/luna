@@ -183,15 +183,23 @@ export function MoonHubApp(): React.JSX.Element {
     }
 
     // ── Auto-wire the server token from ~/.luna/.env via luna-config. ───
+    // Step 1c Part 3d: main.rs now seeds ~/.luna/moon-connection.json
+    // DIRECTLY (Rust-side) when it finds a .env token and this profile
+    // lacks credentials, BEFORE emitting this event - the payload carries
+    // ONLY wsUrl (plus a seeded flag), never wsToken, since no URL redactor
+    // can reach a sibling JSON field. Re-read the now-seeded store via
+    // load_connection, the same source every other connect path uses,
+    // instead of trusting a raw token handed across the webview boundary.
     let unlistenConfig: (() => void) | null = null
     if (tauri?.event) {
       tauri.event
         .listen("luna-config", async ({ payload }: any) => {
           await settingsLoaded
-          if (payload.wsToken && !controller.State.wsToken) {
-            controller.State.wsToken = payload.wsToken
-            controller.State.wsUrl = payload.wsUrl || controller.State.wsUrl
-            await controller.persistConnection(controller.State.wsUrl, controller.State.wsToken)
+          if (controller.State.wsToken) return // already connected - no-op
+          const creds = await getCore()?.invoke("load_connection").catch(() => null)
+          if (creds && creds.wsToken) {
+            controller.State.wsToken = creds.wsToken
+            controller.State.wsUrl = creds.wsUrl || payload.wsUrl || controller.State.wsUrl
             Logger.info("luna-config: token seeded from ~/.luna/.env, connecting...")
             controller.connect()
           }

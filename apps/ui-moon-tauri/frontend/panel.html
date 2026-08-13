@@ -193,9 +193,19 @@
     //      route — no explicit parent-route signal is plumbed through panel.html
     //      today. Explicit parent→child route binding is a C8 follow-up.
     //
-    // Error surfacing:
+    // Error surfacing (Step 1c Part 3b: fixed reason + describeWsUrl(url)
+    // where a url is in scope - NEVER e.message or the raw exception, which
+    // for a WebSocket construction failure embeds the token-bearing URL
+    // verbatim - see docs/next/routes-and-view-mode-plan.md, "The security
+    // invariant, which is not deferrable"):
     //   - Off-Tauri (no __TAURI__): silent fallback (expected in browser dev).
-    //   - Tauri present but route/connection failed: showNotice() with reason.
+    //   - Tauri present but route/connection failed: showNotice() with a
+    //     fixed reason.
+    //
+    // Kept byte-for-byte identical to frontend-react/panel.html's connectWs
+    // (see panel-ctx.ts's module doc) - only frontend-react/panel.html ships
+    // (tauri.conf.json's frontendDist), but this file is not deleted, so the
+    // waterfall must never drift into two parallel implementations.
     connectWs: function (registry, opts) {
       var hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
       var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
@@ -204,66 +214,146 @@
       // Tauri when running inside the app; null in browser / test environments).
       var effectivePanelId = label || null;
 
-      if (typeof MoonSession !== 'undefined') {
-        // Phase 2 C7 — per-panel route resolution via MoonSession (C3).
-        // MoonSession.resolveBootRoute() returns null if:
-        //   - client.toml not found → un-migrated user, fall back to legacy
-        //   - any Tauri error → degrade gracefully
-        MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
-          if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
-            // Route resolved via client.toml — use the first endpoint as the
-            // WebSocket URL. Token still comes from load_connection (Phase 3
-            // will wire token_ref → resolved token from route directly).
-            var wsUrl = route.endpoints[0];
-            // Expose for observability (agent-browser smoke + future C8 hub).
-            if (window.__PanelInternals) {
-              window.__PanelInternals.resolvedRouteKey = route.key || null;
-            }
-            ctx.invoke('load_connection').then(function (creds) {
-              var wsToken = (creds && creds.wsToken) ? creds.wsToken : null;
-              try { client.connect(wsUrl, wsToken); } catch (e) {
-                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+      function describeUrlSafe(url) {
+        return (window.LunaProtocol && typeof window.LunaProtocol.describeWsUrl === 'function')
+          ? window.LunaProtocol.describeWsUrl(url)
+          : '<unavailable>';
+      }
+
+      // Waterfall generation guard (Step 1c F1, opus review). moon-ws.js's
+      // client.connect() gen-gates its OWN socket-level late events, but that
+      // protects only the SOCKET, not this WATERFALL: Settings fires
+      // connection-changed on every save, and the hub-event listener below
+      // re-runs runConnectWaterfall() on every one of them, so two
+      // overlapping runs race their two awaits. If the OLDER run's invokes
+      // resolve LAST, its client.connect() call wins - and it bumps
+      // moon-ws's gen itself when it fires, so the socket layer cannot save
+      // the panel from landing on the stale route/token. Mirrors the Step 1a
+      // F4 / PoolEngine closure-counter pattern: capture myGen at waterfall
+      // entry, re-check after EVERY await, abandon silently when superseded.
+      var waterfallGen = 0;
+
+      // Runs the full connect waterfall against the SAME client/registry
+      // every time. moon-ws.js's client.connect() already tears down its own
+      // prior socket and re-generation-gates late events on every call, so
+      // calling it again here (Step 1c Part 2's hub-event listener, below) is
+      // a clean reconnect through the existing client, not a second one -
+      // frame handlers registered on `registry` by the caller keep working
+      // unchanged across a reconnect.
+      function runConnectWaterfall() {
+        var myGen = ++waterfallGen;
+        if (typeof MoonSession !== 'undefined') {
+          // Phase 2 C7 - per-panel route resolution via MoonSession (C3).
+          // MoonSession.resolveBootRoute() returns null if:
+          //   - client.toml not found -> un-migrated user, fall back to legacy
+          //   - any Tauri error -> degrade gracefully
+          MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
+            if (myGen !== waterfallGen) return; // superseded during resolveBootRoute
+            if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
+              // Route resolved via client.toml - use the first endpoint as
+              // the WebSocket URL. Step 1c Part 1: the token now comes from
+              // the SAME route-keyed Rust resolver every other connect path
+              // uses (resolve_route_token) instead of a panel-id-blind
+              // load_connection that always keyed off cfg.default - the live
+              // defect where a panel bound to a non-default route sent that
+              // route's URL with ANOTHER route's token, no error raised.
+              var wsUrl = route.endpoints[0];
+              // Expose for observability (agent-browser smoke + future C8 hub).
+              if (window.__PanelInternals) {
+                window.__PanelInternals.resolvedRouteKey = route.key || null;
               }
-            }).catch(function (e) {
-              // load_connection rejected — Tauri is present but command failed.
-              showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
-            });
-          } else {
-            // No client.toml route configured — legacy load_connection path.
+              ctx.invoke('resolve_route_token', { routeKey: route.key }).then(function (token) {
+                if (myGen !== waterfallGen) return; // superseded during resolve_route_token
+                // Ok('') is the intentional "none"-tokenRef result
+                // (connection.rs's resolve_route_token). moon-ws.js's
+                // connect() -> LunaProtocol.buildWsUrl already skips the
+                // token query param for a falsy value, so passing '' straight
+                // through dials with NO token param - same falsy-token
+                // contract every other builder in the app honors.
+                try {
+                  client.connect(wsUrl, token || null);
+                } catch (_e) {
+                  showNotice('Panel connection failed: could not open a connection to ' + describeUrlSafe(wsUrl));
+                }
+              }).catch(function (err) {
+                if (myGen !== waterfallGen) return; // superseded while resolve_route_token rejected
+                var reason = (err instanceof Error ? err.message : String(err));
+                if (reason.indexOf('not-paired:') === 0) {
+                  showNotice('Panel connection failed: route "' + route.key + '" is not paired - open Settings to pair it.');
+                } else {
+                  showNotice('Panel connection failed: could not resolve credentials for ' + describeUrlSafe(wsUrl));
+                }
+              });
+            } else {
+              // No client.toml route configured - legacy load_connection
+              // path, UNCHANGED (Step 1c Part 1 only retargets the route
+              // branch above; this fallback keeps its existing credential
+              // source).
+              ctx.invoke('load_connection').then(function (creds) {
+                if (myGen !== waterfallGen) return; // superseded during load_connection
+                if (creds && creds.wsUrl) {
+                  try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+                }
+              }).catch(function () {
+                if (myGen !== waterfallGen) return; // superseded while load_connection rejected
+                if (hasTauri) {
+                  // Tauri is present but load_connection rejected - surface a
+                  // fixed reason (no url is in scope here to describe).
+                  showNotice('Panel connection failed: could not load saved connection settings.');
+                }
+                // Off-Tauri: stay silent (expected in browser dev / jsdom).
+              });
+            }
+          }).catch(function () {
+            if (myGen !== waterfallGen) return; // superseded while resolveBootRoute rejected
+            // resolveBootRoute itself rejected (shouldn't happen - MoonSession
+            // catches internally, but belt-and-suspenders). Fall back to legacy.
             ctx.invoke('load_connection').then(function (creds) {
+              if (myGen !== waterfallGen) return; // superseded during load_connection (fallback)
               if (creds && creds.wsUrl) {
-                try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+                try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) {}
               }
-            }).catch(function (e) {
+            }).catch(function () {
+              if (myGen !== waterfallGen) return; // superseded while load_connection rejected (fallback)
               if (hasTauri) {
-                // Tauri is present but load_connection rejected — surface it.
-                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+                showNotice('Panel connection failed: could not load saved connection settings.');
               }
-              // Off-Tauri: stay silent (expected in browser dev / jsdom).
             });
-          }
-        }).catch(function (e) {
-          // resolveBootRoute itself rejected (shouldn't happen — MoonSession
-          // catches internally, but belt-and-suspenders). Fall back to legacy.
-          ctx.invoke('load_connection').then(function (creds) {
-            if (creds && creds.wsUrl) {
-              try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) {}
-            }
-          }).catch(function (connErr) {
-            if (hasTauri) {
-              showNotice('Panel connection failed: ' + (connErr && connErr.message ? connErr.message : String(connErr)));
-            }
           });
-        });
-      } else {
-        // Legacy path (no MoonSession — off-Tauri / un-migrated / tests).
-        // SYNCHRONOUS invocation preserved byte-identically from master so that
-        // tests can assert ctx.invoke was called immediately after connectWs().
-        ctx.invoke('load_connection').then(function (creds) {
-          if (creds && creds.wsUrl) {
-            try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+        } else {
+          // Legacy path (no MoonSession - off-Tauri / un-migrated / tests).
+          // SYNCHRONOUS invocation preserved byte-identically from master so
+          // that tests can assert ctx.invoke was called immediately after
+          // connectWs().
+          ctx.invoke('load_connection').then(function (creds) {
+            if (myGen !== waterfallGen) return; // superseded during load_connection (legacy branch)
+            if (creds && creds.wsUrl) {
+              try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+            }
+          }).catch(function () {
+            if (myGen !== waterfallGen) return; // superseded (legacy branch)
+            /* off-Tauri */
+          });
+        }
+      }
+
+      runConnectWaterfall();
+
+      // Step 1c Part 2: non-chat panels had NO hub_event listener at all, so
+      // a route switch in Settings never reached them - the fan-out gap this
+      // plan closes (chat windows already had this via wiring.ts's guarded
+      // listener). Rust now fans profile-changed/connection-changed out to
+      // every open window; react the same way here - client.connect() above
+      // already tears its own prior socket down on every call, so re-running
+      // the waterfall IS the clean teardown-and-reconnect.
+      if (W && typeof W.listen === 'function') {
+        W.listen('hub-event', function (e) {
+          var p = e && e.payload;
+          if (!p || p['for'] !== label) return; // targeted-event discipline
+          if (p.name === 'profile-changed' || p.name === 'connection-changed') {
+            runConnectWaterfall();
           }
-        }).catch(function () { /* off-Tauri */ });
+        }).catch(function () {});
       }
 
       return client;

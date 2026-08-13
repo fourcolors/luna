@@ -3821,6 +3821,81 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await Promise.resolve()
     })
 
+    // F2 (opus review, rework round on plan Step 1c): if the
+    // window.__MoonInternals.loadConnectionAndConnect bridge is ever
+    // missing at fire time (the same swallow shape as the ReferenceError
+    // bug this bridge fixed), the handler must NEVER be a silent warn-only
+    // no-op - it logs an ERROR naming the consequence and drives the status
+    // pill to a visible failure.
+    it("hub-event 'profile-changed' with the loadConnectionAndConnect bridge missing logs an ERROR naming the consequence and drives the status pill to 'Reconnect failed'", async () => {
+      const m = M()
+      m.State.activeThreadId = 'th-should-still-clear'
+      const errorSpy = vi.spyOn(console, 'error')
+      // Simulate the bridge being unavailable at fire time - bootChat.ts's
+      // assignBridge normally populates this synchronously during boot.
+      delete (window as any).__MoonInternals.loadConnectionAndConnect
+
+      windowEventHandlers['hub-event']({ payload: { for: 'chat-test', name: 'profile-changed' } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // State reset still runs (harmless hygiene) even though the reconnect
+      // itself cannot proceed.
+      expect(m.State.activeThreadId).toBeNull()
+
+      expect(errorSpy).toHaveBeenCalled()
+      const loggedText = errorSpy.mock.calls.flat().map((a) => String(a)).join(' ')
+      expect(loggedText).toContain('loadConnectionAndConnect is unavailable')
+      expect(loggedText).toContain('OLD credentials after a profile switch')
+
+      const pill = document.getElementById('connection-status')!
+      expect(pill.className).toBe('disconnected')
+      expect(pill.textContent).toBe('Reconnect failed')
+    })
+
+    // Step 1c Part 2 (opus review, plan Step 1c): Rust now fans
+    // profile-changed/connection-changed out to EVERY open window, not just
+    // main+panel-chat - so a PARALLEL chat instance (panel-chat-<hash>
+    // label) can receive this event for the first time. wiring.ts's guarded
+    // listener already handles it correctly (winLabel-driven, not
+    // hardcoded), but nothing ever exercised it with a hashed label before
+    // this plan's fan-out widen made it reachable.
+    it("hub-event 'profile-changed' addressed to a panel-chat-<hash> instance tears down thread state and re-runs the connect waterfall", async () => {
+      // Re-boot with a parallel-chat-panel label so winLabel becomes the
+      // hashed label instead of the default 'chat-test'.
+      mockMe.label = 'panel-chat-a1b2c3'
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'load_connection') return { wsUrl: 'ws://migrated.host:4753/ui', wsToken: 'tok' }
+        return null
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const m = M()
+      m.State.activeThreadId = 'th-old-on-parallel-instance'
+      invoke.mockClear()
+
+      expect(windowEventHandlers['hub-event']).toBeTypeOf('function')
+      windowEventHandlers['hub-event']({
+        payload: { for: 'panel-chat-a1b2c3', name: 'profile-changed' },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // The instance ACTED: thread state torn down (same effect the main
+      // window's hub-event handler already produces) ...
+      expect(m.State.activeThreadId).toBeNull()
+      // ... and the connect waterfall actually re-ran (loadConnectionAndConnect
+      // invokes load_connection fresh) - not a no-op that merely reset state.
+      expect(invoke).toHaveBeenCalledWith('load_connection')
+    })
+
     it('window wiring hands title-bar gestures directly to native dragging', () => {
       document.getElementById('title-bar')!.dispatchEvent(
         new MouseEvent('pointerdown', { bubbles: true, button: 0 }),
@@ -5368,5 +5443,67 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(htmlContent).toMatch(/#thread-divider\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
 
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: WebSocket construction-error logging never leaks the token
+  // (Step 1c Part 3c, opus review on plan Step 1c). new WebSocket(fullUrl)
+  // throwing embeds the token-bearing URL verbatim in its thrown message -
+  // Gate 0.4 proved this live with a jsdom probe. wire.ts's legacy
+  // WebSocketEngine.connect() must log the error NAME and a redacted
+  // describeWsUrl(url) only, never the raw exception or e.message.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: the legacy WebSocketEngine construction-error log never leaks the token', () => {
+    it('new WebSocket() throwing (embedding the token in its message) never reaches console.error', async () => {
+      const SECRET = 'SECRET-do-not-log-me-98765'
+
+      // Force the LEGACY engine (USE_POOL_ENGINE reads this at module-eval
+      // time) so WebSocketEngine.connect() runs UN-monkey-patched, reaching
+      // its own new WebSocket(fullUrl) try/catch directly.
+      localStorage.setItem('luna_pool_engine', '0')
+
+      vi.stubGlobal('WebSocket', class {
+        constructor(url: string) {
+          // Mirrors the real browser behavior Gate 0.4's jsdom probe proved:
+          // the thrown message embeds the full dialed URL, token included.
+          throw new Error(`Failed to construct 'WebSocket': ${url}`)
+        }
+      })
+
+      const errorSpy = vi.spyOn(console, 'error')
+
+      ;(window as any).__TAURI__.core = {
+        invoke: vi.fn(async (cmd: string) => {
+          if (cmd === 'load_connection') return { wsUrl: 'ws://test-host:4753/ui', wsToken: SECRET }
+          return null
+        }),
+      }
+
+      // Re-mount + re-boot so the localStorage flag just set (read at
+      // module-eval time) actually takes effect, and connect() runs against
+      // the throwing WebSocket stubbed above.
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(errorSpy).toHaveBeenCalled()
+      // Error.prototype.message/.stack are NON-ENUMERABLE in V8, so
+      // JSON.stringify(someError) silently drops them (returns '{}') - a
+      // naive stringify-everything check would pass even while the raw
+      // exception (message + stack, both carrying the token) reached
+      // console.error. Extract Error fields explicitly.
+      const allLoggedText = errorSpy.mock.calls
+        .flat()
+        .map((a) => {
+          if (a instanceof Error) return `${a.message} ${a.stack ?? ''}`
+          return typeof a === 'string' ? a : JSON.stringify(a)
+        })
+        .join(' ')
+      expect(allLoggedText).not.toContain(SECRET)
+      expect(allLoggedText).not.toContain('token=')
+    })
   })
 })
