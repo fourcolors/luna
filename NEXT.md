@@ -41,10 +41,22 @@ Every change lands as a small stacked PR on branch `luna-next` for Operator revi
 - Split `chat-service.ts` / `job-ticker.ts` / `main.rs` along existing seams.
 - Establish a `luna.db` schema-continuity contract before any daemon cutover.
 
-## Stack 3 (planned)
+## Stack 3 (in progress)
 
 - Rebuild Moon chat as bundled typed React: delete the vanilla vendor layer and dual-mount bridge, keep the audited markdown sanitizer.
+  SHIPPED (slices S14-S20, PRs #453-#512).
+  chat.html's inline script is deleted: 9563 lines of vanilla JS down to zero.
+  `src/main-chat.tsx` -> `chat/bootChat.ts` is the only code the chat window runs.
+  The dual-mount bridge (`LunaChatHost`) is retired to test-hooks-only; production reads it nowhere outside the hub.
+  The audited markdown sanitizer (`vendor/moon-markdown.js`) is kept, exactly as scoped.
+  `apps/ui-moon-tauri/frontend/panels/*` and `panel.html`'s own vanilla waterfall are a separate surface this bullet never covered; they are untouched.
 - Fold guardian/update-server/autodeploy into one typed compiled binary on the existing `ServerUpdateDriver` contract, keeping a bash escape hatch.
+  HALF SHIPPED.
+  S21 (PR #458) scaffolded `apps/deploy-cli` and taught the engine pin to publish it.
+  S22 (PRs #461, #463, #517, #518, #519, #521, #522, #527) ported the update state machine (journal, session guard, readiness, rollback, layout flip) to TypeScript with golden-parity tests against the bash originals.
+  S23 (flip the deploy engine default to the binary), S24 (fold autodeploy and guardian in), S25 (delete the bash engine, Operator-approved as the escape hatch), and S26 (full-agent E2E, gate promotion, docs truth-up) have not started.
+  The binary compiles and runs today (`bun build --compile apps/deploy-cli/src/main.ts`, pre-verified 2026-08-14), but bash remains the live engine on both channels.
+  Nothing routes real traffic to the binary yet.
 
 ## Review rules
 
