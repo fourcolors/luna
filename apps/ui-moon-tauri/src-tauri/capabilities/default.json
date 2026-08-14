@@ -25,6 +25,7 @@
     "allow-load-profiles",
     "allow-set-active-profile",
     "allow-load-route",
+    "allow-resolve-route-token",
     "allow-list-routes",
     "allow-set-default-route",
     "allow-get-panel-route",

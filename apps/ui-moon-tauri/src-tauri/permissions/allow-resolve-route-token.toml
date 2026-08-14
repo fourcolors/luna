@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-resolve-route-token"
+description = "Allows resolving a route's bearer token by route key (plan Step 1b): legacy sentinel against moon-connection.json, literal passthrough, Err taxonomy for refusals"
+
+[permission.commands]
+allow = [
+  "resolve_route_token"
+]

@@ -81,6 +81,22 @@ function makeInvokeStub(state: { current: typeof ROUTE_STABLE; tokenRejects?: bo
   })
 }
 
+
+// LIVE-SMOKE FENCE: the HTML `hidden` attribute alone cannot hide this chip -
+// it inherits display:flex, and an author display rule defeats the UA
+// stylesheet's [hidden]{display:none}. A REAL WKWebView rendered the "hidden"
+// chip as a stray red dot. jsdom cannot render that, so the fence asserts the
+// stylesheet RULE exists rather than the computed result.
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+describe('hidden-attribute CSS fence (live-smoke finding)', () => {
+  it('chat.html carries an explicit #route-indicator[hidden] display:none rule', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
+    const m = html.match(/#route-indicator\[hidden\]\s*\{[^}]*display:\s*none/)
+    expect(m, 'the [hidden] override rule must exist - display:flex defeats the hidden attribute without it').not.toBeNull()
+  })
+})
+
 describe('Route indicator (plan Step 2) - chat window', () => {
   const internals = () => (window as any).__MoonInternals
   const pool = () => internals().PoolEngine
