@@ -489,6 +489,12 @@
           "markdownDescription": "Allows redock_thread + begin_redock_drag + begin_native_pullout_drag"
         },
         {
+          "description": "Allows resolving a route's bearer token by route key (plan Step 1b): legacy sentinel against moon-connection.json, literal passthrough, Err taxonomy for refusals",
+          "type": "string",
+          "const": "allow-resolve-route-token",
+          "markdownDescription": "Allows resolving a route's bearer token by route key (plan Step 1b): legacy sentinel against moon-connection.json, literal passthrough, Err taxonomy for refusals"
+        },
+        {
           "description": "Allows writing the mode-600 WS connection file",
           "type": "string",
           "const": "allow-save-connection",

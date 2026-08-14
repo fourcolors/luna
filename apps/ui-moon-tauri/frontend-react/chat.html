@@ -384,6 +384,15 @@
       cursor: pointer;
       min-width: 0;
     }
+    /* The HTML `hidden` attribute only applies the UA stylesheet's
+       display:none, which ANY author display rule defeats - and this element
+       inherits .chat-meta span's display:flex, so a "hidden" chip still
+       rendered its ::before dot as a stray red dot beside the status pill.
+       Found on a REAL WKWebView during the live smoke; jsdom tests assert
+       the .hidden property and structurally cannot see it. */
+    #route-indicator[hidden] {
+      display: none;
+    }
     /* Verbose text truncation (plan Step 4): the "label - endpoint - state"
        text is longer than the plain label - .chat-status-row is a nowrap
        flex row with no width constraint of its own, so without this the
