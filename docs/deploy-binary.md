@@ -17,7 +17,7 @@ The charter text that authorized this fold does not disambiguate between these t
 
 **Decided 2026-08-06 (orchestrator, Operator veto until master merge): Option A, the binary owns the state machine.**
 The `ServerUpdateDriver` contract stays frozen at its current four methods for this fold.
-This status holds provisionally until master merge - the Operator retains the veto described above, and if it is exercised, the entire S21-S25 fold must stop and be redesigned before any further slice lands, since S22 onward all build directly on top of this premise.
+SIGNED OFF by the Operator (Mr. Cobb) on 2026-08-14 at the master merge, alongside the removal of browser access to :4753 (Moon is the only client); the provisional status below is retained for the record. This status held provisionally until master merge - the Operator retains the veto described above, and if it is exercised, the entire S21-S25 fold must stop and be redesigned before any further slice lands, since S22 onward all build directly on top of this premise.
 
 ## Why the artifact is named `deploy-cli`, not `luna-deploy`
 
