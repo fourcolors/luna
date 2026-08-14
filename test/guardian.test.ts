@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -36,6 +36,30 @@ import {
 const root = new URL("..", import.meta.url).pathname
 const guardian = join(root, "scripts/luna-guardian")
 const fixture = join(root, "test/fixtures/servers.toml")
+
+/**
+ * Removes a `pins/current-<profile>` SYMLINK itself, never what it points at.
+ *
+ * Use this instead of `rmSync` on any pin symlink a fixture is about to
+ * replace (matches the established fix for the same trap in
+ * releases-layout.test.ts's `unlinkCurrent`). `rmSync` stats THROUGH the
+ * link, so on a link-to-directory it throws ERR_FS_EISDIR ("Path is a
+ * directory") on Node 24 and the whole test dies before it can assert
+ * anything; `rmSync(..., { recursive: true })` would "work" but by deleting
+ * the engine directory the pin resolves to, silently destroying the fixture
+ * the test is about to make claims against - a green suite proving nothing.
+ * `unlinkSync` is the only call with the semantics a pin swap actually
+ * wants. Asserts the target really is a symlink first, so a future fixture
+ * bug that hands this the wrong path fails loudly here instead of silently
+ * deleting something else.
+ */
+function unlinkPin(pins: string, name: string): void {
+  const target = join(pins, name)
+  if (!lstatSync(target).isSymbolicLink()) {
+    throw new Error(`unlinkPin: ${target} is not a symlink - refusing to unlink (fixture bug, not a product bug)`)
+  }
+  unlinkSync(target)
+}
 
 // S21's publish_engine compiles apps/deploy-cli on every publish (scripts/
 // luna-guardian), through the RUNTIME's own bun - the container's bun via
@@ -1503,7 +1527,7 @@ exit 0
     const stale = join(pins, "engine@" + "d".repeat(40))
     mkdirSync(stale, { recursive: true })
     writeFileSync(join(stale, ".complete"), "")
-    rmSync(join(pins, "current-stable"))
+    unlinkPin(pins, "current-stable")
     symlinkSync(stale, join(pins, "current-stable"))
 
     const result = spawnSync("bash", [h.guardian, "install", "stable"], {
@@ -1555,7 +1579,7 @@ exit 0
     expect(kept).toHaveLength(6)
 
     // Break current-dev (dangling) → prune must refuse to touch ANY engine.
-    rmSync(join(pins, "current-dev"))
+    unlinkPin(pins, "current-dev")
     symlinkSync(join(pins, "engine@gone"), join(pins, "current-dev"))
     rmSync(join(h.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer"))
     const refused = spawnSync("bash", [h.guardian, "install", "stable"], {
@@ -2515,7 +2539,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     const stale = join(pins, "engine@" + "e".repeat(40))
     mkdirSync(stale, { recursive: true })
     writeFileSync(join(stale, ".complete"), "")
-    rmSync(join(pins, "current-stable"))
+    unlinkPin(pins, "current-stable")
     symlinkSync(stale, join(pins, "current-stable"))
     const flip = spawnSync("bash", [h.guardian, "install", "stable"], {
       cwd: root,
