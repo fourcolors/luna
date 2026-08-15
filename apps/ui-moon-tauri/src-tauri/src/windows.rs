@@ -407,6 +407,15 @@ pub(crate) async fn open_widget(
         if let (Some(px), Some(py)) = (x, y) {
             let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(px, py)));
         }
+        // A panel the user OS-minimized via the yellow traffic-light is
+        // miniaturized in the Dock, and on macOS NEITHER show() NOR
+        // set_focus() deminiaturizes — so every existing-window reopen path
+        // (hub fresh-thread, server widget-open frames, the wizard's "Start
+        // chatting", the expand fallback) left it stranded as a Dock/shelf
+        // tile: alive in the AX tree, never composited. Same rule as
+        // expand_out_of_moon and redock_thread: unminimize first (a no-op on
+        // non-minimized windows).
+        let _ = win.unminimize();
         let _ = win.show();
         if should_focus {
             let _ = win.set_focus();
@@ -437,8 +446,11 @@ pub(crate) async fn open_artifact_widget(
     height: Option<f64>,
 ) -> Result<String, String> {
     let label = widget_label(&artifact_id);
-    // Already open → focus, don't spawn a duplicate.
+    // Already open → focus, don't spawn a duplicate. Unminimize first: on
+    // macOS neither show() nor set_focus() deminiaturizes an OS-minimized
+    // window (see the same rule in open_widget above).
     if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(label);
