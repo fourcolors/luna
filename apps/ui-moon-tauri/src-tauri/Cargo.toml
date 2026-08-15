@@ -85,7 +85,10 @@ version = "0.3.2"
 default-features = false
 # `block2` enables addLocal/GlobalMonitorForEventsMatchingMask:handler: — the
 # event-driven native resize installs NSEvent monitors instead of polling.
-features = ["NSWindow", "NSEvent", "block2"]
+# `NSWindowRestoration` (+ its `NSResponder` cfg partner) exposes
+# NSWindow.setRestorable — the saved-state opt-out in
+# windows::disable_window_state_restoration.
+features = ["NSWindow", "NSEvent", "NSResponder", "NSWindowRestoration", "block2"]
 
 # Block (Obj-C closure) support for the NSEvent monitor handlers that drive the
 # event-driven native window resize (begin_native_resize). macOS-gated like the

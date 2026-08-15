@@ -53,6 +53,19 @@ Moon would read as "won't open". If `layout.json` listed panels but restore
 spawned none (stale rows, spawn failure), boot falls back to opening the chat
 widget so the user is never left with only the orb.
 
+Two further guards against external state (live incident, Aug 2026):
+
+- A `Moved`-event guard (`windows::reclamp_if_stranded`) pulls the orb back
+  whenever ANYTHING parks it with its top-left off every connected display —
+  it fires only for fully-stranded positions, so legitimate edge-hanging
+  drags are respected and the guard converges after its own corrective move.
+- Every Moon window opts out of macOS window-state restoration
+  (`windows::disable_window_state_restoration`, `NSWindow.restorable = false`).
+  Moon's `layout.json` restore is the single source of truth; AppKit's saved
+  state (applied after non-clean exits such as the auto-updater's relaunch)
+  otherwise re-imposes stale frames and stale visibility — an off-screen orb
+  frame, a panel that exists in the accessibility tree but never composites.
+
 ## Resize
 
 Borderless card resizing still uses `begin_native_resize` because tao's native

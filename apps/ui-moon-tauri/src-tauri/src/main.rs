@@ -39,6 +39,20 @@ fn main() {
         // last-window-closed exit fires. The reverse never holds: closing a
         // widget leaves the hub (and the app) alive.
         .on_window_event(|window, event| {
+            // Orb off-screen guard (live incident): something outside Moon's
+            // own code (display-topology change, stale AppKit saved state,
+            // an external mover) can park the orb off every display — and an
+            // unclickable orb is an unopenable Moon. Whenever the orb lands
+            // with its top-left on NO monitor, pull it back on-screen. The
+            // guard only fires for fully-stranded positions, so it never
+            // fights a legitimate drag and converges after its own move.
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Moved(_)) {
+                // The event handler receives a plain Window; the clamp helpers
+                // work on the WebviewWindow, so resolve it via the app handle.
+                if let Some(moon) = window.app_handle().get_webview_window("main") {
+                    windows::reclamp_if_stranded(&moon);
+                }
+            }
             // Layout persistence (panel-* only): positions settle on Moved
             // (macOS fires it at drag END) and Resized; the Destroyed arm
             // below records removals. Guarded against hub-owned shutdown
@@ -267,9 +281,19 @@ fn main() {
                                 );
                                 let w = p["w"].as_f64().filter(|v| *v >= 220.0);
                                 let h = p["h"].as_f64().filter(|v| *v >= 120.0);
-                                if windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h)
-                                    .is_ok()
+                                if let Ok(label) =
+                                    windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h)
                                 {
+                                    // Restore must produce a VISIBLE window,
+                                    // not an AX-only ghost: if anything (e.g.
+                                    // AppKit saved state applied on relaunch)
+                                    // left the fresh window un-ordered-in,
+                                    // show() it again — idempotent otherwise.
+                                    if let Some(w) = handle.get_webview_window(&label) {
+                                        if !w.is_visible().unwrap_or(true) {
+                                            let _ = w.show();
+                                        }
+                                    }
                                     spawned += 1;
                                 }
                             }
@@ -288,8 +312,13 @@ fn main() {
                 // The orb itself: nothing persists its position, but a
                 // display-topology change (or a drag past the edge) can leave
                 // "main" parked off every display — and an unclickable orb is
-                // an unopenable Moon. Clamp it back on-screen at boot.
+                // an unopenable Moon. Opt it out of AppKit saved-state
+                // restoration (which re-imposes stale frames/visibility after
+                // a non-clean relaunch, e.g. the auto-updater's), then clamp
+                // it back on-screen at boot. Panels/widgets get the same
+                // opt-out in finalize_native_window_chrome.
                 if let Some(moon) = app.get_webview_window("main") {
+                    windows::disable_window_state_restoration(&moon);
                     windows::ensure_window_on_visible_display(&moon);
                 }
             }

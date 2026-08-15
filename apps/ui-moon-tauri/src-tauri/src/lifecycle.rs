@@ -61,7 +61,15 @@ pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
             // a reachable window.
             crate::windows::ensure_window_on_visible_display(win);
             let _ = win.show();
-            shown += 1;
+            // Count only windows that actually BECAME visible: a card that
+            // show() could not order in (live incident: an AX-only window
+            // with no compositor surface) must not satisfy the expand, or
+            // the user ends with the orb hidden and nothing on screen. When
+            // none become visible, the shown==0 fallback below opens (or
+            // re-shows, via open_widget's existing-window path) the chat.
+            if win.is_visible().unwrap_or(false) {
+                shown += 1;
+            }
         }
     }
     if let Some(moon) = windows.get("main") {
@@ -70,11 +78,28 @@ pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
     if shown == 0 {
         // No widgets to restore → open the chat. open_widget is async and shows
         // the window itself; spawn it so this stays callable from sync contexts
-        // (the global-shortcut closure and the sync command wrapper).
+        // (the global-shortcut closure and the sync command wrapper). If even
+        // the chat cannot open, bring the orb back — the moon was just hidden
+        // above, and an expand that produces NOTHING must never leave the
+        // user with an empty desktop.
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = crate::windows::open_widget(app2, "chat".to_string(), None, None, None, None)
-                .await;
+            let opened = crate::windows::open_widget(
+                app2.clone(),
+                "chat".to_string(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+            if opened.is_err() {
+                if let Some(moon) = app2.get_webview_window("main") {
+                    crate::windows::ensure_window_on_visible_display(&moon);
+                    let _ = moon.show();
+                    let _ = moon.set_focus();
+                }
+            }
         });
     }
 }
