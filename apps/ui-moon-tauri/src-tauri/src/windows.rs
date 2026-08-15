@@ -180,7 +180,19 @@ pub(crate) fn write_panel_layout(app: &tauri::AppHandle) {
             }));
         }
     }
-    let doc = serde_json::json!({ "version": 1, "panels": entries });
+    let mut doc = serde_json::json!({ "version": 1, "panels": entries });
+    // The moon orb's own position — the one window with no other home. Moon
+    // OWNS orb placement now: tauri.conf.json sets no position and nothing in
+    // the app ever wrote one, so placement was left to AppKit's default
+    // choice, which proved non-deterministic on multi-display setups (live
+    // incident: every clean launch parked the orb at x=-307, off the main
+    // display, with no writer anywhere in the app). Saved on every layout
+    // write and on orb drag end; restored CLAMPED on-screen at boot.
+    if let Some(moon) = app.get_webview_window("main") {
+        if let Some((x, y, _w, _h)) = window_logical_rect(&moon) {
+            doc["moon"] = serde_json::json!({ "x": x, "y": y });
+        }
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

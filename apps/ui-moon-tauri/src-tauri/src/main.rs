@@ -52,6 +52,11 @@ fn main() {
                 if let Some(moon) = window.app_handle().get_webview_window("main") {
                     windows::reclamp_if_stranded(&moon);
                 }
+                // Persist the orb's (possibly just-corrected) position so the
+                // NEXT launch restores it deterministically — Moon owns orb
+                // placement; AppKit's default choice is never trusted again
+                // (see write_panel_layout's "moon" entry + the boot restore).
+                windows::write_panel_layout(window.app_handle());
             }
             // Layout persistence (panel-* only): positions settle on Moved
             // (macOS fires it at drag END) and Resized; the Destroyed arm
@@ -261,9 +266,15 @@ fn main() {
                 // the user with only the orb — see the fallback below.
                 let mut listed = 0usize;
                 let mut spawned = 0usize;
+                // The orb's own saved position (write_panel_layout's "moon"
+                // entry) — applied clamped further below, after the panels.
+                let mut saved_moon: Option<(f64, f64)> = None;
                 if let Some(path) = windows::layout_path() {
                     if let Ok(raw) = std::fs::read_to_string(&path) {
                         if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            saved_moon = doc["moon"]["x"]
+                                .as_f64()
+                                .zip(doc["moon"]["y"].as_f64());
                             // Restore each panel independently at its saved,
                             // clamped rect. No dock graph is reconstructed.
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
@@ -309,16 +320,26 @@ fn main() {
                         let _ = windows::spawn_panel(&handle, desc, None, None, None, None);
                     }
                 }
-                // The orb itself: nothing persists its position, but a
-                // display-topology change (or a drag past the edge) can leave
-                // "main" parked off every display — and an unclickable orb is
-                // an unopenable Moon. Opt it out of AppKit saved-state
+                // The orb itself. Opt it out of AppKit saved-state
                 // restoration (which re-imposes stale frames/visibility after
-                // a non-clean relaunch, e.g. the auto-updater's), then clamp
-                // it back on-screen at boot. Panels/widgets get the same
-                // opt-out in finalize_native_window_chrome.
+                // a non-clean relaunch, e.g. the auto-updater's); apply
+                // Moon's OWN saved orb position — clamped, so a stale saved
+                // point from a changed display arrangement still lands
+                // on-screen; then the stranded-check covers the no-saved-
+                // position case (first launch / pre-"moon"-entry layout
+                // file), where AppKit's default placement proved able to
+                // park the orb off every display (live incident: x=-307 on
+                // every clean launch, written by nothing in the app).
+                // Panels/widgets get the same restoration opt-out in
+                // finalize_native_window_chrome.
                 if let Some(moon) = app.get_webview_window("main") {
                     windows::disable_window_state_restoration(&moon);
+                    if let Some((sx, sy)) = saved_moon {
+                        let (cx, cy) = windows::clamp_point_to_monitors(&monitors, sx, sy);
+                        let _ = moon.set_position(tauri::Position::Logical(
+                            tauri::LogicalPosition::new(cx, cy),
+                        ));
+                    }
                     windows::ensure_window_on_visible_display(&moon);
                 }
             }

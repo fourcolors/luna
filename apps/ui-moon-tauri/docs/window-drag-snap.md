@@ -65,6 +65,13 @@ Two further guards against external state (live incident, Aug 2026):
   state (applied after non-clean exits such as the auto-updater's relaunch)
   otherwise re-imposes stale frames and stale visibility — an off-screen orb
   frame, a panel that exists in the accessibility tree but never composites.
+- Moon owns the orb's position. `tauri.conf.json` sets no position for the
+  `main` window and nothing in the app ever wrote one, so placement was left
+  to AppKit's default choice — which proved able to park the orb off every
+  display on multi-monitor arrangements, deterministically, on every clean
+  launch. `write_panel_layout` now saves a `"moon": {x, y}` entry (on every
+  layout write and on orb drag end) and boot restores it clamped on-screen;
+  first launches fall back to AppKit placement plus the stranded-check.
 
 ## Resize
 
