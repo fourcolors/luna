@@ -646,6 +646,133 @@ fn window_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)>
         (f64::from(s.height) / sf).round() as i32,
     ))
 }
+// ── On-screen position clamping ──────────────────────────────────────────────
+//
+// Nothing guarantees a window stays on a connected display: a display-topology
+// change (or a drag that ended past the edge) can leave a window parked at a
+// negative X where no display exists. For a panel that is an annoyance; for
+// the moon ORB it is fatal — the orb and the widgets are mutually exclusive
+// (lifecycle.rs), so an off-screen orb leaves the user with NO clickable Luna
+// surface at all (reads as "Moon won't open"). The boot-time layout restore
+// and every path that (re)shows the orb clamp through here.
+
+/// Minimum logical points of a window's top-left that must stay reachable
+/// inside a monitor so its title bar / body can always be grabbed.
+pub(crate) const ON_SCREEN_MARGIN: f64 = 80.0;
+
+/// Logical bounds `((x, y), (w, h))` of every connected monitor.
+pub(crate) fn monitor_bounds(app: &tauri::AppHandle) -> Vec<((f64, f64), (f64, f64))> {
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let sf = m.scale_factor();
+            (
+                (
+                    f64::from(m.position().x) / sf,
+                    f64::from(m.position().y) / sf,
+                ),
+                (m.size().width as f64 / sf, m.size().height as f64 / sf),
+            )
+        })
+        .collect()
+}
+
+/// Clamp a logical top-left point onto a currently-visible display. The point
+/// clamps into the monitor that CONTAINS it (multi-display setups); when no
+/// monitor contains it (display unplugged, stale layout, drag past the edge),
+/// it clamps into the FIRST monitor rather than staying stranded off every
+/// display. An empty monitor list (headless race at boot) returns the point
+/// unchanged — never invent a position.
+pub(crate) fn clamp_point_to_monitors(
+    monitors: &[((f64, f64), (f64, f64))],
+    x: f64,
+    y: f64,
+) -> (f64, f64) {
+    if monitors.is_empty() {
+        return (x, y);
+    }
+    let containing = monitors
+        .iter()
+        .find(|((mx, my), (mw, mh))| x >= *mx && x < mx + mw && y >= *my && y < my + mh);
+    let ((mx, my), (mw, mh)) = containing.unwrap_or(&monitors[0]);
+    (
+        x.clamp(*mx, (mx + mw - ON_SCREEN_MARGIN).max(*mx)),
+        y.clamp(*my, (my + mh - ON_SCREEN_MARGIN).max(*my)),
+    )
+}
+
+/// Move `win` back onto a visible display if its top-left is off every
+/// monitor (or within the grab margin of a far edge). Best-effort: missing
+/// geometry (no monitors yet, no window rect) leaves the window untouched.
+pub(crate) fn ensure_window_on_visible_display(win: &tauri::WebviewWindow) {
+    let monitors = monitor_bounds(win.app_handle());
+    let Some((x, y, _w, _h)) = window_logical_rect(win) else {
+        return;
+    };
+    let (cx, cy) = clamp_point_to_monitors(&monitors, f64::from(x), f64::from(y));
+    if (cx - f64::from(x)).abs() >= 1.0 || (cy - f64::from(y)).abs() >= 1.0 {
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(cx, cy)));
+    }
+}
+
+#[cfg(test)]
+mod clamp_tests {
+    use super::clamp_point_to_monitors;
+
+    /// The live-incident topology: a 2560×1440 main display at (0,0) plus a
+    /// built-in display below it. The orb was parked at (-307, 393) — off the
+    /// left edge where no display exists — leaving nothing clickable.
+    fn dual_monitors() -> Vec<((f64, f64), (f64, f64))> {
+        vec![
+            ((0.0, 0.0), (2560.0, 1440.0)),
+            ((560.0, 1440.0), (1512.0, 982.0)),
+        ]
+    }
+
+    #[test]
+    fn point_off_the_left_edge_clamps_back_onto_the_first_monitor() {
+        // The exact live incident: orb at x=-307 with no display to the left.
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), -307.0, 393.0);
+        assert_eq!((x, y), (0.0, 393.0));
+    }
+
+    #[test]
+    fn point_inside_a_monitor_is_unchanged() {
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), 650.0, 201.0);
+        assert_eq!((x, y), (650.0, 201.0));
+    }
+
+    #[test]
+    fn point_on_a_secondary_monitor_stays_there() {
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), 800.0, 1500.0);
+        assert_eq!((x, y), (800.0, 1500.0));
+    }
+
+    #[test]
+    fn point_near_the_far_edge_keeps_the_grab_margin() {
+        // Top-left just inside the right edge: pulled back so ≥80pt of the
+        // window stays reachable (2560 − 80 = 2480).
+        let (x, _) = clamp_point_to_monitors(&dual_monitors(), 2555.0, 100.0);
+        assert_eq!(x, 2480.0);
+    }
+
+    #[test]
+    fn point_past_the_bottom_right_of_everything_clamps_into_the_first_monitor() {
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), 9000.0, 9000.0);
+        assert_eq!((x, y), (2480.0, 1360.0));
+    }
+
+    #[test]
+    fn empty_monitor_list_returns_the_point_unchanged() {
+        // Headless race at boot: never invent (0,0) — a later show re-clamps.
+        assert_eq!(
+            clamp_point_to_monitors(&[], -307.0, 393.0),
+            (-307.0, 393.0)
+        );
+    }
+}
+
 /// AppKit / NSWindow APIs must run on the process main thread. Tauri invokes
 /// commands on a tokio worker — calling objc from there raises an NSException
 /// that Rust cannot catch (`foreign exception → abort`). Dispatch through the

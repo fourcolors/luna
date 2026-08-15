@@ -32,6 +32,10 @@ pub(crate) fn collapse_into_moon(app: &tauri::AppHandle) {
         }
     }
     if let Some(moon) = windows.get("main") {
+        // The orb is about to become the ONLY Luna surface (widgets are now
+        // hidden) — never reveal it parked off every display, or the user has
+        // nothing clickable and Moon reads as "won't open".
+        crate::windows::ensure_window_on_visible_display(moon);
         let _ = moon.show();
         let _ = moon.set_focus();
         let _ = app.emit_to(tauri::EventTarget::labeled("main"), "moon-absorb", ());
@@ -52,6 +56,10 @@ pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
             // on macOS, so unminimize first — otherwise the card is stranded in
             // the Dock with no in-app way back. No-op on non-minimized windows.
             let _ = win.unminimize();
+            // A display change while collapsed can strand a hidden card off
+            // every monitor; clamp before revealing so expand always produces
+            // a reachable window.
+            crate::windows::ensure_window_on_visible_display(win);
             let _ = win.show();
             shown += 1;
         }

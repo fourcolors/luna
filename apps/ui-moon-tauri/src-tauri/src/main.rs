@@ -88,6 +88,9 @@ fn main() {
                             .keys()
                             .any(|l| l != window.label() && windows::is_dock_label(l));
                         if !any_widget_left && !moon.is_visible().unwrap_or(true) {
+                            // The orb becomes the ONLY Luna surface — never
+                            // reveal it parked off every display.
+                            windows::ensure_window_on_visible_display(&moon);
                             let _ = moon.show();
                             let _ = moon.set_focus();
                             let _ =
@@ -233,43 +236,17 @@ fn main() {
             lifecycle::clear_webview_cache_if_updated();
 
             // Restore open system panels from ~/.luna/layout.json (design doc
-            // Persistence): positions clamped to the primary monitor so a
-            // display change can't strand a panel off-screen. Unknown kinds
-            // (stale file, removed registry entry) are skipped silently.
+            // Persistence): positions clamped onto a visible monitor so a
+            // display change can't strand a panel off-screen (the shared
+            // clamp in windows.rs; the orb below uses the same one).
             {
                 let handle = app.handle().clone();
-                // Logical bounds of every connected monitor; a saved position
-                // clamps to the monitor that CONTAINS it (multi-display
-                // setups), falling back to the first monitor when the saved
-                // display is gone.
-                let monitors: Vec<((f64, f64), (f64, f64))> = app
-                    .available_monitors()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|m| {
-                        let sf = m.scale_factor();
-                        (
-                            (
-                                f64::from(m.position().x) / sf,
-                                f64::from(m.position().y) / sf,
-                            ),
-                            (m.size().width as f64 / sf, m.size().height as f64 / sf),
-                        )
-                    })
-                    .collect();
-                let clamp_to_monitors = move |x: f64, y: f64| -> (f64, f64) {
-                    if monitors.is_empty() {
-                        return (x, y);
-                    }
-                    let containing = monitors.iter().find(|((mx, my), (mw, mh))| {
-                        x >= *mx && x < mx + mw && y >= *my && y < my + mh
-                    });
-                    let ((mx, my), (mw, mh)) = containing.unwrap_or(&monitors[0]);
-                    (
-                        x.clamp(*mx, (mx + mw - 80.0).max(*mx)),
-                        y.clamp(*my, (my + mh - 80.0).max(*my)),
-                    )
-                };
+                let monitors = windows::monitor_bounds(&handle);
+                // Rows the file LISTED vs windows that actually SPAWNED: a
+                // stale layout (unknown kind, spawn failure) must never leave
+                // the user with only the orb — see the fallback below.
+                let mut listed = 0usize;
+                let mut spawned = 0usize;
                 if let Some(path) = windows::layout_path() {
                     if let Ok(raw) = std::fs::read_to_string(&path) {
                         if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
@@ -279,19 +256,41 @@ fn main() {
                                 let Some(kind) = p["kind"].as_str() else {
                                     continue;
                                 };
+                                listed += 1;
                                 let Some(desc) = windows::registry_lookup(kind) else {
                                     continue;
                                 };
-                                let (x, y) = clamp_to_monitors(
+                                let (x, y) = windows::clamp_point_to_monitors(
+                                    &monitors,
                                     p["x"].as_f64().unwrap_or(180.0),
                                     p["y"].as_f64().unwrap_or(160.0),
                                 );
                                 let w = p["w"].as_f64().filter(|v| *v >= 220.0);
                                 let h = p["h"].as_f64().filter(|v| *v >= 120.0);
-                                let _ = windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h);
+                                if windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h)
+                                    .is_ok()
+                                {
+                                    spawned += 1;
+                                }
                             }
                         }
                     }
+                }
+                // The layout listed panels but restore produced NONE (stale
+                // kinds, spawn errors): open the chat as the default widget
+                // so the workspace the user expects actually exists — a stale
+                // layout row must never strand them with only the orb.
+                if listed > 0 && spawned == 0 {
+                    if let Some(desc) = windows::registry_lookup("chat") {
+                        let _ = windows::spawn_panel(&handle, desc, None, None, None, None);
+                    }
+                }
+                // The orb itself: nothing persists its position, but a
+                // display-topology change (or a drag past the edge) can leave
+                // "main" parked off every display — and an unclickable orb is
+                // an unopenable Moon. Clamp it back on-screen at boot.
+                if let Some(moon) = app.get_webview_window("main") {
+                    windows::ensure_window_on_visible_display(&moon);
                 }
             }
             // Voice pipeline controller (lazy: no mic/model touched until the

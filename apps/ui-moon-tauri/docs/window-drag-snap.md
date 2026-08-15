@@ -43,6 +43,16 @@ weld graph, release watcher, or multi-window cluster towing. A window stays
 where the user puts it. Saved system-panel positions continue to restore from
 `~/.luna/layout.json` and are clamped on-screen when displays change.
 
+One deliberate exception: the moon orb (window `main`) and any window being
+revealed by boot restore, expand-from-moon, or collapse-to-moon is clamped
+back onto a currently visible display first
+(`windows::ensure_window_on_visible_display`). The orb and the widgets are
+mutually exclusive surfaces, so an orb stranded off-screen by a
+display-topology change would leave the user with nothing clickable at all —
+Moon would read as "won't open". If `layout.json` listed panels but restore
+spawned none (stale rows, spawn failure), boot falls back to opening the chat
+widget so the user is never left with only the orb.
+
 ## Resize
 
 Borderless card resizing still uses `begin_native_resize` because tao's native
