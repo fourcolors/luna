@@ -334,6 +334,10 @@ fn main() {
                 // finalize_native_window_chrome.
                 if let Some(moon) = app.get_webview_window("main") {
                     windows::disable_window_state_restoration(&moon);
+                    // Floating-companion behavior: every Space, never shelved
+                    // into the Stage Manager tile strip, skipped by Cmd-`
+                    // cycling (see configure_orb_window's doc comment).
+                    windows::configure_orb_window(&moon);
                     if let Some((sx, sy)) = saved_moon {
                         let (cx, cy) = windows::clamp_point_to_monitors(&monitors, sx, sy);
                         let _ = moon.set_position(tauri::Position::Logical(

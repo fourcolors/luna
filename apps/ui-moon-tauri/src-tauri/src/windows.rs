@@ -796,6 +796,47 @@ pub(crate) fn disable_window_state_restoration(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn disable_window_state_restoration(_window: &tauri::WebviewWindow) {}
 
+/// One-time native behavior for the moon ORB (window "main"): a floating
+/// desktop companion that must never be shelved or parked by the window
+/// manager. Live incident: with Stage Manager active, the orb of an
+/// inactive Moon was managed into the LEFT-EDGE TILE STRIP (the
+/// WindowManager-owned icon-sized tiles at x≈-307, alongside every other
+/// inactive app's tiles) — the only Luna surface on screen was a shelf
+/// thumbnail, unclickable as a window, which reads as "Moon won't open".
+///
+/// - `CanJoinAllSpaces`: the orb follows the user onto every Space/stage —
+///   an always-on-top companion, like a picture-in-picture window, is
+///   pointless on a Space the user is not looking at. Windows with this
+///   behavior are not stage-managed into the strip.
+/// - `Stationary`: Exposé / Spaces transitions leave it alone.
+/// - `IgnoresCycle`: Cmd-` window cycling skips the orb (it is a launcher
+///   puck, not a document window).
+///
+/// The widget/panel windows deliberately do NOT get this: they are normal
+/// workspace windows and SHOULD be managed like any app's windows; their
+/// fix is `expand_out_of_moon` focusing one of them so the app activates
+/// and its stage (real, composited windows) swaps in.
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_orb_window(window: &tauri::WebviewWindow) {
+    let _ = with_appkit_main_thread(window.clone(), |win| {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            ns_win.setCollectionBehavior(
+                ns_win.collectionBehavior()
+                    | NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::IgnoresCycle,
+            );
+        }
+        Ok(())
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn configure_orb_window(_window: &tauri::WebviewWindow) {}
+
 #[cfg(test)]
 mod clamp_tests {
     use super::{clamp_point_to_monitors, point_on_any_monitor};

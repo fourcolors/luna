@@ -72,6 +72,16 @@ Two further guards against external state (live incident, Aug 2026):
   launch. `write_panel_layout` now saves a `"moon": {x, y}` entry (on every
   layout write and on orb drag end) and boot restores it clamped on-screen;
   first launches fall back to AppKit placement plus the stranded-check.
+- Stage Manager (live incident): an inactive app's windows are shelved into
+  the WindowManager-owned left-edge tile strip (icon-sized tiles around
+  x≈−307) instead of compositing — a shelved orb reads as "Moon won't open"
+  and a shelved chat panel is AX-visible with no CG surface. Two rules:
+  the orb is a floating companion (`windows::configure_orb_window`:
+  `CanJoinAllSpaces | Stationary | IgnoresCycle`) so it is never shelved and
+  follows the user to every Space; and `expand_out_of_moon` focuses one
+  revealed widget (the chat when present — `pick_expand_focus_target`),
+  because `show()` orders a window in but only activation makes Stage
+  Manager swap the app's real windows in.
 
 ## Resize
 
