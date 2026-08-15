@@ -849,6 +849,38 @@ pub(crate) fn configure_orb_window(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn configure_orb_window(_window: &tauri::WebviewWindow) {}
 
+/// Explicitly activate Moon regardless of any single window's focusability.
+///
+/// Under Stage Manager only the ACTIVE app's stage is composited; an
+/// inactive app's windows sit as left-strip shelf tiles (live incident:
+/// panel-chat AX-present with no CG surface, the orb a 121×128 tile at
+/// x≈-307). tao's `set_focus` does activate the app — but it silently
+/// no-ops when its target window reports not-visible at call time, and
+/// expand must NEVER lose the activation to that early-return: activation
+/// is the one call that swaps Moon's composited stage in. The `window`
+/// argument is only a handle to reach the AppKit main thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn activate_app(window: &tauri::WebviewWindow) {
+    let _ = with_appkit_main_thread(window.clone(), |_win| {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Ok(());
+        };
+        // activateIgnoringOtherApps is soft-deprecated in favor of
+        // activate(), but activate() (macOS 14 cooperative activation) may
+        // decline when another app is frontmost — and expand IS the user's
+        // explicit "bring Moon forward" gesture, so the assertive form is
+        // the correct one here.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        Ok(())
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn activate_app(_window: &tauri::WebviewWindow) {}
+
 #[cfg(test)]
 mod clamp_tests {
     use super::{clamp_point_to_monitors, point_on_any_monitor};

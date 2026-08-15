@@ -87,8 +87,17 @@ default-features = false
 # event-driven native resize installs NSEvent monitors instead of polling.
 # `NSWindowRestoration` (+ its `NSResponder` cfg partner) exposes
 # NSWindow.setRestorable — the saved-state opt-out in
-# windows::disable_window_state_restoration.
-features = ["NSWindow", "NSEvent", "NSResponder", "NSWindowRestoration", "block2"]
+# windows::disable_window_state_restoration. `NSApplication` exposes the
+# explicit app activation in windows::activate_app — under Stage Manager,
+# activation is what swaps Moon's composited stage in.
+features = [
+    "NSWindow",
+    "NSEvent",
+    "NSResponder",
+    "NSWindowRestoration",
+    "NSApplication",
+    "block2",
+]
 
 # Block (Obj-C closure) support for the NSEvent monitor handlers that drive the
 # event-driven native window resize (begin_native_resize). macOS-gated like the

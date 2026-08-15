@@ -82,6 +82,11 @@ pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
     if let Some(label) = pick_expand_focus_target(&shown_labels) {
         if let Some(win) = windows.get(label) {
             let _ = win.set_focus();
+            // set_focus silently no-ops when its target reports not-visible
+            // at call time — but the ACTIVATION must never be lost, or Stage
+            // Manager keeps every Moon window shelved as a strip tile. Make
+            // it unconditional (idempotent when set_focus already did it).
+            crate::windows::activate_app(win);
         }
     }
     if let Some(moon) = windows.get("main") {
