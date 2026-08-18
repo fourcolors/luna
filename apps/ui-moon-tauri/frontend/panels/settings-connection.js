@@ -269,20 +269,27 @@
       effortRow.appendChild(effortSelect);
       el.appendChild(effortRow);
 
-      // ── Machine target (jax-box / This Mac / Custom) — parity with React ─
+      // ── Machine target (jax-box / Custom) — This Mac CUT until jax-box Connected ─
 
+      // Gate: do not offer This Mac → 127.0.0.1 as the path to Connected.
+      var THIS_MAC_TARGET_ENABLED = false;
       function portForChannel(channel) {
         return channel === 'dev' ? 5753 : 4753;
       }
       function urlForMachineTarget(target, channel) {
         var port = portForChannel(channel);
-        if (target === 'this-mac') return 'ws://127.0.0.1:' + port + '/ui';
+        if (target === 'this-mac') {
+          if (!THIS_MAC_TARGET_ENABLED) return 'ws://jax-box:' + port + '/ui';
+          return 'ws://127.0.0.1:' + port + '/ui';
+        }
         return 'ws://jax-box:' + port + '/ui';
       }
       function detectMachineTarget(url) {
         var trimmed = (url || '').trim();
         if (/^wss?:\/\/jax-box(?:\.local)?:\d+\/ui\/?$/i.test(trimmed)) return 'jax-box';
-        if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) return 'this-mac';
+        if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) {
+          return THIS_MAC_TARGET_ENABLED ? 'this-mac' : 'custom';
+        }
         return 'custom';
       }
       var DEFAULT_WS_URL = urlForMachineTarget('jax-box', 'stable');
@@ -291,13 +298,16 @@
       var machineInfo = document.createElement('div');
       machineInfo.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;';
       machineInfo.appendChild(makeLabel('Machine'));
-      machineInfo.appendChild(makeDesc('Which box Moon and luna chat dial — jax-box (remote default), This Mac (127.0.0.1), or a custom URL'));
+      machineInfo.appendChild(makeDesc('Which box Moon and luna chat dial — jax-box (remote default) or a custom URL. This Mac (127.0.0.1) is disabled until jax-box Connected is proven.'));
       var machineSelect = makeSelect('machine-target-select');
-      [
+      var machineOpts = [
         { value: 'jax-box', label: 'jax-box (default)' },
-        { value: 'this-mac', label: 'This Mac' },
         { value: 'custom', label: 'Custom URL' },
-      ].forEach(function (o) {
+      ];
+      if (THIS_MAC_TARGET_ENABLED) {
+        machineOpts.splice(1, 0, { value: 'this-mac', label: 'This Mac' });
+      }
+      machineOpts.forEach(function (o) {
         var opt = document.createElement('option');
         opt.value = o.value;
         opt.textContent = o.label;
@@ -707,6 +717,10 @@
 
       machineSelect.addEventListener('change', function () {
         var target = machineSelect.value;
+        if (target === 'this-mac' && !THIS_MAC_TARGET_ENABLED) {
+          target = 'jax-box';
+          machineSelect.value = 'jax-box';
+        }
         if (target === 'custom') return;
         wsUrlInput.value = urlForMachineTarget(target, channelSelect.value);
       });

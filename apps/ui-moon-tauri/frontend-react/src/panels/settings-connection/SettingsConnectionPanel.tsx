@@ -500,7 +500,8 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           <VStack gap={0}>
             <Text type="label">Machine</Text>
             <Text type="supporting">
-              Which box Moon and luna chat dial — jax-box (remote default), This Mac (127.0.0.1), or a custom URL
+              Which box Moon and luna chat dial — jax-box (remote default) or a custom URL.
+              This Mac (127.0.0.1) is disabled until jax-box Connected is proven.
             </Text>
           </VStack>
           <select

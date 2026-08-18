@@ -354,6 +354,40 @@ describe("pair: runPair (verify injected, no live server)", () => {
     expect(moon.profiles.stable.wsToken).toBe("stabletoken1")
   })
 
+  it("PRIMARY: jax-box pair writes all three stores and never emits 127.0.0.1", async () => {
+    const toml = [
+      'kind = "bootstrap"',
+      "fileFormatVersion = 3",
+      'default = "stable"',
+      "",
+      "[route.stable]",
+      'endpoints = ["ws://stale-host:4753/ui"]',
+      'label = "stable"',
+      'tokenRef = "legacy"',
+      "",
+    ].join("\n")
+    mkdirSync(join(home, ".luna"), { recursive: true, mode: 0o700 })
+    writeFileSync(clientTomlPath(home), toml, { mode: 0o600 })
+
+    await runPair(
+      { url: "ws://jax-box:4753/ui", token: "jax-tok-123456", profile: "stable" },
+      { homeDir: home, cwd: home, env: {}, verify: stubVerify },
+    )
+
+    const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    expect(moon.profiles.stable.wsUrl).toBe("ws://jax-box:4753/ui")
+    expect(moon.profiles.stable.wsToken).toBe("jax-tok-123456")
+
+    const env = readFileSync(lunaEnvPath(home), "utf8")
+    expect(env).toContain("LUNA_STABLE_WS_URL=ws://jax-box:4753/ui")
+    expect(env).not.toContain("127.0.0.1")
+    expect(env).toContain("LUNA_STABLE_UI_WS_TOKEN=jax-tok-123456")
+
+    const after = readFileSync(clientTomlPath(home), "utf8")
+    expect(after).toContain('endpoints = ["ws://jax-box:4753/ui"]')
+    expect(after).not.toContain("127.0.0.1")
+  })
+
   it("rewrites client.toml endpoints[0] on pair; --activate also flips default", async () => {
     const toml = [
       'kind = "bootstrap"',
@@ -361,12 +395,12 @@ describe("pair: runPair (verify injected, no live server)", () => {
       'default = "stable"',
       "",
       "[route.stable]",
-      'endpoints = ["ws://jax-box:4753/ui"]',
+      'endpoints = ["ws://stale-host:4753/ui"]',
       'label = "stable"',
       'tokenRef = "legacy"',
       "",
       "[route.dev]",
-      'endpoints = ["ws://jax-box:5753/ui"]',
+      'endpoints = ["ws://stale-host:5753/ui"]',
       'label = "dev"',
       'tokenRef = "legacy"',
       "",
@@ -375,18 +409,18 @@ describe("pair: runPair (verify injected, no live server)", () => {
     writeFileSync(clientTomlPath(home), toml, { mode: 0o600 })
 
     await runPair(
-      { url: "ws://127.0.0.1:4753/ui", token: "mac-stable-tok", profile: "stable" },
+      { url: "ws://jax-box:4753/ui", token: "stable-tok", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     let after = readFileSync(clientTomlPath(home), "utf8")
-    expect(after).toContain('endpoints = ["ws://127.0.0.1:4753/ui"]')
+    expect(after).toContain('endpoints = ["ws://jax-box:4753/ui"]')
     expect(after).toMatch(/^default = "stable"$/m)
-    expect(after).toContain('endpoints = ["ws://jax-box:5753/ui"]')
+    expect(after).not.toContain("127.0.0.1")
 
     await runPair(
       {
-        url: "ws://127.0.0.1:5753/ui",
-        token: "mac-dev-tok",
+        url: "ws://jax-box:5753/ui",
+        token: "dev-tok",
         profile: "dev",
         activate: true,
       },
@@ -394,18 +428,19 @@ describe("pair: runPair (verify injected, no live server)", () => {
     )
     after = readFileSync(clientTomlPath(home), "utf8")
     expect(after).toMatch(/^default = "dev"$/m)
-    expect(after).toContain('endpoints = ["ws://127.0.0.1:5753/ui"]')
-    // Moon + CLI stores stay in sync with the toml rewrite.
+    expect(after).toContain('endpoints = ["ws://jax-box:5753/ui"]')
+    expect(after).not.toContain("127.0.0.1")
     const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
     expect(moon.activeProfile).toBe("dev")
-    expect(moon.profiles.dev.wsUrl).toBe("ws://127.0.0.1:5753/ui")
+    expect(moon.profiles.dev.wsUrl).toBe("ws://jax-box:5753/ui")
     const env = readFileSync(lunaEnvPath(home), "utf8")
-    expect(env).toContain("LUNA_DEV_WS_URL=ws://127.0.0.1:5753/ui")
+    expect(env).toContain("LUNA_DEV_WS_URL=ws://jax-box:5753/ui")
+    expect(env).not.toContain("127.0.0.1")
   })
 
   it("pair is a no-op for client.toml when the file is absent (pre-C3)", async () => {
     await runPair(
-      { url: "ws://127.0.0.1:4753/ui", token: "tok123456", profile: "stable" },
+      { url: "ws://jax-box:4753/ui", token: "tok123456", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     expect(() => statSync(clientTomlPath(home))).toThrow()
@@ -431,18 +466,19 @@ describe("pair-writers: upsertClientTomlEndpoint", () => {
         'default = "stable"',
         "",
         "[route.stable]",
-        'endpoints = ["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"]',
+        'endpoints = ["ws://stale-host:4753/ui", "ws://jax-box.local:4753/ui"]',
         'label = "stable"',
         'tokenRef = "legacy"',
         "",
       ].join("\n"),
       { mode: 0o600 },
     )
-    upsertClientTomlEndpoint(home, "stable", "ws://127.0.0.1:4753/ui")
+    upsertClientTomlEndpoint(home, "stable", "ws://jax-box:4753/ui")
     const body = readFileSync(clientTomlPath(home), "utf8")
     expect(body).toContain(
-      'endpoints = ["ws://127.0.0.1:4753/ui", "ws://jax-box.local:4753/ui"]',
+      'endpoints = ["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"]',
     )
+    expect(body).not.toContain("127.0.0.1")
     upsertClientTomlEndpoint(home, "canary", "ws://canary:4753/ui", { setDefault: true })
     const after = readFileSync(clientTomlPath(home), "utf8")
     expect(after).toMatch(/^default = "canary"$/m)

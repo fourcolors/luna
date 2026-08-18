@@ -54,12 +54,21 @@ export interface SaveStatus {
 }
 
 /** Named machine targets for Settings → Connection. jax-box is the intentional
- *  remote default (installer/README); This Mac is loopback IPv4; Custom is freeform. */
+ *  remote default (installer/README). Custom is freeform.
+ *
+ *  This Mac (loopback 127.0.0.1) is CUT until jax-box Connected is proven —
+ *  writing loopback into moon-connection / .env / client.toml must not be the
+ *  path operators use to get Connected. */
 export type MachineTarget = "jax-box" | "this-mac" | "custom"
+
+/** Gate for the named This Mac target. Keep false until jax-box Connected is proven. */
+export const THIS_MAC_TARGET_ENABLED = false
 
 export const MACHINE_TARGET_OPTIONS: readonly { value: MachineTarget; label: string }[] = [
   { value: "jax-box", label: "jax-box (default)" },
-  { value: "this-mac", label: "This Mac" },
+  ...(THIS_MAC_TARGET_ENABLED
+    ? ([{ value: "this-mac", label: "This Mac" }] as const)
+    : []),
   { value: "custom", label: "Custom URL" },
 ]
 
@@ -68,9 +77,16 @@ export function portForChannel(channel: string): number {
   return channel === "dev" ? 5753 : 4753
 }
 
+/** Canonical jax-box stable UI URL — installer / README default. */
+export const JAX_BOX_STABLE_WS_URL = "ws://jax-box:4753/ui"
+
 export function urlForMachineTarget(target: MachineTarget, channel: string): string {
   const port = portForChannel(channel)
-  if (target === "this-mac") return `ws://127.0.0.1:${port}/ui`
+  if (target === "this-mac") {
+    // While gated, never emit loopback from a named target (adversary HOLD).
+    if (!THIS_MAC_TARGET_ENABLED) return `ws://jax-box:${port}/ui`
+    return `ws://127.0.0.1:${port}/ui`
+  }
   // jax-box (and any caller that asked for the remote default)
   return `ws://jax-box:${port}/ui`
 }
@@ -78,7 +94,10 @@ export function urlForMachineTarget(target: MachineTarget, channel: string): str
 export function detectMachineTarget(url: string): MachineTarget {
   const trimmed = url.trim()
   if (/^wss?:\/\/jax-box(?:\.local)?:\d+\/ui\/?$/i.test(trimmed)) return "jax-box"
-  if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) return "this-mac"
+  // Loopback is Custom while This Mac is cut — do not revive the named option.
+  if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) {
+    return THIS_MAC_TARGET_ENABLED ? "this-mac" : "custom"
+  }
   return "custom"
 }
 
@@ -123,7 +142,7 @@ export interface ConnectionPanelState {
   readonly model: string
   readonly effortOptions: readonly string[]
   readonly effort: string
-  /** Named machine target — drives the WS URL for jax-box / This Mac. */
+  /** Named machine target — drives the WS URL for jax-box (This Mac gated off). */
   readonly machineTarget: MachineTarget
   /**
    * When true, Save also sets activeProfile + client.toml default to the
@@ -358,7 +377,11 @@ export function reduceConnectionPanel(
     case "effort-selected":
       return { ...state, effort: action.effort }
     case "machine-target-selected": {
-      const target = action.target
+      let target = action.target
+      // Refuse to select This Mac while the gate is off.
+      if (target === "this-mac" && !THIS_MAC_TARGET_ENABLED) {
+        target = "jax-box"
+      }
       if (target === "custom") {
         return { ...state, machineTarget: target }
       }
