@@ -1,0 +1,85 @@
+# macOS local rebuild — Info.plist must be codesign-bound
+
+## The unbound-plist hole (proven 2026-08-18)
+
+Sterling rebuilt Moon with the #544 ATS / Local Network keys present in
+`/Applications/Luna Moon.app/Contents/Info.plist`, but:
+
+- Local Network prompt **never** appeared
+- WebKit.Networking still opened **no TCP** to `jax-box:4753`
+- `codesign -dv` showed: `adhoc,linker-signed`, `Info.plist=not bound`,
+  `Sealed Resources=none`, `entitlements=none`
+- Identifier was `luna_moon_ui-<hash>` — the Cargo package name — **not**
+  `com.luna.moon`
+
+When Info.plist is **not bound** into the code signature, macOS ignores
+`NSLocalNetworkUsageDescription` and `NSAppTransportSecurity`. TCC grants for
+display name “Luna Moon” / `com.luna.moon` also do not apply to that ad-hoc
+linker identity.
+
+### How you get there
+
+1. **`signingIdentity: null`** in `tauri.conf.json` — Tauri skips bundle
+   signing entirely. The Mach-O keeps the linker’s ad-hoc stamp only.
+2. **Copying** `target/release/luna-moon-ui` (or `cargo build` output) into an
+   existing `.app`’s `Contents/MacOS/` — same unbound hole, even if you edited
+   Info.plist by hand.
+
+Host `curl` to `jax-box:4753` still works; only the webview path dies.
+
+## Correct rebuild (binds Info.plist)
+
+Committed config now sets `"signingIdentity": "-"`. Prefer the installer script:
+
+```bash
+cd apps/ui-moon-tauri
+bun run install:macos
+```
+
+That runs `tauri build`, force-codesigns with `com.luna.moon` +
+`entitlements.plist`, installs to `/Applications/Luna Moon.app`, and **fails**
+if Identifier ≠ `com.luna.moon` or `Info.plist=not bound`.
+
+### Manual equivalent
+
+```bash
+cd apps/ui-moon-tauri
+bun run build   # NOT: cargo build && cp into Contents/MacOS
+
+APP="src-tauri/target/release/bundle/macos/Luna Moon.app"
+# arch-specific targets also ok under target/<triple>/release/bundle/macos/
+
+codesign --force --deep --options runtime \
+  --entitlements src-tauri/entitlements.plist \
+  --sign "${APPLE_SIGNING_IDENTITY:--}" \
+  --identifier com.luna.moon \
+  "$APP"
+
+rm -rf "/Applications/Luna Moon.app"
+ditto "$APP" "/Applications/Luna Moon.app"
+```
+
+Optional: set `APPLE_SIGNING_IDENTITY` to an Apple Development cert so the
+CDHash stays stable across rebuilds (TCC Local Network / Screen Recording
+grants survive). Ad-hoc `-` works for ATS/plist binding but rotates CDHash.
+
+## Verify before chasing WS bugs
+
+```bash
+codesign -dv --verbose=4 "/Applications/Luna Moon.app" 2>&1 | egrep 'Identifier=|Info.plist=|Signature=|linker-signed|Sealed Resources|TeamIdentifier'
+plutil -p "/Applications/Luna Moon.app/Contents/Info.plist" | egrep 'CFBundleIdentifier|NSLocalNetwork|NSAllowsLocalNetworking|jax-box|ts.net'
+ls "/Applications/Luna Moon.app/Contents/_CodeSignature"
+```
+
+Expect:
+
+| Field | Good | Bad (ignore ATS / no Local Network prompt) |
+|-------|------|--------------------------------------------|
+| Identifier | `com.luna.moon` | `luna_moon_ui-<hash>` |
+| Info.plist | `bound` | `not bound` |
+| Signature | adhoc (or Developer) **without** `linker-signed` | `adhoc,linker-signed` |
+| Sealed Resources | present (`_CodeSignature/`) | `none` |
+| Entitlements | from `entitlements.plist` | `none` |
+
+Then launch the app, Allow Local Network, confirm Connected on
+`ws://jax-box:4753/ui` — do not retarget localhost.

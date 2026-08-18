@@ -10,6 +10,7 @@
     "build": "tauri build",
     "build:dev": "tauri build --config src-tauri/tauri.dev.conf.json",
     "build:frontend": "vite build",
+    "install:macos": "bash scripts/install-macos-app.sh",
     "test:e2e:build": "cargo build --manifest-path src-tauri/Cargo.toml --features wdio-e2e",
     "test:e2e": "wdio run e2e/wdio.conf.mjs",
     "test:e2e:ci": "bun run test:e2e:build && bun run test:e2e"
