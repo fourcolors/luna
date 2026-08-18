@@ -159,9 +159,8 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
       <VStack gap={2}>
         <Text type="label">Providers</Text>
         <Text type="supporting" color="secondary">
-          Enable providers and set a credentialRef (env:NAME / op://… / luna-op://…). Saving writes the
-          account on this connected server — no second `luna account add` on the wrong machine. Raw API
-          keys never leave the Vault / request_secret flow.
+          Enable providers and optionally set a monthly spend ceiling. Credential entry uses the Luna
+          Vault or the agent's request_secret flow.
         </Text>
         {PROVIDERS.map((pd) => {
           const draft = state.draftProviders[pd.kind] ?? { enabled: false, credentialRef: "", monthlyCapUsd: "" as const }
@@ -260,8 +259,8 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
         )}
       </HStack>
       <Text type="supporting" color="secondary">
-        Save & Restart applies routing on this connected server and schedules a supervised restart —
-        Moon reconnects automatically. No folklore manual restart for the common case.
+        Saving applies model-routing preferences on the next server restart (a brief pause - connections
+        auto-reconnect).
       </Text>
     </VStack>
   )

@@ -245,8 +245,6 @@ import {
   resolveAll,
   validateAndPrepare,
   resolveRoleModel,
-  syncProviderAccountsToDb,
-  ProviderAccountSyncError,
   type ProviderSettingsPayload,
   SuggestedActions,
   SuggestedActionsStore,
@@ -4571,24 +4569,8 @@ const buildServerLayer = (
                   })),
                 }
                 validateAndPrepare(candidate)
-                // Enable + credentialRef must be enough on the CONNECTED
-                // server: upsert settings-<kind> into accounts so the
-                // operator never has to re-run `luna account add` on the
-                // wrong box. Pointer only — raw keys rejected.
-                try {
-                  syncProviderAccountsToDb(mrDb, candidate.providers)
-                } catch (syncErr) {
-                  if (syncErr instanceof ProviderAccountSyncError) {
-                    return { ok: false, message: syncErr.message }
-                  }
-                  throw syncErr
-                }
                 mrStore.write(candidate)
-                return {
-                  ok: true,
-                  message:
-                    "Model routing saved. Restarting server to apply — Moon will reconnect automatically.",
-                }
+                return { ok: true, message: "Model routing settings saved. Restart to apply." }
               } catch (err) {
                 const msg =
                   err instanceof Error ? err.message : String(err)

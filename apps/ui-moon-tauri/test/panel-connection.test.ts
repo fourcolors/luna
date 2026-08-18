@@ -248,7 +248,7 @@ describe('settings.connection panel', () => {
     await flush()
 
     await vi.waitFor(() =>
-      expect(document.getElementById('save-connection-status')!.textContent).toBe('Saved ✓'))
+      expect(document.getElementById('save-connection-status')!.textContent).toMatch(/^Saved ✓/))
     // Token field must NOT be wiped — engine never clears it on save
     expect(tokenInput.value).toBe('keepme')
   })

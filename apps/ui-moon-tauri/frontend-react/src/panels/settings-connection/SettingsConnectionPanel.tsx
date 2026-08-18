@@ -376,10 +376,13 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
   }
 
   async function handleSave(): Promise<void> {
+    // Visible URL is authoritative: named targets write into the field; typing
+    // flips to Custom. Fallback only when the field is empty.
     const url =
-      state.machineTarget === "custom"
-        ? state.wsUrl.trim() || DEFAULT_WS_URL
-        : urlForMachineTarget(state.machineTarget, state.channel)
+      state.wsUrl.trim() ||
+      (state.machineTarget === "custom"
+        ? DEFAULT_WS_URL
+        : urlForMachineTarget(state.machineTarget, state.channel))
     const token = state.wsToken.trim()
     store.dispatch({ type: "save-start" })
     try {
@@ -400,10 +403,6 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
         profile: state.channel,
         activate: state.activateOnSave,
       })
-      // Keep the URL field honest if a named target recomputed it.
-      if (state.machineTarget !== "custom" && state.wsUrl !== url) {
-        store.dispatch({ type: "machine-target-selected", target: state.machineTarget })
-      }
       store.dispatch({ type: "save-success" })
       ctx.invoke("hub_event", { name: "connection-changed" }).catch(() => {})
     } catch (e) {

@@ -284,6 +284,67 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     expect(tokenInput().value).toBe('keepme')
   })
 
+  it('machine-target-select fills This Mac / jax-box URLs and Save sends activate:false by default', async () => {
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_connection') return { wsUrl: 'ws://jax-box:4753/ui', wsToken: 't' }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+
+    const machine = document.querySelector('[data-testid="machine-target-select"]') as HTMLSelectElement
+    expect(machine).toBeTruthy()
+    expect(machine.value).toBe('jax-box')
+
+    act(() => {
+      machine.value = 'this-mac'
+      machine.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(urlInput().value).toBe('ws://127.0.0.1:4753/ui')
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://127.0.0.1:4753/ui',
+      token: 't',
+      profile: 'stable',
+      activate: false,
+    })
+  })
+
+  it('activate-on-save checkbox passes activate:true to save_connection', async () => {
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_connection') {
+        return { wsUrl: 'ws://jax-box:4753/ui', wsToken: 'tok' }
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+
+    const activate = document.querySelector('[data-testid="activate-on-save"]') as HTMLInputElement
+    expect(activate).toBeTruthy()
+    expect(activate.checked).toBe(false)
+    act(() => {
+      activate.click()
+    })
+    await flush()
+    expect(activate.checked).toBe(true)
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith(
+      'save_connection',
+      expect.objectContaining({
+        url: 'ws://jax-box:4753/ui',
+        token: 'tok',
+        profile: 'stable',
+        activate: true,
+      }),
+    )
+  })
+
   it('save button shows error on save_connection failure', async () => {
     const { ctx } = makeCtx((cmd) => {
       if (cmd === 'save_connection') throw new Error('disk full')

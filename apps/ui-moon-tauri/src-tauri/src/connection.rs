@@ -1045,6 +1045,54 @@ mod tests {
         });
     }
 
+    /// seed_connection_from_env_in goes through save_connection_in, so when
+    /// client.toml already exists it ALSO rewrites endpoints[0] (same unified
+    /// writer). activate stays false — default / activeProfile are not hijacked.
+    #[test]
+    fn seed_connection_from_env_in_rewrites_client_toml_endpoints_without_activate() {
+        with_tmp_luna_dir(|luna_dir| {
+            let toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://jax-box:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+"#;
+            std::fs::write(luna_dir.join("client.toml"), toml).expect("seed client.toml");
+            // Profile present but uncredentialed → seed is allowed.
+            let moon = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://jax-box:4753/ui","wsToken":""}}}"#;
+            std::fs::write(luna_dir.join("moon-connection.json"), moon).expect("seed moon");
+
+            let seeded = seed_connection_from_env_in(
+                &luna_dir,
+                "stable",
+                "ws://127.0.0.1:4753/ui",
+                "env-seed-tok",
+            )
+            .expect("seed ok");
+            assert!(seeded);
+
+            let cfg = client_config::parse_client_config(
+                &std::fs::read_to_string(luna_dir.join("client.toml")).unwrap(),
+            )
+            .expect("parse");
+            assert_eq!(cfg.default, "stable", "seed must not flip default");
+            assert_eq!(
+                cfg.route.get("stable").unwrap().endpoints,
+                vec!["ws://127.0.0.1:4753/ui".to_string()],
+                "seed rewrites endpoints via the unified writer"
+            );
+            let moon_after: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(luna_dir.join("moon-connection.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(moon_after["activeProfile"], json!("stable"));
+            assert_eq!(moon_after["profiles"]["stable"]["wsToken"], json!("env-seed-tok"));
+        });
+    }
+
     /// Step 1c Part 3d seeding DECISION, scenario two: the active profile
     /// already has creds - the store must be left UNTOUCHED (never clobber a
     /// genuinely-paired profile with a stale or wrong .env value).

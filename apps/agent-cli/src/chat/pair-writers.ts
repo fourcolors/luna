@@ -87,6 +87,12 @@ const tomlBasicString = (value: string): string =>
  * When `setDefault` is true, also sets top-level `default = "<profile>"`
  * (luna pair --activate). Creates a missing `[route.<profile>]` table with
  * `tokenRef = "legacy"` rather than inventing a whole client.toml.
+ *
+ * DRIFT NOTE: Moon Settings Save uses Rust `toml_edit` in
+ * `client_config::upsert_route_endpoint_in`. This CLI path is a deliberate
+ * line-oriented twin so `luna pair` works without spawning Tauri. Keep the
+ * pair.test.ts / Rust upsert fixtures in lockstep — do not add behavior
+ * here that the Rust writer lacks (or vice versa) without updating both.
  */
 export const upsertClientTomlEndpoint = (
   homeDir: string,
