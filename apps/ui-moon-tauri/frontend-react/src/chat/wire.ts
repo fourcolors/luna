@@ -27,6 +27,13 @@
  */
 // @ts-nocheck
 
+import {
+  invokeWithTimeout,
+  isUsableBearerToken,
+  pickBootWsUrl,
+  BOOT_INVOKE_MS,
+} from "../tauriBoot"
+
 /** Max stall-recovery rounds before surfacing "Reattach stalled". 3 covers one
  *  tombstone advance + one validation miss + one final retry. */
 const MAX_REATTACH_ROUNDS = 3
@@ -216,8 +223,13 @@ export function createWire(ctx: WireCtx) {
     },
 
     updateStatus(statusClass, text) {
-      DOM.connectionStatus.className = statusClass;
-      DOM.connectionStatus.textContent = text;
+      // Null-safe: a missing #connection-status must never abort connect()
+      // before new WebSocket (that left the pill on HTML "Disconnected" and
+      // MoonBar on default "waking up…" with zero SYN).
+      if (DOM.connectionStatus) {
+        DOM.connectionStatus.className = statusClass;
+        DOM.connectionStatus.textContent = text;
+      }
       // Mirror connection into the animated face + free-space bar mood.
       // `?.` HERE ONLY, and it is not defensive noise. This is the one path
       // that can run BEFORE the deferred module publishes MoonFace/MoonBar:
@@ -727,8 +739,17 @@ export function createWire(ctx: WireCtx) {
       // fell back to the legacy path.
       let routeKey, routeLabel, endpoints, tokenRef, tokenResolveError;
       try {
-        // Prefer the C2 route system when available
-        const bootRoute = await MoonSession.resolveBootRoute(null);
+        // Prefer the C2 route system when available — bounded so a hung
+        // list_routes/load_route invoke cannot strand dial forever.
+        const bootRoute = await Promise.race([
+          MoonSession.resolveBootRoute(null),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`boot-timeout: resolveBootRoute exceeded ${BOOT_INVOKE_MS}ms`)),
+              BOOT_INVOKE_MS,
+            ),
+          ),
+        ]);
         if (bootRoute && Array.isArray(bootRoute.endpoints) && bootRoute.endpoints.length > 0) {
           routeKey = bootRoute.key || bootRoute.routeKey || 'default';
           routeLabel = bootRoute.label || null;
@@ -746,9 +767,28 @@ export function createWire(ctx: WireCtx) {
           // whichever route that is - and returns a Result, so an
           // unresolved sentinel is a real Err, not a client-side guess.
           try {
-            tokenRef = await window.__TAURI__.core.invoke('resolve_route_token', { routeKey });
+            const invoke = window.__TAURI__?.core?.invoke?.bind(window.__TAURI__.core);
+            if (invoke) {
+              tokenRef = await invokeWithTimeout(invoke, 'resolve_route_token', { routeKey });
+            } else if (isUsableBearerToken(State.wsToken) || State.wsToken === '') {
+              tokenRef = State.wsToken;
+            } else {
+              tokenResolveError = 'not-paired: no Tauri invoke for resolve_route_token';
+            }
           } catch (e) {
-            tokenResolveError = e instanceof Error ? e.message : String(e);
+            const msg = e instanceof Error ? e.message : String(e);
+            // Only a hung invoke (boot-timeout) falls back to an already-resolved
+            // State.wsToken so dial is not stranded forever. store-read: and
+            // durable taxonomy errors keep the existing #529 refuse/retry path.
+            if (
+              msg.startsWith('boot-timeout:')
+              && (isUsableBearerToken(State.wsToken) || State.wsToken === '')
+            ) {
+              Logger.warn('[PoolEngine] resolve_route_token timed out; using State.wsToken:', msg);
+              tokenRef = State.wsToken;
+            } else {
+              tokenResolveError = msg;
+            }
           }
         } else {
           // Fallback: synthesize a route from the legacy State.wsUrl/wsToken
@@ -859,7 +899,10 @@ export function createWire(ctx: WireCtx) {
       // of leaking a token-bearing URL: nothing downstream of this line ever
       // sees the raw value again, only this already-redacted string.
       this._routeEndpointDisplay = (endpoints && endpoints[0])
-        ? LunaProtocol.describeWsUrl(endpoints[0]) : null;
+        ? (typeof LunaProtocol !== 'undefined' && LunaProtocol && typeof LunaProtocol.describeWsUrl === 'function'
+            ? LunaProtocol.describeWsUrl(endpoints[0])
+            : String(endpoints[0]).split('?')[0])
+        : null;
       // ROOT FIX (plan Step 4 review, chat-only blocker): _teardownAdapter()
       // above does not touch _isConnected (the staleness flagged since Step
       // 1b) - without this line, _isConnected still held the PREVIOUS
@@ -1152,9 +1195,12 @@ export function createWire(ctx: WireCtx) {
     },
 
     updateStatus(statusClass, text) {
-      // Identical contract to WebSocketEngine.updateStatus
-      DOM.connectionStatus.className = statusClass;
-      DOM.connectionStatus.textContent = text;
+      // Identical contract to WebSocketEngine.updateStatus (null-safe so a
+      // missing pill never aborts dial before new WebSocket).
+      if (DOM.connectionStatus) {
+        DOM.connectionStatus.className = statusClass;
+        DOM.connectionStatus.textContent = text;
+      }
       // `?.` HERE ONLY, and it is not defensive noise. This is the one path
       // that can run BEFORE the deferred module publishes MoonFace/MoonBar:
       // loadConnectionAndConnect() is a classic-top-level call whose
@@ -1603,10 +1649,14 @@ export function createWire(ctx: WireCtx) {
     // ── Step 0: one-time migration from moon-connection.json → client.toml ─
     // Runs before resolveBootRoute (inside PoolEngine.connect) so client.toml
     // exists when C2 reads it. Idempotent: Rust returns early when client.toml
-    // already exists. Non-blocking: failure logs and falls through to legacy path.
+    // already exists. BOUNDED: a hung migrate must not block dial forever
+    // (Round-3 Mac: zero SYN while MoonBar stayed on default "waking up…").
     try {
       if (window.__TAURI__ && window.__TAURI__.core) {
-        await window.__TAURI__.core.invoke('migrate_legacy_connection');
+        await invokeWithTimeout(
+          (cmd, args) => window.__TAURI__.core.invoke(cmd, args),
+          'migrate_legacy_connection',
+        );
       }
     } catch (e) {
       Logger.warn('[boot] legacy migration skipped:', e);
@@ -1614,7 +1664,10 @@ export function createWire(ctx: WireCtx) {
 
     if (window.__TAURI__ && window.__TAURI__.core) {
       try {
-        const conn = await window.__TAURI__.core.invoke('load_connection');
+        const conn = await invokeWithTimeout(
+          (cmd, args) => window.__TAURI__.core.invoke(cmd, args),
+          'load_connection',
+        );
         if (conn) {
           // File keys are camelCase (wsUrl/wsToken), matching save_connection.
           if (typeof conn.wsUrl === 'string' && conn.wsUrl) loadedUrl = conn.wsUrl;
@@ -1633,9 +1686,12 @@ export function createWire(ctx: WireCtx) {
     // (read-only after C2 — writes removed from index.html), then default.
     // Route-keyed resolution (MoonSession.resolveBootRoute) is the hub's
     // concern; the chat window reads the URL the hub persisted via
-    // moon-connection.json / load_connection.
-    const legacyUrlCache = localStorage.getItem('luna_ws_url');
-    State.wsUrl = loadedUrl || legacyUrlCache || 'ws://127.0.0.1:4753/ui';
+    // moon-connection.json / load_connection. pickBootWsUrl keeps jax-box
+    // (or any cached luna_ws_url) when load_connection times out.
+    State.wsUrl = pickBootWsUrl(loadedUrl);
+    // Pass tokenRef through verbatim (including "legacy" / scheme refs) so
+    // PoolEngine's F2 guard can refuse dial rather than shipping a sentinel
+    // as a bearer. Only a missing token becomes "".
     State.wsToken = loadedToken !== null ? loadedToken : '';
 
     // Establish the initial WebSocket connection!

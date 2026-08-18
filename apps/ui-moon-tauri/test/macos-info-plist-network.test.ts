@@ -85,10 +85,14 @@ describe("macOS Info.plist — Local Network + cleartext WS carve-out", () => {
     expect(plist).not.toContain("NSAllowsArbitraryLoadsInWebContent")
   })
 
-  it("tauri CSP connect-src still allows ws: and wss:", () => {
+  it("tauri CSP connect-src allows ws/wss and explicit ipc: for boot invokes", () => {
     const csp = conf.app.security.csp
     expect(csp).toMatch(/connect-src[^;]*\bws:/)
     expect(csp).toMatch(/connect-src[^;]*\bwss:/)
+    // Without ipc:, a hung/blocked Tauri invoke never reaches new WebSocket
+    // (Round-3: Disconnected + waking up + zero SYN while luna_ws_url=jax-box).
+    expect(csp).toMatch(/connect-src[^;]*\bipc:/)
+    expect(csp).toMatch(/connect-src[^;]*http:\/\/ipc\.localhost/)
   })
 })
 

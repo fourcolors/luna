@@ -83,3 +83,21 @@ Expect:
 
 Then launch the app, Allow Local Network, confirm Connected on
 `ws://jax-box:4753/ui` — do not retarget localhost.
+
+## Round 3 — boot must reach `new WebSocket` (in-app)
+
+Even with a bound plist + Local Network on, the chat UI can stay on HTML
+**Disconnected** + MoonBar default **“waking up…”** with **zero** SYN from
+WebKit.Networking if boot awaits `migrate_legacy_connection` /
+`load_connection` / `resolveBootRoute` forever before `connect()`.
+
+In-app fix (not another plist string):
+
+- `frontend-react/src/tauriBoot.ts` — `invokeWithTimeout` (2s) + `pickBootWsUrl`
+  keeps `luna_ws_url` (e.g. `ws://jax-box:4753/ui`) when invoke times out
+- hub `loadSettings` + chat `loadConnectionAndConnect` / PoolEngine use it
+- CSP `connect-src` explicitly includes `ipc:` / `http://ipc.localhost` so boot
+  invokes are not CSP-starved
+
+What unblocks the SYN: boot reaches `new WebSocket(...)` instead of hanging
+on a Tauri invoke before the constructor runs.
