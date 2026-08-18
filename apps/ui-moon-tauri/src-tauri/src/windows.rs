@@ -787,11 +787,15 @@ pub(crate) fn reclamp_if_stranded(win: &tauri::WebviewWindow) {
 /// Moon's own restore just did. Best-effort, like the rest of the native
 /// chrome finalization.
 ///
-/// Binding verified against the objc2-app-kit 0.3.2 crate source (safe
-/// `pub fn setRestorable(&self, bool)` in generated/NSWindowRestoration.rs,
-/// gated on the `NSWindowRestoration` + `NSResponder` features now enabled in
-/// Cargo.toml) — but NOT compile-checked on a Mac from this Linux sandbox
-/// (same caveat as `capture_window_screenshot` above).
+/// Binding verified two ways from the Linux dev sandbox: against the
+/// objc2-app-kit 0.3.2 crate source (safe `pub fn setRestorable(&self, bool)`
+/// in generated/NSWindowRestoration.rs, gated on the `NSWindowRestoration` +
+/// `NSResponder` features now enabled in Cargo.toml), and TYPE-CHECKED for
+/// the real Apple target (`cargo check --target aarch64-apple-darwin` on an
+/// isolated probe crate pinning the same versions/features, exercising this
+/// exact call plus configure_orb_window's collection-behavior union and
+/// activate_app's activation). A full macOS build/link and the live Stage
+/// Manager behavior check still require a real Mac.
 #[cfg(target_os = "macos")]
 pub(crate) fn disable_window_state_restoration(window: &tauri::WebviewWindow) {
     let _ = with_appkit_main_thread(window.clone(), |win| {
