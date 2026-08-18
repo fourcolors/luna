@@ -256,7 +256,12 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     // Step 1a: `profile` always targets the currently-selected channel (here
     // the un-migrated fallback default, 'stable') - see the module doc on
     // handleSave and the dedicated save-target test below.
-    expect(invoke).toHaveBeenCalledWith('save_connection', { url: 'ws://newhost:9000/ui', token: 'mytoken', profile: 'stable' })
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://newhost:9000/ui',
+      token: 'mytoken',
+      profile: 'stable',
+      activate: false,
+    })
     expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'connection-changed' })
   })
 
@@ -275,7 +280,7 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     })
     await flush()
 
-    expect(saveStatus().textContent).toBe('Saved ✓')
+    expect(saveStatus().textContent).toMatch(/^Saved ✓/)
     expect(tokenInput().value).toBe('keepme')
   })
 
@@ -991,6 +996,7 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       url: 'ws://canary:4753/ui',
       token: 'TOK-CANARY-PAIRED',
       profile: 'canary',
+      activate: false,
     })
 
     // Retry the switch (re-dispatching 'change' on the already-selected

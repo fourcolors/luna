@@ -69,6 +69,95 @@ export const lunaEnvPath = (homeDir: string): string => join(lunaDir(homeDir), "
 export const moonConnectionPath = (homeDir: string): string =>
   join(lunaDir(homeDir), "moon-connection.json")
 
+export const clientTomlPath = (homeDir: string): string => join(lunaDir(homeDir), "client.toml")
+
+/**
+ * Escape a string for a TOML basic string (double-quoted). Pair URLs are
+ * ascii ws(s)://… so this is defensive rather than a full TOML encoder.
+ */
+const tomlBasicString = (value: string): string =>
+  `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+
+/**
+ * Upsert `route.<profile>.endpoints[0]` in ~/.luna/client.toml (what Moon
+ * dials after C3). No-op when the file is absent — pre-migration Moon still
+ * reads moon-connection.json, and migrate_legacy_connection will snapshot
+ * the just-written URL on first boot.
+ *
+ * When `setDefault` is true, also sets top-level `default = "<profile>"`
+ * (luna pair --activate). Creates a missing `[route.<profile>]` table with
+ * `tokenRef = "legacy"` rather than inventing a whole client.toml.
+ */
+export const upsertClientTomlEndpoint = (
+  homeDir: string,
+  profile: string,
+  url: string,
+  options?: { readonly setDefault?: boolean },
+): void => {
+  const path = clientTomlPath(homeDir)
+  if (!existsSync(path)) return
+
+  const setDefault = options?.setDefault === true
+  const lines = readFileSync(path, "utf8").replace(/\n$/, "").split("\n")
+  const header = `[route.${profile}]`
+  const urlLit = tomlBasicString(url)
+
+  if (setDefault) {
+    let defaultIdx = lines.findIndex((l) => /^default\s*=/.test(l))
+    if (defaultIdx >= 0) {
+      lines[defaultIdx] = `default = ${tomlBasicString(profile)}`
+    } else {
+      const versionIdx = lines.findIndex((l) => /^fileFormatVersion\s*=/.test(l))
+      const insertAt = versionIdx >= 0 ? versionIdx + 1 : 0
+      lines.splice(insertAt, 0, `default = ${tomlBasicString(profile)}`)
+    }
+  }
+
+  let routeStart = lines.findIndex((l) => l.trim() === header)
+  if (routeStart < 0) {
+    if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("")
+    lines.push(header)
+    lines.push(`endpoints = [${urlLit}]`)
+    lines.push(`label = ${tomlBasicString(profile)}`)
+    lines.push(`tokenRef = "legacy"`)
+  } else {
+    let routeEnd = lines.length
+    for (let i = routeStart + 1; i < lines.length; i++) {
+      if (/^\s*\[/.test(lines[i]!)) {
+        routeEnd = i
+        break
+      }
+    }
+    const block = lines.slice(routeStart + 1, routeEnd)
+    let endpointsIdx = block.findIndex((l) => /^endpoints\s*=/.test(l))
+    let hasLabel = block.some((l) => /^label\s*=/.test(l))
+    let hasTokenRef = block.some((l) => /^tokenRef\s*=/.test(l))
+
+    if (endpointsIdx >= 0) {
+      const existing = block[endpointsIdx]!
+      // Multi-line arrays are rare in our fixtures; handle single-line form.
+      const match = existing.match(/^endpoints\s*=\s*\[(.*)\]\s*$/)
+      if (match) {
+        const parts = match[1]!
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p.length > 0)
+        const rest = parts.slice(1)
+        block[endpointsIdx] = `endpoints = [${[urlLit, ...rest].join(", ")}]`
+      } else {
+        block[endpointsIdx] = `endpoints = [${urlLit}]`
+      }
+    } else {
+      block.unshift(`endpoints = [${urlLit}]`)
+    }
+    if (!hasLabel) block.push(`label = ${tomlBasicString(profile)}`)
+    if (!hasTokenRef) block.push(`tokenRef = "legacy"`)
+    lines.splice(routeStart + 1, routeEnd - routeStart - 1, ...block)
+  }
+
+  const dir = ensureLunaDir(homeDir)
+  writeAtomic0600(dir, path, `${lines.join("\n")}\n`)
+}
 /**
  * Replace-or-append a single `KEY=value` line in ~/.luna/.env, preserving all
  * other lines. Mirrors install.sh upsert_env: match is a line whose START is

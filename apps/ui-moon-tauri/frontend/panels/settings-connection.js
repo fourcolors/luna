@@ -615,7 +615,7 @@
           // longer keeps in sync with the selector, so a token typed while
           // viewing an unpaired route would silently land under the WRONG
           // profile.
-          await ctx.invoke('save_connection', { url: url, token: token, profile: channelSelect.value });
+          await ctx.invoke('save_connection', { url: url, token: token, profile: channelSelect.value, activate: false });
           setSaveStatus('Saved ✓', 'ok');
           // Notify hub so it reconnects with the new credentials.
           ctx.invoke('hub_event', { name: 'connection-changed' }).catch(function () {});
