@@ -227,7 +227,7 @@ describe('settings.connection panel', () => {
     // Step 1a: `profile` always targets the currently-selected channel (here
     // the un-migrated fallback default, 'stable') - see the module comment
     // on the save handler and the dedicated save-target test below.
-    expect(invoke).toHaveBeenCalledWith('save_connection', { url: 'ws://newhost:9000/ui', token: 'mytoken', profile: 'stable' })
+    expect(invoke).toHaveBeenCalledWith('save_connection', { url: 'ws://newhost:9000/ui', token: 'mytoken', profile: 'stable', activate: false })
     expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'connection-changed' })
   })
 
@@ -248,7 +248,7 @@ describe('settings.connection panel', () => {
     await flush()
 
     await vi.waitFor(() =>
-      expect(document.getElementById('save-connection-status')!.textContent).toBe('Saved ✓'))
+      expect(document.getElementById('save-connection-status')!.textContent).toMatch(/^Saved ✓/))
     // Token field must NOT be wiped — engine never clears it on save
     expect(tokenInput.value).toBe('keepme')
   })
@@ -1044,6 +1044,7 @@ describe('settings.connection - Step 1a: the guarded route switch', () => {
       url: 'ws://canary:4753/ui',
       token: 'TOK-CANARY-PAIRED',
       profile: 'canary',
+      activate: false,
     })
 
     // Retry the switch (re-dispatching 'change' on the already-selected

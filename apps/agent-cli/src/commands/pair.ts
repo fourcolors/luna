@@ -7,7 +7,7 @@ import {
   normalizeProfileName,
   profileEnvPrefix,
 } from "../chat/config.js"
-import { upsertEnv, writeMoonConnection } from "../chat/pair-writers.js"
+import { upsertClientTomlEndpoint, upsertEnv, writeMoonConnection } from "../chat/pair-writers.js"
 import {
   type ProbeOutcomes,
   redactUrl,
@@ -20,13 +20,17 @@ import {
  * `luna pair` — one command to point BOTH Mac clients (the `luna` CLI and the
  * Moon widget) at a remote Luna server and verify the connection.
  *
- * It writes TWO config files, each holding the secret WS token at mode 0600:
+ * It writes THREE config files that clients actually read, each holding the
+ * secret WS token at mode 0600 (or pointing at it via tokenRef=legacy):
  *   1. ~/.luna/.env — LUNA_<PROFILE>_WS_URL + LUNA_<PROFILE>_UI_WS_TOKEN, using
  *      the SAME profile→env-key mapping `luna chat`/`luna doctor` read, so the
  *      paired connection IS what those commands use. (Keys come from config.ts's
  *      profileEnvPrefix — never hardcoded here.)
- *   2. ~/.luna/moon-connection.json — {"wsUrl","wsToken"} (camelCase) byte-
- *      matching what Moon's Rust save_connection/load_connection use.
+ *   2. ~/.luna/moon-connection.json — profiles.<name> {wsUrl,wsToken} matching
+ *      what Moon's Rust save_connection/load_connection use.
+ *   3. ~/.luna/client.toml — route.<profile>.endpoints[0] (and default when
+ *      --activate), because after C3 Moon dials endpoints[0], not moon-connection.
+ *      No-op when client.toml is absent (pre-migration).
  *
  * After writing, it VERIFIES by running the doctor probe against the just-paired
  * profile and prints WHICH layer (if any) failed — so a bad pairing surfaces
@@ -211,6 +215,9 @@ export const runPair = async (
   upsertEnv(deps.homeDir, tokenKey, token)
   const activate = input.activate === true
   writeMoonConnection(deps.homeDir, url, token, { profile: profileName, activate })
+  // Same write Moon's Settings Save performs: keep client.toml endpoints[0]
+  // in lockstep so a post-C3 retarget actually moves the dial URL.
+  upsertClientTomlEndpoint(deps.homeDir, profileName, url, { setDefault: activate })
 
   // Redact any ?token= in the displayed URL (a user could pass the token in the
   // url query form). Same leak class already fixed in doctor's output.
@@ -218,6 +225,7 @@ export const runPair = async (
   lines.push(`  token: ${redactToken(token)}`)
   lines.push(`  wrote ~/.luna/.env (${urlKey}, ${tokenKey})`)
   lines.push(`  wrote ~/.luna/moon-connection.json (profiles.${profileName})`)
+  lines.push(`  updated ~/.luna/client.toml route.${profileName}.endpoints (when present)`)
   if (activate) {
     lines.push(`  set the Moon's active channel to '${profileName}'`)
   } else {
@@ -256,7 +264,7 @@ export const pairCommand = defineCommand({
   meta: {
     name: "pair",
     description:
-      "Point both Luna clients (CLI + Moon) at a remote server and verify: writes ~/.luna/.env and ~/.luna/moon-connection.json, then runs the doctor preflight",
+      "Point both Luna clients (CLI + Moon) at a remote server and verify: writes ~/.luna/.env, moon-connection.json, and client.toml endpoints, then runs the doctor preflight",
   },
   args: {
     url: { type: "string", description: "UI WebSocket URL, e.g. wss://host:4753/ui" },

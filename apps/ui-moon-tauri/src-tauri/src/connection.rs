@@ -238,11 +238,20 @@ fn persist_profiles(
 /// BEFORE persisting the fresh store, and log to stderr, so pairing genuinely
 /// fixes a garbled store instead of quietly destroying data alongside it.
 /// This closes #532's data-loss half; the distinct-pill half stays open.
+///
+/// Unified write (pair/Save parity): after moon-connection.json, also upsert
+/// `~/.luna/.env` (`LUNA_<PROFILE>_WS_URL` + `_UI_WS_TOKEN`) and — when
+/// `client.toml` already exists — `route.<profile>.endpoints[0]`. When
+/// `activate` is true, also set moon-connection `activeProfile` and
+/// client.toml `default` to the target profile. Order is load-bearing: creds
+/// first, then the dial URL Moon reads from client.toml last, so a mid-write
+/// failure leaves Moon on the old host rather than half-switched.
 fn save_connection_in(
     luna_dir: &std::path::Path,
     url: &str,
     token: &str,
     profile: Option<&str>,
+    activate: bool,
 ) -> Result<(), String> {
     let path = luna_dir.join("moon-connection.json");
 
@@ -251,6 +260,7 @@ fn save_connection_in(
     // from an empty profile set. Present-but-unparseable ALSO starts from an
     // empty profile set, but only after backing the original bytes up.
     let raw_contents = std::fs::read_to_string(&path).ok();
+    let had_file = raw_contents.is_some();
     let (active, mut profiles) = match &raw_contents {
         None => (DEFAULT_PROFILE.to_string(), serde_json::Map::new()),
         Some(contents) => match serde_json::from_str::<serde_json::Value>(contents) {
@@ -292,18 +302,79 @@ fn save_connection_in(
         .unwrap_or_else(|| active.clone());
 
     profiles.insert(
-        target,
+        target.clone(),
         serde_json::json!({ "wsUrl": url, "wsToken": token }),
     );
 
-    // Always write the NEW format. activeProfile is unchanged here (saving creds
-    // for a channel does not switch the active channel).
+    // Activate only when asked (or first-ever file) — mirrors luna pair's
+    // --activate contract so pairing/saving a non-active channel never
+    // hijacks the running Moon.
+    let next_active = if !had_file || activate {
+        target.clone()
+    } else {
+        active
+    };
+
     let body = serde_json::to_string(&serde_json::json!({
-        "activeProfile": active,
+        "activeProfile": next_active,
         "profiles": serde_json::Value::Object(profiles),
     }))
     .map_err(|e| format!("serialize failed: {}", e))?;
-    write_atomic_0600(&path, &body)
+    write_atomic_0600(&path, &body)?;
+
+    // CLI parity: luna chat reads ~/.luna/.env, not moon-connection.json.
+    upsert_env_keys_in(luna_dir, &target, url, token)?;
+
+    // Moon dials client.toml endpoints[0] after C3 — rewrite it here so a
+    // retarget actually moves the socket (migration is idempotent once the
+    // file exists, so this is the ONLY ongoing writer for endpoints).
+    client_config::upsert_route_endpoint_in(luna_dir, &target, url, activate)?;
+
+    Ok(())
+}
+
+/// `LUNA_<PROFILE>_WS_URL` / `_UI_WS_TOKEN` — same mapping as agent-cli
+/// `profileEnvPrefix` (`LUNA_` + uppercased profile with `-` → `_`).
+fn profile_env_prefix(profile: &str) -> String {
+    let upper = profile.to_uppercase().replace('-', "_");
+    format!("LUNA_{upper}")
+}
+
+/// Replace-or-append KEY=value lines in `<luna_dir>/.env` (atomic 0600).
+fn upsert_env_line_in(luna_dir: &std::path::Path, key: &str, value: &str) -> Result<(), String> {
+    let path = luna_dir.join(".env");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefix = format!("{key}=");
+    let new_line = format!("{key}={value}");
+    let mut replaced = false;
+    let mut out: Vec<String> = existing
+        .lines()
+        .map(|line| {
+            if !replaced && line.starts_with(&prefix) {
+                replaced = true;
+                new_line.clone()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    if !replaced {
+        out.push(new_line);
+    }
+    let contents = format!("{}\n", out.join("\n"));
+    write_atomic_0600(&path, &contents)
+}
+
+fn upsert_env_keys_in(
+    luna_dir: &std::path::Path,
+    profile: &str,
+    url: &str,
+    token: &str,
+) -> Result<(), String> {
+    let prefix = profile_env_prefix(profile);
+    upsert_env_line_in(luna_dir, &format!("{prefix}_WS_URL"), url)?;
+    upsert_env_line_in(luna_dir, &format!("{prefix}_UI_WS_TOKEN"), token)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -311,11 +382,18 @@ pub(crate) fn save_connection(
     url: String,
     token: String,
     profile: Option<String>,
+    activate: Option<bool>,
 ) -> Result<(), String> {
     let luna_dir = std::env::var("HOME")
         .map_err(|e| format!("HOME not set: {e}"))
         .map(|h| std::path::PathBuf::from(h).join(".luna"))?;
-    save_connection_in(&luna_dir, &url, &token, profile.as_deref())
+    save_connection_in(
+        &luna_dir,
+        &url,
+        &token,
+        profile.as_deref(),
+        activate.unwrap_or(false),
+    )
 }
 
 /// Step 1c Part 3d: seed `moon-connection.json` directly from a `~/.luna/.env`
@@ -354,7 +432,9 @@ pub(crate) fn seed_connection_from_env_in(
         return Ok(false);
     }
 
-    save_connection_in(luna_dir, url, token, Some(active_profile))?;
+    // Seed must not hijack activeProfile / client.toml default — only fill
+    // the missing creds slot (activate=false).
+    save_connection_in(luna_dir, url, token, Some(active_profile), false)?;
     Ok(true)
 }
 
@@ -839,7 +919,7 @@ mod tests {
         let garbage = "{ this is not valid json, and it used to hold real creds";
         std::fs::write(luna.join("moon-connection.json"), garbage).expect("seed corrupt file");
 
-        save_connection_in(&luna, "ws://canary:4753/ui", "canary-tok", Some("canary"))
+        save_connection_in(&luna, "ws://canary:4753/ui", "canary-tok", Some("canary"), false)
             .expect("save must succeed even against a corrupt store");
 
         // The fresh store parses and carries the new save.
@@ -879,13 +959,13 @@ mod tests {
 
         let garbage_one = "{ first corrupt write, garbage-one";
         std::fs::write(luna.join("moon-connection.json"), garbage_one).expect("seed first corrupt file");
-        save_connection_in(&luna, "ws://canary:4753/ui", "tok-1", Some("canary")).expect("save #1");
+        save_connection_in(&luna, "ws://canary:4753/ui", "tok-1", Some("canary"), false).expect("save #1");
 
         // Corrupt the FRESH store again immediately (well within the same
         // wall-clock second on any real machine) and save again.
         let garbage_two = "{ second corrupt write, garbage-two";
         std::fs::write(luna.join("moon-connection.json"), garbage_two).expect("seed second corrupt file");
-        save_connection_in(&luna, "ws://canary:4753/ui", "tok-2", Some("canary")).expect("save #2");
+        save_connection_in(&luna, "ws://canary:4753/ui", "tok-2", Some("canary"), false).expect("save #2");
 
         let mut backups: Vec<_> = std::fs::read_dir(&luna)
             .unwrap()
@@ -923,7 +1003,7 @@ mod tests {
     fn save_connection_in_creates_no_backup_when_the_store_is_absent_or_valid() {
         with_tmp_luna_dir(|luna_dir| {
             // Absent case.
-            save_connection_in(&luna_dir, "ws://stable:4753/ui", "tok1", None)
+            save_connection_in(&luna_dir, "ws://stable:4753/ui", "tok1", None, false)
                 .expect("save against an absent store");
             let no_backup = std::fs::read_dir(&luna_dir)
                 .unwrap()
@@ -932,7 +1012,7 @@ mod tests {
             assert!(!no_backup, "an absent store must never produce a backup");
 
             // Valid case: save again against the now-valid store.
-            save_connection_in(&luna_dir, "ws://stable:4753/ui", "tok2", None)
+            save_connection_in(&luna_dir, "ws://stable:4753/ui", "tok2", None, false)
                 .expect("save against a valid store");
             let still_no_backup = std::fs::read_dir(&luna_dir)
                 .unwrap()
@@ -965,13 +1045,66 @@ mod tests {
         });
     }
 
+    /// seed_connection_from_env_in goes through save_connection_in, so when
+    /// client.toml already exists it ALSO rewrites endpoints[0] (same unified
+    /// writer). activate stays false — default / activeProfile are not hijacked.
+    #[test]
+    fn seed_connection_from_env_in_rewrites_client_toml_endpoints_without_activate() {
+        with_tmp_luna_dir(|luna_dir| {
+            let toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://jax-box:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+"#;
+            std::fs::write(luna_dir.join("client.toml"), toml).expect("seed client.toml");
+            // Profile present but uncredentialed → seed is allowed.
+            let moon = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://jax-box:4753/ui","wsToken":""}}}"#;
+            std::fs::write(luna_dir.join("moon-connection.json"), moon).expect("seed moon");
+
+            let seeded = seed_connection_from_env_in(
+                &luna_dir,
+                "stable",
+                "ws://jax-box:4753/ui",
+                "env-seed-tok",
+            )
+            .expect("seed ok");
+            assert!(seeded);
+
+            let cfg = client_config::parse_client_config(
+                &std::fs::read_to_string(luna_dir.join("client.toml")).unwrap(),
+            )
+            .expect("parse");
+            assert_eq!(cfg.default, "stable", "seed must not flip default");
+            assert_eq!(
+                cfg.route.get("stable").unwrap().endpoints,
+                vec!["ws://jax-box:4753/ui".to_string()],
+                "seed rewrites endpoints via the unified writer"
+            );
+            let toml_after = std::fs::read_to_string(luna_dir.join("client.toml")).unwrap();
+            assert!(
+                !toml_after.contains("127.0.0.1"),
+                "seed to jax-box must not emit loopback: {toml_after}"
+            );
+            let moon_after: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(luna_dir.join("moon-connection.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(moon_after["activeProfile"], json!("stable"));
+            assert_eq!(moon_after["profiles"]["stable"]["wsToken"], json!("env-seed-tok"));
+        });
+    }
+
     /// Step 1c Part 3d seeding DECISION, scenario two: the active profile
     /// already has creds - the store must be left UNTOUCHED (never clobber a
     /// genuinely-paired profile with a stale or wrong .env value).
     #[test]
     fn seed_connection_from_env_in_leaves_an_already_credentialed_profile_untouched() {
         with_tmp_luna_dir(|luna_dir| {
-            save_connection_in(&luna_dir, "ws://paired.host:4753/ui", "real-paired-tok", Some("stable"))
+            save_connection_in(&luna_dir, "ws://paired.host:4753/ui", "real-paired-tok", Some("stable"), false)
                 .expect("seed a real pairing first");
 
             let seeded = seed_connection_from_env_in(
@@ -1001,7 +1134,7 @@ mod tests {
     #[test]
     fn seed_connection_from_env_in_seeds_a_specific_unpaired_profile_even_when_others_exist() {
         with_tmp_luna_dir(|luna_dir| {
-            save_connection_in(&luna_dir, "ws://stable.host:4753/ui", "stable-tok", Some("stable"))
+            save_connection_in(&luna_dir, "ws://stable.host:4753/ui", "stable-tok", Some("stable"), false)
                 .expect("seed stable first");
 
             let seeded = seed_connection_from_env_in(
@@ -1451,6 +1584,166 @@ tokenRef = "legacy"
             assert_ne!(
                 result, "stable-token-WRONG-for-canary",
                 "REGRESSION: resolved the active profile's token instead of the route's own"
+            );
+        });
+    }
+
+    /// PRIMARY: machine=jax-box Save writes ws://jax-box:4753/ui into all three
+    /// stores Moon + luna chat read, and never emits 127.0.0.1. This is the
+    /// Connected path — not loopback retarget.
+    #[test]
+    fn save_connection_in_jax_box_writes_all_three_stores_never_loopback() {
+        with_tmp_luna_dir(|luna_dir| {
+            // Start from a WRONG host so the write must actually move the dial.
+            let toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://stale-host:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+"#;
+            std::fs::write(luna_dir.join("client.toml"), toml).expect("seed client.toml");
+            let moon = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://stale-host:4753/ui","wsToken":"old"}}}"#;
+            std::fs::write(luna_dir.join("moon-connection.json"), moon).expect("seed moon");
+
+            save_connection_in(
+                &luna_dir,
+                "ws://jax-box:4753/ui",
+                "jax-tok",
+                Some("stable"),
+                false,
+            )
+            .expect("jax-box save");
+
+            let moon_after: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(luna_dir.join("moon-connection.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                moon_after["profiles"]["stable"]["wsUrl"],
+                json!("ws://jax-box:4753/ui")
+            );
+            assert_eq!(moon_after["profiles"]["stable"]["wsToken"], json!("jax-tok"));
+
+            let env = std::fs::read_to_string(luna_dir.join(".env")).expect(".env");
+            assert!(
+                env.contains("LUNA_STABLE_WS_URL=ws://jax-box:4753/ui"),
+                ".env must dial jax-box: {env}"
+            );
+            assert!(
+                !env.contains("127.0.0.1"),
+                ".env must never emit loopback on a jax-box save: {env}"
+            );
+            assert!(env.contains("LUNA_STABLE_UI_WS_TOKEN=jax-tok"));
+
+            let toml_after = std::fs::read_to_string(luna_dir.join("client.toml")).unwrap();
+            assert!(
+                !toml_after.contains("127.0.0.1"),
+                "client.toml must never emit loopback on a jax-box save: {toml_after}"
+            );
+            let cfg = client_config::parse_client_config(&toml_after).expect("parse");
+            assert_eq!(
+                cfg.route.get("stable").unwrap().endpoints,
+                vec!["ws://jax-box:4753/ui".to_string()]
+            );
+
+            let loaded = load_connection_in(&luna_dir).expect("load");
+            assert_eq!(loaded["wsUrl"], json!("ws://jax-box:4753/ui"));
+            assert_eq!(loaded["wsToken"], json!("jax-tok"));
+        });
+    }
+
+    /// Secondary: unified write can retarget a stale host to jax-box (activate
+    /// flips default). Deliberately does NOT use 127.0.0.1 as the destination.
+    #[test]
+    fn save_connection_in_rewrites_client_toml_env_and_moon_connection() {
+        with_tmp_luna_dir(|luna_dir| {
+            let toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://stale-host:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+
+[route.dev]
+endpoints = ["ws://stale-host:5753/ui"]
+label = "dev"
+tokenRef = "legacy"
+"#;
+            std::fs::write(luna_dir.join("client.toml"), toml).expect("seed client.toml");
+            let moon = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://stale-host:4753/ui","wsToken":"old"},"dev":{"wsUrl":"ws://stale-host:5753/ui","wsToken":"devold"}}}"#;
+            std::fs::write(luna_dir.join("moon-connection.json"), moon).expect("seed moon");
+
+            save_connection_in(
+                &luna_dir,
+                "ws://jax-box:4753/ui",
+                "newtok",
+                Some("stable"),
+                false,
+            )
+            .expect("save without activate");
+
+            let moon_after: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(luna_dir.join("moon-connection.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(moon_after["activeProfile"], json!("stable"));
+            assert_eq!(
+                moon_after["profiles"]["stable"]["wsUrl"],
+                json!("ws://jax-box:4753/ui")
+            );
+            assert_eq!(moon_after["profiles"]["stable"]["wsToken"], json!("newtok"));
+            assert_eq!(
+                moon_after["profiles"]["dev"]["wsToken"],
+                json!("devold"),
+                "other profiles preserved"
+            );
+
+            let env = std::fs::read_to_string(luna_dir.join(".env")).expect(".env written");
+            assert!(env.contains("LUNA_STABLE_WS_URL=ws://jax-box:4753/ui"));
+            assert!(!env.contains("127.0.0.1"), "no loopback: {env}");
+            assert!(env.contains("LUNA_STABLE_UI_WS_TOKEN=newtok"));
+
+            let cfg = client_config::parse_client_config(
+                &std::fs::read_to_string(luna_dir.join("client.toml")).unwrap(),
+            )
+            .expect("client.toml still valid");
+            assert_eq!(cfg.default, "stable", "activate=false leaves default");
+            assert_eq!(
+                cfg.route.get("stable").unwrap().endpoints,
+                vec!["ws://jax-box:4753/ui".to_string()]
+            );
+
+            let loaded = load_connection_in(&luna_dir).expect("load");
+            assert_eq!(loaded["wsUrl"], json!("ws://jax-box:4753/ui"));
+            assert_eq!(loaded["wsToken"], json!("newtok"));
+
+            // activate=true on the other channel flips default + activeProfile.
+            save_connection_in(
+                &luna_dir,
+                "ws://jax-box:5753/ui",
+                "devtok",
+                Some("dev"),
+                true,
+            )
+            .expect("save with activate");
+            let moon2: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(luna_dir.join("moon-connection.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(moon2["activeProfile"], json!("dev"));
+            let cfg2 = client_config::parse_client_config(
+                &std::fs::read_to_string(luna_dir.join("client.toml")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(cfg2.default, "dev");
+            assert_eq!(
+                cfg2.route.get("dev").unwrap().endpoints,
+                vec!["ws://jax-box:5753/ui".to_string()]
             );
         });
     }

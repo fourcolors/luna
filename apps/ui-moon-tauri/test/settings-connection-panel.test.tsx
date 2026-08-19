@@ -256,7 +256,12 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     // Step 1a: `profile` always targets the currently-selected channel (here
     // the un-migrated fallback default, 'stable') - see the module doc on
     // handleSave and the dedicated save-target test below.
-    expect(invoke).toHaveBeenCalledWith('save_connection', { url: 'ws://newhost:9000/ui', token: 'mytoken', profile: 'stable' })
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://newhost:9000/ui',
+      token: 'mytoken',
+      profile: 'stable',
+      activate: false,
+    })
     expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'connection-changed' })
   })
 
@@ -275,8 +280,74 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     })
     await flush()
 
-    expect(saveStatus().textContent).toBe('Saved ✓')
+    expect(saveStatus().textContent).toMatch(/^Saved ✓/)
     expect(tokenInput().value).toBe('keepme')
+  })
+
+  it('machine-target-select offers jax-box + Custom only; jax-box Save never sends loopback', async () => {
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_connection') return { wsUrl: 'ws://stale-host:4753/ui', wsToken: 't' }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+
+    const machine = document.querySelector('[data-testid="machine-target-select"]') as HTMLSelectElement
+    expect(machine).toBeTruthy()
+    const values = Array.from(machine.options).map((o) => o.value)
+    expect(values).toEqual(['jax-box', 'custom'])
+    expect(values).not.toContain('this-mac')
+
+    act(() => {
+      machine.value = 'jax-box'
+      machine.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(urlInput().value).toBe('ws://jax-box:4753/ui')
+    expect(urlInput().value).not.toContain('127.0.0.1')
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://jax-box:4753/ui',
+      token: 't',
+      profile: 'stable',
+      activate: false,
+    })
+    const saveCall = invoke.mock.calls.find((c: unknown[]) => c[0] === 'save_connection')
+    expect(JSON.stringify(saveCall)).not.toContain('127.0.0.1')
+  })
+
+  it('activate-on-save checkbox passes activate:true to save_connection', async () => {
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_connection') {
+        return { wsUrl: 'ws://jax-box:4753/ui', wsToken: 'tok' }
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+
+    const activate = document.querySelector('[data-testid="activate-on-save"]') as HTMLInputElement
+    expect(activate).toBeTruthy()
+    expect(activate.checked).toBe(false)
+    act(() => {
+      activate.click()
+    })
+    await flush()
+    expect(activate.checked).toBe(true)
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith(
+      'save_connection',
+      expect.objectContaining({
+        url: 'ws://jax-box:4753/ui',
+        token: 'tok',
+        profile: 'stable',
+        activate: true,
+      }),
+    )
   })
 
   it('save button shows error on save_connection failure', async () => {
@@ -991,6 +1062,7 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
       url: 'ws://canary:4753/ui',
       token: 'TOK-CANARY-PAIRED',
       profile: 'canary',
+      activate: false,
     })
 
     // Retry the switch (re-dispatching 'change' on the already-selected

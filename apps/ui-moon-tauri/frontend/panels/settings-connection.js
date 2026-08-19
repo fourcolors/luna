@@ -269,12 +269,61 @@
       effortRow.appendChild(effortSelect);
       el.appendChild(effortRow);
 
+      // ── Machine target (jax-box / Custom) — This Mac CUT until jax-box Connected ─
+
+      // Gate: do not offer This Mac → 127.0.0.1 as the path to Connected.
+      var THIS_MAC_TARGET_ENABLED = false;
+      function portForChannel(channel) {
+        return channel === 'dev' ? 5753 : 4753;
+      }
+      function urlForMachineTarget(target, channel) {
+        var port = portForChannel(channel);
+        if (target === 'this-mac') {
+          if (!THIS_MAC_TARGET_ENABLED) return 'ws://jax-box:' + port + '/ui';
+          return 'ws://127.0.0.1:' + port + '/ui';
+        }
+        return 'ws://jax-box:' + port + '/ui';
+      }
+      function detectMachineTarget(url) {
+        var trimmed = (url || '').trim();
+        if (/^wss?:\/\/jax-box(?:\.local)?:\d+\/ui\/?$/i.test(trimmed)) return 'jax-box';
+        if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) {
+          return THIS_MAC_TARGET_ENABLED ? 'this-mac' : 'custom';
+        }
+        return 'custom';
+      }
+      var DEFAULT_WS_URL = urlForMachineTarget('jax-box', 'stable');
+
+      var machineRow = splitRow();
+      var machineInfo = document.createElement('div');
+      machineInfo.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;';
+      machineInfo.appendChild(makeLabel('Machine'));
+      machineInfo.appendChild(makeDesc('Which box Moon and luna chat dial — jax-box (remote default) or a custom URL. This Mac (127.0.0.1) is disabled until jax-box Connected is proven.'));
+      var machineSelect = makeSelect('machine-target-select');
+      var machineOpts = [
+        { value: 'jax-box', label: 'jax-box (default)' },
+        { value: 'custom', label: 'Custom URL' },
+      ];
+      if (THIS_MAC_TARGET_ENABLED) {
+        machineOpts.splice(1, 0, { value: 'this-mac', label: 'This Mac' });
+      }
+      machineOpts.forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        machineSelect.appendChild(opt);
+      });
+      machineSelect.value = 'jax-box';
+      machineRow.appendChild(machineInfo);
+      machineRow.appendChild(machineSelect);
+      el.appendChild(machineRow);
+
       // ── WS URL input ─────────────────────────────────────────────────────
 
       var urlRow = sectionRow();
       urlRow.appendChild(makeLabel('WebSocket Server URL'));
       urlRow.appendChild(makeDesc('Luna Central server WebSocket address (for the selected channel)'));
-      var wsUrlInput = makeTextInput('ws-url-input', 'text', 'ws://127.0.0.1:4753/ui');
+      var wsUrlInput = makeTextInput('ws-url-input', 'text', DEFAULT_WS_URL);
       urlRow.appendChild(wsUrlInput);
       el.appendChild(urlRow);
 
@@ -286,6 +335,22 @@
       var wsTokenInput = makeTextInput('ws-token-input', 'password', 'Enter token (optional)...');
       tokenRow.appendChild(wsTokenInput);
       el.appendChild(tokenRow);
+
+      // ── Activate-on-save (mirrors luna pair --activate) ──────────────────
+
+      var activateRow = splitRow();
+      var activateInfo = document.createElement('div');
+      activateInfo.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;';
+      activateInfo.appendChild(makeLabel('Activate this channel'));
+      activateInfo.appendChild(makeDesc('Also switch Moon\'s active channel (same as luna pair --activate). Leave off to update creds without hijacking the other channel.'));
+      var activateCheckbox = document.createElement('input');
+      activateCheckbox.type = 'checkbox';
+      activateCheckbox.id = 'activate-on-save';
+      activateCheckbox.setAttribute('data-testid', 'activate-on-save');
+      activateCheckbox.checked = false;
+      activateRow.appendChild(activateInfo);
+      activateRow.appendChild(activateCheckbox);
+      el.appendChild(activateRow);
 
       // ── Save button + status ─────────────────────────────────────────────
 
@@ -310,7 +375,7 @@
       var wizardInfo = document.createElement('div');
       wizardInfo.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;';
       wizardInfo.appendChild(makeLabel('Setup wizard'));
-      wizardInfo.appendChild(makeDesc('Guided setup — install Luna on this Mac, on a server, or point at one already running'));
+      wizardInfo.appendChild(makeDesc('First-run only — install Luna on this Mac, on a server, or point at one already running'));
       var wizardBtn = document.createElement('button');
       wizardBtn.className = 'panel-btn';
       wizardBtn.id = 'open-wizard-btn';
@@ -341,7 +406,10 @@
 
       ctx.invoke('load_connection').then(function (conn) {
         if (!conn) return;
-        if (typeof conn.wsUrl === 'string' && conn.wsUrl) wsUrlInput.value = conn.wsUrl;
+        if (typeof conn.wsUrl === 'string' && conn.wsUrl) {
+          wsUrlInput.value = conn.wsUrl;
+          machineSelect.value = detectMachineTarget(conn.wsUrl);
+        }
         if (typeof conn.wsToken === 'string') wsTokenInput.value = conn.wsToken;
       }).catch(function () { /* off-Tauri — inputs stay empty */ });
 
@@ -425,6 +493,7 @@
             if (legacyCreds) {
               wsUrlInput.value = (legacyCreds.wsUrl) ? legacyCreds.wsUrl : '';
               wsTokenInput.value = (typeof legacyCreds.wsToken === 'string') ? legacyCreds.wsToken : '';
+              machineSelect.value = detectMachineTarget(wsUrlInput.value);
             }
             channelSelect._currentChannel = next;
             ctx.invoke('hub_event', { name: 'profile-changed' }).catch(function () {});
@@ -494,6 +563,7 @@
             // describe the wrong server under the new channel's name.
             wsUrlInput.value = routeEndpoint;
             wsTokenInput.value = '';
+            machineSelect.value = detectMachineTarget(wsUrlInput.value);
             setChannelError('"' + next + '" is not paired yet - paste a token and save to pair it');
             channelSelect._currentChannel = next;
           } else {
@@ -555,6 +625,7 @@
         if (switchedCreds) {
           wsUrlInput.value = (switchedCreds.wsUrl) ? switchedCreds.wsUrl : '';
           wsTokenInput.value = (typeof switchedCreds.wsToken === 'string') ? switchedCreds.wsToken : '';
+          machineSelect.value = detectMachineTarget(wsUrlInput.value);
         }
         channelSelect._currentChannel = next;
         setSwitchLock(false);
@@ -602,7 +673,15 @@
       });
 
       saveBtn.addEventListener('click', async function () {
-        var url = wsUrlInput.value.trim() || 'ws://127.0.0.1:4753/ui';
+        // Visible URL is authoritative (named targets fill the field; typing
+        // flips to Custom). Fallback only when empty.
+        var url = wsUrlInput.value.trim();
+        if (!url) {
+          url = machineSelect.value === 'custom'
+            ? DEFAULT_WS_URL
+            : urlForMachineTarget(machineSelect.value, channelSelect.value);
+          wsUrlInput.value = url;
+        }
         var token = wsTokenInput.value.trim();
         saveBtn.disabled = true;
         setSaveStatus('Saving…');
@@ -615,8 +694,16 @@
           // longer keeps in sync with the selector, so a token typed while
           // viewing an unpaired route would silently land under the WRONG
           // profile.
-          await ctx.invoke('save_connection', { url: url, token: token, profile: channelSelect.value });
-          setSaveStatus('Saved ✓', 'ok');
+          //
+          // Unified write (same as React): also upserts ~/.luna/.env and
+          // client.toml endpoints[0]. `activate` mirrors luna pair --activate.
+          await ctx.invoke('save_connection', {
+            url: url,
+            token: token,
+            profile: channelSelect.value,
+            activate: !!activateCheckbox.checked,
+          });
+          setSaveStatus('Saved ✓ — Moon + luna chat will dial this host (reconnect if already connected)', 'ok');
           // Notify hub so it reconnects with the new credentials.
           ctx.invoke('hub_event', { name: 'connection-changed' }).catch(function () {});
           // Engine does NOT wipe the token field after a successful save —
@@ -626,6 +713,21 @@
         } finally {
           saveBtn.disabled = false;
         }
+      });
+
+      machineSelect.addEventListener('change', function () {
+        var target = machineSelect.value;
+        if (target === 'this-mac' && !THIS_MAC_TARGET_ENABLED) {
+          target = 'jax-box';
+          machineSelect.value = 'jax-box';
+        }
+        if (target === 'custom') return;
+        wsUrlInput.value = urlForMachineTarget(target, channelSelect.value);
+      });
+
+      wsUrlInput.addEventListener('input', function () {
+        // Typing freely flips to Custom so the named target doesn't fight the field.
+        machineSelect.value = 'custom';
       });
 
       wizardBtn.addEventListener('click', function () {

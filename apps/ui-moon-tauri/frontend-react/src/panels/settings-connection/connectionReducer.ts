@@ -53,6 +53,54 @@ export interface SaveStatus {
   readonly kind: "ok" | "warn" | null
 }
 
+/** Named machine targets for Settings → Connection. jax-box is the intentional
+ *  remote default (installer/README). Custom is freeform.
+ *
+ *  This Mac (loopback 127.0.0.1) is CUT until jax-box Connected is proven —
+ *  writing loopback into moon-connection / .env / client.toml must not be the
+ *  path operators use to get Connected. */
+export type MachineTarget = "jax-box" | "this-mac" | "custom"
+
+/** Gate for the named This Mac target. Keep false until jax-box Connected is proven. */
+export const THIS_MAC_TARGET_ENABLED = false
+
+export const MACHINE_TARGET_OPTIONS: readonly { value: MachineTarget; label: string }[] = [
+  { value: "jax-box", label: "jax-box (default)" },
+  ...(THIS_MAC_TARGET_ENABLED
+    ? ([{ value: "this-mac", label: "This Mac" }] as const)
+    : []),
+  { value: "custom", label: "Custom URL" },
+]
+
+/** Stable=4753, dev=5753; other channel names default to the stable port. */
+export function portForChannel(channel: string): number {
+  return channel === "dev" ? 5753 : 4753
+}
+
+/** Canonical jax-box stable UI URL — installer / README default. */
+export const JAX_BOX_STABLE_WS_URL = "ws://jax-box:4753/ui"
+
+export function urlForMachineTarget(target: MachineTarget, channel: string): string {
+  const port = portForChannel(channel)
+  if (target === "this-mac") {
+    // While gated, never emit loopback from a named target (adversary HOLD).
+    if (!THIS_MAC_TARGET_ENABLED) return `ws://jax-box:${port}/ui`
+    return `ws://127.0.0.1:${port}/ui`
+  }
+  // jax-box (and any caller that asked for the remote default)
+  return `ws://jax-box:${port}/ui`
+}
+
+export function detectMachineTarget(url: string): MachineTarget {
+  const trimmed = url.trim()
+  if (/^wss?:\/\/jax-box(?:\.local)?:\d+\/ui\/?$/i.test(trimmed)) return "jax-box"
+  // Loopback is Custom while This Mac is cut — do not revive the named option.
+  if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) {
+    return THIS_MAC_TARGET_ENABLED ? "this-mac" : "custom"
+  }
+  return "custom"
+}
+
 export interface ConnectionPanelState {
   readonly channelOptions: readonly ChannelOption[]
   readonly channel: string
@@ -94,6 +142,14 @@ export interface ConnectionPanelState {
   readonly model: string
   readonly effortOptions: readonly string[]
   readonly effort: string
+  /** Named machine target — drives the WS URL for jax-box (This Mac gated off). */
+  readonly machineTarget: MachineTarget
+  /**
+   * When true, Save also sets activeProfile + client.toml default to the
+   * selected channel (mirrors `luna pair --activate`). Off by default so
+   * editing a non-active channel's URL never hijacks the running Moon.
+   */
+  readonly activateOnSave: boolean
   readonly wsUrl: string
   readonly wsToken: string
   readonly saving: boolean
@@ -133,6 +189,8 @@ export type ConnectionPanelAction =
   | { readonly type: "switch-settled" }
   | { readonly type: "model-selected"; readonly model: string; readonly effortOptions: readonly string[]; readonly effort: string }
   | { readonly type: "effort-selected"; readonly effort: string }
+  | { readonly type: "machine-target-selected"; readonly target: MachineTarget }
+  | { readonly type: "activate-on-save-changed"; readonly value: boolean }
   | { readonly type: "url-changed"; readonly value: string }
   | { readonly type: "token-changed"; readonly value: string }
   | { readonly type: "save-start" }
@@ -210,6 +268,8 @@ export function initialConnectionPanelState(): ConnectionPanelState {
     model: savedModel,
     effortOptions,
     effort: savedEffort,
+    machineTarget: "jax-box",
+    activateOnSave: false,
     wsUrl: "",
     wsToken: "",
     saving: false,
@@ -223,10 +283,12 @@ export function reduceConnectionPanel(
 ): ConnectionPanelState {
   switch (action.type) {
     case "connection-loaded": {
+      const wsUrl = action.wsUrl ? action.wsUrl : state.wsUrl
       return {
         ...state,
-        wsUrl: action.wsUrl ? action.wsUrl : state.wsUrl,
+        wsUrl,
         wsToken: action.wsToken !== null ? action.wsToken : state.wsToken,
+        machineTarget: action.wsUrl ? detectMachineTarget(action.wsUrl) : state.machineTarget,
       }
     }
     case "profile-loaded": {
@@ -272,14 +334,40 @@ export function reduceConnectionPanel(
     }
     case "routes-unavailable":
       return { ...state, routesKnown: "none" }
-    case "channel-selected":
-      return { ...state, channel: action.channel, channelError: null }
-    case "profile-switch-succeeded":
-      return { ...state, channelError: null, wsUrl: action.wsUrl, wsToken: action.wsToken }
+    case "channel-selected": {
+      // Named targets recompute the URL for the new channel's port; Custom
+      // keeps whatever the operator typed.
+      const channel = action.channel
+      if (state.machineTarget === "custom") {
+        return { ...state, channel, channelError: null }
+      }
+      return {
+        ...state,
+        channel,
+        channelError: null,
+        wsUrl: urlForMachineTarget(state.machineTarget, channel),
+      }
+    }
+    case "profile-switch-succeeded": {
+      const wsUrl = action.wsUrl
+      return {
+        ...state,
+        channelError: null,
+        wsUrl,
+        wsToken: action.wsToken,
+        machineTarget: detectMachineTarget(wsUrl),
+      }
+    }
     case "profile-switch-failed":
       return { ...state, channelError: action.message, channel: action.revertTo ?? state.channel }
     case "pairing-prompted":
-      return { ...state, channelError: action.message, wsUrl: action.wsUrl, wsToken: "" }
+      return {
+        ...state,
+        channelError: action.message,
+        wsUrl: action.wsUrl,
+        wsToken: "",
+        machineTarget: detectMachineTarget(action.wsUrl),
+      }
     case "switch-started":
       return { ...state, switching: true }
     case "switch-settled":
@@ -288,15 +376,43 @@ export function reduceConnectionPanel(
       return { ...state, model: action.model, effortOptions: action.effortOptions, effort: action.effort }
     case "effort-selected":
       return { ...state, effort: action.effort }
+    case "machine-target-selected": {
+      let target = action.target
+      // Refuse to select This Mac while the gate is off.
+      if (target === "this-mac" && !THIS_MAC_TARGET_ENABLED) {
+        target = "jax-box"
+      }
+      if (target === "custom") {
+        return { ...state, machineTarget: target }
+      }
+      return {
+        ...state,
+        machineTarget: target,
+        wsUrl: urlForMachineTarget(target, state.channel),
+      }
+    }
+    case "activate-on-save-changed":
+      return { ...state, activateOnSave: action.value }
     case "url-changed":
-      return { ...state, wsUrl: action.value }
+      return {
+        ...state,
+        wsUrl: action.value,
+        // Typing freely flips to Custom so the named target doesn't fight the field.
+        machineTarget: "custom",
+      }
     case "token-changed":
       return { ...state, wsToken: action.value }
     case "save-start":
       return { ...state, saving: true, saveStatus: { text: "Saving…", kind: null } }
     case "save-success":
       // Token field is intentionally NOT cleared - see module doc.
-      return { ...state, saveStatus: { text: "Saved ✓", kind: "ok" } }
+      return {
+        ...state,
+        saveStatus: {
+          text: "Saved ✓ — Moon + luna chat will dial this host (reconnect if already connected)",
+          kind: "ok",
+        },
+      }
     case "save-error":
       return { ...state, saveStatus: { text: `Save failed: ${action.message}`, kind: "warn" } }
     case "save-settled":

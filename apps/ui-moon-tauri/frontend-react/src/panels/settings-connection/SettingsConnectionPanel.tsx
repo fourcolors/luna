@@ -39,10 +39,13 @@ import { useLocalStore, useMoonSelector } from "../../state/store"
 import {
   capitalize,
   initialConnectionPanelState,
+  MACHINE_TARGET_OPTIONS,
   reduceConnectionPanel,
+  urlForMachineTarget,
   type ChannelOption,
   type ConnectionPanelAction,
   type ConnectionPanelState,
+  type MachineTarget,
 } from "./connectionReducer"
 import type { PanelCtx } from "../panel-ctx"
 
@@ -51,7 +54,9 @@ import type { PanelCtx } from "../panel-ctx"
  *  `title: 'Connection'`. */
 export const PANEL_TITLE = "Connection"
 
-const DEFAULT_WS_URL = "ws://127.0.0.1:4753/ui"
+/** Fallback when Custom is selected and the URL field is empty. Prefer
+ *  jax-box (installer default) over loopback — This Mac is an explicit target. */
+const DEFAULT_WS_URL = urlForMachineTarget("jax-box", "stable")
 
 /**
  * moon-session.js (frontend/vendor/moon-session.js) attaches this classic
@@ -371,7 +376,13 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
   }
 
   async function handleSave(): Promise<void> {
-    const url = state.wsUrl.trim() || DEFAULT_WS_URL
+    // Visible URL is authoritative: named targets write into the field; typing
+    // flips to Custom. Fallback only when the field is empty.
+    const url =
+      state.wsUrl.trim() ||
+      (state.machineTarget === "custom"
+        ? DEFAULT_WS_URL
+        : urlForMachineTarget(state.machineTarget, state.channel))
     const token = state.wsToken.trim()
     store.dispatch({ type: "save-start" })
     try {
@@ -382,7 +393,16 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
       // Step 1a quarantine no longer keeps in sync with the selector, so a
       // token typed while viewing an unpaired route would silently land
       // under the WRONG profile.
-      await ctx.invoke("save_connection", { url, token, profile: state.channel })
+      //
+      // Unified write: save_connection now also upserts ~/.luna/.env and
+      // client.toml route.<profile>.endpoints[0] so Moon + luna chat agree.
+      // `activate` mirrors `luna pair --activate`.
+      await ctx.invoke("save_connection", {
+        url,
+        token,
+        profile: state.channel,
+        activate: state.activateOnSave,
+      })
       store.dispatch({ type: "save-success" })
       ctx.invoke("hub_event", { name: "connection-changed" }).catch(() => {})
     } catch (e) {
@@ -476,13 +496,42 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           </select>
         </HStack>
 
+        <HStack justify="between" align="center" gap={3}>
+          <VStack gap={0}>
+            <Text type="label">Machine</Text>
+            <Text type="supporting">
+              Which box Moon and luna chat dial — jax-box (remote default) or a custom URL.
+              This Mac (127.0.0.1) is disabled until jax-box Connected is proven.
+            </Text>
+          </VStack>
+          <select
+            id="machine-target-select"
+            data-testid="machine-target-select"
+            value={state.machineTarget}
+            disabled={state.saving || state.switching}
+            onChange={(e) =>
+              store.dispatch({
+                type: "machine-target-selected",
+                target: e.target.value as MachineTarget,
+              })
+            }
+          >
+            {MACHINE_TARGET_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </HStack>
+
         <TextInput
           label="WebSocket Server URL"
           description="Luna Central server WebSocket address (for the selected channel)"
           size="sm"
           value={state.wsUrl}
           onChange={(value) => store.dispatch({ type: "url-changed", value })}
-          placeholder={DEFAULT_WS_URL}
+          placeholder={urlForMachineTarget(
+            state.machineTarget === "custom" ? "jax-box" : state.machineTarget,
+            state.channel,
+          )}
           data-testid="ws-url-input"
         />
 
@@ -496,6 +545,25 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           placeholder="Enter token (optional)..."
           data-testid="ws-token-input"
         />
+
+        <HStack justify="between" align="center" gap={3}>
+          <VStack gap={0}>
+            <Text type="label">Activate this channel</Text>
+            <Text type="supporting">
+              Also switch Moon&apos;s active channel (same as luna pair --activate). Leave off to update creds without hijacking the other channel.
+            </Text>
+          </VStack>
+          <input
+            id="activate-on-save"
+            data-testid="activate-on-save"
+            type="checkbox"
+            checked={state.activateOnSave}
+            disabled={state.saving || state.switching}
+            onChange={(e) =>
+              store.dispatch({ type: "activate-on-save-changed", value: e.target.checked })
+            }
+          />
+        </HStack>
 
         <HStack align="center" gap={3}>
           <Button
@@ -521,7 +589,7 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           <VStack gap={0}>
             <Text type="label">Setup wizard</Text>
             <Text type="supporting">
-              Guided setup - install Luna on this Mac, on a server, or point at one already running
+              First-run only — install Luna on this Mac, on a server, or point at one already running
             </Text>
           </VStack>
           <Button
