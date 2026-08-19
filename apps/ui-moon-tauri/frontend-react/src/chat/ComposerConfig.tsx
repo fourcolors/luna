@@ -1,13 +1,19 @@
 /**
- * ComposerConfig.tsx - the composer's model + effort switcher, a React
- * replacement for chat.html's former inline `ComposerConfig` object (stack23
- * S16b). Owns the model/effort picks (localStorage `luna_model`/`luna_effort`,
- * both PRODUCT SURFACE - do not rename), the per-thread model/effort truth
- * (`State.threadModels` / `State.threadEfforts`, server-reported), and the
- * `set-thread-config` optimistic-revert protocol, and paints the button
- * labels, the two popover menus, and the deferred-apply hint via React
- * instead of the vanilla `_rebuildModelMenu`/`_rebuildEffortMenu`/
- * `_refreshLabels`'s manual `document.createElement` building.
+ * ComposerConfig.tsx - the composer's model + effort + account switcher, a
+ * React replacement for chat.html's former inline `ComposerConfig` object
+ * (stack23 S16b). Owns the model/effort/account picks (localStorage
+ * `luna_model`/`luna_effort`/`luna_account`, all PRODUCT SURFACE - do not
+ * rename), the per-thread model/effort truth (`State.threadModels` /
+ * `State.threadEfforts`, server-reported), and the `set-thread-config`
+ * optimistic-revert protocol, and paints the button labels, the popover
+ * menus, and the deferred-apply hint via React instead of the vanilla
+ * `_rebuildModelMenu`/`_rebuildEffortMenu`/`_refreshLabels`'s manual
+ * `document.createElement` building.
+ *
+ * Account pick: null/Auto omits `accountId` on new-thread so the broker
+ * keeps same-kind failover (#398). A pinned id is sticky (disables
+ * failover for that thread by design). Pill is hidden when fewer than two
+ * Anthropic accounts are advertised.
  *
  * WIRED INTO chat.html via main-chat.tsx's `type="module"` script, which
  * calls `mountComposerConfig` and patches chat.html's `ComposerConfig` bare
@@ -107,6 +113,14 @@ export interface ModelEntry {
   readonly efforts: readonly EffortOption[]
 }
 
+/** Public account summary from the server `account-list` frame (no secrets). */
+export interface AccountSummary {
+  readonly id: string
+  readonly label: string
+  readonly kind: string
+  readonly health: string
+}
+
 /** The live, mutable slice of chat.html's `State` this module reads AND
  * writes. Callers (main-chat.tsx / chat-harness.ts) must return the SAME
  * object reference every other frame handler in chat.html's classic script
@@ -184,6 +198,11 @@ interface ComposerSnapshot {
   /** Element 0 is always the "Default" item (id ""), unconditionally -
    * mirrors the vanilla `_rebuildEffortMenu`'s always-appended `defItem`. */
   readonly effortMenuItems: readonly ComposerMenuItem[]
+  /** True when ≥2 Anthropic accounts are advertised (switcher useful). */
+  readonly accountVisible: boolean
+  readonly accountLabel: string
+  /** Element 0 is always "— Auto —" (id ""), then anthropic rows. */
+  readonly accountMenuItems: readonly ComposerMenuItem[]
   readonly deferredHintVisible: boolean
   readonly deferredHintText: string
 }
@@ -259,6 +278,25 @@ function effortItemLabel(ef: string): string {
   return ef === "ultracode" ? "⚡ Ultracode" : ef.charAt(0).toUpperCase() + ef.slice(1)
 }
 
+function normalizeAccountEntry(entry: unknown): AccountSummary | null {
+  if (!entry || typeof entry !== "object") return null
+  const raw = entry as { id?: unknown; label?: unknown; kind?: unknown; health?: unknown }
+  if (typeof raw.id !== "string" || !raw.id) return null
+  if (typeof raw.kind !== "string" || !raw.kind) return null
+  return {
+    id: raw.id,
+    label: typeof raw.label === "string" && raw.label ? raw.label : raw.id,
+    kind: raw.kind,
+    health: typeof raw.health === "string" && raw.health ? raw.health : "healthy",
+  }
+}
+
+function accountItemLabel(account: AccountSummary): string {
+  const base = account.label || account.id
+  if (account.health === "healthy") return base
+  return `${base} (${account.health.replace(/_/g, " ")})`
+}
+
 // ============================================================================
 // Plain (React-free) external store.
 // ============================================================================
@@ -295,12 +333,16 @@ function createComposerConfigStore(initial: ComposerSnapshot): ComposerConfigSto
 
 function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => void) {
   let models: ModelEntry[] = []
+  /** Anthropic accounts only — composer switcher is for same-kind Anthropic
+   * failover / pin. Other kinds are left to Auto / overflow config. */
+  let accounts: AccountSummary[] = []
   const pendingRevert: PendingRevert = {}
   const deferredHint = { visible: false, text: "" }
   let deferredHintTimer: ReturnType<typeof setTimeout> | undefined
   // Cached, NOT recomputed by computeSnapshot - see refreshEffortVisibility's
   // own comment for the call-site constraint.
   let effortVisible = false
+  let accountVisible = false
 
   /** The model id the composer should DISPLAY: the active thread's actual
    * model when the server has told us (thread-created / thread-list /
@@ -385,13 +427,28 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
     ]
     const effortLabel = effort ? effort.charAt(0).toUpperCase() + effort.slice(1) : "Default"
 
+    const selectedAccountId = localStorage.getItem("luna_account") || ""
+    const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null
+    const accountLabel = selectedAccount ? accountItemLabel(selectedAccount) : "— Auto —"
+    const accountMenuItems: ComposerMenuItem[] = [
+      { id: "", label: "— Auto —", selected: !selectedAccountId },
+      ...accounts.map((a) => ({
+        id: a.id,
+        label: accountItemLabel(a),
+        selected: a.id === selectedAccountId,
+      })),
+    ]
+
     return {
-      composerVisible: models.length > 0,
+      composerVisible: models.length > 0 || accountVisible,
       modelLabel,
       modelMenuItems,
       effortVisible,
       effortLabel,
       effortMenuItems,
+      accountVisible,
+      accountLabel,
+      accountMenuItems,
       deferredHintVisible: deferredHint.visible,
       deferredHintText: deferredHint.text,
     }
@@ -445,6 +502,12 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
     patchSnapshot({ effortMenuItems: fresh.effortMenuItems })
   }
 
+  /** Rebuilds ONLY `accountMenuItems`. */
+  function publishAccountMenuItems(): void {
+    const fresh = computeSnapshot()
+    patchSnapshot({ accountMenuItems: fresh.accountMenuItems })
+  }
+
   /** Rebuilds the model menu items and both button labels, never the effort
    * menu items - the vanilla `applyModels` called ONLY `_rebuildModelMenu()` +
    * `_refreshLabels()`, NEVER `_rebuildEffortMenu()`. This runs on EVERY
@@ -460,6 +523,32 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
       modelLabel: fresh.modelLabel,
       effortLabel: fresh.effortLabel,
       modelMenuItems: fresh.modelMenuItems,
+    })
+  }
+
+  /**
+   * Apply `account-list` summaries. Mirrors ui-shared account-switcher:
+   * no auto-select; preserves `luna_account` across reconnects; clears a
+   * pin only when that id disappears from the list. Pill visible when ≥2
+   * Anthropic accounts (0–1 → hide).
+   */
+  function applyAccounts(raw: unknown): void {
+    const all = (Array.isArray(raw) ? raw : [])
+      .map(normalizeAccountEntry)
+      .filter((a): a is AccountSummary => a !== null)
+    accounts = all.filter((a) => a.kind === "anthropic")
+    accountVisible = accounts.length >= 2
+    const saved = localStorage.getItem("luna_account") || ""
+    // Preserve pin when still advertised (reconnect). Drop only if gone.
+    if (saved && !accounts.some((a) => a.id === saved)) {
+      localStorage.removeItem("luna_account")
+    }
+    const fresh = computeSnapshot()
+    patchSnapshot({
+      composerVisible: fresh.composerVisible,
+      accountVisible: fresh.accountVisible,
+      accountLabel: fresh.accountLabel,
+      accountMenuItems: fresh.accountMenuItems,
     })
   }
 
@@ -548,6 +637,18 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
       state.threadEfforts[tid] = effort // optimistic - ack reconciles
       ctx.send({ type: "set-thread-config", threadId: tid, effort })
     }
+    publish()
+  }
+
+  /** Persist account pin for the next new-thread. Empty id = Auto (omit
+   * accountId → broker failover). Non-empty = sticky pin. */
+  function selectAccount(id: string): void {
+    if (id) {
+      localStorage.setItem("luna_account", id)
+    } else {
+      localStorage.removeItem("luna_account")
+    }
+    closeMenus()
     publish()
   }
 
@@ -696,14 +797,18 @@ function createComposerConfigEngine(ctx: ComposerConfigCtx, closeMenus: () => vo
     publish,
     publishModelMenuItems,
     publishEffortMenuItems,
+    publishAccountMenuItems,
     getModels: () => models,
+    getAccounts: () => accounts,
     normalizeEntry: normalizeModelEntry,
     applyModels,
+    applyAccounts,
     applyCapability,
     currentModelEntry,
     isEffortValidForCurrentModel,
     selectModel,
     selectEffort,
+    selectAccount,
     recordThreadConfig,
     reconcileThreadConfig,
   }
@@ -733,6 +838,11 @@ function EffortLabelView({ store }: { store: ComposerConfigStore }) {
   return <>{snap.effortLabel}</>
 }
 
+function AccountLabelView({ store }: { store: ComposerConfigStore }) {
+  const snap = useComposerSnapshot(store)
+  return <>{snap.accountLabel}</>
+}
+
 /** One popover row. EVERY row activates on Enter and Space, including the
  * effort menu's "Default" row.
  *
@@ -755,7 +865,7 @@ function MenuItemRow({
    * vanilla items' `dataset.modelId` / `dataset.effortId` marker (unread by
    * any PRODUCT code today - only composer-config.test.ts's own DOM-query
    * assertions read it - kept for DOM parity). */
-  kind: "model" | "effort"
+  kind: "model" | "effort" | "account"
   onSelect: (id: string) => void
 }) {
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -775,6 +885,7 @@ function MenuItemRow({
       onClick={() => onSelect(item.id)}
       data-model-id={kind === "model" ? item.id : undefined}
       data-effort-id={kind === "effort" ? item.id : undefined}
+      data-account-id={kind === "account" ? item.id : undefined}
       onKeyDown={handleKeyDown}
     >
       <span>{item.label}</span>
@@ -812,6 +923,21 @@ function EffortMenuView({ store, onSelect }: { store: ComposerConfigStore; onSel
   )
 }
 
+function AccountMenuView({ store, onSelect }: { store: ComposerConfigStore; onSelect: (id: string) => void }) {
+  const snap = useComposerSnapshot(store)
+  const autoItem = snap.accountMenuItems[0]
+  const rest = snap.accountMenuItems.slice(1)
+  return (
+    <>
+      <div className="cfg-menu-hint">Account (Auto keeps failover)</div>
+      {autoItem ? <MenuItemRow item={autoItem} kind="account" onSelect={onSelect} /> : null}
+      {rest.map((item) => (
+        <MenuItemRow key={item.id} item={item} kind="account" onSelect={onSelect} />
+      ))}
+    </>
+  )
+}
+
 /** Mounted INTO `#cfg-deferred-hint` (container === host): owns the text
  * children AND the container's own `visible` class via `useLayoutEffect`,
  * mirroring Attachments.tsx's container-owns-its-own-attribute pattern. */
@@ -833,15 +959,19 @@ function DeferredHintView({ store, container }: { store: ComposerConfigStore; co
 
 export interface ComposerConfigBridge {
   readonly _models: readonly ModelEntry[]
+  readonly _accounts: readonly AccountSummary[]
   _normalizeEntry: (entry: unknown) => ModelEntry | null
   _currentModelEntry: () => ModelEntry | null
   _rebuildModelMenu: () => void
   _rebuildEffortMenu: () => void
+  _rebuildAccountMenu: () => void
   _selectModel: (id: string) => void
   _selectEffort: (effort: string) => void
+  _selectAccount: (id: string) => void
   closeAllMenus: () => void
   anyMenuOpen: () => boolean
   applyModels: (models: unknown) => void
+  applyAccounts: (accounts: unknown) => void
   applyCapability: (supportsEffort: boolean) => void
   isEffortValidForCurrentModel: (effort: string) => boolean
   recordThreadConfig: (threadId: unknown, model: unknown, effort: unknown) => void
@@ -859,15 +989,21 @@ function createComposerConfigBridge(
     get _models() {
       return engine.getModels()
     },
+    get _accounts() {
+      return engine.getAccounts()
+    },
     _normalizeEntry: engine.normalizeEntry,
     _currentModelEntry: engine.currentModelEntry,
     _rebuildModelMenu: () => engine.publishModelMenuItems(),
     _rebuildEffortMenu: () => engine.publishEffortMenuItems(),
+    _rebuildAccountMenu: () => engine.publishAccountMenuItems(),
     _selectModel: engine.selectModel,
     _selectEffort: engine.selectEffort,
+    _selectAccount: engine.selectAccount,
     closeAllMenus: dom.closeAllMenus,
     anyMenuOpen: dom.anyMenuOpen,
     applyModels: engine.applyModels,
+    applyAccounts: engine.applyAccounts,
     applyCapability: engine.applyCapability,
     isEffortValidForCurrentModel: engine.isEffortValidForCurrentModel,
     recordThreadConfig: engine.recordThreadConfig,
@@ -887,6 +1023,9 @@ export interface ComposerConfigContainers {
   effortBtn: HTMLElement | null // #effort-cfg-btn
   effortMenu: HTMLElement | null // #effort-cfg-menu
   effortSep: HTMLElement | null // #effort-cfg-sep
+  accountBtn: HTMLElement | null // #account-cfg-btn
+  accountMenu: HTMLElement | null // #account-cfg-menu
+  accountSep: HTMLElement | null // #account-cfg-sep
   deferredHint: HTMLElement | null // #cfg-deferred-hint
 }
 
@@ -897,15 +1036,23 @@ export interface ComposerConfigMount {
 /** Mounts the React-owned labels/menus/hint into `containers` (chat.html's
  * composer-config cluster) and returns the legacy `{ ComposerConfig }`
  * bridge - matches every other mount*'s `if (host) ... else null` degrade-
- * to-no-op guard (see Attachments.tsx). All seven containers are required:
+ * to-no-op guard (see Attachments.tsx). All containers are required:
  * a partial mount would leave some views permanently unsynced with the rest
  * of the shared store. */
 export function mountComposerConfig(
   containers: ComposerConfigContainers,
   ctx: ComposerConfigCtx,
 ): ComposerConfigMount | null {
-  const { cluster, modelBtn, modelMenu, effortBtn, effortMenu, effortSep, deferredHint } = containers
-  if (!cluster || !modelBtn || !modelMenu || !effortBtn || !effortMenu || !effortSep || !deferredHint) return null
+  const {
+    cluster, modelBtn, modelMenu, effortBtn, effortMenu, effortSep,
+    accountBtn, accountMenu, accountSep, deferredHint,
+  } = containers
+  if (
+    !cluster || !modelBtn || !modelMenu || !effortBtn || !effortMenu || !effortSep ||
+    !accountBtn || !accountMenu || !accountSep || !deferredHint
+  ) {
+    return null
+  }
 
   // ── Menu open/close: plain DOM, shared with SlashMenu.tsx - see this
   // module's doc for why this never becomes React state. Arrows, not
@@ -916,11 +1063,18 @@ export function mountComposerConfig(
     modelMenu.setAttribute("aria-hidden", "true")
     effortMenu.classList.remove("open")
     effortMenu.setAttribute("aria-hidden", "true")
+    accountMenu.classList.remove("open")
+    accountMenu.setAttribute("aria-hidden", "true")
     modelBtn.setAttribute("aria-expanded", "false")
     effortBtn.setAttribute("aria-expanded", "false")
+    accountBtn.setAttribute("aria-expanded", "false")
   }
   const anyMenuOpen = (): boolean => {
-    return modelMenu.classList.contains("open") || effortMenu.classList.contains("open")
+    return (
+      modelMenu.classList.contains("open") ||
+      effortMenu.classList.contains("open") ||
+      accountMenu.classList.contains("open")
+    )
   }
 
   const engine = createComposerConfigEngine(ctx, closeAllMenus)
@@ -939,9 +1093,6 @@ export function mountComposerConfig(
     const open = modelMenu.classList.contains("open")
     closeAllMenus()
     if (!open) {
-      // Rebuild the MODEL menu items only before showing - see
-      // publishModelMenuItems's own comment for why this isn't the full
-      // publish() and isn't publishEffortMenuItems too.
       engine.publishModelMenuItems()
       modelMenu.classList.add("open")
       modelMenu.setAttribute("aria-hidden", "false")
@@ -953,11 +1104,21 @@ export function mountComposerConfig(
     const open = effortMenu.classList.contains("open")
     closeAllMenus()
     if (!open) {
-      // Same rebuild-on-open as modelBtn above - vanilla's `_rebuildEffortMenu()`.
       engine.publishEffortMenuItems()
       effortMenu.classList.add("open")
       effortMenu.setAttribute("aria-hidden", "false")
       effortBtn.setAttribute("aria-expanded", "true")
+    }
+  })
+  accountBtn.addEventListener("click", (e) => {
+    e.stopPropagation()
+    const open = accountMenu.classList.contains("open")
+    closeAllMenus()
+    if (!open) {
+      engine.publishAccountMenuItems()
+      accountMenu.classList.add("open")
+      accountMenu.setAttribute("aria-hidden", "false")
+      accountBtn.setAttribute("aria-expanded", "true")
     }
   })
   document.addEventListener("click", () => closeAllMenus())
@@ -966,22 +1127,20 @@ export function mountComposerConfig(
   flushSync(() => {
     createRoot(modelBtn).render(<ModelLabelView store={engine.store} />)
     createRoot(effortBtn).render(<EffortLabelView store={engine.store} />)
+    createRoot(accountBtn).render(<AccountLabelView store={engine.store} />)
     createRoot(modelMenu).render(<ModelMenuView store={engine.store} onSelect={engine.selectModel} />)
     createRoot(effortMenu).render(<EffortMenuView store={engine.store} onSelect={engine.selectEffort} />)
+    createRoot(accountMenu).render(<AccountMenuView store={engine.store} onSelect={engine.selectAccount} />)
     createRoot(deferredHint).render(<DeferredHintView store={engine.store} container={deferredHint} />)
   })
 
-  // `#composer-config` / `#effort-cfg-sep` need no rendered children at all
-  // (only a hidden toggle) - see this module's doc for why that stays a
-  // plain subscription instead of an empty React root. `effortBtn.hidden` is
-  // asserted here too, alongside `effortSep.hidden`, from the same read -
-  // ONE write site for both, mirroring vanilla's `_refreshEffortVisibility`
-  // (see this module's doc; SlashMenu reads `effortCfgBtn.hidden` as truth).
   const syncStructuralVisibility = () => {
     const snap = engine.store.getSnapshot()
     cluster.hidden = !snap.composerVisible
     effortBtn.hidden = !snap.effortVisible
     effortSep.hidden = !snap.effortVisible
+    accountBtn.hidden = !snap.accountVisible
+    accountSep.hidden = !snap.accountVisible
   }
   syncStructuralVisibility()
   engine.store.subscribe(syncStructuralVisibility)

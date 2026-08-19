@@ -2467,6 +2467,7 @@
            children here anyway - see that module's doc). -->
       <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
       <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
+      <div id="account-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
       <!-- Slash-command popover — anchored to .chat-input-area (position:relative),
            opens upward-LEFT above the composer. Kept in the pre-rows block so its
            equal z-index ties on DOM source order in WKWebView.
@@ -2538,13 +2539,14 @@
             </svg>
           </button>
         </div>
-        <!-- Model/effort labels are React-owned (ComposerConfig.tsx) - both
-             buttons stay empty here for the same reason the two popovers
-             above do. -->
+        <!-- Model/effort/account labels are React-owned (ComposerConfig.tsx) -
+             buttons stay empty here for the same reason the popovers above do. -->
         <div class="composer-config" id="composer-config" hidden>
           <button type="button" class="cfg-btn" id="model-cfg-btn" aria-label="Change model" aria-haspopup="true"></button>
           <div class="cfg-sep" id="effort-cfg-sep" hidden></div>
           <button type="button" class="cfg-btn" id="effort-cfg-btn" aria-label="Change effort" aria-haspopup="true" hidden></button>
+          <div class="cfg-sep" id="account-cfg-sep" hidden></div>
+          <button type="button" class="cfg-btn" id="account-cfg-btn" aria-label="Change account" aria-haspopup="true" hidden></button>
           <div class="cfg-deferred-hint" id="cfg-deferred-hint"></div>
         </div>
       </div>
