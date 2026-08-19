@@ -84,7 +84,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "account-list",
   // Agent sidebar S1 — mentionable-agent roster, additive behind
   // capabilities.agents.
-  "agent-list",
+  "agent-list",  "account-status",
   "skill-catalog",
   "skill-status",
   // Capability layer — additive behind capabilities.commands.
@@ -174,6 +174,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "vault-delete",
   "vault-sync-config",
   "vault-import",
+  "account-add",
+  "account-rm",
   "widget-directory",
   "subagent-tree-request",
   "artifact-edit",
@@ -322,11 +324,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // feedback-submit (client) → 59 server / 43 client.
     // Conversation forking (#221) adds fork-proposal-set + fork-proposal-update
     // (server) and fork-proposal-respond (client) → 61 server / 44 client.
-    // Agent sidebar S1 adds agent-list (server only — the mentionable-agent
-    // roster sent after hello, gated on capabilities.agents) → 62 server /
-    // 44 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(62)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(44)
+    // Agent sidebar S1 adds agent-list (server only). The Moon account manager
+    // adds account-status (server) and account-add + account-rm (client).
+    // Base 61/44 -> 63 server / 46 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(63)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(46)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

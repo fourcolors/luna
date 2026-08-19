@@ -22,6 +22,7 @@ const EXPECTED_KINDS = [
   'settings.connection',
   'settings.voice',
   'settings.models',
+  'settings.accounts',
   'settings.vault',
   'settings.skills',
   'settings.connectors',

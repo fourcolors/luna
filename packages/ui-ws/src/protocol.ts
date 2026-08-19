@@ -397,6 +397,45 @@ export interface AgentListFrame {
 }
 
 /**
+ * Server→client: outcome of an `account-add` or `account-rm`. `ok:false`
+ * carries a short, non-sensitive reason. NEVER echoes secret-ref values —
+ * the message is operator-actionable diagnostic text only. Additive — no
+ * protocol bump (older clients ignore unknown frames).
+ */
+export interface AccountStatusFrame {
+  readonly type: "account-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: register a provider account in AccountBroker / `luna.db`.
+ * `secretRef` is a POINTER (`claude-code:login`, `env:VAR`, `op://…`,
+ * `luna-op://…`) — never a resolved credential. Same validation as
+ * `luna account add`. `requestId` correlates the `account-status` reply.
+ * On success the server also re-broadcasts `account-list`.
+ */
+export interface AccountAddFrame {
+  readonly type: "account-add"
+  readonly requestId: string
+  readonly id: string
+  readonly label: string
+  readonly kind: string
+  readonly secretRef: string
+}
+
+/**
+ * Client→server: remove one account by id. `requestId` correlates the
+ * `account-status` reply. On success the server re-broadcasts `account-list`.
+ */
+export interface AccountRmFrame {
+  readonly type: "account-rm"
+  readonly requestId: string
+  readonly id: string
+}
+
+/**
  * One skill row for the settings catalog — METADATA ONLY, by construction.
  *
  * There is deliberately no `body` field on this type: skill bodies are
@@ -1495,6 +1534,7 @@ export type ServerFrame =
   | ResultDeliveredFrame
   | AccountListFrame
   | AgentListFrame
+  | AccountStatusFrame
   | SkillCatalogFrame
   | SkillStatusFrame
   | CapabilityCatalogFrame
@@ -1919,6 +1959,8 @@ export type ClientFrame =
   | VaultDeleteFrame
   | VaultSyncConfigFrame
   | VaultImportFrame
+  | AccountAddFrame
+  | AccountRmFrame
   | SetThreadConfigFrame
   | ModelRoutingSaveFrame
   | ArchiveThreadFrame

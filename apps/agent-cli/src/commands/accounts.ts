@@ -44,7 +44,7 @@ export interface AccountsRenderOptions {
  * visual `⚠` suffix so operators can spot degraded accounts at a glance.
  */
 export const formatHealth = (health: string): string =>
-  health === "rate_limited" ? `${health} ⚠` : health
+  health === "rate_limited" || health === "spent" ? `${health} ⚠` : health
 
 /**
  * Pure: right-pad a string to at least `width` characters.

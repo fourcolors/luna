@@ -23,6 +23,7 @@
     { kind: 'settings.connection',  label: 'Connection' },
     { kind: 'settings.voice',      label: 'Voice' },
     { kind: 'settings.models',     label: 'Models' },
+    { kind: 'settings.accounts',   label: 'Accounts' },
     { kind: 'settings.vault',      label: 'Vault' },
     { kind: 'settings.skills',     label: 'Skills' },
     { kind: 'settings.connectors', label: 'Connectors' },

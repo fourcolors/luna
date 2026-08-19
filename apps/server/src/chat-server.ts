@@ -88,9 +88,11 @@
  * additional ACL setup (e.g. `-T <bun-binary>` at add-time, or
  * "Always Allow" on first prompt). Out of scope for the dev rig.
  *
- * Hot-reload is NOT supported. AccountBroker hydrates the `accounts`
- * table once at Layer construction. To pick up new rows inserted via
- * `luna-account add`, RESTART this server.
+ * AccountBroker hydrates the `accounts` table at Layer construction and
+ * now also accepts live `account-add` / `account-rm` WS mutations (Moon
+ * Settings Accounts) that update the in-memory pool + SQL without a
+ * restart. CLI `luna account add|rm` still writes SQL directly — pick
+ * those up with a restart OR use the WS path from Moon.
  *
  * The web UI will be able to:
  *   - send `{type:"new-thread", model:"claude-sonnet-5"}` to spawn a

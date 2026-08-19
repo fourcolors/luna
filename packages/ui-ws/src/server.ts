@@ -272,8 +272,9 @@ export interface UIWebSocketServerConfig {
   /**
    * Optional AccountBroker handle. When provided, the server sends an
    * `account-list` frame to each client immediately after the `hello`
-   * frame, populated with all "anthropic"-kind accounts. If absent, no
-   * `account-list` is sent (graceful degradation).
+   * frame (all provider kinds — Moon's composer pill filters Anthropic
+   * client-side), and routes inbound `account-add` / `account-rm` frames.
+   * If absent, no `account-list` is sent (graceful degradation).
    * Pass `null` explicitly in setup-mode (same as absent).
    */
   readonly accountBroker?: {
@@ -283,6 +284,13 @@ export interface UIWebSocketServerConfig {
       readonly kind: string
       readonly health: string
     }>>
+    readonly add: (input: {
+      readonly id: string
+      readonly label: string
+      readonly kind: string
+      readonly secretRef: string
+    }) => import("effect").Effect.Effect<void, unknown>
+    readonly remove: (id: string) => import("effect").Effect.Effect<void, unknown>
   } | null
   /**
    * Optional agent-roster handle (agent sidebar S1). When provided, the
@@ -885,7 +893,7 @@ export const startUIWebSocketServer = (
     const jobInputBridge = config.jobInputBridge ?? null
     const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
-    const agentRoster = config.agentRoster ?? null
+    const agentRoster = config.agentRoster ?? null    const accountBroker = config.accountBroker ?? null
     const capabilityRegistry = config.capabilityRegistry ?? null
     const threadArchiveNotifier = config.threadArchiveNotifier ?? null
     const connectorService = config.connectorService ?? null
@@ -1344,13 +1352,14 @@ export const startUIWebSocketServer = (
         })
 
         // Send account-list immediately after hello so the client can
-        // populate the account-switcher dropdown on connect. Fire-and-
-        // forget via runFork — connection setup must not block on OP
-        // resolution.
-        if (config.accountBroker) {
-          const broker = config.accountBroker
+        // populate the account-switcher / settings list on connect.
+        // Fire-and-forget via runFork — connection setup must not block.
+        // All kinds: Moon's composer pill filters Anthropic client-side;
+        // Settings Accounts shows every provider row.
+        if (accountBroker) {
+          const broker = accountBroker
           Effect.runFork(
-            Effect.flatMap(broker.list("anthropic"), (accounts) =>
+            Effect.flatMap(broker.list(), (accounts) =>
               Effect.sync(() => {
                 send(ws, { type: "account-list", accounts })
               }),
@@ -3157,6 +3166,118 @@ export const startUIWebSocketServer = (
                       ok: result.ok,
                       message: result.message,
                     })
+                    return
+                  }
+                  case "account-add": {
+                    // Moon Settings Accounts: insert one AccountBroker row.
+                    // secretRef is a POINTER only — never log it; never echo
+                    // it in account-status.message.
+                    if (accountBroker === null) return
+                    const broker = accountBroker
+                    const reqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      reqId.length === 0 ||
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0 ||
+                      typeof frame.label !== "string" ||
+                      frame.label.trim().length === 0 ||
+                      typeof frame.kind !== "string" ||
+                      frame.kind.trim().length === 0 ||
+                      typeof frame.secretRef !== "string" ||
+                      frame.secretRef.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "account-status",
+                        requestId: reqId,
+                        ok: false,
+                        message: "malformed account-add frame",
+                      })
+                      return
+                    }
+                    yield* broker
+                      .add({
+                        id: frame.id,
+                        label: frame.label,
+                        kind: frame.kind,
+                        secretRef: frame.secretRef,
+                      })
+                      .pipe(
+                        Effect.flatMap(() => broker.list()),
+                        Effect.flatMap((accounts) =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "account-status",
+                              requestId: reqId,
+                              ok: true,
+                              message: "added",
+                            })
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "account-list", accounts })
+                            }
+                          }),
+                        ),
+                        Effect.catchCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "account-status",
+                              requestId: reqId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "account-rm": {
+                    if (accountBroker === null) return
+                    const broker = accountBroker
+                    const reqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      reqId.length === 0 ||
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "account-status",
+                        requestId: reqId,
+                        ok: false,
+                        message: "malformed account-rm frame",
+                      })
+                      return
+                    }
+                    yield* broker.remove(frame.id).pipe(
+                      Effect.flatMap(() => broker.list()),
+                      Effect.flatMap((accounts) =>
+                        Effect.gen(function* () {
+                          send(ws, {
+                            type: "account-status",
+                            requestId: reqId,
+                            ok: true,
+                            message: "removed",
+                          })
+                          const sockets = yield* Ref.get(activeSockets)
+                          for (const sock of sockets) {
+                            send(sock, { type: "account-list", accounts })
+                          }
+                        }),
+                      ),
+                      Effect.catchCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "account-status",
+                            requestId: reqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                        }),
+                      ),
+                    )
                     return
                   }
                   case "vault-put": {

@@ -30,6 +30,7 @@ import { isNowPanelType, mountNowPanel } from "./panels/now/now-mount"
 import { isSettingsModelsPanelType, mountSettingsModelsPanel } from "./panels/settings-models-mount"
 import { isSettingsConnectionPanelType, mountSettingsConnectionPanel } from "./panels/settings-connection-mount"
 import { isSettingsVaultPanelType, mountSettingsVaultPanel } from "./panels/settings-vault-mount"
+import { isSettingsAccountsPanelType, mountSettingsAccountsPanel } from "./panels/settings-accounts-mount"
 import { isSettingsConnectorsPanelType, mountSettingsConnectorsPanel } from "./panels/settings-connectors-mount"
 import { isSettingsUpdatesPanelType, mountSettingsUpdatesPanel } from "./panels/settings-updates/settings-updates-mount"
 import { isLauncherPanelType, mountLauncherPanel } from "./panels/launcher/launcher-mount"
@@ -95,6 +96,10 @@ export function mountReactPanel(type: string, ctx: PanelCtx): boolean {
   }
   if (isSettingsVaultPanelType(type)) {
     mountSettingsVaultPanel(type, ctx)
+    return true
+  }
+  if (isSettingsAccountsPanelType(type)) {
+    mountSettingsAccountsPanel(type, ctx)
     return true
   }
   if (isSettingsConnectorsPanelType(type)) {

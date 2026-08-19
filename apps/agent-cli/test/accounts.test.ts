@@ -22,6 +22,10 @@ describe("accounts — formatHealth (pure)", () => {
     expect(formatHealth("rate_limited")).toBe("rate_limited ⚠")
   })
 
+  it("appends ⚠ to spent", () => {
+    expect(formatHealth("spent")).toBe("spent ⚠")
+  })
+
   it("leaves unknown/custom health strings unchanged", () => {
     expect(formatHealth("degraded")).toBe("degraded")
     expect(formatHealth("")).toBe("")

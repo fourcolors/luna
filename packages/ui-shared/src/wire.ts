@@ -300,6 +300,40 @@ export interface AccountListFrame {
 }
 
 /**
+ * Server→client: outcome of an `account-add` or `account-rm`. NEVER echoes
+ * secret-ref values. Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface AccountStatusFrame {
+  readonly type: "account-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: register a provider account. `secretRef` is a POINTER only.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface AccountAddFrame {
+  readonly type: "account-add"
+  readonly requestId: string
+  readonly id: string
+  readonly label: string
+  readonly kind: string
+  readonly secretRef: string
+}
+
+/**
+ * Client→server: remove one account by id.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface AccountRmFrame {
+  readonly type: "account-rm"
+  readonly requestId: string
+  readonly id: string
+}
+
+/**
  * One skill row for the settings catalog — METADATA ONLY by construction
  * (no `body` field: skill bodies are agent prompt content and never cross
  * the wire to clients). Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
@@ -1013,6 +1047,7 @@ export type ServerFrame =
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
   | AccountListFrame
+  | AccountStatusFrame
   | SkillCatalogFrame
   | SkillStatusFrame
   | ConnectorCatalogFrame
@@ -1186,6 +1221,8 @@ export type ClientFrame =
   | VaultDeleteFrame
   | VaultSyncConfigFrame
   | VaultImportFrame
+  | AccountAddFrame
+  | AccountRmFrame
   | ModelRoutingSaveFrame
   | SetThreadConfigFrame
   | ArchiveThreadFrame

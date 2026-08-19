@@ -47,14 +47,45 @@ import {
 } from "../overflow-chain.js"
 import { readRateTable } from "../pricing.js"
 import { applyUsage, readCycleMs } from "./spend-meter.js"
+import {
+  accountSecretRefError,
+  validateAccountKind,
+} from "./account-refs.js"
 
 /** Public account summary — no secrets. Used by the account-switcher UI. */
 export interface AccountSummary {
   readonly id: string
   readonly label: string
   readonly kind: string
-  /** "healthy" | "rate_limited" */
+  /** "healthy" | "rate_limited" | "spent" */
   readonly health: string
+}
+
+/**
+ * Derive wire health from live cooldown + spend state. Budget exhaustion
+ * surfaces as `"spent"` (distinct from transient `"rate_limited"`); idle /
+ * expired cooldown is `"healthy"`.
+ */
+export function deriveAccountHealth(
+  a: Pick<AccountRecord, "cooldownUntilMs" | "budgetUsd" | "usage">,
+  nowMs: number,
+): "healthy" | "rate_limited" | "spent" {
+  if (a.cooldownUntilMs === undefined || a.cooldownUntilMs <= nowMs) {
+    return "healthy"
+  }
+  const budgetExhausted =
+    a.budgetUsd !== undefined &&
+    a.usage !== undefined &&
+    a.usage.spentUsd >= a.budgetUsd
+  return budgetExhausted ? "spent" : "rate_limited"
+}
+
+/** Inputs for AccountBroker.add — same shape as `luna account add`. */
+export interface AccountAddInput {
+  readonly id: string
+  readonly label: string
+  readonly kind: string
+  readonly secretRef: string
 }
 
 /** Public credential handed to callers. `resolvedSecret` is redacted. */
@@ -157,6 +188,18 @@ export interface AccountBrokerApi {
    * @param kindFilter — if provided, only return accounts matching this kind.
    */
   readonly list: (kindFilter?: string) => Effect.Effect<ReadonlyArray<AccountSummary>>
+
+  /**
+   * Insert one account into the live pool (and SQL when SQL-backed). Same
+   * validation as `luna account add`. Never resolves the secret-ref.
+   */
+  readonly add: (input: AccountAddInput) => Effect.Effect<void, ConfigError>
+
+  /**
+   * Remove one account by id from the live pool (and SQL when SQL-backed).
+   * Fails with ConfigError when the id is unknown.
+   */
+  readonly remove: (id: string) => Effect.Effect<void, ConfigError>
 
   /**
    * Test-only inspector. NOT part of the design-frozen §7.5 surface;
@@ -473,11 +516,87 @@ const fromAccounts = (
             id: a.id,
             label: a.label ?? a.id,
             kind: a.kind,
-            health:
-              a.cooldownUntilMs !== undefined && a.cooldownUntilMs > now
-                ? "rate_limited"
-                : "healthy",
+            health: deriveAccountHealth(a, now),
           }))
+        })
+
+      const add: AccountBrokerApi["add"] = (input) =>
+        Effect.gen(function* () {
+          const id = input.id.trim()
+          const label = input.label.trim()
+          const kind = input.kind.trim()
+          const secretRef = input.secretRef.trim()
+          if (!id || !label || !kind || !secretRef) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "account-broker",
+                key: "accounts.add",
+                message: "id, label, kind, and secretRef are required",
+              }),
+            )
+          }
+          if (!validateAccountKind(kind)) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "account-broker",
+                key: "accounts.add.kind",
+                message: `invalid kind "${kind}"`,
+              }),
+            )
+          }
+          const refErr = accountSecretRefError(secretRef)
+          if (refErr) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "account-broker",
+                key: "accounts.add.secret_ref",
+                message: refErr,
+              }),
+            )
+          }
+          const accounts = yield* Ref.get(ref)
+          if (accounts.some((a) => a.id === id)) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "account-broker",
+                key: "accounts.add.id",
+                message: `account id="${id}" already exists`,
+              }),
+            )
+          }
+          const record: AccountRecord = {
+            id,
+            label,
+            kind,
+            secretRef,
+            inFlight: 0,
+          }
+          yield* Ref.update(ref, (cur) => [...cur, record])
+        })
+
+      const remove: AccountBrokerApi["remove"] = (id) =>
+        Effect.gen(function* () {
+          const trimmed = id.trim()
+          if (!trimmed) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "account-broker",
+                key: "accounts.remove",
+                message: "id is required",
+              }),
+            )
+          }
+          const accounts = yield* Ref.get(ref)
+          if (!accounts.some((a) => a.id === trimmed)) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "account-broker",
+                key: "accounts.remove",
+                message: `no such account: ${trimmed}`,
+              }),
+            )
+          }
+          yield* Ref.update(ref, (cur) => cur.filter((a) => a.id !== trimmed))
         })
 
       return {
@@ -486,6 +605,8 @@ const fromAccounts = (
         report,
         _inspect,
         list,
+        add,
+        remove,
         peekFailoverPossible,
       } satisfies AccountBrokerApi
     }),
