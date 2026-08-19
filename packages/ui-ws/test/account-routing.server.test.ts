@@ -1,12 +1,8 @@
 /**
- * account-routing.server.test.ts — LIVE account-add / account-rm routing
- * against startUIWebSocketServer with a fake AccountBroker handle.
- *
- * Pins: hello → account-list; account-add → account-status + refreshed list;
- * account-rm → account-status + refreshed list; malformed → ok:false;
- * no broker → frames ignored.
+ * account-routing.server.test.ts — account-add / account-rm via
+ * accountManageService (SQL write + scheduleRestart), not AccountBroker hot-reload.
  */
-import { afterEach, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
@@ -16,10 +12,11 @@ import type {
   AccountListFrame,
   AccountRmFrame,
   AccountStatusFrame,
+  HelloFrame,
   ServerFrame,
 } from "../src/protocol.js"
 
-const TOKEN = "test-account-token-1234"
+const TOKEN = "test-account-manage-token"
 
 const baseLayer = () => {
   const clockL = Clock.Default
@@ -33,7 +30,7 @@ const baseLayer = () => {
 class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->()("test/AccountServerHandle") {}
+>()("test/AccountManageServerHandle") {}
 
 type AccountRow = {
   readonly id: string
@@ -42,22 +39,24 @@ type AccountRow = {
   readonly health: string
 }
 
-const makeFakeBroker = (initial: AccountRow[] = []) => {
+const makeFakeAccountManage = (initial: AccountRow[] = []) => {
   let rows = [...initial]
+  let restartCalls = 0
   return {
-    list: (_kindFilter?: string) => Effect.succeed(rows as ReadonlyArray<AccountRow>),
-    add: (input: {
-      readonly id: string
-      readonly label: string
-      readonly kind: string
-      readonly secretRef: string
-    }) =>
-      Effect.gen(function* () {
-        if (rows.some((r) => r.id === input.id)) {
-          return yield* Effect.fail(new Error(`account id="${input.id}" already exists`))
-        }
+    restartCalls: () => restartCalls,
+    svc: {
+      list: () => rows as ReadonlyArray<AccountRow>,
+      add: (input: {
+        readonly id: string
+        readonly label: string
+        readonly kind: string
+        readonly secretRef: string
+      }) => {
         if (input.secretRef.startsWith("file:")) {
-          return yield* Effect.fail(new Error("file: refs are not resolvable"))
+          return { ok: false, message: "file: refs are not resolvable" }
+        }
+        if (rows.some((r) => r.id === input.id)) {
+          return { ok: false, message: `account id="${input.id}" already exists` }
         }
         rows = [
           ...rows,
@@ -68,26 +67,48 @@ const makeFakeBroker = (initial: AccountRow[] = []) => {
             health: "healthy",
           },
         ]
-      }),
-    remove: (id: string) =>
-      Effect.gen(function* () {
-        const before = rows.length
-        rows = rows.filter((r) => r.id !== id)
-        if (rows.length === before) {
-          return yield* Effect.fail(new Error(`no such account: ${id}`))
+        return { ok: true, message: "Account added. Restarting to apply." }
+      },
+      remove: (input: { readonly id: string }) => {
+        const target = rows.find((r) => r.id === input.id)
+        if (!target) return { ok: false, message: `no such account: ${input.id}` }
+        if (target.kind === "anthropic") {
+          const n = rows.filter((r) => r.kind === "anthropic").length
+          if (n <= 1) {
+            return {
+              ok: false,
+              message: "refusing to delete the last Anthropic account",
+            }
+          }
         }
-      }),
+        rows = rows.filter((r) => r.id !== input.id)
+        return { ok: true, message: "Account removed. Restarting to apply." }
+      },
+      scheduleRestart: () => {
+        restartCalls += 1
+      },
+    },
   }
 }
+
+const makeFakeBroker = (initial: AccountRow[]) => ({
+  list: (kindFilter?: string) =>
+    Effect.succeed(
+      (kindFilter
+        ? initial.filter((r) => r.kind === kindFilter)
+        : initial) as ReadonlyArray<AccountRow>,
+    ),
+})
 
 interface Rig {
   readonly url: string
   readonly shutdown: () => Promise<void>
 }
 
-const startRig = async (
-  accountBroker: ReturnType<typeof makeFakeBroker> | null,
-): Promise<Rig> => {
+const startRig = async (opts: {
+  accountBroker?: ReturnType<typeof makeFakeBroker> | null
+  accountManageService?: ReturnType<typeof makeFakeAccountManage>["svc"] | null
+}): Promise<Rig> => {
   const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
@@ -95,7 +116,8 @@ const startRig = async (
         port: 0,
         token: TOKEN,
         pingIntervalMs: 0,
-        accountBroker,
+        accountBroker: opts.accountBroker ?? null,
+        accountManageService: opts.accountManageService ?? null,
       })
       return { port: handle.port }
     }),
@@ -167,56 +189,41 @@ const connect = (url: string): Promise<{
       }
     })
     ws.on("open", () => {
-      resolve({
-        ws,
-        frames,
-        waitFor,
-        close: () => ws.close(),
-      })
+      resolve({ ws, frames, waitFor, close: () => ws.close() })
     })
     ws.on("error", reject)
   })
 
+const isHello = (f: ServerFrame): f is HelloFrame => f.type === "hello"
 const isAccountList = (f: ServerFrame): f is AccountListFrame =>
   f.type === "account-list"
 const isAccountStatus = (f: ServerFrame): f is AccountStatusFrame =>
   f.type === "account-status"
 
-afterEach(async () => {
-  // no shared state
-})
-
-describe("account-add / account-rm routing", () => {
-  it("pushes account-list after hello with seeded rows", async () => {
-    const broker = makeFakeBroker([
-      { id: "default", label: "Claude.ai", kind: "anthropic", health: "healthy" },
-      {
-        id: "account-secondary-1",
-        label: "secondary",
-        kind: "anthropic",
-        health: "healthy",
-      },
-    ])
-    const rig = await startRig(broker)
+describe("account-manage routing (SQL + scheduleRestart)", () => {
+  it("hello advertises accountManage when service is bound", async () => {
+    const fake = makeFakeAccountManage()
+    const rig = await startRig({ accountManageService: fake.svc })
     try {
       const client = await connect(rig.url)
-      const list = await client.waitFor(isAccountList)
-      expect(list.accounts).toHaveLength(2)
-      expect(list.accounts.map((a) => a.id).sort()).toEqual([
-        "account-secondary-1",
-        "default",
-      ])
+      const hello = await client.waitFor(isHello)
+      expect(hello.capabilities.accountManage).toBe(true)
       client.close()
     } finally {
       await rig.shutdown()
     }
   })
 
-  it("account-add → account-status(ok) + refreshed account-list", async () => {
-    const broker = makeFakeBroker([
+  it("account-add → status + list + scheduleRestart; never echoes secretRef", async () => {
+    const seeded = [
       { id: "default", label: "Claude.ai", kind: "anthropic", health: "healthy" },
-    ])
-    const rig = await startRig(broker)
+    ]
+    const fake = makeFakeAccountManage(seeded)
+    const broker = makeFakeBroker(seeded)
+    const rig = await startRig({
+      accountBroker: broker,
+      accountManageService: fake.svc,
+    })
     try {
       const client = await connect(rig.url)
       await client.waitFor(isAccountList)
@@ -237,6 +244,7 @@ describe("account-add / account-rm routing", () => {
       )
       expect(status.ok).toBe(true)
       expect(JSON.stringify(status)).not.toContain("claude-code:login")
+      expect(fake.restartCalls()).toBe(1)
 
       const refreshed = await client.waitFor(
         (f): f is AccountListFrame =>
@@ -252,8 +260,8 @@ describe("account-add / account-rm routing", () => {
     }
   })
 
-  it("account-rm → account-status(ok) + refreshed account-list", async () => {
-    const broker = makeFakeBroker([
+  it("account-rm refuses last Anthropic; succeeds with two", async () => {
+    const seeded = [
       { id: "default", label: "Claude.ai", kind: "anthropic", health: "healthy" },
       {
         id: "account-secondary-1",
@@ -261,71 +269,53 @@ describe("account-add / account-rm routing", () => {
         kind: "anthropic",
         health: "healthy",
       },
-    ])
-    const rig = await startRig(broker)
+    ]
+    const fake = makeFakeAccountManage(seeded)
+    const rig = await startRig({ accountManageService: fake.svc })
     try {
       const client = await connect(rig.url)
-      await client.waitFor(isAccountList)
+      await client.waitFor(isHello)
 
-      const rm: AccountRmFrame = {
-        type: "account-rm",
-        requestId: "req-rm-1",
-        id: "account-secondary-1",
-      }
-      client.ws.send(JSON.stringify(rm))
-
-      const status = await client.waitFor(
-        (f): f is AccountStatusFrame =>
-          isAccountStatus(f) && f.requestId === "req-rm-1",
-      )
-      expect(status.ok).toBe(true)
-
-      const refreshed = await client.waitFor(
-        (f): f is AccountListFrame =>
-          isAccountList(f) && f.accounts.length === 1,
-      )
-      expect(refreshed.accounts[0]?.id).toBe("default")
-      client.close()
-    } finally {
-      await rig.shutdown()
-    }
-  })
-
-  it("malformed account-add → account-status(ok:false)", async () => {
-    const broker = makeFakeBroker([])
-    const rig = await startRig(broker)
-    try {
-      const client = await connect(rig.url)
-      await client.waitFor(isAccountList)
       client.ws.send(
         JSON.stringify({
-          type: "account-add",
-          requestId: "bad",
-          id: "",
-          label: "x",
-          kind: "anthropic",
-          secretRef: "env:X",
-        }),
+          type: "account-rm",
+          requestId: "rm-1",
+          id: "account-secondary-1",
+        } satisfies AccountRmFrame),
       )
-      const status = await client.waitFor(
+      const ok = await client.waitFor(
         (f): f is AccountStatusFrame =>
-          isAccountStatus(f) && f.requestId === "bad",
+          isAccountStatus(f) && f.requestId === "rm-1",
       )
-      expect(status.ok).toBe(false)
-      expect(status.message).toMatch(/malformed/)
+      expect(ok.ok).toBe(true)
+      expect(fake.restartCalls()).toBe(1)
+
+      client.ws.send(
+        JSON.stringify({
+          type: "account-rm",
+          requestId: "rm-2",
+          id: "default",
+        } satisfies AccountRmFrame),
+      )
+      const refused = await client.waitFor(
+        (f): f is AccountStatusFrame =>
+          isAccountStatus(f) && f.requestId === "rm-2",
+      )
+      expect(refused.ok).toBe(false)
+      expect(refused.message).toMatch(/last Anthropic/i)
+      expect(fake.restartCalls()).toBe(1)
       client.close()
     } finally {
       await rig.shutdown()
     }
   })
 
-  it("without accountBroker, account-add is ignored", async () => {
-    const rig = await startRig(null)
+  it("without accountManageService: capability absent; frames ignored", async () => {
+    const rig = await startRig({ accountManageService: null })
     try {
       const client = await connect(rig.url)
-      // No account-list should arrive; give a short window then send add.
-      await new Promise((r) => setTimeout(r, 80))
-      expect(client.frames.some((f) => f.type === "account-list")).toBe(false)
+      const hello = await client.waitFor(isHello)
+      expect(hello.capabilities.accountManage).toBeFalsy()
       client.ws.send(
         JSON.stringify({
           type: "account-add",

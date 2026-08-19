@@ -54,7 +54,6 @@ import {
 } from "../secret-provider/index.js"
 import {
   AccountBroker,
-  deriveAccountHealth,
   type AccountBrokerApi,
   type AccountError,
   type AcquiredSession,
@@ -62,10 +61,6 @@ import {
   type AccountSummary,
 } from "./account-broker.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
-import {
-  accountSecretRefError,
-  validateAccountKind,
-} from "./account-refs.js"
 import { readProviderEnv, resolveKind } from "../provider-profile.js"
 import {
   auditOverflowEnv,
@@ -608,93 +603,11 @@ const fromSql = (
             id: a.id,
             label: a.label ?? a.id,
             kind: a.kind,
-            health: deriveAccountHealth(a, t),
+            health:
+              a.cooldownUntilMs !== undefined && a.cooldownUntilMs > t
+                ? "rate_limited"
+                : "healthy",
           }))
-        })
-
-      const add: AccountBrokerApi["add"] = (input) =>
-        Effect.gen(function* () {
-          const id = input.id.trim()
-          const label = input.label.trim()
-          const kind = input.kind.trim()
-          const secretRef = input.secretRef.trim()
-          if (!id || !label || !kind || !secretRef) {
-            return yield* Effect.fail(
-              cfgErr("accounts.add", "id, label, kind, and secretRef are required"),
-            )
-          }
-          if (!validateAccountKind(kind)) {
-            return yield* Effect.fail(
-              cfgErr("accounts.add.kind", `invalid kind "${kind}"`),
-            )
-          }
-          const refErr = accountSecretRefError(secretRef)
-          if (refErr) {
-            return yield* Effect.fail(
-              cfgErr("accounts.add.secret_ref", refErr),
-            )
-          }
-          const accounts = yield* Ref.get(ref)
-          if (accounts.some((a) => a.id === id)) {
-            return yield* Effect.fail(
-              cfgErr("accounts.add.id", `account id="${id}" already exists`),
-            )
-          }
-          try {
-            db.query(
-              `INSERT INTO accounts (id, label, kind, secret_ref, health, cooldown_ms, usage_json)
-               VALUES (?, ?, ?, ?, ?, NULL, ?)`,
-            ).run(id, label, kind, secretRef, "healthy", "{}")
-          } catch (e) {
-            const msg = String(e)
-            if (msg.includes("UNIQUE") || msg.includes("PRIMARY KEY")) {
-              return yield* Effect.fail(
-                cfgErr("accounts.add.id", `account id="${id}" already exists`),
-              )
-            }
-            return yield* Effect.fail(
-              cfgErr("accounts.add", `insert failed: ${msg}`),
-            )
-          }
-          const record: AccountRecord = {
-            id,
-            label,
-            kind,
-            secretRef,
-            inFlight: 0,
-          }
-          yield* Ref.update(ref, (cur) => [...cur, record])
-        })
-
-      const remove: AccountBrokerApi["remove"] = (id) =>
-        Effect.gen(function* () {
-          const trimmed = id.trim()
-          if (!trimmed) {
-            return yield* Effect.fail(
-              cfgErr("accounts.remove", "id is required"),
-            )
-          }
-          const accounts = yield* Ref.get(ref)
-          if (!accounts.some((a) => a.id === trimmed)) {
-            return yield* Effect.fail(
-              cfgErr("accounts.remove", `no such account: ${trimmed}`),
-            )
-          }
-          try {
-            const result = db
-              .query("DELETE FROM accounts WHERE id = ?")
-              .run(trimmed)
-            if (result.changes === 0) {
-              return yield* Effect.fail(
-                cfgErr("accounts.remove", `no such account: ${trimmed}`),
-              )
-            }
-          } catch (e) {
-            return yield* Effect.fail(
-              cfgErr("accounts.remove", `delete failed: ${String(e)}`),
-            )
-          }
-          yield* Ref.update(ref, (cur) => cur.filter((a) => a.id !== trimmed))
         })
 
       // Suppress "unused" lint without changing surface — Redacted is
@@ -707,8 +620,6 @@ const fromSql = (
         report,
         _inspect,
         list,
-        add,
-        remove,
         peekFailoverPossible,
       } satisfies AccountBrokerApi
     }),

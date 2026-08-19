@@ -115,7 +115,7 @@ describe('SettingsLauncherPanel (React port of panels/settings.js)', () => {
     const { ctx } = makeCtx()
     const el = renderPanel(ctx)
     const buttons = [...el.querySelectorAll('#launcher-list button')] as HTMLButtonElement[]
-    expect(buttons).toHaveLength(10)
+    expect(buttons).toHaveLength(11)
     expect(buttons.every((b) => b.type === 'button')).toBe(true)
   })
 

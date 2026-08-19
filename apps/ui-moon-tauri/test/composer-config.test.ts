@@ -1306,18 +1306,5 @@ describe('ComposerConfig (chat.html)', () => {
       expect(String(internals().State.wsUrl)).not.toContain('127.0.0.1')
       expect(String(internals().State.wsUrl)).not.toContain('localhost')
     })
-
-    it('Manage accounts… opens settings.accounts without forcing a pin', () => {
-      const invoke = vi.fn(async () => null)
-      ;(window as any).__TAURI__.core = { invoke }
-      internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
-      expect(localStorage.getItem('luna_account')).toBeNull()
-      document.getElementById('account-cfg-btn')!.click()
-      const manage = document.querySelector('[data-testid="account-manage-btn"]') as HTMLButtonElement
-      expect(manage).toBeTruthy()
-      manage.click()
-      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.accounts' })
-      expect(localStorage.getItem('luna_account')).toBeNull()
-    })
   })
 })

@@ -927,15 +927,6 @@ function AccountMenuView({ store, onSelect }: { store: ComposerConfigStore; onSe
   const snap = useComposerSnapshot(store)
   const autoItem = snap.accountMenuItems[0]
   const rest = snap.accountMenuItems.slice(1)
-
-  function openAccountsManager(): void {
-    const core = (window as unknown as {
-      __TAURI__?: { core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }
-    }).__TAURI__?.core
-    if (!core) return
-    core.invoke("open_widget", { kind: "settings.accounts" }).catch(() => {})
-  }
-
   return (
     <>
       <div className="cfg-menu-hint">Account (Auto keeps failover)</div>
@@ -943,17 +934,6 @@ function AccountMenuView({ store, onSelect }: { store: ComposerConfigStore; onSe
       {rest.map((item) => (
         <MenuItemRow key={item.id} item={item} kind="account" onSelect={onSelect} />
       ))}
-      <button
-        type="button"
-        className="cfg-menu-item cfg-menu-manage"
-        data-testid="account-manage-btn"
-        onClick={(e) => {
-          e.stopPropagation()
-          openAccountsManager()
-        }}
-      >
-        <span>Manage accounts…</span>
-      </button>
     </>
   )
 }

@@ -78,22 +78,6 @@
   font-weight: 600;
 }
 
-.settings-accounts-kind {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-}
-
-.settings-accounts-kind select {
-  font: inherit;
-  padding: 6px 8px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-  background: transparent;
-  color: inherit;
-}
-
 .settings-accounts-status {
   margin: 0;
   font-size: 12px;

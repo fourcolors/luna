@@ -196,6 +196,12 @@ export interface HelloFrame {
      */
     readonly modelRouting?: boolean
     /**
+     * Account manage (Moon Settings Accounts): server routes `account-add` /
+     * `account-rm` (SQLite write + scheduleRestart). OPTIONAL/additive —
+     * clients hide the Accounts settings tab when absent/false.
+     */
+    readonly accountManage?: boolean
+    /**
      * Capability layer (backend-advertised commands): the server has a
      * capabilityRegistry bound — it sends a `capability-catalog` frame after
      * `hello` and routes `capability-execute`. OPTIONAL/additive (no protocol

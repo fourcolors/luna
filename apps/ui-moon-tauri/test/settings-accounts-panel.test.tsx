@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 /**
- * Settings Accounts panel: list two Anthropic rows; add then remove updates
- * the shared accounts list via account-list pushes; secret-ref never echoed
- * in status text.
+ * Settings Accounts: list two Anthropic rows; add/remove frames; capability gate.
+ * Does not touch composer-config (#545).
  */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
@@ -20,6 +19,7 @@ import {
   SETTINGS_ACCOUNTS_PANEL_TYPES,
 } from "../frontend-react/src/panels/settings-accounts-mount"
 import {
+  FIXED_ACCOUNT_KIND,
   healthLabel,
   initialAccountsPanelState,
   reduceAccountsPanel,
@@ -53,7 +53,6 @@ function makeCtx(): {
   ctx: PanelCtx
   fireFrame: (frame: Record<string, unknown>) => void
   sent: Record<string, unknown>[]
-  setSocketOpen: (open: boolean) => void
 } {
   let registry: LunaFrameRegistry | null = null
   let open = true
@@ -90,9 +89,6 @@ function makeCtx(): {
       registry.dispatch(frame)
     },
     sent,
-    setSocketOpen: (v) => {
-      open = v
-    },
   }
 }
 
@@ -142,6 +138,7 @@ afterEach(() => {
 describe("accountsReducer", () => {
   it("wipes secret-ref on submit-add-started and clears form on ok add", () => {
     let s = initialAccountsPanelState()
+    s = reduceAccountsPanel(s, { type: "capability", supported: true })
     s = reduceAccountsPanel(s, { type: "id-changed", value: "account-secondary-1" })
     s = reduceAccountsPanel(s, { type: "label-changed", value: "secondary" })
     s = reduceAccountsPanel(s, {
@@ -152,24 +149,54 @@ describe("accountsReducer", () => {
     expect(s.secretRefInput).toBe("")
     s = reduceAccountsPanel(s, {
       type: "account-status-received",
-      frame: { requestId: "r1", ok: true, message: "added" },
+      frame: { requestId: "r1", ok: true, message: "Account added. Restarting to apply." },
     })
     expect(s.idInput).toBe("")
     expect(s.statusLine?.kind).toBe("ok")
+    expect(s.statusLine?.text).not.toContain("claude-code:login")
   })
 
-  it("healthLabel maps rate_limited and spent", () => {
+  it("healthLabel maps rate_limited", () => {
     expect(healthLabel("rate_limited")).toBe("rate limited")
-    expect(healthLabel("spent")).toBe("spent")
     expect(healthLabel("healthy")).toBe("healthy")
+  })
+
+  it("FIXED_ACCOUNT_KIND is anthropic", () => {
+    expect(FIXED_ACCOUNT_KIND).toBe("anthropic")
   })
 })
 
 describe("SettingsAccountsPanel", () => {
+  it("hides manage UI when hello lacks accountManage", () => {
+    const { ctx, fireFrame } = makeCtx()
+    renderPanel(ctx)
+    act(() => {
+      fireFrame({
+        type: "hello",
+        protocolVersion: 2,
+        kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, setup: false },
+      })
+    })
+    expect(document.querySelector('[data-testid="account-manage-unsupported"]')).toBeTruthy()
+    expect(document.querySelector('[data-testid="account-add-submit"]')).toBeNull()
+  })
+
   it("renders two Anthropic rows from account-list", () => {
     const { ctx, fireFrame } = makeCtx()
     renderPanel(ctx)
     act(() => {
+      fireFrame({
+        type: "hello",
+        protocolVersion: 2,
+        kinds: [],
+        capabilities: {
+          chat: true,
+          streamingDeltas: true,
+          setup: false,
+          accountManage: true,
+        },
+      })
       fireFrame({
         type: "account-list",
         accounts: [
@@ -187,7 +214,6 @@ describe("SettingsAccountsPanel", () => {
     expect(document.querySelector('[data-testid="account-row-account-secondary-1"]')).toBeTruthy()
     expect(container!.textContent).toContain("Claude.ai")
     expect(container!.textContent).toContain("secondary")
-    expect(container!.textContent).toContain("rate limited")
   })
 
   it("add then remove updates the list via account-list pushes", () => {
@@ -195,6 +221,17 @@ describe("SettingsAccountsPanel", () => {
     renderPanel(ctx)
 
     act(() => {
+      fireFrame({
+        type: "hello",
+        protocolVersion: 2,
+        kinds: [],
+        capabilities: {
+          chat: true,
+          streamingDeltas: true,
+          setup: false,
+          accountManage: true,
+        },
+      })
       fireFrame({
         type: "account-list",
         accounts: [
@@ -212,7 +249,6 @@ describe("SettingsAccountsPanel", () => {
     })
 
     const addFrame = sent.find((f) => f.type === "account-add")
-    expect(addFrame).toBeTruthy()
     expect(addFrame).toMatchObject({
       type: "account-add",
       id: "account-secondary-1",
@@ -227,7 +263,7 @@ describe("SettingsAccountsPanel", () => {
         type: "account-status",
         requestId: addFrame!.requestId,
         ok: true,
-        message: "added",
+        message: "Account added. Restarting to apply.",
       })
       fireFrame({
         type: "account-list",
@@ -243,9 +279,6 @@ describe("SettingsAccountsPanel", () => {
       })
     })
     expect(document.querySelector('[data-testid="account-row-account-secondary-1"]')).toBeTruthy()
-    expect(document.querySelector('[data-testid="account-status"]')?.textContent).not.toContain(
-      "claude-code:login",
-    )
 
     act(() => {
       ;(
@@ -268,7 +301,7 @@ describe("SettingsAccountsPanel", () => {
         type: "account-status",
         requestId: rmFrame!.requestId,
         ok: true,
-        message: "removed",
+        message: "Account removed. Restarting to apply.",
       })
       fireFrame({
         type: "account-list",

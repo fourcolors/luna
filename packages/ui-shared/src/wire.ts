@@ -170,6 +170,9 @@ export interface HelloFrame {
      *  hello and routes `model-routing-save`. OPTIONAL/additive — absent on
      *  older servers. Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
     readonly modelRouting?: boolean
+    /** Account manage: server routes account-add/rm (SQL + restart).
+     *  OPTIONAL/additive — clients hide Accounts settings when absent. */
+    readonly accountManage?: boolean
     /** PRD Part C (Apps): server resolves `ui://` app resources + routes
      *  mcp-resource-read/mcp-tool-call. Lets a client render kind="mcp-app"
      *  artifacts live (vs source). OPTIONAL/additive — mirrors protocol.ts. */

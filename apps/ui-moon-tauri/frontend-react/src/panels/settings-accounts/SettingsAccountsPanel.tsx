@@ -1,12 +1,9 @@
 /**
- * SettingsAccountsPanel.tsx - Moon Settings surface for AccountBroker rows
- * (id / label / kind / health). Distinct from SettingsModelsPanel (provider
- * enable + credentialRef). Composer Auto/pin from #545 is unchanged —
- * managing accounts never forces a pin.
+ * SettingsAccountsPanel.tsx - Moon Settings for AccountBroker rows
+ * (id / label / kind / health). Distinct from SettingsModelsPanel.
  *
- * WS: account-list (shared store) + account-add / account-rm → account-status.
- * secretRef is a POINTER only; the add form uses a password-masked input and
- * never logs or re-renders the value after submit.
+ * Mutations: account-add / account-rm → SQLite + server restart (no broker
+ * hot-reload). Composer Auto/pin (#545) is untouched.
  */
 import { useEffect, useRef } from "react"
 import type { Action } from "@luna/ui-shared/core"
@@ -14,7 +11,7 @@ import { Badge, type BadgeVariant, Button, TextInput } from "../../astryx-kit"
 import { useLocalStore, useMoonSelector, useMoonStore } from "../../state/store"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
 import {
-  ACCOUNT_KIND_OPTIONS,
+  FIXED_ACCOUNT_KIND,
   healthLabel,
   initialAccountsPanelState,
   newReqId,
@@ -56,6 +53,11 @@ function healthBadgeVariant(health: string): BadgeVariant {
   return "neutral"
 }
 
+function helloHasAccountManage(frame: unknown): boolean {
+  const f = frame as { capabilities?: { accountManage?: unknown } } | null | undefined
+  return !!(f && f.capabilities && f.capabilities.accountManage)
+}
+
 export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
   const store = useMoonStore()
   const accounts = useMoonSelector(store, (s) => s.accounts) as ReadonlyArray<AccountRow>
@@ -73,6 +75,7 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
 
     registry.register("hello", (frame) => {
       store.dispatch(frame as Action)
+      local.dispatch({ type: "capability", supported: helloHasAccountManage(frame) })
     })
 
     registry.register("account-list", (frame) => {
@@ -101,7 +104,6 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
   function submitAdd(): void {
     const id = state.idInput.trim()
     const label = state.labelInput.trim()
-    const kind = state.kindInput.trim() || "anthropic"
     const secretRef = state.secretRefInput.trim()
     if (!id || !label || !secretRef) {
       local.dispatch({
@@ -126,7 +128,7 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
       requestId,
       id,
       label,
-      kind,
+      kind: FIXED_ACCOUNT_KIND,
       secretRef,
     })
     if (!sent) {
@@ -163,11 +165,23 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
     }
   }
 
+  if (state.supported === false) {
+    return (
+      <div className="moon-astryx-root settings-accounts" data-testid="settings-accounts">
+        <p className="settings-accounts-lead" data-testid="account-manage-unsupported">
+          This server doesn&apos;t support managing accounts from Moon. Use{" "}
+          <code>luna account add|list|rm</code> on the host, then restart.
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="moon-astryx-root settings-accounts" data-testid="settings-accounts">
       <p className="settings-accounts-lead">
-        Provider accounts for Luna failover. Composer Auto still omits accountId —
-        managing here does not pin a thread.
+        Anthropic provider accounts for Luna failover. Changes write to the server
+        database and restart so AccountBroker reloads. Composer Auto still omits
+        accountId.
       </p>
 
       <section className="settings-accounts-list" aria-label="Accounts">
@@ -217,7 +231,7 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
       </section>
 
       <section className="settings-accounts-add" aria-label="Add account">
-        <h3 className="settings-accounts-add-title">Add account</h3>
+        <h3 className="settings-accounts-add-title">Add Anthropic account</h3>
         <TextInput
           label="Id"
           size="sm"
@@ -234,20 +248,6 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
           onChange={(value) => local.dispatch({ type: "label-changed", value })}
           placeholder="secondary"
         />
-        <label className="settings-accounts-kind">
-          <span>Kind</span>
-          <select
-            data-testid="account-kind-input"
-            value={state.kindInput}
-            onChange={(e) => local.dispatch({ type: "kind-changed", value: e.target.value })}
-          >
-            {ACCOUNT_KIND_OPTIONS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-        </label>
         <TextInput
           label="Secret ref"
           size="sm"

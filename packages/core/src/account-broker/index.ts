@@ -1,10 +1,8 @@
 export {
   AccountBroker,
-  deriveAccountHealth,
   type AccountBrokerApi,
   type AccountSeed,
   type AccountSummary,
-  type AccountAddInput,
   type AccountError,
   type Credential,
   type AcquiredSession,
@@ -17,12 +15,6 @@ export {
   type SpendUpdate,
   type UsageTokens,
 } from "./spend-meter.js"
-export {
-  validateAccountKind,
-  validateAccountSecretRef,
-  accountSecretRefError,
-  FILE_SECRET_REF_ERROR,
-} from "./account-refs.js"
 export type { FromSqlOptions } from "./account-broker-sql.js"
 
 import { AccountBrokerLayer as InMemoryLayer } from "./account-broker.js"
@@ -40,3 +32,20 @@ export const AccountBrokerLayer = {
   ...InMemoryLayer,
   fromSql,
 } as const
+
+export {
+  validateAccountKind,
+  validateAccountSecretRef,
+  accountSecretRefError,
+  FILE_SECRET_REF_ERROR,
+} from "./account-refs.js"
+export {
+  validateAccountAddInput,
+  listAccountsFromDb,
+  addAccountToDb,
+  removeAccountFromDb,
+  type AccountManageRow,
+  type AccountManageResult,
+  type AccountManageDb,
+  type AccountAddInput,
+} from "./account-manage.js"
