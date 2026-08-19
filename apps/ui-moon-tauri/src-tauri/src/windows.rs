@@ -180,7 +180,19 @@ pub(crate) fn write_panel_layout(app: &tauri::AppHandle) {
             }));
         }
     }
-    let doc = serde_json::json!({ "version": 1, "panels": entries });
+    let mut doc = serde_json::json!({ "version": 1, "panels": entries });
+    // The moon orb's own position — the one window with no other home. Moon
+    // OWNS orb placement now: tauri.conf.json sets no position and nothing in
+    // the app ever wrote one, so placement was left to AppKit's default
+    // choice, which proved non-deterministic on multi-display setups (live
+    // incident: every clean launch parked the orb at x=-307, off the main
+    // display, with no writer anywhere in the app). Saved on every layout
+    // write and on orb drag end; restored CLAMPED on-screen at boot.
+    if let Some(moon) = app.get_webview_window("main") {
+        if let Some((x, y, _w, _h)) = window_logical_rect(&moon) {
+            doc["moon"] = serde_json::json!({ "x": x, "y": y });
+        }
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -395,6 +407,15 @@ pub(crate) async fn open_widget(
         if let (Some(px), Some(py)) = (x, y) {
             let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(px, py)));
         }
+        // A panel the user OS-minimized via the yellow traffic-light is
+        // miniaturized in the Dock, and on macOS NEITHER show() NOR
+        // set_focus() deminiaturizes — so every existing-window reopen path
+        // (hub fresh-thread, server widget-open frames, the wizard's "Start
+        // chatting", the expand fallback) left it stranded as a Dock/shelf
+        // tile: alive in the AX tree, never composited. Same rule as
+        // expand_out_of_moon and redock_thread: unminimize first (a no-op on
+        // non-minimized windows).
+        let _ = win.unminimize();
         let _ = win.show();
         if should_focus {
             let _ = win.set_focus();
@@ -425,8 +446,11 @@ pub(crate) async fn open_artifact_widget(
     height: Option<f64>,
 ) -> Result<String, String> {
     let label = widget_label(&artifact_id);
-    // Already open → focus, don't spawn a duplicate.
+    // Already open → focus, don't spawn a duplicate. Unminimize first: on
+    // macOS neither show() nor set_focus() deminiaturizes an OS-minimized
+    // window (see the same rule in open_widget above).
     if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(label);
@@ -646,6 +670,307 @@ fn window_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)>
         (f64::from(s.height) / sf).round() as i32,
     ))
 }
+// ── On-screen position clamping ──────────────────────────────────────────────
+//
+// Nothing guarantees a window stays on a connected display: a display-topology
+// change (or a drag that ended past the edge) can leave a window parked at a
+// negative X where no display exists. For a panel that is an annoyance; for
+// the moon ORB it is fatal — the orb and the widgets are mutually exclusive
+// (lifecycle.rs), so an off-screen orb leaves the user with NO clickable Luna
+// surface at all (reads as "Moon won't open"). The boot-time layout restore
+// and every path that (re)shows the orb clamp through here.
+
+/// Minimum logical points of a window's top-left that must stay reachable
+/// inside a monitor so its title bar / body can always be grabbed.
+pub(crate) const ON_SCREEN_MARGIN: f64 = 80.0;
+
+/// Logical bounds `((x, y), (w, h))` of every connected monitor.
+pub(crate) fn monitor_bounds(app: &tauri::AppHandle) -> Vec<((f64, f64), (f64, f64))> {
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let sf = m.scale_factor();
+            (
+                (
+                    f64::from(m.position().x) / sf,
+                    f64::from(m.position().y) / sf,
+                ),
+                (m.size().width as f64 / sf, m.size().height as f64 / sf),
+            )
+        })
+        .collect()
+}
+
+/// Clamp a logical top-left point onto a currently-visible display. The point
+/// clamps into the monitor that CONTAINS it (multi-display setups); when no
+/// monitor contains it (display unplugged, stale layout, drag past the edge),
+/// it clamps into the FIRST monitor rather than staying stranded off every
+/// display. An empty monitor list (headless race at boot) returns the point
+/// unchanged — never invent a position.
+pub(crate) fn clamp_point_to_monitors(
+    monitors: &[((f64, f64), (f64, f64))],
+    x: f64,
+    y: f64,
+) -> (f64, f64) {
+    if monitors.is_empty() {
+        return (x, y);
+    }
+    let containing = monitors
+        .iter()
+        .find(|((mx, my), (mw, mh))| x >= *mx && x < mx + mw && y >= *my && y < my + mh);
+    let ((mx, my), (mw, mh)) = containing.unwrap_or(&monitors[0]);
+    (
+        x.clamp(*mx, (mx + mw - ON_SCREEN_MARGIN).max(*mx)),
+        y.clamp(*my, (my + mh - ON_SCREEN_MARGIN).max(*my)),
+    )
+}
+
+/// Is a logical top-left point on ANY connected monitor?
+pub(crate) fn point_on_any_monitor(
+    monitors: &[((f64, f64), (f64, f64))],
+    x: f64,
+    y: f64,
+) -> bool {
+    monitors
+        .iter()
+        .any(|((mx, my), (mw, mh))| x >= *mx && x < mx + mw && y >= *my && y < my + mh)
+}
+
+/// Move `win` back onto a visible display if its top-left is off every
+/// monitor (or within the grab margin of a far edge). Best-effort: missing
+/// geometry (no monitors yet, no window rect) leaves the window untouched.
+pub(crate) fn ensure_window_on_visible_display(win: &tauri::WebviewWindow) {
+    let monitors = monitor_bounds(win.app_handle());
+    let Some((x, y, _w, _h)) = window_logical_rect(win) else {
+        return;
+    };
+    let (cx, cy) = clamp_point_to_monitors(&monitors, f64::from(x), f64::from(y));
+    if (cx - f64::from(x)).abs() >= 1.0 || (cy - f64::from(y)).abs() >= 1.0 {
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(cx, cy)));
+    }
+}
+
+/// Moved-event guard for the ORB (live incident): something OUTSIDE Moon's
+/// own code — a display-topology change, stale AppKit saved state after a
+/// non-clean relaunch, an external mover — can park the orb with its top-left
+/// off every connected display, where the user cannot click it. This guard
+/// pulls it back whenever that happens, no matter who moved it.
+///
+/// It deliberately acts ONLY when the top-left is on NO monitor at all: a
+/// user drag that intentionally hangs the orb over an edge (top-left still on
+/// a display) is respected, and our own corrective `set_position` lands the
+/// window ON a monitor, so the next Moved event is a no-op — the guard
+/// converges instead of looping.
+pub(crate) fn reclamp_if_stranded(win: &tauri::WebviewWindow) {
+    let monitors = monitor_bounds(win.app_handle());
+    if monitors.is_empty() {
+        return;
+    }
+    let Some((x, y, _w, _h)) = window_logical_rect(win) else {
+        return;
+    };
+    if point_on_any_monitor(&monitors, f64::from(x), f64::from(y)) {
+        return;
+    }
+    let (cx, cy) = clamp_point_to_monitors(&monitors, f64::from(x), f64::from(y));
+    let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(cx, cy)));
+}
+
+/// Opt a window out of macOS window-state restoration (Lion "Resume",
+/// `~/Library/Saved Application State/`). Moon owns its own layout
+/// persistence — `~/.luna/layout.json` plus the boot restore in main.rs — so
+/// AppKit's saved state must never compete: after a NON-clean exit (the
+/// auto-updater's relaunch, a force kill) restoration re-imposes STALE frames
+/// and visibility from the previous session — an off-screen orb frame, a
+/// window that exists in the AX tree but never composites — over whatever
+/// Moon's own restore just did. Best-effort, like the rest of the native
+/// chrome finalization.
+///
+/// Binding verified two ways from the Linux dev sandbox: against the
+/// objc2-app-kit 0.3.2 crate source (safe `pub fn setRestorable(&self, bool)`
+/// in generated/NSWindowRestoration.rs, gated on the `NSWindowRestoration` +
+/// `NSResponder` features now enabled in Cargo.toml), and TYPE-CHECKED for
+/// the real Apple target (`cargo check --target aarch64-apple-darwin` on an
+/// isolated probe crate pinning the same versions/features, exercising this
+/// exact call plus configure_orb_window's collection-behavior union and
+/// activate_app's activation). A full macOS build/link and the live Stage
+/// Manager behavior check still require a real Mac.
+#[cfg(target_os = "macos")]
+pub(crate) fn disable_window_state_restoration(window: &tauri::WebviewWindow) {
+    let _ = with_appkit_main_thread(window.clone(), |win| {
+        use objc2_app_kit::NSWindow;
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            ns_win.setRestorable(false);
+        }
+        Ok(())
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn disable_window_state_restoration(_window: &tauri::WebviewWindow) {}
+
+/// One-time native behavior for the moon ORB (window "main"): a floating
+/// desktop companion that must never be shelved or parked by the window
+/// manager. Live incident: with Stage Manager active, the orb of an
+/// inactive Moon was managed into the LEFT-EDGE TILE STRIP (the
+/// WindowManager-owned icon-sized tiles at x≈-307, alongside every other
+/// inactive app's tiles) — the only Luna surface on screen was a shelf
+/// thumbnail, unclickable as a window, which reads as "Moon won't open".
+///
+/// - `CanJoinAllSpaces`: the orb follows the user onto every Space/stage —
+///   an always-on-top companion, like a picture-in-picture window, is
+///   pointless on a Space the user is not looking at. Windows with this
+///   behavior are not stage-managed into the strip.
+/// - `Stationary`: Exposé / Spaces transitions leave it alone.
+/// - `IgnoresCycle`: Cmd-` window cycling skips the orb (it is a launcher
+///   puck, not a document window).
+///
+/// The widget/panel windows deliberately do NOT get this: they are normal
+/// workspace windows and SHOULD be managed like any app's windows; their
+/// fix is `expand_out_of_moon` focusing one of them so the app activates
+/// and its stage (real, composited windows) swaps in.
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_orb_window(window: &tauri::WebviewWindow) {
+    let _ = with_appkit_main_thread(window.clone(), |win| {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            ns_win.setCollectionBehavior(
+                ns_win.collectionBehavior()
+                    | NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::IgnoresCycle,
+            );
+        }
+        Ok(())
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn configure_orb_window(_window: &tauri::WebviewWindow) {}
+
+/// Explicitly activate Moon regardless of any single window's focusability.
+///
+/// Under Stage Manager only the ACTIVE app's stage is composited; an
+/// inactive app's windows sit as left-strip shelf tiles (live incident:
+/// panel-chat AX-present with no CG surface, the orb a 121×128 tile at
+/// x≈-307). tao's `set_focus` does activate the app — but it silently
+/// no-ops when its target window reports not-visible at call time, and
+/// expand must NEVER lose the activation to that early-return: activation
+/// is the one call that swaps Moon's composited stage in. The `window`
+/// argument is only a handle to reach the AppKit main thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn activate_app(window: &tauri::WebviewWindow) {
+    let _ = with_appkit_main_thread(window.clone(), |_win| {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Ok(());
+        };
+        // activateIgnoringOtherApps is soft-deprecated in favor of
+        // activate(), but activate() (macOS 14 cooperative activation) may
+        // decline when another app is frontmost — and expand IS the user's
+        // explicit "bring Moon forward" gesture, so the assertive form is
+        // the correct one here.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        Ok(())
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn activate_app(_window: &tauri::WebviewWindow) {}
+
+#[cfg(test)]
+mod clamp_tests {
+    use super::{clamp_point_to_monitors, point_on_any_monitor};
+
+    /// The live-incident topology: a 2560×1440 main display at (0,0) plus a
+    /// built-in display below it. The orb was parked at (-307, 393) — off the
+    /// left edge where no display exists — leaving nothing clickable.
+    fn dual_monitors() -> Vec<((f64, f64), (f64, f64))> {
+        vec![
+            ((0.0, 0.0), (2560.0, 1440.0)),
+            ((560.0, 1440.0), (1512.0, 982.0)),
+        ]
+    }
+
+    #[test]
+    fn point_off_the_left_edge_clamps_back_onto_the_first_monitor() {
+        // The exact live incident: orb at x=-307 with no display to the left.
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), -307.0, 393.0);
+        assert_eq!((x, y), (0.0, 393.0));
+    }
+
+    #[test]
+    fn point_inside_a_monitor_is_unchanged() {
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), 650.0, 201.0);
+        assert_eq!((x, y), (650.0, 201.0));
+    }
+
+    #[test]
+    fn point_on_a_secondary_monitor_stays_there() {
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), 800.0, 1500.0);
+        assert_eq!((x, y), (800.0, 1500.0));
+    }
+
+    #[test]
+    fn point_near_the_far_edge_keeps_the_grab_margin() {
+        // Top-left just inside the right edge: pulled back so ≥80pt of the
+        // window stays reachable (2560 − 80 = 2480).
+        let (x, _) = clamp_point_to_monitors(&dual_monitors(), 2555.0, 100.0);
+        assert_eq!(x, 2480.0);
+    }
+
+    #[test]
+    fn point_past_the_bottom_right_of_everything_clamps_into_the_first_monitor() {
+        let (x, y) = clamp_point_to_monitors(&dual_monitors(), 9000.0, 9000.0);
+        assert_eq!((x, y), (2480.0, 1360.0));
+    }
+
+    #[test]
+    fn empty_monitor_list_returns_the_point_unchanged() {
+        // Headless race at boot: never invent (0,0) — a later show re-clamps.
+        assert_eq!(
+            clamp_point_to_monitors(&[], -307.0, 393.0),
+            (-307.0, 393.0)
+        );
+    }
+
+    // ── point_on_any_monitor: the Moved-event guard's trigger condition ──
+
+    #[test]
+    fn stranded_points_are_off_every_monitor_and_contained_points_are_not() {
+        let m = dual_monitors();
+        // Both live observations of the parked orb trigger the guard.
+        assert!(!point_on_any_monitor(&m, -307.0, 393.0));
+        assert!(!point_on_any_monitor(&m, -323.0, 386.0));
+        // On-screen points — including the corrected orb position (15, 408)
+        // and a point on the secondary display — must NOT trigger it, so a
+        // legitimate user drag is never fought.
+        assert!(point_on_any_monitor(&m, 15.0, 408.0));
+        assert!(point_on_any_monitor(&m, 650.0, 201.0));
+        assert!(point_on_any_monitor(&m, 800.0, 1500.0));
+    }
+
+    #[test]
+    fn moved_guard_converges_because_a_clamped_stranded_point_is_on_a_monitor() {
+        // The guard's no-loop invariant: clamping a stranded point always
+        // lands ON a monitor, so the Moved event our own set_position fires
+        // is a no-op — re-parking by an external mover can ping-pong, but
+        // every cycle ends with the orb on-screen.
+        let m = dual_monitors();
+        let (x, y) = clamp_point_to_monitors(&m, -323.0, 386.0);
+        assert!(point_on_any_monitor(&m, x, y));
+        let (x2, y2) = clamp_point_to_monitors(&m, 9000.0, -500.0);
+        assert!(point_on_any_monitor(&m, x2, y2));
+    }
+}
+
 /// AppKit / NSWindow APIs must run on the process main thread. Tauri invokes
 /// commands on a tokio worker — calling objc from there raises an NSException
 /// that Rust cannot catch (`foreign exception → abort`). Dispatch through the
@@ -868,6 +1193,10 @@ pub(crate) async fn capture_window_screenshot(_window: tauri::WebviewWindow) -> 
 /// chrome failure must never fail the command that opened it.
 #[cfg(target_os = "macos")]
 fn finalize_native_window_chrome(window: &tauri::WebviewWindow) {
+    // Every panel/widget opts out of AppKit saved-state restoration: Moon's
+    // own layout.json restore is the single source of truth for frames and
+    // visibility (see disable_window_state_restoration's doc comment).
+    disable_window_state_restoration(window);
     if let Err(e) = configure_native_window_chrome(window) {
         eprintln!(
             "[moon] native chrome setup failed for {}: {e}",

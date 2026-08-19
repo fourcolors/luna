@@ -39,6 +39,25 @@ fn main() {
         // last-window-closed exit fires. The reverse never holds: closing a
         // widget leaves the hub (and the app) alive.
         .on_window_event(|window, event| {
+            // Orb off-screen guard (live incident): something outside Moon's
+            // own code (display-topology change, stale AppKit saved state,
+            // an external mover) can park the orb off every display — and an
+            // unclickable orb is an unopenable Moon. Whenever the orb lands
+            // with its top-left on NO monitor, pull it back on-screen. The
+            // guard only fires for fully-stranded positions, so it never
+            // fights a legitimate drag and converges after its own move.
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Moved(_)) {
+                // The event handler receives a plain Window; the clamp helpers
+                // work on the WebviewWindow, so resolve it via the app handle.
+                if let Some(moon) = window.app_handle().get_webview_window("main") {
+                    windows::reclamp_if_stranded(&moon);
+                }
+                // Persist the orb's (possibly just-corrected) position so the
+                // NEXT launch restores it deterministically — Moon owns orb
+                // placement; AppKit's default choice is never trusted again
+                // (see write_panel_layout's "moon" entry + the boot restore).
+                windows::write_panel_layout(window.app_handle());
+            }
             // Layout persistence (panel-* only): positions settle on Moved
             // (macOS fires it at drag END) and Resized; the Destroyed arm
             // below records removals. Guarded against hub-owned shutdown
@@ -88,6 +107,9 @@ fn main() {
                             .keys()
                             .any(|l| l != window.label() && windows::is_dock_label(l));
                         if !any_widget_left && !moon.is_visible().unwrap_or(true) {
+                            // The orb becomes the ONLY Luna surface — never
+                            // reveal it parked off every display.
+                            windows::ensure_window_on_visible_display(&moon);
                             let _ = moon.show();
                             let _ = moon.set_focus();
                             let _ =
@@ -233,65 +255,96 @@ fn main() {
             lifecycle::clear_webview_cache_if_updated();
 
             // Restore open system panels from ~/.luna/layout.json (design doc
-            // Persistence): positions clamped to the primary monitor so a
-            // display change can't strand a panel off-screen. Unknown kinds
-            // (stale file, removed registry entry) are skipped silently.
+            // Persistence): positions clamped onto a visible monitor so a
+            // display change can't strand a panel off-screen (the shared
+            // clamp in windows.rs; the orb below uses the same one).
             {
                 let handle = app.handle().clone();
-                // Logical bounds of every connected monitor; a saved position
-                // clamps to the monitor that CONTAINS it (multi-display
-                // setups), falling back to the first monitor when the saved
-                // display is gone.
-                let monitors: Vec<((f64, f64), (f64, f64))> = app
-                    .available_monitors()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|m| {
-                        let sf = m.scale_factor();
-                        (
-                            (
-                                f64::from(m.position().x) / sf,
-                                f64::from(m.position().y) / sf,
-                            ),
-                            (m.size().width as f64 / sf, m.size().height as f64 / sf),
-                        )
-                    })
-                    .collect();
-                let clamp_to_monitors = move |x: f64, y: f64| -> (f64, f64) {
-                    if monitors.is_empty() {
-                        return (x, y);
-                    }
-                    let containing = monitors.iter().find(|((mx, my), (mw, mh))| {
-                        x >= *mx && x < mx + mw && y >= *my && y < my + mh
-                    });
-                    let ((mx, my), (mw, mh)) = containing.unwrap_or(&monitors[0]);
-                    (
-                        x.clamp(*mx, (mx + mw - 80.0).max(*mx)),
-                        y.clamp(*my, (my + mh - 80.0).max(*my)),
-                    )
-                };
+                let monitors = windows::monitor_bounds(&handle);
+                // Rows the file LISTED vs windows that actually SPAWNED: a
+                // stale layout (unknown kind, spawn failure) must never leave
+                // the user with only the orb — see the fallback below.
+                let mut listed = 0usize;
+                let mut spawned = 0usize;
+                // The orb's own saved position (write_panel_layout's "moon"
+                // entry) — applied clamped further below, after the panels.
+                let mut saved_moon: Option<(f64, f64)> = None;
                 if let Some(path) = windows::layout_path() {
                     if let Ok(raw) = std::fs::read_to_string(&path) {
                         if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            saved_moon = doc["moon"]["x"]
+                                .as_f64()
+                                .zip(doc["moon"]["y"].as_f64());
                             // Restore each panel independently at its saved,
                             // clamped rect. No dock graph is reconstructed.
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
                                 let Some(kind) = p["kind"].as_str() else {
                                     continue;
                                 };
+                                listed += 1;
                                 let Some(desc) = windows::registry_lookup(kind) else {
                                     continue;
                                 };
-                                let (x, y) = clamp_to_monitors(
+                                let (x, y) = windows::clamp_point_to_monitors(
+                                    &monitors,
                                     p["x"].as_f64().unwrap_or(180.0),
                                     p["y"].as_f64().unwrap_or(160.0),
                                 );
                                 let w = p["w"].as_f64().filter(|v| *v >= 220.0);
                                 let h = p["h"].as_f64().filter(|v| *v >= 120.0);
-                                let _ = windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h);
+                                if let Ok(label) =
+                                    windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h)
+                                {
+                                    // Restore must produce a VISIBLE window,
+                                    // not an AX-only ghost: if anything (e.g.
+                                    // AppKit saved state applied on relaunch)
+                                    // left the fresh window un-ordered-in,
+                                    // show() it again — idempotent otherwise.
+                                    if let Some(w) = handle.get_webview_window(&label) {
+                                        if !w.is_visible().unwrap_or(true) {
+                                            let _ = w.show();
+                                        }
+                                    }
+                                    spawned += 1;
+                                }
                             }
                         }
                     }
+                }
+                // The layout listed panels but restore produced NONE (stale
+                // kinds, spawn errors): open the chat as the default widget
+                // so the workspace the user expects actually exists — a stale
+                // layout row must never strand them with only the orb.
+                if listed > 0 && spawned == 0 {
+                    if let Some(desc) = windows::registry_lookup("chat") {
+                        let _ = windows::spawn_panel(&handle, desc, None, None, None, None);
+                    }
+                }
+                // The orb itself. Opt it out of AppKit saved-state
+                // restoration (which re-imposes stale frames/visibility after
+                // a non-clean relaunch, e.g. the auto-updater's); apply
+                // Moon's OWN saved orb position — clamped, so a stale saved
+                // point from a changed display arrangement still lands
+                // on-screen; then the stranded-check covers the no-saved-
+                // position case (first launch / pre-"moon"-entry layout
+                // file), where AppKit's default placement proved able to
+                // park the orb off every display (live incident: x=-307 on
+                // every clean launch, written by nothing in the app).
+                // Panels/widgets get the same restoration opt-out in
+                // finalize_native_window_chrome.
+                if let Some(moon) = app.get_webview_window("main") {
+                    windows::disable_window_state_restoration(&moon);
+                    // Floating-companion behavior: every Space, never shelved
+                    // into the Stage Manager tile strip, skipped by Cmd-`
+                    // cycling (see configure_orb_window's doc comment).
+                    windows::configure_orb_window(&moon);
+                    if let Some((sx, sy)) = saved_moon {
+                        let (cx, cy) = windows::clamp_point_to_monitors(&monitors, sx, sy);
+                        let _ = moon.set_position(tauri::Position::Logical(
+                            tauri::LogicalPosition::new(cx, cy),
+                        ));
+                    }
+                    windows::ensure_window_on_visible_display(&moon);
                 }
             }
             // Voice pipeline controller (lazy: no mic/model touched until the

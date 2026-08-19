@@ -32,6 +32,10 @@ pub(crate) fn collapse_into_moon(app: &tauri::AppHandle) {
         }
     }
     if let Some(moon) = windows.get("main") {
+        // The orb is about to become the ONLY Luna surface (widgets are now
+        // hidden) — never reveal it parked off every display, or the user has
+        // nothing clickable and Moon reads as "won't open".
+        crate::windows::ensure_window_on_visible_display(moon);
         let _ = moon.show();
         let _ = moon.set_focus();
         let _ = app.emit_to(tauri::EventTarget::labeled("main"), "moon-absorb", ());
@@ -44,7 +48,7 @@ pub(crate) fn collapse_into_moon(app: &tauri::AppHandle) {
 /// lands somewhere.
 pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
     let windows = app.webview_windows();
-    let mut shown = 0usize;
+    let mut shown_labels: Vec<String> = Vec::new();
     for (label, win) in &windows {
         if crate::windows::is_dock_label(label) {
             // A card the user OS-minimized via the native yellow traffic-light
@@ -52,23 +56,82 @@ pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
             // on macOS, so unminimize first — otherwise the card is stranded in
             // the Dock with no in-app way back. No-op on non-minimized windows.
             let _ = win.unminimize();
+            // A display change while collapsed can strand a hidden card off
+            // every monitor; clamp before revealing so expand always produces
+            // a reachable window.
+            crate::windows::ensure_window_on_visible_display(win);
             let _ = win.show();
-            shown += 1;
+            // Count only windows that actually BECAME visible: a card that
+            // show() could not order in (live incident: an AX-only window
+            // with no compositor surface) must not satisfy the expand, or
+            // the user ends with the orb hidden and nothing on screen. When
+            // none become visible, the empty fallback below opens (or
+            // re-shows, via open_widget's existing-window path) the chat.
+            if win.is_visible().unwrap_or(false) {
+                shown_labels.push(label.clone());
+            }
+        }
+    }
+    // Focus ONE revealed widget (the chat when it is among them): show()
+    // orders a window in but does NOT activate the app, and under Stage
+    // Manager an inactive app's windows stay shelved as left-strip tiles
+    // instead of compositing (live incident: panel-chat existed in the AX
+    // tree at its layout rect with no CG surface while WindowManager tiles
+    // sat at x≈-307). set_focus makes the window key AND activates the app,
+    // so Moon's stage — real, composited windows — swaps in.
+    if let Some(label) = pick_expand_focus_target(&shown_labels) {
+        if let Some(win) = windows.get(label) {
+            let _ = win.set_focus();
+            // set_focus silently no-ops when its target reports not-visible
+            // at call time — but the ACTIVATION must never be lost, or Stage
+            // Manager keeps every Moon window shelved as a strip tile. Make
+            // it unconditional (idempotent when set_focus already did it).
+            crate::windows::activate_app(win);
         }
     }
     if let Some(moon) = windows.get("main") {
         let _ = moon.hide();
     }
-    if shown == 0 {
+    if shown_labels.is_empty() {
         // No widgets to restore → open the chat. open_widget is async and shows
         // the window itself; spawn it so this stays callable from sync contexts
-        // (the global-shortcut closure and the sync command wrapper).
+        // (the global-shortcut closure and the sync command wrapper). If even
+        // the chat cannot open, bring the orb back — the moon was just hidden
+        // above, and an expand that produces NOTHING must never leave the
+        // user with an empty desktop.
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = crate::windows::open_widget(app2, "chat".to_string(), None, None, None, None)
-                .await;
+            let opened = crate::windows::open_widget(
+                app2.clone(),
+                "chat".to_string(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+            if opened.is_err() {
+                if let Some(moon) = app2.get_webview_window("main") {
+                    crate::windows::ensure_window_on_visible_display(&moon);
+                    let _ = moon.show();
+                    let _ = moon.set_focus();
+                }
+            }
         });
     }
+}
+
+/// Which revealed widget should take focus after an expand — the main chat
+/// line when it is among them (the surface the user almost always wants),
+/// otherwise any revealed widget. `None` only when nothing became visible
+/// (the caller then falls back to opening the chat). Pure and unit-tested:
+/// the focus is what ACTIVATES the app, which is what makes Stage Manager
+/// swap Moon's real windows in instead of leaving shelf tiles.
+fn pick_expand_focus_target(shown: &[String]) -> Option<&String> {
+    shown
+        .iter()
+        .find(|l| l.as_str() == "panel-chat")
+        .or_else(|| shown.first())
 }
 
 /// Collapse the whole workspace into the moon (a widget's minimize button / the
@@ -85,6 +148,45 @@ pub(crate) fn collapse_to_moon(app: tauri::AppHandle) -> Result<(), String> {
 pub(crate) fn expand_from_moon(app: tauri::AppHandle) -> Result<(), String> {
     expand_out_of_moon(&app);
     Ok(())
+}
+
+#[cfg(test)]
+mod expand_focus_tests {
+    use super::pick_expand_focus_target;
+
+    fn labels(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn prefers_the_main_chat_line_when_present() {
+        let shown = labels(&["panel-vault", "panel-chat", "widget-abc123"]);
+        assert_eq!(
+            pick_expand_focus_target(&shown).map(String::as_str),
+            Some("panel-chat")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_any_revealed_widget_without_chat() {
+        let shown = labels(&["panel-vault", "widget-abc123"]);
+        assert_eq!(
+            pick_expand_focus_target(&shown).map(String::as_str),
+            Some("panel-vault")
+        );
+    }
+
+    #[test]
+    fn nothing_revealed_focuses_nothing_so_the_chat_fallback_owns_it() {
+        assert_eq!(pick_expand_focus_target(&[]), None);
+        // A parallel chat instance is NOT the main line; it still wins only
+        // as "any revealed widget", never by the panel-chat fast path.
+        let shown = labels(&["panel-chat-abc123"]);
+        assert_eq!(
+            pick_expand_focus_target(&shown).map(String::as_str),
+            Some("panel-chat-abc123")
+        );
+    }
 }
 
 /// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
