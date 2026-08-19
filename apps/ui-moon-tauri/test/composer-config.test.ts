@@ -1225,4 +1225,86 @@ describe('ComposerConfig (chat.html)', () => {
       expect(internals().State.threadModels['12345']).toBe('claude-fable-5')
     })
   })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Account switcher (UI-only). Contract mirrors
+  // packages/ui-shared/src/account-switcher.reducer.test.ts:
+  // no auto-select on account-list; preserve pin on reconnect.
+  // Auto omits accountId (keeps server failover #398); pin sends it (sticky).
+  describe('account switcher (composer pill)', () => {
+    const twoAnthropic = [
+      { id: 'acc-a', label: 'Primary', kind: 'anthropic', health: 'healthy' },
+      { id: 'acc-b', label: 'Backup', kind: 'anthropic', health: 'rate_limited' },
+    ]
+
+    function interceptWsSend() {
+      const sent: any[] = []
+      vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((frame: any) => {
+        sent.push(frame)
+      })
+      return sent
+    }
+
+    it('account-list does not auto-select (stays Auto / null)', () => {
+      internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
+      expect(localStorage.getItem('luna_account')).toBeNull()
+      expect(document.getElementById('account-cfg-btn')!.hidden).toBe(false)
+      expect(document.getElementById('account-cfg-btn')!.textContent).toContain('Auto')
+    })
+
+    it('hides the pill when fewer than two Anthropic accounts', () => {
+      internals().handleFrame({
+        type: 'account-list',
+        accounts: [{ id: 'solo', label: 'Only', kind: 'anthropic', health: 'healthy' }],
+      })
+      expect(document.getElementById('account-cfg-btn')!.hidden).toBe(true)
+    })
+
+    it('preserves luna_account pin across a second account-list (reconnect)', () => {
+      internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
+      internals().ComposerConfig._selectAccount('acc-b')
+      expect(localStorage.getItem('luna_account')).toBe('acc-b')
+      internals().handleFrame({
+        type: 'account-list',
+        accounts: [
+          { id: 'acc-a', label: 'Primary', kind: 'anthropic', health: 'healthy' },
+          { id: 'acc-b', label: 'Backup', kind: 'anthropic', health: 'healthy' },
+        ],
+      })
+      expect(localStorage.getItem('luna_account')).toBe('acc-b')
+      expect(document.getElementById('account-cfg-btn')!.textContent).toContain('Backup')
+    })
+
+    it('Auto omits accountId on new-thread (keeps failover)', () => {
+      sendHello({ models: [{ id: 'claude-fable-5', label: 'Fable 5', efforts: [] }] })
+      internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
+      internals().ComposerConfig._selectAccount('')
+      expect(localStorage.getItem('luna_account')).toBeNull()
+      internals().State.threadCreateIntent = null
+      const sent = interceptWsSend()
+      internals().WebSocketEngine.sendNewThread()
+      expect(sent[0]).toMatchObject({ type: 'new-thread' })
+      expect(sent[0]).not.toHaveProperty('accountId')
+    })
+
+    it('pin sends accountId on new-thread', () => {
+      sendHello({ models: [{ id: 'claude-fable-5', label: 'Fable 5', efforts: [] }] })
+      internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
+      internals().ComposerConfig._selectAccount('acc-a')
+      expect(localStorage.getItem('luna_account')).toBe('acc-a')
+      internals().State.threadCreateIntent = null
+      const sent = interceptWsSend()
+      internals().WebSocketEngine.sendNewThread()
+      expect(sent[0]).toMatchObject({ type: 'new-thread', accountId: 'acc-a' })
+    })
+
+    it('jax-box Connected path is unchanged (no 127.0.0.1 rewrite)', () => {
+      internals().State.wsUrl = 'ws://jax-box:4753/ui'
+      internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
+      internals().ComposerConfig._selectAccount('acc-b')
+      expect(internals().State.wsUrl).toBe('ws://jax-box:4753/ui')
+      expect(String(internals().State.wsUrl)).not.toContain('127.0.0.1')
+      expect(String(internals().State.wsUrl)).not.toContain('localhost')
+    })
+  })
 })

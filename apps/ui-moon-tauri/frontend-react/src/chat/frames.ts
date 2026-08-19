@@ -109,6 +109,14 @@ export function createFrames(ctx: FramesCtx) {
     // announce are HUB concerns — the launchers and panels live there.)
   });
 
+  // Account switcher: server pushes `account-list` after hello (public
+  // summaries only — never secrets). Populates the composer account pill.
+  // Does NOT auto-select (null/Auto keeps broker failover). Preserves
+  // luna_account across reconnects (ui-shared account-switcher contract).
+  MoonFrames.register('account-list', (frame) => {
+    ComposerConfig.applyAccounts(frame && frame.accounts);
+  });
+
 
 
 

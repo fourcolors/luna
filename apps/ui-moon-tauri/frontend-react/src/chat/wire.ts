@@ -379,14 +379,21 @@ export function createWire(ctx: WireCtx) {
 
     /**
      * The ONE place a new-thread frame is built: carries the operator's
-     * persisted model pick (settings switcher) and, when the server supports
-     * effort selection, the persisted effort pick — IF that effort is valid
-     * for the chosen model. Old servers ignore unknown fields (additive).
+     * persisted model pick (settings switcher), optional sticky account pin
+     * (`luna_account`), and, when the server supports effort selection, the
+     * persisted effort pick — IF that effort is valid for the chosen model.
+     * Old servers ignore unknown fields (additive).
+     *
+     * Account: null/empty = Auto (omit accountId so the broker keeps
+     * same-kind failover). A set id pins the thread (sticky — disables
+     * failover for that thread by design).
      */
     sendNewThread() {
       if (!ThreadCreateState.begin()) return;
       const model = localStorage.getItem('luna_model') || '';
       const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
+      const accountId = localStorage.getItem('luna_account') || '';
+      if (accountId) frame.accountId = accountId;
       // Include effort only when: (a) server supports effortSelection cap,
       // (b) an effort is set, and (c) the effort is valid for the chosen model.
       if (State.serverSupportsEffort) {
@@ -1414,6 +1421,8 @@ export function createWire(ctx: WireCtx) {
       if (!ThreadCreateState.begin()) return;
       const model = localStorage.getItem('luna_model') || '';
       const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
+      const accountId = localStorage.getItem('luna_account') || '';
+      if (accountId) frame.accountId = accountId;
       if (State.serverSupportsEffort) {
         const effort = localStorage.getItem('luna_effort') || '';
         if (effort && ComposerConfig.isEffortValidForCurrentModel(effort)) {
