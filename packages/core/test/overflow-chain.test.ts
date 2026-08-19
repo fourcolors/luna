@@ -356,6 +356,13 @@ describe("defaultIsRotatableError - rotatable vs non-rotatable classification", 
     expect(defaultIsRotatableError(new Error("maximum sessions reached"))).toBe(true)
     expect(defaultIsRotatableError({ message: "Maximum sessions reached for account" })).toBe(true)
     expect(defaultIsRotatableError("maximum sessions reached")).toBe(true)
+    // Claude Code CLI's literal subscription-quota phrasing (Pro/Max
+    // weekly cap, and its 5-hour-window sibling) - previously unmatched,
+    // which silently defeated the ordinary chat thread's auto-rotation
+    // gate whenever a "login" (OAuth) credential hit its weekly limit.
+    expect(defaultIsRotatableError(new Error("You've hit your weekly limit \u00b7 resets Aug 21, 8am (UTC)"))).toBe(true)
+    expect(defaultIsRotatableError({ message: "Claude Code returned an error result: You've hit your weekly limit \u00b7 resets Aug 21, 8am (UTC)" })).toBe(true)
+    expect(defaultIsRotatableError(new Error("You've hit your usage limit for this 5-hour window"))).toBe(true)
 
     // Non-rotatable errors
     expect(defaultIsRotatableError(new ValidationError({ module: "m", field: "f", message: "invalid" }))).toBe(false)
