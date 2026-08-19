@@ -717,8 +717,8 @@ export function bootChat() {
     MoonFace: moonFace as never,
     ThreadCreateState: threadDrawer.ThreadCreateState as never,
     ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine as never,
-    MOON_EXPECTED_PROTOCOL_VERSION: (window as unknown as { LunaProtocol: { PROTOCOL_VERSION: number } })
-      .LunaProtocol.PROTOCOL_VERSION,
+    MOON_EXPECTED_PROTOCOL_VERSION: (window as unknown as { LunaProtocol?: { PROTOCOL_VERSION: number } })
+      .LunaProtocol?.PROTOCOL_VERSION ?? 2,
     SPAWN_FRESH,
     PINNED_THREAD,
     winLabel: (getChatHost()?.state() as { winLabel?: string | null } | undefined)?.winLabel ?? null,
