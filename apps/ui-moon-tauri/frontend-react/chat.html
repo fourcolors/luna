@@ -553,9 +553,14 @@
       gap: 8px;
     }
 
-    /* Native controls own the left cluster; Collapse owns the right. The
-       title remains centered between those balanced zones. */
+    /* Native controls own the left cluster; .bar-end owns the right. Both
+       reserve the same 68px footprint (moon-theme.css), so the title stays
+       centered between balanced zones — the same structure panel.html and
+       widget.html already use. */
     #title-bar { position: relative; }
+    /* moon-theme.css's .bar-end has no gap of its own; chat is the only bar
+       that can show two glyphs at once (redock on a pinned floater). */
+    #title-bar .bar-end { gap: 8px; }
 
     /* Watercolor scrollbar styling — applied to every scrolling container in
        the moon. `width` covers vertical, `height` covers horizontal. The
@@ -2088,30 +2093,33 @@
          apply to a direct child of `.title-bar`'s flex box) - "Luna" is the
          pre-mount fallback, identical to the pre-conversion static text. -->
     <span class="bar-title" id="bar-title-root">Luna</span>
-    <!-- Redock — pinned floaters only (#380). Folds this window's thread back
-         into the owner main-line chat (panel-chat or redockTo), then closes. -->
-    <button class="redock-btn" id="redock-btn" type="button" hidden
-            title="Redock into main window" aria-label="Redock into main window">
-      <!-- Lucide "panel-left-close" (ISC) — fold floater back into the owner. -->
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect width="18" height="18" x="3" y="3" rx="2"/>
-        <path d="M9 3v18"/>
-        <path d="m16 15-3-3 3-3"/>
-      </svg>
-    </button>
-    <!-- New thread lives ONLY in the thread drawer ("+ New", #thread-drawer-new).
-         The title bar used to carry a duplicate + button; it was removed so the
-         bar holds just the title and the collapse-into-moon gesture. -->
-    <!-- Collapse the whole workspace back into the moon orb (Luna-specific
-         gesture; the yellow native button does OS-minimize instead). Sits at
-         the far right so it clears the native traffic lights on the left.
-         React-owned (src/chat/chat-chrome-mount.tsx, reusing widget.html's
-         CollapseMoonButton verbatim - same affordance, same ctx contract).
-         Bare host: no class of its own, so it adds zero box-model footprint
-         as a `.title-bar` flex child - the mounted Astryx Button carries the
-         original `collapse-moon-btn` class itself. -->
-    <span id="collapse-moon-btn-root"></span>
+    <!-- Right cluster balances the traffic lights so the title stays centered
+         (same .bar-end structure as panel.html / widget.html). New thread lives
+         ONLY in the thread drawer ("+ New", #thread-drawer-new) — the title bar
+         used to carry a duplicate + button here, and it was removed. -->
+    <div class="bar-end">
+      <!-- Redock — pinned floaters only (#380). Folds this window's thread back
+           into the owner main-line chat (panel-chat or redockTo), then closes. -->
+      <button class="redock-btn" id="redock-btn" type="button" hidden
+              title="Redock into main window" aria-label="Redock into main window">
+        <!-- Lucide "panel-left-close" (ISC) — fold floater back into the owner. -->
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="18" height="18" x="3" y="3" rx="2"/>
+          <path d="M9 3v18"/>
+          <path d="m16 15-3-3 3-3"/>
+        </svg>
+      </button>
+      <!-- Collapse the whole workspace back into the moon orb (Luna-specific
+           gesture; the yellow native button does OS-minimize instead). Sits at
+           the far right so it clears the native traffic lights on the left.
+           React-owned (src/chat/chat-chrome-mount.tsx, reusing widget.html's
+           CollapseMoonButton verbatim - same affordance, same ctx contract).
+           Bare host: no class of its own, so it adds zero box-model footprint
+           as a `.bar-end` flex child - the mounted Astryx Button carries the
+           original `collapse-moon-btn` class itself. -->
+      <span id="collapse-moon-btn-root"></span>
+    </div>
   </div>
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
