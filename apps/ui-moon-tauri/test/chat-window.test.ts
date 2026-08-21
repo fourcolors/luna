@@ -197,6 +197,18 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // global (production too - see wiring.ts's currentViewModeEnabled doc),
     // so it must be cleared per-test same as every other bridged global above.
     delete (window as any).ViewMode
+    // Discard pending fake timers BEFORE handing the clock back, so a timer
+    // armed by this test's engine cannot fire inside the NEXT one.
+    //
+    // Hygiene only - be precise about what this does NOT fix. Nothing shuts a
+    // previous test's PoolEngine down, and its abandoned LunaWsAdapter can
+    // still finish an in-flight attach() on a nextTick continuation and dial a
+    // socket during a later test. That path is promise-driven, not timer-
+    // driven, so clearing timers here does not prevent it (verified: adding
+    // this alone left "Scenario 5" failing). The real teardown of orphaned
+    // adapters is a harness-lifecycle fix that is out of scope here; the
+    // affected test instead selects its socket in an order-independent way.
+    vi.clearAllTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -3921,7 +3933,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // This is the load-bearing assertion: it only passes if the handler
       // reached window.loadConnectionAndConnect WITHOUT going through the
       // now-deleted __MoonInternals mirror.
-      expect(invoke).toHaveBeenCalledWith('load_connection')
+      // Assert the COMMAND was invoked, not an exact argument tuple. The
+      // waterfall calls invoke('load_connection', undefined) - an explicit
+      // second arg that toHaveBeenCalledWith('load_connection') treats as a
+      // mismatch, so this failed on the caller's arity rather than on the
+      // behavior under test (that the waterfall re-ran at all).
+      expect(invoke.mock.calls.some((c: unknown[]) => c[0] === 'load_connection')).toBe(true)
     })
 
     it('window wiring hands title-bar gestures directly to native dragging', () => {
@@ -5525,9 +5542,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         for (let i = 0; i < steps; i++) await vi.advanceTimersByTimeAsync(ms)
       }
       await settle()
-      const sock = FakeWebSocket.latest()!
-      sock.simulateOpen()
-      sock.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      // Bring up EVERY socket dialled since the reset, not just the newest.
+      //
+      // Nothing tears the PREVIOUS test's PoolEngine down, and its abandoned
+      // LunaWsAdapter finishes an in-flight attach() on a nextTick continuation
+      // during our settle() - dialling a SECOND socket for the very same URL.
+      // (Traced: both constructions come from LunaWsAdapter.attach, one via
+      // ConnectionManager.#startAttach and one via runNextTicks. It is NOT
+      // timer-driven, which is why clearing fake timers does not prevent it.)
+      // `FakeWebSocket.latest()` therefore returned a socket the live engine
+      // did not own, so opening it left the real adapter stuck CONNECTING and
+      // the route chip painted "Disconnected" - while passing in isolation,
+      // where no zombie exists. Opening all of them is order-independent: the
+      // abandoned adapter is inert, and the live one gets its open + hello.
+      const socks = FakeWebSocket.instances.slice()
+      expect(socks.length, 'boot should have dialled at least one socket').toBeGreaterThan(0)
+      for (const sk of socks) {
+        sk.simulateOpen()
+        sk.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      }
       await settle()
 
       const indicatorEl = document.getElementById('route-indicator')!
@@ -5704,9 +5737,20 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       htmlContent = readChatHtml()
       mountChatDomFromHtml(htmlContent)
       evalChatInlineScriptWithBridge()
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
+      // Drain the boot waterfall to COMPLETION rather than guessing a fixed
+      // number of microtask ticks. loadConnectionAndConnect() awaits the Tauri
+      // `load_connection` invoke before it ever reaches WebSocketEngine
+      // .connect(), so three `await Promise.resolve()` returned while the
+      // construction under test had not happened yet. That produced BOTH
+      // halves of this test's flake: the assertion below saw an un-called spy,
+      // and the continuation then ran AFTER afterEach had deleted
+      // window.LunaProtocol, surfacing as an unhandled "LunaProtocol is not
+      // defined" rejection attributed to whatever test happened to be running.
+      // Bounded, and advanceTimersByTimeAsync flushes microtasks too (this
+      // file runs on fake timers, so a real setTimeout poll would hang).
+      for (let i = 0; i < 40 && errorSpy.mock.calls.length === 0; i++) {
+        await vi.advanceTimersByTimeAsync(10)
+      }
 
       expect(errorSpy).toHaveBeenCalled()
       // Error.prototype.message/.stack are NON-ENUMERABLE in V8, so
