@@ -299,6 +299,7 @@ export function bootChat() {
         feedbackSubmit: document.getElementById("feedback-submit-btn"),
       },
       State: getChatHost()?.state(),
+      isConnected: () => getChatHost()?.isConnected() ?? false,
       WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
     })
   assignBridge("FeedbackEngine", feedbackEngine)
