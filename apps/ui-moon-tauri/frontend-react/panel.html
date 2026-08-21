@@ -28,7 +28,17 @@
        or client.toml does not exist (un-migrated user). -->
   <script src="/vendor/moon-session.js"></script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    /* Cascade-layer order. Astryx ships every rule inside @layer reset /
+       astryx-base / astryx-theme, and UNLAYERED author rules beat LAYERED ones
+       regardless of specificity - so the universal reset below has to live in a
+       layer of its own, ordered FIRST, or its `*` selector stomps the padding
+       and margin of every Astryx component in Moon. See
+       src/styles/astryx-layer-order.css for the full rationale. */
+    @layer moon-reset, reset, astryx-base, astryx-theme;
+
+    @layer moon-reset {
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    }
 
     html, body {
       width: 100%;
