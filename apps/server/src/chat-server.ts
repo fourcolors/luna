@@ -4820,42 +4820,32 @@ const buildMain = (
     // it accepts messages from an unknown sender:
     //
     //   env var set   → exactly those user ids
-    //   env var unset → the single compiled default id below
-    //   allowlist somehow empty → registration is REFUSED with a loud error
+    //   env var unset → the allowlist is empty and registration is REFUSED
     //
-    // The last branch is unreachable while the compiled default is non-empty.
-    // It is kept as a backstop so that emptying the default can never silently
-    // produce an open bot.
+    // There is deliberately NO compiled-in default. A default allowlist ships
+    // whichever id the author happened to write onto every installation, which
+    // is both a privacy leak and an authorization bug: an operator who has not
+    // said who may talk to their shell has not consented to anyone talking to
+    // it. Empty means refuse, not "fall back to someone".
     //
     // LUNA_DISCORD_ALLOWED_USER_IDS is read from raw process.env, NOT through
     // the SecretProvider chain. Two places therefore feed it, and only two:
     // ~/.luna/.env (loaded into process.env at module scope near the top of
     // this file, well before buildMain runs) and the launchd unit's
     // EnvironmentVariables block, which wins on conflict. A shell-exported var
-    // reaches neither. A typo'd name falls back to the compiled default, which
-    // is still closed, and the boot log names the source that actually won so
-    // the mistake is visible rather than silent.
+    // reaches neither. A typo'd name therefore yields an empty allowlist and a
+    // refusal, so the mistake is loud rather than silent.
     const dcSecret = yield* Effect.promise(() =>
       resolveEnvSecret("DISCORD_BOT_TOKEN"),
     )
     const dcToken =
       dcSecret === undefined ? undefined : Redacted.value(dcSecret).trim()
-    // Eric's Discord user id, compiled in as the boot default so a fresh
-    // install is functional AND closed. An env var overrides it entirely.
-    // Note this default is a single specific user — it is not "open", so
-    // there is no security reason to refuse boot when the env var is unset.
-    const DISCORD_DEFAULT_ALLOWED_USERS = ["000000000000000000"] as const
-    const dcAllowedUsersEnv = (
+    const dcAllowedUsers = (
       process.env["LUNA_DISCORD_ALLOWED_USER_IDS"] ?? ""
     )
       .split(",")
       .map((v) => v.trim())
       .filter((v) => v.length > 0)
-    const dcAllowedUsers =
-      dcAllowedUsersEnv.length > 0
-        ? dcAllowedUsersEnv
-        : [...DISCORD_DEFAULT_ALLOWED_USERS]
-    const dcUsingDefaultAllowlist = dcAllowedUsersEnv.length === 0
     const dcAllowedChannels = (
       process.env["LUNA_DISCORD_ALLOWED_CHANNEL_IDS"] ?? ""
     )
@@ -4890,7 +4880,7 @@ const buildMain = (
         console.log(`\u{1F4E8} discord channel: started (discord-main)`)
         console.log(
           `\u{1F512} discord allowlist: ${dcAllowedUsers.length} user(s) ` +
-            `(${dcUsingDefaultAllowlist ? "compiled default" : "LUNA_DISCORD_ALLOWED_USER_IDS"}), ` +
+            `(LUNA_DISCORD_ALLOWED_USER_IDS), ` +
             `${dcAllowedChannels.length === 0 ? "any" : String(dcAllowedChannels.length)} channel(s)`,
         )
       }

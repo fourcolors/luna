@@ -1125,7 +1125,7 @@ export interface DiscordAdapterConfig {
  *   const adapter = makeDiscordAdapter({
  *     id: "discord-main",
  *     token,
- *     allowedUsers: ["000000000000000000"],
+ *     allowedUsers: ["000000000000000000"], // the operator's Discord user id
  *   })
  *
  * Usage (tests):
