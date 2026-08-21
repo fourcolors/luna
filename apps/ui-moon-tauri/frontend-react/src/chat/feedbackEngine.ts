@@ -46,6 +46,9 @@
 export interface FeedbackEngineDeps {
   readonly DOM: any
   readonly State: any
+  /** ENGINE-AWARE connectivity, evaluated at CALL time. See the note above the
+   *  submit() guard for why this cannot read `State.ws`. */
+  readonly isConnected: () => boolean
   readonly WebSocketEngine: { send: (frame: unknown) => void }
 }
 
@@ -218,7 +221,7 @@ function cropAndEncodeFeedbackScreenshot(img, rectCss, dpr) {
   }
 }
 export function createFeedbackEngine(deps: FeedbackEngineDeps) {
-  const { DOM, State, WebSocketEngine } = deps
+  const { DOM, State, isConnected, WebSocketEngine } = deps
   return {
   _enabled: false,   // server advertises the `feedback` capability
   _picking: false,   // picker mode active
@@ -349,7 +352,14 @@ export function createFeedbackEngine(deps: FeedbackEngineDeps) {
     const note = ((DOM.feedbackInput && DOM.feedbackInput.value) || '').trim();
     if (!note) { this.setStatus('Type a note first.', 'error'); return; }
     if (!this._target) { this.setStatus('Pick an element first.', 'error'); return; }
-    if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+    // ENGINE-AWARE, NOT SOCKET-AWARE - the same bug SecretPromptEngine had in
+    // #500. This used to read `State.ws.readyState`, which ONLY the legacy
+    // WebSocketEngine ever assigns; PoolEngine, the default since #489, does
+    // not assign it at all. So on the shipped engine this guard could never
+    // pass: the operator saw "Not connected." while fully connected, and no
+    // feedback-submit frame was ever sent. Ask the engine-aware predicate, and
+    // ask it at CALL time so the answer is the one true at submit.
+    if (!isConnected()) {
       this.setStatus('Not connected.', 'error');
       return;
     }
