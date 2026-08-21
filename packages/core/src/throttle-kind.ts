@@ -56,12 +56,24 @@ export function classifyThrottleKind(text: string): ThrottleKind | undefined {
   }
 
   // Hard allocation gone: raw Gemini RESOURCE_EXHAUSTED leaking through
-  // unconverted, or an OpenAI billing `insufficient_quota`.
+  // unconverted, an OpenAI billing `insufficient_quota`, or Claude Code's own
+  // subscription-plan usage caps ("You've hit your weekly limit · resets ...",
+  // and its 5-hour-window sibling "hit your usage limit"). These are the exact
+  // literal phrases the `claude` CLI (Claude.ai OAuth "login" credential kind)
+  // emits when a Pro/Max plan's rolling quota is exhausted — distinct from an
+  // API 429/session cap, and previously unmatched by this table entirely, which
+  // silently defeated BOTH the broker cooldown and chat-service's account-
+  // rotation gate (`defaultIsRotatableError`) for exactly the "auto" path this
+  // classification exists to serve. See account-rotation.sim.test.ts for the
+  // end-to-end rotation behavior this phrase now drives.
   if (
     text.includes("quota_exhausted") ||
     text.includes("quota exhausted") ||
     text.includes("insufficient_quota") ||
-    text.includes("resource_exhausted")
+    text.includes("resource_exhausted") ||
+    text.includes("weekly limit") ||
+    text.includes("hit your usage limit") ||
+    text.includes("usage limit reached")
   ) {
     return "quota_exhausted"
   }

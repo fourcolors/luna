@@ -5,15 +5,15 @@
  * `workflow` workers are typed `Worker<never>` and close over only
  * `SDKClient` + `AgentNotesService` (prompt-worker.ts). They cannot carry the
  * wake cycle, which requires `WakeReasoner | WakeLogStore | AgentNotesService`.
- * So wake gets its OWN worker kind — exactly mirroring how `DreamWorkerLayer`
- * (dream-worker.ts) resolves real services at boot and registers a closed-over
- * `Worker<never>`.
+ * So wake gets its OWN worker kind.
  *
  * The wake LOGIC is reused wholesale: the worker simply runs
  * `runWake(now, opts)` (the same effect the legacy `registerWakeCron` cron
- * fired). Only the registration/dispatch wrapper is new. `now` is read from the
- * captured `Clock` service so the worker is deterministic in tests and shares
- * the boot clock identity.
+ * fired). The registration/dispatch ceremony lives in the shared
+ * `defineWorkerLayer` (jobs/define-worker.ts, slice 9a); this file keeps only
+ * what is genuinely wake's: the payload guard and the cycle body. `now` is
+ * read from the captured `Clock` service so the worker is deterministic in
+ * tests and shares the boot clock identity.
  *
  * DIFFERENCE FROM DREAM — wake is PER-WORKSPACE. A dream cycle reads its window
  * from the watermark and ignores the job payload; a wake cycle, by contrast, is
@@ -28,12 +28,18 @@
  * short-circuits to a wake_log row with outcome='error'), so once the payload
  * parses, the worker's only failure surface is the payload guard.
  */
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect } from "effect"
 import { Clock } from "../clock.js"
 import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import {
+  buildWorker,
+  defineWorkerLayer,
+  resolveEnvTimeoutMs,
+  type WorkerKindSpec,
+  type WorkerLayerOptions,
+} from "../jobs/define-worker.js"
+import {
   WorkerError,
-  WorkerRegistry,
   type Worker,
   type WorkerResult,
 } from "../jobs/worker-registry.js"
@@ -51,19 +57,13 @@ export const WAKE_WORKER_KIND = "wake"
  * Registered as defaultTimeoutMs so the ticker applies grace (not the bare
  * 5-min workerDeadline) — fixes the outer/inner timeout inversion.
  */
-export const resolveWakeDefaultTimeoutMs = (): number => {
-  const raw = process.env["LUNA_WAKE_TIMEOUT_MS"]?.trim()
-  const n = raw ? Number(raw) : 10 * 60 * 1000
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 10 * 60 * 1000
-}
+export const resolveWakeDefaultTimeoutMs = (): number =>
+  resolveEnvTimeoutMs("LUNA_WAKE_TIMEOUT_MS", 10 * 60 * 1000)
 
 /** The wake service environment a wake cycle requires (+ Clock for `now`). */
 type WakeCtx = WakeReasoner | WakeLogStore | AgentNotesService | Clock
 
-export interface WakeWorkerLayerOptions {
-  /** Override the kind discriminant. Default "wake". */
-  readonly kind?: string
-}
+export interface WakeWorkerLayerOptions extends WorkerLayerOptions {}
 
 /**
  * Defensively parse a wake job payload into WakeCronOptions. Wake is
@@ -100,20 +100,15 @@ export const parseWakePayload = (
 }
 
 /**
- * Build a `Worker<never>` that runs one wake cycle against `ctx` — the wake
- * service environment captured at layer-build time. The captured context erases
- * the worker's R to `never` (via `Effect.provide`), satisfying the registry's
- * `Worker<never>` contract.
- *
  * The wake `payload` is REQUIRED (unlike dream): it scopes the cycle to one
  * workspace. A malformed payload fails fast with a `bad_payload` WorkerError
- * before any reasoning / disk I/O.
+ * before any reasoning / disk I/O. runWake's E is `never`, so the payload
+ * guard is the only typed failure the shared wrapper ever sees from wake.
  */
-export const buildWakeWorker = (
-  ctx: Context.Context<WakeCtx>,
-  kind: string,
-): Worker<never> => {
-  return (payload, _jobCtx) =>
+const wakeSpec: WorkerKindSpec<WakeCtx> = {
+  kind: WAKE_WORKER_KIND,
+  defaultTimeoutMs: resolveWakeDefaultTimeoutMs,
+  run: (kind, payload, _jobCtx) =>
     Effect.gen(function* () {
       const parsed = parseWakePayload(payload)
       if (!parsed.ok) {
@@ -131,27 +126,19 @@ export const buildWakeWorker = (
       return {
         outputText: `wake cycle complete; workspace=${parsed.opts.workspaceSlug}`,
       } satisfies WorkerResult
-    }).pipe(
-      Effect.provide(ctx),
-      // runWake's E is `never`, so the only typed failure is the payload guard
-      // above (already a WorkerError). Map any residual typed failure to a
-      // WorkerError so the ticker records a clean `job_runs` row; defects
-      // propagate untouched — the ticker converts them to
-      // WorkerError({reason:"defect"}) itself.
-      Effect.catchAll((e) =>
-        e instanceof WorkerError
-          ? Effect.fail(e)
-          : Effect.fail(
-              new WorkerError({
-                reason: "worker_failed",
-                kind,
-                message: `wake worker failed: ${(e as { message?: string }).message ?? String(e)}`,
-                cause: e,
-              }),
-            ),
-      ),
-    )
+    }),
 }
+
+/**
+ * Build a `Worker<never>` that runs one wake cycle against `ctx` — the wake
+ * service environment captured at layer-build time. The captured context
+ * erases the worker's R to `never` (via the shared wrapper's
+ * `Effect.provide`), satisfying the registry's `Worker<never>` contract.
+ */
+export const buildWakeWorker = (
+  ctx: Context.Context<WakeCtx>,
+  kind: string,
+): Worker<never> => buildWorker(wakeSpec, ctx, kind)
 
 /**
  * Layer that registers the wake worker into the WorkerRegistry at boot.
@@ -163,25 +150,4 @@ export const buildWakeWorker = (
  *     )),
  *   )
  */
-export const WakeWorkerLayer = (
-  opts?: WakeWorkerLayerOptions,
-): Layer.Layer<
-  never,
-  never,
-  WakeReasoner | WakeLogStore | AgentNotesService | Clock | WorkerRegistry
-> => {
-  const kind = opts?.kind ?? WAKE_WORKER_KIND
-  return Layer.effectDiscard(
-    Effect.gen(function* () {
-      const reg = yield* WorkerRegistry
-      const ctx = yield* Effect.context<WakeCtx>()
-      const worker = buildWakeWorker(ctx, kind)
-      // A2: register with defaultTimeoutMs so JobTicker outer backstop is
-      // ~10m+grace, not the bare 5m workerDeadline (wake-reasoner inner is 10m).
-      yield* reg.register(kind, {
-        run: worker,
-        defaultTimeoutMs: resolveWakeDefaultTimeoutMs(),
-      })
-    }),
-  )
-}
+export const WakeWorkerLayer = defineWorkerLayer(wakeSpec)

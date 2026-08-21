@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "../jobs/jobs-store.js"
@@ -7,6 +9,7 @@ import {
   isDoctorWorkflowJob,
   maybeEnqueueDoctor,
   patientIdFromDoctorJob,
+  resolveDoctorCliPath,
   resolveDoctorEnqueueConfig,
 } from "./doctor-enqueue.js"
 import type { PersistedJob } from "../jobs/jobs-store-types.js"
@@ -33,6 +36,18 @@ const baseJob = (over: Partial<PersistedJob> = {}): PersistedJob => ({
 })
 
 describe("doctor-enqueue helpers", () => {
+  const savedEnv = {
+    LUNA_DOCTOR_CLI: process.env["LUNA_DOCTOR_CLI"],
+    LUNA_REPO_ROOT: process.env["LUNA_REPO_ROOT"],
+  }
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
   it("isDoctorExemptKind covers dream/wake only", () => {
     expect(isDoctorExemptKind("dream")).toBe(true)
     expect(isDoctorExemptKind("wake")).toBe(true)
@@ -82,6 +97,36 @@ describe("doctor-enqueue helpers", () => {
     expect(resolveDoctorEnqueueConfig({ enabled: false }).enabled).toBe(false)
   })
 
+  describe("resolveDoctorCliPath", () => {
+    it("prefers an explicit override over any env var", () => {
+      process.env["LUNA_DOCTOR_CLI"] = "/env/luna-doctor-workflow.ts"
+      process.env["LUNA_REPO_ROOT"] = "/repo/root"
+      expect(resolveDoctorCliPath("/override/luna-doctor-workflow.ts")).toBe(
+        "/override/luna-doctor-workflow.ts",
+      )
+    })
+
+    it("falls back to LUNA_DOCTOR_CLI when no override is given", () => {
+      process.env["LUNA_DOCTOR_CLI"] = "/env/luna-doctor-workflow.ts"
+      expect(resolveDoctorCliPath()).toBe("/env/luna-doctor-workflow.ts")
+    })
+
+    it("resolves from cwd when neither override nor LUNA_DOCTOR_CLI is set (the running tree, never LUNA_REPO_ROOT)", () => {
+      delete process.env["LUNA_DOCTOR_CLI"]
+      // On releases-layout hosts LUNA_REPO_ROOT is the deploy root, where no
+      // source exists; a value here must have no effect on code-path lookup.
+      process.env["LUNA_REPO_ROOT"] = "/deploy/root"
+      expect(resolveDoctorCliPath()).toBe(
+        join(process.cwd(), "apps/server/scripts/luna-doctor-workflow.ts"),
+      )
+      // Guards the S08 incident itself: if a future relocation moves the CLI
+      // without correcting this default, doctorCliReachable() silently
+      // degrades to warn+skip - so the resolved default must actually exist
+      // on disk (run from the repo root, as CI and the unit both do).
+      expect(existsSync(resolveDoctorCliPath())).toBe(true)
+    })
+  })
+
   it("maybeEnqueueDoctor skips when CLI path is missing (does not disable patient)", async () => {
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -115,6 +160,39 @@ describe("doctor-enqueue helpers", () => {
     )
   })
 
+  it("maybeEnqueueDoctor short-circuits when the env-resolved CLI path is missing (reason recorded, no enqueue, no pause)", async () => {
+    process.env["LUNA_DOCTOR_CLI"] = "/no/such/luna-doctor-workflow.ts"
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({
+        id: "sched-repo-root-miss",
+        kind: "prompt",
+        spec: "0 0 * * *",
+        payload: { label: "x" },
+      })
+      const job = (yield* store.getById("sched-repo-root-miss"))!
+      const result = yield* maybeEnqueueDoctor(
+        store,
+        { ...job, failStreak: 5 },
+        "boom",
+        resolveDoctorEnqueueConfig({ failStreakThreshold: 5 }),
+        Date.now(),
+      )
+      expect(result.enqueued).toBe(false)
+      expect(result.reason).toBe("cli_unreachable")
+      const patient = yield* store.getById("sched-repo-root-miss")
+      expect(patient?.enabled).toBe(true)
+      expect(patient?.healState).toBe("ok")
+      const all = yield* store.listAll()
+      expect(all.filter((j) => j.id.startsWith("doctor-"))).toHaveLength(0)
+    })
+    await Effect.runPromise(
+      program.pipe(
+        Effect.provide(JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))),
+      ),
+    )
+  })
+
   it("maybeEnqueueDoctor records a one-shot and disables the patient", async () => {
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -132,7 +210,7 @@ describe("doctor-enqueue helpers", () => {
         "worker_failed: boom",
         resolveDoctorEnqueueConfig({
           failStreakThreshold: 5,
-          cliPath: process.cwd() + "/apps/ui-web/scripts/luna-doctor-workflow.ts",
+          cliPath: process.cwd() + "/apps/server/scripts/luna-doctor-workflow.ts",
         }),
         1_700_000_000_000,
       )

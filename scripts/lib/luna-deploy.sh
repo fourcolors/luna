@@ -272,17 +272,70 @@ luna_active_ws_count() {
     return
   fi
 
+  # A SERVER TALKING TO ITSELF IS NOT A SESSION, and counting it as one froze a
+  # channel for 154 commits while reporting success every three minutes.
+  #
+  # The chat server holds a loopback connection to its own port: both ends are
+  # owned by the unit's own MainPID. The old count was `established` sockets
+  # with `sport = :PORT`, which includes that self-pair, so the guard saw one
+  # phantom session forever, deferred every deploy, and exited 0 looking
+  # healthy. Nothing ever escalated, because deferring IS the correct answer to
+  # a real session; only the count was wrong.
+  #
+  # The discriminator is ownership, not address. A real client reaches the
+  # container through a forwarder, so the far end is a different process (and on
+  # a remote client, not in this namespace at all). A self-connection has the
+  # SAME pid on both ends. So: subtract only those established sockets that are
+  # connected TO the port and owned by the pid that owns the LISTENER.
+  #
+  # IT FAILS SAFE BY CONSTRUCTION. `ss -p` needs privileges to name a process;
+  # where it cannot, `lp` is empty, `self` stays 0, and the result is exactly
+  # the old count. Undercounting drops live users mid-conversation, so every
+  # uncertain path here must round UP, never down.
+  #
+  # THE SNIPPET CARRIES NO COMMENTS, deliberately. Its text is passed verbatim
+  # as an argument to `sh -c` (and to `incus exec ... -- sh -c` on a container),
+  # so it appears in the deploy engine's own command trace, and the TypeScript
+  # port must run the IDENTICAL text or the two engines diverge. Explanations
+  # therefore live out here, where they cost nothing. GATE 1's trace diff caught
+  # the first version of this fix precisely because its inline comments made the
+  # two engines' traced commands differ.
+  #
+  # ON THE UNPIPED ss CAPTURE, which is the subtle line: piping ss into grep or
+  # wc hands the pipeline grep's exit status instead of ss's, and a FAILING ss
+  # then reads as "zero sessions", which authorizes a restart and drops live
+  # users. That is the hole the original implementation was hardened against,
+  # and it is easy to reintroduce while tidying, so the capture stays plain.
+  #
+  # The -p probes are BEST EFFORT: they only ever subtract, so a failure there
+  # must leave the count untouched rather than fail the whole call.
+  #
+  # ONE implementation, run either inside the container or on the host, because
+  # two copies of a rule this subtle will drift.
+  local probe='
+port="$1"
+command -v ss >/dev/null 2>&1 || exit 9
+out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || exit 1
+if [ -n "$out" ]; then total="$(printf "%s\n" "$out" | wc -l)"; else total=0; fi
+lp="$(ss -tlnHp "( sport = :$port )" 2>/dev/null | grep -o "pid=[0-9]*" | head -1)" || lp=""
+self=0
+if [ -n "$lp" ]; then
+  selfout="$(ss -tnHp state established "( dport = :$port )" 2>/dev/null)" || selfout=""
+  if [ -n "$selfout" ]; then self="$(printf "%s\n" "$selfout" | grep -c "$lp," || true)"; fi
+fi
+[ -n "$self" ] || self=0
+n=$((total - self))
+[ "$n" -lt 0 ] && n=0
+printf "%s" "$n"
+'
+  local out
   if [[ -n "$incus" ]]; then
     command -v incus >/dev/null 2>&1 || return 1
-    local out
-    out="$(incus exec "$incus" -- sh -c "command -v ss >/dev/null 2>&1 || exit 9; ss -tnH state established '( sport = :$port )' 2>/dev/null" 2>/dev/null)" || return 1
-    if [[ -n "$out" ]]; then n="$(printf '%s\n' "$out" | wc -l)"; else n=0; fi
+    out="$(incus exec "$incus" -- sh -c "$probe" _ "$port" 2>/dev/null)" || return 1
   else
-    command -v ss >/dev/null 2>&1 || return 1
-    local out
-    out="$(ss -tnH state established "( sport = :$port )" 2>/dev/null)" || return 1
-    if [[ -n "$out" ]]; then n="$(printf '%s\n' "$out" | wc -l)"; else n=0; fi
+    out="$(sh -c "$probe" _ "$port" 2>/dev/null)" || return 1
   fi
+  n="$out"
   n="$(printf '%s' "$n" | tr -d '[:space:]')"
   [[ "$n" =~ ^[0-9]+$ ]] || return 1
   printf '%s' "$n"
@@ -384,6 +437,58 @@ luna_runtime_matches_checkout() {
 # hermetic test suite runs these scripts on dev Macs, so no bash-4isms.
 luna_lc() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# luna_atomic_replace <src> <dst> - atomically replace <dst> with <src> via the
+# rename(2) syscall (Perl's `rename` builtin is a thin wrapper around it, no
+# shell-out). One code path on every host: no GNU-vs-BSD `mv -T` probe, no
+# cached capability state. Deliberately NOT bun-based: the guardian's
+# engine-pin publish (luna-guardian's install_guardian) must still work when
+# the bun runtime is exactly what is broken.
+#
+# Hard dependency on perl being in PATH: acceptable because perl-base is
+# Essential on Debian/Ubuntu (present on every target host with no extra
+# install) and /usr/bin/perl ships on macOS; the guard below turns a missing
+# perl into a loud, self-describing failure instead of a silent no-op.
+#
+# rename(2) case table, MEASURED on macOS (BSD rename semantics; POSIX
+# mandates cases 1-2 and 3-4 identically, so this holds on Linux too):
+#   CASE 1 symlink -> an EXISTING symlink : exit 0, dst repointed atomically.
+#     Every RE-flip of an already-installed profile lands here (luna-guardian's
+#     engine-pin flip; luna-update-server's current/previous flips).
+#   CASE 2 directory -> a VACATED name    : exit 0, plain rename semantics.
+#     luna-update-server's staged-swap: the damaged tree is moved aside and
+#     the name vacated BEFORE the rebuilt tree is swapped in.
+#   CASE 3 directory -> a NON-EMPTY dir   : exit 1, refused loudly, dst intact.
+#     The safety property this helper has and `mv -fh` lacks: `mv -fh` exits 0
+#     and silently NESTS src inside a surviving dst, turning a loud pre-flip
+#     failure into a corrupt release tree that still satisfies
+#     release_artifacts_ok.
+#   CASE 4 directory -> a symlink-to-dir  : exit 1 (ENOTDIR), loud.
+#     Unreachable at every current call site - each one either flips a staged
+#     symlink onto an existing symlink (case 1) or moves a directory into a
+#     name vacated first (case 2). A future caller that does reach it fails
+#     loudly rather than silently, which is the property that matters.
+#   CASE 5 symlink -> an ABSENT name      : exit 0, dst created (same plain
+#     rename semantics as case 2, just with a symlink src). The FIRST
+#     install_guardian for a profile lands here: $PIN_BASE/current-<profile>
+#     does not exist until that first flip creates it.
+luna_atomic_replace() {
+  command -v perl >/dev/null 2>&1 ||
+    { luna_warn "luna_atomic_replace: perl not found in PATH"; return 127; }
+  perl -e 'rename($ARGV[0], $ARGV[1]) or do { warn "luna_atomic_replace: $ARGV[0] -> $ARGV[1]: $!\n"; exit 1 }' -- "$1" "$2"
+}
+
+# luna_chat_server_launcher_rel - the daemon launcher entrypoint, relative to
+# REPO_DIR (systemd WorkingDirectory / launchd --cwd). The ONE literal shared
+# between the unit renderers (luna-server-install's render_service and
+# lib/launchd-plist.sh's render_launchd_plist, both of which ExecStart it) and
+# luna-guardian's unit_paths_current (which compares the INSTALLED unit's
+# ExecStart against this same value to detect rollback-unsafe drift). A second
+# copy anywhere would let the drift detector itself drift out of sync with
+# what gets rendered - exactly the failure class this indirection removes.
+luna_chat_server_launcher_rel() {
+  printf 'scripts/luna-chat-server-entry.ts\n'
 }
 
 luna_find_bun() {

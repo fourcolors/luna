@@ -903,4 +903,95 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(invoke).not.toHaveBeenCalled()
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // F3 (opus review, rework round on plan Step 1c): the vanilla luna-config
+  // listener used to gate on payload.wsToken - silently inert once main.rs
+  // stopped sending that field (Step 1c Part 3d). It now re-reads the
+  // now-seeded store via load_connection, mirroring the React consumer
+  // (MoonHubApp.tsx) exactly. The shared beforeEach's __TAURI__ has no
+  // `.event`, so the listener is never registered there at all - this
+  // block re-boots index.html with a full __TAURI__ (window + core + event)
+  // present BEFORE the script runs, matching the conditional registration.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: luna-config auto-wire re-reads load_connection (F3 rework)', () => {
+    function rebootWithFullTauri(invokeImpl: (cmd: string, args?: any) => any) {
+      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
+      document.body.innerHTML = bodyMatch ? bodyMatch[1] : htmlContent
+
+      const handlers: Record<string, (e: { payload: any }) => void> = {}
+      const invoke = vi.fn(async (cmd: string, args?: any) => invokeImpl(cmd, args))
+      const listen = vi.fn(async (name: string, cb: (e: { payload: any }) => void) => {
+        handlers[name] = cb
+        return () => {}
+      })
+      ;(window as any).__TAURI__ = {
+        window: { getCurrentWindow: mockGetCurrentWindow, LogicalSize: class { constructor(public width: number, public height: number) {} } },
+        core: { invoke },
+        event: { listen },
+      }
+
+      const scriptMatch = htmlContent.match(/<script>([\s\S]*?)<\/script>/)
+      const jsCode = scriptMatch ? scriptMatch[1] : ''
+      new Function(jsCode)()
+
+      return { invoke, handlers }
+    }
+
+    it('a payload with wsUrl and NO wsToken field invokes load_connection and connects from its response', async () => {
+      // Fresh-install race, matching production: boot's OWN load_connection
+      // call (inside SettingsEngine.load()) runs BEFORE Rust's .env-seeding
+      // write can have landed, so it returns nothing yet. Only AFTER the
+      // luna-config event fires does load_connection return real creds.
+      let seeded = false
+      const { invoke, handlers } = rebootWithFullTauri((cmd) => {
+        if (cmd === 'load_connection') {
+          return seeded ? { wsUrl: 'ws://seeded-host:4753/ui', wsToken: 'seeded-real-token' } : null
+        }
+        return null
+      })
+
+      await vi.waitFor(() => expect(handlers['luna-config']).toBeTypeOf('function'))
+      const m = (window as any).__MoonInternals
+      expect(m.State.wsToken, 'boot found nothing yet').toBeFalsy()
+      seeded = true
+      invoke.mockClear()
+
+      // The exact plan scenario: wsUrl present, wsToken ABSENT entirely.
+      const payload = { wsUrl: 'ws://seeded-host:4753/ui', seeded: true }
+      expect('wsToken' in payload).toBe(false)
+
+      await handlers['luna-config']({ payload })
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('load_connection'))
+
+      expect(m.State.wsToken).toBe('seeded-real-token')
+      expect(m.State.wsUrl).toBe('ws://seeded-host:4753/ui')
+    })
+
+    it('is a no-op when already connected (State.wsToken already set)', async () => {
+      const { invoke, handlers } = rebootWithFullTauri((cmd) => {
+        if (cmd === 'load_connection') return { wsUrl: 'ws://should-not-be-read:4753/ui', wsToken: 'should-not-apply' }
+        return null
+      })
+
+      await vi.waitFor(() => expect(handlers['luna-config']).toBeTypeOf('function'))
+      // Let the INITIAL boot-time load_connection call (inside
+      // SettingsEngine.load()) fully settle before overriding State.wsToken,
+      // or its late resolution would clobber our manual override below.
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('load_connection'))
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const m = (window as any).__MoonInternals
+      m.State.wsToken = 'already-connected-token'
+      invoke.mockClear()
+
+      await handlers['luna-config']({ payload: { wsUrl: 'ws://seeded-host:4753/ui', seeded: true } })
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(invoke).not.toHaveBeenCalledWith('load_connection')
+      expect(m.State.wsToken).toBe('already-connected-token')
+    })
+  })
 })

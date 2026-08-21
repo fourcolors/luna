@@ -728,6 +728,152 @@ describe("JobsStoreService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  // S11a: clean-shutdown marker exempts the orphanStreak bump only - every
+  // other reconcile repair (close orphans, repair sticky status, pull
+  // next_run_at forward) stays identical whether or not the marker was
+  // present. See jobs-store-types.ts's reconcileAfterCrash doc comment.
+  it("reconcileAfterCrash: cleanShutdown=true still closes orphans, repairs sticky status, and pulls next_run_at forward, but does not bump orphanStreak", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const farFuture = 9_000_000_000_000
+      const finishedAt = 1_700_000_000_000
+      yield* store.record({
+        id: "clean-shutdown-orphan",
+        kind: "wake",
+        spec: "*/30 * * * *",
+        payload: { label: "clean-shutdown-orphan" },
+      })
+      yield* store.setV2Fields("clean-shutdown-orphan", {
+        schedule: "*/30 * * * *",
+        enabled: true,
+        nextRunAt: farFuture,
+      })
+      yield* store.touch("clean-shutdown-orphan", {
+        lastStatus: "running",
+        lastRun: finishedAt - 60_000,
+      })
+      const run = yield* store.recordRunStart({
+        jobId: "clean-shutdown-orphan",
+        startedAt: finishedAt - 60_000,
+      })
+
+      const result = yield* store.reconcileAfterCrash({
+        finishedAt,
+        cleanShutdown: true,
+      })
+      expect(result.orphansClosed).toBe(1)
+      expect(result.waitingClosed).toBe(0)
+      expect(result.jobsRepaired).toBe(1)
+      expect(result.jobIdsRepaired).toContain("clean-shutdown-orphan")
+
+      const rows = yield* store.listRuns("clean-shutdown-orphan", 10)
+      expect(rows[0]?.id).toBe(run.id)
+      expect(rows[0]?.status).toBe("cancelled")
+      expect(rows[0]?.finishedAt).toBe(finishedAt)
+
+      const job = yield* store.getById("clean-shutdown-orphan")
+      expect(job?.lastStatus).toBe("errored")
+      expect(job?.enabled).toBe(true)
+      expect(job?.nextRunAt).not.toBeNull()
+      expect(job?.nextRunAt!).toBeGreaterThanOrEqual(finishedAt)
+      expect(job?.nextRunAt!).toBeLessThanOrEqual(finishedAt + 60_000)
+      expect(job?.nextRunAt!).toBeLessThan(farFuture)
+      // The exemption: pull-forward happened above, but the doctor streak
+      // did not move.
+      expect(job?.orphanStreak).toBe(0)
+      expect(job?.failStreak).toBe(0)
+      expect(job?.healState).toBe("ok")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("reconcileAfterCrash: cleanShutdown=false (explicit) bumps orphanStreak exactly like the pre-S11a default", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const farFuture = 9_000_000_000_000
+      const finishedAt = 1_700_000_000_000
+      yield* store.record({
+        id: "no-marker-orphan",
+        kind: "wake",
+        spec: "*/30 * * * *",
+        payload: { label: "no-marker-orphan" },
+      })
+      yield* store.setV2Fields("no-marker-orphan", {
+        schedule: "*/30 * * * *",
+        enabled: true,
+        nextRunAt: farFuture,
+      })
+      yield* store.touch("no-marker-orphan", {
+        lastStatus: "running",
+        lastRun: finishedAt - 60_000,
+      })
+      yield* store.recordRunStart({
+        jobId: "no-marker-orphan",
+        startedAt: finishedAt - 60_000,
+      })
+
+      const result = yield* store.reconcileAfterCrash({
+        finishedAt,
+        cleanShutdown: false,
+      })
+      expect(result.jobsRepaired).toBe(1)
+
+      const job = yield* store.getById("no-marker-orphan")
+      expect(job?.orphanStreak).toBe(1)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("reconcileAfterCrash: consume-once - a cleanShutdown boot exempts itself; a later boot with no marker counts again", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const farFuture1 = 9_000_000_000_000
+      const farFuture2 = 9_100_000_000_000
+      const firstBoot = 1_700_000_000_000
+      const secondBoot = 1_800_000_000_000
+      yield* store.record({
+        id: "consume-once",
+        kind: "dream",
+        spec: "0 3 * * *",
+        payload: { label: "consume-once" },
+      })
+      yield* store.setV2Fields("consume-once", {
+        schedule: "0 3 * * *",
+        enabled: true,
+        nextRunAt: farFuture1,
+      })
+      // First boot: a marker was found and consumed by the (out-of-store)
+      // call site, so this reconcile runs with cleanShutdown=true.
+      yield* store.touch("consume-once", {
+        lastStatus: "running",
+        lastRun: firstBoot - 10_000,
+      })
+      const first = yield* store.reconcileAfterCrash({
+        finishedAt: firstBoot,
+        cleanShutdown: true,
+      })
+      expect(first.jobsRepaired).toBe(1)
+      const afterFirst = yield* store.getById("consume-once")
+      expect(afterFirst?.orphanStreak).toBe(0)
+      expect(afterFirst?.nextRunAt!).toBeLessThan(farFuture1)
+
+      // The job fires normally and is rescheduled far out again, then a
+      // SECOND, genuine crash happens with no marker present (the first
+      // boot already consumed it) - this reconcile must count.
+      yield* store.setV2Fields("consume-once", { nextRunAt: farFuture2 })
+      yield* store.touch("consume-once", {
+        lastStatus: "running",
+        lastRun: secondBoot - 10_000,
+      })
+      const second = yield* store.reconcileAfterCrash({ finishedAt: secondBoot })
+      expect(second.jobsRepaired).toBe(1)
+      const afterSecond = yield* store.getById("consume-once")
+      expect(afterSecond?.orphanStreak).toBe(1)
+      expect(afterSecond?.nextRunAt!).toBeLessThan(farFuture2)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   it("closeOrphanedRuns still closes all open runs with a single error (back-compat)", async () => {
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -850,6 +996,54 @@ dSqlite("JobsStoreService (SQLite layer) — reconcileAfterCrash", () => {
       expect(job?.orphanStreak).toBe(1)
       expect(job?.failStreak).toBe(0)
       expect(job?.healState).toBe("ok")
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
+
+  // S11a: same exemption, SQLite layer - the repair still lands in the one
+  // BEGIN IMMEDIATE transaction, only the orphan_streak CASE-WHEN write is
+  // skipped.
+  it("cleanShutdown=true still closes orphans and pulls next_run_at forward, but does not bump orphan_streak", async () => {
+    const finishedAt = 1_700_000_000_000
+    const farFuture = finishedAt + 86_400_000 * 30
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({
+        id: "sql-clean-shutdown-orphan",
+        kind: "wake",
+        spec: "*/10 * * * *",
+        payload: { label: "sql-clean-shutdown-orphan" },
+      })
+      yield* store.setV2Fields("sql-clean-shutdown-orphan", {
+        schedule: "*/10 * * * *",
+        enabled: true,
+        nextRunAt: farFuture,
+      })
+      yield* store.touch("sql-clean-shutdown-orphan", { lastStatus: "running" })
+      const run = yield* store.recordRunStart({
+        jobId: "sql-clean-shutdown-orphan",
+        startedAt: finishedAt - 1_000,
+      })
+
+      const result = yield* store.reconcileAfterCrash({
+        finishedAt,
+        cleanShutdown: true,
+      })
+      expect(result.orphansClosed).toBe(1)
+      expect(result.jobsRepaired).toBe(1)
+
+      const rows = yield* store.listRuns("sql-clean-shutdown-orphan", 5)
+      expect(rows[0]?.id).toBe(run.id)
+      expect(rows[0]?.status).toBe("cancelled")
+
+      const job = yield* store.getById("sql-clean-shutdown-orphan")
+      expect(job?.lastStatus).toBe("errored")
+      expect(job?.nextRunAt!).toBeGreaterThanOrEqual(finishedAt)
+      expect(job?.nextRunAt!).toBeLessThanOrEqual(finishedAt + 60_000)
+      expect(job?.nextRunAt!).toBeLessThan(farFuture)
+      expect(job?.orphanStreak).toBe(0)
     })
     await Effect.runPromise(
       Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),

@@ -24,7 +24,7 @@
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import {
   Clock,
   EmbedderService,
@@ -42,8 +42,10 @@ import {
   MemoryLayer,
   MemoryRouterTag,
   SqliteVectorBackend,
+  type MemoryRouter,
+  type MemoryVectorBackend,
 } from "@luna/memory"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type {
   AnyZodRawShape,
   McpSdkServerConfigWithInstance,
@@ -132,15 +134,46 @@ export const buildMemoryMcpServer = (
   toolOptions?: MakeMemoryToolsOptions,
 ): McpSdkServerConfigWithInstance => {
   // The tuple has heterogeneous shapes; widen to the SDK's catch-all
-  // shape for the registry. Safe because makeSdkMcpServer treats the
+  // shape for the registry. Safe because defineToolPackage treats the
   // schema field opaquely until the MCP server is actually serving.
   const tools = makeMemoryTools(
     router,
     undefined,
     toolOptions,
   ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
-  return makeSdkMcpServer("memory", "0.1.0", tools)
+  return defineToolPackage({ name: "memory", tools }).server
 }
+
+/**
+ * makeMemoryRouterLayer - generic MemoryRouter composition: resolves
+ * `backendTag` out of an already-built `backendLayer` and routes everything
+ * ("*") to it. This is the seam a different memory backend swaps in through
+ * (a different Tag + Layer pair) without touching the router or any caller
+ * above it. `MemoryRouterLayer` below is the sqlite convenience wrapper most
+ * callers want.
+ *
+ * `BackendApi` must satisfy `MemoryVectorBackend` (put/get/query/delete/
+ * exportAll/importAll plus `search`). This composition always builds a
+ * single-rule `"*"` router, so a search-less backend would make every
+ * `memory_search` call fail with "no vector backend for namespace X" - the
+ * constraint below turns that dead config into a compile error instead of a
+ * runtime surprise.
+ */
+export const makeMemoryRouterLayer = <
+  BackendId,
+  BackendApi extends MemoryVectorBackend,
+  E,
+  R,
+>(
+  backendLayer: Layer.Layer<BackendId, E, R>,
+  backendTag: Context.Tag<BackendId, BackendApi>,
+) =>
+  Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const backend = yield* backendTag
+      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
+    }),
+  ).pipe(Layer.provideMerge(backendLayer))
 
 /**
  * MemoryRouterLayer — provides MemoryRouter with a single rule routing
@@ -150,12 +183,7 @@ export const buildMemoryMcpServer = (
  *   → `MemoryLayer({ rules: [{ pattern: "*", backend }] })`.
  */
 export const MemoryRouterLayer = (dbPath: string) =>
-  Layer.unwrapEffect(
-    Effect.gen(function* () {
-      const backend = yield* SqliteVectorBackend
-      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
-    }),
-  ).pipe(Layer.provideMerge(SqliteVectorBackend.fromPath(dbPath)))
+  makeMemoryRouterLayer(SqliteVectorBackend.fromPath(dbPath), SqliteVectorBackend)
 
 /**
  * MemoryToolsConfig — emitted by MemoryToolsLayer, carries the SDK MCP
@@ -205,6 +233,20 @@ export interface MemoryToolsLayerOptions {
    * adapter-sdk) - the caller builds the SDK-backed layer and passes it in.
    */
   readonly rerankerLayer?: Layer.Layer<MemoryReranker, never, never>
+  /**
+   * Override the MemoryRouter Layer entirely. When provided, `MemoryToolsLayer`
+   * uses it INSTEAD of `MemoryRouterLayer(dbPath)` - this is the seam a
+   * caller swaps a different memory backend through (e.g.
+   * `makeMemoryRouterLayer(otherBackendLayer, otherBackendTag)`) without
+   * editing this file; `dbPath` is ignored when set. DEFAULT undefined:
+   * `MemoryRouterLayer(dbPath)`, today's sqlite-vector-only behavior,
+   * unchanged.
+   */
+  readonly routerLayer?: Layer.Layer<
+    MemoryRouter,
+    MemoryBackendError,
+    EmbedderService | LunaSqliteBootstrap | ObservabilityService | Clock
+  >
 }
 
 /**
@@ -223,7 +265,6 @@ export const MemoryToolsLayer = (
   MemoryBackendError | EmbedderError,
   LunaSqliteBootstrap | ObservabilityService | Clock
 > => {
-  const dbPath = opts?.dbPath ?? resolveDbPath()
   const embedderL = opts?.embedder ?? selectEmbedderLayer()
   const createConfig = (
     router: Parameters<typeof buildMemoryMcpServer>[0],
@@ -255,7 +296,15 @@ export const MemoryToolsLayer = (
         createSessionBinding: () => createConfig(router, reranker, observability),
       }
     }),
-  ).pipe(Layer.provide(MemoryRouterLayer(dbPath)), Layer.provide(embedderL))
+  ).pipe(
+    // `resolveDbPath()` mkdirp's the on-disk db dir as a side effect - only
+    // called when actually needed, so passing `routerLayer` never touches
+    // the filesystem for a path that would end up unused.
+    Layer.provide(
+      opts?.routerLayer ?? MemoryRouterLayer(opts?.dbPath ?? resolveDbPath()),
+    ),
+    Layer.provide(embedderL),
+  )
   return opts?.rerankerLayer !== undefined
     ? base.pipe(Layer.provide(opts.rerankerLayer))
     : base

@@ -8,7 +8,9 @@
  *   - parametrized round-trip across every member of DEFAULT_UI_KINDS
  *     (locks the layer's kind-shape indifference)
  *   - fan-out: two clients each receive every event independently
- *   - path routing (404 on unknown, 200 on /healthz)
+ *   - path routing (404 on unknown, 404 on /, 200 on /healthz, 426 on
+ *     non-upgrade /ui), including the query-string form of /healthz and /ui,
+ *     which regression-guards the pathname split at server.ts's http handler
  *   - startup validation: refuses short token
  *
  * Slow-consumer drop and scope-leak shutdown are covered indirectly by
@@ -50,31 +52,77 @@ const makeFullLayer = (config?: Parameters<typeof UIService.makeLayer>[0]) => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
+/**
+ * Poll `cond` every 10ms until true or `deadlineMs` elapses. Deterministic
+ * replacement for fixed-sleep waits on asynchronous server-side steps: the
+ * caller's assertion still runs (and fails loudly) if the condition never
+ * becomes true within the deadline.
+ */
+const pollUntil = async (
+  cond: () => boolean,
+  deadlineMs: number,
+): Promise<void> => {
+  const deadline = Date.now() + deadlineMs
+  while (!cond() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
+/** Collect takeN frames. Delegates to collectFramesAfterHello (single collector). */
 const collectFrames = (
   url: string,
   headers: Record<string, string>,
   takeN: number,
   timeoutMs = 2000,
 ): Promise<ServerFrame[]> =>
-  new Promise((resolve, reject) => {
+  collectFramesAfterHello(url, headers, takeN, timeoutMs).frames
+
+/**
+ * Like collectFrames, but exposes the moment the `hello` frame arrives so a
+ * test can sequence an obsEmit strictly AFTER the subscription provably
+ * exists. The server takes `ui.subscribe` (eager, queue-backed — see
+ * UIService's subscribeEvents contract) BEFORE it sends `hello`, so
+ * hello-receipt guarantees any later emit reaches this client. Replaces the
+ * fixed-sleep pattern that flaked in CI ("timeout: got 1/2 frames") when the
+ * connection took longer than the sleep.
+ */
+const collectFramesAfterHello = (
+  url: string,
+  headers: Record<string, string>,
+  takeN: number,
+  timeoutMs = 2000,
+): { hello: Promise<void>; frames: Promise<ServerFrame[]> } => {
+  let helloResolve!: () => void
+  let helloReject!: (e: Error) => void
+  const hello = new Promise<void>((res, rej) => {
+    helloResolve = res
+    helloReject = rej
+  })
+  const frames = new Promise<ServerFrame[]>((resolve, reject) => {
     const ws = new WebSocket(url, { headers })
     const out: ServerFrame[] = []
-    const timer = setTimeout(() => {
+    const fail = (err: Error) => {
       ws.close()
-      reject(new Error(`timeout: got ${out.length}/${takeN} frames`))
-    }, timeoutMs)
+      helloReject(err)
+      reject(err)
+    }
+    const timer = setTimeout(
+      () => fail(new Error(`timeout: got ${out.length}/${takeN} frames`)),
+      timeoutMs,
+    )
     ws.on("error", (err) => {
       clearTimeout(timer)
-      reject(err)
+      fail(err as Error)
     })
     ws.on("unexpected-response", (_req, res) => {
       clearTimeout(timer)
-      reject(new Error(`unexpected ${res.statusCode}`))
+      fail(new Error(`unexpected ${res.statusCode}`))
     })
     ws.on("message", (raw) => {
       try {
         const frame = JSON.parse(raw.toString()) as ServerFrame
         out.push(frame)
+        if (out.length === 1) helloResolve()
         if (out.length >= takeN) {
           clearTimeout(timer)
           ws.close()
@@ -82,10 +130,16 @@ const collectFrames = (
         }
       } catch (e) {
         clearTimeout(timer)
-        reject(e)
+        fail(e as Error)
       }
     })
   })
+  // A test that fails before awaiting `frames` must not surface a second,
+  // unhandled rejection from the pre-resolved pair.
+  hello.catch(() => {})
+  frames.catch(() => {})
+  return { hello, frames }
+}
 
 const exchangeFrames = (
   url: string,
@@ -458,8 +512,13 @@ describe("UIWebSocketServer", () => {
       3,
     )
     // exchangeFrames closes the socket once it has all requested frames.
-    // Give the server's close finalizer a moment to drain.
-    await new Promise((r) => setTimeout(r, 50))
+    // The server's close finalizer drains asynchronously - poll until it
+    // has (deadline-bounded), instead of guessing with a fixed sleep (the
+    // same race family the hello-gate fix in this file eliminates).
+    await pollUntil(
+      () => released.includes("thr_disco_a") && released.includes("thr_disco_b"),
+      2000,
+    )
     expect(released).toEqual(expect.arrayContaining(["thr_disco_a", "thr_disco_b"]))
   })
 
@@ -525,14 +584,15 @@ describe("UIWebSocketServer", () => {
   it("forwards a whitelisted event after subscribe", async () => {
     rig = await startRig()
     const url = rig.url
-    // Subscribe first; emit after a short delay.
-    const collectorP = collectFrames(
+    // Subscribe first; emit only once the hello frame proves the
+    // subscription exists (deterministic — no timing assumption).
+    const collector = collectFramesAfterHello(
       url,
       { authorization: `Bearer ${TOKEN}` },
       2,
       3000,
     )
-    await new Promise((r) => setTimeout(r, 100))
+    await collector.hello
     await rig.obsEmit({
       kind: "SessionStart",
       ts: new Date().toISOString(),
@@ -541,7 +601,7 @@ describe("UIWebSocketServer", () => {
       model: "x",
       optionsDigest: "y",
     })
-    const frames = await collectorP
+    const frames = await collector.frames
     expect(frames.map((f) => f.type)).toEqual(["hello", "event"])
     if (frames[1]?.type === "event") {
       expect(frames[1].event.kind).toBe("SessionStart")
@@ -587,15 +647,15 @@ describe("UIWebSocketServer", () => {
   for (const kind of DEFAULT_UI_KINDS) {
     it(`round-trips ${kind} events`, async () => {
       rig = await startRig()
-      const collectorP = collectFrames(
+      const collector = collectFramesAfterHello(
         rig.url,
         { authorization: `Bearer ${TOKEN}` },
         2,
         3000,
       )
-      await new Promise((r) => setTimeout(r, 100))
+      await collector.hello
       await rig.obsEmit(minimalEventFor(kind))
-      const frames = await collectorP
+      const frames = await collector.frames
       expect(frames[1]?.type).toBe("event")
       if (frames[1]?.type === "event") {
         expect(frames[1].event.kind).toBe(kind)
@@ -606,9 +666,9 @@ describe("UIWebSocketServer", () => {
   it("fan-out: two clients each receive the same event", async () => {
     rig = await startRig()
     const headers = { authorization: `Bearer ${TOKEN}` }
-    const aP = collectFrames(rig.url, headers, 2, 3000)
-    const bP = collectFrames(rig.url, headers, 2, 3000)
-    await new Promise((r) => setTimeout(r, 150))
+    const aC = collectFramesAfterHello(rig.url, headers, 2, 3000)
+    const bC = collectFramesAfterHello(rig.url, headers, 2, 3000)
+    await Promise.all([aC.hello, bC.hello])
     await rig.obsEmit({
       kind: "SessionStart",
       ts: new Date().toISOString(),
@@ -616,7 +676,7 @@ describe("UIWebSocketServer", () => {
       sessionId: "s2",
       model: "m",
     })
-    const [a, b] = await Promise.all([aP, bP])
+    const [a, b] = await Promise.all([aC.frames, bC.frames])
     expect(a[1]?.type).toBe("event")
     expect(b[1]?.type).toBe("event")
   })
@@ -627,9 +687,36 @@ describe("UIWebSocketServer", () => {
     expect(res.status).toBe(404)
   })
 
+  it("GET / returns 404 (no static serving)", async () => {
+    rig = await startRig()
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/"))
+    expect(res.status).toBe(404)
+  })
+
+  it("GET /ui (non-upgrade) returns 426", async () => {
+    rig = await startRig()
+    const res = await fetch(rig.url.replace("ws://", "http://"))
+    expect(res.status).toBe(426)
+  })
+
+  it("GET /ui?foo=bar (non-upgrade) still returns 426 despite the query string", async () => {
+    rig = await startRig()
+    const res = await fetch(`${rig.url.replace("ws://", "http://")}?foo=bar`)
+    expect(res.status).toBe(426)
+  })
+
   it("/healthz returns 200", async () => {
     rig = await startRig()
     const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/healthz"))
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe("ok")
+  })
+
+  it("/healthz?format=json still hits the health endpoint despite the query string", async () => {
+    rig = await startRig()
+    const res = await fetch(
+      rig.url.replace("ws://", "http://").replace("/ui", "/healthz?format=json"),
+    )
     expect(res.status).toBe(200)
     expect(await res.text()).toBe("ok")
   })

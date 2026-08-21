@@ -77,6 +77,34 @@ describe('moon-protocol.js', () => {
     expect(P().buildWsUrl('ws://h:1/ui', null)).toBe('ws://h:1/ui')
   })
 
+  // ── describeWsUrl (Step 1c Part 3a - the security invariant) ──────────────
+  // Constructed fixture, not a real credential - avoids the secret-scan
+  // gate's 40-hex-literal ban while still standing in for "a bearer token".
+  const SECRET = 'SECRET-token-do-not-log-me-12345'
+
+  it('describeWsUrl strips userinfo, query (including the token), and fragment - the full plan scenario', () => {
+    const described = P().describeWsUrl(`wss://user:pass@host:4753/ui?token=${SECRET}&x=1#frag`)
+    expect(described).toContain('host:4753/ui')
+    expect(described).not.toContain('?')
+    expect(described).not.toContain('#')
+    expect(described).not.toContain('user')
+    expect(described).not.toContain('pass')
+    expect(described).not.toContain(SECRET)
+    expect(described).toBe('wss://host:4753/ui')
+  })
+
+  it('describeWsUrl returns the fixed placeholder for unparseable input, never any part of the input', () => {
+    expect(P().describeWsUrl('ws://:::/ui')).toBe('<unparseable url>')
+    expect(P().describeWsUrl('not a url at all')).toBe('<unparseable url>')
+    // The placeholder itself must never leak input content even when the
+    // input LOOKS like it has a scheme.
+    expect(P().describeWsUrl(`ws://:::/${SECRET}`)).not.toContain(SECRET)
+  })
+
+  it('describeWsUrl omits the port entirely when the URL has no explicit port', () => {
+    expect(P().describeWsUrl('ws://host.example/ui')).toBe('ws://host.example/ui')
+  })
+
   it('parseHelloCapabilities coerces every absent flag to false (fail closed)', () => {
     expect(P().parseHelloCapabilities({})).toEqual({
       turnComplete: false, skills: false, connectors: false,

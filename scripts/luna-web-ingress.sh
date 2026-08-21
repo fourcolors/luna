@@ -13,10 +13,10 @@
 # Environment:
 #   LUNA_UI_PORT    — chat-server port (default: 4753)
 #
-# Alternatives (not automated here — see docs/web-client/serving.md):
-#   - Caddy + real TLS domain  (Option 2)
-#   - Caddy + tls internal     (Option 3)
-#   - ngrok / Cloudflare Tunnel (Option 5)
+# Alternatives (not automated here):
+#   - Caddy + real TLS domain
+#   - Caddy + tls internal
+#   - ngrok / Cloudflare Tunnel
 #
 # Idempotent: running this script multiple times is safe — `tailscale serve`
 # with the same port is a no-op if already configured.
@@ -34,7 +34,6 @@ if ! command -v tailscale &>/dev/null; then
   echo "Install Tailscale: https://tailscale.com/download" >&2
   echo "" >&2
   echo "Alternatives (no Tailscale required):" >&2
-  echo "  Caddy:  see docs/web-client/serving.md option 2/3" >&2
   echo "  ngrok:  ngrok http ${PORT}" >&2
   exit 1
 fi
@@ -53,7 +52,7 @@ tailscale serve --bg "localhost:${PORT}"
 # ── Show the resulting URL ─────────────────────────────────────────────────────
 TAILNET_URL="$(tailscale serve status 2>/dev/null | grep 'https://' | awk '{print $1}' | head -1 || true)"
 if [[ -n "$TAILNET_URL" ]]; then
-  echo "[luna/web-ingress] Web client available at: ${TAILNET_URL}"
+  echo "[luna/web-ingress] Chat-server exposed at: ${TAILNET_URL} (WS endpoint: ${TAILNET_URL%/}/ui - see docs/server-secrets.md for token transport)"
 else
   echo "[luna/web-ingress] Done. Check your Tailscale URL with: tailscale serve status"
 fi

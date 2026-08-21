@@ -30,14 +30,28 @@
     "packages/*/src/**/*.ts",
     "packages/*/src/**/*.tsx",
     "apps/*/src/**/*.ts",
-    "apps/*/src/**/*.tsx"
+    "apps/*/src/**/*.tsx",
+    // scripts/luna-chat-server-entry.ts alone, not "scripts/*.ts": it is the
+    // single load-bearing entrypoint for every supervised host (systemd +
+    // launchd both exec it directly). The other scripts/*.ts files are
+    // dev/release tooling with no deploy-path stakes.
+    "scripts/luna-chat-server-entry.ts",
+    // All of apps/server/scripts, not just mcp-demo.ts: issue #444 closed the
+    // last carve-out by fixing enable-wake.ts (bun:sqlite reached through
+    // createRequire, the workspaces-loader.ts idiom) and seed-probe-widgets.ts
+    // (26 strictNullChecks / noUncheckedIndexedAccess reads). These are ops
+    // CLIs that touch luna.db and pin widgets into a live ArtifactStore, so
+    // "dev tooling, leave it untyped" was never the right call for them.
+    "apps/server/scripts/**/*.ts"
   ],
   "exclude": [
     "**/dist",
     "**/node_modules",
+    // Project-wide: this root project (incl. apps/server/src, S09) does not
+    // gate test files. A per-package tsconfig (e.g. packages/memory-tools)
+    // may still include its own test/ deliberately, when a compile-time
+    // proof there needs gating (S04's @ts-expect-error).
     "**/*.test.ts",
-    "apps/ui-web/**",
-    "apps/agent-cli/**",
-    "packages/ui-shared-solid/**"
+    "apps/agent-cli/**"
   ]
 }

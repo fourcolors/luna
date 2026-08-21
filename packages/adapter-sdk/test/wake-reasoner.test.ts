@@ -139,6 +139,20 @@ describe("buildWakePrompt", () => {
     expect(prompt).toContain("(no open next_actions)")
     expect(prompt).toContain("(no prior wakes)")
   })
+
+  it("structuredOutputEnabled=false (default) keeps the full field-by-field Shape: listing", () => {
+    const prompt = buildWakePrompt(baseInputs)
+    expect(prompt).toContain("Shape:")
+    expect(prompt).toContain('"picked_action_id": <number|null>')
+  })
+
+  it("structuredOutputEnabled=true drops the Shape: listing for a short instruction plus one worked example", () => {
+    const prompt = buildWakePrompt(baseInputs, true)
+    expect(prompt).not.toContain("Shape:")
+    expect(prompt).not.toContain('"picked_action_id": <number|null>')
+    expect(prompt).toContain("enforced automatically")
+    expect(prompt).toContain('"picked_action_id": 1')
+  })
 })
 
 describe("parseDigest", () => {
@@ -450,23 +464,48 @@ describe("validateDigest — schema-validated structured_output path", () => {
   })
 })
 
-describe("reasonerStructuredOutputEnabled — env gate", () => {
-  it("defaults OFF when unset", () => {
-    expect(reasonerStructuredOutputEnabled({})).toBe(false)
+describe("reasonerStructuredOutputEnabled - capability-driven default + env override", () => {
+  it("no override + capable lane (bare 'default' → anthropic) → ON", () => {
+    expect(reasonerStructuredOutputEnabled(undefined, {})).toBe(true)
   })
-  it("is ON for 1/true/yes/on (case-insensitive)", () => {
+  it("no override + capable lane (google) → ON", () => {
+    expect(reasonerStructuredOutputEnabled("gemini-2.5-flash", {})).toBe(true)
+  })
+  it("no override + incapable lane (openai, structuredOutput=\"none\") → OFF", () => {
+    expect(reasonerStructuredOutputEnabled("gpt-4o", {})).toBe(false)
+  })
+  it("no override + incapable lane (ollama-cloud) → OFF", () => {
+    expect(reasonerStructuredOutputEnabled("qwen3:cloud", {})).toBe(false)
+  })
+  it("override 1/true/yes/on FORCES on even for an incapable lane (case-insensitive)", () => {
     for (const v of ["1", "true", "TRUE", "yes", "on", " On "]) {
       expect(
-        reasonerStructuredOutputEnabled({ LUNA_REASONER_STRUCTURED_OUTPUT: v }),
+        reasonerStructuredOutputEnabled("gpt-4o", {
+          LUNA_REASONER_STRUCTURED_OUTPUT: v,
+        }),
       ).toBe(true)
     }
   })
-  it("is OFF for other values", () => {
-    for (const v of ["0", "false", "no", "off", ""]) {
+  it("override 0/false/no/off FORCES off even for a capable lane (the rollback lever)", () => {
+    for (const v of ["0", "false", "no", "off"]) {
       expect(
-        reasonerStructuredOutputEnabled({ LUNA_REASONER_STRUCTURED_OUTPUT: v }),
+        reasonerStructuredOutputEnabled(undefined, {
+          LUNA_REASONER_STRUCTURED_OUTPUT: v,
+        }),
       ).toBe(false)
     }
+  })
+  it("blank or unrecognized override value defers to the capability check", () => {
+    expect(
+      reasonerStructuredOutputEnabled(undefined, {
+        LUNA_REASONER_STRUCTURED_OUTPUT: "",
+      }),
+    ).toBe(true)
+    expect(
+      reasonerStructuredOutputEnabled("gpt-4o", {
+        LUNA_REASONER_STRUCTURED_OUTPUT: "maybe",
+      }),
+    ).toBe(false)
   })
 })
 
@@ -564,10 +603,10 @@ describe("WakeReasonerDefault — structured output flag ON (end-to-end)", () =>
     })
   })
 
-  it("flag OFF (default) → NO outputFormat in the SDK options (byte-identical back-compat)", async () => {
+  it("no explicit override, default lane (anthropic - capability-driven) → outputFormat included by default", async () => {
     const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
     const frame = {
-      ...makeResultMessage("sid", "uuid-off"),
+      ...makeResultMessage("sid", "uuid-default-on"),
       result: JSON.stringify(validDigest),
     } as unknown as SDKMessage
     await withFlag(undefined, async () => {
@@ -577,7 +616,60 @@ describe("WakeReasonerDefault — structured output flag ON (end-to-end)", () =>
       expect(digest.pickedActionId).toBe(1)
     })
     const opts = sink.last!.options
+    const outputFormat = opts["outputFormat"] as
+      | { type?: string; schema?: unknown }
+      | undefined
+    expect(outputFormat).toBeDefined()
+    expect(outputFormat!.type).toBe("json_schema")
+    expect(outputFormat!.schema).toBe(WAKE_DIGEST_SCHEMA)
+    expect(opts["maxTurns"]).toBe(1)
+  })
+
+  it("explicit override OFF rolls back structured output even on a capable (anthropic) lane", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-forced-off"),
+      result: JSON.stringify(validDigest),
+    } as unknown as SDKMessage
+    await withFlag("0", async () => {
+      const digest = await Effect.runPromise(
+        runReason(baseInputs, recordingClientWith(sink, frame)),
+      )
+      expect(digest.pickedActionId).toBe(1)
+    })
+    const opts = sink.last!.options
     expect("outputFormat" in opts).toBe(false)
     expect(opts["maxTurns"]).toBe(1)
+  })
+
+  it("no explicit override, incapable lane (openai, structuredOutput=\"none\") → NO outputFormat", async () => {
+    const OPENAI_TOK_ENV = "WAKE_OPENAI_TOK"
+    const openaiBroker: Layer.Layer<AccountBroker> = AccountBrokerLayer.fromAccounts([
+      { id: "o1", kind: "openai", secretRef: `env:${OPENAI_TOK_ENV}` },
+    ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-incapable"),
+      result: JSON.stringify(validDigest),
+    } as unknown as SDKMessage
+    const prevModel = process.env["LUNA_WAKE_MODEL"]
+    const prevTok = process.env[OPENAI_TOK_ENV]
+    process.env["LUNA_WAKE_MODEL"] = "gpt-4o"
+    process.env[OPENAI_TOK_ENV] = "openai-secret"
+    try {
+      await withFlag(undefined, async () => {
+        const digest = await Effect.runPromise(
+          runReason(baseInputs, recordingClientWith(sink, frame), openaiBroker),
+        )
+        expect(digest.pickedActionId).toBe(1)
+      })
+    } finally {
+      if (prevModel === undefined) delete process.env["LUNA_WAKE_MODEL"]
+      else process.env["LUNA_WAKE_MODEL"] = prevModel
+      if (prevTok === undefined) delete process.env[OPENAI_TOK_ENV]
+      else process.env[OPENAI_TOK_ENV] = prevTok
+    }
+    const opts = sink.last!.options
+    expect("outputFormat" in opts).toBe(false)
   })
 })

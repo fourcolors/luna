@@ -8,15 +8,15 @@
 ## Architecture
 - **Docking System**: Manages window snapping, group docking, and seam/weld styles for webviews in Tauri. Primarily implemented in `deck-snap.js`, `moon-dock.js`, `moon-skins.css`, and `moon-theme.css`.
 - **Chat Window**: The frontend application for user chat interfaces, defined in `apps/ui-moon-tauri/frontend/chat.html` and tested in `chat-window.test.ts`.
-- **UI Models**: Model listing and capability calculation for LLM backends, defined in `apps/ui-web/scripts/chat-server.ts` and tested in `ui-models.test.ts`.
+- **UI Models**: Model listing and capability calculation for LLM backends, defined in `apps/server/src/chat-server.ts` and tested in `ui-models.test.ts`.
 - **Update Server**: The system update coordinator, defined in `scripts/luna-update-server` and tested in `update-server.test.ts`.
 
 ## Code Layout
 - `apps/ui-moon-tauri/frontend/vendor/`: Vendor JS modules for window docking/snapping (`deck-snap.js`, `moon-dock.js`).
 - `apps/ui-moon-tauri/frontend/vendor/`: CSS files styling the theme and skins (`moon-theme.css`, `moon-skins.css`).
 - `apps/ui-moon-tauri/test/`: Test suites for Tauri window behaviors and docking (`chat-window.test.ts`, `deck-weld.test.ts`).
-- `apps/ui-web/scripts/`: Backend server logic for UI models (`chat-server.ts`).
-- `apps/ui-web/scripts/__tests__/`: Unit tests for backend UI models (`ui-models.test.ts`).
+- `apps/server/src/`: Backend server logic for UI models (`chat-server.ts`).
+- `apps/server/src/__tests__/`: Unit tests for backend UI models (`ui-models.test.ts`).
 - `scripts/`: System updater script (`luna-update-server`).
 - `test/`: Integration tests for system updater (`update-server.test.ts`).
 

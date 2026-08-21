@@ -45,4 +45,3 @@ export const SessionOptionsSchema = S.Struct({
 export type ValidatedSessionOptions = typeof SessionOptionsSchema.Type
 
 export const decodeSessionOptions = S.decodeUnknown(SessionOptionsSchema)
-export const decodeSessionOptionsSync = S.decodeUnknownSync(SessionOptionsSchema)

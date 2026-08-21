@@ -42,7 +42,7 @@ client installer does not read or write Claude OAuth tokens.
 - **Agent SDK:** [Anthropic Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - **Database:** SQLite via `@effect/sql-sqlite-bun` · Vectorlite for HNSW vector search
 - **Testing:** Vitest
-- **UI:** Solid.js (web) · Luna Moon floating widget (Tauri) · the `luna` terminal client
+- **UI:** Luna Moon floating widget (Tauri) · the `luna` terminal client
 
 ## Architecture
 
@@ -76,7 +76,6 @@ packages/
   capabilities/   - versioned capability layer (slash commands, skills) a backend advertises to UIs
 apps/
   agent-cli/      — the `luna` terminal client (chat, doctor, pair, account, memory)
-  ui-web/         — Solid.js web chat interface (Vite dev server on :5174)
   ui-moon-tauri/  — Luna Moon: a small transparent floating-widget desktop app (Tauri)
 ```
 
@@ -85,7 +84,6 @@ apps/
 | App | What it is |
 |-----|------------|
 | `agent-cli` | The `luna` CLI you install on your Mac. `luna chat` opens a terminal chat; `luna doctor` runs a connection preflight; `luna pair` points the CLI + Moon widget at a server in one command. |
-| `ui-web` | The Solid.js web chat UI, served by Vite on `http://localhost:5174`. This is also where first-run Claude subscription login happens. |
 | `ui-moon-tauri` | "Luna Moon" — a small (140×140), transparent, always-on-top floating crescent widget. Click it for a chat panel; toggle with `Cmd/Ctrl+Shift+K`. |
 
 The LLM behind every surface is **cloud Claude via your Claude.ai subscription**
@@ -95,7 +93,7 @@ Local Ollama is used only for memory embeddings, not for chat.
 
 ## Quick Start
 
-Luna is a monorepo. A clone contains the terminal client, web UI, the desktop
+Luna is a monorepo. A clone contains the terminal client, the desktop
 widget, the server runtime, shared packages, and host/container setup scripts.
 
 **Step 0 — clone the repo.** Everything below assumes you have a local clone:
@@ -125,9 +123,8 @@ Every path ends with a live connection test (the wizard listens for the
 server's `hello` before saving anything). Re-run it any time from
 **Settings → Connection → Setup wizard**.
 
-The server still needs its one-time Claude login (`claude setup-token`, see
-[Authentication](#authentication)) — if it's missing, the wizard's final step
-tells you exactly what to do.
+The server still needs its one-time Claude login before it can chat.
+The wizard detects a missing login and says so, but completing it happens outside Moon: run `claude setup-token` in a terminal, then register it with Luna - see [Adding accounts](#adding-accounts).
 
 ### macOS: double-click installer
 
@@ -137,16 +134,13 @@ from Terminal in the clone) and pick a profile:
 
 | Option | What it does | Extra requirements |
 |--------|--------------|--------------------|
-| **[1] Complete Desktop Install** | Installs the `luna` CLI, starts the chat server (supervised by launchd) and the Vite web UI on your Mac, and opens `http://localhost:5174`. | `claude setup-token` login on first run |
+| **[1] Complete Desktop Install** | Installs the `luna` CLI and starts the chat server (supervised by launchd) on your Mac, then points you at Luna Moon to chat. | one-time `claude setup-token` + `luna account add` login (see [Adding accounts](#adding-accounts)) |
 | **[2] Remote Server Client** | Installs the `luna` CLI only and points it at a remote Luna server (prompts for the WebSocket URL + token). | a running remote server |
 | **[3] Separated Client / Server** | Installs the `luna` CLI wrapper only and prints manual server-deploy instructions. | — |
 | **[4] Luna Moon — floating widget** | Starts the supervised local server (launchd) and launches the **Luna Moon** native floating widget; the token is auto-configured. | the **Rust toolchain** ([rustup](https://rustup.rs) + `cargo install tauri-cli`) **and** the `claude` CLI |
 
-Option 4 compiles the Tauri app on first launch via `cargo tauri dev`, so the
-Rust toolchain (`cargo`) and the `cargo-tauri` CLI must be installed first; the
-installer aborts with instructions if either is missing. The widget can only
-chat once the server has a logged-in Claude account, so on a fresh box it opens
-the web UI for a one-time `claude setup-token` login before starting the moon.
+Option 4 compiles the Tauri app on first launch via `cargo tauri dev`, so the Rust toolchain (`cargo`) and the `cargo-tauri` CLI must be installed first; the installer aborts with instructions if either is missing.
+The widget can only chat once the server has a logged-in Claude account, so on a fresh box you still complete that login yourself in a terminal: `claude setup-token`, then register it - see [Adding accounts](#adding-accounts).
 
 ### Any platform: terminal client only
 
@@ -298,7 +292,7 @@ Focused checks for the deployment/client work:
 
 ```bash
 bash -n install.sh scripts/luna-server-install scripts/luna-container-create scripts/luna-guardian scripts/luna-guardian-remote-check scripts/lib/luna-deploy.sh
-bun run test test/deploy-scripts.test.ts apps/ui-web/scripts/__tests__/rename-chat-server.test.ts
+LUNA_TEST_HOST_ENV=1 bun run test test/deploy-scripts.test.ts test/rename-chat-server.test.ts
 bun run --filter '@luna/agent-cli' test
 ```
 
@@ -314,11 +308,11 @@ ManagedRuntime boot smokes — see
 ### Dev servers
 
 ```bash
-# Web UI (Vite, hot reload)
-bun run --filter '@luna/ui-web' dev
+# Moon widget (Tauri) - after a frontend edit, run `bun run build:frontend` first, then Cmd+R
+(cd apps/ui-moon-tauri && bun run tauri dev)
 
 # Chat backend (requires the `claude` CLI logged in via `claude setup-token`)
-bun run --filter '@luna/ui-web' server:chat
+bun run scripts/luna-chat-server-entry.ts
 ```
 
 ### Branching & releases
@@ -378,13 +372,19 @@ idle. See [jax-box deploy](docs/jax-box-deploy.md) for the full runbook.
 
 ```bash
 # Register a Claude.ai account with Luna
-bun run --filter '@luna/agent-cli' luna-account add \
+bun run --filter '@luna/agent-cli' luna -- account add \
   --id me --label "My Account" --kind anthropic \
   --secret-ref claude-code:login
 
 # List registered accounts
-bun run --filter '@luna/agent-cli' luna-account list
+bun run --filter '@luna/agent-cli' luna -- account list
 ```
+
+The `secret-ref claude-code:login` account points at the OAuth session `claude setup-token` leaves in `CLAUDE_CONFIG_DIR`.
+For the macOS installer's launchd-supervised server, that directory is `~/.luna/claude`, not the CLI's own default of `~/.claude`.
+Run `CLAUDE_CONFIG_DIR=~/.luna/claude claude setup-token` before `account add` - `install-mac.command` prints this exact recipe once the server is up.
+Then restart the server so the boot-time credential gate re-reads the `accounts` table.
+Once `install.sh`/`install-mac.command` has put the `luna` wrapper on your `PATH`, drop the `bun run --filter ... luna --` prefix and call `luna account add ...` directly; otherwise use the absolute path `~/.local/bin/luna account add ...`.
 
 ## Personalisation
 

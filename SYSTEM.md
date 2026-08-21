@@ -270,11 +270,10 @@ its stderr prefixed `aborted: dispatch interrupted`.
 
 A dedicated worker kind (`DREAM_WORKER_KIND`,
 `packages/core/src/dream/dream-worker.ts`), NOT a `prompt` row: the dream
-cycle needs `DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`
-(+ an optional `CalibrationStore`), which the generic `prompt` worker cannot
-carry. It runs one `runDream(now)` and **ignores its payload** — the window
-comes from the dream watermark, not the row. There is **ONE** nightly `dream`
-row (default schedule `0 3 * * *`).
+cycle needs `DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`,
+which the generic `prompt` worker cannot carry. It runs one `runDream(now)`
+and **ignores its payload** — the window comes from the dream watermark, not
+the row. There is **ONE** nightly `dream` row (default schedule `0 3 * * *`).
 
 #### `wake` — per-workspace digest cycle
 
@@ -286,7 +285,7 @@ wake is per-workspace there is **ONE `wake` row per wake-enabled workspace**
 (default schedule `*/30 * * * *`).
 
 The `dream` + `wake` rows are seeded by
-`apps/ui-web/scripts/dream-wake-install.ts` (idempotent). These rows are the
+`apps/server/scripts/dream-wake-install.ts` (idempotent). These rows are the
 ONLY driver of the dream / wake cycles — the legacy fiber-per-cron layers were
 removed, so the cycles run exclusively through the JobTicker (DESIGN.md §5.3).
 

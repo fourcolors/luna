@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2046  # unquoted $(_systemctl_user_flag) is an intentional optional flag (10 sites); real fix is an array - known-red follow-up
 # Update an installed Luna server to a target git ref, with auto-rollback.
 #
 # This is the "update the backend over time" half of the install/update plan.
@@ -69,11 +70,11 @@ ROLLBACK=true
 # RESTART_ONLY selects the cheap repair rung: guarded stop-settle-start +
 # readiness, no checkout mutation, no rollback.
 # FORWARD_RESTART_RAN scopes the rollback guard exemption: an apply-phase
-# failure (bun install / SPA build error) rolls back while the OLD server is
-# still running and serving, so that rollback restart must stay guarded — the
-# exemption is earned only once a forward restart has actually interrupted
-# service (or a mid-rollback journal is being recovered, where the interruption
-# already began in a prior run).
+# failure (bun install) rolls back while the OLD server is still running and
+# serving, so that rollback restart must stay guarded — the exemption is
+# earned only once a forward restart has actually interrupted service (or a
+# mid-rollback journal is being recovered, where the interruption already
+# began in a prior run).
 GUARD_SESSIONS=true
 OPERATOR_OVERRIDE_REASON=""
 RESTART_ONLY=false
@@ -396,6 +397,27 @@ git_target_capture() {
   fi
 }
 
+# TODO(#440): drop this probe once every profile's `previous` release
+# resolves to a post-S08 release (apps/server/scripts/dream-wake-install.ts
+# present in BOTH current and previous - checked via `readlink previous` on
+# each host; same condition scripts/luna-chat-server-entry.ts's probe
+# retires on). Until then this script must seed dream/wake jobs from
+# whichever tree shape the running release actually has, because a rollback
+# can flip `current` back to a pre-S08 release with no re-render. Fix or
+# remove: delete the apps/ui-web/scripts fallback below and this comment
+# once the condition holds; S26 carries the removal step. HOST_REPO_DIR is
+# always host-accessible (bind-mount source in incus mode too), so the
+# existence check itself never needs run_target/incus exec; only the
+# printed path is CONTAINER_REPO_DIR-relative, matching every other
+# in-container invocation in this script.
+dream_wake_install_script() {
+  if [[ -f "$HOST_REPO_DIR/apps/server/scripts/dream-wake-install.ts" ]]; then
+    printf '%s' "$CONTAINER_REPO_DIR/apps/server/scripts/dream-wake-install.ts"
+  else
+    printf '%s' "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  fi
+}
+
 # --- preflight ----------------------------------------------------------------
 
 luna_info "Updating Luna server profile: $PROFILE"
@@ -523,14 +545,15 @@ lockfile_hash() {
 
 # --- releases layout helpers (phase 4) ----------------------------------------
 # The mutation surface of the releases layout, all host-side unless noted:
-#   deployed_sha        — resolve current -> releases/<sha>, fail closed
-#   mirror_lock_blob    — bun.lock blob id at a sha, read from the mirror
-#   materialize_release — immutable build: clone --local + detach + install +
-#                         build + .complete LAST (publish_engine idiom)
-#   flip_current        — previous := outgoing current, then staged ln + mv -fT
-#                         + cd -P re-resolve assert on BOTH mount sides
-#   repin_claude_releases — through-current claude pin with read-back
-#   prune_releases      — retention with the prune_engines protection discipline
+#   deployed_sha        - resolve current -> releases/<sha>, fail closed
+#   mirror_lock_blob    - bun.lock blob id at a sha, read from the mirror
+#   materialize_release - immutable build: clone --local + detach + install +
+#                         .complete LAST (publish_engine idiom)
+#   flip_current        - previous := outgoing current, then staged ln +
+#                         luna_atomic_replace + cd -P re-resolve assert on
+#                         BOTH mount sides
+#   repin_claude_releases - through-current claude pin with read-back
+#   prune_releases      - retention with the prune_engines protection discipline
 
 # deployed_sha — print the sha of the release current resolves to. Returns
 # non-zero (and prints nothing usable) when current is absent, dangling, does
@@ -556,16 +579,16 @@ mirror_lock_blob() {
 }
 
 # release_artifacts_ok <release-dir> — the reuse gate: .complete AND
-# node_modules AND a non-empty SPA entry point. Host-side stats (the host can
-# always stat the bind-mount source).
+# node_modules. Host-side stats (the host can always stat the bind-mount
+# source).
 release_artifacts_ok() {
   local rel="$1"
-  [[ -f "$rel/.complete" && -d "$rel/node_modules" && -s "$rel/apps/ui-web/dist/index.html" ]]
+  [[ -f "$rel/.complete" && -d "$rel/node_modules" ]]
 }
 
 # _build_release_tree <build_dir> <crel> <sha> [prev_lock_blob] — the shared
 # build body: clone --local + detach + HEAD postcondition + seed + install +
-# build + .complete LAST. <build_dir> is the host-side tree being built (either
+# .complete LAST. <build_dir> is the host-side tree being built (either
 # the final releases/<sha> or a staged sibling); <crel> is its in-container
 # spelling. Every step is `|| return 1`; the CALLER owns cleanup of a failed
 # tree (materialize_release removes it — a failed build tree is never the
@@ -604,12 +627,6 @@ _build_release_tree() {
   # POSTCONDITION: the install's declared artifact exists (in-container view).
   if ! run_target test -d "$crel/node_modules"; then
     luna_warn "POSTCONDITION: bun install exited 0 but $crel/node_modules is missing"
-    return 1
-  fi
-  run_target "$BUN_BIN" run --cwd "$crel" --filter "@luna/ui-web" build || return 1
-  # POSTCONDITION: the build's declared artifact exists and is non-empty.
-  if ! run_target test -s "$crel/apps/ui-web/dist/index.html"; then
-    luna_warn "POSTCONDITION: ui-web build exited 0 but $crel/apps/ui-web/dist/index.html is missing or empty"
     return 1
   fi
   # Deliberate SIGKILL seam (tests): a crash BEFORE the marker must leave a
@@ -653,7 +670,6 @@ materialize_release() {
     luna_run git clone --no-checkout --local "$MIRROR_GIT" "$rel"
     luna_run git -C "$rel" checkout --detach "$sha"
     run_target "$BUN_BIN" install --cwd "$crel" --frozen-lockfile
-    run_target "$BUN_BIN" run --cwd "$crel" --filter "@luna/ui-web" build
     luna_run touch "$rel/.complete"
     return 0
   fi
@@ -702,13 +718,13 @@ materialize_release() {
     # damaged-but-extant tree is restored so current never dangles.
     aside="$RELEASES_DIR/.old.$sha.$$"
     rm -rf "$aside" 2>/dev/null || true
-    if ! mv -T "$rel" "$aside"; then
+    if ! luna_atomic_replace "$rel" "$aside"; then
       luna_warn "POSTCONDITION: could not move damaged release $sha aside — deployed tree left untouched"
       rm -rf "$build_dir" 2>/dev/null || true
       return 1
     fi
-    if ! mv -T "$build_dir" "$rel"; then
-      mv -T "$aside" "$rel" 2>/dev/null || true
+    if ! luna_atomic_replace "$build_dir" "$rel"; then
+      luna_atomic_replace "$aside" "$rel" 2>/dev/null || true
       luna_warn "POSTCONDITION: staged swap of release $sha did not land — damaged tree restored"
       rm -rf "$build_dir" 2>/dev/null || true
       return 1
@@ -753,18 +769,20 @@ flip_current() {
   if [[ -n "$outgoing_sha" && "$outgoing_sha" != "$sha" ]]; then
     linktmp="$PREVIOUS_LINK.tmp.$$"
     rm -f "$linktmp"
-    if ! ln -s "releases/$outgoing_sha" "$linktmp" || ! mv -fT "$linktmp" "$PREVIOUS_LINK"; then
+    if ! ln -s "releases/$outgoing_sha" "$linktmp" || ! luna_atomic_replace "$linktmp" "$PREVIOUS_LINK"; then
       rm -f "$linktmp" 2>/dev/null || true
       luna_warn "POSTCONDITION: could not restamp $PREVIOUS_LINK -> releases/$outgoing_sha"
       return 1
     fi
   fi
-  # Staged ln + mv -fT: -T is load-bearing (mv onto an existing symlink-to-dir
-  # would otherwise nest the new link INSIDE the old release — the engine-pin
-  # regression class). Then PROVE the flip landed by physical re-resolution.
+  # Staged ln + luna_atomic_replace: the helper's rename(2) semantics are
+  # load-bearing here (an `mv` onto an existing symlink-to-dir without GNU
+  # `-T` would otherwise nest the new link INSIDE the old release - the
+  # engine-pin regression class). Then PROVE the flip landed by physical
+  # re-resolution.
   linktmp="$CURRENT_LINK.tmp.$$"
   rm -f "$linktmp"
-  if ! ln -s "releases/$sha" "$linktmp" || ! mv -fT "$linktmp" "$CURRENT_LINK"; then
+  if ! ln -s "releases/$sha" "$linktmp" || ! luna_atomic_replace "$linktmp" "$CURRENT_LINK"; then
     rm -f "$linktmp" 2>/dev/null || true
     luna_warn "POSTCONDITION: could not publish $CURRENT_LINK -> releases/$sha"
     return 1
@@ -1197,17 +1215,6 @@ apply_ref_inplace() {
     luna_info "bun.lock unchanged -> skipping bun install"
   fi
 
-  # Build the web SPA on every apply (SPA source changes independent of bun.lock)
-  # so chat-server serves the current UI on :4753. The guarded build refuses to
-  # bake VITE_UI_WS_TOKEN (deploy env never sets it); failure routes to rollback.
-  run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build || return 1
-  # POSTCONDITION: the build's declared artifact (the SPA entry point served on
-  # :4753) must exist and be non-empty.
-  if ! run_target test -s "$CONTAINER_REPO_DIR/apps/ui-web/dist/index.html"; then
-    luna_warn "POSTCONDITION: ui-web build exited 0 but $CONTAINER_REPO_DIR/apps/ui-web/dist/index.html is missing or empty"
-    return 1
-  fi
-
   # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE (no-op in dry-run). Deps can move on
   # `bun install` and the override path goes stale — without re-pinning the
   # server boots but cannot spawn `claude` (a REAL incident this session).
@@ -1354,10 +1361,19 @@ sup_stop() {
 }
 
 # sup_start — load/start the supervised service.
-# systemd: systemctl start (picks up the unit from SERVICE_DIR, already reloaded).
+# systemd: start; only on refusal, reset-failed once and retry, and only if
+#   the unit is latched `failed` (StartLimitIntervalSec=1800 / StartLimitBurst=10,
+#   scripts/luna-server-install). reset-failed must never precede a start that
+#   would have succeeded on its own: the failed-state entry it would pre-empt
+#   is what fires OnFailure=luna-alert-* (scripts/luna-server-install).
 # launchd: bootstrap gui/$UID <plist> (reads the plist file at LAUNCHD_PLIST).
+#   launchd has no start-limit-counter concept, so there is nothing to reset.
 sup_start() {
   if [[ "$SUPERVISOR" == "systemd" ]]; then
+    run_target systemctl $(_systemctl_user_flag) start "$SERVICE_NAME" && return 0
+    run_target_capture systemctl $(_systemctl_user_flag) is-failed "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+    luna_warn "sup_start: $SERVICE_NAME is start-limit latched failed; clearing with reset-failed and retrying once"
+    run_target systemctl $(_systemctl_user_flag) reset-failed "$SERVICE_NAME" || true
     run_target systemctl $(_systemctl_user_flag) start "$SERVICE_NAME"
   else
     luna_run launchctl bootstrap "gui/$UID" "$LAUNCHD_PLIST"
@@ -1553,7 +1569,7 @@ restart_service() {
 }
 
 # --- releases bootstrap: --materialize ----------------------------------------
-# Inert by design (graft 6): materialize + build + create current WITHOUT any
+# Inert by design (graft 6): materialize + create current WITHOUT any
 # restart or unit interaction, so it can run beside the live in-place server
 # during the migration (via the temporary additive device mount — the
 # LUNA_CONTAINER_DEPLOY_ROOT seam). current is created only when absent; an
@@ -1591,10 +1607,10 @@ if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
   printf '1. record PREV = %s (deploy root %s; deployed release resolved via current)\n' "$PREV" "$DEPLOY_ROOT"
   printf '2. mirror fetch: git --git-dir %s fetch origin (the ONLY tree any fetch touches; no reset of any kind)\n' "$MIRROR_GIT"
   printf '3. materialize release: git clone --no-checkout --local %s releases/<sha> + checkout --detach (reused if already .complete)\n' "$MIRROR_GIT"
-  printf '4. build-in-release: %s install --frozen-lockfile + @luna/ui-web build INSIDE releases/<sha> (pre-flip; cp -a node_modules seed when bun.lock blob unchanged)\n' "$BUN_BIN"
+  printf '4. build-in-release: %s install --frozen-lockfile INSIDE releases/<sha> (pre-flip; cp -a node_modules seed when bun.lock blob unchanged)\n' "$BUN_BIN"
   printf '5. re-pin LUNA_CLAUDE_CODE_EXECUTABLE through current (detected in the NEW release, written as the through-current spelling)\n'
   printf '6. session guard: refuse stop if live sessions on :%s (dead-server exception: unit inactive/failed permits)\n' "$READINESS_PORT"
-  printf '7. flip-inside-restart: stop %s -> settle %ss -> flip current -> releases/<sha> (previous := outgoing; staged ln + mv -fT + cd -P assert) -> start\n' "$SERVICE_NAME" "$RESTART_SETTLE_SECS"
+  printf '7. flip-inside-restart: stop %s -> settle %ss -> flip current -> releases/<sha> (previous := outgoing; staged ln + atomic rename + cd -P assert) -> start\n' "$SERVICE_NAME" "$RESTART_SETTLE_SECS"
   printf '8. verify: readiness probe is-active + NRestarts-stable + /healthz==200 + /readyz mode=normal + buildSha==<sha> (<=%ss)\n' "$READINESS_TIMEOUT"
   printf '9. on readiness OK: prune releases (keep %s; current/previous/journal-named protected) + seed dream/wake rows through current\n' "$RELEASES_KEEP"
   if [[ "$ROLLBACK" == true ]]; then
@@ -1616,7 +1632,7 @@ if [[ "$DRY_RUN" == true && "$LAYOUT" == "releases" ]]; then
   materialize_release "$DRY_SHA"
   RESTART_PRESTART_HOOK=(flip_current "$DRY_SHA")
   restart_service
-  run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  run_target "$BUN_BIN" run "$(dream_wake_install_script)"
   luna_info "Dry run complete; no changes made."
   exit 0
 fi
@@ -1634,7 +1650,6 @@ if [[ "$DRY_RUN" == true ]]; then
   printf '1. record PREV = %s and bun.lock hash (host repo %s)\n' "$PREV" "$HOST_REPO_DIR"
   printf '2. (HOST git) fetch origin + reset --hard to %s\n' "$REF"
   printf '3. if bun.lock changed: %s install --cwd %s --frozen-lockfile (else skip)\n' "$BUN_BIN" "$CONTAINER_REPO_DIR"
-  printf '3b. %s run --cwd %s --filter @luna/ui-web build (always — builds the web SPA served on :4753)\n' "$BUN_BIN" "$CONTAINER_REPO_DIR"
   # In incus mode the re-pin runs INSIDE the container against the container .env
   # (/root/.luna/.env), NOT the host --luna-home .env; print the path that the
   # concrete command below actually touches so the plan does not contradict it.
@@ -1672,13 +1687,12 @@ if [[ "$DRY_RUN" == true ]]; then
   git_target fetch origin
   git_target reset --hard "$REF"
   run_target "$BUN_BIN" install --cwd "$CONTAINER_REPO_DIR" --frozen-lockfile
-  run_target "$BUN_BIN" run --cwd "$CONTAINER_REPO_DIR" --filter "@luna/ui-web" build
   if [[ -n "$INCUS_CONTAINER" ]]; then
     run_target bash -lc \
       "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }"
   fi
   restart_service
-  run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  run_target "$BUN_BIN" run "$(dream_wake_install_script)"
   luna_info "Dry run complete; no changes made."
   exit 0
 fi
@@ -1700,7 +1714,7 @@ fi
 # seed failure must only WARN, never fail the deploy or trip rollback. Always
 # returns 0 (callers also guard with `|| true`).
 seed_dream_wake_jobs() {
-  local script="$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  local script; script="$(dream_wake_install_script)"
   luna_info "post-deploy: seeding V2 dream/wake job rows (idempotent)"
   if run_target "$BUN_BIN" run "$script"; then
     luna_info "post-deploy: dream/wake job rows ensured"
@@ -1785,9 +1799,9 @@ do_rollback() {
   #   - FORWARD_RESTART_RAN=true: the forward restart already interrupted
   #     service, so the guard has nothing left to protect and blocking rollback
   #     would strand a broken build. Exempt (rollback restart cannot return 3).
-  #   - FORWARD_RESTART_RAN=false: an APPLY-phase failure (bun install / SPA
-  #     build error) — the OLD server never stopped and is still serving, and
-  #     sessions may have been established since the pre-mutation guard check.
+  #   - FORWARD_RESTART_RAN=false: an APPLY-phase failure (bun install) — the
+  #     OLD server never stopped and is still serving, and sessions may have
+  #     been established since the pre-mutation guard check.
   #     The guard stays ACTIVE: a defer restores nothing further (apply_ref
   #     below has already reset the checkout to PREV, matching the still-running
   #     build), keeps the journal at phase=rolling-back, and exits 3 so the next

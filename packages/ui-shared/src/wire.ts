@@ -37,7 +37,7 @@ export interface ObsEventBase {
 
 export type ObsEvent = ObsEventBase
 
-export { UI_WS_PROTOCOL_VERSION } from "@luna/protocol-descriptor"
+export { UI_WS_PROTOCOL_VERSION } from "@luna/tools/protocol-descriptor"
 
 /* Chat-shaped types mirrored from chat-service/types.ts + core projection. */
 
@@ -104,7 +104,7 @@ export type ChatErrorKind =
 
 /* Server → client frames */
 
-import type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor } from "@luna/protocol-descriptor"
+import type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor } from "@luna/tools/protocol-descriptor"
 export type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor }
 
 export interface HelloFrame {

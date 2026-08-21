@@ -27,10 +27,17 @@ import type { Artifact } from "@luna/chat-service"
 // exact by construction).
 export type { ArtifactKind }
 
-import type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor } from "@luna/protocol-descriptor"
+import type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor } from "@luna/tools/protocol-descriptor"
 export type { ServerKind, OperationName, ServerDescriptorCapability, ServerDescriptor }
-import { UI_WS_PROTOCOL_VERSION } from "@luna/protocol-descriptor"
+import { UI_WS_PROTOCOL_VERSION } from "@luna/tools/protocol-descriptor"
 export { UI_WS_PROTOCOL_VERSION }
+// The client-selectable effort vocabulary, previously hand-inlined as the
+// bare literal union in FIVE places in this file (#462). Re-exported so
+// existing `import type { ... } from "@luna/ui-ws"` consumers keep working;
+// browser code must import from "@luna/tools/protocol-descriptor" directly,
+// since this package's single "." export also re-exports server.js.
+import type { EffortOption } from "@luna/tools/protocol-descriptor"
+export type { EffortOption }
 
 /* -------------------------------------------------------------------------- */
 /* Server → client                                                            */
@@ -78,7 +85,7 @@ export interface HelloFrame {
      * demuxes into SDK settings. Treat this as a display/wire list, not a list
      * of SDK effort levels.
      */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
+    readonly efforts?: ReadonlyArray<EffortOption>
     /**
      * Effort a fresh thread should DEFAULT to for this model when the client
      * persists none - server-computed via defaultEffortForModel(). OPTIONAL
@@ -86,7 +93,7 @@ export interface HelloFrame {
      * clients then fall back to the weakest supported level. When present it
      * is always a member of `efforts` and never the "ultracode" pseudo-token.
      */
-    readonly defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
+    readonly defaultEffort?: EffortOption
   }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
@@ -1377,7 +1384,7 @@ export interface ThreadConfigFrame {
   readonly type: "thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
+  readonly effort?: EffortOption
   readonly applied: ReadonlyArray<"model" | "effort">
   readonly deferred: ReadonlyArray<"model" | "effort">
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
@@ -1580,7 +1587,7 @@ export interface NewThreadFrame {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
   /** Additive effort level for this thread. Older servers ignore it. */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
+  readonly effort?: EffortOption
 }
 
 /**
@@ -1789,7 +1796,7 @@ export interface SetThreadConfigFrame {
   readonly type: "set-thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
+  readonly effort?: EffortOption
 }
 
 /**

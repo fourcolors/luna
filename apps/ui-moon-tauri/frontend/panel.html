@@ -62,6 +62,24 @@
       font-style: italic;
     }
 
+    /* Route indicator (plan Step 2): small + muted + italic like .notice
+       above, colored by connection state - no dot (panels have no existing
+       pill idiom to extend the way chat.html's #connection-status does).
+       cursor: pointer (plan Step 3) - the chip doubles as the view-mode
+       toggle affordance; role/tabindex are set in the markup below. */
+    .route-indicator {
+      font-size: 0.68rem;
+      font-style: italic;
+      margin-left: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 90px;
+      cursor: pointer;
+    }
+    .route-indicator.connected { color: #34d399; }
+    .route-indicator.disconnected { color: #f87171; }
+
     /* ── Panel form chrome (settings panels) ─────────────────────────────── */
     /* display:flex would beat the [hidden] attribute's UA display:none —
        pin it (caught live: the install row showed while hidden). */
@@ -100,6 +118,14 @@
   <div class="title-bar" id="title-bar">
     <div class="bar-start" aria-hidden="true"></div>
     <span class="bar-title" id="bar-title">Loading…</span>
+    <!-- Route indicator (plan Step 2): names the route THIS panel's socket
+         is on (its LABEL, never a routeKey), painted by connectWs's
+         runConnectWaterfall + onOpen/onClose. Small + muted, matching
+         .notice's idiom (panels have no existing status pill to extend,
+         unlike chat.html's #connection-status). Hidden until a real route
+         model resolves. role/tabindex (plan Step 3): the chip also toggles
+         this window's view mode on click - wired below, near routeIndicatorEl. -->
+    <span class="route-indicator disconnected" id="route-indicator" hidden role="button" tabindex="0"></span>
     <!-- Right cluster balances the lights so the title stays centered; also
          houses the collapse-to-moon glyph (on the right, clear of native
          traffic lights which sit top-left). -->
@@ -135,6 +161,102 @@
 
   var contentArea = document.getElementById('content-area');
   var barTitle = document.getElementById('bar-title');
+  var routeIndicatorEl = document.getElementById('route-indicator');
+
+  // Route truth (plan Step 2/3): what THIS window's socket genuinely holds
+  // right now - label, connection state, and (Step 3) the redacted endpoint
+  // string. Hoisted to this outer scope (not connectWs's own closure) so the
+  // view-mode seam below can read the SAME truth the chip paints, rather
+  // than a second, possibly-stale copy. paintRouteIndicator (below) is
+  // still the ONLY writer.
+  var currentRouteLabel = null;
+  var currentConnected = false;
+  var currentEndpointDisplay = null;
+
+  // The ONLY writer of routeIndicatorEl (plan Step 2), hoisted here (Step 4)
+  // from inside connectWs so setViewMode below can call it too - it never
+  // referenced anything connectWs-local in the first place (only the
+  // outer-scope current*/routeIndicatorEl variables), so this is a pure
+  // relocation, not a behavior change for connectWs's own three call sites.
+  //
+  // VERBOSE FORM (plan Step 4): when viewModeEnabled, additionally renders
+  // the redacted endpointDisplay alongside the label and the
+  // connected/disconnected word this call is ALREADY painting via
+  // `connected` - never re-derived from anywhere else, so the verbose text
+  // and the className it sits beside can never disagree. setViewMode
+  // (below) calls this function again with the CURRENT
+  // currentRouteLabel/currentConnected/currentEndpointDisplay to force an
+  // immediate re-render on toggle - it never invents a new connected value,
+  // so the latch (only a genuine reconnect may claim `connected: true`)
+  // holds exactly as before: toggling verbose mode changes how the current
+  // truth is DISPLAYED, never what that truth IS.
+  function paintRouteIndicator(label, connected, endpointDisplay) {
+    currentRouteLabel = label;
+    currentConnected = connected;
+    // Step 3: only ever set from a value ALREADY redacted by the caller
+    // (describeUrlSafe, in connectWs below) - never a raw URL. Omitted
+    // entirely on the no-route-model paths, which correctly leaves it null.
+    currentEndpointDisplay = endpointDisplay || null;
+    if (!routeIndicatorEl) return;
+    routeIndicatorEl.hidden = !label;
+    if (label && viewModeEnabled) {
+      var parts = [label];
+      if (currentEndpointDisplay) parts.push(currentEndpointDisplay);
+      parts.push(connected ? 'Connected' : 'Disconnected');
+      routeIndicatorEl.textContent = parts.join(' - ');
+    } else {
+      routeIndicatorEl.textContent = label || '';
+    }
+    routeIndicatorEl.className = 'route-indicator ' + (connected ? 'connected' : 'disconnected');
+  }
+
+  // View mode (plan Step 3): per-window, ephemeral, in-memory only - see
+  // wire.ts's ViewMode (the twin chat-window implementation) for the full
+  // rationale against persisting this anywhere (client.toml,
+  // moon-session.json, or localStorage - the codebase's habitual trap for
+  // exactly this shape of flag). Declared here, outside connectWs, so the
+  // toggle survives independent of which panel type's connectWs call is in
+  // flight (and works even for panels that never call connectWs at all -
+  // the chip is simply hidden then, so there is nothing to click).
+  var viewModeEnabled = false;
+  function setViewMode(enabled) {
+    viewModeEnabled = !!enabled;
+    // Step 4: force an immediate re-render with the CURRENT truth (see
+    // paintRouteIndicator's own doc comment above for why this cannot fake
+    // a reconnect) - needed for both the click-to-toggle affordance and a
+    // redock-applied enable arriving on an already-connected panel.
+    paintRouteIndicator(currentRouteLabel, currentConnected, currentEndpointDisplay);
+  }
+  // THE SEAM (plan Step 3): the ONLY pre-redacted, display-safe read surface
+  // a future consumer (Step 4's verbose indicator form) may use. Every field
+  // is either a plain boolean/string with no credential shape, or a value
+  // ALREADY redacted at capture time (endpointDisplay - see describeUrlSafe
+  // below, never a raw URL). No raw-URL field exists on the returned object,
+  // so a consumer cannot bypass redaction by omission.
+  function viewModeSeam() {
+    return {
+      enabled: viewModeEnabled,
+      routeLabel: currentRouteLabel,
+      connectionState: currentConnected,
+      endpointDisplay: currentEndpointDisplay,
+    };
+  }
+  if (routeIndicatorEl) {
+    routeIndicatorEl.addEventListener('click', function () {
+      setViewMode(!viewModeEnabled);
+    });
+    // KEYBOARD (F1, opus review on plan Step 3): role="button" alone does
+    // not make Enter/Space activate a <span> - only a real <button> element
+    // synthesizes click from keys (WCAG 2.1.1). Space also gets
+    // preventDefault() so it toggles instead of scrolling the page.
+    routeIndicatorEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        if (e.key !== 'Enter') e.preventDefault();
+        setViewMode(!viewModeEnabled);
+      }
+    });
+  }
+
   // Collapse-into-moon is a Luna-specific workspace action, intentionally
   // separate from the native yellow button's per-window minimize behavior.
   var collapseMoonBtn = document.getElementById('collapse-moon-btn');
@@ -193,77 +315,247 @@
     //      route — no explicit parent-route signal is plumbed through panel.html
     //      today. Explicit parent→child route binding is a C8 follow-up.
     //
-    // Error surfacing:
+    // Error surfacing (Step 1c Part 3b: fixed reason + describeWsUrl(url)
+    // where a url is in scope - NEVER e.message or the raw exception, which
+    // for a WebSocket construction failure embeds the token-bearing URL
+    // verbatim - see docs/next/routes-and-view-mode-plan.md, "The security
+    // invariant, which is not deferrable"):
     //   - Off-Tauri (no __TAURI__): silent fallback (expected in browser dev).
-    //   - Tauri present but route/connection failed: showNotice() with reason.
+    //   - Tauri present but route/connection failed: showNotice() with a
+    //     fixed reason.
+    //
+    // Kept byte-for-byte identical to frontend-react/panel.html's connectWs
+    // (see panel-ctx.ts's module doc) - only frontend-react/panel.html ships
+    // (tauri.conf.json's frontendDist), but this file is not deleted, so the
+    // waterfall must never drift into two parallel implementations.
     connectWs: function (registry, opts) {
       var hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-      var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
+
+      // Route indicator (plan Step 2). SOURCE OF TRUTH: this window's OWN
+      // socket state, captured at connect time - never a broadcast. LATCH:
+      // `connected: false` always applies immediately (a failure must
+      // always stay visible); `connected: true` only fires from a REAL
+      // socket 'open' (wired below via onOpen/onClose, the same raw-socket
+      // signal the Workflows panel's own liveness hint already uses - panels
+      // have no hello-frame handshake to gate on the way chat.html does).
+      // Never renders routeKey - only route.label, or nothing when no route
+      // model resolved (the legacy/fallback branches below never call this).
+      //
+      // currentRouteLabel/currentConnected/currentEndpointDisplay (F1, opus
+      // review, blocker; endpointDisplay added Step 3): the label/state/
+      // redacted-endpoint of whatever route THIS window's socket genuinely
+      // holds right now - all three live in the outer IIFE scope (declared
+      // near routeIndicatorEl, above), and only ever mutate through
+      // paintRouteIndicator (also hoisted to that outer scope, Step 4 - see
+      // its own doc comment), which is called for a NEW route ONLY after
+      // resolve_route_token has ALREADY succeeded (below), never before.
+      // moon-ws.js's client.connect() is the ONLY thing that tears a prior
+      // socket down - a token-resolution refusal never calls it - so
+      // painting the new label BEFORE knowing resolve_route_token would
+      // succeed used to leave the chip claiming a route this window's socket
+      // was never actually on, while the OLD socket sat genuinely still
+      // connected underneath it (wrong name AND wrong state, and permanent
+      // once the old socket's own eventual onClose repainted using the wrong
+      // captured label). Reset explicitly here (rather than relying on the
+      // outer scope's initial null/false/null) so a hypothetical second
+      // connectWs() call on the same page starts from a clean slate.
+      currentRouteLabel = null;
+      currentConnected = false;
+      currentEndpointDisplay = null;
+
+      // Wrap the CALLER's own onOpen/onClose (e.g. the Workflows panel's
+      // liveness hint) rather than replace them - both fire.
+      var callerOnOpen = opts && opts.onOpen;
+      var callerOnClose = opts && opts.onClose;
+      var mergedOpts = Object.assign({ registry: registry, autoPong: true }, opts || {}, {
+        onOpen: function () {
+          paintRouteIndicator(currentRouteLabel, true, currentEndpointDisplay);
+          if (callerOnOpen) callerOnOpen();
+        },
+        onClose: function () {
+          paintRouteIndicator(currentRouteLabel, false, currentEndpointDisplay);
+          if (callerOnClose) callerOnClose();
+        },
+      });
+      var client = LunaWS.createClient(mergedOpts);
 
       // Resolve the effective panel identifier (window label, populated from
       // Tauri when running inside the app; null in browser / test environments).
       var effectivePanelId = label || null;
 
-      if (typeof MoonSession !== 'undefined') {
-        // Phase 2 C7 — per-panel route resolution via MoonSession (C3).
-        // MoonSession.resolveBootRoute() returns null if:
-        //   - client.toml not found → un-migrated user, fall back to legacy
-        //   - any Tauri error → degrade gracefully
-        MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
-          if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
-            // Route resolved via client.toml — use the first endpoint as the
-            // WebSocket URL. Token still comes from load_connection (Phase 3
-            // will wire token_ref → resolved token from route directly).
-            var wsUrl = route.endpoints[0];
-            // Expose for observability (agent-browser smoke + future C8 hub).
-            if (window.__PanelInternals) {
-              window.__PanelInternals.resolvedRouteKey = route.key || null;
-            }
-            ctx.invoke('load_connection').then(function (creds) {
-              var wsToken = (creds && creds.wsToken) ? creds.wsToken : null;
-              try { client.connect(wsUrl, wsToken); } catch (e) {
-                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+      function describeUrlSafe(url) {
+        return (window.LunaProtocol && typeof window.LunaProtocol.describeWsUrl === 'function')
+          ? window.LunaProtocol.describeWsUrl(url)
+          : '<unavailable>';
+      }
+
+      // Waterfall generation guard (Step 1c F1, opus review). moon-ws.js's
+      // client.connect() gen-gates its OWN socket-level late events, but that
+      // protects only the SOCKET, not this WATERFALL: Settings fires
+      // connection-changed on every save, and the hub-event listener below
+      // re-runs runConnectWaterfall() on every one of them, so two
+      // overlapping runs race their two awaits. If the OLDER run's invokes
+      // resolve LAST, its client.connect() call wins - and it bumps
+      // moon-ws's gen itself when it fires, so the socket layer cannot save
+      // the panel from landing on the stale route/token. Mirrors the Step 1a
+      // F4 / PoolEngine closure-counter pattern: capture myGen at waterfall
+      // entry, re-check after EVERY await, abandon silently when superseded.
+      var waterfallGen = 0;
+
+      // Runs the full connect waterfall against the SAME client/registry
+      // every time. moon-ws.js's client.connect() already tears down its own
+      // prior socket and re-generation-gates late events on every call, so
+      // calling it again here (Step 1c Part 2's hub-event listener, below) is
+      // a clean reconnect through the existing client, not a second one -
+      // frame handlers registered on `registry` by the caller keep working
+      // unchanged across a reconnect.
+      function runConnectWaterfall() {
+        var myGen = ++waterfallGen;
+        if (typeof MoonSession !== 'undefined') {
+          // Phase 2 C7 - per-panel route resolution via MoonSession (C3).
+          // MoonSession.resolveBootRoute() returns null if:
+          //   - client.toml not found -> un-migrated user, fall back to legacy
+          //   - any Tauri error -> degrade gracefully
+          MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
+            if (myGen !== waterfallGen) return; // superseded during resolveBootRoute
+            if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
+              // Route resolved via client.toml - use the first endpoint as
+              // the WebSocket URL. Step 1c Part 1: the token now comes from
+              // the SAME route-keyed Rust resolver every other connect path
+              // uses (resolve_route_token) instead of a panel-id-blind
+              // load_connection that always keyed off cfg.default - the live
+              // defect where a panel bound to a non-default route sent that
+              // route's URL with ANOTHER route's token, no error raised.
+              var wsUrl = route.endpoints[0];
+              // Expose for observability (agent-browser smoke + future C8 hub).
+              if (window.__PanelInternals) {
+                window.__PanelInternals.resolvedRouteKey = route.key || null;
+                window.__PanelInternals.resolvedRouteLabel = route.label || null;
               }
-            }).catch(function (e) {
-              // load_connection rejected — Tauri is present but command failed.
-              showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
-            });
-          } else {
-            // No client.toml route configured — legacy load_connection path.
+              ctx.invoke('resolve_route_token', { routeKey: route.key }).then(function (token) {
+                if (myGen !== waterfallGen) return; // superseded during resolve_route_token
+                // F1 (opus review, blocker): paint the NEW route's label with
+                // a disconnected mark ONLY NOW that token resolution has
+                // ACTUALLY succeeded - still before dialing (client.connect()
+                // is the next line), so scenario 5 ("switching to a route
+                // whose endpoint never accepts a connection... reads exactly
+                // [the new label] before any connection has succeeded")
+                // still holds. Painting any earlier (before this .then) would
+                // claim this route before this window's socket could ever
+                // possibly reach it, including on a refusal that never calls
+                // client.connect() at all. Step 3: redact wsUrl HERE, at the
+                // same capture moment as the label - describeUrlSafe is
+                // already declared above; nothing downstream ever sees the
+                // raw wsUrl again through this variable.
+                paintRouteIndicator(route.label || null, false, describeUrlSafe(wsUrl));
+                // Ok('') is the intentional "none"-tokenRef result
+                // (connection.rs's resolve_route_token). moon-ws.js's
+                // connect() -> LunaProtocol.buildWsUrl already skips the
+                // token query param for a falsy value, so passing '' straight
+                // through dials with NO token param - same falsy-token
+                // contract every other builder in the app honors.
+                try {
+                  client.connect(wsUrl, token || null);
+                } catch (_e) {
+                  showNotice('Panel connection failed: could not open a connection to ' + describeUrlSafe(wsUrl));
+                }
+              }).catch(function (err) {
+                if (myGen !== waterfallGen) return; // superseded while resolve_route_token rejected
+                var reason = (err instanceof Error ? err.message : String(err));
+                if (reason.indexOf('not-paired:') === 0) {
+                  showNotice('Panel connection failed: route "' + route.key + '" is not paired - open Settings to pair it.');
+                } else {
+                  showNotice('Panel connection failed: could not resolve credentials for ' + describeUrlSafe(wsUrl));
+                }
+                // F1 (opus review, blocker): resolve_route_token failed
+                // BEFORE client.connect() ever ran - the OLD socket (if any)
+                // was NEVER torn down (moon-ws.js's client.connect() is the
+                // ONLY teardown mechanism, and it never fired for this
+                // attempt), so it is STILL genuinely in whatever state it was
+                // before this attempt started. Repaint with the OLD label +
+                // the CURRENT REAL state (never a hardcoded 'disconnected',
+                // never this failed attempt's label) - a first-ever run has
+                // no old label, so this hides the chip, same as chat.
+                paintRouteIndicator(currentRouteLabel, currentConnected, currentEndpointDisplay);
+              });
+            } else {
+              // No client.toml route configured - legacy load_connection
+              // path, UNCHANGED (Step 1c Part 1 only retargets the route
+              // branch above; this fallback keeps its existing credential
+              // source).
+              // Review residual (same family as the F1 blocker): entering the
+              // fallback with a stale currentRouteLabel would let the legacy
+              // socket's onOpen paint a route this socket is NOT on. No route
+              // model here means no route name - hide the chip before dialing.
+              paintRouteIndicator(null, false);
+              ctx.invoke('load_connection').then(function (creds) {
+                if (myGen !== waterfallGen) return; // superseded during load_connection
+                if (creds && creds.wsUrl) {
+                  try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+                }
+              }).catch(function () {
+                if (myGen !== waterfallGen) return; // superseded while load_connection rejected
+                if (hasTauri) {
+                  // Tauri is present but load_connection rejected - surface a
+                  // fixed reason (no url is in scope here to describe).
+                  showNotice('Panel connection failed: could not load saved connection settings.');
+                }
+                // Off-Tauri: stay silent (expected in browser dev / jsdom).
+              });
+            }
+          }).catch(function () {
+            if (myGen !== waterfallGen) return; // superseded while resolveBootRoute rejected
+            // resolveBootRoute itself rejected (shouldn't happen - MoonSession
+            // catches internally, but belt-and-suspenders). Fall back to legacy.
+            // Same no-route-model rule as the fallback above: hide the chip so
+            // the legacy socket's onOpen cannot assert a stale route label.
+            paintRouteIndicator(null, false);
             ctx.invoke('load_connection').then(function (creds) {
+              if (myGen !== waterfallGen) return; // superseded during load_connection (fallback)
               if (creds && creds.wsUrl) {
-                try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+                try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) {}
               }
-            }).catch(function (e) {
+            }).catch(function () {
+              if (myGen !== waterfallGen) return; // superseded while load_connection rejected (fallback)
               if (hasTauri) {
-                // Tauri is present but load_connection rejected — surface it.
-                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+                showNotice('Panel connection failed: could not load saved connection settings.');
               }
-              // Off-Tauri: stay silent (expected in browser dev / jsdom).
             });
-          }
-        }).catch(function (e) {
-          // resolveBootRoute itself rejected (shouldn't happen — MoonSession
-          // catches internally, but belt-and-suspenders). Fall back to legacy.
-          ctx.invoke('load_connection').then(function (creds) {
-            if (creds && creds.wsUrl) {
-              try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) {}
-            }
-          }).catch(function (connErr) {
-            if (hasTauri) {
-              showNotice('Panel connection failed: ' + (connErr && connErr.message ? connErr.message : String(connErr)));
-            }
           });
-        });
-      } else {
-        // Legacy path (no MoonSession — off-Tauri / un-migrated / tests).
-        // SYNCHRONOUS invocation preserved byte-identically from master so that
-        // tests can assert ctx.invoke was called immediately after connectWs().
-        ctx.invoke('load_connection').then(function (creds) {
-          if (creds && creds.wsUrl) {
-            try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+        } else {
+          // Legacy path (no MoonSession - off-Tauri / un-migrated / tests).
+          // SYNCHRONOUS invocation preserved byte-identically from master so
+          // that tests can assert ctx.invoke was called immediately after
+          // connectWs().
+          ctx.invoke('load_connection').then(function (creds) {
+            if (myGen !== waterfallGen) return; // superseded during load_connection (legacy branch)
+            if (creds && creds.wsUrl) {
+              try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+            }
+          }).catch(function () {
+            if (myGen !== waterfallGen) return; // superseded (legacy branch)
+            /* off-Tauri */
+          });
+        }
+      }
+
+      runConnectWaterfall();
+
+      // Step 1c Part 2: non-chat panels had NO hub_event listener at all, so
+      // a route switch in Settings never reached them - the fan-out gap this
+      // plan closes (chat windows already had this via wiring.ts's guarded
+      // listener). Rust now fans profile-changed/connection-changed out to
+      // every open window; react the same way here - client.connect() above
+      // already tears its own prior socket down on every call, so re-running
+      // the waterfall IS the clean teardown-and-reconnect.
+      if (W && typeof W.listen === 'function') {
+        W.listen('hub-event', function (e) {
+          var p = e && e.payload;
+          if (!p || p['for'] !== label) return; // targeted-event discipline
+          if (p.name === 'profile-changed' || p.name === 'connection-changed') {
+            runConnectWaterfall();
           }
-        }).catch(function () { /* off-Tauri */ });
+        }).catch(function () {});
       }
 
       return client;
@@ -286,7 +578,19 @@
     // Expose observability fields for agent-browser smoke and tests.
     // resolvedRouteKey: set by connectWs when a client.toml route is used.
     // lastNotice: set by showNotice — truthy means an error was surfaced.
-    window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, lastNotice: null };
+    // viewMode (plan Step 3): LIVE accessors, not a snapshot - each method
+    // closes over the real outer-scope state (declared near routeIndicatorEl,
+    // above this IIFE's connectWs), so calling them after this object is
+    // built keeps reading current truth even though this whole object is
+    // itself a one-time snapshot assigned once, here.
+    window.__PanelInternals = {
+      type: type, hasModule: !!mod, resolvedRouteKey: null, resolvedRouteLabel: null, lastNotice: null,
+      viewMode: {
+        isEnabled: function () { return viewModeEnabled; },
+        toggle: function () { setViewMode(!viewModeEnabled); return viewModeEnabled; },
+        seam: viewModeSeam,
+      },
+    };
   }
 
   var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];

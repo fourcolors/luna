@@ -253,7 +253,15 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     })
     await flush()
 
-    expect(invoke).toHaveBeenCalledWith('save_connection', { url: 'ws://newhost:9000/ui', token: 'mytoken' })
+    // Step 1a: `profile` always targets the currently-selected channel (here
+    // the un-migrated fallback default, 'stable') - see the module doc on
+    // handleSave and the dedicated save-target test below.
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://newhost:9000/ui',
+      token: 'mytoken',
+      profile: 'stable',
+      activate: false,
+    })
     expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'connection-changed' })
   })
 
@@ -272,8 +280,74 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     })
     await flush()
 
-    expect(saveStatus().textContent).toBe('Saved ✓')
+    expect(saveStatus().textContent).toMatch(/^Saved ✓/)
     expect(tokenInput().value).toBe('keepme')
+  })
+
+  it('machine-target-select offers jax-box + Custom only; jax-box Save never sends loopback', async () => {
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_connection') return { wsUrl: 'ws://stale-host:4753/ui', wsToken: 't' }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+
+    const machine = document.querySelector('[data-testid="machine-target-select"]') as HTMLSelectElement
+    expect(machine).toBeTruthy()
+    const values = Array.from(machine.options).map((o) => o.value)
+    expect(values).toEqual(['jax-box', 'custom'])
+    expect(values).not.toContain('this-mac')
+
+    act(() => {
+      machine.value = 'jax-box'
+      machine.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(urlInput().value).toBe('ws://jax-box:4753/ui')
+    expect(urlInput().value).not.toContain('127.0.0.1')
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://jax-box:4753/ui',
+      token: 't',
+      profile: 'stable',
+      activate: false,
+    })
+    const saveCall = invoke.mock.calls.find((c: unknown[]) => c[0] === 'save_connection')
+    expect(JSON.stringify(saveCall)).not.toContain('127.0.0.1')
+  })
+
+  it('activate-on-save checkbox passes activate:true to save_connection', async () => {
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_connection') {
+        return { wsUrl: 'ws://jax-box:4753/ui', wsToken: 'tok' }
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+
+    const activate = document.querySelector('[data-testid="activate-on-save"]') as HTMLInputElement
+    expect(activate).toBeTruthy()
+    expect(activate.checked).toBe(false)
+    act(() => {
+      activate.click()
+    })
+    await flush()
+    expect(activate.checked).toBe(true)
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith(
+      'save_connection',
+      expect.objectContaining({
+        url: 'ws://jax-box:4753/ui',
+        token: 'tok',
+        profile: 'stable',
+        activate: true,
+      }),
+    )
   })
 
   it('save button shows error on save_connection failure', async () => {
@@ -525,14 +599,26 @@ describe('SettingsConnectionPanel - C8 channel select route enumeration', () => 
     expect(opts).toContain('dev')
   })
 
-  it('active profile NOT in listRoutes keys is still present + selected after enumeration', async () => {
-    // C8 race: client.toml route keys can diverge from profile names.
-    // load_profiles resolves with activeProfile='my-custom' but listRoutes
-    // only returns ['prod', 'local'] - the reducer must append 'my-custom'
-    // as a dynamic option rather than silently dropping the selection.
+  it('Step 1a INVERSION: once routes are known, a divergent profile-loaded activeProfile is never appended nor selected', async () => {
+    // Pre-Step-1a this test asserted the OPPOSITE: that a divergent
+    // activeProfile ('my-custom') got appended as a dynamic option AND
+    // selected (the old C8 race-handling behavior). Step 1a's reducer
+    // quarantine (connectionReducer.ts's routesKnown) deliberately kills
+    // that behavior once client.toml routes exist: the selector's value and
+    // options must come from list_routes() alone, never a
+    // moon-connection.json activeProfile that can name a stale or divergent
+    // profile. See docs/next/routes-and-view-mode-plan.md's Step 1a DECIDE
+    // on the reducer quarantine ("severing BOTH reducer paths ... not
+    // adding alongside them"). This inversion is deliberate, not a
+    // regression - see also the BDD scenario "the selector shows the route
+    // the socket is on, not the stale profile name".
+    // default is deliberately the NON-FIRST route key: an implementation that
+    // ignores defaultKey and always selects options[0] must fail here (review
+    // finding: every other stub's default was first-or-invalid, so sourcing
+    // from defaultKey vs options[0] was otherwise indistinguishable).
     ;(window as any).MoonSession = {
       listRoutes: vi.fn().mockResolvedValue({
-        default: 'prod',
+        default: 'local',
         routes: [
           { key: 'prod', label: 'Production' },
           { key: 'local', label: 'Local Dev' },
@@ -549,8 +635,558 @@ describe('SettingsConnectionPanel - C8 channel select route enumeration', () => 
     await flush()
 
     const optValues = Array.from(channelSelect().options).map((o) => o.value)
-    expect(optValues).toContain('my-custom')
-    expect(channelSelect().value).toBe('my-custom')
+    expect(optValues).toEqual(['prod', 'local'])
+    expect(optValues).not.toContain('my-custom')
+    expect(channelSelect().value).toBe('local')
+  })
+})
+
+// ── F1 (opus review): defaultKey must be a real member of the reported
+// routes, not taken on faith. A dangling default (Gate 0.1 world (c)) or an
+// empty-string default must fall through to the first real option instead of
+// leaving `state.channel` holding a value no option corresponds to.
+//
+// THE DOM-ONLY VERSION OF THIS TEST IS VACUOUS FOR THE REACT PORT, AND THAT
+// IS WORTH RECORDING: `<select value={state.channel}>`'s underlying DOM
+// `.value` blanks (selectedIndex -1) when assigned directly, as it does in
+// the vanilla module - but React's OWN controlled-select reconciliation does
+// NOT assign `.value` naively. It toggles `.selected` per rendered <option>,
+// and when none match, none get marked selected, so the browser's native
+// "select the first option" default silently takes over. That means
+// `channelSelect().value` reads "prod" (the first real option) EVEN WITH THE
+// PRE-F1-FIX BUG PRESENT (`defaultKey ?? options[0]`, no membership check) -
+// confirmed empirically against this React version. The bug is real at the
+// STATE layer (`state.channel` holds the dangling/empty key, not "prod")
+// even though the rendered <select> happens to look fine; anything that
+// reads `state.channel` directly rather than through the DOM - Save's
+// `profile: state.channel` is the real one already in this file - still
+// sees the wrong value. So the fence here drives Save (untouched selector)
+// and asserts on the `profile` it sends, which is what actually depends on
+// the reducer's computed `channel`, not on React's independent DOM masking.
+describe('SettingsConnectionPanel - Step 1a: F1 defaultKey validation', () => {
+  it('a defaultKey not among the reported routes leaves state.channel on the first option, not the dangling key', async () => {
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockResolvedValue({
+        default: 'ghost-route', // dangling - not in routes below
+        routes: [{ key: 'prod', label: 'Production' }, { key: 'local', label: 'Local Dev' }],
+      }),
+    }
+    const { ctx, invoke } = makeCtx()
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    // The rendered select LOOKS fine regardless (see module note above) -
+    // the real fence is what Save sends, which reads state.channel directly.
+    expect(channelSelect().value).toBe('prod')
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: 'prod' }))
+    expect(invoke).not.toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: 'ghost-route' }))
+  })
+
+  it('an empty-string defaultKey also leaves state.channel on the first option, never on ""', async () => {
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockResolvedValue({
+        default: '',
+        routes: [{ key: 'prod', label: 'Production' }, { key: 'local', label: 'Local Dev' }],
+      }),
+    }
+    const { ctx, invoke } = makeCtx()
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('prod')
+
+    act(() => { saveBtn().click() })
+    await flush()
+    expect(invoke).toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: 'prod' }))
+    expect(invoke).not.toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: '' }))
+  })
+})
+
+// ── Step 1a: profile-loaded/routes-loaded arrival-order convergence ────────
+// The reducer quarantine (connectionReducer.ts's routesKnown) must produce
+// the SAME final selector state regardless of which of the two async loads
+// (load_profiles vs MoonSession.listRoutes) resolves first - see plan Step
+// 1a's DECIDE on severing both reducer paths. Each test below controls
+// resolution order explicitly via a manually-gated promise per command.
+describe('SettingsConnectionPanel - Step 1a: profile-loaded/routes-loaded arrival order', () => {
+  function makeDeferredCtx() {
+    let resolveProfiles!: () => void
+    let resolveRoutes!: () => void
+    const profilesGate = new Promise<void>((resolve) => { resolveProfiles = resolve })
+    const routesGate = new Promise<void>((resolve) => { resolveRoutes = resolve })
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn(() => routesGate.then(() => ({
+        default: 'prod',
+        routes: [
+          { key: 'prod', label: 'Production' },
+          { key: 'local', label: 'Local Dev' },
+        ],
+      }))),
+    }
+    const { ctx } = makeCtx((cmd) => {
+      if (cmd === 'load_profiles') return profilesGate.then(() => ({ activeProfile: 'my-custom' }))
+      return null
+    })
+    return { ctx, resolveProfiles, resolveRoutes }
+  }
+
+  it('profile-loaded resolving BEFORE routes-loaded still ends with routes owning the selector', async () => {
+    const { ctx, resolveProfiles, resolveRoutes } = makeDeferredCtx()
+    renderPanel(ctx)
+    await flush()
+
+    resolveProfiles()
+    await flush()
+    resolveRoutes()
+    await flush()
+    await flush()
+
+    const optValues = Array.from(channelSelect().options).map((o) => o.value)
+    expect(optValues).toEqual(['prod', 'local'])
+    expect(optValues).not.toContain('my-custom')
+    expect(channelSelect().value).toBe('prod')
+  })
+
+  it('routes-loaded resolving BEFORE profile-loaded already owns the selector, and the later profile-loaded is inert', async () => {
+    const { ctx, resolveProfiles, resolveRoutes } = makeDeferredCtx()
+    renderPanel(ctx)
+    await flush()
+
+    resolveRoutes()
+    await flush()
+    await flush()
+    resolveProfiles()
+    await flush()
+
+    const optValues = Array.from(channelSelect().options).map((o) => o.value)
+    expect(optValues).toEqual(['prod', 'local'])
+    expect(optValues).not.toContain('my-custom')
+    expect(channelSelect().value).toBe('prod')
+  })
+})
+
+// ── Step 1a: the guarded route switch ───────────────────────────────────────
+// docs/next/routes-and-view-mode-plan.md's Step 1a: once client.toml routes
+// are known, handleChannelChange becomes a guarded dual write
+// (set_active_profile then MoonSession.setDefaultRoute, in that order) with
+// two refusal guards ahead of it, instead of the bare set_active_profile
+// call the un-migrated-world tests above still exercise.
+describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
+  function stubRoutes(routes: Array<{ key: string; label: string }>, defaultKey: string) {
+    return {
+      listRoutes: vi.fn().mockResolvedValue({ default: defaultKey, routes }),
+    }
+  }
+
+  it('a guarded switch calls set_active_profile before setDefaultRoute, both with the target key, then hub_event', async () => {
+    const callOrder: string[] = []
+    const setDefaultRoute = vi.fn(async (key: string) => {
+      callOrder.push('setDefaultRoute:' + key)
+      return true
+    })
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') return 'TOK-CANARY-RESOLVED'
+      if (cmd === 'set_active_profile') {
+        callOrder.push('set_active_profile:canary')
+        return { wsUrl: 'ws://canary:4753/ui', wsToken: 'TOK-CANARY' }
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(callOrder).toEqual(['set_active_profile:canary', 'setDefaultRoute:canary'])
+    expect(invoke).toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).toHaveBeenCalledWith('canary')
+    expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'profile-changed' })
+    expect(channelError().hidden).toBe(true)
+  })
+
+  it('setDefaultRoute resolving false refuses the switch visibly and fires no hub_event (the named trap: it never rejects)', async () => {
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute: vi.fn().mockResolvedValue(false),
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') return 'TOK-CANARY-RESOLVED'
+      if (cmd === 'set_active_profile') return { wsUrl: 'ws://canary:4753/ui', wsToken: 'TOK-CANARY' }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('canary')
+    expect(invoke).not.toHaveBeenCalledWith('hub_event', { name: 'profile-changed' })
+    // F2(b): this is NOT the pairing case - the selector must revert to the
+    // PREVIOUS channel, since the switch did not happen (the two stores are
+    // intentionally left half-moved: activeProfile advanced, default did not).
+    expect(channelSelect().value).toBe('stable')
+  })
+
+  it('a non-route-key value is refused as defense in depth (unreachable via rendered options once quarantined - stale DOM/race only)', async () => {
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }], 'stable'),
+      setDefaultRoute: vi.fn().mockResolvedValue(true),
+    }
+    const { ctx, invoke } = makeCtx()
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    // Once routesKnown, channelOptions is EXACTLY the route keys
+    // (connectionReducer.ts), so a real user can never select a
+    // non-route-key value - this appends a stale option by hand to reach
+    // GUARD 1 at all, simulating leftover DOM from before quarantine or a
+    // race, which is the only way this branch is reachable.
+    const sel = channelSelect()
+    const staleOpt = document.createElement('option')
+    staleOpt.value = 'not-a-route'
+    sel.appendChild(staleOpt)
+
+    selectValue(sel, 'not-a-route')
+    await flush()
+    await flush()
+
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('not-a-route')
+    expect(invoke).not.toHaveBeenCalledWith('load_route', { routeKey: 'not-a-route' })
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'not-a-route' })
+    // F2(b): reverted to the previous (initial default) channel.
+    expect(channelSelect().value).toBe('stable')
+  })
+
+  it('a legacy-sentinel route with no matching profile token is refused, naming the route, without ever calling setDefaultRoute', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('not-paired: route "canary" has no token paired in moon-connection.json')
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    // A stale value in the token field, to prove the F2(a) clear is real.
+    changeInputValue(tokenInput(), 'stale-stable-token')
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('canary') // refused selections stay selected (the pairing UX)
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('canary')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+    // F2(a): the fields show the TARGET route's real endpoint and an EMPTY
+    // token - never 'stable's stale creds displayed under 'canary's name.
+    expect(urlInput().value).toBe('ws://canary:4753/ui')
+    expect(tokenInput().value).toBe('')
+  })
+
+  it('#F1: a missing moon-connection.json store (not just an unpaired profile) still fires the pairing prompt, not the revert', async () => {
+    // The exact message shape connection.rs's resolve_route_token now emits
+    // for an ABSENT store (F1, opus review on plan Step 1b) - distinct from
+    // the "no matching profile token" wording the other not-paired tests use.
+    // Before the fix this path returned "store-read:" (a RETRYABLE class),
+    // which never reaches this branch at all and instead reverts the
+    // selector; this pins that the whole-store-missing case is durable and
+    // pairing-prompted, exactly like the no-matching-profile case.
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('not-paired: route "canary" has no credential store yet - pair it to create one')
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('canary') // pairing UX: refused selections stay selected, NOT reverted
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('canary')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+    expect(urlInput().value).toBe('ws://canary:4753/ui')
+    expect(tokenInput().value).toBe('')
+  })
+
+  it('#F4: a BARE STRING rejection from resolve_route_token (real Tauri Err(String) shape, not an Error wrapper) still routes to the pairing prompt', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        // eslint-disable-next-line no-throw-literal
+        throw 'not-paired: route "canary" has no token paired in moon-connection.json'
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('canary') // pairing UX: refused selections stay selected
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('canary')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+    expect(urlInput().value).toBe('ws://canary:4753/ui')
+    expect(tokenInput().value).toBe('')
+  })
+
+  it('a non-"not-paired:" resolve_route_token error (e.g. route-missing) reverts the selector, unlike the pairing case', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('route-missing: no route named "canary"')
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    // F2(b), not F2(a): this is NOT the pairing case, so the selector
+    // REVERTS - unlike a "not-paired:" refusal, which keeps the selection.
+    expect(channelSelect().value).toBe('stable')
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('route-missing:')
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'canary' })
+    expect(setDefaultRoute).not.toHaveBeenCalled()
+  })
+
+  it('pairing: a refused unpaired route stays selected, Save targets it, and a retried switch succeeds once paired', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    let profiles: Record<string, { wsUrl: string; wsToken: string }> = {
+      stable: { wsUrl: 'ws://stable:4753/ui', wsToken: 'TOK-STABLE' },
+    }
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute,
+    }
+    const { ctx, invoke } = makeCtx((cmd, args) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        const p = profiles[args.routeKey]
+        if (p && p.wsToken) return p.wsToken
+        throw new Error(`not-paired: route "${args.routeKey}" has no token paired in moon-connection.json`)
+      }
+      if (cmd === 'set_active_profile') {
+        const p = profiles[args.name]
+        return { wsUrl: p?.wsUrl ?? '', wsToken: p?.wsToken ?? '' }
+      }
+      if (cmd === 'save_connection') {
+        profiles = { ...profiles, [args.profile]: { wsUrl: args.url, wsToken: args.token } }
+        return null
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    // First attempt: unpaired -> refused, but selection sticks (this is the
+    // pairing UX contract: refusal never reverts the selector).
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+    expect(channelSelect().value).toBe('canary')
+    expect(channelError().hidden).toBe(false)
+    // F2(a): the fields already show the honest pairing state - canary's
+    // real endpoint, empty token - before the operator types anything.
+    expect(urlInput().value).toBe('ws://canary:4753/ui')
+    expect(tokenInput().value).toBe('')
+
+    // Pair it: Save always targets the currently-selected (canary) channel.
+    changeInputValue(tokenInput(), 'TOK-CANARY-PAIRED')
+    act(() => { saveBtn().click() })
+    await flush()
+    // Save sends exactly the route's real endpoint + the pasted token under
+    // profile: canary - the pairing instruction the plan (F2) requires.
+    expect(invoke).toHaveBeenCalledWith('save_connection', {
+      url: 'ws://canary:4753/ui',
+      token: 'TOK-CANARY-PAIRED',
+      profile: 'canary',
+      activate: false,
+    })
+
+    // Retry the switch (re-dispatching 'change' on the already-selected
+    // value is deliberate - real code paths that re-trigger a switch, e.g.
+    // a retry button, would do the same): now resolvable, so it succeeds.
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelError().hidden).toBe(true)
+    expect(setDefaultRoute).toHaveBeenCalledWith('canary')
+    expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'profile-changed' })
+  })
+
+  it('save-target: the currently-selected route key always reaches save_connection as `profile`', async () => {
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute: vi.fn().mockResolvedValue(true),
+    }
+    const { ctx, invoke } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') return 'TOK-CANARY-RESOLVED'
+      if (cmd === 'set_active_profile') return { wsUrl: 'ws://canary:4753/ui', wsToken: 'TOK-CANARY' }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+    expect(channelSelect().value).toBe('canary')
+
+    changeInputValue(tokenInput(), 'sometoken')
+    act(() => { saveBtn().click() })
+    await flush()
+
+    expect(invoke).toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: 'canary' }))
+  })
+
+  it('F3: the selector is disabled while routes are still being discovered, and a change event driven in that window performs no writes', async () => {
+    let resolveRoutes!: (v: unknown) => void
+    const routesGate = new Promise((resolve) => { resolveRoutes = resolve })
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn(() => routesGate.then(() => ({
+        default: 'stable',
+        routes: [{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }],
+      }))),
+    }
+    const { ctx, invoke } = makeCtx()
+    renderPanel(ctx)
+    await flush()
+
+    // Still "unknown" - the selector is disabled, and a driven change performs no writes.
+    expect(channelSelect().disabled).toBe(true)
+    selectValue(channelSelect(), 'dev')
+    await flush()
+
+    expect(invoke).not.toHaveBeenCalledWith('set_active_profile', { name: 'dev' })
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('discovering')
+
+    resolveRoutes(undefined)
+    await flush()
+    await flush()
+
+    expect(channelSelect().disabled).toBe(false)
+  })
+
+  it('F4: a switch superseded by a newer one abandons silently - exactly one setDefaultRoute call, for the newer target only', async () => {
+    const setDefaultRoute = vi.fn().mockResolvedValue(true)
+    ;(window as any).MoonSession = {
+      ...stubRoutes(
+        [{ key: 'stable', label: 'Stable' }, { key: 'a-target', label: 'A' }, { key: 'b-target', label: 'B' }],
+        'stable',
+      ),
+      setDefaultRoute,
+    }
+    let resolveSetActiveProfile!: (v: unknown) => void
+    const gate = new Promise((resolve) => { resolveSetActiveProfile = resolve })
+    const { ctx, invoke } = makeCtx((cmd, args) => {
+      if (cmd === 'load_route') {
+        return { key: args.routeKey, endpoints: ['ws://' + args.routeKey + ':4753/ui'] }
+      }
+      if (cmd === 'resolve_route_token') return 'TOK-RESOLVED-' + args.routeKey
+      if (cmd === 'set_active_profile') {
+        return gate.then(() => ({ wsUrl: 'ws://' + args.name + ':4753/ui', wsToken: 'TOK-' + args.name }))
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    // Fire A, let it reach the gated set_active_profile await.
+    selectValue(channelSelect(), 'a-target')
+    await flush()
+
+    // Fire B (a DIFFERENT target) BEFORE A's gate resolves - a real user
+    // cannot do this (the selector disables itself while a switch is
+    // in-flight), so this is the programmatic driver the disabling exists
+    // to require.
+    selectValue(channelSelect(), 'b-target')
+    await flush()
+
+    // Release the SHARED gate - A's continuation is queued first (it
+    // awaited first) and must find itself superseded; B's runs second and
+    // must be the only one to reach setDefaultRoute.
+    resolveSetActiveProfile({})
+    await flush()
+    await flush()
+
+    expect(setDefaultRoute).toHaveBeenCalledTimes(1)
+    expect(setDefaultRoute).toHaveBeenCalledWith('b-target')
+    expect(channelSelect().value).toBe('b-target')
+    // set_active_profile itself WAS invoked for both attempts - neither
+    // could know it would be superseded before making that call. The
+    // invariant F4 guards is that only the LATEST-STARTED attempt's writes
+    // past that point are ever allowed to land (never an interleave of
+    // writes from two DIFFERENT targets).
+    expect(invoke).toHaveBeenCalledWith('set_active_profile', { name: 'a-target' })
+    expect(invoke).toHaveBeenCalledWith('set_active_profile', { name: 'b-target' })
+    expect(channelSelect().disabled).toBe(false)
   })
 })
 

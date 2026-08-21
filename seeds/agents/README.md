@@ -53,7 +53,7 @@ skill from [fourcolors/skills](https://github.com/fourcolors/skills) at
 `seeds/skills/subagent-memory/`. Install it once with:
 
 ```bash
-bun run apps/ui-web/scripts/install-claude-skills.ts
+bun run apps/server/scripts/install-claude-skills.ts
 ```
 
 Then any subagent can opt in by adding to its frontmatter:

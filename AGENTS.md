@@ -20,7 +20,7 @@ Luna uses a single root context with root-level ADRs when they exist. See `docs/
 - Moon Chrome-tab thread detach/redock: `apps/ui-moon-tauri/docs/chrome-tab-interaction.md` (principles + phased plan; read before changing pull-out/redock).
 - Build/test: `bun run install:safe`, then `bun run test` (vitest), `bun run test:bun`, `bun run typecheck` - see root `package.json` scripts.
 - Moon UI E2E (macOS): `cd apps/ui-moon-tauri && bun run test:e2e:ci` builds with Cargo feature `wdio-e2e` (embedded WebDriver) and runs WebdriverIO specs under `e2e/` - see `apps/ui-moon-tauri/e2e/README.md`.
-- Run the chat server locally: `bun run --filter '@luna/ui-web' server:chat` (`apps/ui-web/scripts/chat-server.ts`).
+- Run the chat server locally: `bun run scripts/luna-chat-server-entry.ts` (boots `apps/server/src/chat-server.ts` via the path-stable launcher).
 - Thread lifecycle: the idle reaper releases only a thread's RUNTIME; recovery on next touch goes through `ensureThreadLive` and the per-thread PubSub map in `packages/chat-service/src/chat-service.ts` (must stay outside the thread scope so pre-reap subscribers keep receiving frames).
 - Server auto-update: new installs use the host-side `luna-guardian-<profile>.timer`; its pinned updater respects `deploy.autoUpdate` (absent = true) and connect-aware deferral. The legacy `luna-autodeploy-<profile>.timer` is removed when guardian installs - see `docs/autodeploy.md`.
 - Runtime guardian: `scripts/luna-guardian` is the independent deep-health/recovery/update module; systemd `Type=notify` remains the fast liveness mechanism. Update transactions are locked and journaled outside the checkout so a killed deploy resumes instead of no-oping at a half-applied HEAD.
@@ -33,7 +33,9 @@ Luna uses a single root context with root-level ADRs when they exist. See `docs/
   Degrade requires a known dimension - an unknown dimension still fails boot fatally, since a guessed dimension would corrupt the `float32[dim]` vectorlite table sizing in `packages/memory/src/backends/sqlite-vector.ts`.
   A declared-vs-probed dimension mismatch is a config error and is never retried or degraded at boot; if boot was degraded (probe failed), the first successful real `embed()` re-checks length vs the declared dimension and fails sticky-loud so a wrong env dim is not only seen as a wall of per-write sqlite-vector errors.
   Provisioning: `scripts/luna-server-install` / `scripts/luna-container-create` accept `--ollama-probe-attempts` / `--ollama-probe-backoff-ms` (and related ollama flags) into `.env`.
-- Vault is a metadata registry plus tiered value storage; `vault_items` never contains values. `LUNA_VAULT_STORAGE` defaults to `auto` (Darwin Keychain, encrypted Luna vault elsewhere), while `env` is the explicit plaintext escape hatch. Reads, writes, all-tier deletion, integrity behavior, migration, backup, and verification are documented in `docs/audits/luna-vault-keychain-migration.md`; composition lives in `apps/ui-web/scripts/secret-chain.ts`, routing in `vault-secret-store.ts`, and registry/sync logic in `packages/vault/src/`.
+- Vault is a metadata registry plus tiered value storage; `vault_items` never contains values.
+  `LUNA_VAULT_STORAGE` defaults to `auto` (Darwin Keychain, encrypted Luna vault elsewhere), while `env` is the explicit plaintext escape hatch.
+  Reads, writes, all-tier deletion, integrity behavior, migration, backup, and verification are documented in `docs/audits/luna-vault-keychain-migration.md`; composition lives in `apps/server/src/secret-chain.ts`, routing in `vault-secret-store.ts`, and registry/sync logic in `packages/vault/src/`.
 
 ## Maintaining this file
 

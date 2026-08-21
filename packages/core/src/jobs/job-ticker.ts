@@ -32,9 +32,11 @@
  * aftermath (retry/reset, touch, postCommit) - into its own EXECUTOR fiber,
  * then moves on to the next row without waiting. `drainOnce` (and the public
  * `drain`) return as soon as every due row this tick has been claimed or
- * forked, never once it has fully run. See `executors` (the in-flight guard),
- * `producerSemaphore` (serialization), and `executor` (the forked tail)
- * below for the three pieces that make that split safe.
+ * forked, never once it has fully run. See `executors` (the in-flight guard)
+ * and `producerSemaphore` (serialization) below, and `executor` (the forked
+ * tail, now in job-ticker-executor.ts) for the three pieces that make that
+ * split safe. The tick loop itself lives in job-ticker-producer.ts, and boot
+ * reconciliation (below) in job-ticker-reconcile.ts.
  *
  * Why a single fiber and not per-row? Per-row would explode fiber count on a
  * thousand-row jobs table and re-create the per-trigger cost we're replacing.
@@ -88,20 +90,18 @@
  * `enabled=1 AND next_run_at <= now` and skips `kind="cron"` rows defensively
  * so any stragglers left in an existing DB stay inert.
  */
-import { Cron, Duration, Effect, Either, FiberMap, Layer, Ref, Schedule } from "effect"
+import { Duration, Effect, FiberMap, Layer, Ref, Schedule } from "effect"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
 import {
-  handleDoctorWorkflowFailure,
-  isDoctorWorkflowJob,
-  maybeEnqueueDoctor,
   resolveDoctorEnqueueConfig,
   type DoctorEnqueueConfig,
 } from "../doctor/doctor-enqueue.js"
+import { defaultRetryBackoffMs, makeExecutor } from "./job-ticker-executor.js"
+import { makeDrainOnce } from "./job-ticker-producer.js"
+import { runBootReconcile } from "./job-ticker-reconcile.js"
 import { JobsStoreService } from "./jobs-store.js"
-import type { JobRun, JobRunTerminalStatus, PersistedJob } from "./jobs-store-types.js"
-import { WorkerRegistry, WorkerError } from "./worker-registry.js"
-import type { WorkerEntry } from "./worker-registry.js"
+import { WorkerRegistry } from "./worker-registry.js"
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -327,132 +327,33 @@ export interface JobTickerOptions {
     readonly maxHealAttempts?: number
     /**
      * Absolute path to `luna-doctor-workflow.ts`. Defaults to
-     * `join(cwd, 'apps/ui-web/scripts/luna-doctor-workflow.ts')` or
+     * `join(cwd, 'apps/server/scripts/luna-doctor-workflow.ts')` or
      * `LUNA_DOCTOR_CLI`.
      */
     readonly cliPath?: string
     readonly bunBin?: string
     readonly lunaHome?: string
   }
+
+  /**
+   * S11a - explicit `$LUNA_HOME` for the boot-reconcile clean-shutdown
+   * marker (see job-ticker-reconcile.ts for the consume-once contract).
+   * No default: omitted means no marker is ever consumed. Production
+   * wiring passes chat-server.ts's own resolved `LUNA_HOME` constant here,
+   * the same value its shutdown handlers write the marker to. Unrelated to
+   * `doctor.lunaHome`, which only scopes the doctor CLI's own state dir.
+   */
+  readonly lunaHome?: string
 }
-
-/**
- * job-ticker-oban-deadlines (Seam 3). `WorkerError` reasons that represent a
- * plausibly-transient failure (a wedged worker, an SDK hiccup, an unexpected
- * defect) — these are the ONLY reasons that earn a retry. `bad_payload` and
- * `unknown_kind` are DETERMINISTIC: the exact same dispatch will fail the
- * exact same way every time, so retrying them on a tight backoff only burns
- * cycles and turns a once-per-cron-period failure into a hot-loop. They fall
- * back to the job's natural cron cadence instead (unretried).
- */
-const RETRYABLE_WORKER_ERROR_REASONS: ReadonlySet<string> = new Set([
-  "deadline_passed",
-  "worker_failed",
-  "defect",
-])
-
-/**
- * job-ticker-oban-deadlines (Seam 3). Resolve the max-attempts ceiling for
- * one dispatch: `payload.max_attempts` when it is a finite, truncates-to-a-
- * positive-integer value (clamped to the Oban-inspired upper bound of 10),
- * else the ticker's `defaultMaxAttempts` (default 3). A non-numeric,
- * non-finite, zero, or negative payload value falls through cleanly to the
- * default rather than disabling retries outright.
- */
-const MAX_ATTEMPTS_CEILING = 10
-const resolveMaxAttempts = (
-  payload: unknown,
-  defaultMaxAttempts: number,
-): number => {
-  if (payload !== null && typeof payload === "object") {
-    const raw = (payload as Record<string, unknown>)["max_attempts"]
-    if (typeof raw === "number" && Number.isFinite(raw)) {
-      const n = Math.trunc(raw)
-      if (n >= 1) return Math.min(n, MAX_ATTEMPTS_CEILING)
-    }
-  }
-  return defaultMaxAttempts
-}
-
-/**
- * job-ticker-oban-deadlines (Seam 1). Extract a payload-level `timeout_ms`
- * override — the highest-priority source in the per-dispatch timeout
- * resolution (ahead of a worker's registered `defaultTimeoutMs` and the
- * ticker's `workerDeadline` fallback). Mirrors the same defensive-parse
- * pattern prompt-worker.ts and workflow-worker.ts already use for this exact
- * field: only a finite, positive number counts; garbage (NaN, negative,
- * string, missing) falls through cleanly to the next source.
- */
-const extractPayloadTimeoutMs = (payload: unknown): number | undefined => {
-  if (payload === null || typeof payload !== "object") return undefined
-  const raw = (payload as Record<string, unknown>)["timeout_ms"]
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-    return undefined
-  }
-  return raw
-}
-
-// ── Internal helpers ────────────────────────────────────────────────────────
-
-/**
- * Compute the next fire time for a `jobs` row from its `schedule` field.
- * Falls back to the legacy `spec` column when `schedule` is null (legacy
- * rows). Returns null when neither parse succeeds — the ticker will leave
- * `next_run_at` alone in that case (and the row stays due forever, which is
- * the right pain signal — operators will see it spinning in logs).
- */
-const computeNextRunAt = (
-  job: PersistedJob,
-  fromMs: number,
-): number | null => {
-  const expr = job.schedule ?? job.spec
-  if (!expr) return null
-  // Pin matching to UTC (not the host's TZ). Without the explicit "UTC" arg,
-  // Effect's Cron interprets the expression in `process.env.TZ`, so the same
-  // schedule would fire at a different wall-clock time depending on where the
-  // server runs. UTC keeps install-time and runtime computations identical.
-  const parsed = Cron.parse(expr, "UTC")
-  if (Either.isLeft(parsed)) return null
-  try {
-    const nextDate = Cron.next(parsed.right, new Date(fromMs))
-    return nextDate.getTime()
-  } catch {
-    return null
-  }
-}
-
-/**
- * job-ticker-oban-deadlines (Seam 3) — default retry backoff, mirroring the
- * doubling-capped pattern already used by `packages/vault/src/op-sync.ts`'s
- * `nextDelayMsPure`. `attempt` is the 1-indexed retry counter (the value
- * `retry_attempt` is bumped TO for this failure). Base 1 min, doubling per
- * attempt, capped at 30 min so a chronically-failing recurring job (e.g. a
- * mis-configured dream backlog) settles into a steady nagging cadence
- * instead of either hot-looping the ticker or going silent for hours.
- */
-const RETRY_BACKOFF_BASE_MS = 60_000
-const RETRY_BACKOFF_CAP_MS = 30 * 60_000
-const defaultRetryBackoffMs = (attempt: number): number => {
-  const n = Math.max(1, Math.floor(attempt) || 1)
-  return Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_BASE_MS * Math.pow(2, n - 1))
-}
-
-/**
- * job-ticker-oban-deadlines (Seam 1) — the lower clamp bound applied to a
- * per-dispatch timeout resolved from `payload.timeout_ms` or a worker's
- * `defaultTimeoutMs` (NOT the back-compat `workerDeadline` fallback path,
- * which is intentionally left unclamped — see the module header). Without
- * this floor a misconfigured payload (`timeout_ms: 5`) or worker
- * registration could hand the ticker a sub-second backstop.
- */
-const MIN_RESOLVED_TIMEOUT_MS = 1_000
-
-const terminalStatusFrom = (
-  result: { _tag: "Right"; right: unknown } | { _tag: "Left"; left: unknown },
-): JobRunTerminalStatus =>
-  result._tag === "Right" ? "success" : "failed"
 
 // ── Layer ───────────────────────────────────────────────────────────────────
+//
+// The Seam 1 (deadline+grace) and Seam 3 (retry+backoff) helpers that used
+// to live here now live in job-ticker-executor.ts alongside the `executor`
+// they configure; `computeNextRunAt` lives in job-ticker-producer.ts
+// alongside the tick loop that calls it; boot reconciliation lives in
+// job-ticker-reconcile.ts. This file keeps the public API types above and
+// the composition Layer below.
 
 /**
  * Build a supervised JobTicker. The forked loop is interrupted when the
@@ -562,60 +463,10 @@ export const JobTickerLayer = (
         })
       }
 
-      // Boot reconcile (runs ONCE, before the loop forks): a hard crash
-      // between recordRunStart and recordRunEnd leaves job_runs rows stuck
-      // `running`/`waiting` forever, and a claim may leave sticky
-      // last_status='running' with a far-future next_run_at. Close open runs
-      // as cancelled and repair job rows (clear sticky status; pull-forward
-      // next_run_at for enabled recurring jobs that had a running orphan).
-      // Best-effort - a failure logs and boot continues.
-      const bootNow = yield* clock.nowMs()
-      const reconcile = yield* store
-        .reconcileAfterCrash({ finishedAt: bootNow })
-        .pipe(
-          Effect.catchAll((err) =>
-            Effect.as(
-              Effect.logWarning(
-                `[luna/sched] boot orphan reconcile failed: ${err.message}`,
-              ),
-              {
-                orphansClosed: 0,
-                waitingClosed: 0,
-                jobsRepaired: 0,
-                jobIdsRepaired: [] as ReadonlyArray<string>,
-              },
-            ),
-          ),
-        )
-      if (
-        reconcile.orphansClosed > 0 ||
-        reconcile.waitingClosed > 0 ||
-        reconcile.jobsRepaired > 0
-      ) {
-        yield* Effect.logInfo(
-          `[luna/sched] boot reconcile: closed ${reconcile.orphansClosed} orphaned run(s) (${reconcile.waitingClosed} waiting); repaired ${reconcile.jobsRepaired} job(s)`,
-        )
-      }
-
-      // A4: quarantine enabled rows with unparseable payload_json so they
-      // stop appearing as forever-due ghosts in listDue (skipped by rowToJob).
-      const quarantined = yield* store
-        .quarantineUnparseablePayloads({ finishedAt: bootNow })
-        .pipe(
-          Effect.catchAll((err) =>
-            Effect.as(
-              Effect.logWarning(
-                `[luna/sched] payload quarantine pass failed: ${err.message}`,
-              ),
-              0,
-            ),
-          ),
-        )
-      if (quarantined > 0) {
-        yield* Effect.logWarning(
-          `[luna/sched] boot quarantine: disabled ${quarantined} job(s) with unparseable payload_json`,
-        )
-      }
+      // Boot reconcile + quarantine (runs ONCE, before the loop forks) — see
+      // job-ticker-reconcile.ts for the crash-safety rationale, including
+      // the S11a clean-shutdown marker consume-once read.
+      yield* runBootReconcile(store, clock, { lunaHome: options?.lunaHome })
 
       // In-memory at-most-once guard for one-shot jobs. The durable disable
       // (setV2Fields enabled=false) can fail under a storage outage, which
@@ -640,7 +491,8 @@ export const JobTickerLayer = (
       // gap) and auto-removes the entry when the fiber completes - success,
       // failure, OR interruption - with no manual `ensuring` needed.
       // `onlyIfMissing` is a second uniqueness backstop on top of the
-      // producer's own `FiberMap.has` pre-check below. `E=never` (not the
+      // producer's own `FiberMap.has` pre-check (job-ticker-producer.ts).
+      // `E=never` (not the
       // default `unknown`) is DELIBERATE: `FiberMap.awaitEmpty` on a map with
       // E=never returns `Effect<void, never>` = `Effect<void>`, matching
       // `awaitIdle`'s declared type exactly (a map with the default E would
@@ -675,712 +527,36 @@ export const JobTickerLayer = (
       // CPU-bound worker, which Luna has none of).
       const producerSemaphore = yield* Effect.makeSemaphore(1)
 
-      /**
-       * job-ticker-producer-executor-276 - the EXECUTOR: the forked tail of
-       * a real dispatch. Exactly the pre-split `handleJob`'s post-entry-check
-       * body, lifted verbatim: resolve the per-dispatch timeout (Seam 1),
-       * build `ctx`, `dispatch(...).pipe(timeoutFail, catchAllDefect,
-       * either)`, close `job_runs` (Seam 3 retry/reset), `touch`, then
-       * `postCommit` (issue #277). Typed `Effect.Effect<void>` (E=never) to
-       * satisfy `FiberMap<string, void, never>` above - every store call
-       * stays wrapped in `Effect.catchAll`/`Effect.catchAllDefect` for
-       * exactly the reason the old `handleJob` doc gave: an escaped typed
-       * failure here would only kill THIS fiber (FiberMap doesn't cascade
-       * fiber failures between entries), but an escaped DEFECT would still
-       * need catching so the fiber closes cleanly and frees its FiberMap
-       * slot rather than dying in a way that could surface as a Layer-level
-       * defect. The executor needs NO manual `ensuring` to free its slot -
-       * `FiberMap` auto-removes the jobId entry when the fiber completes,
-       * which is what lifts the in-flight guard for the NEXT tick.
-       */
-      const executor = (
-        job: PersistedJob,
-        run: JobRun,
-        entry: WorkerEntry<never>,
-        isOneShot: boolean,
-        nextRunAt: number | null,
-      ): Effect.Effect<void> =>
-        Effect.gen(function* () {
-          const attemptNumber = run.attempt
+      // job-ticker-producer-executor-276 - the EXECUTOR (job-ticker-executor.ts):
+      // the forked tail of a real dispatch. See that file for the full doc.
+      const executor = makeExecutor({
+        store,
+        registry,
+        clock,
+        workerDeadlineMs,
+        graceMs,
+        maxWorkerDeadlineMs,
+        retryBackoff,
+        defaultMaxAttempts,
+        doctorCfg,
+      })
 
-          // Seam 1 — per-dispatch timeout resolution, highest priority first:
-          //   1. payload.timeout_ms (a finite positive number) — the
-          //      documented cross-kind payload convention prompt/workflow
-          //      workers already honour internally.
-          //   2. the worker's registered `defaultTimeoutMs`.
-          //   3. the ticker's `workerDeadline` fallback (back-compat path —
-          //      a bare-function registration with NO payload override gets
-          //      `workerDeadlineMs` exactly as before this seam: no floor
-          //      clamp, no grace added, so existing behaviour/tests are
-          //      unaffected).
-          // Sources 1 and 2 are clamped to >= MIN_RESOLVED_TIMEOUT_MS (1s)
-          // before `grace` is added, then the whole backstop is capped at
-          // `maxWorkerDeadlineMs` — this is what stops a payload override
-          // from smuggling in either a sub-second backstop or an unbounded
-          // one, and (for source 1) is what fixes the two-layer inversion
-          // where a payload widened a worker's OWN inner timeout past the
-          // worker's registered default but the ticker's outer backstop
-          // still fired first at the (narrower) default.
-          const payloadTimeoutMs = extractPayloadTimeoutMs(job.payload)
-          const resolvedKindTimeoutMs = payloadTimeoutMs ?? entry.defaultTimeoutMs
-          // `effectiveMs` is the grace-EXCLUSIVE clamped timeout (spec line 31:
-          // "sets ctx.deadline = dispatchAt + effective") — the value a
-          // well-behaved worker should treat as ITS deadline, so that a clean
-          // between-chunk stop gate (e.g. the dream worker) fires with the
-          // full `graceMs` still in hand before the ticker's hard backstop
-          // below. `backstopMs` is the grace-INCLUSIVE outer kill used only by
-          // `Effect.timeoutFail`. Both share the same `maxWorkerDeadlineMs` cap
-          // so `effectiveMs <= backstopMs` always holds (min is monotonic in
-          // its first argument), even when `resolvedKindTimeoutMs` itself
-          // exceeds the cap.
-          const effectiveMs =
-            resolvedKindTimeoutMs !== undefined
-              ? Math.min(
-                  Math.max(resolvedKindTimeoutMs, MIN_RESOLVED_TIMEOUT_MS),
-                  maxWorkerDeadlineMs,
-                )
-              : workerDeadlineMs
-          const backstopMs =
-            resolvedKindTimeoutMs !== undefined
-              ? Math.min(
-                  Math.max(resolvedKindTimeoutMs, MIN_RESOLVED_TIMEOUT_MS) + graceMs,
-                  maxWorkerDeadlineMs,
-                )
-              : workerDeadlineMs
-
-          // Dispatch the worker. Errors caught into Either so the ticker keeps
-          // draining; the result is closed into job_runs regardless of outcome.
-          // ctx.deadline is computed from a fresh clock read (NOT tickAt) so it
-          // matches the relative `timeoutFail(backstopMs)` below. It is set to
-          // `effectiveMs` (grace-EXCLUSIVE), NOT `backstopMs`, so a worker that
-          // consults it (e.g. the dream worker's clean between-chunk stop gate)
-          // still has the full grace window before the ticker's hard kill.
-          const dispatchAt = yield* clock.nowMs()
-          const ctx = {
-            jobId: job.id,
-            runId: run.id,
-            attempt: attemptNumber,
-            deadline: dispatchAt + effectiveMs,
-          }
-          const result = yield* registry
-            .dispatch(job.kind, job.payload, ctx)
-            .pipe(
-              // ENFORCE the deadline: a worker that overruns is interrupted
-              // rather than left to block the ticker indefinitely (the old
-              // behaviour — the deadline was advisory only). The timeout
-              // surfaces as a deadline_passed WorkerError and is closed into
-              // job_runs like any other failure.
-              Effect.timeoutFail({
-                onTimeout: () =>
-                  new WorkerError({
-                    reason: "deadline_passed",
-                    kind: job.kind,
-                    message: `worker for kind "${job.kind}" exceeded the ${backstopMs}ms deadline and was interrupted`,
-                  }),
-                duration: Duration.millis(backstopMs),
-              }),
-              // Convert an uncaught worker DEFECT (a synchronous throw /
-              // Effect.die — e.g. JSON.parse on a malformed payload) into a
-              // typed failure. Otherwise it escapes this executor fiber as a
-              // defect - FiberMap doesn't cascade a sibling's defect to other
-              // entries, but an uncaught defect here would still skip every
-              // durable write below (recordRunEnd, retry scheduling, touch),
-              // leaving the run stuck 'running' until boot reconcile. `Effect
-              // .either` only traps the typed E channel, not defects - this
-              // MUST run before it.
-              Effect.catchAllDefect((defect) =>
-                Effect.fail(
-                  new WorkerError({
-                    reason: "defect",
-                    kind: job.kind,
-                    message: `worker for kind "${job.kind}" raised an unexpected defect: ${String(defect)}`,
-                  }),
-                ),
-              ),
-              Effect.either,
-            )
-
-          const finishedAt = yield* clock.nowMs()
-          if (result._tag === "Right") {
-            yield* store.recordRunEnd(run.id, {
-              finishedAt,
-              status: "success",
-              outputText: result.right.outputText,
-              stepsJson: result.right.stepsJson ?? null,
-            }).pipe(Effect.catchAll(() => Effect.void))
-            // Seam 3 + Phase B1 — clear retry + doctor streaks on recovery.
-            // Only write when something is non-zero / non-ok so healthy ticks
-            // stay free of redundant UPDATEs.
-            if (
-              job.retryAttempt !== 0 ||
-              job.failStreak !== 0 ||
-              job.orphanStreak !== 0 ||
-              job.healAttempts !== 0 ||
-              job.healState !== "ok"
-            ) {
-              yield* store
-                .setV2Fields(job.id, {
-                  retryAttempt: 0,
-                  failStreak: 0,
-                  orphanStreak: 0,
-                  healAttempts: 0,
-                  healState: "ok",
-                })
-                .pipe(Effect.catchAll(() => Effect.void))
-            }
-          } else {
-            const err = result.left as WorkerError
-            const errMsg = `${err.reason}: ${err.message}`
-            yield* store.recordRunEnd(run.id, {
-              finishedAt,
-              status: "failed",
-              error: errMsg,
-              // Workers may pass partial output through WorkerError.stepsJson
-              // (e.g. workflow worker on halt) — persist it so the operator
-              // can see which step failed without rerunning.
-              stepsJson: err.stepsJson ?? null,
-            }).pipe(Effect.catchAll(() => Effect.void))
-            // Seam 3 — retry a RECURRING job sooner than its natural next
-            // cron fire. Gated on THREE explicit conditions, ALL required:
-            //   1. err.reason is RETRYABLE (deadline_passed/worker_failed/
-            //      defect) — bad_payload/unknown_kind are deterministic, the
-            //      identical dispatch will fail the identical way every time,
-            //      so retrying them on a tight backoff only hot-loops the
-            //      ticker; they fall back to the natural cron cadence instead.
-            //   2. NOT a one-shot: a one-shot's FIRST dispatch falls through
-            //      to this same dispatch path (it must — that's how it runs
-            //      at all), so `isOneShot` (computed by the producer and
-            //      passed in - see the executor's parameters) alone is what
-            //      excludes it here.
-            //   3. `nextRunAt !== null` excludes a quarantined/unschedulable
-            //      cron (the producer's guard path already handled that case
-            //      and never forks an executor for it, but the check is kept
-            //      as a type-safe belt-and-suspenders against future
-            //      control-flow changes).
-            // AND bounded by `maxAttempts` (payload.max_attempts clamped to
-            // [1,10], else `defaultMaxAttempts`) — once the just-failed
-            // dispatch's attempt number reaches the ceiling, retrying stops
-            // (exhaustion) instead of continuing forever on the backoff
-            // cadence.
-            const isRetryableReason = RETRYABLE_WORKER_ERROR_REASONS.has(err.reason)
-            let retryScheduled = false
-            if (isRetryableReason && !isOneShot && nextRunAt !== null) {
-              const maxAttempts = resolveMaxAttempts(job.payload, defaultMaxAttempts)
-              const newAttempt = job.retryAttempt + 1
-              if (newAttempt < maxAttempts) {
-                const retryAt =
-                  finishedAt + Duration.toMillis(retryBackoff(newAttempt))
-                const patch: { retryAttempt: number; nextRunAt?: number } = {
-                  retryAttempt: newAttempt,
-                }
-                // Only pull next_run_at EARLIER than the natural cron fire —
-                // claim() already wrote next_run_at=nextRunAt (the
-                // cron-computed fire) above, so a retryAt landing AFTER it
-                // would be a no-op UPDATE that could only ever push the row
-                // LATER by mistake.
-                if (retryAt < nextRunAt) patch.nextRunAt = retryAt
-                yield* store
-                  .setV2Fields(job.id, patch)
-                  .pipe(Effect.catchAll(() => Effect.void))
-                retryScheduled = true
-              }
-            }
-            // Non-retryable reason, exhausted attempts, one-shot, or an
-            // unschedulable cron: no retry was scheduled. On EXHAUSTION in
-            // particular this is the Oban-analogue "give up and fall back to
-            // cron cadence" terminal — `next_run_at` is left exactly as
-            // claim() computed it (the natural next cron fire), and
-            // `retry_attempt` resets to 0 so the next natural fire starts a
-            // fresh attempt count rather than inheriting a stale streak.
-            if (!retryScheduled && job.retryAttempt !== 0) {
-              yield* store
-                .setV2Fields(job.id, { retryAttempt: 0 })
-                .pipe(Effect.catchAll(() => Effect.void))
-            }
-
-            // Phase B1 — doctor auto-heal. Doctor workflow jobs never
-            // become patients themselves; failures re-enqueue or escalate
-            // the *patient*. Everyone else bumps fail_streak and may
-            // enqueue a doctor one-shot once the threshold is hit.
-            if (isDoctorWorkflowJob(job)) {
-              yield* handleDoctorWorkflowFailure(
-                store,
-                job,
-                errMsg,
-                doctorCfg,
-                finishedAt,
-              ).pipe(Effect.catchAllDefect(() => Effect.void))
-            } else {
-              const newFailStreak = job.failStreak + 1
-              yield* store
-                .setV2Fields(job.id, { failStreak: newFailStreak })
-                .pipe(Effect.catchAll(() => Effect.void))
-              yield* maybeEnqueueDoctor(
-                store,
-                { ...job, failStreak: newFailStreak },
-                errMsg,
-                doctorCfg,
-                finishedAt,
-              ).pipe(Effect.catchAllDefect(() => Effect.void))
-            }
-          }
-          // recordRunEnd closes the job_runs row but does NOT touch jobs.last_status,
-          // which claim() set to 'running'. Reset it to the run's outcome so a
-          // recurring schedule isn't shown as perpetually 'running' between fires.
-          yield* store
-            .touch(job.id, {
-              lastStatus: result._tag === "Right" ? "fired" : "errored",
-            })
-            .pipe(Effect.catchAll(() => Effect.void))
-
-          // issue #277 - postCommit (deferred delivery) runs LAST, strictly
-          // AFTER every durable job-state write above (recordRunEnd, the
-          // retry-reset/exhaustion setV2Fields, and touch). A slow or hung
-          // delivery must never delay the writes that make the run's
-          // terminal status visible - those are what a retry/observer relies
-          // on. Bounded with an INDEPENDENT timeout (not the dispatch
-          // backstop above, which has already fired/passed by now - delivery
-          // legitimately runs after it) because the ticker cannot assume a
-          // delivery sink is self-bounding (e.g. a chat-server WS post is
-          // typed E=never but can still hang on a stuck connection). Both
-          // catchAll (typed TimeoutException) and catchAllDefect (an
-          // uncaught throw the worker failed to collapse) are best-effort:
-          // logged, never retried, never affect job_runs/jobs state already
-          // written above.
-          //
-          // ACCEPTED RESIDUAL: if the layer's Scope tears down between the
-          // touch() above and postCommit completing, that one delivery is
-          // lost - the run is already recorded success (or failed, with no
-          // retry queued), so nothing re-fires it. This is deliberate: the
-          // alternative (running postCommit BEFORE the durable writes, or
-          // retrying it) reintroduces the double-delivery race #277 exists
-          // to kill. At-most-once here beats at-least-once.
-          if (result._tag === "Right" && result.right.postCommit) {
-            yield* result.right.postCommit.pipe(
-              Effect.timeout(Duration.seconds(30)),
-              Effect.catchAll((err) =>
-                Effect.logWarning(
-                  `[luna/sched] postCommit failed for job=${job.id}: ${String(err)}`,
-                ),
-              ),
-              Effect.catchAllDefect((defect) =>
-                Effect.logWarning(
-                  `[luna/sched] postCommit raised a defect for job=${job.id}: ${String(defect)}`,
-                ),
-              ),
-            )
-          }
-        })
-
-      /**
-       * job-ticker-producer-executor-276 - the PRODUCER. One tick: read
-       * `listDue`, then for each row either (a) a GUARD path - one-shot
-       * re-encounter or quarantine - that plain-claims and returns
-       * synchronously, no run row, no fork; (b) an UNKNOWN-KIND path that
-       * claims + writes an inline failed `job_runs` row (there is no worker
-       * to dispatch, so nothing to fork); or (c) a REAL DISPATCH that
-       * atomically claims-and-starts the run (`claimAndStartRun`, amendment
-       * 4) and forks the executor. Runs inside `producerSemaphore` so `drain`
-       * and the auto-tick loop can never race each other's writes to
-       * `dispatchedOneShots` or the slot snapshot (amendment 3). Idempotent
-       * on the read side; every write is still guarded by an optimistic CAS
-       * (`claim`/`claimAndStartRun`), same as before the split.
-       */
-      const drainOnce: Effect.Effect<TickSummary> = producerSemaphore.withPermits(1)(
-        Effect.gen(function* () {
-          const tickAt = yield* clock.nowMs()
-          const due = yield* store.listDue(tickAt).pipe(
-            Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<PersistedJob>)),
-          )
-
-          // Backpressure (issue #276) - a START-OF-TICK snapshot of in-flight
-          // executors. This is an UPPER bound on live concurrency: the
-          // producer can UNDER-admit (a slot freed mid-tick by an executor
-          // that finishes early isn't reused until next tick) but can NEVER
-          // over-admit past `dispatchConcurrency`. Worst case under
-          // saturation a due row waits one extra tick (~60s default) for a
-          // slot - acceptable at Luna's scale (a handful of jobs at
-          // concurrency 4; documented as a non-goal to optimize further, not
-          // an oversight).
-          const inFlight = yield* FiberMap.size(executors)
-          let slots = Math.max(0, dispatchConcurrency - inFlight)
-
-          let claimed = 0
-          let forked = 0
-          let skippedInFlight = 0
-          let skippedNoCapacity = 0
-          let skippedUnknownKind = 0
-          let skippedClaimLost = 0
-          let skippedV1Cron = 0
-          let failedInline = 0
-
-          for (const job of due) {
-            // Legacy `kind="cron"` rows (from the removed V1 fiber-per-cron
-            // path) have no worker - claiming one would write a spurious
-            // unknown_kind failure every tick. Skip them structurally so any
-            // stragglers left in an existing DB stay inert rather than
-            // hot-looping.
-            if (job.kind === "cron") {
-              skippedV1Cron++
-              continue
-            }
-
-            // Uniqueness (issue #276 amendment 1) - a dispatch that outlives
-            // its cron period must not be re-claimed while its executor is
-            // still running. This is the ONLY thing that restores the
-            // uniqueness the pre-split await-all `drainOnce` got for free by
-            // construction (the tick loop literally couldn't start a second
-            // drain until the first one - including every dispatch -
-            // returned).
-            const alreadyInFlight = yield* FiberMap.has(executors, job.id)
-            if (alreadyInFlight) {
-              skippedInFlight++
-              continue
-            }
-
-            // Pre-screen: do we have a worker for this kind? Uses
-            // lookupEntry (not lookup) so `defaultTimeoutMs` is available
-            // for the Seam-1 backstop the executor computes.
-            const entry = yield* registry.lookupEntry(job.kind)
-            const nextRunAt = computeNextRunAt(job, tickAt)
-            // One-shot guard: a job with NO schedule expression at all (empty
-            // `schedule` AND empty `spec`) is a fire-once job - `claim` sets
-            // its `next_run_at` to null, and `listDue` returns null-next_run
-            // rows, so without this it would re-fire EVERY tick forever (the
-            // documented "stays due" trap).
-            // `??` only falls through null/undefined, NOT "" - so check BOTH
-            // fields explicitly: an empty-string `schedule` alongside a valid
-            // `spec` must NOT be misread as a one-shot.
-            const scheduleEmpty = (job.schedule ?? "").trim() === ""
-            const specEmpty = (job.spec ?? "").trim() === ""
-            const isOneShot = scheduleEmpty && specEmpty
-            // Quarantine: the schedule/spec is NON-empty (not a one-shot) but
-            // computeNextRunAt could not produce a next fire - the cron is
-            // unparseable OR has no upcoming match (e.g. "0 0 30 2 *"). A job
-            // with a NON-empty-but-unparseable cron is left alone otherwise
-            // (the deliberate pain-signal for a misconfigured schedule).
-            const quarantine = !isOneShot && nextRunAt === null
-            const reEncounter = isOneShot && dispatchedOneShots.has(job.id)
-
-            if (reEncounter) {
-              // GUARD PATH - we already dispatched this one-shot but its
-              // disable hasn't durably landed (storage outage). Retry the
-              // disable and SKIP a second dispatch - the in-memory guard is
-              // what actually bounds it to once-per-process; the durable
-              // disable is just the cross-restart marker. Plain claim (no
-              // run row, no fork): re-claiming just refreshes last_run so a
-              // competing read doesn't see stale state.
-              const won = yield* store.claim(job.id, {
-                claimAt: tickAt,
-                nextRunAt,
-                previousLastRun: job.lastRun,
-              }).pipe(Effect.catchAll(() => Effect.succeed(false)))
-              if (!won) {
-                skippedClaimLost++
-                continue
-              }
-              const disabledNow = yield* store
-                .setV2Fields(job.id, { enabled: false })
-                .pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)))
-              if (disabledNow) {
-                dispatchedOneShots.delete(job.id)
-              } else {
-                yield* Effect.logWarning(
-                  `[luna/sched] one-shot disable still failing for job=${job.id}; in-memory guard is suppressing re-dispatch`,
-                )
-              }
-              // This one-shot already fired in a prior tick; the re-claim set
-              // last_status='running' again. Reset it so it isn't stuck
-              // 'running'.
-              yield* store
-                .touch(job.id, { lastStatus: "fired" })
-                .pipe(Effect.catchAll(() => Effect.void))
-              claimed++
-              continue
-            }
-
-            if (quarantine) {
-              // GUARD PATH - verbatim disable + log + touch from the
-              // pre-split handleJob.
-              const won = yield* store.claim(job.id, {
-                claimAt: tickAt,
-                nextRunAt,
-                previousLastRun: job.lastRun,
-              }).pipe(Effect.catchAll(() => Effect.succeed(false)))
-              if (!won) {
-                skippedClaimLost++
-                continue
-              }
-              yield* store
-                .setV2Fields(job.id, { enabled: false })
-                .pipe(
-                  Effect.retry(Schedule.recurs(2)),
-                  Effect.catchAll((err) =>
-                    Effect.logWarning(
-                      `[luna/sched] quarantine of malformed-cron job=${job.id} failed: ${err.message} - it may re-fire next tick`,
-                    ),
-                  ),
-                )
-              yield* Effect.logWarning(
-                `[luna/sched] job=${job.id} has an unschedulable cron (schedule=${JSON.stringify(
-                  job.schedule,
-                )} spec=${JSON.stringify(
-                  job.spec,
-                )}); disabled it to stop the every-tick re-fire`,
-              )
-              // claim() set last_status='running'; this row will NOT run, so
-              // clear that marker - otherwise a UI/gallery reading
-              // jobs.last_status shows a disabled, quarantined schedule as
-              // perpetually 'running'.
-              yield* store
-                .touch(job.id, { lastStatus: "errored" })
-                .pipe(Effect.catchAll(() => Effect.void))
-              claimed++
-              continue
-            }
-
-            if (!entry) {
-              // UNKNOWN-KIND PATH - claim + write the run row SYNCHRONOUSLY
-              // in the producer: there is no worker to dispatch, so there is
-              // nothing to fork. A one-shot with no worker is ALSO disabled
-              // here (critic amendment 1, sub-case a) - the disable is
-              // orthogonal to worker presence, matching the pre-split
-              // handleJob (its one-shot bookkeeping ran before the entry
-              // check, unconditionally).
-              const won = yield* store.claim(job.id, {
-                claimAt: tickAt,
-                nextRunAt,
-                previousLastRun: job.lastRun,
-              }).pipe(Effect.catchAll(() => Effect.succeed(false)))
-              if (!won) {
-                skippedClaimLost++
-                continue
-              }
-              if (isOneShot) {
-                dispatchedOneShots.add(job.id)
-                const disabled = yield* store
-                  .setV2Fields(job.id, { enabled: false })
-                  .pipe(
-                    Effect.retry(Schedule.recurs(2)),
-                    Effect.as(true),
-                    Effect.catchAll((err) =>
-                      Effect.as(
-                        Effect.logWarning(
-                          `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} - in-memory guard will prevent a re-fire this process`,
-                        ),
-                        false,
-                      ),
-                    ),
-                  )
-                if (disabled) dispatchedOneShots.delete(job.id)
-              }
-              const attemptNumber = job.retryAttempt + 1
-              const run = yield* store.recordRunStart({
-                jobId: job.id,
-                startedAt: tickAt,
-                attempt: attemptNumber,
-              }).pipe(
-                Effect.catchAll((err) =>
-                  Effect.gen(function* () {
-                    yield* Effect.logWarning(
-                      `[luna/sched] recordRunStart failed for job=${job.id}: ${err.message}`,
-                    )
-                    return null
-                  }),
-                ),
-              )
-              if (!run) {
-                // Claimed but no run row - don't leave it stuck 'running'.
-                yield* store
-                  .touch(job.id, { lastStatus: "errored" })
-                  .pipe(Effect.catchAll(() => Effect.void))
-                claimed++
-                continue
-              }
-              const finishedAt = yield* clock.nowMs()
-              yield* store.recordRunEnd(run.id, {
-                finishedAt,
-                status: "failed",
-                error: `no worker registered for kind "${job.kind}"`,
-              }).pipe(Effect.catchAll(() => Effect.void))
-              yield* store
-                .touch(job.id, { lastStatus: "errored" })
-                .pipe(Effect.catchAll(() => Effect.void))
-              claimed++
-              failedInline++
-              skippedUnknownKind++
-              continue
-            }
-
-            // REAL DISPATCH - needs an admission slot (issue #276
-            // backpressure). Checked BEFORE claiming so a saturated tick
-            // leaves the row due and UNCLAIMED (critic amendment 1, sub-case
-            // b) - it is retried next tick, not silently dropped or
-            // wrongly disabled.
-            if (slots <= 0) {
-              skippedNoCapacity++
-              continue
-            }
-            slots--
-
-            const attemptNumber = job.retryAttempt + 1
-            // Amendment 4 - claim + run-start as ONE transaction, closing the
-            // orphan-run-with-no-ledger-row window a separate claim() +
-            // recordRunStart() would reopen now that dispatch is forked (see
-            // the module header and jobs-store-types.ts's doc on this
-            // method).
-            const started = yield* store.claimAndStartRun(job.id, {
-              claimAt: tickAt,
-              nextRunAt,
-              previousLastRun: job.lastRun,
-              startedAt: tickAt,
-              attempt: attemptNumber,
-            }).pipe(
-              Effect.catchAll((err) =>
-                Effect.gen(function* () {
-                  yield* Effect.logWarning(
-                    `[luna/sched] claimAndStartRun failed for job=${job.id}: ${err.message}`,
-                  )
-                  return null
-                }),
-              ),
-            )
-            if (!started) {
-              skippedClaimLost++
-              continue
-            }
-
-            // issue #276 post-build audit (codex, gpt-5.5) fixes:
-            //
-            // (fix 2 - bound synchronous worker execution) `FiberMap.run` ->
-            // `runFork` STARTS the forked fiber SYNCHRONOUSLY, so without a
-            // yield the executor's body would begin running inside the
-            // `FiberMap.run` call itself - and a worker's synchronous prefix
-            // would run to completion right here, inside the producer's
-            // permit-held `drainOnce`, extending the tick by that worker's sync
-            // duration. `Effect.yieldNow()` as the fiber's first op prevents
-            // that: the fork returns to the producer before any executor body
-            // runs.
-            //
-            // What this does NOT guarantee (honest scope - codex post-build
-            // audit): the producer's `withPermits(1)` holds the permit until
-            // ALL of `drainOnce` returns, and the producer keeps running after
-            // this fork. At a downstream suspend point (the one-shot
-            // `setV2Fields` below, or Effect's ~2048-op fairness yield) the
-            // scheduler MAY run this forked executor's body while the permit is
-            // still held. For every worker Luna actually has (prompt / dream /
-            // workflow / wake - all async) this is immaterial: the executor
-            // yields at its FIRST async op (the SDK/subprocess dispatch)
-            // microseconds in, so it never extends `drainOnce` and the next
-            // tick fires on schedule.
-            //
-            // ACCEPTED RESIDUAL: a purely SYNCHRONOUS CPU-bound worker could
-            // run during such a producer suspension while the permit is held.
-            // Luna has no such worker, and one would monopolize the single JS
-            // event loop for its whole duration regardless of any semaphore
-            // (freezing the tick loop AND every other executor) - so releasing
-            // the permit at the fork point would not mitigate it. Documented,
-            // not engineered around; if a sync CPU worker is ever added, it must
-            // itself yield cooperatively, which no permit restructuring can
-            // substitute for.
-            //
-            // (fix 4 - one-shot drop window) FORK FIRST, disable AFTER. Durably
-            // disabling a one-shot before the fork means an interrupt in that gap
-            // leaves it disabled-but-never-dispatched = permanently lost. Forking
-            // first guarantees the executor is registered/scheduled; if teardown
-            // then interrupts before the disable lands, the row simply re-fires
-            // once on the next process start - the documented at-least-once
-            // one-shot fallback (see the `dispatchedOneShots` doc) - never a
-            // silent drop. The `FiberMap.has` in-flight guard + `dispatchedOneShots`
-            // still prevent any double-fire; the producer runs single-threaded
-            // inside the permit, so no other tick observes the brief window
-            // between the fork and the disable.
-            yield* FiberMap.run(
-              executors,
-              job.id,
-              Effect.yieldNow().pipe(
-                Effect.zipRight(
-                  executor(job, started.run, entry, isOneShot, nextRunAt),
-                ),
-              ),
-              { onlyIfMissing: true },
-            )
-            claimed++
-            forked++
-
-            if (isOneShot) {
-              // One-shot at-most-once bookkeeping, now AFTER the fork (fix 4
-              // above): mark in-memory + durably disable so listDue stops
-              // returning it. `dispatchedOneShots` covers the window between the
-              // executor self-removing from the FiberMap and this durable disable
-              // landing (a storage outage); the `if (disabled) delete` clears the
-              // in-memory marker once the durable disable is confirmed.
-              dispatchedOneShots.add(job.id)
-              const disabled = yield* store
-                .setV2Fields(job.id, { enabled: false })
-                .pipe(
-                  Effect.retry(Schedule.recurs(2)),
-                  Effect.as(true),
-                  Effect.catchAll((err) =>
-                    Effect.as(
-                      Effect.logWarning(
-                        `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} - in-memory guard will prevent a re-fire this process`,
-                      ),
-                      false,
-                    ),
-                  ),
-                )
-              if (disabled) dispatchedOneShots.delete(job.id)
-            }
-          }
-
-          if (skippedNoCapacity > 0) {
-            yield* Effect.logWarning(
-              `[luna/sched] tick saturated: ${skippedNoCapacity} due job(s) left unclaimed (all ${dispatchConcurrency} executor slot(s) in flight) - retried next tick`,
-            )
-          }
-
-          // Retention sweep (throttled): prune closed runs older than the
-          // retention window. On failure we log and DO NOT advance
-          // lastPruneAt, so the next drain retries instead of skipping a
-          // full sweep interval.
-          let pruned = 0
-          const lastPrune = yield* Ref.get(lastPruneAt)
-          if (tickAt - lastPrune >= retentionSweepIntervalMs) {
-            const pruneResult = yield* store
-              .pruneRuns(tickAt - retentionMaxAgeMs)
-              .pipe(Effect.either)
-            if (pruneResult._tag === "Right") {
-              pruned = pruneResult.right
-              yield* Ref.set(lastPruneAt, tickAt)
-            } else {
-              yield* Effect.logWarning(
-                `[luna/sched] retention prune failed: ${pruneResult.left.message} - will retry next tick`,
-              )
-            }
-          }
-
-          const summary = {
-            tickAt,
-            considered: due.length,
-            claimed,
-            forked,
-            skippedInFlight,
-            skippedNoCapacity,
-            skippedUnknownKind,
-            skippedClaimLost,
-            skippedV1Cron,
-            failedInline,
-            pruned,
-          } satisfies TickSummary
-          // Publish health after every drain (including quiet considered=0 ticks)
-          // so /readyz can detect a hung producer via lastTickAge.
-          const inFlightNow = yield* FiberMap.size(executors)
-          const observedAt = yield* clock.nowMs()
-          yield* publishHealth(summary, inFlightNow, observedAt)
-          return summary
-        }),
-      )
+      // job-ticker-producer-executor-276 - the PRODUCER (job-ticker-producer.ts):
+      // one tick of listDue -> claim/guard/dispatch. See that file for the full doc.
+      const drainOnce: Effect.Effect<TickSummary> = makeDrainOnce({
+        store,
+        registry,
+        clock,
+        dispatchConcurrency,
+        executors,
+        dispatchedOneShots,
+        producerSemaphore,
+        retentionSweepIntervalMs,
+        retentionMaxAgeMs,
+        lastPruneAt,
+        publishHealth,
+        executor,
+      })
 
       // issue #276 - `awaitIdle` resolves once every currently in-flight
       // executor completes. `FiberMap.awaitEmpty` on a map with E=never

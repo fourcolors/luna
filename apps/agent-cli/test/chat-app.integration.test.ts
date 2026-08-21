@@ -10,10 +10,35 @@ import type { ClientFrame, ServerFrame } from "@luna/ui-ws"
 import type { ChatMessage, SessionSummary } from "@luna/core"
 import { isAutoApprovedLocalShellCwd, runLunaCli } from "../src/chat/app.js"
 
-const waitFor = async <T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> => {
+/**
+ * Hang guard for the integration promises below. Fixes #455.
+ *
+ * This is NOT a latency assertion. Every call site awaits resolution; none
+ * asserts that `waitFor` REJECTS, so the budget never expresses a
+ * requirement - it only converts a hang into a readable failure instead of
+ * vitest's generic test timeout.
+ *
+ * It used to default to 1s with per-call overrides as tight as 250ms, which
+ * made 17 call sites into latency assertions nobody intended: under
+ * concurrent repo-wide suite load one timed out, then passed 14/14 in
+ * isolation. Per TEST-005 a single contended sample is noise, so the harness
+ * budget is what gets fixed, not the one failure.
+ *
+ * One budget now, deliberately generous and sitting just under
+ * vitest.config.ts's `testTimeout: 10_000` - close enough that a genuine
+ * hang still reports through this readable message rather than the generic
+ * one, far enough above real timings that machine load cannot reach it.
+ * Passing a per-call budget is intentionally no longer possible.
+ */
+const WAIT_BUDGET_MS = 8_000
+
+const waitFor = async <T>(promise: Promise<T>): Promise<T> => {
   let timeout: ReturnType<typeof setTimeout> | undefined
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error("timed out waiting")), timeoutMs)
+    timeout = setTimeout(
+      () => reject(new Error(`timed out waiting (${WAIT_BUDGET_MS}ms hang guard, not a latency assertion)`)),
+      WAIT_BUDGET_MS,
+    )
   })
   try {
     return await Promise.race([promise, timeoutPromise])
@@ -60,16 +85,18 @@ const collectStream = (stream: PassThrough): { readonly read: () => string } => 
   return { read: () => text }
 }
 
-const waitForOutput = async (
-  output: { readonly read: () => string },
-  text: string,
-  timeoutMs = 1_000,
-): Promise<void> => {
+/** Same hang-guard contract as `waitFor`, polling stdout instead of racing a
+ * promise, and on the same shared budget for the same reason (#455) - its own
+ * 1s default was the identical latency-assertion-by-accident. No call site
+ * overrode it. */
+const waitForOutput = async (output: { readonly read: () => string }, text: string): Promise<void> => {
   const started = Date.now()
   for (;;) {
     if (output.read().includes(text)) return
-    if (Date.now() - started > timeoutMs) {
-      throw new Error(`timed out waiting for output: ${text}`)
+    if (Date.now() - started > WAIT_BUDGET_MS) {
+      throw new Error(
+        `timed out waiting for output (${WAIT_BUDGET_MS}ms hang guard, not a latency assertion): ${text}`,
+      )
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10))
   }
@@ -419,7 +446,7 @@ describe("luna chat app", () => {
 
     stdin.write("/quit\n")
     stdin.end()
-    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
   })
 
   it("rejects dangerous auto-approved local shell requests outside /root/luna before approval or execution", async () => {
@@ -490,7 +517,7 @@ describe("luna chat app", () => {
 
     stdin.write("/quit\n")
     stdin.end()
-    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
   })
 
   it("can quit while a user message is waiting for thread creation", async () => {
@@ -520,8 +547,8 @@ describe("luna chat app", () => {
     stdin.write("/quit\n")
     stdin.end()
 
-    await expect(waitFor(done, 250)).resolves.toEqual({ exitCode: 0 })
-    await expect(waitFor(socketClosed, 250)).resolves.toBeUndefined()
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(socketClosed)).resolves.toBeUndefined()
   })
 
   it("drains all assistant replies before quitting after quick user messages", async () => {
@@ -584,7 +611,7 @@ describe("luna chat app", () => {
     stdin.write("/quit\n")
     stdin.end()
 
-    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
     expect(received).toContainEqual(
       expect.objectContaining({ type: "user-message", threadId: "thr_1", text: "one" }),
     )
@@ -649,7 +676,7 @@ describe("luna chat app", () => {
     stdin.write("/quit\n")
     stdin.end()
 
-    await expect(waitFor(done, 250)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
     expect(received).toContainEqual({
       type: "local-shell-capability",
       threadId: "thr_1",
@@ -704,7 +731,7 @@ describe("luna chat app", () => {
       stdin.end()
     }, 25)
 
-    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
     expect(approveLocalCommand).toHaveBeenCalledWith("printf hello")
   })
 
@@ -749,7 +776,7 @@ describe("luna chat app", () => {
       stdin.end()
     }, 25)
 
-    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
     await new Promise<void>((resolve) => setTimeout(resolve, 100))
     expect(hasProcessWithMarker(marker)).toBe(false)
   })
@@ -796,7 +823,7 @@ describe("luna chat app", () => {
       stdin.end()
     }, 25)
 
-    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
     await new Promise<void>((resolve) => setTimeout(resolve, 100))
     expect(hasProcessWithMarker(marker)).toBe(false)
   })

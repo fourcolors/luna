@@ -30,6 +30,11 @@ import {
   REPO_URL,
 } from "./wizardHelpers"
 import type { HubAction, ChosenPath, WizardStep } from "./hubReducer"
+import {
+  invokeWithTimeout,
+  isUsableBearerToken,
+  pickBootWsUrl,
+} from "../tauriBoot"
 
 // =========================================================================
 // WIRE PROTOCOL VERSION - SECOND SOURCE OF TRUTH (KEEP IN SYNC!)
@@ -191,13 +196,45 @@ export class HubController {
     this.State.isManuallyClosing = false
 
     const LunaProtocol = getLunaProtocol()
-    const fullUrl = LunaProtocol.buildWsUrl(this.State.wsUrl, this.State.wsToken)
+    // Vendor moon-protocol.js must load before the deferred hub module. If it
+    // did not (404 / CSP), throwing here after updateStatus("connecting") would
+    // leave the orb stuck with no socket and no reconnect. Fall through to a
+    // minimal URL builder so dial still happens.
+    const buildWsUrl =
+      LunaProtocol && typeof LunaProtocol.buildWsUrl === "function"
+        ? LunaProtocol.buildWsUrl.bind(LunaProtocol)
+        : (url: string, token: string) => {
+            if (!token) return url
+            return url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token)
+          }
+    const describeWsUrl =
+      LunaProtocol && typeof LunaProtocol.describeWsUrl === "function"
+        ? LunaProtocol.describeWsUrl.bind(LunaProtocol)
+        : (url: string) => {
+            try {
+              const u = new URL(url)
+              return u.protocol + "//" + u.hostname + (u.port ? ":" + u.port : "") + u.pathname
+            } catch {
+              return "<unparseable url>"
+            }
+          }
+    if (!LunaProtocol) {
+      Logger.warn("[boot] LunaProtocol missing; dialing with inline URL builder")
+    }
+    const fullUrl = buildWsUrl(this.State.wsUrl, this.State.wsToken)
 
     let sock: WebSocket
     try {
       sock = new WebSocket(fullUrl)
     } catch (e) {
-      Logger.error("WebSocket creation error:", e)
+      // Step 1c Part 3c (opus review, plan Step 1c): NEVER log the raw
+      // exception or e.message here - new WebSocket(fullUrl) embeds the
+      // token-bearing URL verbatim in its thrown message (proven live by a
+      // jsdom probe, see docs/next/routes-and-view-mode-plan.md's "The
+      // security invariant, which is not deferrable"). Log the error NAME
+      // and a redacted describeWsUrl(url) only.
+      const errName = e instanceof Error && e.name ? e.name : "Error"
+      Logger.error("WebSocket creation error:", errName, describeWsUrl(this.State.wsUrl))
       this.updateStatus("disconnected")
       this.scheduleReconnect()
       return
@@ -290,7 +327,7 @@ export class HubController {
 
   checkProtocolVersion(frame: any): void {
     const LunaProtocol = getLunaProtocol()
-    const expected = LunaProtocol.PROTOCOL_VERSION
+    const expected = LunaProtocol?.PROTOCOL_VERSION ?? 2
     const serverVersion = frame.protocolVersion
     if (serverVersion === undefined || serverVersion === null) {
       if (!this.State.protocolNoticeShown) {
@@ -429,17 +466,28 @@ export class HubController {
 
     let loadedUrl: string | null = null
     let loadedToken: string | null = null
+    const core = getCore()
 
-    try {
-      if (getCore()) await getCore().invoke("migrate_legacy_connection")
-    } catch (e) {
-      Logger.warn("[boot] legacy migration skipped:", e)
+    // Bounded migrate: a hung invoke here previously blocked connect() forever
+    // (Disconnected + "waking up…", zero SYN). Migration is idempotent; skipping
+    // on timeout still lets dial use luna_ws_url / load_connection.
+    if (core) {
+      try {
+        await invokeWithTimeout((cmd, args) => core.invoke(cmd, args), "migrate_legacy_connection")
+      } catch (e) {
+        Logger.warn("[boot] legacy migration skipped:", e)
+      }
     }
 
     const MoonSession = getMoonSession()
     if (typeof MoonSession !== "undefined") {
       try {
-        const route = await MoonSession.resolveBootRoute()
+        const route = await Promise.race([
+          MoonSession.resolveBootRoute(),
+          new Promise<null>((_, reject) =>
+            setTimeout(() => reject(new Error("boot-timeout: resolveBootRoute exceeded 2000ms")), 2000),
+          ),
+        ])
         if (route) {
           loadedUrl = route.endpoints[0]
           Logger.info(`[boot] route-keyed resolution: key="${route.key}" endpoint="${loadedUrl}"`)
@@ -450,9 +498,12 @@ export class HubController {
       }
     }
 
-    if (getCore()) {
+    if (core) {
       try {
-        const conn = await getCore().invoke("load_connection")
+        const conn = (await invokeWithTimeout(
+          (cmd, args) => core.invoke(cmd, args),
+          "load_connection",
+        )) as { wsUrl?: string; wsToken?: string } | null
         if (conn) {
           if (!loadedUrl && typeof conn.wsUrl === "string" && conn.wsUrl) loadedUrl = conn.wsUrl
           if (typeof conn.wsToken === "string") loadedToken = conn.wsToken
@@ -465,15 +516,17 @@ export class HubController {
       if (legacyToken !== null) {
         if (loadedToken === null) {
           loadedToken = legacyToken
-          const migrateUrl = loadedUrl || localStorage.getItem("luna_ws_url") || "ws://127.0.0.1:4753/ui"
-          const migrated = await this.persistConnection(migrateUrl, legacyToken)
+          const migrateUrl = pickBootWsUrl(loadedUrl)
+          // Don't block dial on a hung save_connection either.
+          void this.persistConnection(migrateUrl, legacyToken).then((migrated) => {
+            if (migrated) {
+              localStorage.removeItem("luna_ws_token")
+              Logger.info("Migrated legacy localStorage WS token into ~/.luna/moon-connection.json")
+            } else {
+              Logger.warn("Legacy WS token migration write failed; leaving localStorage copy for retry next launch")
+            }
+          })
           if (loadedUrl === null) loadedUrl = migrateUrl
-          if (migrated) {
-            localStorage.removeItem("luna_ws_token")
-            Logger.info("Migrated legacy localStorage WS token into ~/.luna/moon-connection.json")
-          } else {
-            Logger.warn("Legacy WS token migration write failed; leaving localStorage copy for retry next launch")
-          }
         } else {
           localStorage.removeItem("luna_ws_token")
         }
@@ -483,9 +536,19 @@ export class HubController {
       if (savedWsToken !== null) loadedToken = savedWsToken
     }
 
-    const legacyUrlCache = localStorage.getItem("luna_ws_url")
-    this.State.wsUrl = loadedUrl || legacyUrlCache || "ws://127.0.0.1:4753/ui"
-    this.State.wsToken = loadedToken !== null ? loadedToken : ""
+    this.State.wsUrl = pickBootWsUrl(loadedUrl)
+    // Keep empty-string tokens (auth-disabled servers) but drop sentinels /
+    // scheme refs so connect() never puts "legacy" on the wire as a bearer.
+    if (loadedToken !== null && isUsableBearerToken(loadedToken)) {
+      this.State.wsToken = loadedToken
+    } else if (loadedToken === "") {
+      this.State.wsToken = ""
+    } else if (loadedToken !== null) {
+      this.State.wsToken = ""
+      Logger.warn("[boot] load_connection token is unresolved; dialing URL without bearer")
+    } else {
+      this.State.wsToken = ""
+    }
 
     Logger.info("Settings synchronized successfully")
     this.connect()

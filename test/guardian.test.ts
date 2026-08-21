@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -14,8 +14,8 @@ import {
   invocationLines,
   journalPath,
   journalValue,
-  makeConvergedHarness,
-  makeHarness,
+  makeConvergedHarness as makeConvergedHarnessFixture,
+  makeHarness as makeHarnessFixture,
   makeRestrictedBin,
   MUTATING_SYSTEMCTL,
   pinnedGuardian,
@@ -28,6 +28,7 @@ import {
   snapshotUnits,
   statusValue,
   trackDir,
+  writeBunBuildStub,
   writeStub,
   writeSystemctlStub,
 } from "./helpers/guardian-harness"
@@ -35,6 +36,85 @@ import {
 const root = new URL("..", import.meta.url).pathname
 const guardian = join(root, "scripts/luna-guardian")
 const fixture = join(root, "test/fixtures/servers.toml")
+
+/**
+ * Removes a `pins/current-<profile>` SYMLINK itself, never what it points at.
+ *
+ * Use this instead of `rmSync` on any pin symlink a fixture is about to
+ * replace (matches the established fix for the same trap in
+ * releases-layout.test.ts's `unlinkCurrent`). `rmSync` stats THROUGH the
+ * link, so on a link-to-directory it throws ERR_FS_EISDIR ("Path is a
+ * directory") on Node 24 and the whole test dies before it can assert
+ * anything; `rmSync(..., { recursive: true })` would "work" but by deleting
+ * the engine directory the pin resolves to, silently destroying the fixture
+ * the test is about to make claims against - a green suite proving nothing.
+ * `unlinkSync` is the only call with the semantics a pin swap actually
+ * wants. Asserts the target really is a symlink first, so a future fixture
+ * bug that hands this the wrong path fails loudly here instead of silently
+ * deleting something else.
+ */
+function unlinkPin(pins: string, name: string): void {
+  const target = join(pins, name)
+  if (!lstatSync(target).isSymbolicLink()) {
+    throw new Error(`unlinkPin: ${target} is not a symlink - refusing to unlink (fixture bug, not a product bug)`)
+  }
+  unlinkSync(target)
+}
+
+// S21's publish_engine compiles apps/deploy-cli on every publish (scripts/
+// luna-guardian), through the RUNTIME's own bun - the container's bun via
+// run_runtime/incus exec for an incus profile, the publishing host's own bun
+// otherwise. makeHarness/makeConvergedHarness (test/helpers/guardian-harness.ts)
+// write their OWN registry with no incus stanza, so every test built on
+// makeHarnessWithDeployCli/makeConvergedHarnessWithDeployCli below takes the
+// BARE-HOST branch and needs only stubBun, never writeIncusPassthroughStub.
+// The incus branch is exercised separately by tests using `fixture`
+// (test/fixtures/servers.toml, whose stable/dev stanzas ARE incus-backed) or
+// a hand-built registry - those call writeIncusPassthroughStub explicitly at
+// their own setup site. Every harness-driven install test below just needs
+// publish_engine to complete, so these two wrappers stub `bun build
+// --compile` with a placeholder-file write instead of paying for a real
+// compile per install. The ONE test that proves the REAL artifact actually
+// compiles and runs is "naming the binary luna-deploy would collide..."
+// below, which invokes `bun build --compile` directly against apps/deploy-cli,
+// never through publish_engine's own plumbing.
+// See the comment above makeHarnessWithDeployCli for which tests need the
+// real deploy-cli artifact and which do not. strict:true (unrecognized bun
+// invocations fail loudly) since a harness-driven install taking a code path
+// this stub does not model should surface here, not downstream.
+const stubBun = (bin: string) => writeBunBuildStub(bin, { strict: true })
+// Named distinctly from the imported *Fixture functions they wrap (rather
+// than shadowing makeHarness/makeConvergedHarness under the same name), so
+// every call site below is visibly opted into the bun stub, not silently
+// resolving to a different function than the import list names.
+const makeHarnessWithDeployCli: typeof makeHarnessFixture = (label) => {
+  const h = makeHarnessFixture(label)
+  stubBun(join(h.temp, "bin"))
+  return h
+}
+const makeConvergedHarnessWithDeployCli: typeof makeConvergedHarnessFixture = (label, opts) => {
+  const h = makeConvergedHarnessFixture(label, opts)
+  stubBun(join(h.temp, "bin"))
+  return h
+}
+
+// Container-seam stub for publish_engine's incus compile branch: `incus exec
+// <container> -- argv...` re-executes argv LOCALLY - the same shape as
+// makeProbeFixture's incus stub below, kept separate since this one can
+// optionally log invocations for a test that asserts the build actually
+// routed through it. Every writeGuardianRegistry-backed test declares an
+// incus profile, so publish_engine's compile step now needs this stub too;
+// pair it with stubBun and LUNA_TEST_BUN_PATH so run_runtime finds a working
+// "container" bun once execution passes through here.
+const writeIncusPassthroughStub = (bin: string, log?: string) => {
+  const logLine = log ? `printf '%s\\n' "\$*" >> "${log}"\n` : ""
+  writeStub(join(bin, "incus"), `#!/usr/bin/env bash
+${logLine}[[ "\${1:-}" == exec ]] || exit 1
+shift 2
+if [[ "\${1:-}" == -- ]]; then shift; fi
+exec "\$@"
+`)
+}
 
 const writeGuardianRegistry = (file: string) => {
   writeFileSync(
@@ -157,7 +237,6 @@ describe("luna-guardian", () => {
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain("Would write")
     expect(result.stdout).not.toContain("UI_WS_TOKEN=")
-    expect(result.stdout).not.toContain("filter @luna/ui-web build")
     expect(result.stdout).not.toContain("systemctl restart")
     expect(existsSync(join(temp, "state"))).toBe(false)
   })
@@ -189,6 +268,11 @@ describe("luna-guardian", () => {
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    // fixture (test/fixtures/servers.toml) declares stable as incus-backed -
+    // publish_engine's compile step now routes through run_runtime/incus exec
+    // for it, so a hermetic run needs the container-seam stub too.
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
 
     const result = spawnSync("bash", [guardian, "install", "stable", "--interval", "2min"], {
       cwd: root,
@@ -205,6 +289,7 @@ describe("luna-guardian", () => {
         LUNA_TEST_SYSTEMD_DIR: units,
         LUNA_TEST_SYSTEMCTL_STATE: systemctlState,
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: join(bin, "bun"),
       },
     })
 
@@ -213,8 +298,25 @@ describe("luna-guardian", () => {
     expect(existsSync(current)).toBe(true)
     expect(existsSync(join(current, ".complete"))).toBe(true)
     expect(existsSync(join(current, "luna-update-server"))).toBe(true)
+    expect(existsSync(join(current, "luna-autodeploy"))).toBe(true)
+    expect(existsSync(join(current, "luna-server-install"))).toBe(true)
     expect(existsSync(join(current, "luna-pager"))).toBe(true)
     expect(existsSync(join(current, "luna-doctor"))).toBe(true)
+    expect(existsSync(join(current, "lib", "luna-deploy.sh"))).toBe(true)
+    expect(existsSync(join(current, "lib", "luna-registry.sh"))).toBe(true)
+    // S21: publish_engine also compiles apps/deploy-cli into the pin, named
+    // off the luna-* prefix (see scripts/luna-guardian's publish_engine
+    // comment) so it can never collide with the `bash -n "$tmp"/luna-*`
+    // syntax check, and proves it runs before the pin is marked complete.
+    const deployCli = join(current, "deploy-cli")
+    expect(existsSync(deployCli)).toBe(true)
+    // Symbolic `chmod +x` applies the umask, so the group/other execute bits
+    // are not guaranteed - only that SOME execute bit is set (this process
+    // owns the file, so owner-execute always survives).
+    expect(statSync(deployCli).mode & 0o100).toBe(0o100)
+    const deployCliVersion = spawnSync(deployCli, ["--version"], { encoding: "utf8" })
+    expect(deployCliVersion.status, deployCliVersion.stdout + deployCliVersion.stderr).toBe(0)
+    expect(deployCliVersion.stdout.trim().length, "must print a version, not silently exit 0").toBeGreaterThan(0)
 
     const service = readFileSync(join(units, "luna-guardian-stable.service"), "utf8")
     expect(service).toContain(`ExecStart=${current}/luna-guardian check stable`)
@@ -234,6 +336,164 @@ describe("luna-guardian", () => {
     expect(alert).not.toContain(`${state}/pager.env`)
   })
 
+  it("naming the binary luna-deploy would collide with the bash -n glob it validates - deploy-cli is named off the prefix instead", () => {
+    // Regression lock for the glob-collision publish_engine's comment
+    // documents: `chmod +x "$tmp"/luna-*; bash -n "$tmp"/luna-* "$tmp/lib/"*.sh`
+    // globs on the luna-* prefix, so a compiled artifact named luna-deploy
+    // would be handed to `bash -n` as if it were a script. Uses the REAL
+    // compiled deploy-cli bytes, not synthetic magic bytes: a few raw ELF/
+    // Mach-O header bytes alone do not reliably trip bash's own
+    // "cannot execute binary file" refusal - only a real executable does.
+    //
+    // The REAL artifact name is read out of publish_engine's own --outfile
+    // literal (not hand-copied here) so a future rename of the artifact
+    // changes what this test exercises instead of silently testing a name
+    // publish_engine no longer uses.
+    const guardianSrc = readFileSync(guardian, "utf8")
+    const outfileMatch = guardianSrc.match(/--outfile="\$tmp\/([^"]+)"/)
+    expect(outfileMatch, "publish_engine's deploy-cli --outfile literal").not.toBeNull()
+    const artifactName = outfileMatch![1]
+    // Lock the naming decision in directly: whatever publish_engine builds
+    // must never sit inside the luna-* glob it would then collide with.
+    expect(artifactName).not.toMatch(/^luna-/)
+
+    const temp = mkdtempSync(join(tmpdir(), "luna-glob-collision-"))
+    trackDir(temp)
+    mkdirSync(join(temp, "lib"), { recursive: true })
+    writeFileSync(join(temp, "luna-guardian"), "#!/usr/bin/env bash\ntrue\n")
+    writeFileSync(join(temp, "lib", "x.sh"), "true\n")
+    const build = spawnSync(
+      "bun",
+      ["build", "--compile", `--outfile=${join(temp, "deploy-cli-real")}`, "src/main.ts"],
+      { cwd: join(root, "apps/deploy-cli"), encoding: "utf8", timeout: 60_000 },
+    )
+    expect(build.status, build.stdout + build.stderr).toBe(0)
+
+    const lunaDeploy = join(temp, "luna-deploy")
+    writeFileSync(lunaDeploy, readFileSync(join(temp, "deploy-cli-real")))
+    const collision = spawnSync("bash", ["-c", 'bash -n "$1"/luna-* "$1/lib/"*.sh', "_", temp], { encoding: "utf8" })
+    expect(collision.status, "a luna-*-prefixed binary must NOT silently pass bash -n").not.toBe(0)
+
+    // The REAL artifact name sits outside the glob and is unaffected: prove
+    // the glob expansion itself excludes it, not just that `bash -n` exits 0
+    // (which it would do identically if artifactName's writeFileSync above
+    // were deleted entirely, since an empty `bash -n` with no args is also 0).
+    rmSync(lunaDeploy)
+    const realName = join(temp, artifactName)
+    writeFileSync(realName, readFileSync(join(temp, "deploy-cli-real")))
+    const globbed = spawnSync("bash", ["-c", 'printf "%s\\n" "$1"/luna-* "$1/lib/"*.sh', "_", temp], { encoding: "utf8" })
+    expect(globbed.stdout.trim().split("\n").sort()).toEqual(
+      [join(temp, "luna-guardian"), join(temp, "lib", "x.sh")].sort(),
+    )
+    const clean = spawnSync("bash", ["-c", 'bash -n "$1"/luna-* "$1/lib/"*.sh', "_", temp], { encoding: "utf8" })
+    expect(clean.status, clean.stdout + clean.stderr).toBe(0)
+  })
+
+  it("a pin published by an older (pre-deploy-cli) engine, missing the binary, is still classified complete", () => {
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-pre-deploy-cli-")
+    installHarness(h)
+    const current = join(h.env.LUNA_GUARDIAN_PIN_BASE as string, "current-stable")
+    expect(existsSync(join(current, "deploy-cli"))).toBe(true)
+    // Simulate a pin an older engine (pre-S21) published: .complete already
+    // present, deploy-cli never existed. The completeness classifier under
+    // test is install_guardian's converged fast-path (scripts/luna-guardian
+    // ~:1217-1218): `.complete` plus `-x luna-guardian`/`-x luna-pager`, which
+    // names neither deploy-cli nor any binary.
+    rmSync(join(current, "deploy-cli"))
+    expect(existsSync(join(current, ".complete"))).toBe(true)
+
+    // Drive the classifier directly by re-running `install` from the
+    // CHECKOUT (h.guardian) - not `check`, and not through the pin symlink.
+    // `check` cannot reach it here: makeConvergedHarnessWithDeployCli's
+    // engine sha equals P_REPO HEAD, so refresh_guardian_if_needed's early
+    // return (scripts/luna-guardian:476) fires before install_guardian is
+    // ever called. Running `install` THROUGH the pin symlink is also wrong -
+    // production only ever invokes it from a checkout (refresh_guardian_
+    // if_needed re-execs "$P_REPO/scripts/luna-guardian install", never the
+    // pin's own copy) - and install_guardian's un-physical `cd "$SCRIPT_DIR/
+    // .." ` would resolve `root` to PIN_BASE, not the engine's real root, if
+    // run through the symlink.
+    //
+    // The fast-path returns 0 SILENTLY (no stdout). Falling through to a
+    // full re-install - e.g. a future change that adds `-x "$current/
+    // deploy-cli"` to the fast-path condition - prints "luna-guardian:
+    // installed ...", so stdout is what proves which branch actually ran.
+    const reinstall = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(reinstall.status, reinstall.stdout + reinstall.stderr).toBe(0)
+    expect(reinstall.stdout, "must take the converged fast-path, not fall through to a full re-install").toBe("")
+    expect(existsSync(join(current, "deploy-cli")), "fast-path must not resurrect the missing binary").toBe(false)
+
+    // render_control_plane (scripts/luna-guardian:~1016) is the OTHER call
+    // site sharing this exact completeness classifier - it fires on every
+    // ordinary `check` tick that finds control-plane drift, not just a
+    // by-hand `install` re-run. Force real drift (delete the rendered timer
+    // unit) so this tick genuinely reaches render_control_plane, and prove
+    // its own `-x luna-guardian`/`-x luna-pager` gate tolerates the missing
+    // binary too - the same property, through the path production actually
+    // walks every tick.
+    const timer = join(h.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer")
+    rmSync(timer)
+    const check = spawnSync("bash", [h.guardian, "check", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(check.status, check.stdout + check.stderr).toBe(0)
+    // Proves the tick actually reached render_control_plane (not merely that
+    // it exited 0) - without this, a future change that returned early would
+    // pass vacuously and the completeness-gate coverage above it would
+    // silently stop meaning anything.
+    expect(existsSync(timer), "the deleted timer must have been re-rendered - this tick must have reached render_control_plane").toBe(true)
+    expect(existsSync(join(current, "deploy-cli")), "render_control_plane's completeness gate must not resurrect the missing binary either").toBe(false)
+  })
+
+  it("install defers (rc 10) rather than dying when bun is unavailable on the publishing host", () => {
+    // The hermetic-PATH canaries below (phase 5) only ever reach an ALREADY-
+    // .complete pin, where publish_engine's early return means bun is never
+    // invoked - they prove nothing about the NEW host-bun coupling S21
+    // added. This drives a FRESH, never-published pin instead, so install_
+    // guardian's bun preflight (scripts/luna-guardian) is the one actually
+    // under test, not publish_engine's early-return skip.
+    const h = makeConvergedHarnessFixture("luna-guardian-bun-missing-")
+    const restricted = makeRestrictedBin(h.temp, [
+      "bash", "env", "git", "sed", "awk", "grep", "date", "mkdir", "chmod",
+      "cat", "rm", "ln", "ls", "cut", "head", "sleep", "cp", "touch", "tr",
+      "dirname", "basename", "mktemp", "stat", "id", "mv", "perl", "ps",
+    ])
+    const install = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...h.env,
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        // HOME must ALSO have no ~/.bun/bin/bun - luna_find_bun's own
+        // fallback - or this dev machine's real bun would leak through
+        // beneath the restricted PATH and the preflight would never fire.
+        HOME: join(h.temp, "empty-home"),
+        PATH: `${join(h.temp, "bin")}:${restricted}`,
+      },
+    })
+    expect(install.status, install.stdout + install.stderr).toBe(10)
+    expect(install.stderr).toContain("DEFERRED: bun not found")
+    // "DEFERRED: bun not found" is a prefix shared by BOTH preflight
+    // branches (scripts/luna-guardian): the incus-container form appends
+    // "inside container '<profile>'", the bare-host form does not. Ruling
+    // that phrase out is what proves this run took the host branch, not
+    // just that it deferred.
+    expect(install.stderr).not.toContain("inside container")
+    // The bun preflight (install_guardian, scripts/luna-guardian) defers
+    // BEFORE `mkdir -p "$PIN_BASE"`, so PIN_BASE itself must never come into
+    // existence - not merely be empty, which a ternary against a directory
+    // that was never created would vacuously satisfy regardless of what the
+    // script actually did.
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    expect(existsSync(pins), "no half-published pin, tmp, or lock").toBe(false)
+  })
+
   it("replaces the pin symlink on re-install instead of nesting it in the old engine", () => {
     const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reinstall-"))
     trackDir(temp)
@@ -243,6 +503,8 @@ describe("luna-guardian", () => {
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
 
     const env = {
       ...process.env,
@@ -256,6 +518,7 @@ describe("luna-guardian", () => {
       LUNA_TEST_SYSTEMD_DIR: units,
       LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
       LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
     }
 
     for (const attempt of ["first", "second"]) {
@@ -267,8 +530,9 @@ describe("luna-guardian", () => {
     // installed_engine_sha() reads it to decide whether the release is healthy.
     const engines = readdirSync(pins).filter((name) => name.startsWith("engine@"))
     expect(engines).toHaveLength(1)
-    const resolved = spawnSync("readlink", ["-f", join(pins, "current-stable")], { encoding: "utf8" })
-    expect(resolved.stdout.trim()).toBe(join(pins, engines[0]))
+    // `pins` can sit under a symlink (macOS mktemp lands in /var/folders ->
+    // /private/var), so both sides of this comparison must be physically resolved.
+    expect(realpathSync(join(pins, "current-stable"))).toBe(realpathSync(join(pins, engines[0])))
 
     // A dereferenced `mv` would have dropped the temp link inside the engine.
     const leaked = readdirSync(join(pins, engines[0])).filter((name) => name.startsWith("current-"))
@@ -315,6 +579,8 @@ describe("luna-guardian", () => {
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
     writeGuardianRegistry(registry)
     const env = {
       ...process.env,
@@ -327,6 +593,7 @@ describe("luna-guardian", () => {
       LUNA_TEST_SYSTEMD_DIR: units,
       LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
       LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
     }
     const install = spawnSync("bash", [guardian, "install", "stable"], {
       cwd: root, encoding: "utf8", env,
@@ -355,6 +622,13 @@ describe("luna-guardian", () => {
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    // fixture declares stable as incus-backed; harmless for the two defer-
+    // before-install_guardian tests above (they never reach the bun
+    // preflight), load-bearing for "defers pin publication..." below, which
+    // proceeds into install_guardian and must clear that preflight first to
+    // reach the update-lock contention it actually exercises.
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
     return {
       ...process.env,
       PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
@@ -366,6 +640,7 @@ describe("luna-guardian", () => {
       LUNA_GUARDIAN_STATE_DIR: join(temp, "state"),
       LUNA_UPDATE_STATE_DIR: join(temp, "update"),
       LUNA_GUARDIAN_PIN_BASE: join(temp, "pins"),
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
     }
   }
 
@@ -449,6 +724,8 @@ describe("luna-guardian", () => {
     writeFileSync(join(units, "luna-autodeploy-stable.timer"), "legacy\n")
     writeFileSync(join(units, "luna-autodeploy-stable.service"), "legacy\n")
     writeSystemctlStub(bin)
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
 
     const result = spawnSync("bash", [guardian, "install", "stable"], {
       cwd: root,
@@ -465,6 +742,7 @@ describe("luna-guardian", () => {
         LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
         LUNA_TEST_LEGACY_DISABLE_FAIL: "true",
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: join(bin, "bun"),
       },
     })
 
@@ -486,6 +764,7 @@ describe("luna-guardian", () => {
         LUNA_TEST_SYSTEMD_DIR: units,
         LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: join(bin, "bun"),
       },
     })
     expect(retry.status, retry.stdout + retry.stderr).toBe(0)
@@ -501,6 +780,8 @@ describe("luna-guardian", () => {
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
     const result = spawnSync(
       "bash",
       ["-c", `"${guardian}" install stable & a=$!; "${guardian}" install dev & b=$!; wait "$a"; ra=$?; wait "$b"; rb=$?; (( ra == 0 && rb == 0 ))`],
@@ -518,6 +799,7 @@ describe("luna-guardian", () => {
           LUNA_TEST_SYSTEMD_DIR: units,
           LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
           LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+          LUNA_TEST_BUN_PATH: join(bin, "bun"),
         },
       },
     )
@@ -540,6 +822,8 @@ describe("luna-guardian", () => {
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
     writeGuardianRegistry(registry)
     const env = {
       ...process.env,
@@ -552,6 +836,7 @@ describe("luna-guardian", () => {
       LUNA_TEST_SYSTEMD_DIR: units,
       LUNA_TEST_SYSTEMCTL_STATE: systemctlState,
       LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
       LUNA_TEST_GUARDIAN_UNIT_HARDENED: "true",
       LUNA_TEST_ACCEPT_SHA: sha,
       LUNA_TEST_DOCTOR_INCUS_ACTIVE: "true",
@@ -664,7 +949,7 @@ describe("luna-guardian", () => {
   })
 
   it("debounces negative readings across separate guardian processes before forcing a repair", () => {
-    const h = makeHarness("luna-guardian-debounce-")
+    const h = makeHarnessWithDeployCli("luna-guardian-debounce-")
     installHarness(h)
 
     const first = runCheck(h, "false")
@@ -700,7 +985,7 @@ describe("luna-guardian", () => {
   })
 
   it("suppresses a repeat forced repair inside the cooldown window", () => {
-    const h = makeHarness("luna-guardian-cooldown-")
+    const h = makeHarnessWithDeployCli("luna-guardian-cooldown-")
     installHarness(h)
     for (let i = 0; i < 3; i++) runCheck(h, "false")
     expect(repairCalls(h)).toHaveLength(1)
@@ -725,7 +1010,7 @@ describe("luna-guardian", () => {
   })
 
   it("never repairs on inconclusive readings", () => {
-    const h = makeHarness("luna-guardian-unknown-")
+    const h = makeHarnessWithDeployCli("luna-guardian-unknown-")
     installHarness(h)
     for (let i = 1; i <= 5; i++) {
       const run = runCheck(h, "inconclusive")
@@ -740,7 +1025,7 @@ describe("luna-guardian", () => {
   })
 
   it("pages once per window when the runtime state stays unknown", () => {
-    const h = makeHarness("luna-guardian-unknown-page-")
+    const h = makeHarnessWithDeployCli("luna-guardian-unknown-page-")
     installHarness(h)
     const env = { LUNA_GUARDIAN_HEALTH_UNKNOWN_LIMIT: "2" }
 
@@ -761,7 +1046,7 @@ describe("luna-guardian", () => {
 
   it("treats the health journal as evidence, not authority", () => {
     // (a) a healthy tick clears both counters.
-    const healthy = makeHarness("luna-guardian-journal-healthy-")
+    const healthy = makeHarnessWithDeployCli("luna-guardian-journal-healthy-")
     installHarness(healthy)
     runCheck(healthy, "false")
     runCheck(healthy, "false")
@@ -772,7 +1057,7 @@ describe("luna-guardian", () => {
     expect(journalValue(healthy, "consecutive_unknown")).toBe("0")
 
     // (b) a record older than the freshness window is not evidence.
-    const stale = makeHarness("luna-guardian-journal-stale-")
+    const stale = makeHarnessWithDeployCli("luna-guardian-journal-stale-")
     installHarness(stale)
     mkdirSync(stale.state, { recursive: true })
     writeFileSync(journalPath(stale), [
@@ -789,7 +1074,7 @@ describe("luna-guardian", () => {
     expect(forceCalls(stale)).toEqual([])
 
     // (c) a different HEAD invalidates the strikes but NOT the repair cooldown.
-    const rebuilt = makeHarness("luna-guardian-journal-sha-")
+    const rebuilt = makeHarnessWithDeployCli("luna-guardian-journal-sha-")
     installHarness(rebuilt)
     mkdirSync(rebuilt.state, { recursive: true })
     const repairedAt = Math.floor(Date.now() / 1000) - 10
@@ -808,7 +1093,7 @@ describe("luna-guardian", () => {
     expect(forceCalls(rebuilt)).toEqual([])
 
     // (d) a missing journal reads as all-zero and cannot repair.
-    const gone = makeHarness("luna-guardian-journal-missing-")
+    const gone = makeHarnessWithDeployCli("luna-guardian-journal-missing-")
     installHarness(gone)
     runCheck(gone, "false")
     rmSync(journalPath(gone), { force: true })
@@ -823,7 +1108,7 @@ describe("luna-guardian", () => {
     // negative streak forward, so freshness measured from the last write would
     // never expire on a 1min timer: "K consecutive" would silently mean
     // "K ever", and two old blips plus one new one would restart production.
-    const h = makeHarness("luna-guardian-aging-")
+    const h = makeHarnessWithDeployCli("luna-guardian-aging-")
     installHarness(h)
     const env = { LUNA_GUARDIAN_HEALTH_WINDOW_SEC: "4" }
 
@@ -844,7 +1129,7 @@ describe("luna-guardian", () => {
   }, 60_000)
 
   it("refuses a forced repair when the repair timestamp is in the future", () => {
-    const h = makeHarness("luna-guardian-skew-")
+    const h = makeHarnessWithDeployCli("luna-guardian-skew-")
     installHarness(h)
     const now = Math.floor(Date.now() / 1000)
 
@@ -870,7 +1155,7 @@ describe("luna-guardian", () => {
     // An unwritable $STATE_DIR must not degrade into "escalate every tick":
     // without a durable last_repair_at there is nothing bounding the restart
     // rate, which is the per-minute rebuild loop this change exists to prevent.
-    const h = makeHarness("luna-guardian-unwritable-")
+    const h = makeHarnessWithDeployCli("luna-guardian-unwritable-")
     installHarness(h)
     const env = { LUNA_TEST_MV_FAIL_GLOB: "*health-stable*" }
     seedJournal(h, {
@@ -893,7 +1178,7 @@ describe("luna-guardian", () => {
     // One inconclusive reading is ignorance; hundreds in a row is evidence.
     // A wedged event loop keeps the unit active and every probe timing out, and
     // before this path existed nothing ever restarted it.
-    const h = makeHarness("luna-guardian-unknown-escalate-")
+    const h = makeHarnessWithDeployCli("luna-guardian-unknown-escalate-")
     installHarness(h)
     const env = { LUNA_GUARDIAN_HEALTH_UNKNOWN_REPAIR_LIMIT: "3" }
 
@@ -922,7 +1207,7 @@ describe("luna-guardian", () => {
     // --from-timer has its own fail-closed active-session guard and never drops
     // the operator. It is also the only path that pulls a fix commit and
     // advances the guardian engine pin, so a flaky probe must not suppress it.
-    const h = makeHarness("luna-guardian-from-timer-")
+    const h = makeHarnessWithDeployCli("luna-guardian-from-timer-")
     installHarness(h)
 
     expect(runCheck(h, "false").status).toBe(0)
@@ -936,7 +1221,7 @@ describe("luna-guardian", () => {
   // ── phase 2: escalation goes through the guarded --repair ladder ──────────
 
   it("escalation constructs --repair with exact argv", () => {
-    const h = makeHarness("luna-guardian-repair-argv-")
+    const h = makeHarnessWithDeployCli("luna-guardian-repair-argv-")
     installHarness(h)
     runCheck(h, "false")
     runCheck(h, "false")
@@ -950,7 +1235,7 @@ describe("luna-guardian", () => {
   })
 
   it("deferred repair pages once and keeps the cooldown armed", () => {
-    const h = makeHarness("luna-guardian-repair-defer-")
+    const h = makeHarnessWithDeployCli("luna-guardian-repair-defer-")
     installHarness(h)
     // Autodeploy stub: --repair defers with rc=3 (engine session guard);
     // everything else (the gentle --from-timer tick) succeeds.
@@ -984,7 +1269,7 @@ exit 0
     // A repair rung colliding with a live manual deploy is update-lock
     // contention: the engine never evaluated sessions, so the incident trail
     // must not send the responder hunting for live sessions that never existed.
-    const h = makeHarness("luna-guardian-repair-lock-")
+    const h = makeHarnessWithDeployCli("luna-guardian-repair-lock-")
     installHarness(h)
     writeStub(
       join(h.temp, "scripts", "luna-autodeploy"),
@@ -1013,7 +1298,7 @@ exit 0
   })
 
   it("failed repair pages", () => {
-    const h = makeHarness("luna-guardian-repair-fail-")
+    const h = makeHarnessWithDeployCli("luna-guardian-repair-fail-")
     installHarness(h)
     writeStub(
       join(h.temp, "scripts", "luna-autodeploy"),
@@ -1033,7 +1318,7 @@ exit 0
   })
 
   it("gentle tick unchanged", () => {
-    const h = makeHarness("luna-guardian-gentle-")
+    const h = makeHarnessWithDeployCli("luna-guardian-gentle-")
     installHarness(h)
     const tick = runCheck(h, "false")
     expect(tick.status, tick.stdout + tick.stderr).toBe(0)
@@ -1051,7 +1336,7 @@ exit 0
 
     // Rendered half: the guardian units from a harness install, plus the
     // legacy luna-autodeploy timer service, must be equally clean.
-    const h = makeHarness("luna-guardian-exit-criterion-")
+    const h = makeHarnessWithDeployCli("luna-guardian-exit-criterion-")
     installHarness(h)
     const units = h.env.LUNA_TEST_SYSTEMD_DIR as string
     const rendered = ["luna-guardian-stable.service", "luna-guardian-stable.timer", "luna-guardian-alert-stable.service"]
@@ -1079,7 +1364,12 @@ exit 0
   // ── phase 3: verify every mutation; converge, don't re-apply ──────────────
 
   it("SIGNATURE 1: a fully converged tick is silent and writes nothing", async () => {
-    const h = makeConvergedHarness("luna-guardian-converged-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-converged-")
+    // This fixture's P_REPO is a filesystem COPY of this repo's scripts/
+    // (makeHarness), not a rendered unit, so it always carries the launcher
+    // ON DISK - bypass unit_paths_current (mirrors LUNA_TEST_GUARDIAN_UNIT_
+    // HARDENED) so this test's silence assertion tests what it always tested.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
 
     // Tick A establishes convergence (it may log while getting there).
@@ -1123,7 +1413,11 @@ exit 0
   })
 
   it("SIGNATURE 2: one drifted aspect is repaired exactly, loudly, then silence returns", async () => {
-    const h = makeConvergedHarness("luna-guardian-drift-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-drift-")
+    // See SIGNATURE 1's comment: this fixture's P_REPO always carries the
+    // launcher on disk (an incidental artifact of the copied scripts/ dir),
+    // unrelated to the control-plane drift this test exercises.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1167,7 +1461,7 @@ exit 0
     // guardian_control_plane_adopted alone could never see this: the timer is
     // loaded/enabled/active and the legacy timer is gone — only the byte-level
     // desired-vs-actual compare notices an edited alert unit.
-    const h = makeConvergedHarness("luna-guardian-content-drift-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-content-drift-")
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1189,7 +1483,7 @@ exit 0
   })
 
   it("a converged re-install is a silent no-op", () => {
-    const h = makeConvergedHarness("luna-guardian-reinstall-noop-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-reinstall-noop-")
     installHarness(h)
 
     const before = snapshotUnits(h)
@@ -1223,8 +1517,8 @@ exit 0
     expect(intervalAfter.ino).toBe(intervalBefore.ino)
   })
 
-  it("the pin-flip postcondition fails loudly when mv lies", () => {
-    const h = makeConvergedHarness("luna-guardian-mv-lie-")
+  it("the pin-flip postcondition fails loudly when the flip lies", () => {
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-flip-lie-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
 
@@ -1233,7 +1527,7 @@ exit 0
     const stale = join(pins, "engine@" + "d".repeat(40))
     mkdirSync(stale, { recursive: true })
     writeFileSync(join(stale, ".complete"), "")
-    rmSync(join(pins, "current-stable"))
+    unlinkPin(pins, "current-stable")
     symlinkSync(stale, join(pins, "current-stable"))
 
     const result = spawnSync("bash", [h.guardian, "install", "stable"], {
@@ -1242,7 +1536,7 @@ exit 0
       env: {
         ...h.env,
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
-        LUNA_TEST_MV_LIE_GLOB: "*current-stable*",
+        LUNA_TEST_FLIP_LIE_GLOB: "*current-stable*",
       },
     })
     expect(result.status).not.toBe(0)
@@ -1253,7 +1547,7 @@ exit 0
   })
 
   it("prune never removes a pinned engine and refuses on an unresolvable pin", () => {
-    const h = makeConvergedHarness("luna-guardian-prune-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-prune-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
 
@@ -1285,7 +1579,7 @@ exit 0
     expect(kept).toHaveLength(6)
 
     // Break current-dev (dangling) → prune must refuse to touch ANY engine.
-    rmSync(join(pins, "current-dev"))
+    unlinkPin(pins, "current-dev")
     symlinkSync(join(pins, "engine@gone"), join(pins, "current-dev"))
     rmSync(join(h.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer"))
     const refused = spawnSync("bash", [h.guardian, "install", "stable"], {
@@ -1301,7 +1595,7 @@ exit 0
   })
 
   it("a failed status write warns distinctly and does not change the tick's exit code", () => {
-    const h = makeConvergedHarness("luna-guardian-status-write-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-status-write-")
     installHarness(h)
     const tick = runPinnedCheck(h, { LUNA_TEST_MV_FAIL_GLOB: "*status-stable*" })
     expect(tick.status, tick.stdout + tick.stderr).toBe(0)
@@ -1309,7 +1603,7 @@ exit 0
   })
 
   it("health-journal zero-skip: converged ticks never create the journal; a stored strike still gets its zero overwrite", () => {
-    const h = makeConvergedHarness("luna-guardian-zero-skip-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-zero-skip-")
     installHarness(h)
 
     // (a) healthy ticks leave the journal ABSENT.
@@ -1336,7 +1630,7 @@ exit 0
   })
 
   it("an engine advance preserves a custom timer cadence instead of resetting it to 1min", () => {
-    const h = makeConvergedHarness("luna-guardian-cadence-advance-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-cadence-advance-")
     const install = spawnSync("bash", [h.guardian, "install", "stable", "--interval", "5min"], {
       cwd: root,
       encoding: "utf8",
@@ -1367,7 +1661,7 @@ exit 0
   })
 
   it("a hand-edited timer cadence is drift to repair, not desired state to self-bless", () => {
-    const h = makeConvergedHarness("luna-guardian-cadence-edit-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-cadence-edit-")
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1387,7 +1681,7 @@ exit 0
   })
 
   it("a manual check run under foreign env overrides refuses to rewrite the live control plane", () => {
-    const h = makeConvergedHarness("luna-guardian-foreign-env-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-foreign-env-")
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1407,7 +1701,9 @@ exit 0
   })
 
   it("byte-current units with stale LOADED definitions (NeedDaemonReload) get exactly one retry reload", async () => {
-    const h = makeConvergedHarness("luna-guardian-need-reload-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-need-reload-")
+    // See SIGNATURE 1's comment: unrelated to the NeedDaemonReload retry path.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
 
@@ -1435,7 +1731,7 @@ exit 0
   })
 
   it("a corrupted pin (missing luna-pager) cannot read as converged install silence", () => {
-    const h = makeConvergedHarness("luna-guardian-corrupt-pin-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-corrupt-pin-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     const target = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
@@ -1453,7 +1749,7 @@ exit 0
   })
 
   it("prune postcondition: pre-existing corruption of ANOTHER pin warns with attribution, never dies", () => {
-    const h = makeConvergedHarness("luna-guardian-prune-preexisting-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-prune-preexisting-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
 
@@ -1477,7 +1773,7 @@ exit 0
   })
 
   it("prune postcondition: a prune that breaks a protected pin dies with the prune attribution", () => {
-    const h = makeConvergedHarness("luna-guardian-prune-broke-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-prune-broke-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
 
@@ -1519,7 +1815,7 @@ exec /bin/rm "$@"
 
   it("guardian_unit_write failure arms: mv failure and a lying mv die with distinguishable messages", () => {
     // Arm 1: the write itself fails -> "cannot write".
-    const h1 = makeConvergedHarness("luna-guardian-unit-mv-fail-")
+    const h1 = makeConvergedHarnessWithDeployCli("luna-guardian-unit-mv-fail-")
     installHarness(h1)
     rmSync(join(h1.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer"))
     const failed = runPinnedCheck(h1, { LUNA_TEST_MV_FAIL_GLOB: "*luna-guardian-stable.timer*" })
@@ -1529,7 +1825,7 @@ exec /bin/rm "$@"
 
     // Arm 2: the write LIES (exit 0, no effect) -> the post-write re-read dies
     // with the POSTCONDITION message, not the action message.
-    const h2 = makeConvergedHarness("luna-guardian-unit-mv-lie-")
+    const h2 = makeConvergedHarnessWithDeployCli("luna-guardian-unit-mv-lie-")
     installHarness(h2)
     rmSync(join(h2.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer"))
     const lied = runPinnedCheck(h2, { LUNA_TEST_MV_LIE_GLOB: "*luna-guardian-stable.timer*" })
@@ -1539,7 +1835,7 @@ exec /bin/rm "$@"
   })
 
   it("publish postcondition: an engine publish whose mv lies dies on the missing .complete marker", () => {
-    const h = makeConvergedHarness("luna-guardian-publish-lie-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-publish-lie-")
     installHarness(h)
     // New sha -> the full install path must PUBLISH a new engine dir.
     spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
@@ -1558,7 +1854,7 @@ exec /bin/rm "$@"
   })
 
   it("uninstall postcondition: a lying rm cannot report the units removed", () => {
-    const h = makeConvergedHarness("luna-guardian-uninstall-lie-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-uninstall-lie-")
     installHarness(h)
     writeStub(join(h.temp, "bin", "rm"), `#!/usr/bin/env bash
 if [[ -n "\${LUNA_TEST_RM_LIE_GLOB:-}" ]]; then
@@ -1581,7 +1877,7 @@ exec /bin/rm "$@"
   })
 
   it("legacy retirement postcondition: a lying rm cannot report the legacy units retired", () => {
-    const h = makeConvergedHarness("luna-guardian-legacy-lie-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-legacy-lie-")
     installHarness(h)
     // Reintroduce legacy units -> adoption state drifts -> render must retire
     // them; the lying rm leaves them, and the postcondition dies.
@@ -1605,20 +1901,23 @@ exec /bin/rm "$@"
   })
 
   it("update-lock acquisition treats an unwitnessable ownership record as contention (rc 10)", () => {
-    // Unit-level: source every function (drop the CLI dispatch), then break the
+    // Unit-level: source the guardian (its own dispatch guard at the bottom
+    // skips the CLI dispatch for us, no sed hack needed), then break the
     // ownership re-verify seam. If the re-verify block regresses away, acquire
-    // returns 0 while holding a lock nobody can witness — the stale-classifier
+    // returns 0 while holding a lock nobody can witness - the stale-classifier
     // would steal it mid-critical-section.
-    const h = makeConvergedHarness("luna-guardian-lock-witness-")
-    // $0 is the guardian path so the sourced prefix resolves SCRIPT_DIR (and
-    // its lib/ sourcing) against the harness scripts copy.
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-lock-witness-")
+    // $1 (not $0) carries the guardian path: `source "$1"` sets BASH_SOURCE[0]
+    // to that path so the sourced prefix resolves SCRIPT_DIR (and its lib/
+    // sourcing) against the harness scripts copy, while $0 stays the literal
+    // below so BASH_SOURCE[0] != $0 and the dispatch guard skips the tail.
     const result = spawnSync("bash", ["-c", `
-eval "$(sed '/^cmd=/,$d' "$0")"
+source "$1"
 guardian_update_lock_owner_alive() { return 1; }
 rc=0
 acquire_guardian_update_lock stable || rc=$?
 printf 'rc=%s\\n' "$rc"
-`, h.guardian], {
+`, "guardian-lock-witness-test", h.guardian], {
       cwd: root,
       encoding: "utf8",
       env: h.env,
@@ -1630,7 +1929,7 @@ printf 'rc=%s\\n' "$rc"
   })
 
   it("diagnose prints the INCIDENT-CAPTURE-FAILED marker when the capture cannot land", () => {
-    const h = makeConvergedHarness("luna-guardian-diagnose-fail-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-diagnose-fail-")
     installHarness(h)
     const result = spawnSync("bash", [h.guardian, "diagnose", "stable"], {
       cwd: root,
@@ -1643,7 +1942,7 @@ printf 'rc=%s\\n' "$rc"
   })
 
   it("a disallowed profile converges to a silent steady state", () => {
-    const h = makeConvergedHarness("luna-guardian-disallowed-steady-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-disallowed-steady-")
     installHarness(h)
     writeFileSync(
       join(h.temp, "servers.toml"),
@@ -1678,7 +1977,7 @@ printf 'rc=%s\\n' "$rc"
   // ── phase 5: idempotency properties ────────────────────────────────────────
 
   it("SIGNATURE 1R: a fully converged tick under P_LAYOUT=releases is silent and writes nothing", async () => {
-    const h = makeConvergedHarness("luna-guardian-converged-rel-", { layout: "releases" })
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-converged-rel-", { layout: "releases" })
     installHarness(h)
     const deploy = join(h.temp, "deploy")
     const relSha = readlinkSync(join(deploy, "current")).replace("releases/", "")
@@ -1726,7 +2025,7 @@ printf 'rc=%s\\n' "$rc"
     // Deliberately NOT silent — adopt is a human/migration command and
     // maybe_migrate depends on rc 0; the property is no-mutation plus a
     // stable one-line answer.
-    const h = makeConvergedHarness("luna-guardian-adopt-noop-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-adopt-noop-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     const before = snapshotUnits(h)
@@ -1765,6 +2064,8 @@ printf 'rc=%s\\n' "$rc"
     mkdirSync(bin, { recursive: true })
     mkdirSync(units, { recursive: true })
     writeSystemctlStub(bin)
+    writeIncusPassthroughStub(bin)
+    stubBun(bin)
     writeGuardianRegistry(registry)
     const env = {
       ...process.env,
@@ -1777,6 +2078,7 @@ printf 'rc=%s\\n' "$rc"
       LUNA_TEST_SYSTEMD_DIR: units,
       LUNA_TEST_SYSTEMCTL_STATE: join(temp, "systemctl-state"),
       LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
       LUNA_TEST_GUARDIAN_UNIT_HARDENED: "true",
       LUNA_TEST_ACCEPT_SHA: sha,
       LUNA_TEST_DOCTOR_INCUS_ACTIVE: "true",
@@ -1814,7 +2116,7 @@ printf 'rc=%s\\n' "$rc"
   })
 
   it("a second full install prunes nothing and warns nothing", () => {
-    const h = makeConvergedHarness("luna-guardian-prune-idem-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-prune-idem-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     const units = h.env.LUNA_TEST_SYSTEMD_DIR as string
@@ -1861,7 +2163,7 @@ printf 'rc=%s\\n' "$rc"
   // strike escalates, the repair stub flips a phase file, and the post-repair
   // verification must poll through boot-time INCONCLUSIVE probes to healthy.
   const waitHarness = (label: string, opts: { postHealthzFailures: number }) => {
-    const h = makeHarness(label)
+    const h = makeHarnessWithDeployCli(label)
     installHarness(h)
     const repaired = join(h.temp, "repaired")
     const healthzCount = join(h.temp, "healthz-count")
@@ -1974,7 +2276,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
   // ── phase 5: accept-grade engine-pin promotion gate ────────────────────────
 
   it("T1: the engine pin advances only on accept-grade evidence (cadence preserved)", () => {
-    const h = makeConvergedHarness("luna-guardian-gate-advance-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-gate-advance-")
     const install = spawnSync("bash", [h.guardian, "install", "stable", "--interval", "5min"], {
       cwd: root, encoding: "utf8",
       env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
@@ -2027,7 +2329,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
   })
 
   it("T2: an unproven tick resets the promotion streak", () => {
-    const h = makeConvergedHarness("luna-guardian-gate-reset-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-gate-reset-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" }
@@ -2062,7 +2364,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
   })
 
   it("T3: stale evidence defers promotion", () => {
-    const h = makeConvergedHarness("luna-guardian-gate-stale-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-gate-stale-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2" }
@@ -2098,7 +2400,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     // — permanent silent starvation of auto-promotion, plus a bash arithmetic
     // error per gated tick. The gate must validate like health_journal_read.
     for (const badWindow of ["15m", "0"]) {
-      const h = makeConvergedHarness(`luna-guardian-gate-window-${badWindow === "0" ? "zero" : "suffix"}-`)
+      const h = makeConvergedHarnessWithDeployCli(`luna-guardian-gate-window-${badWindow === "0" ? "zero" : "suffix"}-`)
       installHarness(h)
       const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
       const gateEnv = { LUNA_GUARDIAN_PROMOTE_MIN_CYCLES: "2", LUNA_GUARDIAN_HEALTH_WINDOW_SEC: badWindow }
@@ -2121,7 +2423,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
   })
 
   it("T4: LUNA_GUARDIAN_PROMOTE_MIN_CYCLES=0 disables the gate", () => {
-    const h = makeConvergedHarness("luna-guardian-gate-disable-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-gate-disable-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
@@ -2135,7 +2437,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
   })
 
   it("T5: manual install bypasses the gate with zero stored evidence", () => {
-    const h = makeConvergedHarness("luna-guardian-gate-manual-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-gate-manual-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
@@ -2155,7 +2457,7 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
   it("a repair is never blocked by missing promotion evidence", () => {
     // The repair ladder runs BEFORE the post-repair refresh — the gate can
     // only defer the pin advance that FOLLOWS a repair, never the repair.
-    const h = makeConvergedHarness("luna-guardian-gate-repair-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-gate-repair-")
     installHarness(h)
     const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
     const oldSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
@@ -2183,7 +2485,11 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     // the harness stubs plus an explicit allowlist of real tools. Any future
     // host-binary coupling on the converged tick fails this loudly — the
     // regression class the six formerly-failing tests embodied.
-    const h = makeConvergedHarness("luna-guardian-canary-")
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-canary-")
+    // See SIGNATURE 1's comment: unrelated to this test's PATH-hermeticity
+    // concern, and the restricted PATH below has no `test`/`systemctl` beyond
+    // the harness stubs, which do not answer luna-chat-server.service queries.
+    h.env.LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT = "true"
     installHarness(h)
     expect(runPinnedCheck(h).status).toBe(0)
     await sleep(1100)
@@ -2204,6 +2510,550 @@ printf 'rc=%s probes=%s\\n' "$rc" "$(cat "${probeCount}")"
     expect(tick.status, tick.stdout + tick.stderr).toBe(0)
     expect(tick.stdout).toBe("")
     expect(tick.stderr).toBe("")
+  })
+
+  it("an install flip is hermetic under a minimal PATH allowing perl and ps", () => {
+    // The converged tick above takes install_guardian's converged fast-path
+    // and never calls luna_atomic_replace, so it proves nothing about the
+    // perl coupling that helper adds. Stale the pin (as the flip-lie test
+    // above does) so install must re-flip: this is the one path that
+    // actually reaches luna_atomic_replace, so pulling "perl" off the
+    // allowlist below must turn this test red. acquire_guardian_update_lock's
+    // /proc-less fingerprint fallback (scripts/luna-guardian) shells out to
+    // "ps", so it is allowlisted here too - deliberately kept OFF the tick
+    // canary above, whose allowlist stays the pre-existing minimal set.
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-install-flip-canary-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const restricted = makeRestrictedBin(h.temp, [
+      "bash", "env", "git", "sed", "awk", "grep", "date", "mkdir", "chmod",
+      "cat", "rm", "ln", "ls", "cut", "head", "sleep", "cp", "touch", "tr",
+      "dirname", "basename", "mktemp", "stat", "id", "mv", "perl", "ps",
+    ])
+    const restrictedEnv = {
+      ...h.env,
+      LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+      PATH: `${join(h.temp, "bin")}:${restricted}`,
+    }
+    const realSha = spawnSync("git", ["-C", h.temp, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+    const stale = join(pins, "engine@" + "e".repeat(40))
+    mkdirSync(stale, { recursive: true })
+    writeFileSync(join(stale, ".complete"), "")
+    unlinkPin(pins, "current-stable")
+    symlinkSync(stale, join(pins, "current-stable"))
+    const flip = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: restrictedEnv,
+    })
+    expect(flip.status, flip.stdout + flip.stderr).toBe(0)
+    const resolved = spawnSync("bash", ["-c", `cd -P "${join(pins, "current-stable")}" && pwd`], { encoding: "utf8" }).stdout.trim()
+    expect(resolved.endsWith(`engine@${realSha}`)).toBe(true)
+  })
+
+  // ── phase 6: unit-path drift (S07 - path-independent launcher) ────────────
+  // unit_hardened() inspects ONLY Type/WatchdogUSec, so a unit rendered with
+  // the OLD app-specific WorkingDirectory/ExecStart reads exactly as
+  // "hardened" as one rendered by this slice. unit_paths_current is the other
+  // half of the reconcile gate. These tests exercise it - and
+  // reconcile_unit_if_idle's use of it - by SOURCING scripts/luna-guardian
+  // (the dispatch guard at the bottom of that file skips the command
+  // dispatch when BASH_SOURCE[0] != $0, i.e. when sourced) and calling the
+  // functions directly against a hand-set profile environment: no registry,
+  // no real systemctl, hermetic and fast.
+
+  type ProfileGlobals = { repo: string; layout: "inplace" | "releases"; deployRoot?: string }
+
+  const profileAssigns = (g: ProfileGlobals) =>
+    `P_REPO=${JSON.stringify(g.repo)}; P_LAYOUT=${JSON.stringify(g.layout)}; P_INCUS=""; `
+    + `P_SERVICE_NAME="luna-chat-server.service"; P_DEPLOY_ROOT=${JSON.stringify(g.deployRoot ?? "")}; P_PORT=4753`
+
+  const writeLauncher = (dir: string) => {
+    mkdirSync(join(dir, "scripts"), { recursive: true })
+    writeFileSync(join(dir, "scripts", "luna-chat-server-entry.ts"), "")
+  }
+
+  const writeServerInstallStub = (dir: string, log: string) => {
+    mkdirSync(join(dir, "scripts"), { recursive: true })
+    writeFileSync(
+      join(dir, "scripts", "luna-server-install"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 0\n`,
+    )
+    spawnSync("chmod", ["+x", join(dir, "scripts", "luna-server-install")])
+  }
+
+  // systemctl's ExecStart --value answer is stubbed to STUB_EXEC_START
+  // (default empty - the shape of an unrendered/old unit); nothing else in
+  // these tests touches systemctl.
+  const callUnitPathsCurrent = (g: ProfileGlobals, execStart = "") =>
+    spawnSync("bash", ["-c",
+      `source "$1"; systemctl() { printf '%s' "$STUB_EXEC_START"; }; ${profileAssigns(g)}; `
+      + `rc=0; unit_paths_current || rc=$?; echo "RC=$rc"`,
+      "_", guardian], { encoding: "utf8", env: { ...process.env, STUB_EXEC_START: execStart } })
+
+  const callReconcile = (
+    g: ProfileGlobals,
+    opts: { hardened: "true" | "false"; wsCount?: string; pendingTransaction?: boolean },
+  ) => {
+    // Isolated, always-empty update-state dir: reconcile_unit_if_idle now
+    // defers while a transaction-stable marker exists there, so these
+    // branch tests must not inherit the real $HOME/.luna/update on the
+    // machine running them.
+    const updateState = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-update-"))
+    trackDir(updateState)
+    if (opts.pendingTransaction) {
+      writeFileSync(join(updateState, "transaction-stable"), "phase=checkout\n")
+    }
+    return spawnSync("bash", ["-c",
+      `source "$1"; systemctl() { printf '%s' ""; }; ${profileAssigns(g)}; `
+      + `rc=0; reconcile_unit_if_idle stable || rc=$?; echo "RC=$rc"`,
+      "_", guardian], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LUNA_TEST_GUARDIAN_UNIT_HARDENED: opts.hardened,
+        LUNA_UPDATE_STATE_DIR: updateState,
+        ...(opts.wsCount !== undefined ? { LUNA_TEST_WS_COUNT: opts.wsCount } : {}),
+      },
+    })
+  }
+
+  describe("unit_paths_current (S07 - rollback-safe unit-shape drift detector)", () => {
+    it("an already-rendered ExecStart reads as current even when previous lacks the launcher", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-rendered-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      writeLauncher(current)
+      const result = callUnitPathsCurrent(
+        { repo: current, layout: "releases", deployRoot: temp },
+        "{ path=/usr/bin/bun ; argv[]=/usr/bin/bun run scripts/luna-chat-server-entry.ts ; }",
+      )
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+    })
+
+    it("releases: current AND previous both carrying the launcher IS drift worth reconciling", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-both-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      const previous = join(temp, "previous")
+      writeLauncher(current)
+      writeLauncher(previous)
+      const result = callUnitPathsCurrent({ repo: current, layout: "releases", deployRoot: temp })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+    })
+
+    it("releases: a previous lacking the launcher is NOT reported as drift (unsafe rollback target)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-prev-missing-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      writeLauncher(current)
+      // `previous` is never created here - the pre-first-rollback shape, and
+      // the shape of any pre-S07 rollback target.
+      const result = callUnitPathsCurrent({ repo: current, layout: "releases", deployRoot: temp })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+    })
+
+    it("releases: a current lacking the launcher is NOT reported as drift (never target a broken tree)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-current-missing-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      const previous = join(temp, "previous")
+      mkdirSync(current, { recursive: true })
+      writeLauncher(previous)
+      const result = callUnitPathsCurrent({ repo: current, layout: "releases", deployRoot: temp })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+    })
+
+    it("inplace: the current checkout carrying the launcher IS drift worth reconciling (no separate previous tree to check)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-paths-inplace-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      writeLauncher(repo)
+      const result = callUnitPathsCurrent({ repo, layout: "inplace" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+    })
+  })
+
+  describe("reconcile_unit_if_idle (S07 acceptance branches)", () => {
+    it("idle (unhardened) reconcile renders exactly one luna-server-install --units-only --no-enable --no-start", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-idle-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      const result = callReconcile({ repo, layout: "inplace" }, { hardened: "false", wsCount: "0" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=0")
+      expect(result.stderr).toContain("reconciling supervisor unit before repair restart")
+      expect(existsSync(log)).toBe(true)
+      const lines = readFileSync(log, "utf8").trim().split("\n")
+      expect(lines.length).toBe(1)
+      expect(lines[0]).toBe(`--profile stable --repo-dir ${repo} --units-only --no-enable --no-start`)
+    })
+
+    it("a pending update transaction defers reconcile with a warning and renders nothing", () => {
+      // apply_ref may already have git-reset the checkout to a not-yet-verified
+      // ref by the time this tick runs; rendering here would target a tree
+      // do_rollback could discard moments later. Mirrors install_guardian's
+      // own pending-transaction defer for the engine-pin flip.
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-pending-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      const result = callReconcile(
+        { repo, layout: "inplace" },
+        { hardened: "false", wsCount: "0", pendingTransaction: true },
+      )
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+      expect(result.stderr).toContain("unit drift: update transaction pending for profile 'stable'; deferring reconcile")
+      expect(existsSync(log)).toBe(false)
+    })
+
+    it("active sessions (>0) defer reconcile with a warning and render nothing", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-active-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      const result = callReconcile({ repo, layout: "inplace" }, { hardened: "false", wsCount: "3" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+      expect(result.stderr).toContain("unit drift: 3 active session(s); deferring")
+      expect(existsSync(log)).toBe(false)
+    })
+
+    it("luna_active_ws_count NON-ZERO EXIT defers reconcile with 'session count unknown' and renders nothing", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-unknown-"))
+      trackDir(temp)
+      const repo = join(temp, "repo")
+      const log = join(temp, "install.log")
+      writeServerInstallStub(repo, log)
+
+      // LUNA_TEST_WS_COUNT="unknown" fails luna_active_ws_count's numeric
+      // regex, simulating an unavailable probe (luna-guardian:525-526) -
+      // never read as "zero sessions".
+      const result = callReconcile({ repo, layout: "inplace" }, { hardened: "false", wsCount: "unknown" })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain("RC=1")
+      expect(result.stderr).toContain("unit drift: session count unknown; deferring")
+      expect(existsSync(log)).toBe(false)
+    })
+
+    it("a previous lacking the launcher leaves the old unit installed (hardened=true, unsafe rollback target)", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-reconcile-stale-prev-"))
+      trackDir(temp)
+      const current = join(temp, "current")
+      writeLauncher(current)
+      const log = join(temp, "install.log")
+      writeServerInstallStub(current, log)
+      // `previous` is never created - current alone carrying the launcher is
+      // not enough to prove a rollback stays bootable.
+
+      const result = callReconcile(
+        { repo: current, layout: "releases", deployRoot: temp },
+        { hardened: "true", wsCount: "0" },
+      )
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      // unit_hardened && unit_paths_current short-circuits true - reconcile
+      // never reaches the WS-count check or the install call.
+      expect(result.stdout).toContain("RC=0")
+      expect(existsSync(log)).toBe(false)
+    })
+  })
+
+  // ── publish_engine compile-topology split ───────────────────────────────
+  // publish_engine compiles apps/deploy-cli against the RUNTIME's own bun
+  // (docs/deploy-binary.md), never the publishing host's bun on an incus
+  // profile's behalf - the container's bun via run_runtime/incus exec for an
+  // incus profile, the publishing host's own bun otherwise. These tests call
+  // publish_engine DIRECTLY by sourcing scripts/luna-guardian (same seam as
+  // unit_paths_current above), so they exercise the topology split without
+  // paying for a full install_guardian run through a registry.
+  describe("publish_engine (compile-topology split)", () => {
+    // Parametrized over BOTH layouts: publish_engine's container_root branch
+    // (scripts/luna-guardian) picks the source tree the compile reads from -
+    // "/root/luna" for inplace, "$LUNA_CONTAINER_DEPLOY_ROOT/current" for
+    // releases - and a wrong pick would silently build a different commit
+    // than the pin's own sha, with no postcondition able to catch it.
+    for (const layout of ["inplace", "releases"] as const) {
+      it(`incus profile (${layout} layout): compiles deploy-cli INSIDE the container through run_runtime/incus exec, never with the host's own bun`, () => {
+        const temp = mkdtempSync(join(tmpdir(), `luna-guardian-publish-incus-${layout}-`))
+        trackDir(temp)
+        const bin = join(temp, "bin")
+        const pinBase = join(temp, "pins")
+        const sha = "a".repeat(40)
+        const pin = join(pinBase, `engine@${sha}`)
+        const log = join(temp, "incus-calls.log")
+        mkdirSync(bin, { recursive: true })
+        mkdirSync(pinBase, { recursive: true })
+        writeIncusPassthroughStub(bin, log)
+        stubBun(bin)
+
+        // Deliberately non-default for the releases case, so a passing
+        // assertion proves LUNA_CONTAINER_DEPLOY_ROOT was actually READ, not
+        // merely that the "/root/luna" default happens to match either branch.
+        const containerDeployRoot = layout === "releases" ? "/root/custom-releases-root" : ""
+        const expectedMainTs = layout === "releases"
+          ? `${containerDeployRoot}/current/apps/deploy-cli/src/main.ts`
+          : "/root/luna/apps/deploy-cli/src/main.ts"
+
+        const result = spawnSync("bash", ["-c",
+          `source "$1"; P_INCUS="luna-test"; P_LAYOUT="$2"; P_REPO=""; publish_engine "$3" "$4" "$5"`,
+          "_", guardian, layout, root, sha, pin], {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_GUARDIAN_PIN_BASE: pinBase,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            ...(containerDeployRoot ? { LUNA_CONTAINER_DEPLOY_ROOT: containerDeployRoot } : {}),
+          },
+        })
+
+        expect(result.status, result.stdout + result.stderr).toBe(0)
+        expect(existsSync(join(pin, ".complete"))).toBe(true)
+        const deployCli = join(pin, "deploy-cli")
+        expect(existsSync(deployCli)).toBe(true)
+        expect(statSync(deployCli).mode & 0o100).toBe(0o100)
+
+        // The build itself, and the retrieval read afterward, both went
+        // through `incus exec luna-test -- ...` - never invoked directly on
+        // the host - and the build used the CONTAINER's bun (LUNA_TEST_BUN_PATH,
+        // this stub's stand-in for /root/.bun/bin/bun) against the container's
+        // OWN view of the checkout, never $root on the host side.
+        const calls = readFileSync(log, "utf8").trim().split("\n").filter(Boolean)
+        expect(calls.some((line) =>
+          line.startsWith("exec luna-test -- ") &&
+          line.includes(join(bin, "bun")) &&
+          line.includes(" build ") &&
+          line.includes("--compile") &&
+          line.includes(expectedMainTs),
+        ), calls.join("\n")).toBe(true)
+        expect(calls.some((line) => line.startsWith("exec luna-test -- cat /tmp/deploy-cli.")), calls.join("\n")).toBe(true)
+      })
+    }
+
+    it("bare-host profile: a bun that vanishes after install_guardian's own preflight dies with a named cause, never a raw exit 127", () => {
+      const temp = mkdtempSync(join(tmpdir(), "luna-guardian-publish-diebun-"))
+      trackDir(temp)
+      const pinBase = join(temp, "pins")
+      const sha = "b".repeat(40)
+      const pin = join(pinBase, `engine@${sha}`)
+      mkdirSync(pinBase, { recursive: true })
+      // A path that resolves to nothing - the TOCTOU shape this test
+      // exercises: bun present at install_guardian's own preflight,
+      // gone by the time publish_engine's OWN check runs this same lookup
+      // again. Under `set -euo pipefail`, calling this path directly (`"$bun_
+      // bin" build --compile ...`) without the runtime_bun_executable guard
+      // first would fail as a raw `exec` ENOENT - exit 127, no postcondition,
+      // no named cause - instead of the actionable luna_die this proves.
+      const missingBun = join(temp, "nonexistent-bun", "bun")
+
+      const result = spawnSync("bash", ["-c",
+        `source "$1"; P_INCUS=""; P_LAYOUT="inplace"; P_REPO=""; publish_engine "$2" "$3" "$4"`,
+        "_", guardian, root, sha, pin], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, LUNA_GUARDIAN_PIN_BASE: pinBase, LUNA_TEST_BUN_PATH: missingBun },
+      })
+
+      expect(result.status, result.stdout + result.stderr).not.toBe(127)
+      expect(result.status, result.stdout + result.stderr).toBe(1)
+      expect(result.stderr).toContain(`error: bun not found at ${missingBun}; cannot publish deploy-cli`)
+      expect(existsSync(pin)).toBe(false)
+    })
+  })
+
+  // ── publish_engine leak containment ─────────────────────────────────────
+  // publish_engine's staging dir ($tmp = "$pin.tmp.$$") and lock ($lock =
+  // "$PIN_BASE/.engine-$sha.lock") match prune_engines' own `engine@*` glob
+  // (the lock does not, but the tmp dir does) and its keep=5 window. A die
+  // inside the critical section that skipped cleanup left `$tmp` behind, and
+  // enough of them accumulated across retries to consume prune's keep=5
+  // budget and get a REAL rollback engine pruned instead of the garbage.
+  it("publish_engine never leaks engine@*.tmp.* or its lock across repeated failed compiles", () => {
+    const temp = mkdtempSync(join(tmpdir(), "luna-guardian-leak-repro-"))
+    trackDir(temp)
+    const bin = join(temp, "bin")
+    const pinBase = join(temp, "pins")
+    const sha = "c".repeat(40)
+    const pin = join(pinBase, `engine@${sha}`)
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(pinBase, { recursive: true })
+    // Executable (passes the runtime_bun_executable preflight) but always
+    // fails the actual compile, distinct from a MISSING bun (already covered
+    // above): this exercises the mid-critical-section `bun build --compile`
+    // POSTCONDITION die, not the preflight die.
+    writeStub(join(bin, "bun"), `#!/usr/bin/env bash\nexit 1\n`)
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      // A fresh bash process per attempt, the same shape as a guardian tick
+      // retrying on its own timer after a failed publish: a fresh $$, hence
+      // a fresh $tmp name every time, so a single-attempt-only fix could not
+      // hide a leak that only shows up once several have accumulated.
+      const result = spawnSync("bash", ["-c",
+        `source "$1"; P_INCUS=""; P_LAYOUT="inplace"; P_REPO=""; publish_engine "$2" "$3" "$4"`,
+        "_", guardian, root, sha, pin], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, LUNA_GUARDIAN_PIN_BASE: pinBase, LUNA_TEST_BUN_PATH: join(bin, "bun") },
+      })
+      expect(result.status, `attempt ${attempt}: ${result.stdout}${result.stderr}`).not.toBe(0)
+      expect(result.stderr, `attempt ${attempt}`).toContain("POSTCONDITION: bun build --compile failed")
+    }
+
+    // Zero survivors after EVERY attempt, not just on average across three -
+    // one leaked directory from any single attempt already proves the bug.
+    const entries = readdirSync(pinBase)
+    const leakedTmp = entries.filter((name) => name.includes(".tmp."))
+    const leakedLock = entries.filter((name) => name.includes(".lock"))
+    expect(leakedTmp, entries.join("\n")).toEqual([])
+    expect(leakedLock, entries.join("\n")).toEqual([])
+    expect(existsSync(pin)).toBe(false)
+  })
+
+  // The repro above drives ONLY the `bun build --compile` POSTCONDITION,
+  // which was always wrapped by an explicit `|| luna_die` (now `||
+  // publish_abort`) even before this slice - it passes identically with the
+  // ERR trap deleted, so it cannot lock the trap in. `mv "$tmp" "$pin"` on
+  // the atomic flip is the one statement in the critical section neither
+  // publish_abort nor an explicit `|| luna_die` wraps: LUNA_TEST_MV_FAIL_GLOB
+  // makes it genuinely fail (exit 1, distinct from LUNA_TEST_MV_LIE_GLOB's
+  // exit-0-without-acting below), tripping `set -e` - only the ERR trap can
+  // clean up after that.
+  it("publish_engine's ERR trap - not the explicit-die cleanup - closes the implicit set -e leak class on the atomic flip's mv", () => {
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-publish-mv-fail-")
+    installHarness(h)
+    // New sha -> the full install path must PUBLISH a new engine dir, same
+    // shape as the mv-LIE postcondition test above.
+    spawnSync("git", ["-C", h.temp, "-c", "user.email=t@t", "-c", "user.name=t",
+      "commit", "-q", "--allow-empty", "-m", "advance"], { encoding: "utf8" })
+    const install = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...h.env,
+        LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_MV_FAIL_GLOB: "*engine@*.tmp.*",
+      },
+    })
+    expect(install.status, install.stdout + install.stderr).not.toBe(0)
+    // Proves the run actually reached the mv flip (and not, say, an earlier
+    // preflight die that would also leave zero .tmp./.lock survivors): the
+    // mv stub only emits this line when LUNA_TEST_MV_FAIL_GLOB matched an
+    // invoked mv argument, so its presence is evidence publish_engine got to
+    // the atomic flip before failing.
+    expect(install.stderr).toContain("mv: simulated failure")
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+    const entries = readdirSync(pins)
+    expect(entries.filter((name) => name.includes(".tmp.")), entries.join("\n")).toEqual([])
+    expect(entries.filter((name) => name.includes(".lock")), entries.join("\n")).toEqual([])
+  })
+
+  it("prune_engines reaps a dead owner's leaked engine@*.tmp.* staging dir but never touches a live owner's", () => {
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-prune-tmp-glob-")
+    installHarness(h)
+    const pins = h.env.LUNA_GUARDIAN_PIN_BASE as string
+
+    // current-dev pins ONE live engine; a second,
+    // complete engine sits unpinned as a rollback target, relying on the
+    // keep=5 window alone (no current-* symlink) to survive. Leaked
+    // engine@<sha>.tmp.<pid> staging dirs - publish_engine's OWN naming for a
+    // still-building or abandoned pin - are all NEWER than every real engine
+    // here, so pre-defense-in-depth they would fill the entire keep=5 window
+    // and push the unpinned rollback engine out to be pruned.
+    const now = Date.now() / 1000
+    const rollback = join(pins, `engine@${"1".repeat(40)}`)
+    mkdirSync(rollback, { recursive: true })
+    writeFileSync(join(rollback, ".complete"), "")
+    utimesSync(rollback, now - 2000, now - 2000)
+
+    const live = join(pins, `engine@${"2".repeat(40)}`)
+    mkdirSync(live, { recursive: true })
+    writeFileSync(join(live, ".complete"), "")
+    utimesSync(live, now - 1000, now - 1000)
+    symlinkSync(live, join(pins, "current-dev"))
+
+    // Dead-owner leaks: pids nothing on this host holds (SIGKILL/OOM/reboot
+    // mid-publish - ERR does not fire on a signal - or any future bug in the
+    // ERR-trap cleanup above). These must be reaped, or they are immortal:
+    // nothing else in PIN_BASE ever reclaims them.
+    const deadLeaks: string[] = []
+    for (let i = 1; i <= 4; i++) {
+      const leak = join(pins, `engine@${String(i).repeat(40)}.tmp.${90000 + i}`)
+      mkdirSync(leak, { recursive: true })
+      utimesSync(leak, now + 500, now + 500)
+      deadLeaks.push(leak)
+    }
+    // Live-owner leak: this test process's OWN pid, guaranteed alive for the
+    // whole run - the one case prune must never touch (a still-running
+    // publish's own $tmp).
+    const liveLeak = join(pins, `engine@${"5".repeat(40)}.tmp.${process.pid}`)
+    mkdirSync(liveLeak, { recursive: true })
+    utimesSync(liveLeak, now + 500, now + 500)
+
+    // Trigger a full (non-fast-path) install so prune_engines actually runs.
+    rmSync(join(h.env.LUNA_TEST_SYSTEMD_DIR as string, "luna-guardian-stable.timer"))
+    const install = spawnSync("bash", [h.guardian, "install", "stable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true" },
+    })
+    expect(install.status, install.stdout + install.stderr).toBe(0)
+
+    // Both real engines survive - the rollback engine specifically, since it
+    // is the unprotected one the pre-defense-in-depth bug pruned.
+    expect(existsSync(join(rollback, ".complete")), "rollback engine must survive prune").toBe(true)
+    expect(existsSync(join(live, ".complete")), "live-pinned engine must survive prune").toBe(true)
+    for (const leak of deadLeaks) {
+      expect(existsSync(leak), `dead-owner leak ${leak} must be reaped`).toBe(false)
+    }
+    expect(existsSync(liveLeak), "a live owner's own $tmp must never be touched").toBe(true)
+  })
+
+  it("check_profile reconciles unit-path drift through the FULL wiring - both the 524 early-return gate and the 670 caller gate", () => {
+    // Regression guard for exactly the risk the approach called out: editing
+    // ONLY reconcile_unit_if_idle's body (the 524 gate) without ALSO gating
+    // its sole caller in check_profile (670) leaves unit_paths_current
+    // permanently unreachable, because unit_hardened=true alone already
+    // short-circuits the caller. This goes through run_check/check_profile
+    // for real - LUNA_TEST_GUARDIAN_UNIT_HARDENED stays "true" (makeHarness's
+    // default), so ONLY unit_paths_current returning false can explain a
+    // reconcile firing here.
+    const h = makeConvergedHarnessWithDeployCli("luna-guardian-unit-paths-wiring-", { layout: "releases" })
+    installHarness(h)
+    const deploy = join(h.temp, "deploy")
+    const relSha = readlinkSync(join(deploy, "current")).replace("releases/", "")
+    const releaseDir = join(deploy, "releases", relSha)
+
+    // Current release already carries the launcher (a post-S07 tree would).
+    writeLauncher(releaseDir)
+    // Rollback target ALSO carries it - safe to reconcile.
+    symlinkSync(`releases/${relSha}`, join(deploy, "previous"))
+    // Recording stub at the exact path reconcile_unit_if_idle invokes:
+    // $P_REPO/scripts/luna-server-install (P_REPO resolves through `current`).
+    const log = join(h.temp, "install-invocations.log")
+    writeServerInstallStub(releaseDir, log)
+
+    const tick = runPinnedCheck(h, { LUNA_TEST_WS_COUNT: "0" })
+    expect(tick.status, tick.stdout + tick.stderr).toBe(0)
+    expect(existsSync(log)).toBe(true)
+    const invocations = readFileSync(log, "utf8").trim().split("\n")
+    expect(invocations.length).toBe(1)
+    expect(invocations[0]).toBe(
+      `--profile stable --repo-dir ${join(deploy, "current")} --units-only --no-enable --no-start --layout releases`,
+    )
   })
 
 })

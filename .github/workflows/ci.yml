@@ -12,20 +12,23 @@
 #      WITHOUT tripping on the legitimate `sk-ant-oat-totally-bogus` test
 #      fixtures / redaction docs in the repo.
 #   3. Moon version sync              - see the inline comment on its step.
-#   4. Studio version sync            - see the inline comment on its step.
-#   5. Server version sync            - see the inline comment on its step.
-#   6. Moon WS-contract harness       - apps/ui-moon-tauri/test/ws-contract.test.ts
+#   4. Server version sync            - see the inline comment on its step.
+#   5. Moon WS-contract harness       - apps/ui-moon-tauri/test/ws-contract.test.ts
 #      drives frontend-react/chat.html's WebSocketEngine (reconnect backoff,
 #      connGen supersession, thread-switch resubscribe) through a scriptable
 #      FakeWebSocket double under realistic async timing. Task #45 of the Moon
 #      stability-audit batch - the prior stub never fired real events, so
 #      reconnect/thread-switch races were never exercised. Kept as its OWN gate
-#      (it predates gate 7) so this seam stays individually named.
-#   7. test - vitest                  - the vitest suite, minus the host-env
+#      (it predates gate 6) so this seam stays individually named.
+#   6. test - vitest                  - the vitest suite, minus the host-env
 #      suites carved into their own non-blocking step (HOST_ENV_TESTS in
 #      vitest.config.ts). Promoted at master 1df40f68, the first time the suite
 #      reached 0 failures. 403 of 406 test files are gated; the 3 carved out
 #      are the ops-script suites that read the host machine.
+#   7. test:bun (bun:sqlite suites)   - the ONLY runner that can load
+#      bun:sqlite, so it is also the sole coverage for
+#      packages/core/test/luna-db-contract.test.ts, the luna.db
+#      schema-continuity contract (see the inline comment on its step).
 #
 # TEST RUNNERS - Luna's suite runs under TWO runners, and CI runs BOTH
 # (see TESTING.md). This split is the fix for the bun:sqlite FALSE failures:
@@ -43,10 +46,9 @@
 #     packages/thread-tools/src/layer.ts). Fixed in #385, so this is GREEN now;
 #     left non-blocking only because nothing has re-verified it across a few
 #     merges yet. Promote it once it has held.
-#   - test:bun - currently green (1797 pass). Next promotion candidate.
 #   - test:hostenv - genuinely host-dependent (incus / tailscale / launchd /
 #     systemd profile state). Giving each a hermetic fixture root is the
-#     follow-up that would let them join gate 7.
+#     follow-up that would let them join gate 6.
 #
 # HISTORY, so the "macOS-only" excuse does not come back: the vitest step was
 # non-blocking for a long time on the theory that keychain-helper /
@@ -61,7 +63,7 @@
 #   - three ui-web suites were failing at COLLECTION on any machine without
 #     UI_WS_TOKEN set, which has nothing to do with the OS.
 # A gate nobody has to satisfy collects rot. Do not re-add continue-on-error to
-# gate 7; carve a genuinely environment-dependent file into HOST_ENV_TESTS
+# gate 6; carve a genuinely environment-dependent file into HOST_ENV_TESTS
 # instead, and say why.
 #
 # Rationale: lockfile drift and leaked secrets are correctness/safety issues
@@ -169,15 +171,7 @@ jobs:
       - name: Moon version sync (HARD GATE)
         run: bun run scripts/bump-moon.ts --check
 
-      # HARD GATE 4: Studio version quadruple stays in lockstep, same story as
-      # HARD GATE 3 above but for apps/ui-studio-tauri (package.json +
-      # src-tauri Cargo.toml/tauri.conf.json/Cargo.lock). Drift would only
-      # surface AFTER an irreversible `studio-v*` tag push (release-studio.yml).
-      # `bump-studio.ts` is the single writer that keeps the four in sync.
-      - name: Studio version sync (HARD GATE)
-        run: bun run scripts/bump-studio.ts --check
-
-      # HARD GATE 5: the server release version (server.version.json) is valid
+      # HARD GATE 4: the server release version (server.version.json) is valid
       # semver. The `server-v*` tag the release pipeline cuts is derived from this
       # file; an invalid/missing version would otherwise only surface AFTER an
       # irreversible tag push (release-server.yml's coherence guard). Catch it here
@@ -190,15 +184,15 @@ jobs:
         continue-on-error: true
         run: bun run typecheck
 
-      # HARD GATE 6: Moon WS-contract harness (task #45, Moon stability-audit
-      # batch). Now a SUBSET of gate 7 below, kept as its own named step so this
+      # HARD GATE 5: Moon WS-contract harness (task #45, Moon stability-audit
+      # batch). Now a SUBSET of gate 6 below, kept as its own named step so this
       # specific seam stays individually visible in the checks list and fails
-      # fast (2s) rather than after the full suite. It predates gate 7, which is
+      # fast (2s) rather than after the full suite. It predates gate 6, which is
       # why it exists separately at all.
       - name: Test — Moon WS-contract harness (HARD GATE)
         run: bun run test -- apps/ui-moon-tauri/test/ws-contract.test.ts
 
-      # HARD GATE 7: the whole vitest suite. Promoted from non-blocking once the
+      # HARD GATE 6: the whole vitest suite. Promoted from non-blocking once the
       # suite reached 0 failures for the first time (master 1df40f68). It had
       # been continue-on-error to tolerate a "macOS-only" baseline, and that
       # tolerance is exactly what let real rot accumulate unseen: of the 14
@@ -241,9 +235,29 @@ jobs:
         continue-on-error: true
         run: bun run test:hostenv
 
-      # Surfaced, NON-BLOCKING. The bun:sqlite-backed suites' ONLY coverage —
-      # vitest cannot load bun:sqlite. (Whole-package run, so a few macOS-only
-      # tests in these packages are also red on the Linux runner; see TESTING.md.)
-      - name: Test — bun:sqlite suites (non-blocking)
-        continue-on-error: true
+      # HARD GATE 7: the bun:sqlite-backed suites - vitest cannot load
+      # bun:sqlite, so this is their ONLY coverage (whole-package run, so their
+      # runner-agnostic tests get free cross-runner validation too). This
+      # includes packages/core/test/luna-db-contract.test.ts, the luna.db
+      # schema-continuity contract gate (docs/next/luna-db-contract.md) -
+      # promoting THIS step is what makes that contract enforced instead of
+      # merely documented.
+      #
+      # TESTING.md previously deferred this promotion on a macOS-only baseline
+      # (keychain-helper.test.ts, launchd-plist, ui-models). That baseline is
+      # stale: launchd-plist (test/deploy-scripts.test.ts) and ui-models
+      # (apps/ui-web) are not even in test:bun's package list below, and
+      # keychain-helper.test.ts already carries the same `_platform` injection
+      # + `it.skipIf(process.platform !== "darwin")` fix gate 6's own history
+      # note above describes - a Linux runner skips that one case, it does not
+      # fail it. Verified on THIS runner (the evidence that actually justifies
+      # a Linux-runner promotion) at 1766 pass / 3 skip / 0 fail across the two
+      # most recent green runs in this branch's own ancestry - runs 30971646491
+      # (ed538ef6) and 30971649021 (master 2c7b3915); the 2 skips beyond the
+      # local run's 1 are the darwin-gated keychain-helper.test.ts:220 case
+      # this runner does not hit plus the env-gated OnePasswordSecretProvider
+      # live test (OP_SERVICE_ACCOUNT_TOKEN unset). Locally verified at
+      # 1768 pass / 1 skip (bun-only vectorlite variant, not platform-gated)
+      # / 0 fail.
+      - name: Test - bun:sqlite suites (HARD GATE)
         run: bun run test:bun

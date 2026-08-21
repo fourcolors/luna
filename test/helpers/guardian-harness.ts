@@ -120,6 +120,92 @@ export const writeStub = (path: string, body: string) => {
   spawnSync("chmod", ["+x", path])
 }
 
+// LUNA_TEST_FLIP_LIE_GLOB stubs perl's rename(2) the way LUNA_TEST_MV_LIE_GLOB
+// stubs mv: exit 0 WITHOUT renaming when the invocation is luna_atomic_replace's
+// `perl -e 'rename(...) ...'` and the LAST argument (the destination) matches
+// the glob - the shape of the original engine-pin disaster, now aimed at the
+// syscall the flip actually goes through, since luna_atomic_replace never
+// shells out to mv. Passthrough resolves perl by NAME, never a baked absolute
+// path: it strips its own directory from PATH (self-recursion guard) and lets
+// the remaining PATH resolve `perl`, so a restricted PATH lacking perl fails
+// rc=127 for real instead of the stub silently smuggling in a host perl the
+// allowlist never granted.
+export const writePerlStub = (bin: string) => {
+  // Host precondition only - the stub itself resolves perl via PATH at runtime.
+  if (!spawnSync("bash", ["-c", "command -v perl"], { encoding: "utf8" }).stdout.trim())
+    throw new Error("writePerlStub: perl not found on host")
+  writeStub(join(bin, "perl"), `#!/usr/bin/env bash
+if [[ -n "\${LUNA_TEST_FLIP_LIE_GLOB:-}" && "$*" == *'rename('* ]]; then
+  last="\${@: -1}"
+  case "$last" in
+    \${LUNA_TEST_FLIP_LIE_GLOB}) exit 0 ;;
+  esac
+fi
+case "$0" in
+  */*) self="\${0%/*}" ;;
+  *) self="" ;;
+esac
+# $0 with no slash leaves self empty, so the strip below would remove
+# nothing and exec could re-enter this same stub forever. Depth marker
+# survives exec (env is preserved) but never a fresh fork, so it only
+# trips on that self-exec loop, not on separate sequential invocations.
+if [[ -n "\${_LUNA_PERL_STUB_GUARD:-}" ]]; then
+  printf 'perl stub: PATH self-strip found no slash in \$0, refusing to re-exec\\n' >&2
+  exit 127
+fi
+export _LUNA_PERL_STUB_GUARD=1
+newpath=""
+oldifs="$IFS"
+IFS=':'
+set -f
+for entry in $PATH; do
+  [[ "$entry" == "$self" ]] && continue
+  newpath="\${newpath:+$newpath:}$entry"
+done
+set +f
+IFS="$oldifs"
+PATH="$newpath"
+exec perl "$@"
+`)
+}
+
+// Stand-in for a real `bun build --compile`: writes a placeholder executable
+// at --outfile instead of actually compiling apps/deploy-cli, so a harness-
+// driven publish_engine (S21, scripts/luna-guardian) can complete without
+// paying for a real compile per install. Shared by guardian.test.ts's
+// stubBun and deploy-scripts.test.ts's makeBunStub, which were ~16 verbatim-
+// identical lines differing only in the tail: how an invocation this stub
+// does not recognize is handled. `strict` fails loudly (stderr message,
+// exit 1) so an unexpected bun invocation shape surfaces at the stub
+// itself; the lenient default exits 0 unconditionally.
+export const writeBunBuildStub = (bin: string, opts: { strict?: boolean } = {}) => {
+  const tail = opts.strict
+    ? `  chmod +x "\$outfile"
+  exit 0
+fi
+printf 'bun stub: unsupported invocation: %s\\n' "\$*" >&2
+exit 1
+`
+    : `  chmod +x "\$outfile"
+fi
+exit 0
+`
+  writeStub(join(bin, "bun"), `#!/usr/bin/env bash
+set -euo pipefail
+outfile=""
+for arg in "\$@"; do
+  case "\$arg" in
+    --outfile=*) outfile="\${arg#--outfile=}" ;;
+  esac
+done
+if [[ "\${1:-}" == build && -n "\$outfile" ]]; then
+  cat > "\$outfile" <<'STUB'
+#!/usr/bin/env bash
+printf 'stub\\n'
+STUB
+${tail}`)
+}
+
 export const headSha = () =>
   spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
 
@@ -153,9 +239,11 @@ export const makeHarness = (label: string): Harness => {
   // Inert unless LUNA_TEST_MV_FAIL_GLOB is set: lets a test make exactly the
   // health-journal rename fail, the way ENOSPC or an errors=remount-ro /var
   // does, without disturbing any other atomic rename in the tick.
-  // LUNA_TEST_MV_LIE_GLOB is the nastier cousin: exit 0 WITHOUT executing —
+  // LUNA_TEST_MV_LIE_GLOB is the nastier cousin: exit 0 WITHOUT executing -
   // the shape of the original engine-pin disaster, where mv "succeeded" and
-  // did nothing. Used to prove the flip postcondition fails loudly.
+  // did nothing. Covers the mv calls that remain (unit-file writes,
+  // engine-pin staging); the pin-flip itself goes through luna_atomic_replace
+  // (perl rename, never mv) - see writePerlStub / LUNA_TEST_FLIP_LIE_GLOB.
   writeStub(join(bin, "mv"), `#!/usr/bin/env bash
 if [[ -n "\${LUNA_TEST_MV_FAIL_GLOB:-}" ]]; then
   for a in "$@"; do
@@ -173,6 +261,7 @@ if [[ -n "\${LUNA_TEST_MV_LIE_GLOB:-}" ]]; then
 fi
 exec /bin/mv "$@"
 `)
+  writePerlStub(bin)
   spawnSync("cp", ["-a", join(root, "scripts"), scripts])
   writeStub(
     join(scripts, "luna-autodeploy"),

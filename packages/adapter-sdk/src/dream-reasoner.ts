@@ -12,17 +12,18 @@
  *      memories = current state to reconcile). The category boundary (belief ops
  *      must derive from transcripts, never telemetry) is stated in the prompt.
  *   2. Call sdk.query({ prompt }) → collect the type:"result"/subtype:"success"
- *      message. When LUNA_REASONER_STRUCTURED_OUTPUT is on (default OFF), the
- *      turn is issued with an `outputFormat` json_schema (DREAM_OPS_SCHEMA) and
- *      we consume the SDK's schema-validated `structured_output`; otherwise we
- *      take the message's `.result: string`.
+ *      message. When the dream lane's resolved provider profile supports
+ *      structured output (default ON for capable lanes; LUNA_REASONER_STRUCTURED_OUTPUT
+ *      overrides in either direction), the turn is issued with an `outputFormat`
+ *      json_schema (DREAM_OPS_SCHEMA) and we consume the SDK's schema-validated
+ *      `structured_output`; otherwise we take the message's `.result: string`.
  *   3. Structured path → validate op array shapes directly; text path →
  *      JSON.parse → validate op array shapes (shared validateRawOpsArray).
  *   4. For belief_candidate ops: derive targetId, build a proposed MemoryRecord,
  *      snapshot `before` from memory (idempotency + revert contract).
  *   5. Any parse/validation/memory failure → DreamError (never crashes the cron).
  */
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer } from "effect"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
 import {
@@ -30,8 +31,6 @@ import {
   DreamError,
   deriveBeliefId,
   makeBeliefRecord,
-  computeAgreement,
-  CalibrationStore,
   AccountBroker,
   DEFAULT_DISTILL_OPTIONS,
   DREAM_PROMPT_TOKEN_BUDGET,
@@ -100,21 +99,6 @@ const DREAM_OPS_SCHEMA: Record<string, unknown> = {
     },
   },
 }
-
-/**
- * Slice B (sampling-based confidence, MEASURE-ONLY): how many UNSEEDED
- * reasoning passes to run for the SelfCheckGPT-style agreement signal. Pass 1
- * is the privileged "today's path" that SOLELY materializes ops; passes 2..N
- * are measurement-only. Overridable via LUNA_DREAM_SAMPLES (read at layer-build
- * time, mirroring LUNA_DREAM_TIMEOUT_MS); clamps to a positive integer.
- */
-const DEFAULT_DREAM_SAMPLES = 5
-/** Defensive upper bound on N: a misconfigured LUNA_DREAM_SAMPLES (e.g. 1000)
- * must not flood the system with SDK queries — each pass is a real query. */
-const MAX_DREAM_SAMPLES = 10
-/** Bounded concurrency for the measurement-only extra passes (avoid load
- * spikes / rate limits / memory pressure at high N). */
-const DREAM_SAMPLE_CONCURRENCY = 4
 
 // ---------------------------------------------------------------------------
 // Raw op shape from the model's JSON output
@@ -194,9 +178,20 @@ function capMemories(lines: ReadonlyArray<string>, budget: number): string {
  * prompt, and leaking summary fields (title, etc.) is both bloat and a category
  * leak. Memories render one line each, capped at DEFAULT_DISTILL_OPTIONS.memoriesChars.
  *
+ * `structuredOutputEnabled` (default false, i.e. today's prose) drops the
+ * verbose field-by-field union restatement (rule 2) in favor of a short
+ * instruction plus one worked example when the turn will carry a native
+ * `outputFormat` json_schema (DREAM_OPS_SCHEMA already enforces the top-level
+ * field union) - the substantive per-kind rules (3-6: category boundary,
+ * required fields NOT covered by the permissive top-level schema, the skill-chip
+ * cap, etc.) are unaffected either way, since the schema doesn't encode them.
+ *
  * Exported so it can be unit-tested independently of the full layer.
  */
-export function buildDreamPrompt(inputs: DreamInputs): string {
+export function buildDreamPrompt(
+  inputs: DreamInputs,
+  structuredOutputEnabled = false,
+): string {
   const sessions = inputs.sessions
     .map(
       (s) =>
@@ -219,6 +214,26 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
   // Cap skill catalog block hard so a large registry cannot bloat the prompt.
   const skillsBlock = capMemories(skillLines, 4_000)
 
+  // Rule 2 (op field shape): on the structured path, the SDK's outputFormat
+  // json_schema (DREAM_OPS_SCHEMA) already enforces the field union, so
+  // restating it in prose is redundant - a short instruction plus one worked
+  // example is enough. The parse path (structured output off, "none" lanes or
+  // an explicit rollback) keeps the full field-by-field restatement, since it
+  // is the model's ONLY source of the required shape there.
+  const opShapeRule = structuredOutputEnabled
+    ? [
+        "2. The op field shape is enforced by the response schema. Example op:",
+        '   { "kind": "belief_candidate", "domain": "comms", "statement": "...",',
+        '     "confidence": 0.8, "evidence": ["session:s-1#m-1"], "rationale": "..." }',
+      ]
+    : [
+        "2. Each op MUST have exactly these fields:",
+        '   { "kind": ..., "domain"?: ..., "statement"?: ..., "confidence"?: ...,',
+        '     "evidence"?: [...], "targetId"?: ..., "before"?: ..., "after"?: ...,',
+        '     "mode"?: ..., "skillId"?: ..., "title"?: ..., "detail"?: ..., "prompt"?: ...,',
+        '     "rationale": "..." }',
+      ]
+
   return [
     "You are Luna's nightly Dream reasoner. Reflect over the sessions and current",
     "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops.",
@@ -227,11 +242,7 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
     "",
     "1. Output ONLY a JSON array. No markdown, no prose, no code fences.",
     "",
-    "2. Each op MUST have exactly these fields:",
-    '   { "kind": ..., "domain"?: ..., "statement"?: ..., "confidence"?: ...,',
-    '     "evidence"?: [...], "targetId"?: ..., "before"?: ..., "after"?: ...,',
-    '     "mode"?: ..., "skillId"?: ..., "title"?: ..., "detail"?: ..., "prompt"?: ...,',
-    '     "rationale": "..." }',
+    ...opShapeRule,
     "",
     `3. kind MUST be one of: ${[...VALID_KINDS].join(" | ")}`,
     "",
@@ -422,23 +433,6 @@ function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamErr
   })
 }
 
-/**
- * Slice B clustering: derive the belief-candidate `beliefId`s from a parsed pass.
- * ONLY belief_candidate ops cluster — memory hygiene ops carry a targetId but
- * are NOT beliefs, so they must not enter the agreement count. The id is
- * deriveBeliefId(domain, statement), which trims/lowercases/collapses
- * whitespace, so case/whitespace variants of one statement collapse to one id.
- */
-function beliefIdsOf(ops: ReadonlyArray<RawOp>): ReadonlyArray<{ readonly beliefId: string }> {
-  const out: Array<{ readonly beliefId: string }> = []
-  for (const raw of ops) {
-    if (raw.kind === "belief_candidate") {
-      out.push({ beliefId: deriveBeliefId(raw.domain, raw.statement) })
-    }
-  }
-  return out
-}
-
 // ---------------------------------------------------------------------------
 // Map RawOp → DreamOp (with before-snapshot for belief_candidate)
 // ---------------------------------------------------------------------------
@@ -537,11 +531,14 @@ export const DreamReasonerDefault: Layer.Layer<
     // account → no env overlay, no options.model → today's behavior exactly.
     const dreamModel = resolveReasonerModel("LUNA_DREAM_MODEL")
 
-    // Native structured output gate (default OFF). When on, each dream turn is
-    // issued with an outputFormat json_schema and we consume the SDK's validated
-    // structured_output; when off, behavior is byte-identical to before. Applies
-    // uniformly to pass 1 AND the sampling extras so agreement stays meaningful.
-    const structuredOutputEnabled = reasonerStructuredOutputEnabled()
+    // Native structured output gate. DEFAULT ON whenever dreamModel's resolved
+    // provider profile supports structured output (laneSupportsStructuredOutput,
+    // via @luna/core's provider-profile registry) - the "default" lane (anthropic)
+    // and google both qualify today; a "none" lane falls back to prompt-and-parse
+    // exactly as before. LUNA_REASONER_STRUCTURED_OUTPUT overrides in EITHER
+    // direction: force it on to try a lane ahead of the capability check, or off
+    // to roll back instantly if dream's op-validation failure rate rises.
+    const structuredOutputEnabled = reasonerStructuredOutputEnabled(dreamModel)
 
     /**
      * The SDK package ships per-arch native binaries under
@@ -568,9 +565,9 @@ export const DreamReasonerDefault: Layer.Layer<
     // the V2 JobTicker (kind:"dream" -> DreamWorker), whose per-dispatch
     // backstop deadline interrupts an overrunning CHUNK; runDream commits the
     // watermark per chunk, so an interrupted chunk cleanly re-runs next
-    // dispatch. This timeout is the inner per-SDK-call ceiling (also covers
-    // the sampling extras phase) so a wedged turn can't hold the worker until
-    // the ticker kills it. Overridable via env; defaults to 10 min.
+    // dispatch. This timeout is the inner per-SDK-call ceiling so a wedged
+    // turn can't hold the worker until the ticker kills it. Overridable via
+    // env; defaults to 10 min.
     //
     // job-ticker-oban-deadlines (Seam 1): the ticker's `grace` window (which
     // lets a worker's OWN inner timeout fire first, on its own typed
@@ -590,23 +587,9 @@ export const DreamReasonerDefault: Layer.Layer<
       return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_QUERY_TIMEOUT_MS
     })()
 
-    // Slice B (MEASURE-ONLY): the number of UNSEEDED reasoning passes N for the
-    // sampling-agreement signal. Read at layer-build time (same pattern as the
-    // timeout above). An EXPLICIT finite value < 1 (e.g. "0", "-1" — the natural
-    // "disable sampling" spellings) clamps to 1 = sampling OFF, honoring the
-    // operator's opt-out; only an absent/non-numeric value falls back to the
-    // default. Upper-clamped so a misconfiguration cannot flood SDK queries.
-    const dreamSamples = (() => {
-      const raw = process.env["LUNA_DREAM_SAMPLES"]?.trim()
-      if (!raw) return DEFAULT_DREAM_SAMPLES
-      const n = Number(raw)
-      if (!Number.isFinite(n)) return DEFAULT_DREAM_SAMPLES
-      return Math.max(1, Math.min(Math.trunc(n), MAX_DREAM_SAMPLES))
-    })()
-
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
-        const prompt = buildDreamPrompt(inputs)
+        const prompt = buildDreamPrompt(inputs, structuredOutputEnabled)
 
         // Pre-flight token budget gate (issue #255): distillation bounds each
         // session/memory scope, but a pathological input can still overflow the
@@ -628,28 +611,17 @@ export const DreamReasonerDefault: Layer.Layer<
         yield* Effect.logInfo("[luna/dream] reasoner.reason: starting", {
           sessions: inputs.sessions.length,
           memories: inputs.memories.length,
-          samples: dreamSamples,
           dreamModel: dreamModel ?? "(default)",
           pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
         })
 
-        // ── PASS 1 — the PRIVILEGED "today's path" (SOLE materializer) ────────
-        // Issued FIRST and SEQUENTIALLY, NOT inside any concurrency: brokered
-        // turn → parseRawOps → materializeOp, EXACTLY as the single-pass impl.
-        // A pass-1 failure (timeout/parse/SDK error) propagates as today's
-        // DreamError — no new failure modes. (Locking pass-1 as the first
-        // sdk.query() call is also what makes the integration test's
-        // confidence===0.85 assertion deterministic against the fake's closure
-        // counter.)
+        // ── PASS 1 — the SOLE materializer ─────────────────────────────────────
+        // Brokered turn → parseRawOps → materializeOp.
         //
         // One brokered turn (shared with wake-reasoner): scoped acquire so the
         // broker's inFlight finalizer fires at turn end, the model-gate +
         // provider env-overlay options fragment, and usage / rate-limit
         // reporting so chain budgets and 429 failover apply to this lane.
-        // Pass 1 AND the sampling extras below share this thunk so every pass
-        // samples the SAME model/provider lane (agreement over mixed providers
-        // would be meaningless) and every pass is metered — the N× nightly
-        // sampling cost lands in the spend meter, not off the books.
         const runDreamTurn = () =>
           runBrokeredReasonerTurn({
             sdk,
@@ -700,8 +672,7 @@ export const DreamReasonerDefault: Layer.Layer<
         // Prefer the SDK's schema-validated structured_output; fall back to
         // parsing the text result. structuredOutput is only ever present when
         // the gate is on AND the provider honored outputFormat — otherwise this
-        // is exactly the prior parseRawOps(text) path. Shared by pass 1 and the
-        // sampling extras so every pass is validated identically.
+        // is exactly the prior parseRawOps(text) path.
         const opsFromTurn = (
           turn: BrokeredTurnResult,
         ): Effect.Effect<ReadonlyArray<RawOp>, DreamError> =>
@@ -717,98 +688,10 @@ export const DreamReasonerDefault: Layer.Layer<
           ops.push(op)
         }
 
-        // ── PASSES 2..N — MEASUREMENT-ONLY extras (never materialize) ─────────
-        // COST IS CONTINGENT ON THE SINK: the only consumer of the agreement
-        // signal is the calibration log, so extras run ONLY when (a) a
-        // CalibrationStore is actually present in the ambient context (else the
-        // data is dropped on the floor — paying ~N× SDK cost for nothing),
-        // (b) N >= 2 was configured, and (c) pass 1 produced at least one
-        // belief_candidate (agreement can only ever attach to pass-1 belief
-        // ops — on a no-candidate night extras would be pure waste).
-        // serviceOption keeps reason()'s R channel unchanged.
-        const calOpt = yield* Effect.serviceOption(CalibrationStore)
-        const pass1HasCandidates = pass1Raw.some(
-          (r) => r.kind === "belief_candidate",
-        )
-        const samplingActive =
-          Option.isSome(calOpt) && dreamSamples >= 2 && pass1HasCandidates
-        if (dreamSamples >= 2 && !samplingActive) {
-          yield* Effect.logInfo(
-            `[luna/dream] reasoner.reason: sampling extras SKIPPED (` +
-              `${Option.isNone(calOpt) ? "no CalibrationStore sink" : "no pass-1 belief candidates"})`,
-          )
-        }
-
-        // Run AFTER pass 1, concurrently with EACH OTHER. Each extra swallows
-        // ALL failures AND defects (timeout/parse/SDK error/sync throw — a
-        // plain catchAll would miss defects and fail the turn after pass 1
-        // already succeeded) → `null`, lowering the effective N. The whole
-        // extras phase shares ONE additional dreamTimeoutMs deadline, so the
-        // turn's wall-clock ceiling is ≤ 2× dreamTimeoutMs REGARDLESS of N
-        // (without it, batching makes the ceiling (1 + ceil((N-1)/4)) ×
-        // timeout). On phase timeout the completed batches are discarded and
-        // the turn degrades to no sampling fields — never fails.
-        const extraCount = samplingActive ? dreamSamples - 1 : 0
-        const extraResults =
-          extraCount === 0
-            ? []
-            : yield* Effect.all(
-                Array.from({ length: extraCount }, () =>
-                  runDreamTurn().pipe(
-                    Effect.flatMap(opsFromTurn),
-                    Effect.map(
-                      (raw): ReadonlyArray<{ readonly beliefId: string }> | null =>
-                        beliefIdsOf(raw),
-                    ),
-                    // RESILIENCE: an extra-pass failure is SKIPPED — failures
-                    // AND defects — it only lowers the effective N.
-                    Effect.catchAllCause(() => Effect.succeed(null)),
-                  ),
-                ),
-                { concurrency: DREAM_SAMPLE_CONCURRENCY },
-              ).pipe(
-                Effect.timeout(dreamTimeoutMs),
-                Effect.catchAll(() =>
-                  Effect.succeed(
-                    [] as ReadonlyArray<ReadonlyArray<{ readonly beliefId: string }> | null>,
-                  ),
-                ),
-              )
-
-        // ── Agreement over ALL surviving passes (pass 1 + surviving extras) ───
-        // sampleCount = the number of passes that did NOT error (an empty-but-
-        // successful pass still counts toward the denominator). computeAgreement
-        // owns the degenerate-N sentinel: with < 2 surviving passes it returns
-        // an EMPTY map, so the fields below stay ABSENT (identical to Slice A)
-        // rather than logging a meaningless constant-1 "agreement".
-        const survivingExtras = extraResults.filter(
-          (r): r is ReadonlyArray<{ readonly beliefId: string }> => r !== null,
-        )
-        const pass1Ids = beliefIdsOf(pass1Raw)
-        const passes: ReadonlyArray<ReadonlyArray<{ readonly beliefId: string }>> =
-          [pass1Ids, ...survivingExtras]
-        const agreement = computeAgreement(passes)
-
-        // Attach the MEASURE-ONLY sampling fields to each PASS-1 belief_candidate
-        // op. targetId IS the beliefId. The materialized belief + its verbalized
-        // confidence are UNCHANGED — these fields are additive logging metadata
-        // (absent whenever the agreement map is empty).
-        const withSampling: ReadonlyArray<DreamOp> = ops.map((op) => {
-          if (op.kind !== "belief_candidate") return op
-          const m = agreement.get(op.targetId)
-          if (m === undefined) return op
-          return {
-            ...op,
-            sampledConfidence: m.sampledConfidence,
-            sampleCount: m.sampleCount,
-          }
-        })
-
         yield* Effect.logInfo(
-          `[luna/dream] reasoner.reason: returning ${withSampling.length} op(s) ` +
-            `(N=${passes.length} effective sample(s))`,
+          `[luna/dream] reasoner.reason: returning ${ops.length} op(s)`,
         )
-        return withSampling
+        return ops
       })
 
     return { reason } satisfies DreamReasonerApi

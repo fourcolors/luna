@@ -1,28 +1,36 @@
 // @vitest-environment jsdom
 //
-// Behavioral tests for the SlashMenu engine in chat.html — the UI-owned slash
-// command menu driven by window.LunaCapabilities (the bundled @luna/capabilities).
+// Behavioral tests for the SlashMenu engine in src/chat/SlashMenu.tsx - the
+// UI-owned slash command menu driven by window.LunaCapabilities (the bundled
+// @luna/capabilities). Mounted into chat.html via chat-harness.ts.
 // Uses the same __MoonInternals harness as composer-config.test.ts.
 //
 // Coverage: open/filter on '/', kind-exclusion, arrow-nav highlight, Tab complete,
 // Enter accept + dispatch, Esc (does not reach voice), mousedown accept, and the
 // handleSubmit intercept for typed "/cmd args".
+//
+// Also covers src/chat/SmartBarEngine.tsx (stack23 S16d) - the composer's
+// context-pill Smart Bar - driven through the SAME `internals().handleFrame`
+// seam composer-config.test.ts's own `smart-bar`-frame test uses. These are
+// the VANILLA-IDENTICAL differential probes: written and confirmed green
+// against chat.html's former vanilla `SmartBarEngine` object BEFORE the S16d
+// port, then reconfirmed green after - see SmartBarEngine.tsx's module doc
+// for the one enumerated invisible-only delta (JSX's auto-escaping replacing
+// the vanilla object's manual `_esc`).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
+import {
+  evalChatInlineScriptWithBridge,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  readChatHtml,
+} from './helpers/chat-harness'
 
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
-
-describe('SlashMenu (chat.html)', () => {
+describe('SlashMenu (src/chat/SlashMenu.tsx)', () => {
   let mockMe: any
 
   beforeEach(() => {
-    const htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    const htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
 
     mockMe = {
       label: 'chat-test',
@@ -47,11 +55,7 @@ describe('SlashMenu (chat.html)', () => {
 
     localStorage.clear()
 
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    evalChatInlineScriptWithBridge()
 
     vi.useFakeTimers()
   })
@@ -60,11 +64,14 @@ describe('SlashMenu (chat.html)', () => {
     document.body.innerHTML = ''
     delete (window as any).__TAURI__
     delete (window as any).__MoonInternals
+    delete (window as any).LunaChatHost
     delete (window as any).LunaProtocol
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
     delete (window as any).LunaCapabilities
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
     vi.restoreAllMocks()
     vi.useRealTimers()
   })
@@ -77,6 +84,7 @@ describe('SlashMenu (chat.html)', () => {
     WebSocketEngine: any
     State: any
     Attachments: any
+    SmartBarEngine: any
     handleFrame: (f: any) => void
   }
 
@@ -324,6 +332,64 @@ describe('SlashMenu (chat.html)', () => {
     expect(append.mock.calls.some((c: any[]) => /multiple models/.test(String(c[1])))).toBe(true)
   })
 
+  // ── no-arg pickers: hand off to the REAL ComposerConfig bridge ──
+  // dispatchModel/dispatchEffort's no-arg branch (SlashMenu.tsx:489-508)
+  // reaches into the SAME #model-cfg-menu/#effort-cfg-menu nodes
+  // ComposerConfig.tsx owns roots on, deferred one tick via setTimeout(0) so
+  // the mouse-accept path's trailing document 'click' closer runs first -
+  // driven here through the real bridge, not a stub, per this slice's NOTE.
+  it('bare "/model" opens the picker via the REAL ComposerConfig bridge after setTimeout(0)', () => {
+    seedModels([{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }])
+    const rebuild = vi.spyOn(internals().ComposerConfig, '_rebuildModelMenu')
+    const modelMenu = document.getElementById('model-cfg-menu') as HTMLElement
+    const modelBtn = document.getElementById('model-cfg-btn') as HTMLElement
+    input().value = '/model'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(modelMenu.classList.contains('open')).toBe(false) // deferred, not yet
+    vi.advanceTimersByTime(0)
+    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(modelMenu.classList.contains('open')).toBe(true)
+    expect(modelMenu.getAttribute('aria-hidden')).toBe('false')
+    expect(modelBtn.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('bare "/effort" opens the picker via the REAL ComposerConfig bridge when available', () => {
+    const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }]
+    seedModels(models)
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    internals().ComposerConfig.applyModels(models)
+    internals().ComposerConfig.applyCapability(true) // re-gates effortCfgBtn.hidden, mirrors composer-config.test.ts
+    expect((document.getElementById('effort-cfg-btn') as HTMLButtonElement).hidden).toBe(false) // precondition
+    const rebuild = vi.spyOn(internals().ComposerConfig, '_rebuildEffortMenu')
+    const effortMenu = document.getElementById('effort-cfg-menu') as HTMLElement
+    const effortBtn = document.getElementById('effort-cfg-btn') as HTMLElement
+    input().value = '/effort'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(effortMenu.classList.contains('open')).toBe(false) // deferred, not yet
+    vi.advanceTimersByTime(0)
+    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(effortMenu.classList.contains('open')).toBe(true)
+    expect(effortMenu.getAttribute('aria-hidden')).toBe('false')
+    expect(effortBtn.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('bare "/effort" warns instead of opening when effortCfgBtn.hidden is true (dom.effortBtn.hidden read as truth)', () => {
+    const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }]
+    seedModels(models, false) // effortSelection:false
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    internals().ComposerConfig.applyModels(models)
+    internals().ComposerConfig.applyCapability(false)
+    expect((document.getElementById('effort-cfg-btn') as HTMLButtonElement).hidden).toBe(true) // precondition
+    const rebuild = vi.spyOn(internals().ComposerConfig, '_rebuildEffortMenu')
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    input().value = '/effort'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    vi.advanceTimersByTime(0)
+    expect(rebuild).not.toHaveBeenCalled()
+    expect(document.getElementById('effort-cfg-menu')!.classList.contains('open')).toBe(false)
+    expect(append.mock.calls.some((c: any[]) => /not available for the current model/.test(String(c[1])))).toBe(true)
+  })
+
   // ── a11y + focus ──
   it('aria-expanded + aria-activedescendant live on the textarea, not the listbox', () => {
     typeInComposer('/')
@@ -486,5 +552,190 @@ describe('SlashMenu (chat.html)', () => {
     internals().handleFrame({ type: 'hello', protocolVersion: 2, capabilities: { commands: true }, availableModels: [] })
     typeInComposer('/')
     expect(items().map((el) => el.getAttribute('data-command'))).not.toContain('interrupt')
+  })
+
+  // ── RULING R3 regression: the /help line is ORACLE-PINNED product copy ──
+  it('the /help output line for a known command is em-dash separated (ORACLE-PINNED, RULING R3)', () => {
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    input().value = '/help'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    const helpMsg = append.mock.calls.map((c: any[]) => String(c[1])).find((m) => /Available commands/.test(m))
+    expect(helpMsg).toContain('/clear — Start a new conversation')
+  })
+
+  // ── Seam pins: window.LunaChatHost (stack23 S16c-host) degrades, never throws ──
+  //
+  // Object.freeze forbids deleting a single member off the live host, so both
+  // pins below swap the WHOLE window.LunaChatHost global instead of poking one
+  // accessor - see chat-host.ts's HOST_ABSENT fallback and the standing
+  // late-bound-read rule (chat.html's own construction-site comment).
+  it('with the capability provider gone, the menu builds only local commands without throwing', () => {
+    // RETARGETED at the frame layer (stack23 S20b). The backend catalog used
+    // to live in chat.html behind LunaChatHost.backendCapabilities, so
+    // deleting the host was how you simulated "no backend commands". The
+    // provider moved to frames.ts with the `hello` handler that clears it, so
+    // the honest equivalent is emptying THAT - deleting the host now only
+    // removes state reads and the wire, which is a different scenario.
+    sendCapCatalog([interruptCap])
+    vi.spyOn(internals().frames, 'backendCapabilities').mockReturnValue([])
+    expect(() => typeInComposer('/')).not.toThrow()
+    expect(items().map((el) => el.getAttribute('data-command'))).toEqual(['clear', 'new', 'help'])
+  })
+
+  it('with executeCapability unavailable, a backend-command dispatch surfaces the host-unavailable warning instead of throwing (RULING 3a: executeCapability is total)', async () => {
+    sendCapCatalog([interruptCap])
+    internals().State.activeThreadId = 'thread-abc'
+    // Swap in a host whose executeCapability resolves the same {ok:false}
+    // shape chat-host.ts's HOST_ABSENT fallback does - backendCapabilities()
+    // stays real so '/interrupt' is still found and routed as executor:'server'.
+    // Stubbed on the FRAME LAYER, which owns executeCapability as of S20b.
+    // backendCapabilities() stays real so '/interrupt' is still found and
+    // routed as executor:'server' - the point is the execute path, not lookup.
+    vi.spyOn(internals().frames, 'executeCapability').mockResolvedValue(
+      { ok: false, error: 'chat host unavailable', reason: 'unavailable' } as never,
+    )
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+    typeInComposer('/interrupt')
+    expect(() => keyInComposer('Enter')).not.toThrow()
+    await Promise.resolve()
+    await Promise.resolve()
+    // The ONE declared test-visible delta from totalizing executeCapability:
+    // an unavailable result now surfaces the warning line rather than
+    // silently doing nothing.
+    expect(append.mock.calls.some((c: any[]) => /⚠️ chat host unavailable/.test(String(c[1])))).toBe(true)
+  })
+
+  // ── SmartBar (src/chat/SmartBarEngine.tsx, stack23 S16d) ──────────────────
+  //
+  // Differential probes for the context-pill Smart Bar, driven through the
+  // real `smart-bar` frame handler (chat.html) -> SmartBarEngine.applyFrame
+  // seam, exactly like a real server push. Ported 1:1 from the vanilla
+  // object's `_render`/`_renderItem` logic - see SmartBarEngine.tsx's module
+  // doc.
+  describe('SmartBar (src/chat/SmartBarEngine.tsx)', () => {
+    const smartBar = () => document.getElementById('smart-bar')!
+    const pills = () => Array.from(smartBar().querySelectorAll('.sb-item'))
+
+    function sendSmartBar(items: any[], threadId = 'thr-1') {
+      internals().handleFrame({ type: 'smart-bar', threadId, version: 1, items })
+    }
+
+    it('the bar is hidden on load', () => {
+      expect(smartBar().hidden).toBe(true)
+    })
+
+    it('a single info item renders one pill and unhides the bar', () => {
+      sendSmartBar([{ id: 'git.worktree', kind: 'info', label: 'branch', value: 'main', icon: '⎇' }])
+      expect(smartBar().hidden).toBe(false)
+      expect(pills()).toHaveLength(1)
+      const pill = pills()[0]
+      expect(pill.querySelector('.sb-lbl')!.textContent).toBe('branch')
+      expect(pill.querySelector('.sb-val')!.textContent).toBe('main')
+      expect(pill.querySelector('.sb-ic')!.textContent).toBe('⎇')
+    })
+
+    it('non-"info" kinds are silently skipped (v1: info only)', () => {
+      sendSmartBar([{ id: 'x', kind: 'warning', label: 'a', value: 'b' }])
+      expect(smartBar().hidden).toBe(true)
+      expect(pills()).toHaveLength(0)
+    })
+
+    it('sorts rendered pills by group then priority (lower priority number = leftmost)', () => {
+      sendSmartBar([
+        { id: 'b', kind: 'info', group: 'z', priority: 1, value: 'B' },
+        { id: 'a', kind: 'info', group: 'a', priority: 2, value: 'A2' },
+        { id: 'c', kind: 'info', group: 'a', priority: 1, value: 'A1' },
+      ])
+      expect(pills().map((p) => p.querySelector('.sb-val')!.textContent)).toEqual(['A1', 'A2', 'B'])
+    })
+
+    it('an item with no priority sorts after prioritized items in the same group (default 999)', () => {
+      sendSmartBar([
+        { id: 'a', kind: 'info', group: 'g', value: 'no-priority' },
+        { id: 'b', kind: 'info', group: 'g', priority: 1, value: 'has-priority' },
+      ])
+      expect(pills().map((p) => p.querySelector('.sb-val')!.textContent)).toEqual(['has-priority', 'no-priority'])
+    })
+
+    it('the git.worktree item gets the flagship accent class; others do not', () => {
+      sendSmartBar([
+        { id: 'git.worktree', kind: 'info', value: 'main' },
+        { id: 'other', kind: 'info', value: 'x' },
+      ])
+      expect(pills()[0]!.classList.contains('sb-flagship')).toBe(true)
+      expect(pills()[1]!.classList.contains('sb-flagship')).toBe(false)
+    })
+
+    it('tone "good"/"warn" map to sb-good/sb-warn; a plain item gets neither', () => {
+      sendSmartBar([
+        { id: 'ok', kind: 'info', value: '1', tone: 'good' },
+        { id: 'bad', kind: 'info', value: '2', tone: 'warn' },
+        { id: 'plain', kind: 'info', value: '3' },
+      ])
+      const [ok, warn, plain] = pills()
+      expect(ok!.classList.contains('sb-good')).toBe(true)
+      expect(warn!.classList.contains('sb-warn')).toBe(true)
+      expect(plain!.classList.contains('sb-good')).toBe(false)
+      expect(plain!.classList.contains('sb-warn')).toBe(false)
+    })
+
+    it('a tooltip becomes the pill\'s title attribute; no tooltip means no title attribute', () => {
+      sendSmartBar([
+        { id: 'x', kind: 'info', value: '1', tooltip: 'hover text' },
+        { id: 'y', kind: 'info', value: '2' },
+      ])
+      const [withTip, withoutTip] = pills()
+      expect(withTip!.getAttribute('title')).toBe('hover text')
+      expect(withoutTip!.hasAttribute('title')).toBe(false)
+    })
+
+    it('omits the icon/label/value spans entirely when the item omits them (not just empties them)', () => {
+      sendSmartBar([{ id: 'x', kind: 'info' }])
+      const pill = pills()[0]!
+      expect(pill.querySelector('.sb-ic')).toBeNull()
+      expect(pill.querySelector('.sb-lbl')).toBeNull()
+      expect(pill.querySelector('.sb-val')).toBeNull()
+    })
+
+    it('a value of 0 still renders (present-but-falsy, not treated as absent)', () => {
+      sendSmartBar([{ id: 'x', kind: 'info', value: 0 }])
+      expect(pills()[0]!.querySelector('.sb-val')!.textContent).toBe('0')
+    })
+
+    it('a later frame REPLACES the bar wholesale, it does not merge with the previous one', () => {
+      sendSmartBar([
+        { id: 'a', kind: 'info', value: '1' },
+        { id: 'b', kind: 'info', value: '2' },
+      ])
+      expect(pills()).toHaveLength(2)
+      sendSmartBar([{ id: 'c', kind: 'info', value: '3' }])
+      expect(pills()).toHaveLength(1)
+      expect(pills()[0]!.querySelector('.sb-val')!.textContent).toBe('3')
+    })
+
+    it('an empty items array hides the bar again', () => {
+      sendSmartBar([{ id: 'a', kind: 'info', value: '1' }])
+      expect(smartBar().hidden).toBe(false)
+      sendSmartBar([])
+      expect(smartBar().hidden).toBe(true)
+    })
+
+    it('HTML-special characters in label/value render as literal text, never as markup', () => {
+      sendSmartBar([{ id: 'x', kind: 'info', label: '<b>&"', value: '<i>tag</i>' }])
+      const pill = pills()[0]!
+      expect(pill.querySelector('.sb-lbl')!.textContent).toBe('<b>&"')
+      expect(pill.querySelector('.sb-val')!.textContent).toBe('<i>tag</i>')
+      expect(pill.querySelector('.sb-val')!.querySelector('i')).toBeNull() // never parsed as an element
+    })
+
+    it('a malformed frame (items missing/non-array) degrades to an empty, hidden bar without throwing', () => {
+      sendSmartBar([{ id: 'a', kind: 'info', value: '1' }])
+      expect(smartBar().hidden).toBe(false)
+      expect(() => internals().handleFrame({ type: 'smart-bar', threadId: 'thr-1', version: 1 })).not.toThrow()
+      expect(smartBar().hidden).toBe(true)
+      expect(pills()).toHaveLength(0)
+    })
   })
 })

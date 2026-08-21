@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type { SecretRequestBridge } from "@luna/ui-ws"
 import type {
   AnyZodRawShape,
@@ -60,25 +60,16 @@ const createSecretToolsConfig = (
     }
   }
 
-  const tools = makeSecretTools(bridge, currentThreadId)
-  const server = buildSecretToolsMcpServer(tools)
-
-  return {
-    serverName: "secret_tools",
-    server,
-    systemPromptAddendum: SECRET_TOOLS_SYSTEM_PROMPT_ADDENDUM,
-    bindSession,
-    clearSession,
-  }
-}
-
-export const buildSecretToolsMcpServer = (
-  tools: ReturnType<typeof makeSecretTools>,
-): McpSdkServerConfigWithInstance => {
-  const widened = tools as unknown as ReadonlyArray<
+  const tools = makeSecretTools(bridge, currentThreadId) as unknown as ReadonlyArray<
     SdkMcpToolDefinition<AnyZodRawShape>
   >
-  return makeSdkMcpServer("secret_tools", "0.1.0", widened)
+  const config = defineToolPackage({
+    name: "secret_tools",
+    tools,
+    addendum: SECRET_TOOLS_SYSTEM_PROMPT_ADDENDUM,
+  })
+
+  return { ...config, serverName: "secret_tools", bindSession, clearSession }
 }
 
 export const SecretToolsLayer = (

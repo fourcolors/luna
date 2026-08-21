@@ -33,16 +33,19 @@
  * the covering tests assert on native <select> semantics (.value,
  * 'change' events).
  */
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { Button, HStack, Text, TextInput, VStack } from "../../astryx-kit"
 import { useLocalStore, useMoonSelector } from "../../state/store"
 import {
   capitalize,
   initialConnectionPanelState,
+  MACHINE_TARGET_OPTIONS,
   reduceConnectionPanel,
+  urlForMachineTarget,
   type ChannelOption,
   type ConnectionPanelAction,
   type ConnectionPanelState,
+  type MachineTarget,
 } from "./connectionReducer"
 import type { PanelCtx } from "../panel-ctx"
 
@@ -51,7 +54,9 @@ import type { PanelCtx } from "../panel-ctx"
  *  `title: 'Connection'`. */
 export const PANEL_TITLE = "Connection"
 
-const DEFAULT_WS_URL = "ws://127.0.0.1:4753/ui"
+/** Fallback when Custom is selected and the URL field is empty. Prefer
+ *  jax-box (installer default) over loopback — This Mac is an explicit target. */
+const DEFAULT_WS_URL = urlForMachineTarget("jax-box", "stable")
 
 /**
  * moon-session.js (frontend/vendor/moon-session.js) attaches this classic
@@ -64,6 +69,14 @@ declare global {
   interface Window {
     MoonSession?: {
       listRoutes: () => Promise<{ default?: string; routes?: unknown[] } | null>
+      /**
+       * moon-session.js's wrapper around the `set_default_route` Tauri
+       * command. NEVER rejects: it swallows a Rust `Err` into
+       * `console.warn` and resolves `false` (see moon-session.js). The
+       * boolean return is therefore the ONLY refusal signal - a `.catch`
+       * on this call is dead code (plan Step 1a's named trap).
+       */
+      setDefaultRoute?: (routeKey: string) => Promise<boolean>
     }
   }
 }
@@ -72,6 +85,15 @@ interface ListedRoute {
   key?: unknown
   name?: unknown
   label?: unknown
+}
+
+/** Shape of `load_route`'s RouteInfo (client_config.rs), narrowed to the
+ *  one field guard 2 still needs directly: `endpoints[0]`, for the honest
+ *  URL shown on an unpaired refusal (F2a - see handleChannelChange).
+ *  Resolvability itself is no longer inspected here - `resolve_route_token`
+ *  (Step 1b) decides that server-side, in the ONE place it happens. */
+interface LoadedRouteInfo {
+  endpoints?: unknown
 }
 
 function routesToOptions(routes: unknown[]): ChannelOption[] {
@@ -93,6 +115,16 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
     initialConnectionPanelState(),
   )
   const state = useMoonSelector(store, (snapshot) => snapshot)
+
+  // F4 (opus review): a plain ref, NOT reducer state - state reads inside a
+  // handler are render-captured (a stale closure once an await yields), so
+  // only a ref is live enough to detect "a newer switch started while I was
+  // awaiting". Bumped once per handleChannelChange call; every checkpoint
+  // after an await re-reads it and abandons silently (no dispatch, no
+  // further writes) the moment it no longer matches what this call bumped
+  // it to - the invariant is that only the LATEST-STARTED call's writes are
+  // ever allowed to land, regardless of which call's promises settle first.
+  const inFlightGenRef = useRef(0)
 
   useEffect(() => {
     ctx.invoke("load_connection").then((conn) => {
@@ -121,9 +153,20 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
             options: routesToOptions(result.routes),
             defaultKey: typeof result.default === "string" ? result.default : null,
           })
+        } else {
+          // listRoutes returned nothing useful → confirmed un-migrated (F3:
+          // routesKnown "unknown" → "none", never left dangling).
+          store.dispatch({ type: "routes-unavailable" })
         }
-        // listRoutes returned nothing useful → un-migrated; leave fallback.
-      }).catch(() => { /* listRoutes rejected → leave fallback options in place. */ })
+      }).catch(() => {
+        // listRoutes rejected → same as "nothing useful": confirmed
+        // un-migrated, not left "unknown" forever.
+        store.dispatch({ type: "routes-unavailable" })
+      })
+    } else {
+      // No MoonSession/listRoutes at all (off-Tauri, or an old build) →
+      // confirmed un-migrated immediately; nothing async to wait for (F3).
+      store.dispatch({ type: "routes-unavailable" })
     }
     // ctx/store are stable for this component's lifetime (useLocalStore
     // memoizes the store; ctx is panel.html's single window.__panelCtx) -
@@ -131,20 +174,185 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function handleChannelChange(next: string): void {
+  /**
+   * Step 1a (docs/next/routes-and-view-mode-plan.md): once client.toml
+   * routes are known (routesKnown === "routes"), the switch becomes a
+   * GUARDED dual write instead of a bare set_active_profile call. The
+   * un-migrated world (routesKnown === "none") keeps the byte-identical
+   * legacy path; "unknown" (boot still discovering routes, F3) is refused
+   * outright rather than guessed at.
+   *
+   * F2 pins two DIFFERENT honest outcomes for a refusal:
+   *   (a) UNPAIRED (guard 2 finds no resolvable token): the selection STAYS
+   *       on the target - this is the pairing UX, paste a token and Save
+   *       (which always targets the selected channel - see handleSave),
+   *       then retry - but the displayed URL/token fields update to the
+   *       TARGET route's real endpoint and an empty token, never the old
+   *       channel's stale creds shown under the new channel's name.
+   *   (b) EVERY OTHER refusal (unknown route, an invoke throwing, or
+   *       setDefaultRoute resolving false): the selector REVERTS to
+   *       `previousChannel` - the switch did not happen, so the UI must not
+   *       keep claiming it did.
+   */
+  async function handleChannelChange(next: string): Promise<void> {
+    const previousChannel = state.channel
+    // F4: bump the in-flight generation before any dispatch or await. Every
+    // checkpoint below re-checks this after an await and abandons silently
+    // (no dispatch, no further invoke calls) the instant it no longer holds
+    // the latest value - see inFlightGenRef's doc comment.
+    const myGen = ++inFlightGenRef.current
+    const superseded = () => inFlightGenRef.current !== myGen
+
     store.dispatch({ type: "channel-selected", channel: next })
-    ctx.invoke("set_active_profile", { name: next }).then((creds) => {
-      const c = creds as { wsUrl?: unknown; wsToken?: unknown } | null
+
+    if (state.routesKnown === "unknown") {
+      // F3 defense in depth: the selector is disabled while "unknown" (see
+      // the JSX below), so a real user cannot reach this - only a
+      // programmatic driver (a race, or a test) can. Refuse and revert
+      // exactly like any other non-pairing refusal (F2b) rather than ever
+      // guessing which branch (guarded vs legacy) applies.
       store.dispatch({
-        type: "profile-switch-succeeded",
-        wsUrl: c && typeof c.wsUrl === "string" ? c.wsUrl : "",
-        wsToken: c && typeof c.wsToken === "string" ? c.wsToken : "",
+        type: "profile-switch-failed",
+        message: `Couldn't switch to "${next}": still discovering routes`,
+        revertTo: previousChannel,
       })
-      ctx.invoke("hub_event", { name: "profile-changed" }).catch(() => {})
-    }).catch((e) => {
+      return
+    }
+
+    if (state.routesKnown === "none") {
+      // Un-migrated world (b): byte-compatible with the pre-Step-1a
+      // behavior - no generation guard, no disabling. A single un-guarded
+      // write cannot leave the two stores half-moved the way the guarded
+      // dual write can, so F4's race has nothing to protect here.
+      ctx.invoke("set_active_profile", { name: next }).then((creds) => {
+        const c = creds as { wsUrl?: unknown; wsToken?: unknown } | null
+        store.dispatch({
+          type: "profile-switch-succeeded",
+          wsUrl: c && typeof c.wsUrl === "string" ? c.wsUrl : "",
+          wsToken: c && typeof c.wsToken === "string" ? c.wsToken : "",
+        })
+        ctx.invoke("hub_event", { name: "profile-changed" }).catch(() => {})
+      }).catch((e) => {
+        const reason = e instanceof Error ? e.message : String(e)
+        store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}` })
+      })
+      return
+    }
+
+    // routesKnown === "routes" from here on: the guarded dual write.
+    store.dispatch({ type: "switch-started" })
+
+    // GUARD 1, target must be a route key. Defense in depth, not the primary
+    // gate: the Step 1a reducer quarantine means channelOptions is EXACTLY
+    // the route keys once routesKnown, so a non-route-key value can only
+    // reach here via stale DOM state or a race, never normal use.
+    if (!state.channelOptions.some((o) => o.value === next)) {
+      store.dispatch({
+        type: "profile-switch-failed",
+        message: `Couldn't switch to "${next}": not a known route`,
+        revertTo: previousChannel,
+      })
+      store.dispatch({ type: "switch-settled" })
+      return
+    }
+
+    // GUARD 2, the route's token must be resolvable before committing to it.
+    // Resolution now lives in ONE place: connection.rs's resolve_route_token
+    // (Step 1b, docs/next/routes-and-view-mode-plan.md) - no more mirroring
+    // connection.rs's sentinel logic on the frontend. load_route is still
+    // needed here for `endpoints[0]`, which the pairing prompt (F2a) shows.
+    let route: LoadedRouteInfo | null
+    try {
+      route = (await ctx.invoke("load_route", { routeKey: next })) as LoadedRouteInfo | null
+    } catch (e) {
+      if (superseded()) return
       const reason = e instanceof Error ? e.message : String(e)
-      store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}` })
+      store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}`, revertTo: previousChannel })
+      store.dispatch({ type: "switch-settled" })
+      return
+    }
+    if (superseded()) return
+
+    const routeEndpoint = route && Array.isArray(route.endpoints) && typeof route.endpoints[0] === "string"
+      ? route.endpoints[0]
+      : ""
+
+    try {
+      await ctx.invoke("resolve_route_token", { routeKey: next })
+    } catch (e) {
+      if (superseded()) return
+      const reason = e instanceof Error ? e.message : String(e)
+      if (reason.startsWith("not-paired:")) {
+        // F2(a): UNPAIRED refusal. Selection stays on `next` (already
+        // dispatched above); the fields shown are the TARGET route's real
+        // endpoint and an EMPTY token - never the previous channel's creds,
+        // which would describe the wrong server under the new channel's name.
+        store.dispatch({
+          type: "pairing-prompted",
+          message: `"${next}" is not paired yet - paste a token and save to pair it`,
+          wsUrl: routeEndpoint,
+        })
+      } else {
+        // Every other cause (store-read, route-missing, unresolvable-scheme,
+        // route-config-invalid) is a durable refusal a retry from here
+        // cannot fix - F2(b): the selector reverts.
+        store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}`, revertTo: previousChannel })
+      }
+      store.dispatch({ type: "switch-settled" })
+      return
+    }
+    if (superseded()) return
+
+    // ORDER IS LOAD-BEARING (plan Step 1a). One click writes two files
+    // through two unlocked commands and cannot be atomic across files, so
+    // client.toml's `default` is written LAST: both the URL and the token
+    // key off cfg.default (connection.rs), so whichever file is written
+    // last is the one that decides, and a failure between the two writes
+    // leaves the connect path fully on the OLD route rather than half
+    // switched. set_active_profile goes first for un-migrated-world (b)
+    // coherence and because it returns the creds this panel displays.
+    let creds: { wsUrl?: unknown; wsToken?: unknown } | null
+    try {
+      creds = (await ctx.invoke("set_active_profile", { name: next })) as typeof creds
+    } catch (e) {
+      if (superseded()) return
+      const reason = e instanceof Error ? e.message : String(e)
+      store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}`, revertTo: previousChannel })
+      store.dispatch({ type: "switch-settled" })
+      return
+    }
+    if (superseded()) return
+
+    // MoonSession.setDefaultRoute NEVER rejects (see its type doc above) -
+    // the boolean return is the ONLY refusal signal here.
+    const ms = window.MoonSession
+    const ok = ms && typeof ms.setDefaultRoute === "function" ? await ms.setDefaultRoute(next) : false
+    if (superseded()) return
+    if (!ok) {
+      // F2(b): setDefaultRoute resolving false leaves the two stores
+      // intentionally half-moved - moon-connection.json's activeProfile
+      // already advanced to `next` (set_active_profile above succeeded),
+      // but client.toml's default did not. Default is what rules the
+      // connect path for a migrated user (connection.rs), so the SELECTOR
+      // reverting to `previousChannel` matches what the socket is actually
+      // still doing, even though the activeProfile pointer did move.
+      store.dispatch({
+        type: "profile-switch-failed",
+        message: `Couldn't switch to "${next}": failed to set the default route`,
+        revertTo: previousChannel,
+      })
+      store.dispatch({ type: "switch-settled" })
+      return
+    }
+
+    store.dispatch({
+      type: "profile-switch-succeeded",
+      wsUrl: creds && typeof creds.wsUrl === "string" ? creds.wsUrl : "",
+      wsToken: creds && typeof creds.wsToken === "string" ? creds.wsToken : "",
     })
+    store.dispatch({ type: "switch-settled" })
+    // hub_event fires only after BOTH writes succeeded (plan Step 1a).
+    ctx.invoke("hub_event", { name: "profile-changed" }).catch(() => {})
   }
 
   function handleModelChange(next: string): void {
@@ -168,12 +376,33 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
   }
 
   async function handleSave(): Promise<void> {
-    const url = state.wsUrl.trim() || DEFAULT_WS_URL
+    // Visible URL is authoritative: named targets write into the field; typing
+    // flips to Custom. Fallback only when the field is empty.
+    const url =
+      state.wsUrl.trim() ||
+      (state.machineTarget === "custom"
+        ? DEFAULT_WS_URL
+        : urlForMachineTarget(state.machineTarget, state.channel))
     const token = state.wsToken.trim()
     store.dispatch({ type: "save-start" })
     try {
-      // Rust param names are `url`/`token` (distinct from file JSON keys wsUrl/wsToken).
-      await ctx.invoke("save_connection", { url, token })
+      // Rust param names are `url`/`token` (distinct from file JSON keys
+      // wsUrl/wsToken). `profile` always targets the currently-selected
+      // channel (plan Step 1a) - without it, save_connection falls back to
+      // moon-connection.json's activeProfile (connection.rs), which the
+      // Step 1a quarantine no longer keeps in sync with the selector, so a
+      // token typed while viewing an unpaired route would silently land
+      // under the WRONG profile.
+      //
+      // Unified write: save_connection now also upserts ~/.luna/.env and
+      // client.toml route.<profile>.endpoints[0] so Moon + luna chat agree.
+      // `activate` mirrors `luna pair --activate`.
+      await ctx.invoke("save_connection", {
+        url,
+        token,
+        profile: state.channel,
+        activate: state.activateOnSave,
+      })
       store.dispatch({ type: "save-success" })
       ctx.invoke("hub_event", { name: "connection-changed" }).catch(() => {})
     } catch (e) {
@@ -209,6 +438,13 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
             id="channel-select"
             data-testid="channel-select"
             value={state.channel}
+            // F3: disabled while boot is still discovering routes.
+            // F4: disabled while a guarded switch is in flight, so a second
+            // genuine user interaction cannot start a concurrent one -
+            // reaching a concurrent attempt then needs a programmatic
+            // driver, which the in-flight generation guard also protects
+            // against regardless.
+            disabled={state.routesKnown === "unknown" || state.switching}
             onChange={(e) => handleChannelChange(e.target.value)}
           >
             {state.channelOptions.map((o) => (
@@ -260,13 +496,42 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           </select>
         </HStack>
 
+        <HStack justify="between" align="center" gap={3}>
+          <VStack gap={0}>
+            <Text type="label">Machine</Text>
+            <Text type="supporting">
+              Which box Moon and luna chat dial — jax-box (remote default) or a custom URL.
+              This Mac (127.0.0.1) is disabled until jax-box Connected is proven.
+            </Text>
+          </VStack>
+          <select
+            id="machine-target-select"
+            data-testid="machine-target-select"
+            value={state.machineTarget}
+            disabled={state.saving || state.switching}
+            onChange={(e) =>
+              store.dispatch({
+                type: "machine-target-selected",
+                target: e.target.value as MachineTarget,
+              })
+            }
+          >
+            {MACHINE_TARGET_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </HStack>
+
         <TextInput
           label="WebSocket Server URL"
           description="Luna Central server WebSocket address (for the selected channel)"
           size="sm"
           value={state.wsUrl}
           onChange={(value) => store.dispatch({ type: "url-changed", value })}
-          placeholder={DEFAULT_WS_URL}
+          placeholder={urlForMachineTarget(
+            state.machineTarget === "custom" ? "jax-box" : state.machineTarget,
+            state.channel,
+          )}
           data-testid="ws-url-input"
         />
 
@@ -281,12 +546,31 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           data-testid="ws-token-input"
         />
 
+        <HStack justify="between" align="center" gap={3}>
+          <VStack gap={0}>
+            <Text type="label">Activate this channel</Text>
+            <Text type="supporting">
+              Also switch Moon&apos;s active channel (same as luna pair --activate). Leave off to update creds without hijacking the other channel.
+            </Text>
+          </VStack>
+          <input
+            id="activate-on-save"
+            data-testid="activate-on-save"
+            type="checkbox"
+            checked={state.activateOnSave}
+            disabled={state.saving || state.switching}
+            onChange={(e) =>
+              store.dispatch({ type: "activate-on-save-changed", value: e.target.checked })
+            }
+          />
+        </HStack>
+
         <HStack align="center" gap={3}>
           <Button
             label="Save"
             variant="primary"
             size="sm"
-            isDisabled={state.saving}
+            isDisabled={state.saving || state.switching}
             onClick={handleSave}
             id="save-connection-btn"
             data-testid="save-connection-btn"
@@ -305,7 +589,7 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           <VStack gap={0}>
             <Text type="label">Setup wizard</Text>
             <Text type="supporting">
-              Guided setup - install Luna on this Mac, on a server, or point at one already running
+              First-run only — install Luna on this Mac, on a server, or point at one already running
             </Text>
           </VStack>
           <Button

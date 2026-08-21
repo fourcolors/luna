@@ -771,6 +771,19 @@ are kept indefinitely as deprecated synonyms; new code never writes them.
 Legacy `kind="cron"` rows left in an existing DB are skipped by the ticker (no
 `cron` worker), so they stay inert rather than firing or erroring.
 
+**Unification considered and rejected (2026-08, luna-next Stack 2, slice 09).**
+Merging dream + wake into one `ReflectionJob` was evaluated and blocked on six
+deliberate divergences: cardinality (one nightly row vs one row per
+workspace), storage home (`luna.db` `dream_audit`/`dream_state` vs
+per-workspace `workspace.db` `wake_log`), watermark-ratchet vs stateless
+progress, `DreamOp[]` vs single-`WakeDigest` output, propagate-for-retry vs
+never-fail error policy, and this section's worker-kind split.
+Only the registration/dispatch wrapper is shared
+(`jobs/define-worker.ts`, slice 9a); each worker file keeps its cycle body,
+payload contract, and optional-service folding as plug points.
+Re-opening full unification requires Operator adjudication of all six
+divergences (including a rewrite of this section), not a refactor PR.
+
 #### 5.3.7 Non-goals (V1)
 
 - ~~Retries with backoff~~ - SHIPPED (job-ticker-oban-deadlines): recurring
@@ -1162,6 +1175,26 @@ the current drift.
   contract doesn't apply to ephemeral storage.
 - **Per-backend tuning knobs** (TTL, eviction policy, encryption-at-rest)
   remain backend-private until a real caller demands a uniform surface.
+
+### 10.6 Backend selection is a build-time composition choice, not an env branch
+
+`packages/memory-tools/src/layer.ts` exposes `makeMemoryRouterLayer(backendLayer, backendTag)`.
+It resolves `backendTag` out of `backendLayer` and routes everything ("*") to it, exactly like §10.4's `MemoryLayer({ rules })`.
+This is the seam a different memory backend swaps in through at the router-composition level: pass a different Layer/Tag pair and the resulting `MemoryRouter` is built on that backend, since the router only ever sees the `MemoryBackend` interface (§10.2).
+`makeMemoryRouterLayer`'s `BackendApi` type parameter requires `MemoryVectorBackend` (put/get/query/delete/exportAll/importAll plus `search`), not just `MemoryBackend` - it always builds a single-rule `"*"` router, so a search-less backend would make every `memory_search` call fail at runtime with "no vector backend for namespace X"; the constraint turns that into a compile error instead (S04).
+`MemoryRouterLayer(dbPath)` is a one-line convenience wrapper over it that pins `SqliteVectorBackend` - the shape most callers want, including the chat-server boot path.
+`MemoryToolsLayer`, the Layer that actually boots the memory MCP server the agent's tools run against, accepts an optional `routerLayer` in `MemoryToolsLayerOptions` and uses it instead of calling `MemoryRouterLayer(dbPath)` when a caller sets it (default unchanged) - swapping the backend behind `memory_save`/`memory_search` now means passing a different Layer at a caller, not editing that function (S04).
+`packages/memory-tools/test/router-swap.test.ts` proves this end to end with a second, test-only `MemoryVectorBackend` that never ships in production wiring, driven through `MemoryToolsLayer`'s own registered MCP tool handlers (not the router in isolation).
+`MemoryToolsLayer`'s declared `R` still names `LunaSqliteBootstrap` even when `routerLayer` is set, because the option layers on top of the existing Layer signature rather than narrowing it - a caller wiring a genuinely sqlite-free backend still has to provide `LunaSqliteBootstrapLive` to satisfy the type, even though that backend never touches it (`router-swap.test.ts` does exactly this).
+For the same reason, `MemoryToolsLayer` always builds `embedderL` (default `selectEmbedderLayer()`) even when `routerLayer` needs no `EmbedderService`, because `Layer.provide` builds the layer it's given unconditionally, regardless of whether the layer consuming it actually reads that service - a caller on a host with `LUNA_EMBEDDER=ollama` set and no reachable daemon can fail the whole build for a backend that never embeds, and the workaround is to also pass `embedder` (e.g. `StubEmbedderLayer`) alongside `routerLayer`.
+`memory_search` hardcodes `mode: "hybrid"` (`packages/memory-tools/src/tools.ts:277`), so the seam's real requirement is a *hybrid-capable* `MemoryVectorBackend`, not merely one that implements `search` - `TestVectorBackend` fuses a lexical and a vector-like ranking via RRF for `"hybrid"` and fails with `MemoryBackendError` on modes it does not implement, honoring the MUST at `packages/memory/src/backend.ts:45-49` instead of silently answering every mode with one ranking.
+The compile-time `@ts-expect-error` proof in `packages/memory-tools/test/layer.test.ts` (that a search-less backend can no longer satisfy `makeMemoryRouterLayer`) is now mechanically gated: `packages/memory-tools/tsconfig.json` (S09) covers `src` and `test`, is wired into the root `bun run typecheck` chain in `package.json`, and pulls in the cross-package `packages/memory/test/backend-contract.js` import transitively (no `rootDir` widening needed under `noEmit`) - so `bun run typecheck` now catches a regression that made the search-less backend satisfy the constraint again.
+The CI `Typecheck` step stays `continue-on-error: true` (known-red baseline) until S26 promotes it to a hard gate, so this closes the tsconfig/wiring half of the gap without yet making the check itself block a PR.
+
+There is deliberately no `LUNA_MEMORY_BACKEND`-style environment selector.
+`InMemoryBackend` implements `MemoryBackend` but not `MemoryVectorBackend` (no `search`), so `hasVectorSearch` (`packages/memory/src/backend.ts`) is false for it and every `MemoryRouter.search` call fails - with "no vector backend for namespace X" on the namespaced branch, or "no vector backends registered" on the fan-out branch.
+An env var that could select `in-memory` in a real deployment would be a bootable production config that silently kills `memory_search` - a config-time footgun, not a decoupling win.
+Backend choice stays a call-site decision because the on-disk format differs per backend; swapping backends is a code change (pick the Layer/Tag pair passed to `makeMemoryRouterLayer`), never a runtime flag.
 
 ---
 

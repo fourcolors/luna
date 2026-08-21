@@ -1,0 +1,105 @@
+/**
+ * chat-host.ts - the single reader of `window.LunaChatHost` (see
+ * luna-chat-host.d.ts for the ambient type and chat.html's construction-site
+ * comment for the publish side), plus the two ctx factories every React
+ * component in this directory mounts with.
+ *
+ * `CHAT_HOST_MEMBERS` is the compile-time half of the membership drift
+ * guard: a member added to or removed from `LunaChatHostApi` without a
+ * matching edit here is a missing/excess-property error under `bun run
+ * typecheck` (a CI gate). test/luna-chat-host.parity.test.ts is the runtime
+ * half, asserting the real object chat.html constructs against
+ * `CHAT_HOST_MEMBER_NAMES` - together they catch drift in both directions,
+ * because chat.html's own classic-script block sits outside this app's
+ * tsconfig (`include: ["frontend-react/src/**\/*"]`).
+ *
+ * Every accessor below reads `window.LunaChatHost` at CALL time, never at
+ * module-load or mount time - load-bearing for two reasons: (1) the shipped
+ * page's load order (classic script, then this module) is INVERTED in
+ * test/helpers/chat-harness.ts (React mounts first, the classic script
+ * evaluates after), so an eager read would see `undefined` there; (2)
+ * chat.html's PoolEngine dark flag patches `WebSocketEngine.send` in place
+ * AFTER construction, and several tests spy on `internals().WebSocketEngine.
+ * send` after the host is built - a captured reference would miss both the
+ * patch and the spy.
+ */
+import type { CapabilityDescriptor, ExecuteRequest, ExecuteResult } from "@luna/capabilities"
+import type { ComposerConfigBridge, ComposerConfigCtx } from "./ComposerConfig"
+import type { LunaChatHostApi } from "./luna-chat-host"
+import type { SlashMenuCtx } from "./SlashMenu"
+
+/**
+ * The host lives on `window`, and as of S20d bootChat.ts is what publishes it
+ * rather than chat.html's (now deleted) classic script.
+ *
+ * I FIRST HELD IT IN A MODULE-LOCAL AND THAT WAS WRONG. A module-local
+ * survives `delete window.LunaChatHost`, which is precisely how all eleven
+ * jsdom suites reset between cases - so the previous case's host, with its own
+ * State and its own live engines, leaked into the next one. 68 tests failed in
+ * the file and every one of them passed in isolation.
+ *
+ * The window property IS the lifetime. One window, one host, and tearing the
+ * window down tears the host down with it.
+ */
+export function setChatHost(next: LunaChatHostApi | null): void {
+  ;(window as unknown as { LunaChatHost: LunaChatHostApi | null }).LunaChatHost = next
+}
+
+export function getChatHost(): LunaChatHostApi | null {
+  return window.LunaChatHost ?? null
+}
+
+/** Compile-time member manifest - see this file's module doc. */
+export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
+  state: true,
+  isConnected: true,
+  send: true,
+  clearTurnTimeout: true,
+  startSubscribeTimeout: true,
+  startTurnTimeout: true,
+  sendNewThread: true,
+}
+export const CHAT_HOST_MEMBER_NAMES: readonly string[] = Object.keys(CHAT_HOST_MEMBERS).sort()
+
+/** What every SlashMenuCtx call resolves when the whole host is unavailable
+ * (module evaluated before chat.html's classic script ran) - the ctx-level
+ * counterpart of chat.html's own per-member absent-provider degrade (see
+ * luna-chat-host.d.ts's `executeCapability` doc). */
+const HOST_ABSENT: ExecuteResult = { ok: false, error: "chat host unavailable", reason: "unavailable" }
+
+export function chatHostComposerCtx(): ComposerConfigCtx {
+  return {
+    getState: () => getChatHost()?.state() ?? null,
+    send: (frame) => getChatHost()?.send(frame),
+  }
+}
+
+export function chatHostSlashMenuCtx(peers: {
+  getComposerConfig: () => ComposerConfigBridge | null
+  clearAttachments: () => void
+  /** Passed in rather than routed through the host: LocalShell is a module as
+   *  of S19h, so this is a direct module-to-module call and
+   *  LunaChatHost.closeLocalShellMenu could be DELETED. */
+  closeLocalShellMenu: () => void
+  /** As of S20b these come from frames.ts, not the host: the capability
+   *  provider moved with the `hello` handler that clears its catalog. */
+  getBackendCommands: () => readonly CapabilityDescriptor[]
+  executeCapability: (req: ExecuteRequest) => Promise<ExecuteResult>
+  /** Same story as of S19k, for ChatEngine. These three were the LAST Group C
+   *  members; passing the engine directly emptied the category. */
+  appendMessage: (role: string, text: string) => void
+  newConversation: () => void
+  autoGrowMessageInput: () => void
+}): SlashMenuCtx {
+  return {
+    getState: () => getChatHost()?.state() ?? null,
+    getComposerConfig: peers.getComposerConfig,
+    clearAttachments: peers.clearAttachments,
+    getBackendCommands: peers.getBackendCommands,
+    executeCapability: peers.executeCapability,
+    appendMessage: peers.appendMessage,
+    newConversation: peers.newConversation,
+    closeLocalShellMenu: peers.closeLocalShellMenu,
+    autoGrowMessageInput: peers.autoGrowMessageInput,
+  }
+}

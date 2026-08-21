@@ -15,24 +15,54 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  cpSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, describe, expect, it } from "vitest"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const FIXTURE = join(repoRoot, "test/fixtures/servers.toml")
 const LUNA_AUTODEPLOY = join(repoRoot, "scripts/luna-autodeploy")
 const LUNA_REGISTRY = join(repoRoot, "scripts/lib/luna-registry.sh")
 
-// FIX 2: The pin sha is now keyed by the ENGINE repo HEAD (scripts/ dir), not
-// the deploy target repo HEAD. Pre-compute the engine sha once for all tests.
-const engineSha = spawnSync(
-  "git",
-  ["-C", join(repoRoot, "scripts"), "rev-parse", "HEAD"],
-  { encoding: "utf8" },
-).stdout.trim()
+// FIX 2: The pin sha is keyed by the ENGINE repo HEAD, not the deploy target's.
+//
+// THE ENGINE IS A FIXTURE, NOT THE LIVE scripts/ DIRECTORY, and that is a
+// correctness fix rather than tidiness. This file used to read the real repo's
+// HEAD once at module load, while luna_pin_engine reads it again on every
+// invocation. Any git operation between those two reads - a colleague
+// switching branches, a parallel CI step, an agent committing while the suite
+// runs - made them disagree and failed up to 9 tests with paths that differed
+// only in the sha. It was reproducible on demand with nothing more than:
+//
+//     git commit --allow-empty        (HEAD moves, the working tree does not)
+//
+// Pointing UPDATE_SERVER at a throwaway repo whose single commit this file
+// created removes the shared mutable input entirely. The sha is now ours.
+const engineRepo = mkdtempSync(join(tmpdir(), "luna-engine-fixture-"))
+const engineSha = (() => {
+  const lib = join(engineRepo, "lib")
+  mkdirSync(lib, { recursive: true })
+  // The REAL engine and libs - only their git history is synthetic, so the
+  // copy/permission/completeness assertions still exercise real files.
+  cpSync(join(repoRoot, "scripts/luna-update-server"), join(engineRepo, "luna-update-server"))
+  cpSync(join(repoRoot, "scripts/lib"), lib, { recursive: true })
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-C", engineRepo, ...args], { encoding: "utf8" })
+  git("init", "--initial-branch=master")
+  git("config", "user.email", "test@test.com")
+  git("config", "user.name", "Test")
+  git("add", ".")
+  git("commit", "-m", "engine fixture")
+  return git("rev-parse", "HEAD").stdout.trim()
+})()
+const engineSrc = join(engineRepo, "luna-update-server")
+
+afterAll(() => {
+  rmSync(engineRepo, { recursive: true, force: true })
+})
 
 const tempDirs: string[] = []
 const makeTempDir = () => {
@@ -106,7 +136,7 @@ const callPinEngine = (
     //
     // Safer approach: grep out the luna_pin_engine function body and eval it,
     // plus set the UPDATE_SERVER variable that it needs.
-    `UPDATE_SERVER="${join(repoRoot, "scripts/luna-update-server")}"`,
+    `UPDATE_SERVER="${engineSrc}"`,
     `LUNA_TEST_PIN_DIR="${pinDir}"`,
     // Extract and define luna_pin_engine from the autodeploy file
     `eval "$(awk '/^luna_pin_engine\(\)/{found=1} found{print} found && /^}$/{exit}' "${LUNA_AUTODEPLOY}")"`,
@@ -230,8 +260,11 @@ describe("F11: luna_pin_engine — pinned binary runs from pinned location", () 
     // Verify the pinned path is a real executable file (not just a symlink
     // to the original) by overwriting the original with a canary file and
     // confirming the pinned copy is unaffected.
-    const originalEngine = join(repoRoot, "scripts/luna-update-server")
-    const originalContent = readFileSync(originalEngine, "utf8")
+    // Compare against the file that was actually PINNED - the fixture engine -
+    // not the in-tree one. They happen to be byte-identical (the fixture is a
+    // copy), which is exactly why naming the wrong one would have gone
+    // unnoticed.
+    const originalContent = readFileSync(engineSrc, "utf8")
 
     // The pinned file must have identical content to the original at pin time
     const pinnedContent = readFileSync(pinnedEngine, "utf8")
@@ -259,9 +292,9 @@ describe("F11: luna_pin_engine — fail-safe", () => {
     // Must warn on stderr
     expect(result.stderr).toContain("WARNING")
     expect(result.stderr).toContain("self-mutation hazard")
-    // Must fall back to the in-tree path
-    const expected = join(repoRoot, "scripts/luna-update-server")
-    expect(result.stdout.trim()).toBe(expected)
+    // Must fall back to the in-tree path - which is the fixture engine, since
+    // that is what UPDATE_SERVER points at.
+    expect(result.stdout.trim()).toBe(engineSrc)
   })
 
   it("bad repo dir (no .git) → still pins successfully using engine repo sha (FIX 2: target repo no longer needed for sha)", () => {
@@ -459,13 +492,9 @@ describe("FIX 2: pin sha keyed by engine repo, not target repo", () => {
     const pinDir = makeTempDir()
     const { repoDir, sha: targetSha } = makeStubRepo(pinDir)
 
-    // The real engine lives in repoRoot/scripts/luna-update-server.
-    // Its git HEAD is the real repo's HEAD.
-    const engineSha = spawnSync(
-      "git",
-      ["-C", join(repoRoot, "scripts"), "rev-parse", "HEAD"],
-      { encoding: "utf8" },
-    ).stdout.trim()
+    // The engine is the module-level fixture repo, so its HEAD is a sha this
+    // file created - which is what makes "engine sha, not target sha" provable
+    // rather than merely likely.
 
     // Only meaningful if target and engine repos have different HEADs
     // (which they do: the stub target has a fresh single-commit sha).

@@ -43,6 +43,46 @@ weld graph, release watcher, or multi-window cluster towing. A window stays
 where the user puts it. Saved system-panel positions continue to restore from
 `~/.luna/layout.json` and are clamped on-screen when displays change.
 
+One deliberate exception: the moon orb (window `main`) and any window being
+revealed by boot restore, expand-from-moon, or collapse-to-moon is clamped
+back onto a currently visible display first
+(`windows::ensure_window_on_visible_display`). The orb and the widgets are
+mutually exclusive surfaces, so an orb stranded off-screen by a
+display-topology change would leave the user with nothing clickable at all —
+Moon would read as "won't open". If `layout.json` listed panels but restore
+spawned none (stale rows, spawn failure), boot falls back to opening the chat
+widget so the user is never left with only the orb.
+
+Two further guards against external state (live incident, Aug 2026):
+
+- A `Moved`-event guard (`windows::reclamp_if_stranded`) pulls the orb back
+  whenever ANYTHING parks it with its top-left off every connected display —
+  it fires only for fully-stranded positions, so legitimate edge-hanging
+  drags are respected and the guard converges after its own corrective move.
+- Every Moon window opts out of macOS window-state restoration
+  (`windows::disable_window_state_restoration`, `NSWindow.restorable = false`).
+  Moon's `layout.json` restore is the single source of truth; AppKit's saved
+  state (applied after non-clean exits such as the auto-updater's relaunch)
+  otherwise re-imposes stale frames and stale visibility — an off-screen orb
+  frame, a panel that exists in the accessibility tree but never composites.
+- Moon owns the orb's position. `tauri.conf.json` sets no position for the
+  `main` window and nothing in the app ever wrote one, so placement was left
+  to AppKit's default choice — which proved able to park the orb off every
+  display on multi-monitor arrangements, deterministically, on every clean
+  launch. `write_panel_layout` now saves a `"moon": {x, y}` entry (on every
+  layout write and on orb drag end) and boot restores it clamped on-screen;
+  first launches fall back to AppKit placement plus the stranded-check.
+- Stage Manager (live incident): an inactive app's windows are shelved into
+  the WindowManager-owned left-edge tile strip (icon-sized tiles around
+  x≈−307) instead of compositing — a shelved orb reads as "Moon won't open"
+  and a shelved chat panel is AX-visible with no CG surface. Two rules:
+  the orb is a floating companion (`windows::configure_orb_window`:
+  `CanJoinAllSpaces | Stationary | IgnoresCycle`) so it is never shelved and
+  follows the user to every Space; and `expand_out_of_moon` focuses one
+  revealed widget (the chat when present — `pick_expand_focus_target`),
+  because `show()` orders a window in but only activation makes Stage
+  Manager swap the app's real windows in.
+
 ## Resize
 
 Borderless card resizing still uses `begin_native_resize` because tao's native

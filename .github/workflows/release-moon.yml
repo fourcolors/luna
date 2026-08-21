@@ -22,7 +22,9 @@
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the updater minisign keypair). The matching
 # public key is baked into apps/ui-moon-tauri/src-tauri/tauri.conf.json
 # (plugins.updater.pubkey). No Apple notarization yet — the bundle is ad-hoc
-# signed (tauri.conf bundle.macOS.signingIdentity "-").
+# signed (committed tauri.conf bundle.macOS.signingIdentity is "-"; see
+# apps/ui-moon-tauri/docs/macos-local-rebuild.md — null skips codesign and
+# leaves Info.plist unbound so ATS / Local Network purpose strings are ignored).
 #
 # NOTE: editing this file requires pushing over the SSH remote — the gh HTTPS
 # token lacks the `workflow` scope.
@@ -110,20 +112,17 @@ jobs:
       - name: Install JS deps (frozen lockfile)
         run: bun install --frozen-lockfile
 
-      # The committed tauri.conf.json signs with the operator's personal
-      # "Apple Development" cert (added in #49 to keep local-rebuild TCC grants
-      # stable — ad-hoc signing changes the CDHash each build and voids Screen
-      # Recording grants). That cert is NOT in the macos-14 runner keychain, so
-      # CI must sign AD-HOC — exactly how moon-v0.0.2..0.0.12 shipped. We rewrite
-      # the bundle.macOS block to ad-hoc in the EPHEMERAL checkout only; the
-      # committed config keeps the real cert for local builds. Updater trust is
-      # minisign (independent of Apple signing), so the ad-hoc bundle still
-      # auto-updates over a real-signed install.
+      # The committed tauri.conf.json uses ad-hoc signingIdentity "-" so a local
+      # `tauri build` / `bun run install:macos` binds Info.plist (required for
+      # ATS + NSLocalNetworkUsageDescription — see docs/macos-local-rebuild.md).
+      # CI rewrites the same value explicitly for defense in depth and to keep
+      # minimumSystemVersion if someone changes the committed identity later.
+      # Updater trust is minisign (independent of Apple signing).
       # The rewrite must PRESERVE minimumSystemVersion: tauri exports it as
       # MACOSX_DEPLOYMENT_TARGET (default 10.13), and whisper.cpp's C++
       # (std::filesystem) needs >= 10.15 — dropping the field broke the first
       # moon-v0.0.22 release run with "'path' is unavailable" compile errors.
-      - name: Ad-hoc sign for CI (keep the real cert in the committed config)
+      - name: Ad-hoc sign for CI (keep minimumSystemVersion)
         working-directory: apps/ui-moon-tauri/src-tauri
         run: |
           node -e 'const fs=require("fs");const f="tauri.conf.json";const c=JSON.parse(fs.readFileSync(f,"utf8"));c.bundle.macOS={signingIdentity:"-",minimumSystemVersion:c.bundle.macOS.minimumSystemVersion};fs.writeFileSync(f,JSON.stringify(c,null,2)+"\n");console.log("CI macOS signing -> ad-hoc (-), minSystemVersion kept:",c.bundle.macOS.minimumSystemVersion)'

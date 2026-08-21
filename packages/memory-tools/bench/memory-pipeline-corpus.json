@@ -4,55 +4,70 @@
     {
       "id": "operator-shell",
       "text": "The operator prefers Zsh syntax for terminal examples",
-      "scope": { "observerId": "luna", "subjectId": "operator", "visibility": "private" }
+      "scope": {
+        "observerId": "luna",
+        "subjectId": "operator",
+        "visibility": "private"
+      }
     },
     {
       "id": "other-observer-shell",
       "text": "The operator prefers Fish syntax for terminal examples",
-      "scope": { "observerId": "helper", "subjectId": "operator", "visibility": "private" }
+      "scope": {
+        "observerId": "helper",
+        "subjectId": "operator",
+        "visibility": "private"
+      }
     },
     {
       "id": "shared-release",
       "text": "The release checklist requires typecheck, tests, and deployment verification",
-      "scope": { "observerId": "shared", "subjectId": "operator", "visibility": "shared" }
+      "scope": {
+        "observerId": "shared",
+        "subjectId": "operator",
+        "visibility": "shared"
+      }
     },
     {
       "id": "other-subject-release",
       "text": "The release checklist skips tests and deploys immediately",
-      "scope": { "observerId": "luna", "subjectId": "teammate", "visibility": "private" }
+      "scope": {
+        "observerId": "luna",
+        "subjectId": "teammate",
+        "visibility": "private"
+      }
     }
   ],
   "retrievalCases": [
     {
       "id": "operator-shell-recall",
       "query": "which shell syntax should I use",
-      "scope": { "observerId": "luna", "subjectId": "operator" },
-      "relevantIds": ["operator-shell"],
-      "forbiddenIds": ["other-observer-shell", "other-subject-release"]
+      "scope": {
+        "observerId": "luna",
+        "subjectId": "operator"
+      },
+      "relevantIds": [
+        "operator-shell"
+      ],
+      "forbiddenIds": [
+        "other-observer-shell",
+        "other-subject-release"
+      ]
     },
     {
       "id": "shared-release-recall",
       "query": "what is required before release",
-      "scope": { "observerId": "luna", "subjectId": "operator" },
-      "relevantIds": ["shared-release"],
-      "forbiddenIds": ["other-observer-shell", "other-subject-release"]
-    }
-  ],
-  "extractionCases": [
-    {
-      "id": "explicit-preference",
-      "userText": "I prefer concise operational answers.",
-      "expectedKinds": ["durable-fact"]
-    },
-    {
-      "id": "agent-expectation",
-      "userText": "I want you to always verify the real code path before answering.",
-      "expectedKinds": ["belief-evidence"]
-    },
-    {
-      "id": "ordinary-task",
-      "userText": "Please fix the failing test in the router.",
-      "expectedKinds": []
+      "scope": {
+        "observerId": "luna",
+        "subjectId": "operator"
+      },
+      "relevantIds": [
+        "shared-release"
+      ],
+      "forbiddenIds": [
+        "other-observer-shell",
+        "other-subject-release"
+      ]
     }
   ]
 }

@@ -9,8 +9,8 @@
 # on whatever process held the port. That is dangerous on two counts:
 #   1. It never checks WHAT it is killing. On a machine that reaches a remote
 #      Luna over Tailscale, the Tailscale daemon binds :4753 on the tailnet
-#      address — so the installer would offer to SIGKILL Tailscale. The Vite UI
-#      port (5174) collides with unrelated dev servers too.
+#      address - so the installer would offer to SIGKILL Tailscale. A
+#      wildcard-bound port collides with unrelated dev servers the same way.
 #   2. SIGKILL is wrong even for a genuine stale Luna server: it cannot be
 #      trapped, so it bypasses chat-server.ts's SIGTERM handler (installShutdown)
 #      → runtime.dispose() / db.close() never runs → the vectorlite HNSW sidecar
@@ -30,12 +30,13 @@ port_guard_is_luna_cmd() {
   # Must reference THIS install dir — a foreign process (Tailscale, another app,
   # or a different Luna checkout) won't be running out of the user's install path.
   [[ -n "$luna_dir" && "$cmd" == *"$luna_dir"* ]] || return 1
-  # …and be one of our two known server entrypoints (see install-mac.command:
-  # `scripts/chat-server.ts` for :4753, `apps/ui-web … dev` for vite on :5174).
-  # The `*\ dev*` glob also matches `dev:preview`, so either UI launch is covered.
+  # …and be our known server entrypoint (see install-mac.command): the
+  # chat-server daemon for :4753 - `*chat-server*` covers both the
+  # path-independent launcher (scripts/luna-chat-server-entry.ts) and the
+  # transitional `scripts/chat-server.ts` direct-run shape, so this predicate
+  # does not go stale the moment the launcher lands.
   case "$cmd" in
-    *chat-server.ts*) return 0 ;;
-    *apps/ui-web*\ dev*) return 0 ;;
+    *chat-server*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -49,14 +50,15 @@ port_guard_info() { printf 'port-guard: %s\n' "$*" >&2; }
 # PID of a LISTEN whose bind address would block a fresh LOCAL bind: loopback
 # (127.0.0.1 / [::1]) or wildcard (* / 0.0.0.0 / [::]). A listener on a specific
 # non-loopback address (e.g. a Tailscale tailnet IP) does NOT conflict — our
-# server binds loopback (chat-server) or wildcard (vite), and those never collide
-# with a tailnet-address bind. Prints the first conflicting PID, or nothing.
+# server binds loopback (chat-server); a wildcard-bound dev server would too,
+# and neither ever collides with a tailnet-address bind. Prints the first
+# conflicting PID, or nothing.
 #
 # Why classify the address instead of filtering with lsof's `@host`: `@host`
 # cannot express "loopback-or-wildcard but not a specific address". `@127.0.0.1`
-# misses a `*:port` (vite) bind; `@0.0.0.0` matches ANY address (re-catching
+# misses a `*:port` (wildcard) bind; `@0.0.0.0` matches ANY address (re-catching
 # Tailscale). So we read the bind address out of the listing ($9, NAME=addr:port)
-# and decide per row. macOS lsof NAME examples: `*:5174` and `127.0.0.1:4753`
+# and decide per row. macOS lsof NAME examples: `*:8080` and `127.0.0.1:4753`
 # conflict; `100.x.y.z:4753` / `[fd7a:115c:...]:4753` (Tailscale)
 # do not. Scans every row — a leading tailnet row must not hide a later loopback.
 port_guard_conflicting_pid() {
@@ -118,7 +120,7 @@ ensure_port_free() {
   local port="$1" name="$2" luna_dir="$3"
 
   # Only a listener that would actually block our own bind counts: a loopback
-  # (chat-server → 127.0.0.1) or wildcard (vite → *) bind. A listener on a
+  # (chat-server → 127.0.0.1) or wildcard (a dev server → *) bind. A listener on a
   # *different* address — e.g. Tailscale serving :"$port" on a tailnet address —
   # does NOT conflict and must not trip the guard (which would otherwise refuse
   # the install). port_guard_conflicting_pid does that address classification.

@@ -367,6 +367,18 @@ export interface JobsStoreApi {
    *     never pull-forward; disabled jobs are never re-enabled.
    * Jitter is deterministic: `hash(jobId) % (rescheduleJitterMs + 1)`
    * (default rescheduleJitterMs = 60000).
+   *
+   * S11a - `cleanShutdown`: the caller (boot-reconcile call site) passes
+   * `true` when a clean-shutdown marker was found and consumed, meaning
+   * this boot follows a deliberate stop (deploy, manual systemctl
+   * stop/restart), not a genuine crash. Orphaned runs still close, sticky
+   * jobs still repair, and `next_run_at` still pulls forward exactly as
+   * above (an interrupted job should rerun promptly) - ONLY the
+   * `orphanStreak` bump on pull-forward is skipped, so a deploy cadence can
+   * never by itself walk a healthy job to the doctor's pause threshold.
+   * Default `false`/omitted behaves byte-identical to pre-S11a: every
+   * pull-forward bumps `orphanStreak`, which is what a genuine crash
+   * (watchdog kill, OOM, power loss - no marker was written) should do.
    */
   readonly reconcileAfterCrash: (args: {
     readonly finishedAt: number
@@ -376,6 +388,12 @@ export interface JobsStoreApi {
     readonly waitingError?: string
     /** Inclusive upper bound for deterministic reschedule jitter (default 60000). */
     readonly rescheduleJitterMs?: number
+    /**
+     * S11a - true when this boot consumed a clean-shutdown marker. Exempts
+     * the pull-forward `orphanStreak` bump only; every other repair still
+     * runs. Default false (counts toward the doctor, matching a crash).
+     */
+    readonly cleanShutdown?: boolean
   }) => Effect.Effect<CrashReconcileResult, JobsStoreError>
 
   /**

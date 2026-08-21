@@ -13,7 +13,6 @@ cd "$(dirname "$0")" || exit 1
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
@@ -26,9 +25,16 @@ error() { printf "${RED}error: %b${NC}\n" "$*" >&2; }
 die() { error "$*"; exit 1; }
 
 # Claude Code CLI preflight (#24). Options 1 & 4 boot a local Luna server whose
-# in-browser setup-mode login shells out to `claude setup-token`; without the
-# `claude` binary that flow dead-ends on a clean Mac. Mirror the server's own
-# resolver order (scripts/lib/luna-deploy.sh: luna_find_claude_executable):
+# setup-mode login needs one manual, terminal-only round trip this installer
+# cannot do for the user: run `claude setup-token` (browser OAuth), register
+# the result with `luna account add --id default --label Default --kind
+# anthropic --secret-ref claude-code:login`, then restart the server so the
+# boot-time gate (apps/server/src/credential-readiness.ts) re-reads the
+# accounts table. Luna Moon's setup wizard only walks through CONNECTING Moon
+# to the server - it has no PTY client and cannot itself seed that row - so
+# without the `claude` binary this login has no path forward on a clean Mac.
+# Mirror the server's own resolver order (scripts/lib/luna-deploy.sh:
+# luna_find_claude_executable):
 #   1) an explicit, executable LUNA_CLAUDE_CODE_EXECUTABLE, then
 #   2) `claude` on PATH, then
 #   3) a known install path the official Claude Code installer uses.
@@ -67,8 +73,8 @@ require_claude_cli() {
   if resolve_claude_cli >/dev/null; then
     return 0
   fi
-  info "The in-app login runs \`claude setup-token\` inside the embedded terminal — this preflight only needs the \`claude\` binary present."
-  die "Claude Code CLI required for the in-app login — install it from https://claude.ai/code, then re-run this installer (it will run \`claude setup-token\` for you in the embedded terminal)."
+  info "The one-time login runs \`claude setup-token\` in a terminal - this preflight only needs the \`claude\` binary present."
+  die "Claude Code CLI required for the one-time login - install it from https://claude.ai/code, then re-run this installer."
 }
 
 # Persist the resolved `claude` absolute path into ~/.luna/.env as
@@ -98,6 +104,72 @@ persist_claude_executable() {
   ' "$env_file" > "$tmp"
   mv "$tmp" "$env_file"
   chmod 600 "$env_file"
+}
+
+# wait_for_readyz <port>
+# Poll the chat server's /readyz endpoint (HTTP 200) until it answers, or the
+# iteration budget runs out. /readyz is a stronger signal than a bound TCP
+# port: it proves the HTTP server inside the process is actually serving
+# requests, not just that something is listening. Each attempt is capped at
+# --max-time 1s - a listening-but-not-yet-serving socket (the launchd cold-boot
+# case this loop exists to catch) otherwise hangs the full --max-time on every
+# iteration - plus a 0.5s sleep. A dead port refuses INSTANTLY, so the floor
+# is max_wait * 0.5s of wall clock; 60 iterations gives a >=30s budget,
+# matching the unit's own TimeoutStartSec=60 order of magnitude rather than
+# starving a cold first boot that must import the full module graph before
+# binding. Silent on success; returns 1 on timeout so the caller can warn
+# without aborting the install - a slow-to-boot server is not a failed one.
+wait_for_readyz() {
+  local port="$1" max_wait=60 count=0
+  until curl -fs --max-time 1 "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; do
+    sleep 0.5
+    count=$((count + 1))
+    (( count < max_wait )) || return 1
+  done
+  return 0
+}
+
+# readyz_is_setup_mode <port>
+# Fetch the /readyz body ONCE and report whether the server answered in
+# setup-mode (no usable Claude credential yet - see
+# apps/server/src/credential-readiness.ts), so callers can gate the one-time
+# login hint on the SAME signal the server itself uses to choose its boot
+# layer, not a proxy like "does luna.db exist" (a returning user with a lapsed
+# `claude-code:login` token has a non-empty luna.db and is STILL in
+# setup-mode). Defaults to "setup" when the probe fails OR the body doesn't
+# parse, so a transient curl error or a reshaped /readyz payload can only
+# over-show the hint, never silently suppress it. Extracts the `mode` value
+# with a tolerant regex (whitespace- and key-order-independent) instead of a
+# raw substring match, so a pretty-printed or reordered /readyz response can't
+# silently flip every install into showing a spurious login hint.
+readyz_is_setup_mode() {
+  local port="$1" body mode
+  body="$(curl -fs --max-time 4 "http://127.0.0.1:$port/readyz" 2>/dev/null)" || return 0
+  mode="$(printf '%s' "$body" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')"
+  [[ "$mode" != "normal" ]]
+}
+
+# print_setup_login_steps <launchd_domain/label>
+# Print the numbered one-time Claude login recipe (finding #24), shared by
+# options 1 and 4 so the wording a new user reads first never drifts between
+# the two entry points. `claude setup-token` needs CLAUDE_CONFIG_DIR pinned to
+# the SAME directory the launchd-supervised server reads
+# (scripts/lib/launchd-plist.sh: $luna_home/claude, and LUNA_DATA above is
+# always $HOME/.luna) - a bare `claude setup-token` writes to the CLI's own
+# default (~/.claude) instead, so the credential the server probes would stay
+# lapsed and setup-mode would never clear. Step 2 uses the wrapper's absolute
+# path, not bare `luna`: install.sh only warns when ~/.local/bin is missing
+# from PATH, it does not fix PATH, so a bare `luna` can dead-end with "command
+# not found" on a clean Mac. Step 2 is first-login-only - a returning user
+# with a lapsed token already has the `default` account row (seeded by
+# setup-login.ts), so `luna account add` would hit the id conflict; the
+# printed note tells them that failure is fine.
+print_setup_login_steps() {
+  local launchd_target="$1"
+  printf "  1. In Terminal:                    ${CYAN}CLAUDE_CONFIG_DIR=~/.luna/claude claude setup-token${NC}\n"
+  printf "  2. Register it (first login only): ${CYAN}~/.local/bin/luna account add --id default --label Default --kind anthropic --secret-ref claude-code:login${NC}\n"
+  printf "     Already registered? That's fine - the command above says so. Skip to step 3.\n"
+  printf "  3. Restart the server:              ${CYAN}launchctl kickstart -k $launchd_target${NC}\n\n"
 }
 
 # Shared, SIGPIPE-safe UI-WS-token generator (defines gen_ui_ws_token).
@@ -152,8 +224,8 @@ success "Bun is available ($(bun --version))."
 printf "${BOLD}Please select your installation profile:${NC}\n\n"
 printf "  ${BOLD}[1] Complete Desktop Install (Recommended)${NC}\n"
 printf "      - Runs client and server natively on your Mac.\n"
-printf "      - Automatically opens the web UI browser tab.\n"
-printf "      - Guides you through the Claude subscription login.\n\n"
+printf "      - Starts the supervised chat server (launchd).\n"
+printf "      - Points you at Luna Moon to finish login and chat.\n\n"
 printf "  ${BOLD}[2] Remote Server Client (Client-Only)${NC}\n"
 printf "      - Connects your Mac CLI to a remote Luna server.\n"
 printf "      - Configures URLs and access tokens.\n\n"
@@ -192,7 +264,6 @@ case "$SELECTION" in
     # (SIGTERM-first); refuse and abort if a FOREIGN process holds the port —
     # e.g. on a box where Tailscale binds :4753 to reach a remote Luna (#7).
     ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR" || exit 1
-    ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR" || exit 1
 
     info "Starting Complete Desktop Install..."
     
@@ -240,9 +311,6 @@ case "$SELECTION" in
       mv "$tmp_env" "$ENV_FILE"
       chmod 600 "$ENV_FILE"
     fi
-    
-    # Read the token for background startup injection
-    TOKEN=$(awk -F= '$1 == "UI_WS_TOKEN" {print $2}' "$ENV_FILE")
 
     # Persist the resolved `claude` path so the launchd server (minimal PATH) can
     # run setup-token (#24). Done AFTER the token upsert so neither clobbers the
@@ -257,6 +325,18 @@ case "$SELECTION" in
     # the plist), so no token is baked into the LaunchAgent.
     BUN_BIN="$(command -v bun)"
     PLIST_FILE="$LUNA_DATA/$LAUNCHD_LABEL.plist"
+    # Plist-render rollback: copy an already-installed plist aside as
+    # com.user.luna-chat-server.plist.prev before overwriting it, mirroring
+    # write_service's unit backup in scripts/luna-server-install. $LUNA_DATA
+    # (~/.luna) is not a launchd scan directory - the plist is only ever
+    # loaded by the explicit `launchctl bootstrap` call below - so the .prev
+    # copy is inert until a manual restore: cp -f "$PLIST_FILE.prev"
+    # "$PLIST_FILE" && launchctl bootstrap ...
+    # Backup must land BEFORE the render truncates the plist: continuing past
+    # a failed cp would leave a stale .prev that the documented restore recipe
+    # would then install. Same hard-fail posture as write_service.
+    [[ ! -f "$PLIST_FILE" ]] || cp -f "$PLIST_FILE" "$PLIST_FILE.prev" \
+      || die "could not back up the existing plist (aborting before overwriting it)"
     render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$LUNA_DATA" > "$PLIST_FILE"
     chmod 644 "$PLIST_FILE"
     # bootout any prior instance, clear a lingering disable, then bootstrap into
@@ -266,37 +346,44 @@ case "$SELECTION" in
     launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_FILE" \
       || die "Could not load the Luna LaunchAgent. Run manually: launchctl bootstrap $LAUNCHD_DOMAIN '$PLIST_FILE'"
     success "Chat server is supervised by launchd (Restart button now works)."
-    
-    info "Launching local Vite web UI dev server in the background..."
-    # Start the Vite dev server on :5174 — the port vite.config.ts actually
-    # binds (an earlier installer assumed the wrong port and never reached it).
-    VITE_UI_WS_TOKEN="$TOKEN" nohup bun run --cwd "$LUNA_DIR/apps/ui-web" dev > "$LUNA_DATA/logs/ui.log" 2>&1 &
-    UI_PID=$!
-    disown $UI_PID
 
-    success "Local processes booted successfully."
-    info "Waiting for web UI server to start (http://localhost:5174)..."
-    count=0
-    max_wait=20
-    while ! curl -fs http://localhost:5174 >/dev/null 2>&1; do
-      sleep 0.5
-      count=$((count + 1))
-      if [[ $count -ge $max_wait ]]; then
-        warn "Web UI server is taking longer than expected to start. Launching browser anyway..."
-        break
-      fi
-    done
-    
-    info "Opening your default browser to the web chat interface..."
-    open "http://localhost:5174"
-    
+    # Confirm the daemon is actually serving, not just that launchd accepted
+    # the bootstrap - /readyz is the same signal scripts/lib/luna-deploy.sh
+    # uses to prove a runtime is up.
+    info "Waiting for the chat server to become ready (http://127.0.0.1:4753/readyz)..."
+    SERVER_READY=0
+    if wait_for_readyz 4753; then
+      success "Chat server is ready."
+      SERVER_READY=1
+    else
+      warn "Server is taking longer than expected to become ready; check ~/.luna/logs/server.log."
+    fi
+
     success "Complete desktop installation finished successfully!"
     printf "\n"
     printf "  - Client Wrapper: ${CYAN}luna chat${NC}\n"
-    printf "  - Server log:     ${CYAN}tail -f ~/.luna/logs/server.log${NC}\n"
-    printf "  - UI log:         ${CYAN}tail -f ~/.luna/logs/ui.log${NC}\n"
-    printf "  - Web Chat URL:   ${CYAN}http://localhost:5174${NC}\n\n"
-    printf "${GREEN}If the credential was missing, the web page will guide you through Claude subscription login in setup-mode. Paste the authorization token into the embedded terminal to complete onboarding!${NC}\n"
+    printf "  - Server log:     ${CYAN}tail -f ~/.luna/logs/server.log${NC}\n\n"
+    printf "${BOLD}Next step:${NC} launch ${CYAN}Luna Moon${NC} to chat - download the floating-widget\n"
+    printf "app from ${CYAN}https://github.com/fourcolors/luna/releases${NC} (Apple Silicon), or - if you\n"
+    printf "have the Rust toolchain - re-run this installer and pick ${BOLD}[4]${NC}.\n\n"
+    # Gated on SERVER_READY: readyz_is_setup_mode fails open to "setup" on a
+    # curl error, so probing a server that never answered /readyz would
+    # misdiagnose "not up yet" as "no login yet" (#24).
+    if [[ "$SERVER_READY" -eq 1 ]]; then
+      if readyz_is_setup_mode 4753; then
+        printf "${YELLOW}No usable Claude login yet - Moon can connect, but can't chat until you${NC}\n"
+        printf "${YELLOW}finish the one-time login:${NC}\n"
+        print_setup_login_steps "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL"
+      fi
+    else
+      warn "Could not confirm the server is ready before the timeout."
+      info "Once it's up, check it yourself: curl http://127.0.0.1:4753/readyz"
+      # Fail OPEN with the recipe: suppressing it on a slow boot would leave a
+      # fresh install with NO path to the one-time login (setup-mode has no
+      # interactive client since the web UI's removal).
+      printf "${YELLOW}If it comes up in setup-mode (no Claude login yet), finish the one-time login:${NC}\n"
+      print_setup_login_steps "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL"
+    fi
     ;;
 
   2)
@@ -378,7 +465,6 @@ case "$SELECTION" in
       mv "$tmp_env" "$ENV_FILE"
       chmod 600 "$ENV_FILE"
     fi
-    TOKEN="$(awk -F= '$1 == "UI_WS_TOKEN" {print $2}' "$ENV_FILE")"
 
     # Persist the resolved `claude` path so the launchd server (minimal PATH) can
     # run setup-token (#24) — same reasoning as option 1.
@@ -392,6 +478,10 @@ case "$SELECTION" in
     info "Installing a launchd LaunchAgent for the chat server..."
     BUN_BIN="$(command -v bun)"
     PLIST_FILE="$LUNA_DATA/$LAUNCHD_LABEL.plist"
+    # Plist-render rollback (see option 1's com.user.luna-chat-server.plist.prev
+    # backup above for the restore recipe).
+    [[ ! -f "$PLIST_FILE" ]] || cp -f "$PLIST_FILE" "$PLIST_FILE.prev" \
+      || die "could not back up the existing plist (aborting before overwriting it)"
     render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$LUNA_DATA" > "$PLIST_FILE"
     chmod 644 "$PLIST_FILE"
     launchctl bootout  "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
@@ -400,30 +490,34 @@ case "$SELECTION" in
       || die "Could not load the Luna LaunchAgent. Try: launchctl bootstrap $LAUNCHD_DOMAIN '$PLIST_FILE'"
     success "Chat server is supervised by launchd."
 
-    # Wait for the server to bind on loopback.
-    info "Waiting for chat server to start (ws://127.0.0.1:4753)..."
-    count=0
-    max_wait=30
-    while ! lsof -t -i @127.0.0.1:4753 -sTCP:LISTEN >/dev/null 2>&1; do
-      sleep 0.5
-      count=$((count + 1))
-      if [[ $count -ge $max_wait ]]; then
-        warn "Server is taking longer than expected. Launching the widget anyway..."
-        break
-      fi
-    done
+    # Confirm the daemon is actually serving, not just that launchd accepted
+    # the bootstrap - /readyz is a stronger signal than a bound TCP port.
+    info "Waiting for the chat server to become ready (http://127.0.0.1:4753/readyz)..."
+    SERVER_READY=0
+    if wait_for_readyz 4753; then
+      success "Chat server is ready."
+      SERVER_READY=1
+    else
+      warn "Server is taking longer than expected. Launching the widget anyway..."
+    fi
 
-    # First-run credential hint: if luna.db doesn't exist the server is in
-    # setup-mode and the moon widget won't be able to chat yet.
-    if [[ ! -s "$LUNA_DATA/luna.db" ]]; then
-      warn "No Claude account found — the server is in setup-mode."
-      warn "Open the web UI to log in first, then the widget will be ready to chat."
-      info "Starting Vite web UI for one-time Claude login..."
-      VITE_UI_WS_TOKEN="$TOKEN" nohup bun run --cwd "$LUNA_DIR/apps/ui-web" dev \
-        > "$LUNA_DATA/logs/ui.log" 2>&1 &
-      disown $!
-      open "http://localhost:5174"
-      info "Log in via the browser, then relaunch the installer to start Luna Moon."
+    # First-run credential hint: Moon detects setup-mode itself (the WS hello
+    # frame's capabilities.setup) and can CONNECT, but its wizard has no PTY
+    # client and cannot complete the login on its own - tell the user the
+    # manual steps up front rather than let the widget open to a dead end.
+    # Gated on SERVER_READY: readyz_is_setup_mode fails open to "setup" on a
+    # curl error, so probing a server that never answered /readyz would
+    # misdiagnose "not up yet" as "no login yet" (#24).
+    if [[ "$SERVER_READY" -eq 1 ]] && readyz_is_setup_mode 4753; then
+      warn "No usable Claude login yet - the server is in setup-mode."
+      info "Finish the one-time login before Moon can chat:"
+      print_setup_login_steps "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL"
+    elif [[ "$SERVER_READY" -ne 1 ]]; then
+      info "Could not confirm readiness before the timeout; check it yourself later: curl http://127.0.0.1:4753/readyz"
+      # Fail OPEN with the recipe (same rationale as option 1): a slow boot
+      # must not strand a fresh install without the one-time login steps.
+      printf "${YELLOW}If it comes up in setup-mode (no Claude login yet), finish the one-time login:${NC}\n"
+      print_setup_login_steps "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL"
     fi
 
     # Launch the Luna Moon native widget via tauri dev.

@@ -46,6 +46,22 @@ export class FakeWebSocket {
   static readonly CLOSING = 2
   static readonly CLOSED = 3
 
+  // INSTANCE copies of the readyState constants. The DOM puts these on
+  // WebSocket.prototype as well as the constructor, so `sock.OPEN` is valid on
+  // a real socket - and real code relies on it. LunaWsAdapter.sendFrame guards
+  // with `this.#ws.readyState === this.#ws.OPEN`, so a fake carrying only the
+  // STATIC constants makes that comparison `1 === undefined`, and the adapter
+  // SILENTLY DROPS EVERY FRAME IT IS ASKED TO SEND.
+  //
+  // That is not hypothetical: it is why PoolEngine's subscribe never reached
+  // the wire in pool-engine-contract.test.ts while `send()` was demonstrably
+  // called with the right frame. Any adapter-driven suite would have hit the
+  // same wall and concluded, wrongly, that the engine does not send.
+  readonly CONNECTING = 0
+  readonly OPEN = 1
+  readonly CLOSING = 2
+  readonly CLOSED = 3
+
   /** Every FakeWebSocket ever constructed since the last reset(). */
   static instances: FakeWebSocket[] = []
 
@@ -58,7 +74,10 @@ export class FakeWebSocket {
 
   constructor(url: string, protocols?: string | string[]) {
     this.url = url
-    this.protocols = protocols
+    // Assigned only when present: the field is optional and the project runs
+    // exactOptionalPropertyTypes, so writing an explicit `undefined` is a
+    // different thing from leaving it unset.
+    if (protocols !== undefined) this.protocols = protocols
     FakeWebSocket.instances.push(this)
   }
 

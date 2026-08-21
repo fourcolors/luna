@@ -131,18 +131,37 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   static readonly #MAX_RECONNECT_ATTEMPTS = 6
   static readonly #BASE_RECONNECT_MS = 500
   static readonly #MAX_RECONNECT_MS = 15_000
+  /** Default random spread added to each reconnect delay, in ms. Production
+   *  default; see the `jitterMs` option for why it is overridable. */
+  static readonly #RECONNECT_JITTER_MS = 200
 
   readonly #maxReconnectAttempts: number
   readonly #baseReconnectMs: number
   readonly #maxReconnectMs: number
+  readonly #jitterMs: number
 
   constructor(
     route: RouteConfig,
     wsFactory?: WsFactory,
     /** Timeout in ms before handshake is considered failed. Default: 10_000. */
     handshakeTimeoutMs = 10_000,
-    /** For tests: override reconnect timing constants. */
-    reconnectOpts?: { maxAttempts?: number; baseMs?: number; maxMs?: number },
+    /**
+     * For tests: override reconnect timing constants.
+     *
+     * `jitterMs` caps the random spread added to each computed delay
+     * (default 200). It exists because the spread is CORRECT in production -
+     * it is what stops every client reconnecting in lockstep after a server
+     * restart - but it makes the schedule non-deterministic, so a test cannot
+     * pin an exact backoff sequence while it is on. Setting `jitterMs: 0`
+     * makes the schedule exactly `min(baseMs * 2^n, maxMs)`.
+     *
+     * This matters beyond tests: stack23 S18b promotes the pooled engine to
+     * default, and Moon's connection contract pins an exact reconnect
+     * sequence. Without this knob that pin would have to be loosened to a
+     * range on the highest-risk surface in the app, which trades gate
+     * precision for a default nobody chose.
+     */
+    reconnectOpts?: { maxAttempts?: number; baseMs?: number; maxMs?: number; jitterMs?: number },
     /**
      * Optional resolver for route.tokenRef → bearer token. When omitted, the
      * literal route.tokenRef is used (backward compat). Resolved lazily, once.
@@ -156,6 +175,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     this.#maxReconnectAttempts = reconnectOpts?.maxAttempts ?? LunaWsAdapter.#MAX_RECONNECT_ATTEMPTS
     this.#baseReconnectMs = reconnectOpts?.baseMs ?? LunaWsAdapter.#BASE_RECONNECT_MS
     this.#maxReconnectMs = reconnectOpts?.maxMs ?? LunaWsAdapter.#MAX_RECONNECT_MS
+    this.#jitterMs = reconnectOpts?.jitterMs ?? LunaWsAdapter.#RECONNECT_JITTER_MS
     this.#tokenResolver = tokenResolver
   }
 
@@ -172,6 +192,23 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       : this.#route.tokenRef
     this.#resolvedToken = token
     return token
+  }
+
+  /**
+   * Append the resolved bearer token to `url` as a `token` query param -
+   * mirrors moon-protocol.js's buildWsUrl EXACTLY, including its falsy-token
+   * short-circuit (F3, opus review on plan Step 1b): a route whose tokenRef
+   * is "none" resolves to "" (connection.rs's resolve_route_token - the ONE
+   * intentional empty result, per packages/ui-transport/src/token-resolver.ts's
+   * doc comment), and that empty token must dial a URL with NO token
+   * parameter at all - not `?token=` with an empty value. The two builders
+   * must never diverge: a consumer reading buildWsUrl's documented contract
+   * elsewhere in the app must see the SAME wire shape this adapter produces.
+   */
+  #tokenizeUrl(url: string, token: string): string {
+    if (!token) return url
+    const sep = url.includes("?") ? "&" : "?"
+    return `${url}${sep}token=${encodeURIComponent(token)}`
   }
 
   /**
@@ -234,8 +271,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       this.#publishConnectionState({ status: "down", reason })
       throw err
     }
-    const sep = url.includes("?") ? "&" : "?"
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`
+    const tokenizedUrl = this.#tokenizeUrl(url, token)
 
     const result = await this.#connectWs(tokenizedUrl)
     this.#lastAttach = result
@@ -565,7 +601,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       Math.min(
         this.#baseReconnectMs * Math.pow(2, this.#reconnectAttempts),
         this.#maxReconnectMs,
-      ) + Math.random() * 200
+      ) + (this.#jitterMs > 0 ? Math.random() * this.#jitterMs : 0)
     this.#reconnectAttempts++
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null
@@ -582,8 +618,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     // Reuse the cached token from the initial attach (resolved once). On the
     // off-chance it is not yet cached (defensive), resolve again.
     const token = await this.#resolveToken()
-    const sep = url.includes("?") ? "&" : "?"
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`
+    const tokenizedUrl = this.#tokenizeUrl(url, token)
 
     this.#ws = null
 

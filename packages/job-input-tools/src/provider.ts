@@ -20,7 +20,7 @@ import type {
   AnyZodRawShape,
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type { JobRunToolsProvider } from "@luna/adapter-sdk"
 import { makeJobInputTools, type JobInputToolsDeps } from "./tools.js"
 
@@ -43,15 +43,19 @@ export const createJobInputToolsProvider = (
   deps: JobInputToolsDeps,
 ): JobRunToolsProvider => ({
   forRun: (run) => {
-    const tools = makeJobInputTools(deps, run)
-    const widened = tools as unknown as ReadonlyArray<
+    const tools = makeJobInputTools(deps, run) as unknown as ReadonlyArray<
       SdkMcpToolDefinition<AnyZodRawShape>
     >
+    const { serverName, server, systemPromptAddendum } = defineToolPackage({
+      name: JOB_INPUT_SERVER_NAME,
+      tools,
+      addendum: JOB_INPUT_SYSTEM_PROMPT_ADDENDUM,
+    })
     return {
-      serverName: JOB_INPUT_SERVER_NAME,
-      server: makeSdkMcpServer(JOB_INPUT_SERVER_NAME, "0.1.0", widened),
+      serverName,
+      server,
       allowedTools: [`mcp__${JOB_INPUT_SERVER_NAME}__request_input`],
-      systemPromptAddendum: JOB_INPUT_SYSTEM_PROMPT_ADDENDUM,
+      systemPromptAddendum,
     }
   },
 })

@@ -1,0 +1,27 @@
+{
+  // WHY THIS EXISTS: the root tsconfig includes only `apps/*/src/**` and
+  // excludes `**/*.test.ts`, so `tsc -p tsconfig.json` never looks at
+  // apps/deploy-cli/test at all. That matters more here than almost anywhere
+  // else in the repo, because this app is mostly TEST code: the parity suites
+  // that check the ported engine against the bash it replaces are the whole
+  // verification strategy, and a type error in a fixture would have sailed
+  // straight through CI while looking green.
+  //
+  // It was found the hard way. A widening pass changed a fixture constant from
+  // number to string, and three test-side call sites needed updating that
+  // nothing in the build would have caught; they only surfaced under a
+  // throwaway local project someone happened to write. This makes that project
+  // permanent and puts it in the `typecheck` script so the next one is caught
+  // by the gate rather than by luck.
+  //
+  // vitest does not typecheck either, so without this file there is NO gate on
+  // any of it.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["**/dist", "**/node_modules"]
+}

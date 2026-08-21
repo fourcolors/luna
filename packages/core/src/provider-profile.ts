@@ -199,6 +199,16 @@ export function profileForKind(kind: string, providerEnv: ProviderEnv): Provider
   }
 }
 
+/** Whether a resolved provider profile's lane can emit structured output at
+ * all — i.e. `capabilities.structuredOutput !== "none"`. Single definition of
+ * "this lane can emit structured output", consumed by both config-time
+ * validators (overflow-chain's JSON-consumer-lane audit and the
+ * provider-settings resolver's role-binding check) so the two can never drift
+ * on what counts as JSON-capable. */
+export function laneSupportsStructuredOutput(profile: ProviderProfile): boolean {
+  return profile.capabilities.structuredOutput !== "none"
+}
+
 /** Resolve a model string to the provider profile that tells the adapter how to
  * point the SDK. `env` is injectable for tests; defaults to `process.env`. */
 export function resolveProfile(

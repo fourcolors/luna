@@ -19,8 +19,10 @@
 import { Effect } from "effect"
 import {
   CLAUDE_CODE_LOGIN_SECRET_REF,
+  laneSupportsStructuredOutput,
   profileForKind,
   readProviderEnv,
+  resolveProfile,
   toWireModel,
   type AccountBrokerApi,
   type AcquiredSession,
@@ -51,19 +53,34 @@ export function resolveReasonerModel(
 
 /**
  * Feature gate for native SDK structured output on the reasoner lanes
- * (wake/dream). When OFF (the default), reasoners pass NO `outputFormat` and
- * fall back to prompt-and-parse — byte-identical to pre-change behavior, so
- * merging is zero-runtime-risk. Flip `LUNA_REASONER_STRUCTURED_OUTPUT` to
- * 1/true/yes/on to have reasoners request `outputFormat: { type:"json_schema" }`
- * and consume the schema-validated `structured_output` frame (the text-parse
- * path stays as a fallback for providers that don't honor it). Read at
- * layer-build time, mirroring resolveReasonerModel / the *_TIMEOUT_MS vars.
+ * (wake/dream). DEFAULT ON whenever `model`'s resolved provider profile
+ * supports structured output - i.e. `laneSupportsStructuredOutput` (the
+ * slice-09 capability check @luna/core's overflow-chain validator and the
+ * provider-settings resolver already use) reports the lane's provider can
+ * honor `outputFormat`. Today that's anthropic (the bare "default" lane) and
+ * google; a "none" lane (openai, ollama-cloud, ollama-local, or an unrecognized
+ * gateway kind) falls back to prompt-and-parse exactly as before this change.
+ * `model` is resolved with the SAME `"default"` fallback the broker itself
+ * applies in `runBrokeredReasonerTurn` (`args.model ?? "default"`), so the
+ * capability check reflects the provider the turn actually routes to in the
+ * common (non-overflow-chain) case.
+ *
+ * `LUNA_REASONER_STRUCTURED_OUTPUT` remains an explicit override in BOTH
+ * directions: 1/true/yes/on FORCES structured output on even for a lane the
+ * capability check would leave off (e.g. trying a new gateway build); 0/false/
+ * no/off FORCES it off (the instant rollback lever if dream/wake op-validation
+ * failure rates rise - see job_runs / dream_audit). An unset, blank, or
+ * unrecognized value defers to the capability check. Read at layer-build time,
+ * mirroring resolveReasonerModel / the *_TIMEOUT_MS vars.
  */
 export function reasonerStructuredOutputEnabled(
+  model: string | undefined,
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   const v = env["LUNA_REASONER_STRUCTURED_OUTPUT"]?.trim().toLowerCase()
-  return v === "1" || v === "true" || v === "yes" || v === "on"
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false
+  return laneSupportsStructuredOutput(resolveProfile(model ?? "default", env))
 }
 
 /**

@@ -6,26 +6,38 @@ import {
   type RerankScore,
 } from "@luna/core"
 import {
-  InMemoryBackend,
   makeRecord,
   makeRouter,
   OPERATOR_MEMORY_SCOPE,
+  type MemoryVectorBackend,
 } from "@luna/memory"
-import {
-  captureTurnCandidates,
-  extractTurnCandidates,
-  MEMORY_CANDIDATE_KIND,
-  packRecallContext,
-  recallForTurn,
-} from "../src/turn-memory.js"
+import { packRecallContext, recallForTurn } from "../src/turn-memory.js"
 import {
   checkEmbeddingEvalPreflight,
-  scoreExtractionEval,
   scoreRetrievalEval,
 } from "../src/eval.js"
 
+const notUsed = (): never => {
+  throw new Error("not used")
+}
+
+// Only `search` is exercised by these fakes; the rest of MemoryBackend is
+// never called.
+const makeFakeVectorBackend = (
+  search: MemoryVectorBackend["search"],
+): MemoryVectorBackend => ({
+  backendName: "fake",
+  put: notUsed,
+  get: notUsed,
+  query: notUsed,
+  delete: notUsed,
+  exportAll: notUsed,
+  importAll: notUsed,
+  search,
+})
+
 describe("turn memory", () => {
-  it("packs bounded untrusted context and excludes inert candidates", () => {
+  it("packs bounded untrusted context and escapes delimiter injection", () => {
     const packed = packRecallContext(
       [
         {
@@ -37,15 +49,6 @@ describe("turn memory", () => {
           }),
           score: 0.9,
         },
-        {
-          record: makeRecord({
-            id: "candidate",
-            namespace: "memory-candidates",
-            kind: MEMORY_CANDIDATE_KIND,
-            content: { text: "unreviewed" },
-          }),
-          score: 1,
-        },
       ],
       { maxHits: 2, maxRecordChars: 100, maxTotalChars: 300 },
     )
@@ -55,59 +58,43 @@ describe("turn memory", () => {
     expect(packed?.text.length).toBeLessThanOrEqual(300)
   })
 
-  it("extracts explicit durable facts and belief evidence deterministically", () => {
-    const input = {
-      userText:
-        "Remember that I prefer Zsh. I want you to always verify claims before answering.",
-      scope: OPERATOR_MEMORY_SCOPE,
-    }
-    const first = extractTurnCandidates(input)
-    const second = extractTurnCandidates(input)
-    expect(first.map((c) => c.kind)).toEqual([
-      "durable-fact",
-      "belief-evidence",
-    ])
-    expect(second.map((c) => c.id)).toEqual(first.map((c) => c.id))
-  })
-
-  it("writes idempotent inert candidates with provenance", async () => {
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const backend = yield* InMemoryBackend
-        const router = makeRouter([{ pattern: "*", backend }])
-        const input = {
-          router,
-          sessionId: "session-1",
-          userMessageId: "message-1",
-          userText: "We decided to use Postgres for the event store.",
-          scope: OPERATOR_MEMORY_SCOPE,
-        }
-        const first = yield* captureTurnCandidates(input)
-        const second = yield* captureTurnCandidates(input)
-        const records = yield* Stream.runCollect(
-          router.query({ namespace: "memory-candidates" }),
-        )
-        return { first, second, records: Array.from(records) }
-      }).pipe(Effect.provide(InMemoryBackend.Default)),
+  it("drops legacy candidate rows (candidateText-only content) from packed recall", () => {
+    // Live DBs may still hold rows written by the deleted turn-capture
+    // pipeline: kind "memory-candidate" with content.candidateText and no
+    // content.text. With the recall-side kind filter gone, their exclusion
+    // rests entirely on memoryText() returning null for that shape.
+    const packed = packRecallContext(
+      [
+        {
+          record: makeRecord({
+            id: "legacy-candidate",
+            namespace: "notes",
+            kind: "memory-candidate",
+            content: { candidateText: "unreviewed preference" },
+          }),
+          score: 0.95,
+        },
+        {
+          record: makeRecord({
+            id: "real",
+            namespace: "notes",
+            kind: "semantic",
+            content: { text: "prefers terse answers" },
+          }),
+          score: 0.5,
+        },
+      ],
+      { maxHits: 2, maxRecordChars: 100, maxTotalChars: 300 },
     )
-    expect(result.first).toBe(1)
-    expect(result.second).toBe(1)
-    expect(result.records).toHaveLength(1)
-    expect(result.records[0]?.kind).toBe(MEMORY_CANDIDATE_KIND)
-    expect(result.records[0]?.provenance).toEqual({
-      source: "turn-extraction",
-      sessionId: "session-1",
-      messageIds: ["message-1"],
-    })
+    expect(packed?.hits.map((hit) => hit.id)).toEqual(["real"])
+    expect(packed?.text).not.toContain("unreviewed preference")
   })
 
   it("keeps scoped backend over-fetch bounded while retaining pack headroom", async () => {
     let backendTopK: number | undefined
-    const backend = Object.assign(new InMemoryBackend(), {
-      search: (args: { readonly topK?: number }) => {
-        backendTopK = args.topK
-        return Stream.empty
-      },
+    const backend = makeFakeVectorBackend((args) => {
+      backendTopK = args.topK
+      return Stream.empty
     })
     const router = makeRouter([{ pattern: "*", backend }])
 
@@ -134,36 +121,33 @@ describe("turn memory", () => {
       delete process.env["LUNA_RERANK_THRESHOLD"]
     })
 
-    // InMemoryBackend has no real search() implementation (put/get/query
-    // only - see packages/memory/src/backends/in-memory.ts) - same reason
-    // the "keeps scoped backend over-fetch bounded" test above overrides
-    // `search` directly rather than relying on it. Mirror that pattern here
-    // with two fixed records so the FAKE reranker below has something to
-    // reorder/gate.
+    // No shipped backend has a scriptable search() for this scenario, so this
+    // fakes a whole MemoryVectorBackend the same way the "keeps scoped
+    // backend over-fetch bounded" test above does, seeded with two fixed
+    // records so the FAKE reranker below has something to reorder/gate.
     const seededRouter = () => {
-      const backend = Object.assign(new InMemoryBackend(), {
-        search: () =>
-          Stream.fromIterable([
-            {
-              record: makeRecord({
-                id: "good",
-                namespace: "notes",
-                kind: "semantic",
-                content: { text: "operator's favorite coffee is espresso" },
-              }),
-              score: 0.9,
-            },
-            {
-              record: makeRecord({
-                id: "junk",
-                namespace: "notes",
-                kind: "semantic",
-                content: { text: "the weather in Lisbon was sunny yesterday" },
-              }),
-              score: 0.5,
-            },
-          ]),
-      })
+      const backend = makeFakeVectorBackend(() =>
+        Stream.fromIterable([
+          {
+            record: makeRecord({
+              id: "good",
+              namespace: "notes",
+              kind: "semantic",
+              content: { text: "operator's favorite coffee is espresso" },
+            }),
+            score: 0.9,
+          },
+          {
+            record: makeRecord({
+              id: "junk",
+              namespace: "notes",
+              kind: "semantic",
+              content: { text: "the weather in Lisbon was sunny yesterday" },
+            }),
+            score: 0.5,
+          },
+        ]),
+      )
       return makeRouter([{ pattern: "*", backend }])
     }
 
@@ -291,7 +275,7 @@ describe("turn memory", () => {
 })
 
 describe("memory eval metrics", () => {
-  it("scores recall, reciprocal rank, forbidden leakage, and extraction", () => {
+  it("scores recall, reciprocal rank, and forbidden leakage", () => {
     expect(
       scoreRetrievalEval([
         {
@@ -309,18 +293,6 @@ describe("memory eval metrics", () => {
       averagePackedChars: 0,
       truncationRate: 0,
     })
-    expect(
-      scoreExtractionEval([
-        {
-          caseId: "preference",
-          expectedKinds: ["durable-fact"],
-          candidates: extractTurnCandidates({
-            userText: "I prefer concise answers.",
-            scope: OPERATOR_MEMORY_SCOPE,
-          }),
-        },
-      ]),
-    ).toEqual({ cases: 1, precision: 1, recall: 1 })
   })
 
   it("invalidates quality scores when vector dimensions are incompatible", () => {

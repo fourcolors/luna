@@ -20,14 +20,13 @@
 // for the "inert" WebSocket stub, so this suite can actually script opens,
 // drops, flaps and message delivery instead of leaving the socket dead.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import { FakeWebSocket } from './helpers/FakeWebSocket'
-
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
+import {
+  evalChatInlineScriptWithBridge,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  readChatHtml,
+} from './helpers/chat-harness'
 
 describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', () => {
   let htmlContent: string
@@ -38,15 +37,8 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     // frontend-react/chat.html is what actually ships (src-tauri/tauri.conf.json's
     // `frontendDist`); the superseded frontend/chat.html copy was deleted by the
     // React + Astryx conversion. Same source chat-window.test.ts reads.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    // `<body[^>]*>`, NOT `<body>`: the shipped tag carries a class
-    // (`<body class="moon-astryx-root">`), and - more dangerously - the first
-    // LITERAL `<body>` in this file now sits inside a JS comment far down the
-    // inline script. A `<body>` regex silently matches THAT and yields a
-    // truncated, mid-script DOM instead of failing, so keep this in lockstep
-    // with chat-window.test.ts.
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
     // Fail loudly rather than running every scenario against an empty DOM if
     // the shell is ever restructured again.
     expect(document.body.innerHTML.length).toBeGreaterThan(0)
@@ -84,15 +76,14 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.useFakeTimers()
 
-    // Same "select the inline script by content, not position" guard as
-    // chat-window.test.ts — fails loudly if a future edit adds a second
-    // <script> block containing 'WebSocketEngine' instead of silently
-    // running the wrong one.
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    // Mount the React transcript (src/chat/MessageList.tsx) into
+    // #chat-messages, then evaluate the inline page script (selected by
+    // CONTENT, not position - same guard as chat-window.test.ts, fails
+    // loudly if a future edit adds a second <script> block containing
+    // 'WebSocketEngine' instead of silently running the wrong one) and
+    // patch its ChatState/ChatLoop forward-declarations to the real bridge
+    // in the SAME scope (see helpers/chat-harness.ts's module doc).
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {
@@ -103,6 +94,9 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
+    delete (window as any).LunaChatHost
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -264,6 +258,90 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
       const m = internals()
       FakeWebSocket.simulateFlap(4, { advance: (ms) => vi.advanceTimersByTime(ms) })
       expect(m.State.reconnectAttempts).toBe(1)
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Scenario F: the registerCloseHook seam, driven through a REAL close.
+  //
+  // WHY HERE AND NOT IN chat-window.test.ts. That suite already pins the
+  // shipped hook's BODY, but it does so by reaching into
+  // `WebSocketEngine._closeHooks` and calling each entry directly:
+  //
+  //     for (const hook of hooks) hook()
+  //
+  // That proves the wipe works when invoked. It cannot prove the ENGINE
+  // invokes it. An engine rewrite that dropped the `for (const hook of
+  // this._closeHooks)` loop in the close handler would leave that test
+  // green while a typed-but-unsent secret survived a socket drop - which is
+  // a security property, not a cosmetic one.
+  //
+  // stack23 S18 is about to rewrite exactly that close handler onto the ESM
+  // ConnectionManager, so the seam gets an integration-level pin in the CI
+  // hard gate FIRST, driven by a real `close` event through FakeWebSocket.
+  // ───────────────────────────────────────────────────────────────────────
+  describe('Scenario: close hooks run on a real socket drop (registerCloseHook seam)', () => {
+    it('a mid-stream drop invokes every registered close hook, in registration order', () => {
+      const m = internals()
+      const order: string[] = []
+      m.WebSocketEngine.registerCloseHook(() => order.push('first'))
+      m.WebSocketEngine.registerCloseHook(() => order.push('second'))
+
+      FakeWebSocket.latest()!.simulateOpen()
+      expect(order).toEqual([]) // nothing runs while the socket is healthy
+      FakeWebSocket.latest()!.simulateDrop()
+
+      expect(order).toEqual(['first', 'second'])
+    })
+
+    it('the SHIPPED secret-wipe hook clears a typed secret through a real drop, not just when called directly', () => {
+      const input = document.getElementById('secret-prompt-input') as HTMLInputElement | null
+      expect(input, 'chat.html must still carry #secret-prompt-input').toBeTruthy()
+      input!.value = 'typed-not-sent'
+
+      FakeWebSocket.latest()!.simulateOpen()
+      FakeWebSocket.latest()!.simulateDrop()
+
+      // The end-to-end property: socket drops => no typed secret retained.
+      expect(input!.value).toBe('')
+    })
+
+    it('a throwing hook does not prevent later hooks from running', () => {
+      // Hook isolation matters precisely because the secret wipe may not be
+      // the only registered policy: one panel's failing hook must not strand
+      // another panel's secret in the DOM.
+      const m = internals()
+      const order: string[] = []
+      m.WebSocketEngine.registerCloseHook(() => {
+        order.push('throwing')
+        throw new Error('boom')
+      })
+      m.WebSocketEngine.registerCloseHook(() => order.push('after-throw'))
+
+      FakeWebSocket.latest()!.simulateOpen()
+      expect(() => FakeWebSocket.latest()!.simulateDrop()).not.toThrow()
+
+      expect(order).toEqual(['throwing', 'after-throw'])
+    })
+
+    it('hooks run on EVERY drop across a reconnect, not only the first', () => {
+      // A rewrite that registered the close handler once against the first
+      // socket - rather than per-connection - would pass the single-drop
+      // tests above and silently stop wiping from the second drop onward.
+      const m = internals()
+      let runs = 0
+      m.WebSocketEngine.registerCloseHook(() => {
+        runs += 1
+      })
+
+      for (let i = 0; i < 3; i++) {
+        const sock = FakeWebSocket.latest()!
+        sock.simulateOpen()
+        sock.simulateDrop()
+        vi.advanceTimersByTime(1000) // let the scheduled reconnect mint the next socket
+      }
+
+      expect(runs).toBe(3)
     })
   })
 })

@@ -870,8 +870,3 @@ export const subscribeAndDeliver = (
 
 export const streamEditThrottleMs = STREAM_EDIT_THROTTLE_MS
 
-/** A Schedule that retries delivery with exponential backoff capped at 30s. */
-export const deliveryRetrySchedule = Schedule.exponential("500 millis").pipe(
-  Schedule.union(Schedule.spaced("30 seconds")),
-  Schedule.upTo("5 minutes"),
-)

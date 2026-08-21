@@ -1,0 +1,605 @@
+/*
+ * message-list.css - styling for the chat transcript (#chat-messages and
+ * every bubble/timeline/tool-card kind MessageList.tsx renders into it).
+ *
+ * Moved verbatim out of chat.html's inline <style> block as part of the
+ * ChatRenderer -> React conversion (stack23 S15) - selectors, declarations,
+ * and relative order are otherwise UNCHANGED from the pre-conversion page,
+ * so this is a pure relocation, not a redesign. The one deliberate edit is
+ * the webkit-scrollbar group just below: it used to be grouped with
+ * `.chat-input` (the composer's own textarea, which stays in chat.html and
+ * keeps its own copy of that rule) - split here to the message-list-only
+ * selectors, with identical declarations, so both keep the same look.
+ */
+
+/* Watercolor scrollbar styling for every scrolling region this file owns
+   (`width` covers vertical, `height` covers horizontal - assistant `<pre>`
+   blocks scroll horizontally). Thumbs use the ink-faint token so they work
+   on both paper and dark-paper backgrounds. */
+.chat-messages::-webkit-scrollbar,
+.msg.assistant pre::-webkit-scrollbar,
+.tool-card-input::-webkit-scrollbar,
+.tool-card-output::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.chat-messages::-webkit-scrollbar-track,
+.msg.assistant pre::-webkit-scrollbar-track,
+.tool-card-input::-webkit-scrollbar-track,
+.tool-card-output::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-messages::-webkit-scrollbar-thumb,
+.msg.assistant pre::-webkit-scrollbar-thumb,
+.tool-card-input::-webkit-scrollbar-thumb,
+.tool-card-output::-webkit-scrollbar-thumb {
+  background: var(--ink-faint);
+  border-radius: 3px;
+}
+.chat-messages::-webkit-scrollbar-thumb:hover,
+.msg.assistant pre::-webkit-scrollbar-thumb:hover,
+.tool-card-input::-webkit-scrollbar-thumb:hover,
+.tool-card-output::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-soft);
+}
+
+/* Messages Stream */
+.chat-messages {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Every message / timeline is a flex item in this column. Default
+   flex-shrink is 1, so when the combined content is taller than the panel,
+   flexbox COMPRESSES the items to fit instead of letting the container
+   scroll. A `.timeline` sets `overflow:hidden`, which (per the flexbox
+   automatic-minimum-size rule, CSS Flexbox §4.5) lets it be shrunk all the
+   way down to its one-line summary - clipping every tool step inside it AND
+   making scrollHeight == clientHeight, so .chat-messages can't scroll at
+   all. That is the "long task → 'Working on it…' gets cut off and scroll is
+   dead" bug. Pinning flex-shrink:0 keeps each child at its natural height;
+   the overflow then spills into .chat-messages' overflow-y:auto and scrolls
+   normally. (Reproduces identically in Blink and WebKit - it's flex layout,
+   not an engine quirk.)
+   The universal `> *` is intentional: the invariant is that EVERY direct
+   child of the scroll region must keep its natural height so the list
+   scrolls rather than compressing. Scoping this to specific classes (.msg,
+   .timeline, …) would silently re-break the moment a new message/card kind
+   is added under .chat-messages. */
+.chat-messages > * { flex-shrink: 0; }
+
+.msg {
+  max-width: 82%;
+  display: flex;
+  flex-direction: column;
+  /* Chat typeface + size knobs (data-font / data-fontsize). Code/tables
+     inside keep their own --font-mono / fixed sizes via child rules. */
+  font-family: var(--font-chat);
+  font-size: calc(0.84rem * var(--font-scale));
+  line-height: 1.45;
+  animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+  transform-origin: bottom left;
+}
+.msg.user { align-self: flex-end; align-items: flex-end; transform-origin: bottom right; }
+.msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+@keyframes msgAppear {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* The painted bubble. Every .msg kind (user/assistant/banner/error/typing)
+   wraps its content in .msg-body, so the bubble chrome is uniform and the
+   optional .msg-meta footer always paints on the page, not the bubble. */
+.msg-body { padding: 9px 13px; border-radius: 14px; max-width: 100%; }
+
+/* Watercolor message bubbles. User = paper envelope with ink border;
+   assistant = soft panel-tint wash (hand-painted look). */
+.msg.user .msg-body {
+  background: var(--paper);
+  border: 1.3px solid var(--ink-faint);
+  border-radius: 14px 4px 14px 14px;
+  color: var(--ink);
+}
+
+.msg.assistant .msg-body {
+  /* Wash painted on the ::before layer below (wc-wobble hand-painted
+     edge, design fidelity) - text above stays crisp. */
+  background: transparent;
+  border: none;
+  border-radius: 4px 14px 14px 14px;
+  color: var(--ink);
+  position: relative;
+  isolation: isolate;
+}
+.msg.assistant .msg-body::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
+  filter: url(#wc-wobble);
+  z-index: -1;
+}
+
+/* Per-message action row: an always-visible footer that sits BELOW and
+   OUTSIDE the bubble (a sibling of .msg-body) holding the copy button +
+   the relative send-time. Side alignment is inherited from .msg's
+   align-items (user flush-right, assistant flush-left). The row is an
+   extensible flex container (future home for undo / branch). */
+.msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  padding: 0 2px;
+}
+.msg-time {
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* Light ghost icon button - no chip border/fill now that it lives on the
+   page rather than inside the bubble; subtle at rest, lifts on hover. */
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft);
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.msg-copy:hover {
+  opacity: 1;
+  background: color-mix(in oklab, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.msg-copy:focus-visible {
+  opacity: 1;
+  outline: 1px solid var(--ink-faint);
+  outline-offset: 1px;
+}
+/* Brief confirmation state after a successful copy (mint, like the
+   code-block copy's done state). */
+.msg-copy[data-copied="1"] {
+  opacity: 1;
+  color: #6ee7b7;
+  background: rgba(110, 231, 183, 0.12);
+}
+.msg-copy svg { width: 12px; height: 12px; display: block; }
+
+/* #124 "from a background task" chip - marks an assistant turn that was
+   DELIVERED by a finished background/scheduled job (not a live reply). Lives
+   in the always-visible meta row, before the copy button. A faint accent
+   pill so it reads as a quiet provenance note, not a loud badge. */
+.msg-delivery {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 2px 7px 2px 6px;
+  border-radius: 999px;
+  color: color-mix(in oklab, var(--accent) 72%, var(--ink));
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
+  -webkit-user-select: none;
+  user-select: none;
+  max-width: 220px;
+}
+.msg-delivery .glyph { font-size: 0.72rem; opacity: 0.85; }
+.msg-delivery .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+/* Markdown tables (GFM). Dark-glass: thin separators, transparent
+   background, tight cell padding so the table fits in the 560px-wide
+   panel without forcing a horizontal scrollbar on short rows. */
+.msg.assistant table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 0.88rem;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.msg.assistant table th,
+.msg.assistant table td {
+  padding: 4px 8px;
+  border: 1px solid var(--ink-faint);
+  text-align: left;
+  vertical-align: top;
+}
+.msg.assistant table th {
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  font-weight: 600;
+}
+.msg.assistant table tr:nth-child(even) td {
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+}
+
+/* Activity timeline - Gemini-style collapsible progress for a tool-using
+   turn. While streaming the steps (interim text + tool calls) show on a
+   vertical connector line; on finish the timeline auto-collapses to a
+   one-line summary pill and the final answer renders as a normal bubble
+   below it. Collapse state lives on the turn (ChatState), NOT the DOM, so
+   it survives the per-frame re-render. */
+.timeline {
+  align-self: flex-start;
+  width: 92%;
+  max-width: 92%;
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+  border: 1px solid var(--ink-faint);
+  border-radius: 12px;
+  overflow: hidden;
+  animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+  transform-origin: bottom left;
+}
+.timeline-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+.timeline-summary:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+.timeline-chevron {
+  display: inline-block;
+  transition: transform 160ms ease;
+  width: 12px;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+.timeline:not(.collapsed) .timeline-chevron { transform: rotate(90deg); }
+.timeline-summary-label { flex: 1; min-width: 0; }
+.timeline-summary .typing-dots { padding: 0; }
+.timeline-body {
+  position: relative;
+  padding: 6px 12px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* the vertical connector line behind the step icons */
+.timeline-body::before {
+  content: '';
+  position: absolute;
+  left: 21px;
+  top: 2px;
+  bottom: 14px;
+  width: 1px;
+  background: var(--ink-faint);
+}
+.timeline-step {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.timeline-step-icon {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  border-radius: 50%;
+  background: var(--paper); /* occlude the vertical connector line */
+}
+.timeline-step-icon .tl-dot { width: 8px; height: 8px; border-radius: 50%; }
+.timeline-step-icon .tl-dot.pending { background: #fcd34d; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+.timeline-step-icon .tl-dot.ok { background: #6ee7b7; }
+.timeline-step-icon .tl-dot.error { background: #fda4af; }
+.timeline-step-content { flex: 1; min-width: 0; padding-top: 1px; }
+.timeline-step-text { color: var(--ink-soft); font-size: 0.82rem; line-height: 1.45; }
+
+/* Tool-call cards - one per tool invocation, rendered as a timeline step
+   (and reused by the legacy appendToolCallCard/attachToolResult adapters).
+   Native <details>/<summary> gives free keyboard a11y + open-state. */
+.tool-call-card {
+  padding: 0;
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+  border: 1px solid var(--ink-faint);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 0.82rem;
+}
+.tool-call-card details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+.tool-call-card details > summary::-webkit-details-marker { display: none; }
+.tool-call-card .tool-card-chevron {
+  display: inline-block;
+  transition: transform 120ms ease;
+  width: 10px;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+}
+.tool-call-card details[open] .tool-card-chevron { transform: rotate(90deg); }
+.tool-call-card .tool-card-name {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.80rem;
+  color: var(--ink);
+}
+.tool-call-card .tool-card-status {
+  margin-left: auto;
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 8px;
+  letter-spacing: 0.02em;
+}
+.tool-call-card .tool-card-status-ok    { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
+.tool-call-card .tool-card-status-error { background: rgba(248, 113, 113, 0.18); color: #fda4af; }
+.tool-call-card .tool-card-status-pending { background: rgba(251, 191, 36, 0.16); color: #fcd34d; }
+.tool-call-card .tool-card-body {
+  padding: 4px 10px 10px 10px;
+  border-top: 1px solid var(--ink-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tool-call-card .tool-card-section-label {
+  font-size: 0.70rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  opacity: 0.85;
+}
+.tool-call-card .tool-card-input,
+.tool-call-card .tool-card-output {
+  margin: 0;
+  padding: 6px 8px;
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  border-radius: 6px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+.tool-call-card .tool-card-truncated {
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  opacity: 0.7;
+  margin-top: -4px;
+}
+
+/* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
+.msg.assistant .msg-body > :first-child { margin-top: 0; }
+.msg.assistant .msg-body > :last-child { margin-bottom: 0; }
+.msg.assistant p { margin: 0.5em 0; white-space: pre-wrap; } /* keep single newlines */
+.msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.25;
+  font-weight: 700;
+}
+.msg.assistant h1 { font-size: 1.2em; }
+.msg.assistant h2 { font-size: 1.12em; }
+.msg.assistant h3 { font-size: 1.05em; }
+.msg.assistant ul, .msg.assistant ol { margin: 0.4em 0; padding-left: 1.3em; }
+.msg.assistant li { margin: 0.15em 0; }
+.msg.assistant a { color: var(--accent); text-decoration: none; }
+.msg.assistant a:hover { text-decoration: underline; }
+.msg.assistant strong { font-weight: 700; }
+.msg.assistant em { font-style: italic; }
+.msg.assistant code {
+  background: color-mix(in oklab, var(--ink) 9%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+}
+/* Editor-feel fenced code blocks. Each ```fence is wrapped in a
+   .code-block container that hosts a header (language chip + copy
+   button) + the <pre><code> body. Tokens are coloured by highlight.js
+   at render-time; see window.LunaMarkdown.enhanceCodeBlocks (vendored,
+   frozen - MarkdownBody in MessageList.tsx calls it post-commit).       */
+.msg.assistant .code-block {
+  margin: 0.6em 0;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 16%, transparent);
+  overflow: hidden;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+.msg.assistant .code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 4px 12px;
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  border-bottom: 1px solid var(--ink-faint);
+  min-height: 26px;
+}
+.msg.assistant .code-block-lang {
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.9;
+}
+.msg.assistant .code-block-lang:empty { display: none; }
+.msg.assistant .code-block-copy {
+  background: transparent;
+  border: 1px solid var(--ink-faint);
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 2px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+}
+.msg.assistant .code-block-copy:hover {
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--ink);
+}
+.msg.assistant .code-block-copy[data-copy-state="done"] {
+  color: #6ee7b7;
+  border-color: rgba(110, 231, 183, 0.4);
+  background: rgba(110, 231, 183, 0.08);
+}
+.msg.assistant .code-block > pre {
+  margin: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 10px 14px 11px;
+  overflow-x: auto;     /* long lines scroll the body, never the bubble */
+}
+.msg.assistant .code-block > pre > code {
+  background: none;
+  padding: 0;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
+               "Cascadia Code", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  font-variant-ligatures: contextual;
+  tab-size: 2;
+  -moz-tab-size: 2;
+  white-space: pre;     /* hard-wrap off; horizontal scroll instead */
+  color: var(--ink);
+  display: block;
+}
+
+/* Bare <pre><code> that escapes the .code-block wrapper (defensive: if a
+   future code-path emits plain <pre>, we still want it to look right). */
+.msg.assistant .msg-body > pre,
+.msg.assistant li > pre {
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 16%, transparent);
+  padding: 10px 14px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.msg.assistant .msg-body > pre > code,
+.msg.assistant li > pre > code {
+  background: none;
+  padding: 0;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
+               "Cascadia Code", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+/* highlight.js token theme. The Palenight-leaning colors below are pale
+   pigments mixed for NIGHT paper, so the token block is gated on
+   html[data-theme='dark'] - otherwise its .msg.assistant scoping
+   (higher specificity) would also beat the shared moon-theme.css light
+   ink palette and leave pale-on-paper code in light mode. Scoped under
+   .msg.assistant so it never leaks into surrounding chrome. */
+.msg.assistant .hljs                                { color: var(--ink); background: transparent; }
+.msg.assistant .hljs-emphasis                       { font-style: italic; }
+.msg.assistant .hljs-strong                         { font-weight: 700; }
+html[data-theme='dark'] .msg.assistant .hljs-comment,
+html[data-theme='dark'] .msg.assistant .hljs-quote                          { color: #6b7896; font-style: italic; }
+html[data-theme='dark'] .msg.assistant .hljs-keyword,
+html[data-theme='dark'] .msg.assistant .hljs-selector-tag,
+html[data-theme='dark'] .msg.assistant .hljs-literal,
+html[data-theme='dark'] .msg.assistant .hljs-section,
+html[data-theme='dark'] .msg.assistant .hljs-doctag                         { color: #c792ea; }
+html[data-theme='dark'] .msg.assistant .hljs-built_in,
+html[data-theme='dark'] .msg.assistant .hljs-type,
+html[data-theme='dark'] .msg.assistant .hljs-class .hljs-title              { color: #ffcb6b; }
+html[data-theme='dark'] .msg.assistant .hljs-string,
+html[data-theme='dark'] .msg.assistant .hljs-attr,
+html[data-theme='dark'] .msg.assistant .hljs-template-tag,
+html[data-theme='dark'] .msg.assistant .hljs-addition                       { color: #c3e88d; }
+html[data-theme='dark'] .msg.assistant .hljs-number,
+html[data-theme='dark'] .msg.assistant .hljs-meta,
+html[data-theme='dark'] .msg.assistant .hljs-meta .hljs-string              { color: #f78c6c; }
+html[data-theme='dark'] .msg.assistant .hljs-name,
+html[data-theme='dark'] .msg.assistant .hljs-tag                            { color: var(--accent); }
+html[data-theme='dark'] .msg.assistant .hljs-title,
+html[data-theme='dark'] .msg.assistant .hljs-variable,
+html[data-theme='dark'] .msg.assistant .hljs-template-variable,
+html[data-theme='dark'] .msg.assistant .hljs-property,
+html[data-theme='dark'] .msg.assistant .hljs-function .hljs-title           { color: #82aaff; }
+html[data-theme='dark'] .msg.assistant .hljs-symbol,
+html[data-theme='dark'] .msg.assistant .hljs-bullet,
+html[data-theme='dark'] .msg.assistant .hljs-link,
+html[data-theme='dark'] .msg.assistant .hljs-selector-class,
+html[data-theme='dark'] .msg.assistant .hljs-selector-id                    { color: #89ddff; }
+html[data-theme='dark'] .msg.assistant .hljs-deletion,
+html[data-theme='dark'] .msg.assistant .hljs-regexp                         { color: #ff5370; }
+html[data-theme='dark'] .msg.assistant .hljs-params                         { color: #ffcb6b; }
+html[data-theme='dark'] .msg.assistant .hljs-punctuation,
+html[data-theme='dark'] .msg.assistant .hljs-operator                       { color: #cbd5e1; }
+
+/* Horizontal rule from a markdown --- / *** / ___ line. */
+.msg.assistant hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--ink-faint), transparent);
+  margin: 0.8em 0;
+}
+
+/* Typing indicator dots */
+.typing-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 0;
+}
+
+/* Watercolor: typing dots use ink-soft token for both themes. */
+.dot {
+  width: 5px;
+  height: 5px;
+  background: var(--ink-soft);
+  border-radius: 50%;
+  animation: dotPulse 1.4s infinite ease-in-out;
+}
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dotPulse {
+  0%, 100% { transform: scale(0.6); opacity: 0.4; }
+  50% { transform: scale(1.2); opacity: 1; }
+}
+

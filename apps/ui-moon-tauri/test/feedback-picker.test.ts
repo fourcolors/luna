@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 //
 // Behavioral tests for the point-at-the-UI FeedbackEngine in chat.html.
-// Uses the same __MoonInternals harness as composer-config.test.ts.
+// Driven through the same test/helpers/chat-harness.ts bridge chat-window.
+// test.ts, slash-menu.test.ts and composer-config.test.ts use: chat.html's
+// hello handler unconditionally routes through ComposerConfig.applyModels
+// (stack23 S16b converted ComposerConfig to a `var` forward-declaration that
+// only the harness's bridge patches to a live value - see chat-harness.ts's
+// module doc), so any suite that sends a hello frame needs the same bridge,
+// not just suites that exercise ComposerConfig directly.
 //
 // Coverage:
 //  - #feedback-btn is hidden until the server advertises capabilities.feedback
@@ -11,24 +17,19 @@
 //  - Escape cancels the picker WITHOUT reaching VoiceEngine.handleEscape
 //  - a `feedback-ack` ok:true confirms + auto-hides; ok:false stays open
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
+import {
+  evalChatInlineScriptWithBridge,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  readChatHtml,
+} from './helpers/chat-harness'
 
 describe('FeedbackEngine (chat.html)', () => {
   let mockMe: any
 
   beforeEach(() => {
-    const htmlContent = fs.readFileSync(
-      path.resolve(__dirname, '../frontend-react/chat.html'),
-      'utf8',
-    )
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    const htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
 
     mockMe = {
       label: 'chat-test',
@@ -55,11 +56,7 @@ describe('FeedbackEngine (chat.html)', () => {
 
     localStorage.clear()
 
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    evalChatInlineScriptWithBridge()
 
     vi.useFakeTimers()
   })
@@ -76,6 +73,11 @@ describe('FeedbackEngine (chat.html)', () => {
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
+    delete (window as any).LunaChatHost
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
+    delete (window as any).Attachments
+    delete (window as any).ComposerConfig
     vi.restoreAllMocks()
     vi.useRealTimers()
   })

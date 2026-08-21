@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
-import { makeRestrictedBin } from "./helpers/guardian-harness"
+import { makeRestrictedBin, writeBunBuildStub } from "./helpers/guardian-harness"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const tempDirs: string[] = []
@@ -44,15 +44,19 @@ const runScript = (
 // Hermetic bun seam (the HOST_ENV_TESTS follow-up in vitest.config.ts): an
 // executable stub for LUNA_TEST_BUN_PATH, so rendered plans/units derive from
 // the fixture instead of naming a path only some hosts have (/root/.bun on
-// Linux roots, /opt/homebrew on Macs). The dry-run installers skip the -x
-// check today, but the stub is real so that can change without breaking tests.
+// Linux roots, /opt/homebrew on Macs). Most callers only need the -x/presence
+// check to pass, so a bare invocation exits 0; publish_engine's real `bun
+// build --compile --outfile=<x>` (scripts/luna-guardian, S21) additionally
+// needs an --outfile to land or its retrieval postcondition dies on an empty
+// artifact, so a `build --outfile=X` invocation writes a placeholder
+// executable there instead. Lenient (writeBunBuildStub's strict:false
+// default): an invocation this stub does not recognize exits 0 rather than
+// failing, since most callers here only care about the -x/presence check.
 const makeBunStub = (temp: string) => {
   const bin = join(temp, "stub-bin")
   mkdirSync(bin, { recursive: true })
-  const bun = join(bin, "bun")
-  writeFileSync(bun, "#!/usr/bin/env bash\nexit 0\n")
-  expect(spawnSync("chmod", ["+x", bun]).status).toBe(0)
-  return { bin, bun }
+  writeBunBuildStub(bin)
+  return { bin, bun: join(bin, "bun") }
 }
 
 const writePermissiveSystemctl = (bin: string) => {
@@ -86,6 +90,16 @@ const writePermissiveSystemctl = (bin: string) => {
 // container orchestration succeeds (info no-arg = daemon reachable; info
 // <instance> = new; config set drains the cloud-init heredoc off stdin; every
 // exec/probe returns 0) so the script reaches the host-side timer install.
+// `exec` is SELECTIVE, not a blanket passthrough: publish_engine's in-
+// container `bun build --compile`, its retrieval `cat`, and its cleanup `rm`
+// (S21, scripts/luna-guardian) re-execute their argv LOCALLY (mirroring
+// test/guardian.test.ts's writeIncusPassthroughStub), so the compile
+// actually runs under test and `run_runtime rm -f "$container_out"` actually
+// executes instead of leaking the compiled stub into the host's real /tmp.
+// Every OTHER exec'd command this script runs against a "new" instance -
+// `cloud-init status --wait`, `test -f /etc/systemd/...`, `test -w
+// /root/luna`, `systemctl status` - stays on the blind `exit 0` path: those
+// name real host paths and real tools (cloud-init) this test has neither.
 const writePermissiveIncus = (bin: string) => {
   writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
 set -uo pipefail
@@ -109,6 +123,14 @@ case "$cmd" in
   config)
     [[ "\${1:-}" == "set" ]] && cat >/dev/null
     exit 0
+    ;;
+  exec)
+    shift
+    [[ "\${1:-}" == -- ]] && shift
+    case "$*" in
+      *"/tmp/deploy-cli."*) exec "$@" ;;
+      *) exit 0 ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -695,46 +717,18 @@ esac
     const token = "test-container-token-sentinel-88888888"
     mkdirSync(bin, { recursive: true })
     mkdirSync(join(repo, ".git"), { recursive: true })
-    // Fully permissive fake incus: the entire non-dry-run orchestration succeeds
-    // (info no-arg = daemon reachable; info <instance> = new; config set drains
-    // the cloud-init heredoc off stdin; every exec/probe — including the post-
-    // cloud-init `test -f /etc/systemd/system/<service>` install-success check —
-    // returns 0) so the script reaches the real token-write codepath and exits 0.
-    writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
-set -uo pipefail
-cmd="\${1:-}"
-if [[ "$#" -gt 0 ]]; then shift; fi
-case "$cmd" in
-  info)
-    [[ "$#" -eq 0 ]] && exit 0
-    exit 1
-    ;;
-  storage) exit 0 ;;
-  network) exit 0 ;;
-  profile)
-    case "$*" in
-      "device get default root pool") printf 'default\\n'; exit 0 ;;
-      "device get default root path") printf '/\\n'; exit 0 ;;
-      "device get default eth0 network") printf 'incusbr0\\n'; exit 0 ;;
-    esac
-    exit 0
-    ;;
-  config)
-    [[ "\${1:-}" == "set" ]] && cat >/dev/null
-    exit 0
-    ;;
-  *) exit 0 ;;
-esac
-`)
-    const chmod = spawnSync("chmod", ["+x", join(bin, "incus")])
-    expect(chmod.status).toBe(0)
+    writePermissiveIncus(bin)
 
     // Hermetic auto-update seams: the post-create timer install must never
     // touch the real /etc/luna or /etc/systemd/system, even when the suite
     // runs as root on a Linux box.
     const unitDir = join(temp, "units")
     mkdirSync(unitDir)
-    writePermissiveSystemctl(bin)
+    // The dev stanza this seeds is incus-backed, so the guardian install
+    // below reaches publish_engine's in-container compile - it needs a real
+    // (stub) bun at the path runtime_bun_bin resolves, or the un-blinded
+    // `incus exec` passthrough has nothing to run.
+    const { bun } = makeBunStub(temp)
 
     const result = runScript("scripts/luna-container-create", [
       "--profile",
@@ -757,6 +751,7 @@ esac
         LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
         LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: bun,
       },
     })
 
@@ -794,6 +789,11 @@ esac
     mkdirSync(bin, { recursive: true })
     mkdirSync(join(repo, ".git"), { recursive: true })
     writePermissiveIncus(bin)
+    // The dev stanza below is incus-backed, so the guardian install reaches
+    // publish_engine's in-container compile - it needs a real (stub) bun at
+    // the path runtime_bun_bin resolves, or the un-blinded `incus exec`
+    // passthrough has nothing to run.
+    const { bun } = makeBunStub(temp)
 
     const unitDir = join(temp, "units")
     mkdirSync(unitDir)
@@ -835,6 +835,7 @@ deploy.autoUpdate    = true
         LUNA_GUARDIAN_STATE_DIR: join(temp, "guardian-state"),
         LUNA_UPDATE_STATE_DIR: join(temp, "update-state"),
         LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true",
+        LUNA_TEST_BUN_PATH: bun,
       },
     })
 
@@ -989,9 +990,14 @@ deploy.autoUpdate    = true
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
+    // Path-independent launcher (S07): WorkingDirectory names REPO_DIR itself
+    // (no app-specific subpath) and ExecStart names ONLY the launcher, which
+    // resolves the daemon's actual file relative to its own import.meta.url -
+    // a future move of the daemon needs no unit re-render.
+    expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo"))
+    expect(result.stdout).not.toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
     expect(result.stdout).toContain("EnvironmentFile=-" + join(temp, "state", ".env"))
-    expect(result.stdout).toContain("ExecStart=" + bun + " run scripts/chat-server.ts")
+    expect(result.stdout).toContain("ExecStart=" + bun + " run scripts/luna-chat-server-entry.ts")
     // Liveness ladder L1: hang detection. Type=notify holds the unit in
     // `activating` until the app's READY=1; WatchdogSec restarts a
     // wedged-but-alive process; NotifyAccess=all because beats arrive from a
@@ -1082,11 +1088,176 @@ deploy.autoUpdate    = true
     expect(result.stderr).toContain("sd-notify.ts")
   })
 
-  it("does NOT emit the version-skew warning when the checkout has sd-notify.ts", () => {
+  // S07: unit-render rollback. A bad render (or a rollback across the
+  // launcher boundary) needs a restore point in the SAME write path the
+  // guardian's --units-only auto-reconcile goes through, not just a manual
+  // render - see luna-guardian's reconcile_unit_if_idle.
+  it("re-rendering the service unit copies the previous version aside as .prev", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const serviceDir = join(temp, "systemd")
+    mkdirSync(join(repo, ".git"), { recursive: true })
+
+    const args = [
+      "--profile", "stable",
+      "--repo-dir", repo,
+      "--luna-home", state,
+      "--service-dir", serviceDir,
+      "--units-only", "--no-enable", "--no-start",
+    ]
+
+    const bin1 = makeBunStub(temp).bin
+    writePermissiveSystemctl(bin1)
+    const first = runScript("scripts/luna-server-install", args, {
+      env: { LUNA_TEST_BUN_PATH: join(bin1, "bun"), PATH: `${bin1}:${process.env.PATH ?? "/usr/bin:/bin"}` },
+    })
+    expect(first.status, first.stdout + first.stderr).toBe(0)
+    const unitPath = join(serviceDir, "luna-chat-server.service")
+    expect(existsSync(unitPath)).toBe(true)
+    // Nothing to back up on a first install - there is no prior unit.
+    expect(existsSync(unitPath + ".prev")).toBe(false)
+    const firstContent = readFileSync(unitPath, "utf8")
+
+    // A DIFFERENT bun stub path makes the second render byte-different from
+    // the first, so the .prev copy can be proven to hold the PRE-render
+    // content rather than a copy of what was just written.
+    const bin2 = join(temp, "stub-bin-2")
+    mkdirSync(bin2, { recursive: true })
+    writeFileSync(join(bin2, "bun"), "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", join(bin2, "bun")])
+    writePermissiveSystemctl(bin2)
+
+    const second = runScript("scripts/luna-server-install", args, {
+      env: { LUNA_TEST_BUN_PATH: join(bin2, "bun"), PATH: `${bin2}:${process.env.PATH ?? "/usr/bin:/bin"}` },
+    })
+    expect(second.status, second.stdout + second.stderr).toBe(0)
+    expect(existsSync(unitPath + ".prev")).toBe(true)
+    expect(readFileSync(unitPath + ".prev", "utf8")).toBe(firstContent)
+    const secondContent = readFileSync(unitPath, "utf8")
+    expect(secondContent).not.toBe(firstContent)
+    expect(secondContent).toContain(join(bin2, "bun"))
+    // Scoped to the service unit only - the pager alert unit's shape did not
+    // change in this slice, so it gets no .prev.
+    expect(existsSync(join(serviceDir, "luna-alert-luna-chat-server.service.prev"))).toBe(false)
+  })
+
+  describe("path-independent launcher - the bun-run-bash-shebang failure mode (S07)", () => {
+    it("the shared launcher literal (luna_chat_server_launcher_rel) names the real, shebang-less .ts file", () => {
+      // Sourcing lib/luna-deploy.sh is the SAME literal luna-server-install's
+      // ExecStart and lib/launchd-plist.sh's ProgramArguments both render -
+      // one source, so the two renderers can never name a different file.
+      const r = spawnSync("bash", ["-c",
+        `source "${join(repoRoot, "scripts/lib/luna-deploy.sh")}"; luna_chat_server_launcher_rel`],
+        { encoding: "utf8" })
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      const launcherRel = r.stdout.trim()
+      expect(launcherRel).toBe("scripts/luna-chat-server-entry.ts")
+      // Static assertion: ends in .ts, not a shebang script. `bun run
+      // <bash-shebang-file>` does NOT execute the file as a shell script -
+      // see the behavioral tests below for what it does instead.
+      expect(launcherRel.endsWith(".ts")).toBe(true)
+      const launcherPath = join(repoRoot, launcherRel)
+      expect(existsSync(launcherPath)).toBe(true)
+      expect(readFileSync(launcherPath, "utf8").startsWith("#!")).toBe(false)
+    })
+
+    // QUALIFIED empirical claim (measured, Bun 1.3.14): `bun run` on a
+    // bash-shebang file does NOT run it as a real shell script - Bun uses its
+    // OWN limited shell/parser, and the outcome depends on the file's shape,
+    // not just its extension. A MINIMAL file with no parenthesized syntax
+    // anywhere (e.g. just `set -euo pipefail` then a plain command) is
+    // "interpreted": unknown builtins like `set` report "command not found"
+    // WITHOUT aborting, so the file can run its later lines and reach
+    // `exit 0` having done nothing real - an exit-code-only assertion cannot
+    // see this. Extension does not save it: the identical content without a
+    // `.sh` extension is instead parsed as JS/TS and fails the SAME way
+    // (a bare `pipefail` after `set` is not valid JS either), exit 1.
+    it("the minimal shape that measurably exits 0 under bun run is silent - no output resembles a readiness signal", () => {
+      const temp = makeTempDir()
+      const fixture = join(temp, "bad-launcher.sh")
+      writeFileSync(fixture, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+      const r = spawnSync("bun", ["run", fixture], { encoding: "utf8" })
+      // Exit code alone is explicitly insufficient here (this shape exits 0
+      // while doing nothing real): stdout=="" is the second, load-bearing
+      // signal that no readiness output was ever produced. Not pinning the
+      // exact stderr wording Bun emits for the unrecognized `set` builtin -
+      // that string is Bun's internals, not this repo's behavior, and a
+      // reword there would fail this test with no product change.
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toBe("")
+    })
+
+    // What this proves: this repo's ACTUAL launcher content (bash-shebanged,
+    // matching the accident this static+behavioral guard exists to catch)
+    // makes Bun's shell/parser reject the WHOLE FILE (any parenthesized
+    // syntax - Bun.serve, `await import(...)` - forces this) BEFORE A
+    // SINGLE LINE RUNS. Nothing executing is what makes the daemon's port
+    // bind and READY=1 (systemd Type=notify only sends it once the WS
+    // server is actually listening, apps/ui-web/scripts/sd-notify.ts)
+    // provably unreachable code paths for this shape - this test does not
+    // itself probe the port or observe READY; it proves the precondition
+    // (zero lines executed) that makes both impossible.
+    it("this repo's real launcher content, bash-shebanged, fails the whole-file parse before a single line runs", () => {
+      const temp = makeTempDir()
+      const fixture = join(temp, "bad-real-launcher.sh")
+      writeFileSync(
+        fixture,
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+          + readFileSync(join(repoRoot, "scripts/luna-chat-server-entry.ts"), "utf8"),
+      )
+      // spawnSync blocks until the process exits - this IS the whole-file
+      // execution, not just its start, so an empty stdout with no listening
+      // side effect is dispositive: Bun's shell/parser rejected the file
+      // (any parenthesized call anywhere is a WHOLE-FILE parse failure)
+      // before a single line - let alone `await import(...)` - ran.
+      const r = spawnSync("bun", ["run", fixture], { encoding: "utf8" })
+      // Loud (a whole-file parse failure) is the ACTUAL outcome for this
+      // repo's launcher content - still never boots, just not silently. Not
+      // pinning the exact wording of Bun's parse-error message, same reason
+      // as the fixture above: Bun's internals, not this repo's behavior.
+      expect(r.status).not.toBe(0)
+      expect(r.stdout).toBe("")
+    })
+  })
+
+  it("does NOT emit the version-skew warning when the checkout has the pre-move apps/ui-web/scripts/sd-notify.ts", () => {
     const temp = makeTempDir()
     // Provision the S1 marker file so the guard has nothing to warn about.
     mkdirSync(join(temp, "repo", "apps", "ui-web", "scripts"), { recursive: true })
     writeFileSync(join(temp, "repo", "apps", "ui-web", "scripts", "sd-notify.ts"), "// present")
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain("sd-notify.ts")
+  })
+
+  it("does NOT emit the version-skew warning when the checkout has the post-move apps/server/src/sd-notify.ts", () => {
+    const temp = makeTempDir()
+    // Provision the S1 marker file at its POST-S08 location - the guard must
+    // accept this tree shape too, not just the pre-move apps/ui-web/scripts
+    // one, or every post-S08 install would emit a false start-timeout warning.
+    mkdirSync(join(temp, "repo", "apps", "server", "src"), { recursive: true })
+    writeFileSync(join(temp, "repo", "apps", "server", "src", "sd-notify.ts"), "// present")
 
     const result = runScript("scripts/luna-server-install", [
       "--dry-run",
@@ -1374,7 +1545,7 @@ exit 0
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
+    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/luna-chat-server-entry.ts")
   })
 
   it("server install replaces stale Claude Code overrides with the repo-bundled Linux binary", () => {
@@ -1686,18 +1857,43 @@ exit 0
     expect(script).toContain("--stable-fallback-url ws://127.0.0.1:4753/ui")
   })
 
-  it("desktop install probes/serves the Vite UI on the correct port (5174, not 5173)", () => {
+  it("desktop install no longer guards/boots the retired Vite web UI (stack23 S13)", () => {
     const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
-    // Pre-existing bug the review caught: vite.config.ts binds the dev server on
-    // 5174, but the installer probed/polled/opened 5173 (which Vite never bound).
-    // All five references corrected to 5174.
+    // apps/ui-web (and its Vite dev server on :5174) was deleted (S12); the
+    // installer must not reference the port, the tool, or the deleted app dir.
+    expect(script).not.toContain("5174")
     expect(script).not.toContain("5173")
-    expect(script).toContain("http://localhost:5174")
-    expect(script).toContain('ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR"')
-    // Decision latch (#3): keep the plain Vite dev server, NOT dev:preview —
-    // `vite preview` is not a production server and would bake the token into
-    // on-disk dist/. Do not let a refactor silently re-introduce it.
+    // Case-insensitive: a re-introduced `vite ...` invocation must fail this too.
+    expect(script).not.toMatch(/vite/i)
+    expect(script).not.toContain("apps/ui-web")
     expect(script).not.toContain("dev:preview")
+  })
+
+  it("desktop install (option 1) confirms /readyz and directs the user at Luna Moon", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // Replaces the old Vite-boot/browser-open flow: confirm the daemon is
+    // actually serving (not just that launchd accepted the bootstrap), then
+    // point the new user at Luna Moon instead of a URL that no longer exists.
+    expect(script).toContain("wait_for_readyz() {")
+    expect(script).toContain("wait_for_readyz 4753")
+    expect(script).toContain("http://127.0.0.1:4753/readyz")
+    expect(script).toContain("Luna Moon")
+  })
+
+  it("desktop install keeps the one-time login recipe reachable, even on a slow boot", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // The three strings a fresh install cannot complete without - a refactor
+    // that drops or mangles any of them strands new users in setup-mode with
+    // no interactive client (the web UI is gone).
+    expect(script).toContain("CLAUDE_CONFIG_DIR=")
+    expect(script).toContain("claude setup-token")
+    expect(script).toContain("claude-code:login")
+    expect(script).toContain("launchctl kickstart -k")
+    // Fail-OPEN on readiness timeout: BOTH install options must still print
+    // the recipe when SERVER_READY != 1 (a slow first boot is not a reason
+    // to suppress the only path to login).
+    const failOpenCount = (script.match(/If it comes up in setup-mode/g) ?? []).length
+    expect(failOpenCount).toBe(2)
   })
 
   it("desktop install writes only the canonical UI_WS_TOKEN, not a redundant LUNA_STABLE_UI_WS_TOKEN", () => {
@@ -1762,10 +1958,25 @@ exit 0
       'command -v port_guard_is_luna_cmd >/dev/null || { echo MISSING; exit 0; }; '
       + 'if port_guard_is_luna_cmd "$CMD" "$DIR"; then echo LUNA; else echo FOREIGN; fi'
 
-    it("recognizes THIS install's chat-server as Luna", () => {
+    it("recognizes THIS install's chat-server as Luna (transitional scripts/chat-server.ts shape)", () => {
       const result = runGuard(verdict, {
         env: {
           CMD: "bun run --cwd /Users/me/luna/apps/ui-web scripts/chat-server.ts",
+          DIR: "/Users/me/luna",
+        },
+      })
+      expect(result.stdout.trim()).toBe("LUNA")
+    })
+
+    // S07: the rendered launchd ProgramArguments' final entry no longer ends in
+    // "chat-server.ts" - it is the path-independent launcher
+    // (scripts/luna-chat-server-entry.ts) - so the `*chat-server.ts*` glob
+    // alone would misclassify Luna's own daemon as foreign and
+    // ensure_port_free would refuse to free the port for its own reinstall.
+    it("recognizes THIS install's chat-server as Luna (path-independent launcher shape)", () => {
+      const result = runGuard(verdict, {
+        env: {
+          CMD: "bun run --cwd /Users/me/luna scripts/luna-chat-server-entry.ts",
           DIR: "/Users/me/luna",
         },
       })
@@ -1793,14 +2004,19 @@ exit 0
       expect(result.stdout.trim()).toBe("FOREIGN")
     })
 
-    it("recognizes THIS install's vite web UI dev server as Luna", () => {
+    // apps/ui-web (and its vite dev server) was deleted; the matcher's
+    // dedicated `*apps/ui-web* dev*` arm went with it (S12). Assert the
+    // pattern stays gone rather than deleting this case outright, so a
+    // future re-add of a similarly-shaped command does not silently start
+    // matching again.
+    it("no longer recognizes the retired apps/ui-web vite dev command as Luna", () => {
       const result = runGuard(verdict, {
         env: {
           CMD: "bun run --cwd /Users/me/luna/apps/ui-web dev",
           DIR: "/Users/me/luna",
         },
       })
-      expect(result.stdout.trim()).toBe("LUNA")
+      expect(result.stdout.trim()).toBe("FOREIGN")
     })
 
     const rcOf = (r: { stdout: string }) => r.stdout.match(/rc=(\d+)/)?.[1]
@@ -1931,7 +2147,9 @@ exit 0
       const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
       expect(script).toContain("source scripts/lib/port-guard.sh")
       expect(script).toContain('ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR"')
-      expect(script).toContain('ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR"')
+      // apps/ui-web (and the port it guarded) was deleted (S12) - only the
+      // chat-server port is guarded now.
+      expect(script).not.toContain("ensure_port_free 5174")
       // The dangerous old behavior must be gone for good (finding #7).
       expect(script).not.toContain("kill -9")
       expect(script).not.toContain("check_port")
@@ -2006,6 +2224,150 @@ exit 0
     })
   })
 
+  describe("luna_atomic_replace (portable atomic flip via perl rename, finding: GNU-only mv -T)", () => {
+    const LIB = join(repoRoot, "scripts/lib/luna-deploy.sh")
+
+    // Source the lib in a fresh bash and call luna_atomic_replace directly -
+    // one code path on every host, so this is the same call GNU and BSD/macOS
+    // hosts take. No `mv` shim is needed: the helper never shells out to mv.
+    const runReplace = (src: string, dst: string) =>
+      spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_atomic_replace "$1" "$2"; echo "rc=$?"`, "_", src, dst],
+        { cwd: repoRoot, encoding: "utf8" },
+      )
+
+    it("case 1: symlink onto an EXISTING symlink - exit 0, dst repointed atomically", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      mkdirSync(join(temp, "realB"))
+      const src = join(temp, "linkSrc")
+      const dst = join(temp, "linkDst")
+      spawnSync("ln", ["-s", "realA", src])
+      spawnSync("ln", ["-s", "realB", dst])
+
+      const r = runReplace(src, dst)
+      expect(r.stdout).toContain("rc=0")
+      expect(readlinkSync(dst)).toBe("realA")
+      expect(existsSync(src)).toBe(false)
+    })
+
+    it("case 2: directory onto a VACATED name - exit 0, plain rename", () => {
+      const temp = makeTempDir()
+      const src = join(temp, "srcDir")
+      const dst = join(temp, "dstDir")
+      mkdirSync(src)
+      writeFileSync(join(src, "marker.txt"), "marker")
+
+      const r = runReplace(src, dst)
+      expect(r.stdout).toContain("rc=0")
+      expect(readFileSync(join(dst, "marker.txt"), "utf8")).toBe("marker")
+      expect(existsSync(src)).toBe(false)
+    })
+
+    it("case 3: directory onto a NON-EMPTY directory - exit 1, refused loudly, dst intact", () => {
+      const temp = makeTempDir()
+      const src = join(temp, "srcDir")
+      const dst = join(temp, "dstDir")
+      mkdirSync(src)
+      mkdirSync(dst)
+      writeFileSync(join(src, "a.txt"), "srcmarker")
+      writeFileSync(join(dst, "b.txt"), "dstmarker")
+
+      const r = runReplace(src, dst)
+      // An exact boundary, not a substring - "rc=1" also matches "rc=127"
+      // (the missing-perl guard's exit code), which would let this pass for
+      // the wrong reason.
+      expect(r.stdout).toMatch(/rc=1$/m)
+      // The warn the helper restores over the old mv -fT: the destination and
+      // the errno both land on stderr instead of being discarded like the mv
+      // implementation threw $! away.
+      expect(r.stderr).toContain("luna_atomic_replace:")
+      expect(r.stderr).toMatch(/luna_atomic_replace: .+ -> .+: .+/)
+      // Destination state intact - never silently nested (the mv -fh regression
+      // class), and the source is untouched since the rename never landed.
+      expect(readFileSync(join(dst, "b.txt"), "utf8")).toBe("dstmarker")
+      expect(existsSync(join(dst, "a.txt"))).toBe(false)
+      expect(readFileSync(join(src, "a.txt"), "utf8")).toBe("srcmarker")
+    })
+
+    it("case 4: directory onto a symlink-to-directory - exit 1 ENOTDIR, loud, dst intact", () => {
+      const temp = makeTempDir()
+      const src = join(temp, "srcDir")
+      const realTarget = join(temp, "realTarget")
+      const dst = join(temp, "dstLink")
+      mkdirSync(src)
+      mkdirSync(realTarget)
+      writeFileSync(join(src, "a.txt"), "srcmarker")
+      spawnSync("ln", ["-s", "realTarget", dst])
+
+      const r = runReplace(src, dst)
+      // An exact boundary, not a substring - "rc=1" also matches "rc=127".
+      expect(r.stdout).toMatch(/rc=1$/m)
+      expect(r.stderr).toMatch(/luna_atomic_replace: .+ -> .+: .+/)
+      // Destination symlink unchanged, source untouched - unreachable at every
+      // real call site, but must fail loudly rather than silently if ever hit.
+      expect(readlinkSync(dst)).toBe("realTarget")
+      expect(readFileSync(join(src, "a.txt"), "utf8")).toBe("srcmarker")
+    })
+
+    it("case 5: symlink onto an ABSENT name - exit 0, dst created (first install_guardian for a profile)", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      const src = join(temp, "linkSrc")
+      const dst = join(temp, "linkDst")
+      spawnSync("ln", ["-s", "realA", src])
+
+      const r = runReplace(src, dst)
+      expect(r.stdout).toContain("rc=0")
+      expect(readlinkSync(dst)).toBe("realA")
+      expect(existsSync(src)).toBe(false)
+    })
+
+    it("guard A: a dash-prefixed src name still flips (finding: `perl -e` without `--` parses a leading-dash argv as its OWN switches, prints usage, and exits 0 with NO rename)", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      mkdirSync(join(temp, "realB"))
+      // `./-dashlink` only works around `ln`'s own flag parsing during setup;
+      // the file's actual name on disk is the bare `-dashlink`, and that bare
+      // name is what gets passed to luna_atomic_replace below.
+      spawnSync("ln", ["-s", "realA", "./-dashlink"], { cwd: temp })
+      spawnSync("ln", ["-s", "realB", "linkDst"], { cwd: temp })
+
+      const r = spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_atomic_replace "$1" "$2"; echo "rc=$?"`, "_", "-dashlink", "linkDst"],
+        { cwd: temp, encoding: "utf8" },
+      )
+      expect(r.stdout).toContain("rc=0")
+      expect(readlinkSync(join(temp, "linkDst"))).toBe("realA")
+      expect(existsSync(join(temp, "-dashlink"))).toBe(false)
+    })
+
+    it("guard B: perl missing from PATH - exit 127, loud, no rename attempted", () => {
+      const temp = makeTempDir()
+      mkdirSync(join(temp, "realA"))
+      const src = join(temp, "linkSrc")
+      const dst = join(temp, "linkDst")
+      spawnSync("ln", ["-s", "realA", src])
+
+      // A PATH with only bash on it, the way a perl-less deploy host would
+      // present - no perl symlink is added, so `command -v perl` in the guard
+      // genuinely fails.
+      const restricted = makeRestrictedBin(temp, ["bash"])
+      const r = spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_atomic_replace "$1" "$2"; echo "rc=$?"`, "_", src, dst],
+        { cwd: repoRoot, encoding: "utf8", env: { PATH: restricted } },
+      )
+      expect(r.stdout).toContain("rc=127")
+      expect(r.stderr).toContain("luna_atomic_replace: perl not found in PATH")
+      // No rename attempted: the symlink is untouched.
+      expect(readlinkSync(src)).toBe("realA")
+      expect(existsSync(dst)).toBe(false)
+    })
+  })
+
   describe("launchd-plist (finding #2: supervise the desktop chat server)", () => {
     const LIB = join(repoRoot, "scripts/lib/launchd-plist.sh")
     const BUN = "/Users/me/.bun/bin/bun"
@@ -2029,8 +2391,13 @@ exit 0
     it("launches the chat server via bun with the right cwd", () => {
       const r = render()
       expect(r.stdout).toContain(`<string>${BUN}</string>`)
-      expect(r.stdout).toContain(`<string>${DIR}/apps/ui-web</string>`)
-      expect(r.stdout).toContain("<string>scripts/chat-server.ts</string>")
+      // Path-independent launcher (S07): --cwd names REPO_DIR itself (no
+      // app-specific subpath) and the ProgramArguments' final entry is the
+      // path-independent launcher, the SAME literal the systemd unit's
+      // ExecStart uses (scripts/luna-server-install) - one shared source.
+      expect(r.stdout).toContain(`<string>${DIR}</string>`)
+      expect(r.stdout).not.toContain(`<string>${DIR}/apps/ui-web</string>`)
+      expect(r.stdout).toContain("<string>scripts/luna-chat-server-entry.ts</string>")
     })
 
     it("supervises via KeepAlive=true (always respawn) — NOT systemd's Restart key", () => {
@@ -2048,11 +2415,17 @@ exit 0
       expect(r.stdout).not.toContain("<key>Restart</key>")
     })
 
-    it("routes logs to the luna home and sets LUNA_HOME / CLAUDE_CONFIG_DIR / PATH", () => {
+    it("routes logs to the luna home and sets LUNA_HOME / LUNA_REPO_ROOT / CLAUDE_CONFIG_DIR / PATH", () => {
       const r = render()
       expect(r.stdout).toContain(`<string>${HOME}/logs/server.log</string>`)
       expect(r.stdout).toContain("<key>LUNA_HOME</key>")
       expect(r.stdout).toContain(`<string>${HOME}</string>`)
+      // LUNA_REPO_ROOT (S07): the launchd plist has no WorkingDirectory-style
+      // key, so without this the macOS wake-workspace path would silently
+      // move from <luna_dir>/apps/ui-web to <luna_dir> (chat-server.ts's cwd
+      // fallback) the moment the launcher stops chdir'ing into apps/ui-web.
+      expect(r.stdout).toContain("<key>LUNA_REPO_ROOT</key>")
+      expect(r.stdout).toContain(`<string>${DIR}</string>`)
       expect(r.stdout).toContain("<key>CLAUDE_CONFIG_DIR</key>")
       expect(r.stdout).toContain(`<string>${HOME}/claude</string>`)
       expect(r.stdout).toContain("<key>PATH</key>")
@@ -2085,6 +2458,23 @@ exit 0
       // The old UNSUPERVISED nohup launch of the chat server must be gone (the
       // Vite UI may still use nohup — this only targets the chat-server line).
       expect(script).not.toMatch(/nohup bun run [^\n]*chat-server\.ts/)
+    })
+
+    it("both plist writes back up the existing plist to .prev BEFORE the render truncates it", () => {
+      const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+      const backupRe = /cp -f "\$PLIST_FILE" "\$PLIST_FILE\.prev"/g
+      const renderRe = /render_launchd_plist [^\n]*> "\$PLIST_FILE"/g
+      const backups = [...script.matchAll(backupRe)].map((m) => m.index ?? -1)
+      const renders = [...script.matchAll(renderRe)].map((m) => m.index ?? -1)
+      // One real backup statement per render site - a comment mentioning
+      // .prev must not satisfy this (the regex matches the cp form only).
+      expect(backups).toHaveLength(2)
+      expect(renders).toHaveLength(2)
+      // Ordering is the restore point's whole value: a backup AFTER the
+      // render would snapshot the NEW plist and destroy the rollback copy.
+      expect(backups[0]).toBeLessThan(renders[0])
+      expect(backups[1]).toBeLessThan(renders[1])
+      expect(renders[0]).toBeLessThan(backups[1])
     })
   })
 
@@ -2194,14 +2584,11 @@ exit 0
       const bin = join(temp, "bin")
       mkdirSync(join(repo, ".git"), { recursive: true })
       mkdirSync(bin, { recursive: true })
-      // Phase-3 artifact-postcondition fixtures: the engine now verifies the
-      // ui-web build artifact (and node_modules after a lockfile-changed
-      // install) after every apply; the fake-git live runs here would
-      // otherwise roll back on the dist probe.
+      // Phase-3 artifact-postcondition fixture: the engine now verifies
+      // node_modules (after a lockfile-changed install) after every apply;
+      // the fake-git live runs here would otherwise roll back on the probe.
       mkdirSync(join(repo, "node_modules"), { recursive: true })
       writeFileSync(join(repo, "node_modules", ".keep"), "keep\n")
-      mkdirSync(join(repo, "apps", "ui-web", "dist"), { recursive: true })
-      writeFileSync(join(repo, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
       return { repo, bin }
     }
 
@@ -2820,6 +3207,55 @@ esac
       const result = runWsCountWithSs(`exit 0`)
       expect(result.status, result.stderr).toBe(0)
       expect(result.stdout.trim()).toBe("0")
+    })
+
+    /**
+     * THE SELF-CONNECTION CASE, which froze a live channel for 154 commits.
+     *
+     * The chat server holds a loopback connection to its own port, so both ends
+     * are owned by the unit's own MainPID. The old count included that pair, so
+     * the guard reported one phantom session forever, deferred every deploy,
+     * and exited 0 looking healthy. Nothing escalated, because deferring IS the
+     * right answer to a real session - only the count was wrong.
+     *
+     * The stub below reproduces the exact shapes observed on the live host:
+     * the listener owned by pid 220, the server side of the self-pair, and the
+     * client side ALSO owned by pid 220.
+     */
+    const selfConnStub = (extraEstablished = "", listenerPid = "220") => `
+case "$*" in
+  *-tlnHp*)  printf 'LISTEN 0 511 127.0.0.1:4753 0.0.0.0:* users:(("bun",pid=${listenerPid},fd=70))\\n' ;;
+  *dport*)   printf 'ESTAB 0 0 127.0.0.1:41430 127.0.0.1:4753 users:(("bun",pid=220,fd=71))\\n' ;;
+  *)         printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:41430\\n'${extraEstablished} ;;
+esac`
+
+    it("does NOT count the server talking to itself", () => {
+      const result = runWsCountWithSs(selfConnStub())
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim(), "a self-pair is not a user session").toBe("0")
+    })
+
+    it("still counts a REAL client alongside the self-connection", () => {
+      // One genuine session plus the phantom: the answer must be 1, not 0 and
+      // not 2. Undercounting here drops a live user mid-conversation.
+      const result = runWsCountWithSs(selfConnStub(`"ESTAB 0 0 127.0.0.1:4753 10.0.0.5:52001\\n"`))
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe("1")
+    })
+
+    it("falls back to the RAW count when ss cannot name the listener's process", () => {
+      // `ss -p` needs privileges. Where it cannot name a process the exclusion
+      // is unprovable, and the only safe direction is to round UP: report the
+      // old count and defer, rather than authorize a restart on a guess.
+      const noPid = `
+case "$*" in
+  *-tlnHp*)  printf 'LISTEN 0 511 127.0.0.1:4753 0.0.0.0:*\\n' ;;
+  *dport*)   printf 'ESTAB 0 0 127.0.0.1:41430 127.0.0.1:4753\\n' ;;
+  *)         printf 'ESTAB 0 0 127.0.0.1:4753 127.0.0.1:41430\\n' ;;
+esac`
+      const result = runWsCountWithSs(noPid)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim(), "unprovable means defer, never authorize").toBe("1")
     })
   })
 

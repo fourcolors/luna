@@ -14,6 +14,8 @@ describe("classifyThrottle — phrase coverage", () => {
     "Too Many Requests",
     "rate limit exceeded, please slow down",
     "RESOURCE_EXHAUSTED: quota will reset shortly", // raw Gemini leak
+    "You've hit your weekly limit \u00b7 resets Aug 21, 8am (UTC)", // Claude Code CLI subscription cap
+    "Claude Code returned an error result: You've hit your usage limit for this 5-hour window",
   ])("classifies %j as throttled", (msg) => {
     expect(classifyThrottle(new Error(msg)).throttled).toBe(true)
   })

@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
 import { processFingerprint } from "./helpers/guardian-harness"
+import { git, makeDeployRepo, makeStubBin } from "./helpers/update-server-fixtures"
 
 const repoRoot = new URL("..", import.meta.url).pathname
 const tempDirs: string[] = []
@@ -19,173 +20,6 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
-
-const git = (cwd: string, ...args: ReadonlyArray<string>) => {
-  const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" })
-  if (r.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`)
-  }
-  return r.stdout.trim()
-}
-
-// Build a deploy-style checkout: a local bare `origin` plus a working clone with
-// TWO commits on master. This gives the script a REAL `git fetch origin` +
-// `git reset --hard <ref>` to drive — no faking of git's internal state. Returns
-// the working-clone path plus the two commit SHAs (prev = first, target = HEAD).
-const makeDeployRepo = (root: string) => {
-  const origin = join(root, "origin.git")
-  const work = join(root, "repo")
-  mkdirSync(origin, { recursive: true })
-  git(origin, "init", "--quiet", "--bare")
-
-  const seed = join(root, "seed")
-  mkdirSync(seed, { recursive: true })
-  git(seed, "init", "--quiet")
-  git(seed, "config", "user.email", "t@example.test")
-  git(seed, "config", "user.name", "Test")
-  git(seed, "checkout", "-q", "-B", "master")
-  writeFileSync(join(seed, "file.txt"), "v1\n")
-  writeFileSync(join(seed, "bun.lock"), "lock-v1\n")
-  git(seed, "add", "-A")
-  git(seed, "commit", "--quiet", "-m", "prev")
-  const prevSha = git(seed, "rev-parse", "HEAD")
-  writeFileSync(join(seed, "file.txt"), "v2\n")
-  // Same lockfile content as prev → "lockfile unchanged" path for the happy test.
-  git(seed, "add", "-A")
-  git(seed, "commit", "--quiet", "-m", "target")
-  const targetSha = git(seed, "rev-parse", "HEAD")
-  git(seed, "remote", "add", "origin", origin)
-  git(seed, "push", "--quiet", "origin", "master")
-
-  // The deploy checkout starts at PREV (so an update to origin/master moves it
-  // forward to target).
-  git(root, "clone", "--quiet", origin, work)
-  git(work, "config", "user.email", "t@example.test")
-  git(work, "config", "user.name", "Test")
-  git(work, "checkout", "--quiet", prevSha)
-
-  // Phase-3 artifact-postcondition fixtures: the engine now verifies that
-  // `bun install` produced node_modules/ and the ui-web build produced a
-  // non-empty dist/index.html. UNTRACKED files survive `git reset --hard` in
-  // both directions, so every happy/rollback path stays green.
-  mkdirSync(join(work, "node_modules"), { recursive: true })
-  writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-  mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-  writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
-
-  return { origin, work, prevSha, targetSha }
-}
-
-// Stub bin dir with deterministic systemctl/curl/bun. The readiness VERDICT is
-// keyed off the repo's CURRENT HEAD (read live by the curl stub) compared to
-// env-provided SHAs — so there is zero timing dependence:
-//   READY_AT_TARGET=1 → curl 200 when HEAD==target (happy path)
-//   READY_AT_PREV=1   → curl 200 when HEAD==prev   (rollback recovers)
-// Each stub appends to its own log so the test can assert call counts/sequence.
-const makeStubBin = (
-  root: string,
-  opts: {
-    readonly repo: string
-    readonly prevSha: string
-    readonly targetSha: string
-    readonly readyAtTarget: boolean
-    readonly readyAtPrev: boolean
-    // #28: simulate a deploy that boots (healthz 200) but lands in SETUP-mode at
-    // the target SHA — /readyz reports mode=setup, so the deepened gate must FAIL.
-    readonly setupAtTarget?: boolean
-    // Legacy /readyz responses can omit the additive buildSha field. Forward
-    // promotion must reject that ambiguity, while rollback may accept it.
-    readonly omitBuildShaAtTarget?: boolean
-    readonly omitBuildShaAtPrev?: boolean
-    readonly mismatchBuildShaAtPrev?: boolean
-    // Phase 2 session-guard matrix: when set, `systemctl is-active` answers
-    // THIS string (may be empty) until the first `start` lands, then 'active'
-    // — modelling a dead/activating unit that comes up after the restart.
-    // Undefined keeps the legacy always-'active' behaviour.
-    readonly isActive?: string
-  },
-) => {
-  const bin = join(root, "bin")
-  mkdirSync(bin, { recursive: true })
-  const systemctlLog = join(root, "systemctl.log")
-  const curlLog = join(root, "curl.log")
-  const bunLog = join(root, "bun.log")
-  const startedMarker = join(root, "started.marker")
-
-  // systemctl: is-active "active" (or opts.isActive until a start happened);
-  // NRestarts always "0"; stop/start/daemon-reload just log. (Crash-loop
-  // detection is exercised indirectly; here the verdict is driven purely by
-  // curl so the tests stay deterministic.)
-  const isActiveLine =
-    opts.isActive === undefined
-      ? `printf 'active\\n'`
-      : `if [[ -f "${startedMarker}" ]]; then printf 'active\\n'; else printf '%s\\n' '${opts.isActive}'; fi`
-  writeFileSync(
-    join(bin, "systemctl"),
-    `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "${systemctlLog}"
-case "$1" in
-  is-active) ${isActiveLine}; exit 0 ;;
-  start) : > "${startedMarker}"; exit 0 ;;
-  show) printf '0\\n'; exit 0 ;;
-  *) exit 0 ;;
-esac
-`,
-  )
-
-  // curl: read the repo's live HEAD; emit 200 only at the SHA(s) marked ready.
-  // Answers BOTH /healthz (bare code) and /readyz (JSON body + newline + code),
-  // mirroring the two curl -w contracts the readiness gate uses.
-  writeFileSync(
-    join(bin, "curl"),
-    `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "${curlLog}"
-head="$(git -C "${opts.repo}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
-code='503'
-mode='normal'
-if [[ "$head" == "${opts.targetSha}" && "${opts.readyAtTarget ? "1" : "0"}" == "1" ]]; then
-  code='200'
-fi
-if [[ "$head" == "${opts.prevSha}" && "${opts.readyAtPrev ? "1" : "0"}" == "1" ]]; then
-  code='200'
-fi
-# #28: a deploy that boots into setup-mode answers /healthz 200 but /readyz setup.
-if [[ "$head" == "${opts.targetSha}" && "${opts.setupAtTarget ? "1" : "0"}" == "1" ]]; then
-  code='200'; mode='setup'
-fi
-if [[ "$*" == *"/readyz"* ]]; then
-  # Mirror curl -sS -w '\\n%{http_code}' on /readyz: JSON body, newline, code.
-  okbool='true'; [[ "$mode" == 'setup' ]] && okbool='false'
-  if [[ "$head" == "${opts.targetSha}" && "${opts.omitBuildShaAtTarget ? "1" : "0"}" == "1" ]] ||
-     [[ "$head" == "${opts.prevSha}" && "${opts.omitBuildShaAtPrev ? "1" : "0"}" == "1" ]]; then
-    printf '{"status":"ok","mode":"%s","credentialOk":%s}\\n%s' "$mode" "$okbool" "$code"
-  elif [[ "$head" == "${opts.prevSha}" && "${opts.mismatchBuildShaAtPrev ? "1" : "0"}" == "1" ]]; then
-    printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"deadbeef"}\\n%s' "$mode" "$okbool" "$code"
-  else
-    printf '{"status":"ok","mode":"%s","credentialOk":%s,"buildSha":"%s"}\\n%s' "$mode" "$okbool" "$head" "$code"
-  fi
-  exit 0
-fi
-# /healthz: mirror -o /dev/null -w '%{http_code}' → print just the code. Exit 0 so
-# the script's own [[ "$http" == "200" ]] gate (not curl's rc) decides.
-printf '%s' "$code"
-exit 0
-`,
-  )
-
-  // bun: log the invocation so we can assert install fired ONLY when bun.lock
-  // changed. Exit 0 (a real frozen install would succeed on an unchanged lock).
-  writeFileSync(
-    join(bin, "bun"),
-    `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "${bunLog}"
-exit 0
-`,
-  )
-
-  spawnSync("chmod", ["+x", join(bin, "systemctl"), join(bin, "curl"), join(bin, "bun")])
-  return { bin, systemctlLog, curlLog, bunLog }
-}
 
 // Add an `incus` stub into an existing stub bin so the --incus LIVE path can be
 // exercised hermetically (the repo's verify design expected a stub `incus`). The
@@ -213,7 +47,7 @@ if [[ "$1" == "exec" ]]; then
   # Hermetic in-container artifact probes (phase 3): never let \`test\` fall
   # through to the passthrough, or it would stat the REAL host /root/luna.
   # \`test -f\` is the unit-existence preflight (always passes, as before);
-  # STUB_INCUS_TEST_RC drives the -d/-s artifact probes.
+  # STUB_INCUS_TEST_RC drives the -d artifact probe.
   if [[ "$1" == "test" ]]; then
     if [[ "$2" == "-f" ]]; then exit 0; fi
     exit "\${STUB_INCUS_TEST_RC:-0}"
@@ -628,11 +462,9 @@ describe("luna-update-server", () => {
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
-    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    // Untracked artifact fixture for the phase-3 postcondition (see makeDeployRepo).
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -695,11 +527,9 @@ describe("luna-update-server", () => {
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
-    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    // Untracked artifact fixture for the phase-3 postcondition (see makeDeployRepo).
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -1554,8 +1384,106 @@ exec "${realGit}" "$@"
     expect(sys).toContain("daemon-reload")
     expect(sys).toContain("stop luna-chat-server.service")
     expect(sys).toContain("start luna-chat-server.service")
+    // reset-failed is a refused-start recovery step, never a happy-path
+    // ritual: calling it ahead of a start that would have succeeded on its
+    // own would clear the unit's start-limit counter before OnFailure could
+    // ever fire, silencing the pager. A start that succeeds on the first try
+    // must never touch reset-failed.
+    const lines = sys.trim().split("\n")
+    expect(lines.filter((l) => l === "reset-failed luna-chat-server.service").length).toBe(0)
+    expect(lines.filter((l) => l === "start luna-chat-server.service").length).toBe(1)
     // No transaction journal was created.
     expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
+  })
+
+  // Fixture for the systemd start-limiter (scripts/luna-server-install:257-258,
+  // StartLimitIntervalSec=1800/StartLimitBurst=10): a unit that just burned
+  // through a burst of rapid failed starts is latched `failed` and refuses any
+  // further `start` for the rest of the interval UNTIL `reset-failed` clears
+  // the counter. Models the real systemd "start request repeated too quickly"
+  // lockout without needing an actual crash-looping process. is-failed and
+  // is-active both key off the same marker: is-failed drives sup_start's
+  // refused-start recovery check, is-active drives the session guard and the
+  // readiness probe.
+  const makeLockedUnitStubBin = (
+    temp: string,
+    opts: {
+      readonly repo: string
+      readonly prevSha: string
+      readonly targetSha: string
+      readonly readyAtTarget: boolean
+      readonly readyAtPrev: boolean
+    },
+  ) => {
+    const { bin, systemctlLog, curlLog } = makeStubBin(temp, opts)
+    const lockedMarker = join(temp, "start-limit-locked")
+    writeFileSync(lockedMarker, "1\n")
+    const recoveredMarker = join(temp, "recovered.marker")
+    writeFileSync(
+      join(bin, "systemctl"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${systemctlLog}"
+case "$1" in
+  reset-failed) rm -f "${lockedMarker}"; exit 0 ;;
+  start)
+    if [[ -f "${lockedMarker}" ]]; then
+      echo "Job for luna-chat-server.service failed because start of the service was attempted too often." >&2
+      exit 1
+    fi
+    : > "${recoveredMarker}"
+    exit 0
+    ;;
+  is-failed)
+    if [[ -f "${lockedMarker}" ]]; then printf 'failed\\n'; exit 0; fi
+    printf 'active\\n'; exit 1
+    ;;
+  is-active)
+    if [[ -f "${lockedMarker}" ]]; then printf 'failed\\n'; else printf 'active\\n'; fi
+    exit 0
+    ;;
+  show) printf '0\\n'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
+    )
+    spawnSync("chmod", ["+x", join(bin, "systemctl")])
+    return { bin, systemctlLog, curlLog, recoveredMarker }
+  }
+
+  it("start-limit lockout: a unit latched `failed` by 10 rapid failed starts recovers via a single --restart-only", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog, recoveredMarker } = makeLockedUnitStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: false, readyAtPrev: true,
+    })
+
+    const r = runUpdate(guardArgs(temp, work, serviceDir, ["--restart-only"]), {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    // No manual step: one --restart-only call recovers the locked unit.
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stdout).toContain("healthy")
+    const sys = readLog(systemctlLog)
+    const lines = sys.trim().split("\n")
+    // reset-failed only runs AFTER the refused start (the latch that fires
+    // OnFailure has already happened by then) and the retry that follows it
+    // is what actually recovers the unit.
+    const startIdxs = lines.reduce<number[]>(
+      (acc, l, i) => (l === "start luna-chat-server.service" ? [...acc, i] : acc),
+      [],
+    )
+    const resetIdx = lines.indexOf("reset-failed luna-chat-server.service")
+    expect(startIdxs.length).toBe(2)
+    expect(resetIdx).toBeGreaterThan(startIdxs[0])
+    // The retry genuinely started the unit - the stub only writes this marker
+    // on a start that succeeds after the latch is cleared.
+    expect(existsSync(recoveredMarker)).toBe(true)
+    expect(r.stderr).toContain("start-limit latched failed")
+    expect(resetIdx).toBeLessThan(startIdxs[1])
   })
 
   it("--restart-only: readiness failure exits 1 with NO rollback", () => {
@@ -1819,11 +1747,9 @@ exec "${realGit}" "$@"
     git(seed, "push", "--quiet", "origin", "master")
     git(temp, "clone", "--quiet", origin, work)
     git(work, "checkout", "--quiet", prevSha)
-    // Untracked artifact fixtures for the phase-3 postconditions (see makeDeployRepo).
+    // Untracked artifact fixture for the phase-3 postcondition (see makeDeployRepo).
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
 
     const serviceDir = join(temp, "systemd")
     const updateState = join(temp, "update-state")
@@ -2148,31 +2074,9 @@ esac
     // Lockfile differs prev<->target so the install (and its probe) fire; the
     // bun stub creates node_modules ONLY at PREV, so the forward apply fails
     // its artifact postcondition and the rollback succeeds.
-    const origin = join(temp, "origin.git")
-    const seed = join(temp, "seed")
-    const work = join(temp, "repo")
-    mkdirSync(origin, { recursive: true })
-    git(origin, "init", "--quiet", "--bare")
-    mkdirSync(seed, { recursive: true })
-    git(seed, "init", "--quiet")
-    git(seed, "config", "user.email", "t@example.test")
-    git(seed, "config", "user.name", "Test")
-    git(seed, "checkout", "-q", "-B", "master")
-    writeFileSync(join(seed, "bun.lock"), "lock-v1\n")
-    git(seed, "add", "-A")
-    git(seed, "commit", "--quiet", "-m", "prev")
-    const prevSha = git(seed, "rev-parse", "HEAD")
-    writeFileSync(join(seed, "bun.lock"), "lock-v2\n")
-    git(seed, "add", "-A")
-    git(seed, "commit", "--quiet", "-m", "target")
-    const targetSha = git(seed, "rev-parse", "HEAD")
-    git(seed, "remote", "add", "origin", origin)
-    git(seed, "push", "--quiet", "origin", "master")
-    git(temp, "clone", "--quiet", origin, work)
-    git(work, "checkout", "--quiet", prevSha)
-    // dist fixture present (the build probe must pass); node_modules ABSENT.
-    mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
-    writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
+    const { work, prevSha, targetSha } = makeDeployRepo(temp, { lockChanges: true })
+    // node_modules deliberately ABSENT: the bun stub below creates it only at PREV.
+    rmSync(join(work, "node_modules"), { recursive: true, force: true })
 
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir)
@@ -2202,50 +2106,19 @@ exit 0
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 
-  it("artifact postcondition: ui-web build exit 0 without dist/index.html rolls back", () => {
-    const temp = makeTempDir()
-    const { work, prevSha, targetSha } = makeDeployRepo(temp)
-    // Remove the fixture: the build probe must fail forward. The bun stub
-    // recreates it ONLY at PREV so the rollback recovers.
-    rmSync(join(work, "apps", "ui-web", "dist"), { recursive: true, force: true })
-    const serviceDir = join(temp, "systemd")
-    writeUnit(serviceDir)
-    const { bin } = makeStubBin(temp, {
-      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: true,
-    })
-    const distFile = join(work, "apps", "ui-web", "dist", "index.html")
-    writeFileSync(
-      join(bin, "bun"),
-      `#!/usr/bin/env bash
-head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
-if [[ "$*" == *"build"* && "$head" == "${prevSha}" ]]; then
-  mkdir -p "$(dirname "${distFile}")"
-  printf '<!doctype html>\\n' > "${distFile}"
-fi
-exit 0
-`,
-    )
-    spawnSync("chmod", ["+x", join(bin, "bun")])
-
-    const r = runUpdate(guardArgs(temp, work, serviceDir), {
-      PATH: `${bin}:/usr/bin:/bin`,
-      LUNA_TEST_BUN_PATH: join(bin, "bun"),
-    })
-
-    expect(r.status, r.stdout + r.stderr).toBe(1)
-    expect(r.stderr).toMatch(/POSTCONDITION.*dist\/index\.html/)
-    expect(r.stderr).toContain("ROLLED BACK")
-    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-  })
-
   it("artifact postcondition (incus arm): the probe runs IN-CONTAINER and a failing probe rolls back", () => {
-    // STUB_INCUS_TEST_RC=1 makes every in-container -d/-s probe fail, proving
+    // STUB_INCUS_TEST_RC=1 makes every in-container -d probe fail, proving
     // (a) the probe is routed through incus exec — never the host FS — and
     // (b) a missing in-container artifact routes into rollback. The rollback's
     // probe fails the same way, so the run ends CRITICAL (exit 2) — the
     // deterministic worst case, loudly reported.
+    //
+    // bun.lock must differ prev<->target (both forward AND back) so the
+    // node_modules postcondition - the only remaining artifact probe - fires
+    // on both the forward apply and the rollback re-apply.
     const temp = makeTempDir()
-    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const { work, prevSha, targetSha } = makeDeployRepo(temp, { lockChanges: true })
+
     const serviceDir = join(temp, "systemd")
     writeUnit(serviceDir, "luna-dev-chat-server.service")
     const { bin } = makeStubBin(temp, {
@@ -2270,10 +2143,10 @@ exit 0
     })
 
     expect(r.status, r.stdout + r.stderr).toBe(2)
-    expect(r.stderr).toMatch(/POSTCONDITION.*dist\/index\.html/)
+    expect(r.stderr).toMatch(/POSTCONDITION.*node_modules/)
     expect(r.stderr).toContain("CRITICAL")
     // The probe went through incus exec (in-container), not the host.
-    expect(readLog(incusLog)).toContain("exec luna-dev -- test -s /root/luna/apps/ui-web/dist/index.html")
+    expect(readLog(incusLog)).toContain("exec luna-dev -- test -d /root/luna/node_modules")
   })
 
   it("claude re-pin degradation warns loudly but never fails the deploy (bare host)", () => {

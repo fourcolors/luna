@@ -295,24 +295,105 @@ pub fn list_routes() -> Result<RouteList, String> {
 /// `default` at a phantom route).
 #[tauri::command]
 pub fn set_default_route(route_key: String) -> Result<(), String> {
-    // Guard: route must exist before we touch the file.
-    let cfg = load_client_config()?;
-    if !cfg.route.contains_key(&route_key) {
+    let luna_dir = luna_dir()?;
+    set_default_route_in(&luna_dir, &route_key)
+}
+
+/// Path-injectable `set_default_route` — same contract, used by tests and by
+/// the unified pair/save writer that must not depend on `$HOME`.
+pub(crate) fn set_default_route_in(
+    luna_dir: &std::path::Path,
+    route_key: &str,
+) -> Result<(), String> {
+    let path = luna_dir.join("client.toml");
+    if !path.exists() {
+        return Err(format!(
+            "client.toml: cannot set default — file absent (no route named {route_key:?})"
+        ));
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read client.toml: {e}"))?;
+    let cfg = parse_client_config(&raw)?;
+    if !cfg.route.contains_key(route_key) {
         return Err(format!(
             "client.toml: cannot set default — no route named {route_key:?}"
         ));
     }
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("client.toml toml_edit parse error: {e}"))?;
+    doc["default"] = toml_edit::value(route_key);
+    write_atomic_0600(&path, &doc.to_string())
+}
 
-    // Read the raw file and parse with toml_edit to preserve formatting.
-    let path = client_toml_path()?;
+/// Upsert `route.<profile>.endpoints[0] = url` in `client.toml`.
+///
+/// This is the missing half of pair/Save after C3: Moon dials
+/// `endpoints[0]`, but historically only `moon-connection.json` / `.env`
+/// were rewritten, so retargets left Moon on a frozen host.
+///
+/// Contract:
+/// - `client.toml` ABSENT → Ok no-op (pre-C3 Moon still reads moon-connection).
+/// - Route missing → create `[route.<profile>]` with `tokenRef = "legacy"`
+///   and `label = <profile>` (same shape migration writes).
+/// - Route present → replace `endpoints[0]` (or set a single-element array).
+/// - `set_default` → also set top-level `default = <profile>` (pair --activate).
+pub(crate) fn upsert_route_endpoint_in(
+    luna_dir: &std::path::Path,
+    profile: &str,
+    url: &str,
+    set_default: bool,
+) -> Result<(), String> {
+    let path = luna_dir.join("client.toml");
+    if !path.exists() {
+        return Ok(());
+    }
     let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("cannot read ~/.luna/client.toml: {e}"))?;
+        .map_err(|e| format!("cannot read client.toml: {e}"))?;
     let mut doc: toml_edit::DocumentMut = raw
         .parse()
         .map_err(|e| format!("client.toml toml_edit parse error: {e}"))?;
 
-    // Surgically update only the `default` key.
-    doc["default"] = toml_edit::value(route_key);
+    let route_table = doc["route"]
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| "client.toml: [route] is not a table".to_string())?;
+
+    let profile_item = route_table.entry(profile).or_insert_with(|| {
+        let mut t = toml_edit::Table::new();
+        t["tokenRef"] = toml_edit::value("legacy");
+        t["label"] = toml_edit::value(profile);
+        toml_edit::Item::Table(t)
+    });
+    let profile_table = profile_item
+        .as_table_mut()
+        .ok_or_else(|| format!("client.toml: [route.{profile}] is not a table"))?;
+
+    // Replace endpoints[0] while preserving any failover endpoints beyond it.
+    let mut endpoints = toml_edit::Array::new();
+    endpoints.push(url);
+    if let Some(existing) = profile_table.get("endpoints").and_then(|i| i.as_array()) {
+        for (idx, item) in existing.iter().enumerate() {
+            if idx == 0 {
+                continue;
+            }
+            if let Some(s) = item.as_str() {
+                endpoints.push(s);
+            }
+        }
+    }
+    profile_table["endpoints"] = toml_edit::value(endpoints);
+    // Ensure tokenRef exists for newly-created routes (or was wiped).
+    if profile_table.get("tokenRef").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+        profile_table["tokenRef"] = toml_edit::value("legacy");
+    }
+    if profile_table.get("label").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+        profile_table["label"] = toml_edit::value(profile);
+    }
+
+    if set_default {
+        doc["default"] = toml_edit::value(profile);
+    }
 
     write_atomic_0600(&path, &doc.to_string())
 }
@@ -339,13 +420,6 @@ fn load_session() -> MoonSession {
     }
 }
 
-fn save_session(session: &MoonSession) -> Result<(), String> {
-    let path = moon_session_path()?;
-    let body = serde_json::to_string_pretty(session)
-        .map_err(|e| format!("moon-session.json serialize error: {e}"))?;
-    write_atomic_0600(&path, &body)
-}
-
 /// Retrieve the route key assigned to a panel (returns `null` / `None` when
 /// the panel hasn't been assigned one yet; the caller then uses the default).
 #[tauri::command]
@@ -354,12 +428,45 @@ pub fn get_panel_route(panel_id: String) -> Option<String> {
     session.panels.get(&panel_id).and_then(|p| p.route.clone())
 }
 
+/// Inner implementation of `set_panel_route` that accepts an explicit
+/// `luna_dir` so tests can pass a tempdir without mutating `HOME` - mirrors
+/// `set_panel_last_thread_in`'s pattern (Step 1c: `set_panel_route` had zero
+/// Rust tests despite this plan promoting it into the write path - a panel's
+/// bound route is now read on every connect, not just at pairing time).
+///
+/// Preserves every OTHER panel's entry and this panel's own `last_thread`
+/// (the plan's round-trip scenario: writing a route for panel A must not
+/// disturb A's last-thread pointer or any other panel's slot).
+fn set_panel_route_in(
+    luna_dir: &std::path::Path,
+    panel_id: &str,
+    route_key: &str,
+) -> Result<(), String> {
+    let session_path = luna_dir.join("moon-session.json");
+
+    let mut session: MoonSession = std::fs::read_to_string(&session_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    session
+        .panels
+        .entry(panel_id.to_string())
+        .or_default()
+        .route = Some(route_key.to_string());
+
+    let body = serde_json::to_string_pretty(&session)
+        .map_err(|e| format!("moon-session.json serialize error: {e}"))?;
+    write_atomic_0600(&session_path, &body)
+}
+
 /// Persist `route_key` as the route for `panel_id` in `moon-session.json`.
+///
+/// Delegates to `set_panel_route_in` with the real `~/.luna` directory.
 #[tauri::command]
 pub fn set_panel_route(panel_id: String, route_key: String) -> Result<(), String> {
-    let mut session = load_session();
-    session.panels.entry(panel_id).or_default().route = Some(route_key);
-    save_session(&session)
+    let dir = luna_dir()?;
+    set_panel_route_in(&dir, &panel_id, &route_key)
 }
 
 // ── Phase-2 last-thread (per-panel) ──────────────────────────────────────────
@@ -915,6 +1022,106 @@ tokenRef  = "env:TOK"
     // ── FIX 2: set_default_route preserves comments, unknown fields, and order
 
     // ── Phase-2 C10: migration tests ─────────────────────────────────────────
+
+    #[test]
+    fn upsert_route_endpoint_rewrites_endpoints0_and_optionally_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+        let existing = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://stale-host:4753/ui", "ws://jax-box.local:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+
+[route.dev]
+endpoints = ["ws://stale-host:5753/ui"]
+label = "dev"
+tokenRef = "legacy"
+"#;
+        std::fs::write(luna_dir.join("client.toml"), existing).expect("write");
+
+        upsert_route_endpoint_in(
+            &luna_dir,
+            "stable",
+            "ws://jax-box:4753/ui",
+            false,
+        )
+        .expect("upsert");
+
+        let cfg = parse_client_config(
+            &std::fs::read_to_string(luna_dir.join("client.toml")).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(cfg.default, "stable", "default untouched without set_default");
+        assert_eq!(
+            cfg.route.get("stable").unwrap().endpoints,
+            vec![
+                "ws://jax-box:4753/ui".to_string(),
+                "ws://jax-box.local:4753/ui".to_string()
+            ],
+            "endpoints[0] rewritten to jax-box; failover preserved"
+        );
+        let body = std::fs::read_to_string(luna_dir.join("client.toml")).unwrap();
+        assert!(
+            !body.contains("127.0.0.1"),
+            "jax-box upsert must not emit loopback: {body}"
+        );
+
+        upsert_route_endpoint_in(&luna_dir, "dev", "ws://jax-box:5753/ui", true)
+            .expect("upsert activate");
+        let cfg2 = parse_client_config(
+            &std::fs::read_to_string(luna_dir.join("client.toml")).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(cfg2.default, "dev", "set_default flips default");
+        assert_eq!(
+            cfg2.route.get("dev").unwrap().endpoints,
+            vec!["ws://jax-box:5753/ui".to_string()]
+        );
+    }
+
+    #[test]
+    fn upsert_route_endpoint_is_noop_when_client_toml_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+        upsert_route_endpoint_in(&luna_dir, "stable", "ws://jax-box:4753/ui", true)
+            .expect("absent is Ok");
+        assert!(
+            !luna_dir.join("client.toml").exists(),
+            "must not invent client.toml"
+        );
+    }
+
+    #[test]
+    fn upsert_route_endpoint_creates_missing_route_slot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+        let existing = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://jax-box:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+"#;
+        std::fs::write(luna_dir.join("client.toml"), existing).expect("write");
+        upsert_route_endpoint_in(&luna_dir, "canary", "ws://canary:4753/ui", false)
+            .expect("create route");
+        let cfg = parse_client_config(
+            &std::fs::read_to_string(luna_dir.join("client.toml")).expect("read"),
+        )
+        .expect("parse");
+        let canary = cfg.route.get("canary").expect("canary route");
+        assert_eq!(canary.endpoints, vec!["ws://canary:4753/ui".to_string()]);
+        assert_eq!(canary.token_ref, "legacy");
+    }
 
     #[test]
     fn migration_no_op_when_client_toml_exists() {
@@ -1482,6 +1689,44 @@ tokenRef  = "env:ALPHA_TOKEN"
                 secondary.as_deref(),
                 Some("secondary-thread"),
                 "panel-secondary must be untouched"
+            );
+        });
+    }
+
+    /// Step 1c round-trip scenario (plan's "a panel route write preserves the
+    /// rest of the session"): writing panel-chat's route must preserve its
+    /// own last_thread AND every other panel's entry untouched.
+    #[test]
+    fn set_panel_route_in_preserves_last_thread_and_other_panels() {
+        with_tmp_luna(|luna_dir| {
+            set_panel_route_in(&luna_dir, "panel-chat", "stable").expect("set initial route");
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "t-1").expect("set last thread");
+            set_panel_route_in(&luna_dir, "panel-secondary", "canary")
+                .expect("set panel-secondary route");
+
+            // The scenario: set_panel_route("panel-chat", "canary") is called.
+            set_panel_route_in(&luna_dir, "panel-chat", "canary").expect("switch route");
+
+            let session_path = luna_dir.join("moon-session.json");
+            let session: MoonSession =
+                serde_json::from_str(&std::fs::read_to_string(&session_path).unwrap()).unwrap();
+
+            let chat = session.panels.get("panel-chat").expect("panel-chat entry");
+            assert_eq!(chat.route.as_deref(), Some("canary"), "route must be updated");
+            assert_eq!(
+                chat.last_thread.as_deref(),
+                Some("t-1"),
+                "last_thread must survive the route write"
+            );
+
+            let secondary = session
+                .panels
+                .get("panel-secondary")
+                .expect("panel-secondary entry");
+            assert_eq!(
+                secondary.route.as_deref(),
+                Some("canary"),
+                "every other panel's entry must be unchanged"
             );
         });
     }

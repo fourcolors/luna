@@ -31,10 +31,17 @@ function makeTestDescriptor(
 
 interface TestServer {
   url: string
+  /** The bound port, so a restarted server can reclaim the same address. */
+  port: number
   close(): Promise<void>
   dropClients(): void
   lastNewThreadFrame?: Record<string, unknown>
   sessionFrames: Array<Record<string, unknown>>
+  /** Every raw `req.url` this server has seen a client connect with, in
+   *  order - F3 (opus review): distinguishes "no token param" from "token
+   *  param with an empty value", which server-side auth matching alone
+   *  cannot (both normalize to the same empty comparison string). */
+  capturedUrls: string[]
 }
 
 async function startTestServer(opts: {
@@ -49,9 +56,12 @@ async function startTestServer(opts: {
   recordFrames?: boolean
   /** If true, records subscribe/user-message/interrupt/unsubscribe frames into server.sessionFrames. */
   recordSessionFrames?: boolean
+  /** Bind a SPECIFIC port instead of an ephemeral one. Needed to restart a
+   *  server on the same address a client is already trying to reconnect to. */
+  port?: number
 }): Promise<TestServer> {
   return new Promise((resolve, reject) => {
-    const wss = new WebSocketServer({ port: 0 })
+    const wss = new WebSocketServer({ port: opts.port ?? 0 })
     wss.on("error", reject)
     wss.on("listening", () => {
       const addr = wss.address()
@@ -59,6 +69,8 @@ async function startTestServer(opts: {
 
 
       wss.on("connection", (ws, req) => {
+        serverHandle.capturedUrls.push(req.url ?? "")
+
         if (opts.rejectAuth) {
           ws.close(1008, "Unauthorized")
           return
@@ -164,8 +176,10 @@ async function startTestServer(opts: {
 
       const serverHandle: TestServer = {
         url: `ws://127.0.0.1:${port}/ui`,
+        port,
         lastNewThreadFrame: undefined,
         sessionFrames: [],
+        capturedUrls: [],
         dropClients: () => {
           for (const client of wss.clients) {
             client.close(1001, "drop")
@@ -326,6 +340,32 @@ describe("LunaWsAdapter", () => {
       expect(states).toEqual(["connecting", "down"])
       // Fail-closed: no token reached the wire — the WS factory was never invoked.
       expect(wsFactoryCalled).toBe(false)
+
+      await adapter.dispose()
+    })
+  })
+
+  // ── F3 (opus review, plan Step 1b) ────────────────────────────────────────
+  // A route whose tokenRef is "none" resolves to "" (connection.rs's
+  // resolve_route_token). moon-protocol.js's buildWsUrl skips the token
+  // param entirely for a falsy token; the adapter must match that EXACTLY,
+  // not append `?token=` with an empty value.
+  describe("empty resolved token (route tokenRef \"none\")", () => {
+    it("dials a URL with NO token parameter at all", async () => {
+      server = await startTestServer({ token: "", sendDescriptor: true })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "none-token-route", endpoints: [server.url], tokenRef: "" },
+        makeNodeWsFactory(),
+      )
+
+      await adapter.attach()
+
+      // >= 1 rather than exactly 1: a stray reconnect from a neighboring
+      // timing test must not fail this fence, whose invariant is about the
+      // URL SHAPE of every dial, not the dial count.
+      expect(server.capturedUrls.length).toBeGreaterThanOrEqual(1)
+      for (const u of server.capturedUrls) expect(u).not.toContain("token=")
 
       await adapter.dispose()
     })
@@ -1011,6 +1051,231 @@ describe("LunaWsAdapter", () => {
       expect(frames2).toHaveLength(0)
 
       await adapter.dispose()
+    }, 10_000)
+  })
+
+  // ── REAL SERVER RESTART ────────────────────────────────────────────────────
+  //
+  // stack23 S18b promotes the ConnectionManager engine to be Moon's live chat
+  // transport, and S18's deployNote gates that on: "Exercise a real server
+  // restart against a running Moon to prove reconnect, not just a fresh
+  // connect."
+  //
+  // The existing reconnect tests above all use `dropClients()` - the server
+  // STAYS UP, so the very next retry succeeds. A restart is a materially
+  // different path: the listener disappears, retries fail with ECONNREFUSED
+  // for a while, and only then does a NEW process accept on the same address.
+  // That exercises the retry LOOP rather than a single retry, which is the
+  // half a client-drop test cannot reach.
+  //
+  // This does not replace the Operator's hands-on exercise (that also covers
+  // the Tauri host, token re-resolution through the real resolver, and OS-level
+  // socket teardown). It does close the part that is automatable, against real
+  // sockets rather than a fake.
+  describe("reconnect across a real server restart", () => {
+    it("reconnects and re-subscribes after the server process goes away and comes back", async () => {
+      const waitFor = async (pred: () => boolean, timeoutMs = 8000, label = "condition") => {
+        const start = Date.now()
+        while (!pred()) {
+          if (Date.now() - start > timeoutMs) throw new Error(`timeout waiting for ${label}`)
+          await new Promise((r) => setTimeout(r, 20))
+        }
+      }
+
+      server = await startTestServer({ token: TOKEN, sendDescriptor: true, recordSessionFrames: true })
+      const port = server.port
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "restart-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        2000,
+        // Tight, deterministic retry so the restart window is crossed quickly.
+        { baseMs: 100, maxMs: 400, maxAttempts: 50, jitterMs: 0 },
+      )
+      const seenStates: string[] = []
+      const it0 = adapter.connection[Symbol.asyncIterator]()
+      void (async () => {
+        try {
+          for await (const st of { [Symbol.asyncIterator]: () => it0 }) {
+            seenStates.push(st.status)
+            if (seenStates.length > 60) break
+          }
+        } catch { /* iterator ends on dispose */ }
+      })()
+      await adapter.attach()
+      await adapter.openSession({ threadId: "t-restart" })
+      await waitFor(
+        () => server!.sessionFrames.some((f) => f["type"] === "subscribe" && f["threadId"] === "t-restart"),
+        4000,
+        "initial subscribe",
+      )
+
+      // TAKE THE SERVER DOWN COMPLETELY. Both steps are required to model a
+      // process restart: `wss.close()` alone only stops ACCEPTING - it leaves
+      // established sockets open, so the client never notices and the first
+      // version of this test sat at ["connecting","ready"] forever. A real
+      // process death closes its sockets, which is what dropClients() does.
+      server.dropClients()
+      await server.close()
+      server = undefined
+
+      // Let the adapter actually fail some attempts against a dead port, so
+      // this proves the retry LOOP and not merely one lucky retry.
+      await new Promise((r) => setTimeout(r, 400))
+
+      // Bring a NEW server up on the SAME address, as a restart would.
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        recordSessionFrames: true,
+        port,
+      })
+
+      // The client must find its way back and re-subscribe with no help.
+      await waitFor(
+        () => server!.sessionFrames.some((f) => f["type"] === "subscribe" && f["threadId"] === "t-restart"),
+        8000,
+        "re-subscribe after restart",
+      ).catch((e: unknown) => {
+        // The state trace is the diagnostic that matters if this ever goes
+        // red: a run that never leaves ["connecting","ready"] means the client
+        // never noticed the server vanish, which is a TEST-fidelity problem,
+        // while one that ends at "down" means the retry budget was exhausted.
+        throw new Error(`${String(e)} - states: ${JSON.stringify(seenStates)}`)
+      })
+
+      const lastSubscribe = [...server.sessionFrames].reverse().find((f) => f["type"] === "subscribe")
+      expect(lastSubscribe?.["threadId"]).toBe("t-restart")
+
+      // The RETRY LOOP is the point, not just the happy ending: the client
+      // must have observed the outage and recovered from it, rather than
+      // reconnecting on a single lucky first attempt.
+      expect(seenStates, `states: ${JSON.stringify(seenStates)}`).toContain("recovering")
+      expect(seenStates.at(-1), `states: ${JSON.stringify(seenStates)}`).toBe("ready")
+
+      await adapter.dispose()
+    }, 25_000)
+  })
+
+  // ── reconnect jitter ───────────────────────────────────────────────────────
+  //
+  // The random spread on each reconnect delay is CORRECT in production: it is
+  // what stops every client reconnecting in lockstep after a server restart.
+  // But it makes the schedule non-deterministic, and stack23 S18b promotes the
+  // pooled engine to default in Moon, whose connection contract pins an EXACT
+  // reconnect sequence. Without a way to disable the spread that pin would
+  // have to be loosened to a range on the highest-risk surface in the app.
+  //
+  // These tests pin both halves: the knob works, and the production default
+  // still spreads.
+  describe("reconnect delay jitter", () => {
+    /** Collects the delays passed to setTimeout while `fn` runs. */
+    const captureDelays = async (fn: () => Promise<void>): Promise<number[]> => {
+      const delays: number[] = []
+      const realSetTimeout = globalThis.setTimeout
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(globalThis as any).setTimeout = ((cb: () => void, ms?: number, ...rest: unknown[]) => {
+        if (typeof ms === "number") delays.push(ms)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (realSetTimeout as any)(cb, ms, ...rest)
+      }) as typeof globalThis.setTimeout
+      try {
+        await fn()
+      } finally {
+        globalThis.setTimeout = realSetTimeout
+      }
+      return delays
+    }
+
+    /** A scriptable socket. A FAILED attach does not schedule a reconnect -
+     *  only a socket that opened, handshook, and then CLOSED does - so the
+     *  fake has to complete the hello handshake before it can be dropped. */
+    class ScriptedSocket {
+      static instances: ScriptedSocket[] = []
+      readyState = 0
+      #listeners = new Map<string, Set<(e: unknown) => void>>()
+      constructor() {
+        ScriptedSocket.instances.push(this)
+        // Open + hello on the next microtask so attach() can await them.
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.#emit("open", {})
+          this.#emit("message", {
+            data: JSON.stringify({ type: "hello", protocolVersion: 2, capabilities: {} }),
+          })
+        })
+      }
+      #emit(type: string, e: unknown) {
+        for (const cb of this.#listeners.get(type) ?? []) cb(e)
+      }
+      addEventListener(type: string, cb: (e: unknown) => void) {
+        if (!this.#listeners.has(type)) this.#listeners.set(type, new Set())
+        this.#listeners.get(type)!.add(cb)
+      }
+      removeEventListener(type: string, cb: (e: unknown) => void) {
+        this.#listeners.get(type)?.delete(cb)
+      }
+      send() {}
+      close() {
+        this.readyState = 3
+      }
+      drop() {
+        this.readyState = 3
+        this.#emit("close", { code: 1006, reason: "test drop", wasClean: false })
+      }
+    }
+
+    const scriptedFactory: WsFactory = () => new ScriptedSocket() as unknown as WebSocket
+
+    const makeAdapter = (jitterMs: number | undefined) =>
+      new LunaWsAdapter(
+        { routeKey: "jitter", endpoints: ["ws://127.0.0.1:1/ui"], tokenRef: "none" },
+        scriptedFactory,
+        1000,
+        { baseMs: 1000, maxMs: 16_000, maxAttempts: 3, ...(jitterMs === undefined ? {} : { jitterMs }) },
+      )
+
+    const dropLatest = () => {
+      const s = ScriptedSocket.instances.at(-1)
+      s?.drop()
+    }
+
+    it("jitterMs: 0 makes the schedule exactly min(baseMs * 2^n, maxMs)", async () => {
+      const adapter = makeAdapter(0)
+      await adapter.attach()
+      const delays = await captureDelays(async () => {
+        dropLatest()
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      await adapter.dispose()
+
+      // Filter to the reconnect-shaped delays (the handshake timeout is 20ms).
+      const reconnects = delays.filter((d) => d >= 1000)
+      expect(reconnects.length, JSON.stringify(delays)).toBeGreaterThan(0)
+      // Every one is a clean power-of-two multiple of the base, with no spread.
+      for (const d of reconnects) {
+        expect(Number.isInteger(d), `delay ${d} should be an integer`).toBe(true)
+        expect([1000, 2000, 4000, 8000, 16_000], `unexpected delay ${d}`).toContain(d)
+      }
+    }, 10_000)
+
+    it("the production default still spreads the delay", async () => {
+      const adapter = makeAdapter(undefined)
+      await adapter.attach()
+      const delays = await captureDelays(async () => {
+        dropLatest()
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      await adapter.dispose()
+
+      const reconnects = delays.filter((d) => d >= 1000)
+      expect(reconnects.length, JSON.stringify(delays)).toBeGreaterThan(0)
+      // Not asserting randomness (that would flake) - asserting the spread is
+      // APPLIED, i.e. delays are not clamped to the bare exact ladder. A
+      // fractional value can only come from the jitter term.
+      const anyFractional = reconnects.some((d) => !Number.isInteger(d))
+      const anyOffLadder = reconnects.some((d) => ![1000, 2000, 4000, 8000, 16_000].includes(d))
+      expect(anyFractional || anyOffLadder, JSON.stringify(reconnects)).toBe(true)
     }, 10_000)
   })
 })

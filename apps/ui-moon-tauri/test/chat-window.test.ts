@@ -16,13 +16,79 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import {
+  evalChatInlineScriptWithBridge,
+  installSyncRequestAnimationFrame,
+  loadVendorInto,
+  mountChatDomFromHtml,
+  readChatHtml,
+} from './helpers/chat-harness'
+import { FakeWebSocket } from './helpers/FakeWebSocket'
 
-// jsdom never fetches external <script src> tags, so required vendor files
-// are loaded by hand, in the same order the page declares them (same
-// mechanism as moon-app.test.ts / widget-window.test.ts).
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
+/**
+ * Set the page's socket stub AND the ACTIVE engine's connected flag.
+ *
+ * chat.html delegates `WebSocketEngine.isConnected` to PoolEngine when the
+ * pool engine is live (stack23 S18b), so assigning `State.ws` alone no longer
+ * decides connectivity - it only did for the legacy engine, whose
+ * isConnected() reads State.ws.readyState directly. Tests that stub a socket
+ * to mean "we are online" have to say so in a way BOTH engines understand,
+ * otherwise every send path silently short-circuits and the assertion that
+ * fails is a missing `subscribe`, miles from the actual cause.
+ *
+ * The adapter stub routes frames back through the same `ws.send` the legacy
+ * path uses, and stringifies exactly as chat.html does, so socket-level
+ * assertions keep seeing the shape they always saw.
+ */
+function setWs(m: any, ws: any): void {
+  m.State.ws = ws
+  if (!m.PoolEngine) return
+  const open = !!ws && ws.readyState === 1
+  m.PoolEngine._isConnected = open
+  m.PoolEngine._adapter = open && typeof ws.send === 'function'
+    ? { sendFrame: (frame: unknown) => ws.send(JSON.stringify(frame)) }
+    : null
+  // The pool engine's watchdogs gate on its OWN generation counter rather
+  // than State.connGen (see startSubscribeTimeout: `!this._gen ||
+  // !this._gen.gate(myGen)` returns early). A stub that never went through
+  // PoolEngine.connect() has no counter, so every watchdog would silently
+  // no-op and the failure would surface as "onReattachStalled was never
+  // called" rather than "this connection was never really up".
+  const helper = (globalThis as any).PoolEngineHelper
+  if (open && !m.PoolEngine._gen && helper?.createGenCounter) {
+    m.PoolEngine._gen = helper.createGenCounter()
+    m.PoolEngine._gen.bump()
+  }
+}
+
+/**
+ * Spy on the ACTIVE engine's `send`.
+ *
+ * chat.html routes all 23 call sites through `WebSocketEngine.send`, which is
+ * patched to delegate to PoolEngine when the pool engine is live (stack23
+ * S18b). That wrapper catches those 23 - but NOT sends made from inside an
+ * engine method via `this.send`, which resolve straight to the active
+ * engine's own function. `syncThread` is exactly such a caller, which is why
+ * spying only on WebSocketEngine.send made 27 scenarios look like the engine
+ * had stopped subscribing when it had simply stopped routing through the
+ * wrapper.
+ *
+ * Spying on the active engine covers both paths, and keeps these tests
+ * engine-agnostic so the same assertions hold whichever engine is default.
+ */
+function activeEngine(m: any) {
+  return m.USE_POOL_ENGINE && m.PoolEngine ? m.PoolEngine : m.WebSocketEngine
+}
+
+/** Spy on a method of the ACTIVE engine - see spyOnSend's note. Engine
+ *  methods invoked internally via `this.<name>` bypass the WebSocketEngine
+ *  wrapper entirely, so a spy pinned to WebSocketEngine sees nothing. */
+function spyOnEngine(m: any, name: string) {
+  return vi.spyOn(activeEngine(m), name)
+}
+
+function spyOnSend(m: any) {
+  return spyOnEngine(m, 'send')
 }
 
 describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
@@ -39,9 +105,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     window.history.replaceState({}, '', '/')
 
     // 1. Load chat.html content + body structure.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
 
     // 2. Mock the Tauri window surface. NOTE: no `core` by default — boot
     // degrades exactly like the hub harness (voice unavailable, localStorage
@@ -74,6 +139,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
     loadVendorInto(window, 'moon-dock.js')
+    // pool-engine.js ONLY. moon-session.js is deliberately NOT loaded here:
+    // several scenarios in this file assert the `typeof MoonSession ===
+    // 'undefined'` fallback branches (legacy set_last_thread_id, legacy
+    // get_last_thread_id) and stub MoonSession per-test where they need it.
+    // PoolEngine.connect() already treats a missing MoonSession as a
+    // non-fatal fallback to the legacy URL.
+    loadVendorInto(window, 'pool-engine.js')
     loadVendorInto(window, 'thread-drag-session.js')
 
     // Clean localStorage so persisted-prefs tests don't leak across cases.
@@ -98,13 +170,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       removeEventListener() {}
     })
 
-    // 4. Select the inline page script by CONTENT, not position (an added
-    // config stub must fail loudly here, not silently run the wrong script).
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    // 4. Mount the React transcript (src/chat/MessageList.tsx) into
+    // #chat-messages, then select the inline page script by CONTENT, not
+    // position (an added config stub must fail loudly here, not silently
+    // run the wrong script), and patch its ChatState/ChatLoop forward
+    // -declarations to the real bridge in the SAME scope (see
+    // helpers/chat-harness.ts's module doc for why that has to happen
+    // together instead of as a separate assignment afterward).
+    evalChatInlineScriptWithBridge()
 
     vi.useFakeTimers()
   })
@@ -117,6 +190,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     delete (window as any).LunaWS
     delete (window as any).LunaMarkdown
     delete (window as any).LunaDock
+    delete (window as any).LunaChatHost
+    delete (window as any).ChatState
+    delete (window as any).ChatLoop
+    // ViewMode (plan Step 3): bootChat's assignBridge always sets this bare
+    // global (production too - see wiring.ts's currentViewModeEnabled doc),
+    // so it must be cleared per-test same as every other bridged global above.
+    delete (window as any).ViewMode
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -147,7 +227,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // offline message no longer shows a phantom typing indicator).
       const mi = (window as any).__MoonInternals
       mi.State.activeThreadId = 'th-watchdog'
-      mi.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
 
       // 1. User types "How does this look?" and submits
       messageInput.value = 'How does this look?'
@@ -185,7 +265,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: submitting with no thread while OFFLINE stashes the message and marks pendingFreshThread (reconnect mints a thread + flushes it)', () => {
       const mi = (window as any).__MoonInternals
       // Offline: no open socket, no active thread.
-      mi.State.ws = null
+      setWs(mi, null)
       mi.State.activeThreadId = null
       mi.State.pendingFreshThread = false
       mi.State.pendingUserMessage = null
@@ -212,7 +292,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: second offline no-thread submit does not overwrite the first queued message', async () => {
       const mi = (window as any).__MoonInternals
-      mi.State.ws = null
+      setWs(mi, null)
       mi.State.activeThreadId = null
       mi.State.pendingFreshThread = false
       mi.State.pendingUserMessage = null
@@ -268,11 +348,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // observe the render without waiting for an actual frame. The real
       // runtime uses rAF for coalescing; here we want determinism.
       vi.useRealTimers()
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => {
-        cb(0)
-        return 1
-      }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
     })
 
     it('Scenario: closeOpenFences auto-closes a dangling ``` so partial code renders as code', () => {
@@ -481,7 +557,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: appendToolCallCard renders a collapsible card with the tool name + JSON input + pending status', () => {
       const { appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const card = appendToolCallCard({
         type: 'tool-call',
         threadId: 't1', turnId: 'turn-1', toolCallId: 'call-1',
@@ -513,7 +588,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: appendToolCallCard escapes the tool name + input (no XSS via name/input)', () => {
       const { appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const card = appendToolCallCard({
         type: 'tool-call',
         threadId: 't', turnId: 't', toolCallId: 'c',
@@ -529,7 +603,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult flips the matching cards status pill to OK and appends the output', () => {
       const { appendToolCallCard, attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       appendToolCallCard({
         type: 'tool-call',
         threadId: 't', turnId: 't', toolCallId: 'call-A',
@@ -552,7 +625,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult with status=error flips the pill to error', () => {
       const { appendToolCallCard, attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       appendToolCallCard({
         type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'call-X',
         name: 'Bash', input: { command: 'false' },
@@ -569,7 +641,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult shows a truncated-output hint when frame.truncated is true', () => {
       const { appendToolCallCard, attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       appendToolCallCard({ type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'big', name: 'Read', input: {} })
       const card = attachToolResult({
         type: 'tool-result', threadId: 't', toolCallId: 'big',
@@ -583,13 +654,17 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: attachToolResult is a no-op when no matching tool-call card exists', () => {
       const { attachToolResult } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const ret = attachToolResult({
         type: 'tool-result', threadId: 't', toolCallId: 'missing',
         status: 'ok', output: 'x', truncated: false,
       })
       expect(ret).toBeNull()
-      expect(chat.children.length).toBe(0)
+      // The WELCOME item is what production renders for an empty transcript, and
+      // it is a child. This used to read 0 only because the harness mounted
+      // MessageList WITHOUT `emptyStateItem` - a divergence S20d removed. The
+      // assertion's intent is "no ghost bubble was added", so it counts real
+      // message bubbles rather than every child.
+      expect(chat.querySelectorAll('.msg:not([data-msg-key="welcome"])').length).toBe(0)
     })
 
     // ── Regression: text after tool round-trip (moon-009 fix) ─────────────
@@ -615,7 +690,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: assistant-delta after a tool-call-card opens a fresh text bubble (does NOT overwrite the card)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
 
       // Tool round-trip already happened.
       appendToolCallCard({
@@ -650,7 +724,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: assistant-done after tool-call+text-stream finalizes with streamRaw (does NOT duplicate via frame.message.text)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
 
       // Multi-segment turn: text-before-tool, then tool, then text-after-tool.
       // Pre-fix bug: assistant-done would write frame.message.text (= the
@@ -704,7 +777,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a turn that ends on a tool settles to the pill on turn-complete (no finalize-into-card)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
 
       // Turn that ended on a tool with no trailing assistant text. doneMsg
       // would be the tool-call-card itself. Pre-fix, finalize would write
@@ -752,7 +824,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: pre-tool-call typing-dots/delta path still works (regression guard for the simple case)', () => {
       const { handleFrame } = internals() as any
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
       const dots = document.createElement('div')
       dots.className = 'msg assistant'
       dots.innerHTML = '<div class="typing-dots"><div class="dot"></div></div>'
@@ -928,11 +999,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     beforeEach(() => {
       // Synchronous rAF so we observe each frame's effect immediately.
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       chat = document.getElementById('chat-messages') as HTMLElement
-      chat.innerHTML = ''
     })
 
     it('thread-snapshot with messages renders one bubble per non-empty message', () => {
@@ -980,7 +1049,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.querySelector('.typing-dots')).not.toBeNull()
 
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
-      expect(chat.children.length).toBe(0)
+      // The WELCOME item is what production renders for an empty transcript, and
+      // it is a child. This used to read 0 only because the harness mounted
+      // MessageList WITHOUT `emptyStateItem` - a divergence S20d removed. The
+      // assertion's intent is "no ghost bubble was added", so it counts real
+      // message bubbles rather than every child.
+      expect(chat.querySelectorAll('.msg:not([data-msg-key="welcome"])').length).toBe(0)
     })
 
     it('a background-delivered assistant-done raises an OS notification via the notify command', () => {
@@ -1093,7 +1167,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('a delta that arrives empty does NOT pollute the transcript', () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: '' })
       expect(M().ChatState.turns).toHaveLength(0)
-      expect(chat.children.length).toBe(0)
+      // The WELCOME item is what production renders for an empty transcript, and
+      // it is a child. This used to read 0 only because the harness mounted
+      // MessageList WITHOUT `emptyStateItem` - a divergence S20d removed. The
+      // assertion's intent is "no ghost bubble was added", so it counts real
+      // message bubbles rather than every child.
+      expect(chat.querySelectorAll('.msg:not([data-msg-key="welcome"])').length).toBe(0)
     })
 
     // Regression: chat-service publishes the CUMULATIVE assistant text on
@@ -1426,11 +1505,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     beforeEach(() => {
       // Synchronous rAF so each frame's render is observable immediately.
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       chat = document.getElementById('chat-messages') as HTMLElement
-      chat.innerHTML = ''
     })
 
     it('Scenario: a settled assistant answer copies its RAW markdown (not the rendered text)', async () => {
@@ -1699,8 +1776,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       const m = M()
       if (m && m.ChatState && typeof m.ChatState.reset === 'function') m.ChatState.reset()
       const panel = document.getElementById('user-ask-panel')
@@ -1800,7 +1876,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: Submit sends one survey-response frame and hides the panel', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame(sampleFrame())
 
       // Answer task_quality + one belief.
@@ -1828,7 +1904,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: Dismiss closes the panel WITHOUT sending any wire frame', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame(sampleFrame())
 
       const dismiss = document.getElementById('user-ask-dismiss') as HTMLButtonElement
@@ -1840,7 +1916,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: Submit is a no-op when task_quality is unanswered (defence in depth past disabled button)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame(sampleFrame())
       // Only answer a belief — leave Likert null.
       const items = document.querySelectorAll('.user-ask-item')
@@ -1903,8 +1979,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const status = () => document.getElementById('secret-prompt-status') as HTMLElement
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       M().SecretPromptEngine.hide()
     })
@@ -1926,7 +2001,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('submit with an empty value shows an error and sends nothing', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       showFrame()
       document.getElementById('secret-prompt-submit')!.click()
       expect(sendSpy).not.toHaveBeenCalled()
@@ -1934,9 +2009,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('submit while the socket is not OPEN refuses (send() logs frames when not open — the leak guard)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       showFrame()
-      M().State.ws = null
+      setWs(M(), null)
       input().value = 'sk-secret'
       document.getElementById('secret-prompt-submit')!.click()
       expect(sendSpy).not.toHaveBeenCalled()
@@ -1947,8 +2022,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('submit on an OPEN socket sends ONE secret-result and wipes the input immediately', () => {
       showFrame()
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'sk-live-12345'
       document.getElementById('secret-prompt-submit')!.click()
       expect(sendSpy).toHaveBeenCalledTimes(1)
@@ -1961,8 +2036,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Enter in the password field submits (single-field form feel)', () => {
       showFrame()
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'sk-enter'
       input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
       expect(sendSpy).toHaveBeenCalledTimes(1)
@@ -1971,8 +2046,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('cancel sends secret-result cancelled:true (when OPEN), hides + wipes', () => {
       showFrame()
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'half-typed'
       document.getElementById('secret-prompt-cancel')!.click()
       expect(sendSpy).toHaveBeenCalledWith({
@@ -2001,7 +2076,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       vi.advanceTimersByTime(5000)
       expect(panel().hidden).toBe(false)
       // _reqId cleared → a stray submit is inert.
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       input().value = 'retyped'
       M().SecretPromptEngine.submit()
       expect(sendSpy).not.toHaveBeenCalled()
@@ -2010,7 +2085,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('the WS close hook wipes a typed-but-unsent secret (registerCloseHook seam)', () => {
       showFrame()
       input().value = 'typed-not-sent'
-      const hooks = M().WebSocketEngine._closeHooks
+      const hooks = activeEngine(M())._closeHooks
       expect(hooks.length).toBeGreaterThanOrEqual(1)
       for (const hook of hooks) hook()
       expect(input().value).toBe('')
@@ -2031,7 +2106,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // send path on State.ws.readyState (see WebSocketEngine.isConnected's
       // own doc comment) — without it every submit below would silently take
       // the offline branch and never call WebSocketEngine.send at all.
-      M().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
+      setWs(M(), { readyState: WebSocket.OPEN, send: () => {} })
       // Model the real new-thread → thread-created acknowledgement sequence.
       M().State.threadCreateIntent = 'attach'
       M().handleFrame({ type: 'thread-created', thread: { id } })
@@ -2041,8 +2116,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       spy.mock.calls.filter((c: any[]) => (c[0] as any).type === 'user-message')
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       // Reset chat state + textarea so the suite is independent.
       const m = M()
       if (m?.ChatState?.reset) m.ChatState.reset()
@@ -2053,7 +2127,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a single Enter keypress in the textarea fires exactly ONE user-message frame', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2065,7 +2139,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a single form-submit fires exactly ONE user-message frame', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2077,7 +2151,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: keydown Enter IMMEDIATELY followed by a synthetic form-submit fires exactly ONE user-message frame (WKWebView implicit-submission defence)', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2091,7 +2165,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: calling ChatEngine.handleSubmit() synchronously twice fires exactly ONE user-message frame', () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'hi luna'
@@ -2109,7 +2183,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: two intentional submits separated by a microtask DO both fire (guard self-clears)', async () => {
       const m = M()
       setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'first'
@@ -2151,10 +2225,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // robust to the stylesheet being split across multiple <style> blocks —
     // unlike a text/regex match.
     it('Scenario: a direct child of .chat-messages computes flex-shrink:0 (cannot be compressed away)', () => {
-      // Pull EVERY <style> block out of the source and apply them all.
+      // Pull EVERY <style> block out of the source and apply them all, PLUS
+      // src/chat/message-list.css - the `.chat-messages > * { flex-shrink: 0 }`
+      // rule this scenario pins moved there verbatim as part of the S15
+      // ChatRenderer -> React conversion (see that file's module doc); a real
+      // page load pulls it in via main-chat.tsx's `import "./chat/message-list.css"`,
+      // which jsdom never sees unless we read the file directly like this.
+      const messageListCss = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/message-list.css'),
+        'utf8',
+      )
       const css = [...htmlContent.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
         .map((m) => m[1])
-        .join('\n')
+        .join('\n') + '\n' + messageListCss
       const styleEl = document.createElement('style')
       styleEl.textContent = css
       document.head.appendChild(styleEl)
@@ -2191,7 +2274,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2206,7 +2289,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       )
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2227,11 +2310,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // rendered "No threads yet." forever even though threads existed.
       const m = M()
       stubInvoke()
-      m.State.ws = fakeOpenSocket()          // WebSocketEngine.isConnected() must read true
+      setWs(m, fakeOpenSocket())          // WebSocketEngine.isConnected() must read true
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
       m.State.threadDrawerOpen = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2242,11 +2325,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a fast-path resubscribe leaves a CLOSED drawer alone (no spurious list-threads)', async () => {
       const m = M()
       stubInvoke()
-      m.State.ws = fakeOpenSocket()
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
       m.State.threadDrawerOpen = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2259,11 +2342,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = stubInvoke((cmd) =>
         Promise.resolve(cmd === 'get_last_thread_id' ? 'file-thread' : null),
       )
-      m.State.ws = fakeOpenSocket()
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = false
       m.State.threadDrawerOpen = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2277,7 +2360,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
       m.State.activeThreadId = 'stale-old-server-thread'
       m.State.skipLastThreadFile = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2290,9 +2373,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       stubInvoke()
       // Neutralize any pending auto-reconnect so connGen cannot shift under us.
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket() // socket is fine; only the thread is missing
-      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket()) // socket is fine; only the thread is missing
+      const stalled = spyOnEngine(m, 'onReattachStalled').mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       expect(m.State.subscribeTimeout).not.toBeNull()
@@ -2306,10 +2389,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a thread-snapshot cancels the watchdog (success is not treated as stalled)', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = 'thread-xyz'
-      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
+      const stalled = spyOnEngine(m, 'onReattachStalled').mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       m.handleFrame({ type: 'thread-snapshot', messages: [] })
@@ -2322,7 +2405,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a thread-snapshot persists the thread id for restart-survival', () => {
       const m = M()
       const invoke = stubInvoke()
-      m.State.ws = fakeOpenSocket()
+      setWs(m, fakeOpenSocket())
       m.State.activeThreadId = 'thread-xyz'
 
       m.handleFrame({ type: 'thread-snapshot', messages: [] })
@@ -2333,11 +2416,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a stalled reattach self-heals by listing this server\'s threads (round 1)', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()        // socket is fine; the stored thread is gone from THIS server
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())        // socket is fine; the stored thread is gone from THIS server
       m.State.activeThreadId = 'thread-pruned-from-this-server'
       m.State.reattachRound = 0
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       vi.advanceTimersByTime(7000)         // watchdog fires → real onReattachStalled recovers
@@ -2352,11 +2435,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: stalls surface "Reattach stalled" only after the retry budget is exhausted', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
       m.State.reattachRound = 3            // budget at the limit (MAX_REATTACH_ROUNDS = 3)
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       m.WebSocketEngine.onReattachStalled()
 
@@ -2366,7 +2449,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: a successful reattach refreshes the self-heal budget', () => {
       const m = M()
-      vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
       m.State.reattachRound = 2
       m.State.stalledThreadId = 'some-thread'
 
@@ -2429,7 +2512,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         }
         return Promise.resolve(null)
       })
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2449,7 +2532,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         if (cmd === 'get_last_thread_id') return Promise.resolve('legacy-fallback')
         return Promise.resolve(null)
       })
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2464,10 +2547,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = stubInvokeWithSession(() => Promise.resolve(undefined))
       const fakeWs = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.ws = fakeWs
+      setWs(m, fakeWs)
       m.State.activeThreadId = 'thread-snap-123'
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
 
       m.handleFrame({ type: 'thread-snapshot', messages: [] })
 
@@ -2485,7 +2567,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = stubInvokeWithSession(() => Promise.resolve(null))
       m.State.pinnedThread = 'pinned-xyz'
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2535,8 +2617,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.State.pinnedThread = null
       m.State.reattachRound = 0
       m.State.skipLastThreadFile = false
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       m.ChatState.reset()
     })
 
@@ -2549,8 +2630,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // recover if the id is truly gone.
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'th-stored' : null))
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2568,10 +2649,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // stalled status (within budget).
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'th-gone' : null))
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
       // Blind-subscribed; watchdog armed.
@@ -2599,8 +2680,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: empty server on cold start (no stored id) → mints a fresh thread, never stalls', async () => {
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? null : null))
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2620,7 +2701,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = stubInvoke(() => Promise.resolve('file-thread'))
       m.State.activeThreadId = 'live-thread'    // session already running
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       await m.WebSocketEngine.syncThread()
 
@@ -2636,10 +2717,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: single tombstone (lists but no snapshot) → thread-list handler advances to next', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       // First round: subscribed to th-tombstone, stalled.
       m.State.activeThreadId = 'th-tombstone'
@@ -2669,10 +2750,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // With stalledIdSet accumulation, both A and B are skipped on round 2.
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       // Round 1: subscribe A → stall.
       m.State.activeThreadId = 'th-A'
@@ -2704,10 +2785,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: server unresponsive (no list reply) → surfaces stalled after retry budget', () => {
       const m = M()
       stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
-      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
+      spyOnSend(m).mockImplementation(() => {})
 
       // Exhaust 3 rounds of stalls (server never replies to list-threads).
       m.State.reattachRound = 0
@@ -2732,11 +2813,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Tests set it directly to exercise the guard without a page reload.
       const m = M()
       stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'other-thread' : null))
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
+      spyOnEngine(m, 'connect').mockImplementation(() => {})
+      setWs(m, fakeOpenSocket())
       m.State.pinnedThread = 'pinned-id'
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      const statusSpy = spyOnEngine(m, 'updateStatus').mockImplementation(() => {})
 
       // syncThread with pinnedThread set: subscribes directly, never list-threads.
       await m.WebSocketEngine.syncThread()
@@ -2763,15 +2844,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       M().State.activeThreadId = null
       M().State.pendingUserMessage = null
     })
 
     it('thread-list with threads and no active thread subscribes to the most recent', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-new' }, { id: 'th-old' }] })
       expect(M().State.activeThreadId).toBe('th-new')
@@ -2779,7 +2859,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('thread-list with NO threads auto-creates one (new-thread frame)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [] })
       expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread' })
@@ -2787,7 +2867,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('the new-thread frame carries the persisted model pick (luna_model)', () => {
       localStorage.setItem('luna_model', 'gemini-3-flash')
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.threadListAutoSelectPending = true
       M().handleFrame({ type: 'thread-list', threads: [] })
       expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread', model: 'gemini-3-flash' })
@@ -2795,7 +2875,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('an existing active thread ignores a thread-list (no re-subscribe)', () => {
       M().State.activeThreadId = 'th-current'
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-other' }] })
       expect(sendSpy).not.toHaveBeenCalled()
       expect(M().State.activeThreadId).toBe('th-current')
@@ -2812,10 +2892,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // runs because a message just arrived on an open socket).
       const m = M()
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
-      // flushPendingUserMessage uses State.ws.send directly (clear-after-send);
-      // subscribe still goes through WebSocketEngine.send.
-      const engSend = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation((frame: any) => {
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
+      // Both the subscribe and the flush go through WebSocketEngine.send
+      // (#500 routed the flush through the engine; it used to reach for
+      // State.ws directly, which PoolEngine never assigns). This spy forwards
+      // to the raw socket so the wire assertion below still sees the frame.
+      const engSend = spyOnSend(m).mockImplementation((frame: any) => {
         if (m.State.ws && m.State.ws.readyState === WebSocket.OPEN) {
           m.State.ws.send(JSON.stringify(frame))
         }
@@ -2840,8 +2922,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // OLD code would still fire its setTimeout(..., 100) blindly and lose
       // the message on the dead socket. The fix must neither send on a dead
       // socket nor drop the stash -- it leaves it queued for the retry path.
-      m.State.ws = { readyState: WebSocket.CLOSED, send: vi.fn() }
-      const engSend = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.CLOSED, send: vi.fn() })
+      const engSend = spyOnSend(m).mockImplementation(() => {})
       m.State.pendingUserMessage = { text: 'queued while dropping', attachments: undefined }
       m.State.threadCreateIntent = 'attach'
 
@@ -2857,7 +2939,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // server replays a thread-snapshot -- the next proof this connection
       // can deliver. That is what retries the stashed send now, not a timer.
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
+      engSend.mockClear()
       // thread-snapshot's restart-survival tail calls window.__TAURI__.core.invoke
       // when a core bridge is present (see the `stubInvoke` convention used
       // elsewhere in this file); stub it so that fire-and-forget call doesn't
@@ -2866,18 +2949,21 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.handleFrame({ type: 'thread-snapshot', threadId: 'th-fresh', messages: [] })
 
       expect(m.State.pendingUserMessage).toBeNull()
-      const payloads = rawSend.mock.calls.map((c: any[]) => {
-        try { return JSON.parse(String(c[0])) } catch { return null }
-      })
-      expect(payloads.some((p: any) =>
-        p && p.type === 'user-message' && p.threadId === 'th-fresh' && p.text === 'queued while dropping',
-      )).toBe(true)
+      // Asserted on the ENGINE, not the raw socket. This used to read the raw
+      // socket, which only worked because the flush bypassed the engine and
+      // wrote to State.ws itself - the very thing that made it dead code under
+      // PoolEngine (#500). Through the engine is both the fix and the stronger
+      // assertion, since it is the path every other send already takes.
+      expect(engSend).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'user-message', threadId: 'th-fresh', text: 'queued while dropping',
+      }))
+      expect(rawSend, 'the flush must not write to the socket behind the engine').not.toHaveBeenCalled()
     })
 
     it('M41: unbound stash refuses snapshot flush into an unrelated active thread (Devin misdelivery fix)', () => {
       const m = M()
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
       // No thread-created yet - stash has text only, no target threadId.
       m.State.pendingUserMessage = { text: 'meant for a new chat', attachments: undefined }
       m.State.activeThreadId = 'th-older'
@@ -2897,7 +2983,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('M41: stash bound to th-fresh refuses flush into th-other', () => {
       const m = M()
       const rawSend = vi.fn()
-      m.State.ws = { readyState: WebSocket.OPEN, send: rawSend }
+      setWs(m, { readyState: WebSocket.OPEN, send: rawSend })
       m.State.pendingUserMessage = {
         text: 'for fresh only',
         attachments: undefined,
@@ -2926,8 +3012,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
     })
 
@@ -2953,21 +3038,32 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(el.hidden).toBe(true)
     })
 
+    // The hard version-mismatch banner used to be a raw DOM node with a
+    // fixed id ("protocol-mismatch-banner") the vanilla code checked for
+    // idempotency; the S15 conversion moved that idempotency check onto the
+    // reducer state itself (ChatState.turns.some(banner-with-this-text)) and
+    // renders the banner through the normal ChatEngine.appendMessage path
+    // (see chat.html's showVersionMismatch), so it no longer carries any id.
+    // These assert the same OBSERVABLE behavior via its text instead.
+    const versionMismatchBanners = () =>
+      Array.from(document.querySelectorAll('#chat-messages .msg.assistant'))
+        .filter((n) => n.textContent!.includes('Version mismatch'))
+
     it('a protocol-version MISMATCH warns loudly but keeps chatting enabled (idempotent banner)', () => {
       M().handleFrame({ type: 'hello', protocolVersion: 99, capabilities: {} })
       const statusEl = document.getElementById('connection-status')!
       expect(statusEl.className).toBe('version-warning')
       expect(statusEl.textContent).toContain('v99')
-      expect(document.getElementById('protocol-mismatch-banner')).not.toBeNull()
+      expect(versionMismatchBanners().length).toBe(1)
       // Reconnects re-deliver hello — no duplicate banners.
       M().handleFrame({ type: 'hello', protocolVersion: 99, capabilities: {} })
-      expect(document.querySelectorAll('#protocol-mismatch-banner').length).toBe(1)
+      expect(versionMismatchBanners().length).toBe(1)
     })
 
     it('an older server with NO protocolVersion gets one soft note, never a hard banner', () => {
       M().handleFrame({ type: 'hello', capabilities: {} })
       M().handleFrame({ type: 'hello', capabilities: {} })
-      expect(document.getElementById('protocol-mismatch-banner')).toBeNull()
+      expect(versionMismatchBanners().length).toBe(0)
       const notes = Array.from(document.querySelectorAll('#chat-messages .msg.assistant'))
         .filter((n) => n.textContent!.includes('older server'))
       expect(notes.length).toBe(1)
@@ -2991,9 +3087,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: empty composer -> transcript fills and auto-sends via the EXACT existing send path (client info included)', () => {
       voiceLive()
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.activeThreadId = 'th-voice'
-      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the auto-send delivers, so the composer clears
+      setWs(M(), { readyState: WebSocket.OPEN, send: vi.fn() })   // connected: the auto-send delivers, so the composer clears
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3015,7 +3111,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: non-empty draft -> transcript appends with a space and does NOT send', () => {
       voiceLive()
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = 'remind me to'
 
@@ -3028,7 +3124,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: a blank transcript is a no-op', () => {
       voiceLive()
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().VoiceEngine.handleTranscript('   ')
       expect(sendSpy).not.toHaveBeenCalled()
       expect(document.querySelectorAll('#chat-messages .msg.user').length).toBe(0)
@@ -3041,7 +3137,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: transcript arriving after voice was turned OFF is dropped', () => {
       const V = voiceLive()
       V.mode = 'off'
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3055,7 +3151,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: transcript arriving after the mic-pause click is dropped', () => {
       const V = voiceLive()
       V.micPaused = true   // the pause click is exactly "stop listening NOW"
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = ''
 
@@ -3281,8 +3377,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // handleTranscript dispatches a form submit, so it needs the same
       // connected-socket gate as ChatEngine.handleSubmit (see
       // WebSocketEngine.isConnected's doc comment).
-      M().State.ws = { readyState: WebSocket.OPEN, send: () => {} }
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(M(), { readyState: WebSocket.OPEN, send: () => {} })
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.activeThreadId = 'th-boot'
       M().VoiceEngine.micPaused = false
       windowEventHandlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
@@ -3399,7 +3495,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       sentFrames.length = 0
       const m = M()
       m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-      m.State.ws = { readyState: WebSocket.OPEN }
+      setWs(m, { readyState: WebSocket.OPEN })
       m.State.pinnedArtifacts = []
       m.State.sessionArtifacts = []
       m.State.artifactsPanelOpen = false
@@ -3687,8 +3783,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
     })
 
@@ -3731,6 +3826,104 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await Promise.resolve()
     })
 
+    // F2 (opus review, rework round on plan Step 1c): if the
+    // window.loadConnectionAndConnect bridge is ever missing at fire time
+    // (the same swallow shape as the ReferenceError bug this bridge fixed),
+    // the handler must NEVER be a silent warn-only no-op - it logs an ERROR
+    // naming the consequence and drives the status pill to a visible
+    // failure.
+    it("hub-event 'profile-changed' with the loadConnectionAndConnect bridge missing logs an ERROR naming the consequence and drives the status pill to 'Reconnect failed'", async () => {
+      const m = M()
+      m.State.activeThreadId = 'th-should-still-clear'
+      const errorSpy = vi.spyOn(console, 'error')
+      // Simulate the bridge being unavailable at fire time by deleting the
+      // BARE global wiring.ts actually reads (assignBridge normally
+      // populates it synchronously during boot). Deleting the
+      // __MoonInternals mirror instead (as this test used to) would not
+      // simulate production at all - production never populates that
+      // mirror in the first place (see wiring.ts's read-site comment), so
+      // this branch always fires there regardless of what this test deletes.
+      delete (window as any).loadConnectionAndConnect
+
+      windowEventHandlers['hub-event']({ payload: { for: 'chat-test', name: 'profile-changed' } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // State reset still runs (harmless hygiene) even though the reconnect
+      // itself cannot proceed.
+      expect(m.State.activeThreadId).toBeNull()
+
+      expect(errorSpy).toHaveBeenCalled()
+      const loggedText = errorSpy.mock.calls.flat().map((a) => String(a)).join(' ')
+      expect(loggedText).toContain('loadConnectionAndConnect is unavailable')
+      expect(loggedText).toContain('OLD credentials after a profile switch')
+
+      const pill = document.getElementById('connection-status')!
+      expect(pill.className).toBe('disconnected')
+      expect(pill.textContent).toBe('Reconnect failed')
+    })
+
+    // Step 1c Part 2 (opus review, plan Step 1c): Rust now fans
+    // profile-changed/connection-changed out to EVERY open window, not just
+    // main+panel-chat - so a PARALLEL chat instance (panel-chat-<hash>
+    // label) can receive this event for the first time. wiring.ts's guarded
+    // listener already handles it correctly (winLabel-driven, not
+    // hardcoded), but nothing ever exercised it with a hashed label before
+    // this plan's fan-out widen made it reachable.
+    it("hub-event 'profile-changed' addressed to a panel-chat-<hash> instance tears down thread state and re-runs the connect waterfall", async () => {
+      // Re-boot with a parallel-chat-panel label so winLabel becomes the
+      // hashed label instead of the default 'chat-test'.
+      mockMe.label = 'panel-chat-a1b2c3'
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'load_connection') return { wsUrl: 'ws://migrated.host:4753/ui', wsToken: 'tok' }
+        return null
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // MODEL PRODUCTION, NOT THE HARNESS (found auditing plan Step 3): this
+      // is the SECOND boot in this test, so window.__MoonInternals already
+      // exists from the FIRST boot (beforeEach's own
+      // evalChatInlineScriptWithBridge call) - which means THIS boot's
+      // internal assignBridge call mirrors loadConnectionAndConnect onto it
+      // too, purely as a side effect of the double-boot shape. A real
+      // window only ever boots ONCE, and production never creates
+      // __MoonInternals at all, so that mirror never exists there. Deleting
+      // it here (while the BARE window.loadConnectionAndConnect global -
+      // the one assignBridge sets unconditionally - stays present) is what
+      // actually reproduces the single-boot production shape; without this
+      // line the assertions below would pass even if wiring.ts regressed to
+      // reading the __MoonInternals mirror again.
+      delete (window as any).__MoonInternals.loadConnectionAndConnect
+
+      const m = M()
+      m.State.activeThreadId = 'th-old-on-parallel-instance'
+      invoke.mockClear()
+
+      expect(windowEventHandlers['hub-event']).toBeTypeOf('function')
+      windowEventHandlers['hub-event']({
+        payload: { for: 'panel-chat-a1b2c3', name: 'profile-changed' },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // The instance ACTED: thread state torn down (same effect the main
+      // window's hub-event handler already produces) ...
+      expect(m.State.activeThreadId).toBeNull()
+      // ... and the connect waterfall actually re-ran (loadConnectionAndConnect
+      // invokes load_connection fresh) - not a no-op that merely reset state.
+      // This is the load-bearing assertion: it only passes if the handler
+      // reached window.loadConnectionAndConnect WITHOUT going through the
+      // now-deleted __MoonInternals mirror.
+      expect(invoke).toHaveBeenCalledWith('load_connection')
+    })
+
     it('window wiring hands title-bar gestures directly to native dragging', () => {
       document.getElementById('title-bar')!.dispatchEvent(
         new MouseEvent('pointerdown', { bubbles: true, button: 0 }),
@@ -3748,8 +3941,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const A = () => M().Attachments
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       A().items = []
       A().setError(null)
@@ -3787,8 +3979,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       m.State.threadCreateIntent = 'attach'
       m.handleFrame({ type: 'thread-created', thread: { id: 'th-att' } })
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }   // connected: the send delivers, so the bubble paints + composer clears
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })   // connected: the send delivers, so the bubble paints + composer clears
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
       const ta = document.getElementById('message-input') as HTMLTextAreaElement
       ta.value = 'see attached'
       document.getElementById('chat-form')!.dispatchEvent(
@@ -3848,11 +4040,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
+      installSyncRequestAnimationFrame()
       M().ChatState.reset()
       const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
     })
 
     // ── ChatState.applyToolCall preserves parentToolUseId ────────────────────
@@ -3873,7 +4063,24 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect('parentToolUseId' in seg).toBe(false)
     })
 
-    // ── ChatRenderer.buildToolStep: Agent label with description ─────────────
+    // ── appendToolCallCard: Agent label with description ─────────────────────
+    // ChatRenderer.buildToolStep (a pure seg->card renderer) has no
+    // replacement post-S15 - MessageList.tsx's ToolCard only renders as part
+    // of the full reducer-driven turn tree (see chatModel.ts's module doc).
+    // These cases now drive the same OBSERVABLE behavior through the real
+    // bridge: appendToolCallCard(frame) dispatches applyToolCall + flushes,
+    // then returns the rendered `.tool-call-card` by data-tool-call-id -
+    // exactly what buildToolStep(seg, turnId) used to hand back directly.
+    function buildToolStep(seg: any, turnId: string) {
+      return M().appendToolCallCard({
+        turnId,
+        toolCallId: seg.id,
+        name: seg.name,
+        input: seg.input,
+        ...(seg.parentToolUseId ? { parentToolUseId: seg.parentToolUseId } : {}),
+      })
+    }
+
     it('buildToolStep renders "Agent — <description>" for an Agent tool call with a description', () => {
       const seg = {
         kind: 'tool',
@@ -3882,7 +4089,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'Research lunar cycles', prompt: 'look it up' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent — Research lunar cycles')
     })
@@ -3895,7 +4102,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'Compile the report', prompt: 'do it' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent — Compile the report')
     })
@@ -3908,7 +4115,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { prompt: 'do something' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent')
     })
@@ -3921,7 +4128,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'Analyze code', prompt: 'x', subagent_type: 'codebase-analyzer' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Agent — Analyze code')
       const sub = card.querySelector('.tool-card-subtype')!
@@ -3939,7 +4146,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         result: null,
         parentToolUseId: 'parent-agent-id',
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('↳ Read')
     })
@@ -3953,7 +4160,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         result: null,
         parentToolUseId: 'outer-agent-call',
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('↳ Agent — Sub-task')
     })
@@ -3966,7 +4173,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { command: 'ls' },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const nameEl = card.querySelector('.tool-card-name')!
       expect(nameEl.textContent).toBe('Bash')
       expect(nameEl.textContent).not.toContain('↳')
@@ -3982,7 +4189,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { description: 'big task', prompt: longPrompt },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const inputEl = card.querySelector('.tool-card-input')!
       expect(inputEl.textContent).toContain('… (+200 chars)')
       // The full value must not appear (it was elided).
@@ -4000,7 +4207,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { file_path: borderline },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const inputEl = card.querySelector('.tool-card-input')!
       expect(inputEl.textContent).not.toContain('… (+')
       expect(inputEl.textContent).toContain(borderline)
@@ -4015,7 +4222,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         input: { command: bigCmd },
         result: null,
       }
-      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const card = buildToolStep(seg, 'turn-1')
       const inputEl = card.querySelector('.tool-card-input')!
       expect(inputEl.textContent).toContain('… (+100 chars)')
       expect(inputEl.textContent).not.toContain(bigCmd)
@@ -4364,13 +4571,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking + preserves the typed draft and staged attachments (they carry into the fresh thread)', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const input = document.getElementById('message-input') as HTMLTextAreaElement
       input.value = 'draft that must survive'
       input.style.height = '120px'
       m.Attachments.items = [{ id: 'att_x', kind: 'text', name: 'notes.txt', text: 'notes' }]
       m.Attachments.render()
-      const sendNewThread = vi.spyOn(m.WebSocketEngine, 'sendNewThread').mockImplementation(() => {})
+      const sendNewThread = spyOnEngine(m, 'sendNewThread').mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
 
@@ -4383,8 +4590,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: the online + waits for thread-created before arming the snapshot watchdog', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const watchdog = spyOnEngine(m, 'startSubscribeTimeout')
 
       document.getElementById('new-thread-btn')!.click()
 
@@ -4396,9 +4603,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: an in-flight informational thread-list cannot attach the previous latest thread while + is minting', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'current-thread'
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       m.handleFrame({ type: 'thread-list', threads: [{ id: 'previous-latest' }] })
@@ -4409,8 +4616,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: thread-create-error stays on the fresh surface and never falls back to the previous latest thread', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       m.handleFrame({ type: 'thread-create-error', message: 'Could not create the thread. Please try again.' })
@@ -4423,8 +4630,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: double-clicking + emits only one new-thread request while creation is pending', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       document.getElementById('new-thread-btn')!.click()
@@ -4435,8 +4642,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: choosing an existing row while creation is pending wins over the late thread-created ack', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
       m.ThreadDrawerEngine.onRowClick('chosen-thread')
@@ -4470,15 +4677,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // readyState gate would wrongly take the offline branch here.
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       const mint = vi.spyOn(m.PoolEngine, 'sendNewThread').mockImplementation(() => {})
 
@@ -4492,12 +4695,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: the PoolEngine path shares the one-create-at-a-time intent guard and adopts its ack', () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       m.PoolEngine._isConnected = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
@@ -4517,15 +4716,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       const invoke = vi.fn((cmd: string) => Promise.resolve(cmd === 'get_last_thread_id' ? 'persisted-thread' : null))
       ;(window as any).__TAURI__.core = { invoke }
-      m.State.ws = null
+      setWs(m, null)
       m.State.activeThreadId = 'current-thread'
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
       document.getElementById('new-thread-btn')!.click()
 
       expect(sendSpy).not.toHaveBeenCalled()
       expect(m.State.activeThreadId).toBeNull()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
 
       await m.WebSocketEngine.syncThread()
 
@@ -4549,12 +4748,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // one test re-runs the page script under a pinned URL (same mechanism
       // as the beforeEach boot) instead of injecting State.pinnedThread.
       window.history.replaceState({}, '', '/?thread=t-pinned')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       expect((document.getElementById('new-thread-btn') as HTMLElement).hidden).toBe(true)
       // The non-pinned boot in beforeEach leaves it visible (contrast pin).
       window.history.replaceState({}, '', '/')
@@ -4588,8 +4783,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: opening the sidebar gives it a width + aria-hidden and requests the thread list', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} } // WebSocket.OPEN
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      setWs(m, { readyState: 1, send: () => {} }) // WebSocket.OPEN
+      const send = spyOnSend(m)
       const drawer = document.getElementById('thread-drawer')!
       expect(m.State.sidebarWidth).toBe(0)
       m.ThreadDrawerEngine.openPanel()
@@ -4601,9 +4796,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: requestList is a true no-op when the drawer is closed (State.threadDrawerOpen false)', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
+      setWs(m, { readyState: 1, send: () => {} })
       m.State.threadDrawerOpen = false
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const send = spyOnSend(m)
 
       m.ThreadDrawerEngine.requestList()
 
@@ -4615,15 +4810,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // silently skip the list request and the sidebar would render empty.
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.threadDrawerOpen = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
@@ -4637,15 +4828,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag a fast-path resubscribe refreshes an already-open thread drawer (State.threadDrawerOpen true)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
@@ -4662,15 +4849,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag a fast-path resubscribe leaves a CLOSED drawer alone (State.threadDrawerOpen false)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = 'live-thread'
       m.State.skipLastThreadFile = false
@@ -4687,15 +4870,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is closed (State.threadDrawerOpen false)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = true
@@ -4712,15 +4891,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: under the PoolEngine dark flag fallback listing sends list-threads when drawer is open (State.threadDrawerOpen true)', async () => {
       loadVendorInto(window, 'pool-engine.js')
       localStorage.setItem('luna_pool_engine', '1')
-      const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-      document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
-      const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-        .map((s) => s[1])
-        .filter((s) => s.includes('WebSocketEngine'))
-      new Function(inlineScripts[0])()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
       const m = M()
       expect(m.USE_POOL_ENGINE).toBe(true)
-      m.State.ws = null
+      setWs(m, null)
       m.PoolEngine._isConnected = true
       m.State.activeThreadId = null
       m.State.skipLastThreadFile = true
@@ -4760,7 +4935,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: shrinking the window re-clamps an over-wide open sidebar (resize listener)', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      installSyncRequestAnimationFrame()
       const m = M()
       const panel = document.getElementById('chat-panel')!
       const rect = vi.spyOn(panel, 'getBoundingClientRect')
@@ -4778,7 +4953,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: a collapsed sidebar is left untouched by a window resize', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      installSyncRequestAnimationFrame()
       const m = M()
       expect(m.State.sidebarWidth).toBe(0)
       window.dispatchEvent(new Event('resize'))
@@ -4888,7 +5063,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: a collapsed resize refreshes the divider aria-valuemax for AT', () => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      installSyncRequestAnimationFrame()
       const m = M()
       const panel = document.getElementById('chat-panel')!
       const rect = vi.spyOn(panel, 'getBoundingClientRect')
@@ -4928,10 +5103,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
+      setWs(m, { readyState: 1, send: () => {} })
       m.State.activeThreadId = 'other'
       m.ThreadDrawerEngine.openPanel()
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const send = spyOnSend(m)
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
       expect(m.State.threadDrawerOpen).toBe(true)          // stays open, unlike the old overlay drawer
@@ -4940,10 +5115,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking a row arms the subscribe watchdog so a lost snapshot self-heals', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'other'
-      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const watchdog = vi.spyOn(m.WebSocketEngine, 'startSubscribeTimeout')
+      spyOnSend(m).mockImplementation(() => {})
+      const watchdog = spyOnEngine(m, 'startSubscribeTimeout')
 
       m.ThreadDrawerEngine.onRowClick('b')
 
@@ -4954,16 +5129,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: clicking a row cancels a deferred "+ New" so reconnect resubscribes instead of minting', async () => {
       const m = M()
       // Offline "+ New" defers the mint…
-      m.State.ws = null
+      setWs(m, null)
       m.State.pendingFreshThread = true
       // …then the user picks an existing thread before reconnecting.
       m.ThreadDrawerEngine.onRowClick('b')
       expect(m.State.pendingFreshThread).toBe(false)
       expect(m.State.activeThreadId).toBe('b')
       // Reconnect honors the newer intent: fast-path resubscribe, no mint.
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      const mint = vi.spyOn(m.WebSocketEngine, 'sendNewThread')
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
+      const send = spyOnSend(m).mockImplementation(() => {})
+      const mint = spyOnEngine(m, 'sendNewThread')
       await m.WebSocketEngine.syncThread()
       expect(mint).not.toHaveBeenCalled()
       expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
@@ -4971,10 +5146,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: clicking the already-active thread does not re-subscribe and keeps the sidebar open', () => {
       const m = M()
-      m.State.ws = { readyState: 1, send: () => {} }
+      setWs(m, { readyState: 1, send: () => {} })
       m.State.activeThreadId = 'b'
       m.ThreadDrawerEngine.openPanel()
-      const send = vi.spyOn(m.WebSocketEngine, 'send')
+      const send = spyOnSend(m)
       m.ThreadDrawerEngine.onRowClick('b')
       expect(send).not.toHaveBeenCalledWith({ type: 'subscribe', threadId: 'b' })
       expect(m.State.threadDrawerOpen).toBe(true)
@@ -4984,7 +5159,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Regression: server used to no-op re-subscribe, and the client wiped
       // ChatState with no cache — switch-back left an empty transcript.
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'a'
       m.ThreadCache.put('a', [
         { role: 'user', text: 'hello from A', ts: 1 },
@@ -4993,7 +5168,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.ThreadCache.put('b', [
         { role: 'user', text: 'hello from B', ts: 3 },
       ], 1)
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const send = spyOnSend(m).mockImplementation(() => {})
 
       m.ThreadDrawerEngine.onRowClick('b')
       expect(m.State.activeThreadId).toBe('b')
@@ -5048,6 +5223,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.ThreadCache.isBusy('bg')).toBe(false)
     })
 
+    // These three EXTEND (plan Step 3), not invert: window.ViewMode is not
+    // verbose in any of them (a fresh boot's default), so params carries no
+    // 'viewMode' key at all - openInNewWindow only ever ADDS the key, never
+    // adds it as false/undefined. Together with Scenario 6 below (a verbose
+    // source window), these three now also pin the omitted-when-disabled
+    // shape: a regression that always stamped viewMode would fail these.
     it('Scenario: openInNewWindow invokes open_widget with the thread param', async () => {
       const m = M()
       m.State.winLabel = null // no owner stamp in this baseline case
@@ -5107,11 +5288,18 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Global * { -webkit-user-drag: none } kills HTML5 DnD in WKWebView;
       // pull-out is pointer-capture based with a card ghost + ThreadDragSession.
       expect(row?.draggable).toBe(false)
-      expect(htmlContent).toMatch(/thread-drag-ghost/)
-      expect(htmlContent).toMatch(/threadDragActive/)
-      expect(htmlContent).toMatch(/setPointerCapture/)
-      expect(htmlContent).toMatch(/LunaThreadDrag/)
-      expect(htmlContent).toMatch(/_seedFloaterCache/)
+      // These read src/chat/threadDrawer.ts, not chat.html: stack23 S19j
+      // moved ThreadDrawerEngine out. Same assertions, correct file - the
+      // sibling ThreadDragSession test below already did this after S17f.
+      const drawerSrc = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/threadDrawer.ts'),
+        'utf8',
+      )
+      expect(drawerSrc).toMatch(/thread-drag-ghost/)
+      expect(drawerSrc).toMatch(/threadDragActive/)
+      expect(drawerSrc).toMatch(/setPointerCapture/)
+      expect(drawerSrc).toMatch(/LunaThreadDrag/)
+      expect(drawerSrc).toMatch(/_seedFloaterCache/)
       expect((window as any).LunaThreadDrag?.createSession).toBeTypeOf('function')
       const ghost = m.ThreadDrawerEngine._makeGhost({
         id: 'a',
@@ -5178,27 +5366,37 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: ThreadDragSession wired — open_widget only after detach action', () => {
       // Contract: createSession.pointerMove while in strip never implies spawn.
-      expect(htmlContent).toMatch(/move\.action === 'detach'/)
-      expect(htmlContent).toMatch(/outcome === 'reorder'/)
-      expect(htmlContent).toMatch(/LunaThreadDrag\.createSession/)
-      expect(htmlContent).toMatch(/focus: false/)
+      //
+      // These read src/chat/threadDrag.ts, not chat.html: stack23 S17f moved
+      // the gesture there VERBATIM. Repointing rather than deleting is the
+      // whole value - the invariants still hold, and the fact that every one
+      // of them still matches after the move is independent evidence that the
+      // 430 lines relocated intact.
+      const dragSrc = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/threadDrag.ts'),
+        'utf8',
+      )
+      expect(dragSrc).toMatch(/move\.action === 'detach'/)
+      expect(dragSrc).toMatch(/outcome === 'reorder'/)
+      expect(dragSrc).toMatch(/LunaThreadDrag\.createSession/)
+      expect(dragSrc).toMatch(/focus: false/)
       // Detach path spawns the floater; enter_attached only updates strip chrome.
       // a8c1ac22 ("hard-promote Chrome-tab drag, native free motion") replaced
       // the old placeFloater(..., focus:false) call with hardPromoteFloater(),
       // which spawns ONCE and hands motion to the OS. The no-focus-steal
       // guarantee moved with it: hardPromoteFloater calls
       // openInNewWindow(id, x, y, { focus: false }).
-      expect(htmlContent).toMatch(
+      expect(dragSrc).toMatch(
         /move\.action === 'detach'[\s\S]{0,400}hardPromoteFloater\(/,
       )
-      expect(htmlContent).toMatch(
+      expect(dragSrc).toMatch(
         /const hardPromoteFloater[\s\S]{0,600}openInNewWindow\([^)]*\{\s*focus:\s*false\s*\}/,
       )
-      expect(htmlContent).toMatch(
+      expect(dragSrc).toMatch(
         /move\.action === 'enter_attached'[\s\S]{0,160}showAttachedChrome/,
       )
       // enter_attached must never spawn a floater by any of its names.
-      expect(htmlContent).not.toMatch(
+      expect(dragSrc).not.toMatch(
         /move\.action === 'enter_attached'[\s\S]{0,160}(placeFloater|hardPromoteFloater)/,
       )
     })
@@ -5208,10 +5406,17 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Assert the markup + CSS hide rule exist so a pinned window can show it.
       expect(htmlContent).toMatch(/id="redock-btn"/)
       expect(htmlContent).toMatch(/#title-bar \.redock-btn\[hidden\]/)
-      expect(htmlContent).toMatch(/redock_thread/)
-      expect(htmlContent).toMatch(/begin_redock_drag/)
-      expect(htmlContent).toMatch(/redock-preview/)
-      expect(htmlContent).toMatch(/redock-drag-ended/)
+      // The BEHAVIOUR assertions read src/chat/wiring.ts now: stack23 S20c moved
+      // the redock button wiring out of chat.html. The markup + CSS above stay
+      // where they are, because that is still chat.html's job.
+      const wiringSrc = fs.readFileSync(
+        path.resolve(__dirname, '../frontend-react/src/chat/wiring.ts'), 'utf8',
+      )
+      expect(wiringSrc).toMatch(/redock_thread/)
+      expect(wiringSrc).toMatch(/begin_redock_drag/)
+      expect(wiringSrc).toMatch(/redock-preview/)
+      expect(wiringSrc).toMatch(/redock-drag-ended/)
+      // Still chat.html: this one is the drop-gap CSS class, not the button wiring.
       expect(htmlContent).toMatch(/thread-row-insert-gap/)
     })
 
@@ -5256,6 +5461,191 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ])
     })
 
+    // ── View mode rides redock (plan Step 3, both directions) ────────────────
+    //
+    // Owner side (this describe's default beforeEach boot is a non-pinned
+    // window - exactly the branch that installs the 'redock-thread' listener,
+    // see wiring.ts). The floater side needs its OWN pinned+redockTo boot,
+    // driven the same way the existing "?thread=<id> boot" tests above do.
+
+    it('Scenario 5: a verbose floater redocking here makes THIS (owner) window verbose', () => {
+      const m = M()
+      expect(m.ViewMode.isEnabled()).toBe(false)
+      windowEventHandlers['redock-thread']({
+        payload: { threadId: 'thr-1', draft: null, from: 'widget-abc', yRatio: null, viewMode: true },
+      })
+      expect(m.ViewMode.isEnabled()).toBe(true)
+    })
+
+    it('Scenario 5 (negative): a non-verbose floater redocking here must not silently quiet an already-verbose owner', () => {
+      const m = M()
+      m.ViewMode.enable()
+      windowEventHandlers['redock-thread']({
+        payload: { threadId: 'thr-1', draft: null, from: 'widget-abc', yRatio: null, viewMode: false },
+      })
+      // Only ENABLE, never disable: the payload is a positive assertion only.
+      expect(m.ViewMode.isEnabled()).toBe(true)
+    })
+
+    // Plan Step 4: a redock arrival with viewMode:true must render the
+    // verbose form IMMEDIATELY on the owner window's chip - not merely flip
+    // a state flag that happens to show up on the NEXT unrelated repaint.
+    // This window's default beforeEach boot never loads moon-session.js
+    // (several other scenarios in this file assert the no-MoonSession
+    // fallback), so its chip has no label to render verbosely - re-boot
+    // here with a real client.toml route (mirrors route-indicator.test.ts's
+    // harness) so there is real label/endpoint/state to prove against.
+    it('Scenario 5: a redocked verbose arrival renders the verbose form on THIS (owner) window immediately', async () => {
+      const invoke = vi.fn(async (cmd: string) => {
+        switch (cmd) {
+          case 'load_connection':
+            return { wsUrl: 'ws://owner-host:4753/ui', wsToken: 'legacy' }
+          case 'list_routes':
+            return { default: 'owner-route', routes: [{ key: 'owner-route', label: 'Owner Route' }] }
+          case 'load_route':
+            return {
+              key: 'owner-route', label: 'Owner Route',
+              endpoints: ['ws://owner-host:4753/ui'], token_ref: 'legacy', transport: 'luna-ws',
+            }
+          case 'resolve_route_token':
+            return 'RESOLVED-TOK-owner'
+          default:
+            return null
+        }
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      loadVendorInto(window, 'moon-session.js')
+      FakeWebSocket.reset()
+      vi.stubGlobal('WebSocket', FakeWebSocket)
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+
+      const settle = async (steps = 8, ms = 50) => {
+        for (let i = 0; i < steps; i++) await vi.advanceTimersByTimeAsync(ms)
+      }
+      await settle()
+      const sock = FakeWebSocket.latest()!
+      sock.simulateOpen()
+      sock.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      await settle()
+
+      const indicatorEl = document.getElementById('route-indicator')!
+      expect(indicatorEl.textContent).toBe('Owner Route')
+      const m = M()
+      expect(m.ViewMode.isEnabled()).toBe(false)
+
+      windowEventHandlers['redock-thread']({
+        payload: { threadId: 'thr-1', draft: null, from: 'widget-abc', yRatio: null, viewMode: true },
+      })
+
+      // No await, no further settle: the verbose form must already be
+      // painted synchronously inside the redock-thread handler, via
+      // ViewMode.enable()'s own repaint (see wire.ts's _repaintRouteIndicator).
+      expect(m.ViewMode.isEnabled()).toBe(true)
+      expect(indicatorEl.textContent).toContain('Owner Route')
+      expect(indicatorEl.textContent).toContain('owner-host:4753/ui')
+      expect(indicatorEl.textContent).toContain('Connected')
+    })
+
+    it('Scenario 5: the Redock button stamps viewMode:true when THIS (floater) window is verbose', () => {
+      window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner')
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      const m = M()
+      const invoke = vi.fn().mockResolvedValue(true)
+      ;(window as any).__TAURI__ = { core: { invoke } }
+      m.ViewMode.enable()
+
+      document.getElementById('redock-btn')!.click()
+
+      expect(invoke).toHaveBeenCalledWith('redock_thread', expect.objectContaining({ viewMode: true }))
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('Scenario 5: the Redock button stamps viewMode:false when THIS (floater) window is not verbose', () => {
+      window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner')
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      const m = M()
+      const invoke = vi.fn().mockResolvedValue(true)
+      ;(window as any).__TAURI__ = { core: { invoke } }
+      expect(m.ViewMode.isEnabled()).toBe(false)
+
+      document.getElementById('redock-btn')!.click()
+
+      expect(invoke).toHaveBeenCalledWith('redock_thread', expect.objectContaining({ viewMode: false }))
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('Scenario 6: a verbose SOURCE window detaching a thread stamps open_widget params.viewMode:true', async () => {
+      const m = M()
+      m.State.winLabel = 'panel-chat'
+      m.ViewMode.enable()
+      const invoke = vi.fn().mockResolvedValue('panel-chat-xyz')
+      ;(window as unknown as { __TAURI__: { core: { invoke: typeof invoke } } }).__TAURI__ = {
+        core: { invoke },
+      }
+      await m.ThreadDrawerEngine.openInNewWindow('thr-99')
+      expect(invoke).toHaveBeenCalledWith('open_widget', {
+        kind: 'chat',
+        params: { thread: 'thr-99', redockTo: 'panel-chat', viewMode: true },
+      })
+    })
+
+    // Plan Step 4, the detach-arrival half: the NEW floater window boots
+    // off ?viewMode=true (stamped by Scenario 6 above) - wiring.ts reads
+    // that back as INITIAL_VIEW_MODE and bootChat.ts calls
+    // wire.ViewMode.enable() BEFORE wire.boot() ever runs, so the FIRST
+    // successful connect's own paint call already renders verbose - no
+    // separate "apply it after boot" step is needed, and none exists.
+    it('Scenario 6: a floater booted from ?viewMode=true renders the verbose form on its FIRST successful connect', async () => {
+      window.history.replaceState({}, '', '/?thread=t-float&redockTo=panel-chat-owner&viewMode=true')
+      const invoke = vi.fn(async (cmd: string) => {
+        switch (cmd) {
+          case 'load_connection':
+            return { wsUrl: 'ws://floater-host:4753/ui', wsToken: 'legacy' }
+          case 'list_routes':
+            return { default: 'floater-route', routes: [{ key: 'floater-route', label: 'Floater Route' }] }
+          case 'load_route':
+            return {
+              key: 'floater-route', label: 'Floater Route',
+              endpoints: ['ws://floater-host:4753/ui'], token_ref: 'legacy', transport: 'luna-ws',
+            }
+          case 'resolve_route_token':
+            return 'RESOLVED-TOK-floater'
+          default:
+            return null
+        }
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      loadVendorInto(window, 'moon-session.js')
+      FakeWebSocket.reset()
+      vi.stubGlobal('WebSocket', FakeWebSocket)
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+
+      const m = M()
+      expect(m.ViewMode.isEnabled(), 'INITIAL_VIEW_MODE must have been applied before the first connect').toBe(true)
+
+      const settle = async (steps = 8, ms = 50) => {
+        for (let i = 0; i < steps; i++) await vi.advanceTimersByTimeAsync(ms)
+      }
+      await settle()
+      const sock = FakeWebSocket.latest()!
+      sock.simulateOpen()
+      sock.simulateMessage({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      await settle()
+
+      const indicatorEl = document.getElementById('route-indicator')!
+      expect(indicatorEl.textContent).toContain('Floater Route')
+      expect(indicatorEl.textContent).toContain('floater-host:4753/ui')
+      expect(indicatorEl.textContent).toContain('Connected')
+
+      window.history.replaceState({}, '', '/')
+    })
+
     it('Scenario: a pinned (?thread=<id>) window refuses to open the drawer (one-thread-forever invariant)', () => {
       const m = M()
       m.State.pinnedThread = 't-pinned'
@@ -5272,5 +5662,67 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(htmlContent).toMatch(/#thread-divider\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
 
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: WebSocket construction-error logging never leaks the token
+  // (Step 1c Part 3c, opus review on plan Step 1c). new WebSocket(fullUrl)
+  // throwing embeds the token-bearing URL verbatim in its thrown message -
+  // Gate 0.4 proved this live with a jsdom probe. wire.ts's legacy
+  // WebSocketEngine.connect() must log the error NAME and a redacted
+  // describeWsUrl(url) only, never the raw exception or e.message.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: the legacy WebSocketEngine construction-error log never leaks the token', () => {
+    it('new WebSocket() throwing (embedding the token in its message) never reaches console.error', async () => {
+      const SECRET = 'SECRET-do-not-log-me-98765'
+
+      // Force the LEGACY engine (USE_POOL_ENGINE reads this at module-eval
+      // time) so WebSocketEngine.connect() runs UN-monkey-patched, reaching
+      // its own new WebSocket(fullUrl) try/catch directly.
+      localStorage.setItem('luna_pool_engine', '0')
+
+      vi.stubGlobal('WebSocket', class {
+        constructor(url: string) {
+          // Mirrors the real browser behavior Gate 0.4's jsdom probe proved:
+          // the thrown message embeds the full dialed URL, token included.
+          throw new Error(`Failed to construct 'WebSocket': ${url}`)
+        }
+      })
+
+      const errorSpy = vi.spyOn(console, 'error')
+
+      ;(window as any).__TAURI__.core = {
+        invoke: vi.fn(async (cmd: string) => {
+          if (cmd === 'load_connection') return { wsUrl: 'ws://test-host:4753/ui', wsToken: SECRET }
+          return null
+        }),
+      }
+
+      // Re-mount + re-boot so the localStorage flag just set (read at
+      // module-eval time) actually takes effect, and connect() runs against
+      // the throwing WebSocket stubbed above.
+      htmlContent = readChatHtml()
+      mountChatDomFromHtml(htmlContent)
+      evalChatInlineScriptWithBridge()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(errorSpy).toHaveBeenCalled()
+      // Error.prototype.message/.stack are NON-ENUMERABLE in V8, so
+      // JSON.stringify(someError) silently drops them (returns '{}') - a
+      // naive stringify-everything check would pass even while the raw
+      // exception (message + stack, both carrying the token) reached
+      // console.error. Extract Error fields explicitly.
+      const allLoggedText = errorSpy.mock.calls
+        .flat()
+        .map((a) => {
+          if (a instanceof Error) return `${a.message} ${a.stack ?? ''}`
+          return typeof a === 'string' ? a : JSON.stringify(a)
+        })
+        .join(' ')
+      expect(allLoggedText).not.toContain(SECRET)
+      expect(allLoggedText).not.toContain('token=')
+    })
   })
 })

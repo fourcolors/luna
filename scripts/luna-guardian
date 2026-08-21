@@ -3,7 +3,11 @@
 # timer-driven oneshot owns deep health, evidence capture, repair, and updates.
 set -euo pipefail
 
-SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# BASH_SOURCE[0], not $0: identical when this file is executed directly (the
+# only way it runs in production), but $0 names the CALLER when this file is
+# sourced (the test seam the dispatch guard at the bottom of this file uses),
+# which would resolve SCRIPT_DIR to the wrong directory and fail to find lib/.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SELF")"
 source "$SCRIPT_DIR/lib/luna-deploy.sh"
 source "$SCRIPT_DIR/lib/luna-registry.sh"
@@ -25,6 +29,37 @@ load_profile() {
 
 run_runtime() {
   if [[ -n "$P_INCUS" ]]; then incus exec "$P_INCUS" -- "$@"; else "$@"; fi
+}
+
+# runtime_bun_bin - the bun that PUBLISHES deploy-cli for THIS profile's
+# runtime (docs/deploy-binary.md, "Who builds it, and for which platform"):
+# the container's own bun for an incus profile (BUN_BIN_INCUS precedent,
+# scripts/luna-update-server), the publishing host's own bun for a bare-host
+# profile - host bun IS the runtime bun there, nothing to route through
+# run_runtime. Always prints a path, mirroring luna_find_bun's own contract:
+# callers decide what a missing bun means (defer vs. die), never this function.
+runtime_bun_bin() {
+  if [[ -n "$P_INCUS" ]]; then
+    printf '%s\n' "${LUNA_TEST_BUN_PATH:-/root/.bun/bin/bun}"
+  else
+    luna_find_bun
+  fi
+}
+
+# runtime_bun_executable <bun_bin> - true iff that path is executable on THIS
+# profile's actual runtime: an incus profile's bun lives in the container's
+# filesystem, unreachable from a local `[[ -x ]]`, so the check itself must
+# run THROUGH run_runtime; a bare-host profile's bun is a local path, checked
+# directly. Without this the missing-bun shape is a raw `exec` failure deep
+# inside `bun build --compile` under `set -euo pipefail` - exit 127, no
+# postcondition, no named cause - instead of the actionable die/defer every
+# caller of this helper produces.
+runtime_bun_executable() {
+  if [[ -n "$P_INCUS" ]]; then
+    run_runtime test -x "$1"
+  else
+    [[ -x "$1" ]]
+  fi
 }
 
 redact() {
@@ -146,6 +181,62 @@ unit_hardened() {
   type="$(run_runtime systemctl show "$P_SERVICE_NAME" -p Type --value 2>/dev/null || true)"
   watchdog="$(run_runtime systemctl show "$P_SERVICE_NAME" -p WatchdogUSec --value 2>/dev/null || true)"
   [[ "$type" == notify && -n "$watchdog" && "$watchdog" != 0 && "$watchdog" != 0us ]]
+}
+
+# unit_paths_current - the other half of the reconcile gate unit_hardened
+# cannot see: unit_hardened inspects ONLY Type/WatchdogUSec, so a unit
+# rendered by a pre-S07 luna-server-install (app-specific WorkingDirectory +
+# ExecStart) reads exactly as "hardened" as one rendered by this slice. This
+# predicate is what lets the guardian tell the two apart, WITHOUT duplicating
+# render_service's template here: it compares the INSTALLED unit's ExecStart
+# against luna_chat_server_launcher_rel, the one literal shared with both
+# renderers (lib/luna-deploy.sh).
+#
+# Returns 1 ("not current" - safe AND needed to reconcile) ONLY when the
+# installed ExecStart does NOT already name the launcher AND BOTH the current
+# release and the rollback target (`previous`, releases layout only) already
+# contain it on disk. Every other case returns 0 ("current" - leave the old
+# unit alone): already rendered with the launcher, OR a `previous` that is
+# absent or still predates the launcher. A good render over a stale rollback
+# target would make a FUTURE rollback (do_rollback_releases flips `current`
+# back to `previous` and restarts the SAME unit, never re-rendering it) boot
+# an ExecStart naming a file that release does not contain - precisely the
+# failure this slice exists to remove, so this predicate must fail closed
+# toward "leave it alone" whenever it cannot prove the rollback target is
+# safe. inplace layout has no separate, possibly-stale `previous` tree - a
+# rollback there is a `git reset --hard` in the SAME checkout, so once the
+# CURRENT tree has the launcher, every rollback target reachable by ordinary
+# forward-only branch tracking also does; only the current-tree check applies.
+#
+# Test seam mirrors unit_hardened's LUNA_TEST_GUARDIAN_UNIT_HARDENED: a
+# fixture whose P_REPO is a filesystem copy of THIS repo's scripts/ (not a
+# rendered unit at all) would otherwise always read the launcher as present
+# on disk and misreport drift for tests that are not exercising this axis.
+unit_paths_current() {
+  local launcher exec_line current_dir previous_dir="" cdr
+  if [[ "${LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_GUARDIAN_UNIT_PATHS_CURRENT" == "true" ]]
+    return
+  fi
+  launcher="$(luna_chat_server_launcher_rel)"
+  exec_line="$(run_runtime systemctl show "$P_SERVICE_NAME" -p ExecStart --value 2>/dev/null || true)"
+  [[ "$exec_line" == *"run $launcher"* ]] && return 0
+
+  cdr="${LUNA_CONTAINER_DEPLOY_ROOT:-/root/luna}"
+  if [[ -n "$P_INCUS" ]]; then
+    if [[ "$P_LAYOUT" == "releases" ]]; then
+      current_dir="$cdr/current"; previous_dir="$cdr/previous"
+    else
+      current_dir="/root/luna"
+    fi
+  else
+    current_dir="$P_REPO"
+    [[ "$P_LAYOUT" == "releases" ]] && previous_dir="$P_DEPLOY_ROOT/previous"
+  fi
+
+  run_runtime test -f "$current_dir/$launcher" || return 0
+  [[ -z "$previous_dir" ]] || run_runtime test -f "$previous_dir/$launcher" || return 0
+  return 1
 }
 
 host_unit_property() {
@@ -520,8 +611,19 @@ update_then_refresh() {
 }
 
 reconcile_unit_if_idle() {
-  local profile="$1" n
-  unit_hardened && return 0
+  local profile="$1" n pending
+  unit_hardened && unit_paths_current && return 0
+  # Defer while an update-server transaction is in flight for this profile
+  # (same journal install_guardian's engine-pin flip already refuses to run
+  # past). apply_ref may have already git-reset the checkout to a
+  # not-yet-verified ref by the time this tick runs; rendering here would
+  # target a tree do_rollback could discard moments later, leaving an
+  # installed unit whose ExecStart the rolled-back tree does not contain.
+  pending="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}/transaction-$profile"
+  if [[ -f "$pending" ]]; then
+    luna_warn "unit drift: update transaction pending for profile '$profile'; deferring reconcile"
+    return 1
+  fi
   if ! n="$(luna_active_ws_count "$P_PORT" "$P_INCUS")"; then
     luna_warn "unit drift: session count unknown; deferring"; return 1
   fi
@@ -667,9 +769,11 @@ check_profile() {
     fi
   fi
 
-  if ! unit_hardened; then
+  if ! unit_hardened || ! unit_paths_current; then
     # A server with live/unknown sessions stays untouched; the normal updater
-    # below still runs, and its own fail-closed session guard defers.
+    # below still runs, and its own fail-closed session guard defers. Gated
+    # on unit_paths_current too - unit_hardened alone cannot see app-specific
+    # ExecStart/WorkingDirectory drift (see unit_paths_current).
     if reconcile_unit_if_idle "$profile"; then escalate=true; fi
   fi
   if [[ "$escalate" != true ]]; then
@@ -998,13 +1102,30 @@ render_control_plane() {
     luna_die "guardian handoff verification failed; inspect guardian and legacy timer state"
 }
 
+# publish_abort <tmp> <lock> <message...> - the single path out of
+# publish_engine's critical section for every EXPLICIT failure (the ERR trap
+# set inside publish_engine covers the IMPLICIT set -e failures the same
+# way). Never returns.
+publish_abort() {
+  local tmp="$1" lock="$2"
+  shift 2
+  rm -rf "$tmp" "$lock"
+  luna_die "$@"
+}
+
 publish_engine() {
   local root="$1" sha="$2" pin="$3"
   local lock="$PIN_BASE/.engine-$sha.lock"
-  local tmp="$pin.tmp.$$" attempt owner
+  local tmp="$pin.tmp.$$" attempt owner deploy_cli_version bun_bin version_err
+  local container_root container_out
   [[ -f "$pin/.complete" ]] && return 0
 
-  for ((attempt = 1; attempt <= 50; attempt++)); do
+  # 600 attempts * 0.1s = 60s: the critical section now runs a `bun build
+  # --compile` (docs/deploy-binary.md), so a contender must be able to outwait
+  # a build. 60s leaves ample headroom under the guardian unit's own
+  # TimeoutStartSec=12min (desired_guardian_service): a contender that waited
+  # the full budget and still lost has time left in its OWN tick to retry.
+  for ((attempt = 1; attempt <= 600; attempt++)); do
     if mkdir "$lock" 2>/dev/null; then
       # An ownership claim nobody can witness is not a claim: if the pid record
       # cannot be written and re-read, the stale-classifier below would steal
@@ -1017,13 +1138,103 @@ publish_engine() {
       rm -rf "$tmp"
       [[ ! -e "$pin" || -f "$pin/.complete" ]] || rm -rf "$pin"
       if [[ ! -f "$pin/.complete" ]]; then
+        # ERR, not EXIT: the caller already holds an EXIT/INT/TERM trap for
+        # the update lock (acquire_guardian_update_lock) that a second `trap
+        # ... EXIT` here would silently replace. `luna_die` calls `exit`,
+        # which does not fire ERR, so publish_abort (above) still removes
+        # $tmp/$lock itself on every explicit failure; this trap covers only
+        # the implicit set -e failures publish_abort does not wrap. Armed
+        # inside this function's own frame, so it fires on bash 3.2
+        # (scripts/lib/luna-deploy.sh:382) without needing `set -o errtrace`.
+        trap 'rm -rf "$tmp" "$lock"' ERR
         mkdir -p "$tmp/lib"
         cp "$root/scripts/luna-guardian" "$root/scripts/luna-autodeploy" \
           "$root/scripts/luna-update-server" "$root/scripts/luna-server-install" \
           "$root/scripts/luna-doctor" "$root/scripts/luna-pager" "$tmp/"
         cp "$root/scripts/lib/"*.sh "$tmp/lib/"
         chmod +x "$tmp"/luna-*; bash -n "$tmp"/luna-* "$tmp/lib/"*.sh
+        # deploy-cli is compiled HERE (docs/deploy-binary.md: "Who builds it,
+        # and for which platform"), against the RUNTIME's own bun - the
+        # container's bun for an incus profile, the publishing host's own
+        # bun otherwise - never the publishing host's bun for an incus
+        # profile. bun is preflighted by install_guardian before this lock
+        # is taken, so a missing bun here means that precondition was
+        # skipped - a hard die, not the caller's defer.
+        bun_bin="$(runtime_bun_bin)"
+        if ! runtime_bun_executable "$bun_bin"; then
+          if [[ -n "$P_INCUS" ]]; then
+            publish_abort "$tmp" "$lock" "bun not found at $bun_bin inside container '$P_INCUS'; cannot publish deploy-cli (docs/deploy-binary.md)"
+          else
+            publish_abort "$tmp" "$lock" "bun not found at $bun_bin; cannot publish deploy-cli (docs/deploy-binary.md)"
+          fi
+        fi
+        # Build progress goes to stdout by default - redirected here so an
+        # install/check tick stays one log line per state change.
+        if [[ -n "$P_INCUS" ]]; then
+          # The container sees the SAME checkout $root is a bind mount OF
+          # (luna-container-create: /root/luna/<profile>/repo -> /root/luna;
+          # LUNA_CONTAINER_DEPLOY_ROOT for releases) - the same host/
+          # container path split unit_paths_current and reconcile_unit_
+          # if_idle already use. PIN_BASE (where $tmp lives) is a HOST-only
+          # path with no such mount, so the artifact is built to a
+          # container-local tmp path and read back out through the SAME
+          # run_runtime/incus-exec seam, never written into the (supposedly
+          # immutable) release tree via the bind mount.
+          if [[ "$P_LAYOUT" == "releases" ]]; then
+            container_root="${LUNA_CONTAINER_DEPLOY_ROOT:-/root/luna}/current"
+          else
+            container_root="/root/luna"
+          fi
+          container_out="/tmp/deploy-cli.$sha.$$"
+          run_runtime "$bun_bin" build --compile \
+            --outfile="$container_out" "$container_root/apps/deploy-cli/src/main.ts" >/dev/null ||
+            publish_abort "$tmp" "$lock" "POSTCONDITION: bun build --compile failed inside container '$P_INCUS' (docs/deploy-binary.md)"
+          # Retrieved through the same run_runtime/incus-exec seam as the
+          # build above (`incus file pull` would be a second, differently-
+          # authenticated path) - one seam to reason about, at the cost of
+          # streaming the ~60MB artifact over exec's stdout. Both failure arms
+          # below also clear the container-side artifact first: it is already
+          # built by this point, and nothing in the container ever reaps a
+          # `/tmp/deploy-cli.<sha>.<pid>` left by a failed retrieval.
+          run_runtime cat "$container_out" > "$tmp/deploy-cli" || {
+            run_runtime rm -f "$container_out" || true
+            publish_abort "$tmp" "$lock" "POSTCONDITION: could not retrieve compiled deploy-cli from container '$P_INCUS' (docs/deploy-binary.md)"
+          }
+          # `cat` above exits 0 for an empty or truncated stream (an incus
+          # exec hiccup, or - see the container-seam test doubles - a stub
+          # with no `exec` case at all), so a zero-byte artifact would
+          # otherwise reach the --version postcondition below and get
+          # misreported as a binary that "produced no output" instead of a
+          # retrieval that never happened.
+          [[ -s "$tmp/deploy-cli" ]] || {
+            run_runtime rm -f "$container_out" || true
+            publish_abort "$tmp" "$lock" "POSTCONDITION: compiled deploy-cli retrieved from container '$P_INCUS' is empty (docs/deploy-binary.md)"
+          }
+          run_runtime rm -f "$container_out" || true
+        else
+          "$bun_bin" build --compile \
+            --outfile="$tmp/deploy-cli" "$root/apps/deploy-cli/src/main.ts" >/dev/null ||
+            publish_abort "$tmp" "$lock" "POSTCONDITION: bun build --compile failed on the publishing host (docs/deploy-binary.md)"
+        fi
+        chmod +x "$tmp/deploy-cli"
+        # POSTCONDITION mirrors `bash -n` above: prove the freshly built
+        # binary actually PRINTS a version, not merely exits 0 - main.ts
+        # writes --version straight to stdout (docs/deploy-binary.md's
+        # "Operational gotcha"), so this is not sensitive to this process's
+        # own NODE_ENV/TEST. stderr is captured, not discarded: a container/
+        # host ABI mismatch (see docs/deploy-binary.md's host/container
+        # boundary section) prints its cause there and nowhere else.
+        deploy_cli_version="$("$tmp/deploy-cli" --version 2>"$tmp/.version-stderr")" || true
+        if [[ -z "$deploy_cli_version" ]]; then
+          version_err="$(cat "$tmp/.version-stderr" 2>/dev/null || true)"
+          publish_abort "$tmp" "$lock" "POSTCONDITION: freshly built deploy-cli --version produced no output${version_err:+ ($version_err)}"
+        fi
+        rm -f "$tmp/.version-stderr"
         touch "$tmp/.complete"; mv "$tmp" "$pin"
+        # Clear the trap: traps are process-global, not function-scoped, so
+        # a stale one would fire on unrelated failures for the rest of this
+        # process's life.
+        trap - ERR
       fi
       rm -rf "$lock"
       return 0
@@ -1032,6 +1243,7 @@ publish_engine() {
     owner="$(cat "$lock/pid" 2>/dev/null || true)"
     if [[ ! "$owner" =~ ^[0-9]+$ ]] || ! kill -0 "$owner" 2>/dev/null; then
       rm -rf "$lock"
+      sleep 0.1
       continue
     fi
     sleep 0.1
@@ -1040,7 +1252,7 @@ publish_engine() {
 }
 
 prune_engines() {
-  local keep=5 index=0 dir link target protected=" " known_broken=" " pruned_any=false
+  local keep=5 index=0 dir link target owner protected=" " known_broken=" " pruned_any=false
   # PRECONDITION: every live pin must resolve before anything is deleted. A
   # dangling current-* would otherwise silently drop out of the protected set
   # and its engine could be pruned. Refusal only warns — pruning is optional,
@@ -1063,9 +1275,37 @@ prune_engines() {
   done
   # shellcheck disable=SC2012
   for dir in $(ls -dt "$PIN_BASE"/engine@* 2>/dev/null || true); do
+    if [[ "${dir##*/}" == *.tmp.* ]]; then
+      # publish_engine's own staging name (engine@<sha>.tmp.<pid>, its $tmp)
+      # matches this same engine@* glob. A live owner's $tmp (still-running
+      # publish) must never be touched or counted toward keep=5; a dead
+      # owner's is leaked staging that nothing else in PIN_BASE ever reaps -
+      # publish_engine only ever removes its OWN $tmp, named with a fresh pid
+      # every run. Same stale-owner idiom as publish_engine's lock loop: the
+      # pid is embedded in the dirname. Reaping one deliberately does not arm
+      # pruned_any below: it is garbage, never a current-* target, so its
+      # removal can never be the cause of a broken pin the postcondition
+      # checks for.
+      owner="${dir##*.tmp.}"
+      if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
+        continue
+      fi
+      if rm -rf "$dir"; then
+        luna_warn "prune: removed leaked staging dir ${dir##*/} (dead owner pid $owner)"
+      else
+        luna_warn "prune: could not remove leaked staging dir $dir"
+      fi
+      continue
+    fi
     index=$((index + 1))
     if (( index <= keep )); then continue; fi
-    if [[ "$protected" == *" $dir "* ]]; then continue; fi
+    # Compare physically resolved paths on both sides of the membership check -
+    # $dir is glob-expanded under $PIN_BASE unresolved, while $protected holds
+    # cd -P targets, so a symlinked PIN_BASE (e.g. macOS /var/folders ->
+    # /private/var/folders) would otherwise never match and prune could delete
+    # an engine a live pin still needs.
+    target="$(cd -P "$dir" 2>/dev/null && pwd || true)"
+    if [[ -n "$target" && "$protected" == *" $target "* ]]; then continue; fi
     pruned_any=true
     rm -rf "$dir" || luna_warn "prune: could not remove $dir"
   done
@@ -1090,7 +1330,7 @@ prune_engines() {
 
 install_guardian() {
   local profile="$1" interval="$2" root sha pin current linktmp pending lock_rc=0
-  local resolved pin_phys
+  local resolved pin_phys bun_bin
   load_profile "$profile"
   [[ "$P_TIMER_ALLOWED" == "true" ]] || luna_die \
     "guardian is not allowed for profile '$profile' (registry deploy.timer=false)"
@@ -1125,20 +1365,46 @@ install_guardian() {
     luna_warn "DEFERRED: runtime does not prove checkout HEAD for profile '$profile'; guardian pin unchanged"
     return 10
   fi
+  if [[ ! -f "$pin/.complete" ]]; then
+    # bun is a precondition S21 added: publish_engine now compiles
+    # apps/deploy-cli through the runtime's own bun (docs/deploy-binary.md) -
+    # the container's bun for an incus profile, the publishing host's own
+    # bun for a bare-host profile - never the publishing host's bun for an
+    # incus profile (that coupling was the topology bug this preflight
+    # closed: the incus host deliberately carries no bun of its own).
+    # Preflighted here, AFTER the pending-transaction and runtime-health
+    # guards, so a container that is merely stopped or restarting mid-deploy
+    # (routine during those guards' own window) is diagnosed by the guard
+    # that actually explains it, not misreported as a missing bun - both
+    # defer identically (return 10), only the diagnosis differs. Still
+    # BEFORE `publish_engine`, so a runtime without bun yet defers this tick
+    # like any other "cannot advance the pin right now" case instead of
+    # dying mid-critical-section on every future check.
+    bun_bin="$(runtime_bun_bin)"
+    if ! runtime_bun_executable "$bun_bin"; then
+      if [[ -n "$P_INCUS" ]]; then
+        luna_warn "DEFERRED: bun not found at $bun_bin inside container '$P_INCUS'; cannot publish deploy-cli for profile '$profile' (docs/deploy-binary.md)"
+      else
+        luna_warn "DEFERRED: bun not found at $bun_bin; cannot publish deploy-cli for profile '$profile' (docs/deploy-binary.md)"
+      fi
+      return 10
+    fi
+  fi
   mkdir -p "$PIN_BASE" "$STATE_DIR"; chmod 700 "$STATE_DIR"
   publish_engine "$root" "$sha" "$pin"
   [[ -f "$pin/.complete" ]] ||
     luna_die "POSTCONDITION: published engine $pin is missing its .complete marker"
-  # -T is load-bearing: without it, `mv` onto an existing symlink-to-directory
-  # dereferences the destination and drops the new link *inside* the old engine
-  # instead of replacing it, so the pin never advances. And because exactly that
-  # silent no-op once lied for a week, the flip must PROVE its effect: re-resolve
-  # the link and require it to land on the just-published pin (both sides
-  # resolved physically, so a symlinked PIN_BASE cannot false-alarm).
+  # luna_atomic_replace is load-bearing: an `mv` onto an existing
+  # symlink-to-directory without GNU `-T` dereferences the destination and
+  # drops the new link *inside* the old engine instead of replacing it, so the
+  # pin never advances. And because exactly that silent no-op once lied for a
+  # week, the flip must PROVE its effect: re-resolve the link and require it
+  # to land on the just-published pin (both sides resolved physically, so a
+  # symlinked PIN_BASE cannot false-alarm).
   linktmp="$current.tmp.$$"
   rm -f "$linktmp"
   ln -s "$pin" "$linktmp" || luna_die "cannot stage engine link $linktmp"
-  mv -fT "$linktmp" "$current" || luna_die "cannot publish engine link $current"
+  luna_atomic_replace "$linktmp" "$current" || luna_die "cannot publish engine link $current"
   resolved="$(cd -P "$current" 2>/dev/null && pwd || true)"
   pin_phys="$(cd -P "$pin" 2>/dev/null && pwd || true)"
   [[ -n "$resolved" && "$resolved" == "$pin_phys" ]] ||
@@ -1282,33 +1548,41 @@ uninstall_guardian() {
   systemctl daemon-reload
 }
 
-cmd="${1:-}"; profile="${2:-}"
-[[ -n "$cmd" && -n "$profile" ]] || { echo "usage: luna-guardian check|diagnose|adopt|install|accept|uninstall <profile>" >&2; exit 2; }
-luna_validate_profile "$profile"
-case "$cmd" in
-  check) run_check "$profile" ;;
-  diagnose) diagnose "$profile" ;;
-  adopt) adopt_profile "$profile" ;;
-  install)
-    shift 2; interval=1min
-    while [[ $# -gt 0 ]]; do
-      case "$1" in --interval) interval="${2:?}"; shift 2 ;; *) luna_die "unknown option: $1" ;; esac
-    done
-    [[ "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]] || luna_die "invalid interval: $interval"
-    install_guardian "$profile" "$interval"
-    ;;
-  accept)
-    shift 2; expected=""; min_cycles=2
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --expected-sha) expected="${2:?}"; shift 2 ;;
-        --min-cycles) min_cycles="${2:?}"; shift 2 ;;
-        *) luna_die "unknown option: $1" ;;
-      esac
-    done
-    [[ -n "$expected" ]] || luna_die "accept requires --expected-sha <full-sha>"
-    accept_profile "$profile" "$expected" "$min_cycles"
-    ;;
-  uninstall) uninstall_guardian "$profile" ;;
-  *) luna_die "unknown command: $cmd" ;;
-esac
+# Dispatch runs only when this file is EXECUTED directly, not sourced. Test
+# seam: sourcing this file (with BASH_SOURCE[0] != $0) exercises its
+# functions - e.g. unit_paths_current - against a controlled environment
+# without ever reaching this tail, matching how lib/*.sh files are already
+# exercised. Production only ever executes this file directly, so
+# BASH_SOURCE[0] == $0 always holds there and this guard changes nothing.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  cmd="${1:-}"; profile="${2:-}"
+  [[ -n "$cmd" && -n "$profile" ]] || { echo "usage: luna-guardian check|diagnose|adopt|install|accept|uninstall <profile>" >&2; exit 2; }
+  luna_validate_profile "$profile"
+  case "$cmd" in
+    check) run_check "$profile" ;;
+    diagnose) diagnose "$profile" ;;
+    adopt) adopt_profile "$profile" ;;
+    install)
+      shift 2; interval=1min
+      while [[ $# -gt 0 ]]; do
+        case "$1" in --interval) interval="${2:?}"; shift 2 ;; *) luna_die "unknown option: $1" ;; esac
+      done
+      [[ "$interval" =~ ^[0-9]+(ms|s|min|h|d|w)$ ]] || luna_die "invalid interval: $interval"
+      install_guardian "$profile" "$interval"
+      ;;
+    accept)
+      shift 2; expected=""; min_cycles=2
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --expected-sha) expected="${2:?}"; shift 2 ;;
+          --min-cycles) min_cycles="${2:?}"; shift 2 ;;
+          *) luna_die "unknown option: $1" ;;
+        esac
+      done
+      [[ -n "$expected" ]] || luna_die "accept requires --expected-sha <full-sha>"
+      accept_profile "$profile" "$expected" "$min_cycles"
+      ;;
+    uninstall) uninstall_guardian "$profile" ;;
+    *) luna_die "unknown command: $cmd" ;;
+  esac
+fi

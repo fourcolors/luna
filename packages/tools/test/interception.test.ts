@@ -12,6 +12,8 @@ import { describe, expect, it } from "vitest"
 import { Effect } from "effect"
 import {
   allowByName,
+  buildMcpGateEntries,
+  clearStaleUnmountableForLiveConnector,
   composeInterceptors,
   defaultSafetyInterceptors,
   denyByName,
@@ -19,6 +21,7 @@ import {
   denySecretPaths,
   mcpToolGate,
   redactInput,
+  type McpGateEntry,
   type McpServerPolicy,
   type ToolInterceptor,
 } from "../src/interception.js"
@@ -429,5 +432,317 @@ describe("mcpToolGate regex routing (regression pins)", () => {
       x: { allowAll: false, allowedTools: new Set() },
     })
     expect(await run(gate("mcp__x__", {}))).toBe("pass")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// mcpToolGate - registered-but-unmountable slugs fail CLOSED (Slice S11b,
+// issue #445). A server the operator enabled+trusted but that failed to
+// mount (e.g. an unresolved secret-ref) must DENY its whole namespace, not
+// defer ("pass") the way an unregistered slug does.
+// ---------------------------------------------------------------------------
+
+describe("mcpToolGate - registered-but-unmountable slugs (fail-closed)", () => {
+  const makeGate = (entries: Record<string, McpGateEntry>) =>
+    mcpToolGate((slug) => entries[slug])
+
+  // (a) Unmountable slug -> DENY, message names the slug and the failing
+  // header, but never a raw header/config value - see summarizeMountFailure
+  // (packages/tools/src/interception.ts). Uses the exact scenario an
+  // operator who stores a literal credential instead of an "env:NAME" ref
+  // would hit: mount-loader.ts's backward-compat branch embeds the full
+  // unresolved value in `reason`, and that must not reach a DENY message a
+  // model reads and a transcript persists.
+  it("(a) denies every tool on an unmountable slug, naming the failure without leaking a raw header value", async () => {
+    const gate = makeGate({
+      "broken-server": {
+        unmountable: true,
+        reason:
+          "unresolved secret-ref for header 'Authorization': Bearer sk-live-abc123",
+      },
+    })
+    const result = await run(gate("mcp__broken-server__do_something", {}))
+    expect(result).toMatchObject({ behavior: "deny" })
+    const message = (result as { behavior: string; message: string }).message
+    expect(message).toContain("broken-server")
+    expect(message).toContain("Authorization")
+    expect(message).not.toContain("sk-live-abc123")
+  })
+
+  // (a2) Same hazard, embedded-ref shape: the ref text in the reason is
+  // lifted from the header VALUE, so a literal credential wrapped in ${...}
+  // must never be echoed - only the header name survives redaction.
+  it("(a2) denies without leaking an embedded ref lifted from the header value", async () => {
+    const gate = makeGate({
+      "broken-server": {
+        unmountable: true,
+        reason:
+          "unresolved embedded secret-ref 'sk-ant-api03-REAL' in header 'Authorization'",
+      },
+    })
+    const result = await run(gate("mcp__broken-server__do_something", {}))
+    expect(result).toMatchObject({ behavior: "deny" })
+    const message = (result as { behavior: string; message: string }).message
+    expect(message).toContain("Authorization")
+    expect(message).not.toContain("sk-ant-api03-REAL")
+  })
+
+  // (b) Mounted server policies are unchanged by the presence of an
+  // unmountable entry for a DIFFERENT slug in the same map.
+  it("(b) mounted server policies are unaffected by an unmountable entry for a different slug", async () => {
+    const gate = makeGate({
+      "broken-server": {
+        unmountable: true,
+        reason: "unresolved secret-ref",
+      },
+      "good-server": { allowAll: true, allowedTools: new Set() },
+    })
+    const input = { x: 1 }
+    expect(await run(gate("mcp__good-server__anything", input))).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+    })
+    expect(
+      await run(gate("mcp__broken-server__anything", input)),
+    ).toMatchObject({ behavior: "deny" })
+  })
+
+  // (c) Unknown tool names (non-MCP AND unregistered mcp__ slugs) keep
+  // today's pass-through behavior - the interceptor chain for regular
+  // tools, built-ins, and connectors is not broken by this fix.
+  it("(c) non-MCP and unregistered-slug tool names keep today's pass-through behavior", async () => {
+    const gate = makeGate({
+      "broken-server": { unmountable: true, reason: "x" },
+    })
+    expect(await run(gate("Read", { file_path: "/x" }))).toBe("pass")
+    expect(await run(gate("Bash", { command: "ls" }))).toBe("pass")
+    expect(await run(gate("mcp__memory__memory_search", {}))).toBe("pass")
+    expect(await run(gate("mcp__someconnector__foo", {}))).toBe("pass")
+  })
+
+  // (d) TEST-014-style false-positive regression: a tool name whose slug
+  // merely CONTAINS an unmountable slug as a substring, but is itself a
+  // fully-mounted (or otherwise unaffected) server, is not denied.
+  it("(d) a mounted slug containing an unmountable slug as a substring is not denied", async () => {
+    const gate = makeGate({
+      demo: { unmountable: true, reason: "unresolved secret-ref" },
+      "demo-extra": { allowAll: true, allowedTools: new Set() },
+    })
+    const input = {}
+    // "demo-extra" parses as its own full slug - must not collapse to "demo".
+    expect(await run(gate("mcp__demo-extra__some_tool", input))).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+    })
+    // The genuinely-unmountable "demo" slug is still denied on its own namespace.
+    expect(await run(gate("mcp__demo__some_tool", input))).toMatchObject({
+      behavior: "deny",
+    })
+  })
+
+  // (e) The inverse: an unmountable slug that is a substring of a HEALTHY
+  // slug's name must not leak deny onto the healthy slug.
+  it("(e) an unmountable slug that is a substring of a healthy slug does not leak deny onto it", async () => {
+    const gate = makeGate({
+      "extra-demo": { unmountable: true, reason: "unresolved secret-ref" },
+      demo: { allowAll: true, allowedTools: new Set() },
+    })
+    const input = {}
+    expect(await run(gate("mcp__demo__some_tool", input))).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+    })
+    expect(
+      await run(gate("mcp__extra-demo__some_tool", input)),
+    ).toMatchObject({ behavior: "deny" })
+  })
+
+  // (f) Live-mutation parity with the existing policy-change test: an
+  // unmountable entry reflects immediately, and clears the same way once
+  // the caller replaces it with a real mounted policy (mount succeeded on
+  // a later re-sync).
+  it("(f) an unmountable entry clears once replaced by a mounted policy (simulates a later successful mount)", async () => {
+    const liveMap = new Map<string, McpGateEntry>([
+      ["fixed-server", { unmountable: true, reason: "unresolved secret-ref" }],
+    ])
+    const gate = mcpToolGate((slug) => liveMap.get(slug))
+
+    expect(
+      await run(gate("mcp__fixed-server__do_something", {})),
+    ).toMatchObject({ behavior: "deny" })
+
+    liveMap.set("fixed-server", { allowAll: true, allowedTools: new Set() })
+
+    const input = {}
+    expect(await run(gate("mcp__fixed-server__do_something", input))).toEqual(
+      { behavior: "allow", updatedInput: input },
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildMcpGateEntries -> mcpToolGate (Slice S11b): the real production fold
+// from a syncMcpMounts()-shaped report to the map mcpToolGate consults, not
+// a hand-built entry map. This is what chat-server.ts and mcp-demo.ts both
+// call; exercising the FOLD itself (rather than only its output shape) is
+// what proves the fail-closed path end to end.
+// ---------------------------------------------------------------------------
+
+describe("buildMcpGateEntries -> mcpToolGate (real fold, Slice S11b)", () => {
+  // (g) A genuine mount-failure skip flows through the real fold to a DENY
+  // verdict - the acceptance criterion's "proven through the real
+  // buildPolicyMap + mcpToolGate path, not a stub".
+  it("(g) a genuine mount-failure skip flows through the real fold to a DENY verdict", async () => {
+    const report = {
+      policy: {},
+      skipped: [
+        {
+          slug: "broken-server",
+          reason: "unresolved secret-ref for header 'Authorization': env:MISSING_TOKEN",
+        },
+      ],
+    }
+    const entries = buildMcpGateEntries(report, new Set())
+    const gate = mcpToolGate((slug) => entries.get(slug))
+    expect(
+      await run(gate("mcp__broken-server__do_something", {})),
+    ).toMatchObject({ behavior: "deny" })
+  })
+
+  // (h) BLOCKER regression pin: a durable row that bypassed store.add()
+  // validation and landed on a built-in reserved slug (e.g. a hand-edited
+  // luna.db row with slug "memory") is REJECTED by syncMcpMounts before any
+  // mount attempt - it is not a genuine mount failure - so it must never
+  // shadow the built-in server of the same name when the caller passes
+  // RESERVED_SLUGS as (part of) excludedSlugs.
+  it("(h) a rejected reserved-slug row (e.g. a hand-edited 'memory' row) does not shadow the built-in server when excluded", async () => {
+    const report = {
+      policy: {},
+      skipped: [
+        {
+          slug: "memory",
+          reason: "invalid slug (failed validation): memory - reserved",
+        },
+      ],
+    }
+    const entries = buildMcpGateEntries(report, new Set(["memory"]))
+    const gate = mcpToolGate((slug) => entries.get(slug))
+    expect(await run(gate("mcp__memory__memory_search", {}))).toBe("pass")
+  })
+
+  // (i) The same skip, WITHOUT the exclusion, does deny - proving (h)
+  // exercises a real exclusion rather than a fold that never denies "memory".
+  it("(i) the same reserved-slug skip denies when the caller omits it from excludedSlugs", async () => {
+    const report = {
+      policy: {},
+      skipped: [
+        {
+          slug: "memory",
+          reason: "invalid slug (failed validation): memory - reserved",
+        },
+      ],
+    }
+    const entries = buildMcpGateEntries(report, new Set())
+    const gate = mcpToolGate((slug) => entries.get(slug))
+    expect(
+      await run(gate("mcp__memory__memory_search", {})),
+    ).toMatchObject({ behavior: "deny" })
+  })
+
+  // (j) A connector-collision skip is excluded from deny markers the same
+  // way - that namespace is actively served by the connector, not broken.
+  it("(j) a connector-collision skip is excluded from deny markers, deferring to the connector's own tool wiring", async () => {
+    const report = {
+      policy: {},
+      skipped: [
+        {
+          slug: "github",
+          reason: "slug collides with a reserved/built-in mount key: github",
+        },
+      ],
+    }
+    const entries = buildMcpGateEntries(report, new Set(["github"]))
+    const gate = mcpToolGate((slug) => entries.get(slug))
+    expect(await run(gate("mcp__github__create_issue", {}))).toBe("pass")
+  })
+
+  // (k) Mounted-server policy and an unmountable marker for a DIFFERENT
+  // slug combine correctly out of a single report, through the real fold.
+  it("(k) mounted policy and an unmountable marker combine correctly from one report", async () => {
+    const report = {
+      policy: { "good-server": { allowAll: true, allowedTools: [] } },
+      skipped: [{ slug: "broken-server", reason: "unresolved secret-ref" }],
+    }
+    const entries = buildMcpGateEntries(report, new Set())
+    const gate = mcpToolGate((slug) => entries.get(slug))
+    const input = {}
+    expect(await run(gate("mcp__good-server__anything", input))).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+    })
+    expect(
+      await run(gate("mcp__broken-server__anything", input)),
+    ).toMatchObject({ behavior: "deny" })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// clearStaleUnmountableForLiveConnector (Slice S11b live-connector bypass) -
+// regression pin for the chat-server.ts gate-lookup closure: connector
+// liveness must defer ONLY a stale `unmountable` marker, never a real
+// `McpServerPolicy` for a server that mounted successfully.
+// ---------------------------------------------------------------------------
+
+describe("clearStaleUnmountableForLiveConnector", () => {
+  it("clears a stale unmountable marker once its slug is a live connector mount", async () => {
+    const gate = mcpToolGate((slug) =>
+      clearStaleUnmountableForLiveConnector(
+        slug === "github"
+          ? { unmountable: true, reason: "unresolved secret-ref" }
+          : undefined,
+        slug === "github",
+      ),
+    )
+    expect(await run(gate("mcp__github__create_issue", {}))).toBe("pass")
+  })
+
+  // BLOCKER regression pin: a slug that mounted successfully at boot keeps
+  // denying by its own policy even after a same-keyed connector goes live -
+  // the bypass must never widen a mounted server's own deny-by-default
+  // policy, only clear a marker that no longer reflects reality.
+  it("does NOT clear a mounted McpServerPolicy for a slug that is a live connector mount", async () => {
+    const policy: McpServerPolicy = { allowAll: false, allowedTools: new Set() }
+    const gate = mcpToolGate((slug) =>
+      clearStaleUnmountableForLiveConnector(
+        slug === "github" ? policy : undefined,
+        slug === "github",
+      ),
+    )
+    expect(await run(gate("mcp__github__create_issue", {}))).toMatchObject({
+      behavior: "deny",
+    })
+  })
+
+  it("leaves an unmountable marker denying when its slug is NOT a live connector mount", async () => {
+    const gate = mcpToolGate((slug) =>
+      clearStaleUnmountableForLiveConnector(
+        slug === "broken-server"
+          ? { unmountable: true, reason: "x" }
+          : undefined,
+        false,
+      ),
+    )
+    expect(
+      await run(gate("mcp__broken-server__do_something", {})),
+    ).toMatchObject({ behavior: "deny" })
+  })
+
+  it("leaves an unregistered slug (undefined) untouched regardless of connector liveness", () => {
+    expect(
+      clearStaleUnmountableForLiveConnector(undefined, true),
+    ).toBeUndefined()
+    expect(
+      clearStaleUnmountableForLiveConnector(undefined, false),
+    ).toBeUndefined()
   })
 })

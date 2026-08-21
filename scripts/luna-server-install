@@ -213,6 +213,15 @@ write_service() {
     return 0
   fi
   mkdir -p "$SERVICE_DIR"
+  # Unit-render rollback: copy the INSTALLED unit aside as <name>.prev before
+  # overwriting it. systemd never loads a .prev suffix, so the backup is
+  # inert. This runs in the shared write path - a manual install AND the
+  # guardian's --units-only auto-reconcile both get a restore point. If the
+  # freshly rendered unit fails to start, restore it:
+  #   cp -f "$SERVICE_FILE.prev" "$SERVICE_FILE" && systemctl daemon-reload && \
+  #     systemctl reset-failed "$SERVICE_NAME" && systemctl restart "$SERVICE_NAME"
+  # Skipped on a first install - there is no prior unit to preserve.
+  [[ ! -f "$SERVICE_FILE" ]] || cp -f "$SERVICE_FILE" "$SERVICE_FILE.prev"
   render_service "$bun_bin" > "$SERVICE_FILE"
 }
 
@@ -229,7 +238,7 @@ render_service() {
   # Liveness ladder (L1+L2), motivated by the Sol autopsy:
   # - Type=notify + WatchdogSec: the app sends READY=1 once the WS server
   #   listens (both normal and setup mode) and health-GATED WATCHDOG=1 beats
-  #   every ~30s (apps/ui-web/scripts/sd-notify.ts). A wedged-but-alive
+  #   every ~30s (apps/server/src/sd-notify.ts). A wedged-but-alive
   #   process stops beating and pid 1 restarts it — the failure class bare
   #   Restart= can never see. NotifyAccess=all because Bun has no
   #   unix-datagram API, so beats arrive from a spawned systemd-notify child.
@@ -249,6 +258,20 @@ render_service() {
   # - The alert unit is rendered per-profile (concrete name, no %i template):
   #   dev + stable co-installed on one host must not share a template whose
   #   baked-in LUNA_HOME/pager.env would belong to whichever installed last.
+  # - PATH-INDEPENDENCE: WorkingDirectory names REPO_DIR itself (no
+  #   app-specific subpath) and ExecStart names ONLY the path-independent
+  #   launcher (luna_chat_server_launcher_rel, lib/luna-deploy.sh), which
+  #   resolves the daemon's actual file relative to its own import.meta.url.
+  #   A future move of the daemon's source needs no unit re-render - this is
+  #   the one unit shape this host will ever need. luna-guardian's
+  #   unit_paths_current is the OTHER half: it detects when an installed unit
+  #   still names the old app-specific paths and is gated on the rollback
+  #   target also carrying the launcher before reconciling. LUNA_REPO_ROOT is
+  #   also redundantly set here (in addition to .env, below): it shadows the
+  #   daemon's own cwd fallbacks, and the guardian's auto-reconcile writes
+  #   this unit with --units-only, which never touches .env - so a host whose
+  #   .env predates this key would otherwise silently move where the daemon
+  #   resolves its wake workspace and thread default cwd.
   cat <<EOF
 [Unit]
 Description=Luna chat server (${PROFILE})
@@ -263,12 +286,13 @@ Type=notify
 NotifyAccess=all
 WatchdogSec=90
 TimeoutStartSec=60
-WorkingDirectory=${REPO_DIR}/apps/ui-web
+WorkingDirectory=${REPO_DIR}
 Environment=HOME=${HOME}
 Environment=PATH=${bun_dir}:/usr/local/bin:/usr/bin:/bin
 Environment=CLAUDE_CONFIG_DIR=${LUNA_HOME}/claude
+Environment=LUNA_REPO_ROOT=${REPO_DIR}
 EnvironmentFile=-${ENV_FILE}
-ExecStart=${bun_bin} run scripts/chat-server.ts
+ExecStart=${bun_bin} run $(luna_chat_server_launcher_rel)
 Restart=always
 RestartSec=5
 StandardOutput=append:${LUNA_HOME}/logs/${CHAT_SERVER_NAME}.log
@@ -310,6 +334,20 @@ write_alert_service() {
   fi
   mkdir -p "$SERVICE_DIR"
   render_alert_service > "$ALERT_SERVICE_FILE"
+}
+
+# TODO(#440): drop this probe once every profile's `previous` release
+# resolves to a post-S08 release (apps/server/scripts/seed-default-account.ts
+# present in BOTH current and previous - same condition
+# scripts/luna-chat-server-entry.ts's probe retires on). Fix or remove:
+# delete the apps/ui-web/scripts fallback below and this comment once the
+# condition holds; S26 carries the removal step.
+seed_default_account_script() {
+  if [[ -f "$REPO_DIR/apps/server/scripts/seed-default-account.ts" ]]; then
+    printf '%s' "apps/server/scripts/seed-default-account.ts"
+  else
+    printf '%s' "apps/ui-web/scripts/seed-default-account.ts"
+  fi
 }
 
 luna_info "Installing Luna server profile: $PROFILE"
@@ -379,12 +417,6 @@ if [[ "$SKIP_DEPS" == false ]]; then
   luna_run "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile
 fi
 
-# Build the web SPA so chat-server serves it on :4753 (reachable via the existing
-# tailnet proxy, no extra infra). Always run — SPA source changes without
-# touching deps — and NOT gated by --skip-deps (that flag is apt/bun-install
-# only). The guarded build refuses to bake VITE_UI_WS_TOKEN, which deploy never sets.
-luna_run "$BUN_BIN" run --cwd "$REPO_DIR" --filter "@luna/ui-web" build
-
 luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"
 
 # Seed the default account so the server boots straight into NORMAL mode rather
@@ -393,11 +425,12 @@ luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"
 # (which seeds claude-code:login). The token is passed via the subprocess ENV
 # (not argv) and only the POINTER ref is ever written/printed. Non-fatal.
 if [[ -n "$CLAUDE_TOKEN" && "$DRY_RUN" == false ]]; then
+  SEED_DEFAULT_ACCOUNT_SCRIPT="$(seed_default_account_script)"
   if ( cd "$REPO_DIR" && CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" LUNA_DB_PATH="$LUNA_HOME/luna.db" \
-        "$BUN_BIN" run apps/ui-web/scripts/seed-default-account.ts "$LUNA_HOME/luna.db" ); then
+        "$BUN_BIN" run "$SEED_DEFAULT_ACCOUNT_SCRIPT" "$LUNA_HOME/luna.db" ); then
     :
   else
-    luna_warn "default-account seed failed — server may start in setup-mode; re-run apps/ui-web/scripts/seed-default-account.ts after install"
+    luna_warn "default-account seed failed - server may start in setup-mode; re-run $SEED_DEFAULT_ACCOUNT_SCRIPT after install"
   fi
 elif [[ -n "$CLAUDE_TOKEN" ]]; then
   luna_info "[dry-run] would seed default account (secret_ref=env:CLAUDE_CODE_OAUTH_TOKEN)"
@@ -409,8 +442,26 @@ fi
 # (or after a rollback across the S1 boundary) turns the rollback safety net
 # into an unpaged activating→timeout→restart spiral. Warn loudly; the runbook
 # ordering is: deploy + verify the code FIRST, then re-run this installer.
-if [[ ! -f "$REPO_DIR/apps/ui-web/scripts/sd-notify.ts" ]]; then
-  luna_warn "checkout at $REPO_DIR lacks apps/ui-web/scripts/sd-notify.ts — the Type=notify unit will start-timeout against this code; update the checkout BEFORE restarting the service"
+#
+# TODO(#440): drop this probe once every profile's `previous` release
+# resolves to a post-S08 release (apps/server/src/sd-notify.ts present in
+# BOTH current and previous - same condition scripts/luna-chat-server-entry.ts's
+# probe retires on). Until then this guard must accept both tree shapes,
+# because a rollback can flip $REPO_DIR back to a pre-S08 checkout. Fix or
+# remove: delete the apps/ui-web/scripts fallback below and this comment once
+# the condition holds; S26 carries the removal step.
+if [[ ! -f "$REPO_DIR/apps/server/src/sd-notify.ts" && ! -f "$REPO_DIR/apps/ui-web/scripts/sd-notify.ts" ]]; then
+  luna_warn "checkout at $REPO_DIR lacks sd-notify.ts (apps/server/src or apps/ui-web/scripts) - the Type=notify unit will start-timeout against this code; update the checkout BEFORE restarting the service"
+fi
+
+# Same guard, for the OTHER unit-critical file: ExecStart names ONLY the
+# path-independent launcher (luna_chat_server_launcher_rel, lib/luna-deploy.sh)
+# unconditionally, with no existence check inline. A render against a
+# checkout that lacks it (a rolled-back tree, an older --repo-dir, or the
+# guardian's --units-only reconcile racing a deploy) would otherwise silently
+# produce an unbootable unit with no diagnostic.
+if [[ ! -f "$REPO_DIR/$(luna_chat_server_launcher_rel)" ]]; then
+  luna_warn "checkout at $REPO_DIR lacks $(luna_chat_server_launcher_rel); the rendered ExecStart will not boot against this code; update the checkout BEFORE restarting the service"
 fi
 
 write_service "$BUN_BIN"

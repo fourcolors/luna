@@ -9,10 +9,10 @@ This is **not** `luna doctor` (CLI preflight) or `scripts/luna-doctor` (registry
 
 ```sh
 # From repo root (server machine or worktree with LUNA_DB_PATH set):
-bun run apps/ui-web/scripts/doctor-workflow-run.ts --patient job:<jobId>
+bun run apps/server/scripts/doctor-workflow-run.ts --patient job:<jobId>
 
 # Optional:
-bun run apps/ui-web/scripts/doctor-workflow-run.ts \
+bun run apps/server/scripts/doctor-workflow-run.ts \
   --patient job:sched-xxx \
   --attempt 1 \
   --summary "max turns exhausted"
@@ -37,11 +37,11 @@ State handoff lives under `~/.luna/doctor-runs/<run-id>/`.
 ## CLI (workflow shell steps)
 
 ```sh
-bun run apps/ui-web/scripts/luna-doctor-workflow.ts diagnose --state-dir <dir>
-bun run apps/ui-web/scripts/luna-doctor-workflow.ts backup --state-dir <dir> --attempt 1
-bun run apps/ui-web/scripts/luna-doctor-workflow.ts apply --state-dir <dir> --attempt 1
-bun run apps/ui-web/scripts/luna-doctor-workflow.ts verify --state-dir <dir>
-bun run apps/ui-web/scripts/luna-doctor-workflow.ts finalize --state-dir <dir>
+bun run apps/server/scripts/luna-doctor-workflow.ts diagnose --state-dir <dir>
+bun run apps/server/scripts/luna-doctor-workflow.ts backup --state-dir <dir> --attempt 1
+bun run apps/server/scripts/luna-doctor-workflow.ts apply --state-dir <dir> --attempt 1
+bun run apps/server/scripts/luna-doctor-workflow.ts verify --state-dir <dir>
+bun run apps/server/scripts/luna-doctor-workflow.ts finalize --state-dir <dir>
 ```
 
 ## Auto-enqueue (Phase B1)
@@ -63,5 +63,5 @@ Thresholds / CLI path are overridable via `JobTickerLayer({ doctor: { ... } })`.
 ## Code
 
 - Types / builder / heal API: `packages/core/src/doctor/`
-- Run: `apps/ui-web/scripts/doctor-workflow-run.ts`
-- Step CLI: `apps/ui-web/scripts/luna-doctor-workflow.ts`
+- Run: `apps/server/scripts/doctor-workflow-run.ts`
+- Step CLI: `apps/server/scripts/luna-doctor-workflow.ts`

@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { evalChatInlineScriptWithBridge } from './helpers/chat-harness'
 
 function loadVendorInto(target: any, file: string) {
   const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
@@ -41,12 +42,14 @@ describe('ThreadDrawerEngine & PoolEngine Stress & Edge Case Tests', () => {
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
     loadVendorInto(window, 'moon-dock.js')
-    if (usePoolEngine) {
-      loadVendorInto(window, 'pool-engine.js')
-      localStorage.setItem('luna_pool_engine', '1')
-    } else {
-      localStorage.removeItem('luna_pool_engine')
-    }
+    // ENGINE SELECTION IS EXPLICIT IN BOTH DIRECTIONS (stack23 S18b).
+    // PoolEngine is now the DEFAULT, so "legacy" can no longer be expressed by
+    // simply omitting the flag - absence means pool. This file compares the
+    // two engines against each other, so each branch has to say which one it
+    // wants out loud, or the "legacy" half silently tests pool and the parity
+    // it claims to prove becomes a comparison of pool against itself.
+    loadVendorInto(window, 'pool-engine.js')
+    localStorage.setItem('luna_pool_engine', usePoolEngine ? '1' : '0')
 
     vi.stubGlobal('WebSocket', class {
       static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3
@@ -60,10 +63,13 @@ describe('ThreadDrawerEngine & PoolEngine Stress & Edge Case Tests', () => {
       removeEventListener() {}
     })
 
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    new Function(inlineScripts[0])()
+    // THROUGH THE BRIDGED LOADER (stack23 S19j). This file used to eval
+    // chat.html's inline script bare, with no module bridge - which worked
+    // only while ThreadDrawerEngine was still a chat.html const. It is a
+    // module now, so a bare eval leaves it undefined and every assertion
+    // here dies on `undefined.requestList`. chat-harness is what wires the
+    // module side the way production wires it.
+    evalChatInlineScriptWithBridge()
 
     return (window as any).__MoonInternals
   }

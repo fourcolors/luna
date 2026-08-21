@@ -5,37 +5,38 @@
  * `workflow` workers are typed `Worker<never>` and close over only
  * `SDKClient` + `AgentNotesService` (prompt-worker.ts). They cannot carry the
  * dream cycle, which requires `DreamStore | DreamReasoner | SessionStore |
- * MemoryRouter | Clock` (+ optional CalibrationStore / SuggestedActions /
- * SkillRegistry). So dream gets its OWN worker kind — exactly mirroring how
- * `PromptWorkerLayer` resolves real services at boot and registers a
- * closed-over `Worker<never>`.
+ * MemoryRouter | Clock` (+ optional SuggestedActions / SkillRegistry). So
+ * dream gets its OWN worker kind.
  *
  * The dream LOGIC is reused wholesale: the worker simply runs `runDream(now)`
- * (the same effect the legacy `registerDreamCron` cron fired). Only the
- * registration/dispatch wrapper is new. `now` is read from the captured `Clock`
- * service so the worker is deterministic in tests and shares the boot clock
- * identity (the watermark's crash-recovery determinism depends on a single
- * clock — see runDream's idempotency notes).
+ * (the same effect the legacy `registerDreamCron` cron fired). The
+ * registration/dispatch ceremony lives in the shared `defineWorkerLayer`
+ * (jobs/define-worker.ts, slice 9a); this file keeps only what is genuinely
+ * dream's: the cycle body, the deadline threading, and the optional-service
+ * folding. `now` is read from the captured `Clock` service so the worker is
+ * deterministic in tests and shares the boot clock identity (the watermark's
+ * crash-recovery determinism depends on a single clock — see runDream's
+ * idempotency notes).
  *
  * Optional deps (serviceOption at layer build, folded into captured context):
- *   - CalibrationStore → ECE calibration rows from belief_candidate
  *   - SuggestedActions → skill_improvement chips (source:"dream")
  *   - SkillRegistry → skill catalog snapshot for the reasoner prompt
  * Absent any of them → dream turn still runs; chip/catalog paths degrade loudly.
  */
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Option } from "effect"
 import type { MemoryRouter } from "@luna/memory"
 import { Clock } from "../clock.js"
-import { CalibrationStore } from "../alignment/calibration-store.js"
 import { SessionStore } from "../session/session-store.js"
 import { SkillRegistry } from "../skill-registry/skill-registry.js"
 import { SuggestedActions } from "../suggested-actions/suggested-actions.js"
 import {
-  WorkerError,
-  WorkerRegistry,
-  type Worker,
-  type WorkerResult,
-} from "../jobs/worker-registry.js"
+  buildWorker,
+  defineWorkerLayer,
+  resolveEnvTimeoutMs,
+  type WorkerKindSpec,
+  type WorkerLayerOptions,
+} from "../jobs/define-worker.js"
+import type { Worker, WorkerResult } from "../jobs/worker-registry.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
 import { runDream } from "./dream.js"
@@ -44,46 +45,34 @@ import { runDream } from "./dream.js"
 export const DREAM_WORKER_KIND = "dream"
 
 // job-ticker-oban-deadlines (Seam 2 boot wiring) — the whole-dispatch ceiling
-// registered with the WorkerRegistry (see DreamWorkerLayer below). This is
-// DISTINCT from `LUNA_DREAM_TIMEOUT_MS` (dream-reasoner.ts's per-SDK-call
-// inner ceiling, default 10 min): a dream cycle draining a multi-day backlog
-// legitimately spans MANY inner calls, so the outer registered default is
-// wider (15 min) — and still just the "well-behaved" ceiling; the ticker's
-// `grace` window on top of it is the true last-resort backstop, and a large
-// backlog hitting THAT is the expected, retry-recoverable terminal (Seam 3).
-// Overridable via env so operators can widen it without a redeploy.
+// registered with the WorkerRegistry. This is DISTINCT from
+// `LUNA_DREAM_TIMEOUT_MS` (dream-reasoner.ts's per-SDK-call inner ceiling,
+// default 10 min): a dream cycle draining a multi-day backlog legitimately
+// spans MANY inner calls, so the outer registered default is wider (15 min) —
+// and still just the "well-behaved" ceiling; the ticker's `grace` window on
+// top of it is the true last-resort backstop, and a large backlog hitting
+// THAT is the expected, retry-recoverable terminal (Seam 3). Overridable via
+// env so operators can widen it without a redeploy.
 const DEFAULT_DREAM_WORKER_TIMEOUT_MS = 15 * 60 * 1000 // 15 min
-const dreamWorkerDefaultTimeoutMs = (): number => {
-  const raw = process.env["LUNA_DREAM_WORKER_TIMEOUT_MS"]?.trim()
-  if (!raw) return DEFAULT_DREAM_WORKER_TIMEOUT_MS
-  const n = Number(raw)
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_DREAM_WORKER_TIMEOUT_MS
-}
 
 /** The (non-optional) dream service environment a dream cycle requires. */
 type DreamCtx = DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock
 
-export interface DreamWorkerLayerOptions {
-  /** Override the kind discriminant. Default "dream". */
-  readonly kind?: string
-}
+export interface DreamWorkerLayerOptions extends WorkerLayerOptions {}
 
 /**
- * Build a `Worker<never>` that runs one dream cycle against `ctx` — the dream
- * service environment captured at layer-build time. The captured context erases
- * the worker's R to `never` (via `Effect.provide`), satisfying the registry's
- * `Worker<never>` contract. `ctx` may additionally carry optional services
- * (CalibrationStore, SuggestedActions, SkillRegistry) folded in by
- * `DreamWorkerLayer`; providing a wider context is harmless.
- *
- * The dream `payload` is intentionally ignored — a dream cycle reads its window
- * from the watermark + SessionStore, not from the job row. The payload column
- * stays available for future tuning without changing this contract.
+ * The dream `payload` is intentionally ignored — a dream cycle reads its
+ * window from the watermark + SessionStore, not from the job row. The payload
+ * column stays available for future tuning without changing this contract.
  */
-export const buildDreamWorker = (
-  ctx: Context.Context<DreamCtx>,
-): Worker<never> => {
-  return (_payload, jobCtx) =>
+const dreamSpec: WorkerKindSpec<DreamCtx> = {
+  kind: DREAM_WORKER_KIND,
+  defaultTimeoutMs: () =>
+    resolveEnvTimeoutMs(
+      "LUNA_DREAM_WORKER_TIMEOUT_MS",
+      DEFAULT_DREAM_WORKER_TIMEOUT_MS,
+    ),
+  run: (_kind, _payload, jobCtx) =>
     Effect.gen(function* () {
       const clock = yield* Clock
       const now = yield* clock.nowMs()
@@ -102,74 +91,51 @@ export const buildDreamWorker = (
           `sessions=${summary.sessionsProcessed}; stoppedEarly=${summary.stoppedEarly}; ` +
           `watermark=${summary.watermark}`,
       } satisfies WorkerResult
-    }).pipe(
-      Effect.provide(ctx),
-      // Map any typed dream failure to a WorkerError so the ticker records a
-      // clean `job_runs` row. Defects propagate untouched — the ticker converts
-      // them to WorkerError({reason:"defect"}) itself.
-      Effect.catchAll((e) =>
-        Effect.fail(
-          new WorkerError({
-            reason: "worker_failed",
-            kind: DREAM_WORKER_KIND,
-            message: `dream worker failed: ${(e as { message?: string }).message ?? String(e)}`,
-            cause: e,
-          }),
-        ),
-      ),
-    )
-}
-
-/**
- * Layer that registers the dream worker into the WorkerRegistry at boot.
- * Requires the dream service environment + WorkerRegistry; reads OPTIONAL
- * CalibrationStore / SuggestedActions / SkillRegistry via serviceOption (so
- * the layer's R does not grow and compositions without them — tests, smokes —
- * keep working).
- *
- *   const dreamWorkerL = DreamWorkerLayer().pipe(
- *     Layer.provide(Layer.mergeAll(
- *       dreamStoreL, dreamReasonerL, sessionStoreL, memoryRouterL, clockL,
- *       workerRegistryL, calibrationStoreL /* optional *\/,
- *       suggestedActionsL /* optional *\/, skillRegistryL /* optional *\/,
- *     )),
- *   )
- */
-export const DreamWorkerLayer = (
-  opts?: DreamWorkerLayerOptions,
-): Layer.Layer<
-  never,
-  never,
-  DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock | WorkerRegistry
-> => {
-  const kind = opts?.kind ?? DREAM_WORKER_KIND
-  return Layer.effectDiscard(
+    }),
+  // Optional sinks — serviceOption keeps them OUT of the layer's R.
+  // Fold each into the captured context so applyOps / gatherInputs
+  // serviceOption resolves them at dispatch time. The cast narrows the
+  // wider Context back to DreamCtx — safe: a superset only ever satisfies
+  // MORE requirements.
+  augmentContext: (base) =>
     Effect.gen(function* () {
-      const reg = yield* WorkerRegistry
-      const base = yield* Effect.context<DreamCtx>()
-      // Optional sinks — serviceOption keeps them OUT of the layer's R.
-      // Fold each into the captured context so applyOps / gatherInputs
-      // serviceOption resolves them at dispatch time. The cast narrows the
-      // wider Context back to DreamCtx — safe: a superset only ever satisfies
-      // MORE requirements.
-      const calOpt = yield* Effect.serviceOption(CalibrationStore)
       const saOpt = yield* Effect.serviceOption(SuggestedActions)
       const skillsOpt = yield* Effect.serviceOption(SkillRegistry)
       let ctx: Context.Context<DreamCtx> = base
-      if (Option.isSome(calOpt)) {
-        ctx = Context.add(ctx, CalibrationStore, calOpt.value) as Context.Context<DreamCtx>
-      }
       if (Option.isSome(saOpt)) {
         ctx = Context.add(ctx, SuggestedActions, saOpt.value) as Context.Context<DreamCtx>
       }
       if (Option.isSome(skillsOpt)) {
         ctx = Context.add(ctx, SkillRegistry, skillsOpt.value) as Context.Context<DreamCtx>
       }
-      const worker = buildDreamWorker(ctx)
-      yield* reg.register(kind, {
-        run: worker,
-        defaultTimeoutMs: dreamWorkerDefaultTimeoutMs(),
-      })
+      return ctx
     }),
-  )
 }
+
+/**
+ * Build a `Worker<never>` that runs one dream cycle against `ctx` — the dream
+ * service environment captured at layer-build time. The captured context
+ * erases the worker's R to `never` (via the shared wrapper's
+ * `Effect.provide`), satisfying the registry's `Worker<never>` contract.
+ * `ctx` may additionally carry optional services (SuggestedActions,
+ * SkillRegistry) folded in by `DreamWorkerLayer`; providing a wider context
+ * is harmless.
+ */
+export const buildDreamWorker = (
+  ctx: Context.Context<DreamCtx>,
+): Worker<never> => buildWorker(dreamSpec, ctx, DREAM_WORKER_KIND)
+
+/**
+ * Layer that registers the dream worker into the WorkerRegistry at boot.
+ * Requires the dream service environment + WorkerRegistry; reads OPTIONAL
+ * SuggestedActions / SkillRegistry via serviceOption (so the layer's R does
+ * not grow and compositions without them — tests, smokes — keep working).
+ *
+ *   const dreamWorkerL = DreamWorkerLayer().pipe(
+ *     Layer.provide(Layer.mergeAll(
+ *       dreamStoreL, dreamReasonerL, sessionStoreL, memoryRouterL, clockL,
+ *       workerRegistryL, suggestedActionsL /* optional *\/, skillRegistryL /* optional *\/,
+ *     )),
+ *   )
+ */
+export const DreamWorkerLayer = defineWorkerLayer(dreamSpec)

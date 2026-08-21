@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@luna/protocol-descriptor": "workspace:*"
+    "@luna/tools": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

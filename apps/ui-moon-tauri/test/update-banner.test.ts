@@ -14,8 +14,10 @@
 //     same-version re-show, but a NEWER version shows again
 //   - "What's new" opens the Updates panel (open_widget settings.updates)
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createUpdateBanner } from '../frontend-react/src/chat/updateBanner'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { evalChatInlineScriptWithBridge, loadVendorInto, mountChatDomFromHtml, readChatHtml } from './helpers/chat-harness'
 
 // jsdom never fetches external <script src> tags; load the vendor files the page
 // script references at definition time, in declaration order (same mechanism as
@@ -76,11 +78,12 @@ describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
     })
 
     // 4. Select the inline page script by CONTENT (the WebSocketEngine one).
-    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
-      .map((m) => m[1])
-      .filter((s) => s.includes('WebSocketEngine'))
-    expect(inlineScripts).toHaveLength(1)
-    new Function(inlineScripts[0])()
+    // Through the SHARED boot (stack23 S20d). This suite predated chat-harness
+    // and hand-rolled its own `new Function(inlineScript)` boot so it could
+    // assign UpdateBanner inside that scope. There is no inline script any
+    // more, and bootChat() constructs the banner itself - so the hand-rolled
+    // boot is not just broken, it is redundant.
+    evalChatInlineScriptWithBridge()
   })
 
   afterEach(() => {

@@ -1,0 +1,66 @@
+# Luna Next
+
+Luna Next is the simplification branch informed by the 2026-07-31 greenfield redesign analysis.
+Every change lands as a small stacked PR on branch `luna-next` for Operator review.
+
+## Decisions
+
+1. Moon (`apps/ui-moon-tauri`) is the only graphical UI going forward.
+   `ui-studio-tauri` and the `ui-web` frontend are retired.
+   `ui-web`'s frontend is deleted only after the chat server daemon is extracted out of `apps/ui-web/scripts/`, which is Stack 2.
+   The terminal client (`apps/agent-cli`) and the Telegram channel stay.
+2. Duplicate concepts collapse to one path: one component set (Moon's), one reflection runtime (dream+wake merge, Stack 2), one tool-package factory, one memory backend.
+3. The model gets more trust in judgment: what to remember, proposed remedies, structured output by default where the provider supports it.
+   The model gets zero new trust in irreversible execution: no model in the rollback loop, egress allowlist, shell deny-rails, secret chain, push/PR path, or the markdown sanitizer.
+4. The provider-capability profile (`packages/core/src/provider-profile.ts`) is a routing input.
+   Every SDK-native adoption is gated per lane on its capability flag, with exactly one portable fallback, because Luna deliberately keeps local model lanes.
+5. Every behavioral change carries an acceptance metric and an abandon condition, measured with harnesses already in the repo: retrieval bench, cost ledger, job-run history.
+
+## Stack 1 (this stack)
+
+1. charter
+2. drop studio shell
+3. drop `packages/ui-shared-solid`
+4. drop workflow-runtime
+5. drop dead memory backends
+6. drop turn-capture regexes
+7. drop tier classifier + calibration
+8. drop Haiku rerank stack
+9. shellcheck CI gate
+10. capability-gate helper
+11. structured output default-on
+
+## Stack 2 (planned)
+
+- Add the `defineToolPackage` factory, then migrate all ten tool packages onto it.
+- Extract the server to `apps/server` (coordinated deploy migration).
+- Delete the `ui-web` frontend.
+- ~~Unify dream+wake into one `ReflectionJob`~~ — REJECTED on implementation contact (Operator adjudication, 2026-08-03).
+  Six deliberate divergences block the merge; see `DESIGN.md` §5.3.6.
+  Landed instead as slice 9a: the shared `defineWorkerLayer` registration wrapper (`jobs/define-worker.ts`), runtimes untouched.
+- Split `chat-service.ts` / `job-ticker.ts` / `main.rs` along existing seams.
+- Establish a `luna.db` schema-continuity contract before any daemon cutover.
+
+## Stack 3 (in progress)
+
+- Rebuild Moon chat as bundled typed React: delete the vanilla vendor layer and dual-mount bridge, keep the audited markdown sanitizer.
+  SHIPPED (slices S14-S20, PRs #453-#512).
+  chat.html's inline script is deleted: 9563 lines of vanilla JS down to zero.
+  `src/main-chat.tsx` -> `chat/bootChat.ts` is the only code the chat window runs.
+  The dual-mount bridge (`LunaChatHost`) is retired to test-hooks-only; production reads it nowhere outside the hub.
+  The audited markdown sanitizer (`vendor/moon-markdown.js`) is kept, exactly as scoped.
+  `apps/ui-moon-tauri/frontend/panels/*` and `panel.html`'s own vanilla waterfall are a separate surface this bullet never covered; they are untouched.
+- Fold guardian/update-server/autodeploy into one typed compiled binary on the existing `ServerUpdateDriver` contract, keeping a bash escape hatch.
+  HALF SHIPPED.
+  S21 (PR #458) scaffolded `apps/deploy-cli` and taught the engine pin to publish it.
+  S22 (PRs #461, #463, #517, #518, #519, #521, #522, #527) ported the update state machine (journal, session guard, readiness, rollback, layout flip) to TypeScript with golden-parity tests against the bash originals.
+  S23 (flip the deploy engine default to the binary), S24 (fold autodeploy and guardian in), S25 (delete the bash engine, Operator-approved as the escape hatch), and S26 (full-agent E2E, gate promotion, docs truth-up) have not started.
+  The binary compiles and runs today (`bun build --compile apps/deploy-cli/src/main.ts`, pre-verified 2026-08-14), but bash remains the live engine on both channels.
+  Nothing routes real traffic to the binary yet.
+
+## Review rules
+
+- One concern per PR.
+- The PR body states what, why, and how it was verified.
+- Deletions must show the verification greps.
+- Nothing merges out of stack order.

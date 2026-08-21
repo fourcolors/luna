@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { makeSdkMcpServer } from "@luna/tools"
+import { defineToolPackage } from "@luna/tools"
 import type { LocalShellBridge } from "@luna/ui-ws"
 import type {
   AnyZodRawShape,
@@ -80,7 +80,7 @@ export const buildLocalShellMcpServer = (
   const widened = tools as unknown as ReadonlyArray<
     SdkMcpToolDefinition<AnyZodRawShape>
   >
-  return makeSdkMcpServer("local_shell", "0.1.0", widened)
+  return defineToolPackage({ name: "local_shell", tools: widened }).server
 }
 
 export const LocalShellToolsLayer = (

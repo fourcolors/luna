@@ -6,8 +6,9 @@
  *   - mirror-only fetches (git reset --hard provably absent from the arm)
  *   - materialize_release: clone --local + build-in-release + .complete LAST,
  *     stale-partial sweep, reuse gate, cp -a node_modules seeding
- *   - flip_current: relative links, previous restamp, staged ln + mv -fT,
- *     cd -P postconditions, flip strictly INSIDE the guarded restart window
+ *   - flip_current: relative links, previous restamp, staged ln + atomic
+ *     rename, cd -P postconditions, flip strictly INSIDE the guarded restart
+ *     window
  *   - session-guard invariants: defer leaves current untouched (fresh and
  *     mid-transaction)
  *   - rollback matrix: flip-back only (no git surgery, no rebuild), CRITICAL
@@ -21,9 +22,9 @@
  * The three baseline test files are untouched: the ENTIRE existing suite
  * exercises the inplace arm unchanged.
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it } from "vitest"
 import { releaseManifest } from "./helpers/guardian-harness"
@@ -33,19 +34,8 @@ const ENGINE = join(repoRoot, "scripts/luna-update-server")
 const AUTODEPLOY = join(repoRoot, "scripts/luna-autodeploy")
 const SERVER_INSTALL = join(repoRoot, "scripts/luna-server-install")
 const REAL_GIT = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
-const REAL_MV = spawnSync("bash", ["-c", "command -v mv"], { encoding: "utf8" }).stdout.trim()
-
-// Does the host mv support GNU -T (rename-onto, never descend into a dir the
-// destination symlink points at)? GNU coreutils yes; BSD/macOS mv no. Probed
-// once so the mv shim below can exec the real mv untouched on GNU hosts (CI
-// fidelity) and emulate -fT/-T only where the host lacks them (dev Macs).
-const MV_HAS_T = (() => {
-  const d = mkdtempSync(join(tmpdir(), "luna-mv-probe-"))
-  writeFileSync(join(d, "a"), "")
-  const ok = spawnSync(REAL_MV, ["-fT", join(d, "a"), join(d, "b")]).status === 0
-  rmSync(d, { recursive: true, force: true })
-  return ok
-})()
+const REAL_PERL = spawnSync("bash", ["-c", "command -v perl"], { encoding: "utf8" }).stdout.trim()
+if (!REAL_PERL) throw new Error("releases-layout.test.ts: perl not found on host")
 
 const tempDirs: string[] = []
 const makeTempDir = () => {
@@ -76,8 +66,16 @@ const LIB_CONTENT = readFileSync(join(repoRoot, "scripts/lib/luna-deploy.sh"), "
  * Releases fixture: upstream bare origin (two commits, same bun.lock), a bare
  * mirror WITH the explicit origin refspec, one built prev release, and
  * current -> releases/<prev> (RELATIVE link).
+ *
+ * `targetExtraFiles` (relative path -> content) lands ONLY in the "target"
+ * commit, after the "prev" commit is already cut - so the materialized prev
+ * release lacks them and the materialized target release has them, modeling
+ * a post-move tree shape appearing for the first time on a fresh deploy.
  */
-const makeReleasesFixture = (root: string) => {
+const makeReleasesFixture = (
+  root: string,
+  opts: { readonly targetExtraFiles?: Readonly<Record<string, string>> } = {},
+) => {
   const origin = join(root, "origin.git")
   mkdirSync(origin, { recursive: true })
   git(origin, "init", "--quiet", "--bare")
@@ -96,6 +94,11 @@ const makeReleasesFixture = (root: string) => {
   git(seed, "commit", "--quiet", "-m", "prev")
   const prevSha = git(seed, "rev-parse", "HEAD")
   writeFileSync(join(seed, "file.txt"), "v2\n")
+  for (const [relPath, content] of Object.entries(opts.targetExtraFiles ?? {})) {
+    const full = join(seed, relPath)
+    mkdirSync(dirname(full), { recursive: true })
+    writeFileSync(full, content)
+  }
   git(seed, "add", "-A")
   git(seed, "commit", "--quiet", "-m", "target")
   const targetSha = git(seed, "rev-parse", "HEAD")
@@ -120,8 +123,6 @@ const makeReleasesFixture = (root: string) => {
   mkdirSync(claudeDir, { recursive: true })
   writeFileSync(join(claudeDir, "claude"), "#!/bin/sh\nexit 0\n")
   spawnSync("chmod", ["+x", join(claudeDir, "claude")])
-  mkdirSync(join(prevRel, "apps", "ui-web", "dist"), { recursive: true })
-  writeFileSync(join(prevRel, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
   writeFileSync(join(prevRel, ".complete"), "")
 
   symlinkSync(`releases/${prevSha}`, join(deploy, "current"))
@@ -130,11 +131,26 @@ const makeReleasesFixture = (root: string) => {
 }
 
 /**
+ * Removes the `current` SYMLINK itself, never what it points at.
+ *
+ * Use this instead of `rmSync` on any deploy symlink. `rmSync` stats THROUGH
+ * the link, so on a link-to-directory it throws ERR_FS_EISDIR ("Path is a
+ * directory") on Node 24 and the whole test dies before it can assert
+ * anything; `rmSync(..., { recursive: true })` would "work" but by deleting
+ * the release the link resolves to, silently destroying the fixture the test
+ * is about to make claims against. `unlinkSync` is the only call with the
+ * semantics the deploy layout actually wants.
+ */
+function unlinkCurrent(deploy: string): void {
+  unlinkSync(join(deploy, "current"))
+}
+
+/**
  * Stub bin: systemctl (records stop/start WITH what current resolves to at
  * that instant — the flip-inside-the-window proof), curl (verdict keyed off
  * the release current resolves to), bun (CREATES the release artifacts,
- * mirroring a real install/build), plus a logging passthrough git shim so
- * fetch targets are assertable.
+ * mirroring a real install), plus a logging passthrough git shim so fetch
+ * targets are assertable.
  */
 const makeReleasesStubBin = (
   root: string,
@@ -201,18 +217,11 @@ for a in "$@"; do
 done
 if [[ "$1" == "install" && -n "$cwd" ]]; then
   [[ "\${STUB_BUN_FAIL_INSTALL:-}" == "1" ]] && exit 1
+  [[ -n "\${STUB_BUN_RM:-}" ]] && rm -f "\$STUB_BUN_RM"
   d="$cwd/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64"
   mkdir -p "$d"
   printf '#!/bin/sh\\nexit 0\\n' > "$d/claude"
   chmod +x "$d/claude"
-fi
-if [[ "$1" == "run" && "$*" == *build* ]]; then
-  [[ "\${STUB_BUN_FAIL_BUILD:-}" == "1" ]] && exit 1
-  [[ -n "\${STUB_BUN_RM:-}" ]] && rm -f "\$STUB_BUN_RM"
-  if [[ -n "$cwd" ]]; then
-    mkdir -p "$cwd/apps/ui-web/dist"
-    printf '<!doctype html>\\n' > "$cwd/apps/ui-web/dist/index.html"
-  fi
 fi
 exit 0
 `,
@@ -227,35 +236,23 @@ exec "${REAL_GIT}" "$@"
 `,
   )
 
-  // mv shim, always on PATH, two seams in one script:
-  //   1. Sabotage (env-keyed, harmless when STUB_MV_SABOTAGE_TARGET unset): an
-  //      mv -fT whose STAGED LINK points at $STUB_MV_SABOTAGE_TARGET silently
-  //      "succeeds" without moving — the rigged non-landing mv the flip
-  //      postcondition must catch.
-  //   2. Host-keyed -T emulation (baked in only when the host mv lacks GNU -T,
-  //      i.e. BSD/macOS): rename-onto semantics that refuse loudly rather than
-  //      ever descending into a directory, so the staged-swap and flip paths
-  //      are hermetic on any dev machine. GNU hosts exec the real mv untouched.
+  // perl shim: sabotage seam for luna_atomic_replace, the ONLY thing the flip
+  // and materialize's staged swap now go through. Env-keyed, harmless when
+  // STUB_FLIP_SABOTAGE_TARGET is unset: a rename(2) call whose staged-link
+  // SOURCE points at $STUB_FLIP_SABOTAGE_TARGET silently "succeeds" without
+  // renaming - the rigged non-landing flip the postcondition must catch.
   writeFileSync(
-    join(bin, "mv"),
+    join(bin, "perl"),
     `#!/usr/bin/env bash
-if [[ -n "\${STUB_MV_SABOTAGE_TARGET:-}" && "$1" == "-fT" ]]; then
-  tgt="$(readlink "$2" 2>/dev/null || true)"
-  if [[ "$tgt" == "\$STUB_MV_SABOTAGE_TARGET" ]]; then
-    rm -f "$2"
+if [[ -n "\${STUB_FLIP_SABOTAGE_TARGET:-}" && "$*" == *'rename('* ]]; then
+  src="\${@: -2:1}"
+  tgt="$(readlink "$src" 2>/dev/null || true)"
+  if [[ "$tgt" == "\$STUB_FLIP_SABOTAGE_TARGET" ]]; then
+    rm -f "$src"
     exit 0
   fi
 fi
-${MV_HAS_T ? "" : `if [[ "$1" == "-fT" || "$1" == "-T" ]]; then
-  src="$2"; dst="$3"
-  [[ "$1" == "-fT" ]] && rm -f "$dst" 2>/dev/null
-  if [[ -e "$dst" || -L "$dst" ]]; then
-    printf 'mv shim: refusing %s onto existing %s\\n' "$1" "$dst" >&2
-    exit 1
-  fi
-  exec "${REAL_MV}" -f "$src" "$dst"
-fi
-`}exec "${REAL_MV}" "$@"
+exec "${REAL_PERL}" "$@"
 `,
   )
 
@@ -279,7 +276,7 @@ exit 0
     )
   }
 
-  for (const f of ["systemctl", "curl", "bun", "git", "mv", ...(opts.withIncus ? ["incus"] : [])]) {
+  for (const f of ["systemctl", "curl", "bun", "git", "perl", ...(opts.withIncus ? ["incus"] : [])]) {
     spawnSync("chmod", ["+x", join(bin, f)])
   }
   return { bin, systemctlLog, orderLog, curlLog, bunLog, gitLog, incusLog }
@@ -388,7 +385,7 @@ describe("releases layout — materialize", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     // Empty-root bootstrap: remove the pre-built release AND current.
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     rmSync(join(fx.releases, fx.prevSha), { recursive: true })
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
@@ -439,7 +436,7 @@ describe("releases layout — materialize", () => {
     expect(existsSync(join(rel, "canary.txt"))).toBe(false)
   })
 
-  it("reuse gate: a complete release is reused (zero bun calls); a damaged one (deleted dist) is rebuilt", () => {
+  it("reuse gate: a complete release is reused (zero bun calls); a damaged one (deleted node_modules) is rebuilt", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
@@ -448,20 +445,20 @@ describe("releases layout — materialize", () => {
     const r1 = runReleases(fx, stubs, temp, ["--materialize", "--ref", fx.targetSha])
     expect(r1.status, r1.stdout + r1.stderr).toBe(0)
     const bunAfterFirst = readLog(stubs.bunLog).split("\n").filter(Boolean).length
-    expect(bunAfterFirst).toBe(2) // install + build
+    expect(bunAfterFirst).toBe(1) // install only
 
     const r2 = runReleases(fx, stubs, temp, ["--materialize", "--ref", fx.targetSha])
     expect(r2.status, r2.stdout + r2.stderr).toBe(0)
     expect(r2.stdout).toContain("reusing")
     expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(bunAfterFirst) // zero new bun calls
 
-    // Damage the declared artifact: .complete present but dist gone → rebuild.
-    rmSync(join(fx.releases, fx.targetSha, "apps", "ui-web", "dist", "index.html"))
+    // Damage the declared artifact: .complete present but node_modules gone → rebuild.
+    rmSync(join(fx.releases, fx.targetSha, "node_modules"), { recursive: true })
     const r3 = runReleases(fx, stubs, temp, ["--materialize", "--ref", fx.targetSha])
     expect(r3.status, r3.stdout + r3.stderr).toBe(0)
     expect(r3.stderr).toContain("removing stale/incomplete release")
-    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(bunAfterFirst + 2)
-    expect(existsSync(join(fx.releases, fx.targetSha, "apps", "ui-web", "dist", "index.html"))).toBe(true)
+    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(bunAfterFirst + 1)
+    expect(existsSync(join(fx.releases, fx.targetSha, "node_modules"))).toBe(true)
   })
 })
 
@@ -525,6 +522,25 @@ describe("releases layout — forward deploy", () => {
     // Journal cleared; dream-wake seeded through current.
     expect(existsSync(join(temp, "update-state", "transaction-stable"))).toBe(false)
     expect(readLog(stubs.bunLog)).toContain(`${fx.deploy}/current/apps/ui-web/scripts/dream-wake-install.ts`)
+  })
+
+  it("dream-wake-install probe: a target release carrying apps/server/scripts logs the post-move path, not the ui-web fallback", () => {
+    const temp = makeTempDir()
+    const fx = makeReleasesFixture(temp, {
+      targetExtraFiles: { "apps/server/scripts/dream-wake-install.ts": "// post-move fixture stub\n" },
+    })
+    const stubs = makeReleasesStubBin(temp, fx.deploy, {
+      prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
+    })
+    const r = runReleases(fx, stubs, temp)
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    // The materialized target release carries the post-move file; the prev
+    // release (cut before it was added) does not.
+    expect(existsSync(join(fx.releases, fx.targetSha, "apps", "server", "scripts", "dream-wake-install.ts"))).toBe(true)
+    expect(existsSync(join(fx.releases, fx.prevSha, "apps", "server", "scripts", "dream-wake-install.ts"))).toBe(false)
+    const bunLog = readLog(stubs.bunLog)
+    expect(bunLog).toContain(`${fx.deploy}/current/apps/server/scripts/dream-wake-install.ts`)
+    expect(bunLog).not.toContain(`${fx.deploy}/current/apps/ui-web/scripts/dream-wake-install.ts`)
   })
 
   it("cp -a node_modules seeding fires on an unchanged bun.lock blob, and the frozen install still runs", () => {
@@ -849,8 +865,8 @@ describe("releases layout — rollback", () => {
     // current back at prev; previous names the FAILED release (forensics).
     expect(currentOf(fx.deploy)).toBe(`releases/${fx.prevSha}`)
     expect(previousOf(fx.deploy)).toBe(`releases/${fx.targetSha}`)
-    // ZERO bun installs during rollback: forward materialize's 2 calls only.
-    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(2)
+    // ZERO bun installs during rollback: forward materialize's 1 call only.
+    expect(readLog(stubs.bunLog).split("\n").filter(Boolean).length).toBe(1)
     // ZERO git mutation during rollback: no reset, exactly one fetch (forward).
     // (\bfetch\b as a WORD: the preflight's `config --get remote.origin.fetch`
     // read is not a fetch.)
@@ -881,13 +897,13 @@ describe("releases layout — rollback", () => {
     expect(readFileSync(join(temp, "update-state", "transaction-stable"), "utf8")).toContain("phase=rollback-failed")
   })
 
-  it("(c) pre-flip build failure: current untouched, NO stop issued, exit 1, journal cleared; failed build tree cleaned up", () => {
+  it("(c) pre-flip install failure: current untouched, NO stop issued, exit 1, journal cleared; failed build tree cleaned up", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
-    const r1 = runReleases(fx, stubs, temp, [], { STUB_BUN_FAIL_BUILD: "1" })
+    const r1 = runReleases(fx, stubs, temp, [], { STUB_BUN_FAIL_INSTALL: "1" })
     expect(r1.status, r1.stdout + r1.stderr).toBe(1)
     expect(r1.stderr).toContain("PRE-flip")
     expect(currentOf(fx.deploy)).toBe(`releases/${fx.prevSha}`)
@@ -903,14 +919,14 @@ describe("releases layout — rollback", () => {
     expect(currentOf(fx.deploy)).toBe(`releases/${fx.targetSha}`)
   })
 
-  it("(d) rigged non-landing mv: flip postcondition returns 1 (not die), routes to rollback flip-back, old release serving", () => {
+  it("(d) rigged non-landing flip: flip postcondition returns 1 (not die), routes to rollback flip-back, old release serving", () => {
     const temp = makeTempDir()
     const fx = makeReleasesFixture(temp)
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
     const r = runReleases(fx, stubs, temp, [], {
-      STUB_MV_SABOTAGE_TARGET: `releases/${fx.targetSha}`,
+      STUB_FLIP_SABOTAGE_TARGET: `releases/${fx.targetSha}`,
     })
     expect(r.status, r.stdout + r.stderr).toBe(1)
     expect(r.stderr).toContain("POSTCONDITION: current flip did not land")
@@ -925,7 +941,7 @@ describe("releases layout — rollback", () => {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: false, readyAtPrev: true,
     })
     // The prev release loses its .complete DURING the run (post-preflight),
-    // via the build stub's rm seam.
+    // via the install stub's rm seam.
     const r = runReleases(fx, stubs, temp, [], {
       STUB_BUN_RM: join(fx.releases, fx.prevSha, ".complete"),
     })
@@ -1141,7 +1157,7 @@ describe("releases layout — identity fails closed", () => {
     const stubs = makeReleasesStubBin(temp, fx.deploy, {
       prevSha: fx.prevSha, targetSha: fx.targetSha, readyAtTarget: true, readyAtPrev: true,
     })
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const r = runReleases(fx, stubs, temp)
     expect(r.status, r.stdout + r.stderr).toBe(1)
@@ -1255,7 +1271,7 @@ describe("luna-autodeploy — releases mode", () => {
     expect(ok.stdout).not.toContain("--ref origin/master")
 
     // Dangling current: refuse unattended repair, exit 2.
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const bad = spawnSync("bash", [AUTODEPLOY, "stable", "--repair"], { cwd: repoRoot, encoding: "utf8", env })
     expect(bad.status, bad.stdout + bad.stderr).toBe(2)
@@ -1291,7 +1307,7 @@ describe("luna-autodeploy — releases mode", () => {
     gitDir(fx.mirror, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 
     // Broken element 3: dangling current.
-    rmSync(join(fx.deploy, "current"))
+    unlinkCurrent(fx.deploy)
     symlinkSync("releases/" + "0".repeat(40), join(fx.deploy, "current"))
     const dangling = spawnSync("bash", [AUTODEPLOY, "stable", "--validate"], { cwd: repoRoot, encoding: "utf8", env })
     expect(dangling.status).toBe(2)
@@ -1352,8 +1368,13 @@ describe("luna-server-install — releases layout", () => {
     ])
     expect(r.status, r.stdout + r.stderr).toBe(0)
     const unit = readFileSync(join(unitDir, "luna-chat-server.service"), "utf8")
-    expect(unit).toContain(`WorkingDirectory=${repoDir}/apps/ui-web`)
-    expect(unit).toMatch(/^ExecStart=.*bun run scripts\/chat-server\.ts$/m)
+    // Path-independent launcher (S07): WorkingDirectory names REPO_DIR itself
+    // (no app-specific subpath) and ExecStart names ONLY the launcher, which
+    // resolves the daemon's actual file relative to its own import.meta.url -
+    // migration-window or not, the unit never encodes a version-dependent path.
+    expect(unit).toContain(`WorkingDirectory=${repoDir}`)
+    expect(unit).not.toContain(`WorkingDirectory=${repoDir}/apps/ui-web`)
+    expect(unit).toMatch(/^ExecStart=.*bun run scripts\/luna-chat-server-entry\.ts$/m)
     const alert = readFileSync(join(unitDir, "luna-alert-luna-chat-server.service"), "utf8")
     expect(alert).toContain(`ExecStart=${repoDir}/scripts/luna-pager`)
   })
@@ -1403,6 +1424,9 @@ describe("inplace verbatim signature", () => {
     git(work, "checkout", "--quiet", prevSha)
     mkdirSync(join(work, "node_modules"), { recursive: true })
     writeFileSync(join(work, "node_modules", ".keep"), "keep\n")
+    // The PHASE3_TIP pinned engine (below) still runs the ui-web build and
+    // checks this artifact - S11 only removed it from the LIVE engine, so
+    // the fixture must still satisfy the historical engine's own postcondition.
     mkdirSync(join(work, "apps", "ui-web", "dist"), { recursive: true })
     writeFileSync(join(work, "apps", "ui-web", "dist", "index.html"), "<!doctype html>\n")
     return { work, prevSha, targetSha }
@@ -1509,9 +1533,23 @@ exit 0
       )
       expect(r.status, `${engine}: ${r.stdout}${r.stderr}`).toBe(0)
       const normalize = (s: string) => s.split(root).join("ROOT")
+      const bunLog = normalize(readLog(stubs.bunLog))
+      const uiWebBuildLine = /^run --cwd \S+ --filter @luna\/ui-web build$/m
+      // S11 intentionally dropped the `@luna/ui-web build` step from the
+      // inplace apply (nothing serves the frontend build anymore) - the ONE
+      // sanctioned divergence from PHASE3_TIP. Strip that single line from
+      // the HISTORICAL stream only, and assert its absence on the LIVE
+      // stream directly, so a regression that re-adds the step to the live
+      // engine fails this test instead of being silently stripped away.
+      const bunLogForCompare = engine === ENGINE
+        ? bunLog
+        : bunLog.split("\n").filter((line) => !uiWebBuildLine.test(line)).join("\n")
+      if (engine === ENGINE) {
+        expect(bunLog).not.toMatch(uiWebBuildLine)
+      }
       streams.push(
         "SYSTEMCTL:\n" + normalize(readLog(stubs.systemctlLog)) +
-        "BUN:\n" + normalize(readLog(stubs.bunLog)) +
+        "BUN:\n" + bunLogForCompare +
         "CURL:\n" + normalize(readLog(stubs.curlLog)),
       )
     }

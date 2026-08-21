@@ -32,7 +32,7 @@ ops*:
   CLI wrapper. There is **no upgrade verb**.
 - There is **no server release artifact, no server version, no `luna update` command, and no
   "update available" signal.** The only server-version notion that exists is the git short-SHA:
-  `resolveBuildSha()` (`apps/ui-web/scripts/chat-server.ts:358-378`) resolves `LUNA_BUILD_SHA` →
+  `resolveBuildSha()` (`apps/server/src/chat-server.ts:358-378`) resolves `LUNA_BUILD_SHA` →
   `git rev-parse --short HEAD` → `"unknown"`, surfaced in the `hello` frame
   (`packages/ui-ws/src/protocol.ts:42-46`) and the `/readyz` JSON body
   (`packages/ui-ws/src/server.ts:960-998`). `PKG_VERSION` in

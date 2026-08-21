@@ -16,14 +16,6 @@ export * from "./adapter.js"
 export { loadAgents } from "./agent-loader.js"
 export { DreamReasonerDefault, buildDreamPrompt } from "./dream-reasoner.js"
 export {
-  MemoryRerankerDefault,
-  DEFAULT_RERANK_TIMEOUT_MS,
-  resolveRerankModel,
-  buildRerankPrompt,
-  parseScores as parseRerankScores,
-  RERANK_RUBRIC,
-} from "./memory-reranker.js"
-export {
   CrossEncoderRerankerLayer,
   probeCrossEncoder,
   normalizeCrossEncoderScore,

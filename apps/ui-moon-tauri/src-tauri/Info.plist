@@ -8,5 +8,50 @@
          enough — it only *permits* the prompt under hardened runtime). -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Luna listens through the microphone so you can talk to her instead of typing.</string>
+
+    <!-- macOS Local Network privacy (Sequoia / macOS 26+): without this
+         purpose string, WKWebView outbound sockets to LAN / Tailscale /
+         .local / unqualified hosts can be dropped with no prompt and no
+         TCP from the WebKit.Networking process — while Terminal curl to
+         the same host still succeeds. Observed on Luna Moon 0.0.66
+         dialing ws://jax-box:4753/ui. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Luna Moon connects to your Luna chat server on the local network or Tailscale (for example jax-box).</string>
+
+    <!-- App Transport Security: keep default ATS for the rest of the app,
+         but allow cleartext ws:// to local / Tailscale Luna endpoints.
+         Do NOT force wss; installer defaults stay on ws://jax-box:….
+         NSAllowsLocalNetworking covers unqualified + .local + local IPs;
+         NSExceptionDomains cover MagicDNS FQDNs (*.ts.net) and the
+         jax-box short / .local names explicitly for insecure loads. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>jax-box</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+            <key>jax-box.local</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+            <key>ts.net</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
 </dict>
 </plist>
