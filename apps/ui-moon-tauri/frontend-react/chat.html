@@ -553,32 +553,9 @@
       gap: 8px;
     }
 
-    /* Native controls own the left cluster; New thread and Collapse own the
-       right. The title remains centered between those balanced zones. */
+    /* Native controls own the left cluster; Collapse owns the right. The
+       title remains centered between those balanced zones. */
     #title-bar { position: relative; }
-
-    /* New-thread button — the promoted action, accent-tinted to invite. Sits at
-       the right (the flex:1 bar-title pushes it there). */
-    #title-bar .newthread-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--accent);
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.12s, color 0.12s;
-    }
-    #title-bar .newthread-btn:hover {
-      background: color-mix(in oklab, var(--accent) 16%, transparent);
-    }
-    /* Pinned windows hide the + via [hidden]; the class's display:flex beats
-       the UA [hidden]{display:none} by cascade, so force it. */
-    #title-bar .newthread-btn[hidden] { display: none !important; }
 
     /* Watercolor scrollbar styling — applied to every scrolling container in
        the moon. `width` covers vertical, `height` covers horizontal. The
@@ -2123,16 +2100,9 @@
         <path d="m16 15-3-3 3-3"/>
       </svg>
     </button>
-    <!-- New thread — the promoted action, alone on the right. Mints a fresh
-         thread in THIS window (single-window model; same as the sidebar's
-         "+ New"). Hidden and inert in pinned ?thread=<id> windows. -->
-    <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New thread">
-      <!-- Lucide "plus" (ISC). -->
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 5v14"/><path d="M5 12h14"/>
-      </svg>
-    </button>
+    <!-- New thread lives ONLY in the thread drawer ("+ New", #thread-drawer-new).
+         The title bar used to carry a duplicate + button; it was removed so the
+         bar holds just the title and the collapse-into-moon gesture. -->
     <!-- Collapse the whole workspace back into the moon orb (Luna-specific
          gesture; the yellow native button does OS-minimize instead). Sits at
          the far right so it clears the native traffic lights on the left.

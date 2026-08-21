@@ -41,7 +41,7 @@
 // `#slash-menu`, and - as of stack23 S16d, completing the composer arc - the
 // context-pill Smart Bar (chat/SmartBarEngine.tsx) into `#smart-bar`.
 // chat.html's WebSocketEngine/PoolEngine/ThreadDrawerEngine-driven wire
-// pipeline and every other title-bar control (new-thread-btn, redock-btn)
+// pipeline and every other title-bar control (redock-btn)
 // keep running completely unchanged in chat.html's own inline <script> - see
 // chat-chrome-mount.tsx's module doc for the chrome scope rationale,
 // MessageList.tsx's module doc for the transcript-conversion seam (the

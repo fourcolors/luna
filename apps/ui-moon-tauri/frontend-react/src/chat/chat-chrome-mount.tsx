@@ -16,7 +16,7 @@
  * title this chrome needs no store/reducer; the text mounts as a plain
  * literal via Astryx's Text.
  *
- * Everything else in chat.html's title bar (new-thread-btn, redock-btn) stays
+ * Everything else in chat.html's title bar (redock-btn) stays
  * exactly as before: those are chat-specific, state-driven affordances
  * (pinned-floater detection, live composer-draft capture, Tauri window
  * handles) outside the shared window-envelope chrome boundary this mount

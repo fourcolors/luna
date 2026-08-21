@@ -706,16 +706,8 @@ export function installWiring(ctx: WiringCtx) {
   // mounted by main-chat.tsx into #collapse-moon-btn-root) - this inline
   // script no longer touches that DOM or wires its click handler.
 
-  // New-thread button → mint a FRESH thread in THIS window (single-window
-  // model; the title-bar + and the sidebar "+ New" now do the same thing —
-  // no separate window is spawned).
-  const winNewThreadBtn = document.getElementById('new-thread-btn');
-  if (winNewThreadBtn) {
-    winNewThreadBtn.addEventListener('click', () => {
-      if (State.pinnedThread) return;
-      try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ }
-    });
-  }
+  // New-thread lives ONLY in the thread drawer ("+ New", wired further down).
+  // The title bar's duplicate + button was removed.
 
   // View mode (plan Step 3) rides BOTH redock call sites below. Read the
   // BARE window.ViewMode global at call time, not window.__MoonInternals.
@@ -764,7 +756,6 @@ export function installWiring(ctx: WiringCtx) {
   // and skip wiring so the switcher can never open there.
   if (State.pinnedThread) {
     if (DOM.toggleThreads) DOM.toggleThreads.hidden = true;
-    if (winNewThreadBtn) winNewThreadBtn.hidden = true;
     // Floater: native startDragging + redock-drag-ended (no CSS scale - it
     // misaligns AppKit traffic lights relative to the panel card).
     try {
@@ -801,7 +792,14 @@ export function installWiring(ctx: WiringCtx) {
     });
     if (DOM.threadDrawerClose) DOM.threadDrawerClose.addEventListener('click', () => ThreadDrawerEngine.closePanel());
     // Drawer "+ New" mints a fresh thread IN THIS window (single-window model).
-    if (DOM.threadDrawerNew) DOM.threadDrawerNew.addEventListener('click', () => { try { ChatEngine.newConversation(); } catch (_) {} });
+    // The pinnedThread guard is belt-and-braces: this whole block is skipped at
+    // boot for a pinned ?thread=<id> window, but the guard keeps the
+    // one-thread-forever invariant true even if the pin is set later. It moved
+    // here from the title-bar + button, which was removed.
+    if (DOM.threadDrawerNew) DOM.threadDrawerNew.addEventListener('click', () => {
+      if (State.pinnedThread) return;
+      try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ }
+    });
     if (DOM.threadDrawerSearch) DOM.threadDrawerSearch.addEventListener('input', (e) => ThreadDrawerEngine.setSearch(e.target.value));
     // Redock return channel (#380): floater Redock button / native drag-release.
     try {

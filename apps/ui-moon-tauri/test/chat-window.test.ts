@@ -4552,24 +4552,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   // #collapse-moon-btn (that id no longer exists - see chat-chrome.test.tsx's
   // markup assertions).
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: title-bar + button — mints a fresh thread IN THIS window
+  // Feature: drawer "+ New" button — mints a fresh thread IN THIS window
   // (single-window model), and is disarmed entirely in pinned windows
-  // (one-thread-forever invariant).
+  // (one-thread-forever invariant). The title bar's duplicate + button was
+  // removed; #thread-drawer-new is the only new-thread affordance left.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: title-bar + button (new thread in place)', () => {
+  describe('Feature: drawer "+ New" button (new thread in place)', () => {
     const M = () => (window as any).__MoonInternals
 
-    it('Scenario: clicking + in a normal window calls newConversation and never open_widget', () => {
+    it('Scenario: clicking "+ New" in a normal window calls newConversation and never open_widget', () => {
       const m = M()
       const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
       const newConv = vi.spyOn(m.ChatEngine, 'newConversation').mockImplementation(() => {})
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
       expect(newConv).toHaveBeenCalledTimes(1)
       expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
     })
 
-    it('Scenario: clicking + preserves the typed draft and staged attachments (they carry into the fresh thread)', () => {
+    it('Scenario: clicking "+ New" preserves the typed draft and staged attachments (they carry into the fresh thread)', () => {
       const m = M()
       setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const input = document.getElementById('message-input') as HTMLTextAreaElement
@@ -4579,7 +4580,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.Attachments.render()
       const sendNewThread = spyOnEngine(m, 'sendNewThread').mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
 
       expect(sendNewThread).toHaveBeenCalledTimes(1)
       expect(input.value).toBe('draft that must survive')
@@ -4588,12 +4589,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(false)
     })
 
-    it('Scenario: the online + waits for thread-created before arming the snapshot watchdog', () => {
+    it('Scenario: the online "+ New" waits for thread-created before arming the snapshot watchdog', () => {
       const m = M()
       setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const watchdog = spyOnEngine(m, 'startSubscribeTimeout')
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
 
       expect(watchdog).not.toHaveBeenCalled()
       m.handleFrame({ type: 'thread-created', thread: { id: 'fresh-thread' } })
@@ -4601,13 +4602,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.subscribeTimeout).not.toBeNull()
     })
 
-    it('Scenario: an in-flight informational thread-list cannot attach the previous latest thread while + is minting', () => {
+    it('Scenario: an in-flight informational thread-list cannot attach the previous latest thread while "+ New" is minting', () => {
       const m = M()
       setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       m.State.activeThreadId = 'current-thread'
       const send = spyOnSend(m).mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
       m.handleFrame({ type: 'thread-list', threads: [{ id: 'previous-latest' }] })
 
       expect(m.State.activeThreadId).toBeNull()
@@ -4619,7 +4620,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const send = spyOnSend(m).mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
       m.handleFrame({ type: 'thread-create-error', message: 'Could not create the thread. Please try again.' })
       m.handleFrame({ type: 'thread-list', threads: [{ id: 'previous-latest' }] })
 
@@ -4628,13 +4629,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(document.getElementById('chat-messages')!.textContent).toContain('Could not create the thread')
     })
 
-    it('Scenario: double-clicking + emits only one new-thread request while creation is pending', () => {
+    it('Scenario: double-clicking "+ New" emits only one new-thread request while creation is pending', () => {
       const m = M()
       setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const send = spyOnSend(m).mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
+      document.getElementById('thread-drawer-new')!.click()
 
       const creates = send.mock.calls.filter(([frame]) => frame.type === 'new-thread')
       expect(creates).toHaveLength(1)
@@ -4645,7 +4646,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       setWs(m, { readyState: WebSocket.OPEN, send: vi.fn() })
       const send = spyOnSend(m).mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
       m.ThreadDrawerEngine.onRowClick('chosen-thread')
       m.handleFrame({ type: 'thread-created', thread: { id: 'late-fresh-thread' } })
 
@@ -4671,7 +4672,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(document.getElementById('chat-messages')!.textContent).not.toContain('old thread history')
     })
 
-    it('Scenario: under the PoolEngine dark flag a connected + mints immediately (engine-aware gate)', () => {
+    it('Scenario: under the PoolEngine dark flag a connected "+ New" mints immediately (engine-aware gate)', () => {
       // Re-boot the page with the pool vendor + dark flag so the delegation
       // block is live - the pool path never assigns State.ws, so a raw
       // readyState gate would wrongly take the offline branch here.
@@ -4685,7 +4686,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.PoolEngine._isConnected = true
       const mint = vi.spyOn(m.PoolEngine, 'sendNewThread').mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
 
       expect(mint).toHaveBeenCalledTimes(1)
       expect(m.State.pendingFreshThread).toBe(false)
@@ -4701,8 +4702,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.PoolEngine._isConnected = true
       const send = vi.spyOn(m.PoolEngine, 'send').mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
+      document.getElementById('thread-drawer-new')!.click()
       expect(send.mock.calls.filter(([frame]) => frame.type === 'new-thread')).toHaveLength(1)
 
       m.handleFrame({ type: 'thread-created', thread: { id: 'pool-fresh' } })
@@ -4712,7 +4713,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       localStorage.removeItem('luna_pool_engine')
     })
 
-    it('Scenario: offline + then reconnect mints a fresh thread instead of restoring the persisted thread', async () => {
+    it('Scenario: offline "+ New" then reconnect mints a fresh thread instead of restoring the persisted thread', async () => {
       const m = M()
       const invoke = vi.fn((cmd: string) => Promise.resolve(cmd === 'get_last_thread_id' ? 'persisted-thread' : null))
       ;(window as any).__TAURI__.core = { invoke }
@@ -4720,7 +4721,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       m.State.activeThreadId = 'current-thread'
       const sendSpy = spyOnSend(m).mockImplementation(() => {})
 
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
 
       expect(sendSpy).not.toHaveBeenCalled()
       expect(m.State.activeThreadId).toBeNull()
@@ -4735,30 +4736,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.pendingFreshThread).toBe(false)
     })
 
-    it('Scenario: in a pinned window the + click is a no-op (does not mint a thread)', () => {
+    it('Scenario: in a pinned window the "+ New" click is a no-op (does not mint a thread)', () => {
       const m = M()
       m.State.pinnedThread = 't-pinned'
       const newConv = vi.spyOn(m.ChatEngine, 'newConversation').mockImplementation(() => {})
-      document.getElementById('new-thread-btn')!.click()
+      document.getElementById('thread-drawer-new')!.click()
       expect(newConv).not.toHaveBeenCalled()
     })
 
-    it('Scenario: a pinned (?thread=<id>) boot hides the + button', () => {
-      // The hidden attribute is set at BOOT from the URL-derived pin, so this
-      // one test re-runs the page script under a pinned URL (same mechanism
-      // as the beforeEach boot) instead of injecting State.pinnedThread.
-      window.history.replaceState({}, '', '/?thread=t-pinned')
-      mountChatDomFromHtml(htmlContent)
-      evalChatInlineScriptWithBridge()
-      expect((document.getElementById('new-thread-btn') as HTMLElement).hidden).toBe(true)
-      // The non-pinned boot in beforeEach leaves it visible (contrast pin).
-      window.history.replaceState({}, '', '/')
-    })
-
-    it('+ button: .newthread-btn[hidden] forces display:none over its own display:flex', () => {
-      // Same cascade trap as .mic-btn: the class's display:flex beats the UA
-      // [hidden]{display:none} rule, so the !important override must exist.
-      expect(htmlContent).toMatch(/\.newthread-btn\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    it('Scenario: the removed title-bar + button is gone from the markup', () => {
+      // Regression guard: new-thread has ONE affordance now (the drawer's
+      // "+ New"); the duplicate title-bar + must not come back.
+      expect(document.getElementById('new-thread-btn')).toBeNull()
+      expect(htmlContent).not.toContain('newthread-btn')
     })
   })
 
@@ -5655,7 +5645,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('divider: #thread-divider[hidden] forces display:none over its own display:flex', () => {
-      // Same cascade trap as .newthread-btn/.mic-btn: initSidebar hides the
+      // Same cascade trap as .mic-btn: initSidebar hides the
       // divider in pinned windows via the hidden PROPERTY, but the class's
       // display:flex beats the UA [hidden]{display:none} rule, so the
       // !important override must exist or a phantom col-resize strip paints.
