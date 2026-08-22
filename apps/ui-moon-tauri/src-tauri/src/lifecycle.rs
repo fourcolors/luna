@@ -8,6 +8,9 @@
 use tauri::Emitter;
 use tauri::Manager;
 
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, Instant};
+
 // ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
 //
 // The moon orb (window "main") and the widget windows (panel-* / widget-*) are
@@ -189,16 +192,64 @@ mod expand_focus_tests {
     }
 }
 
+/// Hard ceiling so a hung WKWebsiteDataStore callback cannot freeze Moon boot.
+/// A few seconds is plenty for a disk/memory cache purge on a healthy Mac.
+#[cfg(target_os = "macos")]
+const WEBVIEW_CACHE_PURGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Outcome of waiting for the WK cache-purge completion signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CachePurgeWaitOutcome {
+    Completed,
+    TimedOut,
+    Disconnected,
+}
+
+/// Wait up to `timeout` for `rx` to receive the purge-done signal.
+///
+/// Between polls, `pump` runs (on macOS: CFRunLoopRunInMode) so WK's
+/// `MainRunLoopCallbackAggregator` can deliver the completion on this same
+/// main thread — a bare `recv_timeout` would deadlock until the deadline.
+/// Pure enough to unit-test without AppKit by passing a sleep/no-op pump.
+pub(crate) fn wait_for_cache_purge_signal<F>(
+    rx: &Receiver<()>,
+    timeout: Duration,
+    mut pump: F,
+) -> CachePurgeWaitOutcome
+where
+    F: FnMut(Duration),
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        match rx.try_recv() {
+            Ok(()) => return CachePurgeWaitOutcome::Completed,
+            Err(TryRecvError::Disconnected) => return CachePurgeWaitOutcome::Disconnected,
+            Err(TryRecvError::Empty) => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return CachePurgeWaitOutcome::TimedOut;
+        }
+        let slice = (deadline - now).min(Duration::from_millis(50));
+        pump(slice);
+    }
+}
+
 /// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
 /// IndexedDB. WKWebView caches the `tauri://` asset responses (the embedded
 /// frontend) and keeps serving them ACROSS app updates — so a user on a fresh
 /// binary kept seeing a months-old frontend (none of the shipped frontend fixes
 /// ran). Purging the cache forces the webview to re-fetch the new embedded
 /// assets. Must run on the main thread.
+///
+/// Blocks until the WK completion handler fires (or [`WEBVIEW_CACHE_PURGE_TIMEOUT`]
+/// elapses) so hub/panel webviews opened after this returns cannot race a
+/// still-in-flight purge and load stale cached JS (exp_moon_cache_race).
 #[cfg(target_os = "macos")]
 fn clear_webview_disk_cache() {
     use block2::RcBlock;
     use objc2::MainThreadMarker;
+    use objc2_core_foundation::{kCFRunLoopDefaultMode, CFRunLoopRunInMode};
     use objc2_foundation::{NSDate, NSSet, NSString};
     use objc2_web_kit::WKWebsiteDataStore;
 
@@ -212,18 +263,92 @@ fn clear_webview_disk_cache() {
     let mem = NSString::from_str("WKWebsiteDataTypeMemoryCache");
     let types = NSSet::from_retained_slice(&[disk, mem]);
     let epoch = NSDate::dateWithTimeIntervalSince1970(0.0); // clear all ages
-    let done = RcBlock::new(|| eprintln!("[moon] WKWebView cache purge completed"));
+
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let done = RcBlock::new(move || {
+        let _ = tx.send(());
+        eprintln!("[moon] WKWebView cache purge completed");
+    });
     let store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
-    unsafe { store.removeDataOfTypes_modifiedSince_completionHandler(&types, &epoch, &done) };
     eprintln!("[moon] clearing WKWebView disk/memory cache (frontend refresh)");
+    unsafe { store.removeDataOfTypes_modifiedSince_completionHandler(&types, &epoch, &done) };
+
+    // WK delivers the completion via MainRunLoopCallbackAggregator — pump the
+    // main CFRunLoop while waiting so the RcBlock can run on this thread.
+    let outcome = wait_for_cache_purge_signal(&rx, WEBVIEW_CACHE_PURGE_TIMEOUT, |slice| {
+        let _ = unsafe {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, slice.as_secs_f64(), true)
+        };
+    });
+    match outcome {
+        CachePurgeWaitOutcome::Completed => {}
+        CachePurgeWaitOutcome::TimedOut => {
+            eprintln!(
+                "[moon] WKWebView cache purge timed out after {}s — continuing boot",
+                WEBVIEW_CACHE_PURGE_TIMEOUT.as_secs()
+            );
+        }
+        CachePurgeWaitOutcome::Disconnected => {
+            eprintln!(
+                "[moon] WKWebView cache purge waiter disconnected before completion — continuing boot"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_purge_wait_tests {
+    use super::{wait_for_cache_purge_signal, CachePurgeWaitOutcome};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn completed_when_signal_already_sent() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(()).unwrap();
+        let outcome = wait_for_cache_purge_signal(&rx, Duration::from_secs(1), |_| {});
+        assert_eq!(outcome, CachePurgeWaitOutcome::Completed);
+    }
+
+    #[test]
+    fn completed_when_signal_arrives_during_wait() {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            let _ = tx.send(());
+        });
+        let outcome = wait_for_cache_purge_signal(&rx, Duration::from_secs(1), |slice| {
+            thread::sleep(slice.min(Duration::from_millis(10)));
+        });
+        assert_eq!(outcome, CachePurgeWaitOutcome::Completed);
+    }
+
+    #[test]
+    fn timed_out_when_no_signal() {
+        let (_tx, rx) = mpsc::channel::<()>();
+        let outcome = wait_for_cache_purge_signal(&rx, Duration::from_millis(40), |slice| {
+            thread::sleep(slice.min(Duration::from_millis(10)));
+        });
+        assert_eq!(outcome, CachePurgeWaitOutcome::TimedOut);
+    }
+
+    #[test]
+    fn disconnected_when_sender_dropped_without_signal() {
+        let (tx, rx) = mpsc::channel::<()>();
+        drop(tx);
+        let outcome = wait_for_cache_purge_signal(&rx, Duration::from_secs(1), |_| {});
+        assert_eq!(outcome, CachePurgeWaitOutcome::Disconnected);
+    }
 }
 
 /// On the FIRST launch after an app update, purge the webview cache so the new
 /// embedded frontend loads instead of the version the webview cached under the
 /// old build. Tracks the last-seen version in `~/.luna/.moon-webview-version`.
 /// Best-effort: any error simply skips the purge (no worse than before). Runs at
-/// the very start of `setup`, before any panel webview opens on demand, so the
-/// panels load fresh.
+/// the very start of `setup` and **waits for the purge to finish** (with a short
+/// timeout) before any panel webview opens, so panels cannot race a still-in-
+/// flight cache clear and load stale JS.
 pub(crate) fn clear_webview_cache_if_updated() {
     #[cfg(target_os = "macos")]
     {
