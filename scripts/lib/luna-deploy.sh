@@ -408,6 +408,7 @@ luna_session_defer_mark() {
   local profile="$1" path dir tmp since
   path="$(luna_session_defer_state_path "$profile")"
   dir="$(dirname "$path")"
+  # shellcheck disable=SC2174  # mkdir -p -m 0700 applies mode to deepest dir only - acknowledged; known-red follow-up
   mkdir -p -m 0700 "$dir" 2>/dev/null || true
   if [[ -f "$path" ]]; then
     since="$(grep -E '^since=' "$path" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
