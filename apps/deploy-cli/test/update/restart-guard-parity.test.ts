@@ -133,7 +133,7 @@ const baseGuard = (serviceName: string, readinessPort: string): SessionGuardOpti
   serviceName,
   profile: "stable",
   maxSessionDefer: "4h",
-  updateStateDir: makeTempDir(),
+  updateStateDir: makeTempDir("deploy-cli-guard-defer-"),
   readinessPort,
 })
 
@@ -691,7 +691,7 @@ describe("session guard: fail-closed decision matrix, parity with the real bash 
   })
 
   it("standing sessions past maxSessionDefer permit as session-defer-stale (not operator-override)", () => {
-    const stateDir = makeTempDir()
+    const stateDir = makeTempDir("deploy-cli-guard-stale-")
     writeFileSync(join(stateDir, "session-defer-stable"), "since=1000\n")
     const early = restartSessionGuardSync({
       ...baseGuard("luna-chat-server.service", READINESS_PORT),
@@ -717,7 +717,7 @@ describe("session guard: fail-closed decision matrix, parity with the real bash 
   })
 
   it("unknown ws count never consults maxSessionDefer (still fail-closed)", () => {
-    const stateDir = makeTempDir()
+    const stateDir = makeTempDir("deploy-cli-guard-unknown-")
     writeFileSync(join(stateDir, "session-defer-stable"), "since=1\n")
     const verdict = restartSessionGuardSync({
       ...baseGuard("luna-chat-server.service", READINESS_PORT),

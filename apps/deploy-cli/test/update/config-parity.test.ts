@@ -667,6 +667,18 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
     )
 
     refuses(
+      "an invalid --max-session-defer",
+      { argv: ["--max-session-defer", "not-a-span"] },
+      CONFIG_ERRORS.maxSessionDeferInvalid("not-a-span"),
+    )
+
+    refuses(
+      "the max-session-defer check beats the profile check",
+      { argv: ["--max-session-defer", "bogus", "--profile", "bad/profile"] },
+      CONFIG_ERRORS.maxSessionDeferInvalid("bogus"),
+    )
+
+    refuses(
       "the deploy-root presence check beats its absoluteness check",
       { argv: ["--layout", "releases", "--releases-keep", "0"] },
       CONFIG_ERRORS.releasesNeedsDeployRoot,
@@ -733,6 +745,7 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
     missing("--ref as the last argument", ["--ref"])
     missing("--incus with an empty value", ["--incus", ""])
     missing("--operator-override as the last argument", ["--operator-override"])
+    missing("--max-session-defer as the last argument", ["--max-session-defer"])
     missing("--launchd-label with an empty value", ["--launchd-label", ""])
     missing("--releases-keep as the last argument", ["--releases-keep"])
 
@@ -740,12 +753,12 @@ describe("update config: golden parity with scripts/luna-update-server", () => {
       const valued = [
         "--profile", "--repo-dir", "--luna-home", "--ref", "--service-dir", "--service-name",
         "--incus", "--readiness-timeout", "--readiness-interval", "--readiness-port",
-        "--restart-settle", "--operator-override", "--layout", "--deploy-root",
+        "--restart-settle", "--operator-override", "--max-session-defer", "--layout", "--deploy-root",
         "--releases-keep", "--supervisor", "--launchd-label", "--launchd-plist",
       ]
       const valueless = ["--no-rollback", "--restart-only", "--materialize", "--dry-run", "--user"]
-      // 23 flags exactly, as the spec counts them (help is not one of them).
-      expect(valued.length + valueless.length).toBe(23)
+      // 24 flags exactly, as the spec counts them (help is not one of them).
+      expect(valued.length + valueless.length).toBe(24)
 
       const env = baseEnv()
       for (const flag of valued) {

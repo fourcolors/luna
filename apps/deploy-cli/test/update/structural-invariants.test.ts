@@ -886,10 +886,10 @@ describe("rule 6: the ROLLED BACK marker is present, in rollback.ts, and nowhere
       expect(found.map((h) => h.file), "files emitting the marker").toEqual(["update/rollback.ts"])
       expect(found.length).toBe(1)
       // Byte-exact against the bash oracle, which is what makes it a contract:
-      // scripts/luna-update-server:1839 emits the same sentence.
+      // scripts/luna-update-server:1866 emits the same sentence.
       const bash = readFileSync(join(repoRoot, "scripts/luna-update-server"), "utf8").split("\n")
-      const oracle = bash[1838]
-      expect(oracle, "scripts/luna-update-server:1839").toContain("ROLLED BACK to")
+      const oracle = bash[1865]
+      expect(oracle, "scripts/luna-update-server:1866").toContain("ROLLED BACK to")
       expect(oracle).toContain("($SERVICE_NAME healthy)")
       const at = found[0] as Hit
       const line = (raw.get("update/rollback.ts") as string).split("\n")[at.line - 1]

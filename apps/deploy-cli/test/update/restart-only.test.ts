@@ -432,7 +432,7 @@ describe("restartOnlySync - composed with the real restart primitive", () => {
           guardSessions: cfg.guardSessions ?? false,
           profile: "stable",
           maxSessionDefer: "4h",
-          updateStateDir: makeTempDir(),
+          updateStateDir: makeTempDir("deploy-cli-restart-only-defer-"),
           readinessPort: "4753",
           queryActiveWsCount: () => cfg.wsCount ?? 0,
         },

@@ -54,7 +54,7 @@ describe("the four silent arms", () => {
 })
 
 describe("the five lines bash actually prints", () => {
-  it("operator-override (:1468) reuses the auditLine already minted onto the verdict", () => {
+  it("operator-override (:1488) reuses the auditLine already minted onto the verdict", () => {
     const reason = "incident 42: paging is down"
     const verdict: GuardVerdict = {
       permitted: true,
@@ -63,7 +63,7 @@ describe("the five lines bash actually prints", () => {
     }
     expect(guardVerdictLine(verdict, PORT)).toBe(
       bashLogLine({
-        line: 1468,
+        line: 1488,
         fn: "luna_warn",
         anchor: "SESSION GUARD OVERRIDDEN by operator",
         vars: { OPERATOR_OVERRIDE_REASON: reason },
@@ -71,22 +71,22 @@ describe("the five lines bash actually prints", () => {
     )
   })
 
-  it("live-sessions (:1477) carries the count and the RAW port spelling", () => {
+  it("live-sessions (:1502) carries the count and the RAW port spelling", () => {
     expect(guardVerdictLine({ permitted: false, reason: "live-sessions", sessionCount: 3 }, PORT)).toBe(
       bashLogLine({
-        line: 1477,
+        line: 1502,
         fn: "luna_warn",
-        anchor: "active session(s) on",
+        anchor: "deferring restart",
         vars: { n: "3", READINESS_PORT: PORT },
       }),
     )
   })
 
-  it("dead-server-exception (:1491) quotes the unit state, and is the only line on a PERMITTED arm", () => {
+  it("dead-server-exception (:1518) quotes the unit state, and is the only line on a PERMITTED arm", () => {
     const verdict: GuardVerdict = { permitted: true, reason: "dead-server-exception", unitState: "inactive" }
     expect(guardVerdictLine(verdict, PORT)).toBe(
       bashLogLine({
-        line: 1491,
+        line: 1518,
         fn: "luna_warn",
         anchor: "no server process; restart permitted",
         vars: { state: "inactive" },
@@ -94,16 +94,16 @@ describe("the five lines bash actually prints", () => {
     )
   })
 
-  it("transport-unreachable (:1494) interpolates nothing at all", () => {
+  it("transport-unreachable (:1521) interpolates nothing at all", () => {
     expect(guardVerdictLine({ permitted: false, reason: "transport-unreachable", unitState: "" }, PORT)).toBe(
-      bashLogLine({ line: 1494, fn: "luna_warn", anchor: "transport never reached systemd" }),
+      bashLogLine({ line: 1521, fn: "luna_warn", anchor: "transport never reached systemd" }),
     )
   })
 
-  it("unit-state-uncertain (:1497) quotes the state that made it fail closed", () => {
+  it("unit-state-uncertain (:1524) quotes the state that made it fail closed", () => {
     expect(guardVerdictLine({ permitted: false, reason: "unit-state-uncertain", unitState: "activating" }, PORT)).toBe(
       bashLogLine({
-        line: 1497,
+        line: 1524,
         fn: "luna_warn",
         anchor: "may be serving; deferring",
         vars: { state: "activating" },
@@ -120,6 +120,13 @@ describe("structural properties", () => {
       { permitted: true, reason: "dead-server-exception", unitState: "failed" },
       { permitted: false, reason: "transport-unreachable", unitState: "" },
       { permitted: false, reason: "unit-state-uncertain", unitState: "activating" },
+      {
+        permitted: true,
+        reason: "session-defer-stale",
+        sessionCount: 2,
+        auditLine:
+          "session guard: 2 active session(s) on :04753 — deploy.maxSessionDefer=4h elapsed; applying despite standing sessions (staleness, not an operator override)",
+      },
     ]
     for (const verdict of all) {
       const line = guardVerdictLine(verdict, PORT)
@@ -140,9 +147,9 @@ describe("structural properties", () => {
     expect(uncertain).not.toContain("undefined")
     expect(live).toBe(
       bashLogLine({
-        line: 1477,
+        line: 1502,
         fn: "luna_warn",
-        anchor: "active session(s) on",
+        anchor: "deferring restart",
         vars: { n: "", READINESS_PORT: PORT },
       }),
     )
@@ -162,6 +169,7 @@ describe("structural properties", () => {
         case "zero-sessions":
         case "operator-override":
         case "live-sessions":
+        case "session-defer-stale":
         case "dead-server-exception":
         case "transport-unreachable":
         case "unit-state-uncertain":
