@@ -526,7 +526,7 @@ export const buildWorkflowWorker = (
           // The inner promise never rejects (runShellStep always resolves,
           // even on spawn error) - the `.catch` below is defensive only, so
           // a future edit that introduces a reject path can't hang this fiber.
-          result = yield* Effect.async<ShellStepResult>((resume) => {
+          result = yield* Effect.callback<ShellStepResult>((resume) => {
             const controller = new AbortController()
             void runShellStep(step, controller.signal)
               .then((r) => resume(Effect.succeed(r)))

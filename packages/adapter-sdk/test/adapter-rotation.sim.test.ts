@@ -282,14 +282,13 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
         // Open a Scope manually. Don't drain the stream — just hold the
         // credential lifetime open and inspect.
         const scope = yield* Scope.make()
-        const out = yield* Scope.extend(
-          adapter.query({
+        const out = yield* adapter
+          .query({
             sessionId: localSid,
             prompt: emptyPrompt,
             sessionOptions: { model: "m", idleTimeoutMs: 5_000 },
-          }),
-          scope,
-        )
+          })
+          .pipe(Scope.provide(scope))
         // Touching the stream value to keep the lint quiet.
         void out
 
@@ -574,7 +573,7 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
       // be a single value or an array depending on the call — stringify both.
       const warns: string[] = []
       const captureLogger = Logger.make(({ logLevel, message }) => {
-        if (logLevel.label !== "WARN") return
+        if (String(logLevel) !== "Warn") return
         const text = Array.isArray(message)
           ? message.map((m) => String(m)).join(" ")
           : String(message)
@@ -598,7 +597,7 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
           yield* Effect.scoped(runOneQuery(adapter, store, undefined, "chat-lane"))
         }).pipe(
           Effect.provide(layer),
-          Effect.provide(Logger.replace(Logger.defaultLogger, captureLogger)),
+          Effect.provide(Logger.layer([captureLogger])),
         ),
       )
 

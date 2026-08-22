@@ -456,7 +456,7 @@ describe("buildWorkflowWorker - shell step process-group kill (issue #277 Seam B
         // Fork (not yield*) - we need a live Fiber to interrupt mid-flight,
         // which the existing tests never needed (they always run the
         // worker to completion).
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           worker({ steps: [{ kind: "shell", cmd }] }, ctx),
         )
 

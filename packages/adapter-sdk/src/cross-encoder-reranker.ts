@@ -6,6 +6,7 @@
  * fallback to retrieval order.
  */
 import { Effect, Layer, Ref } from "effect"
+import * as Semaphore from "effect/Semaphore"
 import {
   MemoryReranker,
   RerankError,
@@ -440,7 +441,7 @@ export function CrossEncoderRerankerLayer(
       // a sidecar the header warns is queue-sensitive. The semaphore serializes
       // the check-and-run so exactly one fiber probes while the rest await; a
       // failed probe leaves probePassed false so the next call retries.
-      const probeGate = yield* Effect.makeSemaphore(1)
+      const probeGate = yield* Semaphore.make(1)
 
       const ensureProbed = probeGate.withPermits(1)(
         Effect.gen(function* () {
@@ -466,13 +467,15 @@ export function CrossEncoderRerankerLayer(
           // `/v1/rerank` has no sampling parameters. Identical inputs must
           // produce identical scores, which is the Phase 4 enable-blocker.
           const scores = yield* requestScores(url, timeoutMs, maxInputChars, args).pipe(
-            Effect.timeoutFail({
+            Effect.timeoutOrElse({
               duration: `${budgetMs} millis`,
-              onTimeout: () =>
-                new RerankError({
-                  op: "timeout",
-                  message: `cross-encoder scoring exceeded the per-call budget of ${budgetMs}ms (${args.candidates.length} candidates)`,
-                }),
+              orElse: () =>
+                Effect.fail(
+                  new RerankError({
+                    op: "timeout",
+                    message: `cross-encoder scoring exceeded the per-call budget of ${budgetMs}ms (${args.candidates.length} candidates)`,
+                  }),
+                ),
             }),
           )
           return scores.map(({ id, llmScore }) => ({ id, llmScore }))

@@ -331,7 +331,7 @@ describe("buildPromptWorker", () => {
       let loggedDefect: unknown
       yield* result.postCommit!.pipe(
         Effect.catch(() => Effect.void),
-        Effect.catchAllDefect((defect) =>
+        Effect.catchDefect((defect) =>
           Effect.sync(() => {
             loggedDefect = defect
           }),

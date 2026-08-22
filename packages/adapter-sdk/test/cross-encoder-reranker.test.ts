@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { Effect } from "effect"
+import { Cause, Effect, Option } from "effect"
 import { MemoryReranker, RerankError, type RerankCandidateInput } from "@luna/core"
 import {
   CrossEncoderRerankerLayer,
@@ -91,11 +91,16 @@ const runRerankCandidates = (
 
 const failureOf = (exit: Awaited<ReturnType<typeof runRerank>>): RerankError => {
   expect(exit._tag).toBe("Failure")
-  if (exit._tag !== "Failure" || exit.cause._tag !== "Fail") {
+  if (exit._tag !== "Failure") {
     throw new Error("expected a typed failure")
   }
-  expect(exit.cause.error).toBeInstanceOf(RerankError)
-  return exit.cause.error as RerankError
+  const err = Cause.findErrorOption(exit.cause)
+  expect(Option.isSome(err)).toBe(true)
+  if (Option.isNone(err)) {
+    throw new Error("expected a typed failure")
+  }
+  expect(err.value).toBeInstanceOf(RerankError)
+  return err.value as RerankError
 }
 
 describe("CrossEncoderRerankerLayer", () => {
@@ -246,9 +251,13 @@ describe("CrossEncoderRerankerLayer", () => {
     setFetch(brokenFetch as unknown as typeof globalThis.fetch)
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error).toBeInstanceOf(RerankError)
-      expect((exit.cause.error as RerankError).message).toContain("broken-GGUF")
+    if (exit._tag === "Failure") {
+      const err = Cause.findErrorOption(exit.cause)
+      expect(Option.isSome(err)).toBe(true)
+      if (Option.isSome(err)) {
+        expect(err.value).toBeInstanceOf(RerankError)
+        expect((err.value as RerankError).message).toContain("broken-GGUF")
+      }
     }
   })
 
@@ -421,9 +430,13 @@ describe("CrossEncoderRerankerLayer", () => {
 
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error).toMatchObject({ op: "acquire" })
-      expect((exit.cause.error as RerankError).message).toContain("health")
+    if (exit._tag === "Failure") {
+      const err = Cause.findErrorOption(exit.cause)
+      expect(Option.isSome(err)).toBe(true)
+      if (Option.isSome(err)) {
+      expect(err.value).toMatchObject({ op: "acquire" })
+      expect((err.value as RerankError).message).toContain("health")
+      }
     }
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -438,12 +451,16 @@ describe("CrossEncoderRerankerLayer", () => {
 
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error).toMatchObject({ op: "timeout" })
-      expect((exit.cause.error as RerankError).message).toContain(
+    if (exit._tag === "Failure") {
+      const err = Cause.findErrorOption(exit.cause)
+      expect(Option.isSome(err)).toBe(true)
+      if (Option.isSome(err)) {
+      expect(err.value).toMatchObject({ op: "timeout" })
+      expect((err.value as RerankError).message).toContain(
         "reachable but not responding to reranking requests",
       )
-      expect((exit.cause.error as RerankError).message).not.toContain("broken-GGUF")
+      expect((err.value as RerankError).message).not.toContain("broken-GGUF")
+      }
     }
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
@@ -499,8 +516,12 @@ describe("CrossEncoderRerankerLayer", () => {
     setFetch(fetchMock as unknown as typeof globalThis.fetch)
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect((exit.cause.error as RerankError).message).toMatch(/batch|n_ubatch|500/i)
+    if (exit._tag === "Failure") {
+      const err = Cause.findErrorOption(exit.cause)
+      expect(Option.isSome(err)).toBe(true)
+      if (Option.isSome(err)) {
+      expect((err.value as RerankError).message).toMatch(/batch|n_ubatch|500/i)
+      }
     }
     // Guard the guardrail: the calibration request must actually carry the
     // long batch-capacity document (all 3 candidates, the 3rd ~3,445 chars),
@@ -621,12 +642,16 @@ describe("CrossEncoderRerankerLayer", () => {
       )
       const elapsed = Date.now() - started
       expect(exit._tag).toBe("Failure")
-      if (exit._tag !== "Failure" || exit.cause._tag !== "Fail") {
+      if (exit._tag !== "Failure") {
         throw new Error(`expected Fail cause, got ${String(exit)}`)
       }
-      expect(exit.cause.error).toBeInstanceOf(RerankError)
-      expect((exit.cause.error as RerankError).op).toBe("timeout")
-      expect((exit.cause.error as RerankError).message).toMatch(
+      const err = Cause.findErrorOption(exit.cause)
+      if (Option.isNone(err)) {
+        throw new Error(`expected Fail cause, got ${String(exit)}`)
+      }
+      expect(err.value).toBeInstanceOf(RerankError)
+      expect((err.value as RerankError).op).toBe("timeout")
+      expect((err.value as RerankError).message).toMatch(
         /per-call budget of 400ms|timed out after 400ms/,
       )
       // Must fail near the budget, not after the 2.5s slow body completes.
@@ -653,9 +678,13 @@ describe("CrossEncoderRerankerLayer", () => {
     setFetch(fetchMock as unknown as typeof globalThis.fetch)
     const exit = await Effect.runPromiseExit(probeCrossEncoder("http://cross-encoder.test"))
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect((exit.cause.error as RerankError).op).toBe("parse")
-      expect((exit.cause.error as RerankError).message).toMatch(/logit|out-of-\[0,1\]/i)
+    if (exit._tag === "Failure") {
+      const err = Cause.findErrorOption(exit.cause)
+      expect(Option.isSome(err)).toBe(true)
+      if (Option.isSome(err)) {
+      expect((err.value as RerankError).op).toBe("parse")
+      expect((err.value as RerankError).message).toMatch(/logit|out-of-\[0,1\]/i)
+      }
     }
   })
 })

@@ -562,10 +562,10 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
             // against a 400ms timer that wins → proves NO trip occurred.
             return yield* out.pipe(
               Stream.runDrain,
-              Effect.timeoutTo({
+              Effect.as("ended" as const),
+              Effect.timeoutOrElse({
                 duration: "400 millis",
-                onTimeout: () => "still-hanging" as const,
-                onSuccess: () => "ended" as const,
+                orElse: () => Effect.succeed("still-hanging" as const),
               }),
             )
           }),
