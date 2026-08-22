@@ -656,37 +656,62 @@ export function bootChat() {
   // AFTER every engine (its 33 listeners call them) and BEFORE the wire (which
   // needs the params, and whose boot reads the State.pinnedThread this sets).
   // Nothing here touches the wire, which is what makes that slot available.
-  const { SPAWN_FRESH, PINNED_THREAD, INITIAL_VIEW_MODE } = installWiring({
-    Logger,
-    DOM: DOM as never,
-    State: getChatHost()?.state() as never,
-    engines: {
-      ArtifactsEngine: artifactsEngine,
-      Attachments: attachmentsMount?.Attachments,
-      ChatLoop: messageListMount?.ChatLoop,
-      ChatState: messageListMount?.ChatState,
-      ComposerConfig: composerConfigMount?.ComposerConfig,
-      FeedbackEngine: feedbackEngine,
-      LocalShell: localShell,
-      SecretPromptEngine: secretPromptEngine,
-      SlashMenu: slashMenuMount?.SlashMenu,
-      SuggestedActionsEngine: suggestedActionsEngine,
-      SurveyEngine: surveyEngine,
-      ThreadCache: threadDrawer.ThreadCache,
-      ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine,
-      ChatEngine: chatEngine.ChatEngine,
-      VoiceEngine: chatEngine.VoiceEngine,
-      formatRelTime,
-      buildMessageMeta,
-      moonDragDebugNote,
-    },
-  })
+  //
+  // IGNITION ISOLATION (0.0.71 / #563): composer chrome wiring must never
+  // skip wire.boot(). installWiring derives boot params first and catches
+  // chrome throws; this try/catch is belt-and-suspenders so a total abort
+  // still leaves URL-derived params and we reach connect().
+  let SPAWN_FRESH: boolean
+  let PINNED_THREAD: string | null
+  let INITIAL_VIEW_MODE: boolean
+  try {
+    ;({ SPAWN_FRESH, PINNED_THREAD, INITIAL_VIEW_MODE } = installWiring({
+      Logger,
+      DOM: DOM as never,
+      State: getChatHost()?.state() as never,
+      engines: {
+        ArtifactsEngine: artifactsEngine,
+        Attachments: attachmentsMount?.Attachments,
+        ChatLoop: messageListMount?.ChatLoop,
+        ChatState: messageListMount?.ChatState,
+        ComposerConfig: composerConfigMount?.ComposerConfig,
+        FeedbackEngine: feedbackEngine,
+        LocalShell: localShell,
+        SecretPromptEngine: secretPromptEngine,
+        SlashMenu: slashMenuMount?.SlashMenu,
+        SuggestedActionsEngine: suggestedActionsEngine,
+        SurveyEngine: surveyEngine,
+        ThreadCache: threadDrawer.ThreadCache,
+        ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine,
+        ChatEngine: chatEngine.ChatEngine,
+        VoiceEngine: chatEngine.VoiceEngine,
+        formatRelTime,
+        buildMessageMeta,
+        moonDragDebugNote,
+      },
+    }))
+  } catch (err) {
+    Logger.error(
+      "installWiring aborted; using URL boot params so wire.boot() still dials:",
+      err,
+    )
+    const threadParam = new URLSearchParams(location.search).get("thread") || null
+    SPAWN_FRESH = threadParam === "new"
+    PINNED_THREAD = SPAWN_FRESH ? null : threadParam
+    INITIAL_VIEW_MODE = new URLSearchParams(location.search).get("viewMode") === "true"
+    const st = getChatHost()?.state() as { pinnedThread?: string | null } | undefined
+    if (st) st.pinnedThread = PINNED_THREAD
+  }
 
   // The drawer's two boot calls run HERE, not at its construction: wireDivider is
   // gated on State.pinnedThread, which installWiring above is what sets.
-  threadDrawer.ThreadDrawerEngine.initSidebar()
-  if (!getChatHost()?.state().pinnedThread) {
-    threadDrawer.ThreadDrawerEngine.wireDivider(document.getElementById("thread-divider"))
+  try {
+    threadDrawer.ThreadDrawerEngine.initSidebar()
+    if (!getChatHost()?.state().pinnedThread) {
+      threadDrawer.ThreadDrawerEngine.wireDivider(document.getElementById("thread-divider"))
+    }
+  } catch (err) {
+    Logger.error("thread drawer boot failed (non-fatal; connect continues):", err)
   }
 
   // ── The wire, and its ignition (stack23 S20a) ───────────────────────────
