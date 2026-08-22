@@ -181,6 +181,16 @@
       "width": 360,
       "height": 460,
       "description": "Suggested actions proposed by Luna for the active conversation (opens with params {thread})"
+    },
+    {
+      "kind": "launcher",
+      "title": "Launcher",
+      "page": "panel.html?type=launcher",
+      "trust": "system",
+      "singleton": true,
+      "width": 560,
+      "height": 420,
+      "description": "Quick launcher — fuzzy-search and open any Moon panel or pinned artifact (widget, MCP app or document) by name"
     }
   ]
 }

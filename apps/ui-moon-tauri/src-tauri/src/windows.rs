@@ -143,6 +143,16 @@ fn panel_kind_from_label(label: &str) -> Option<String> {
     label.strip_prefix("panel-").map(|s| s.replace('-', "."))
 }
 
+/// Pure layout-persistence guard (testable without a webview), same shape as
+/// `is_closable_widget_label`. The launcher is a transient, summoned-on-demand
+/// command palette: `write_panel_layout` records every open panel and the boot
+/// restore replays everything it recorded, so persisting the palette would make
+/// a single quit-with-it-open reopen it on EVERY subsequent launch. Every other
+/// kind persists.
+fn persists_in_layout(kind: &str) -> bool {
+    kind != "launcher"
+}
+
 /// May this label participate in the dock graph and be closed by page JS?
 /// widget-* (content tier) and panel-* (system tier); never the hub.
 pub(crate) fn is_dock_label(label: &str) -> bool {
@@ -174,6 +184,9 @@ pub(crate) fn write_panel_layout(app: &tauri::AppHandle) {
         let Some(kind) = panel_kind_from_label(&label) else {
             continue;
         };
+        if !persists_in_layout(&kind) {
+            continue;
+        }
         if let Some((x, y, w, h)) = window_logical_rect(&win) {
             entries.push(serde_json::json!({
                 "kind": kind, "x": x, "y": y, "w": w, "h": h
@@ -2287,6 +2300,18 @@ mod tests {
         // ':' and '/' and ' ' and '&' must be encoded so they cannot break the
         // query string the widget page parses.
         assert_eq!(encode_query_value("a:b/c d&e"), "a%3Ab%2Fc%20d%26e");
+    }
+
+    #[test]
+    fn launcher_never_persists_into_the_saved_layout() {
+        // Transient command palette: recording it would make the boot restore
+        // reopen it on every launch after one quit-with-it-open.
+        assert!(!persists_in_layout("launcher"));
+        // Every genuine panel kind still round-trips through layout.json.
+        assert!(persists_in_layout("chat"));
+        assert!(persists_in_layout("settings"));
+        assert!(persists_in_layout("settings.voice"));
+        assert!(persists_in_layout("now"));
     }
 
     #[test]

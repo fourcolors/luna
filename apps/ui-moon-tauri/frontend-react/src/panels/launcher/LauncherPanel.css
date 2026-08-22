@@ -1,0 +1,137 @@
+/*
+ * LauncherPanel.css - styles for the Cmd+K quick-launcher panel ('launcher' kind).
+ *
+ * Dark-glass palette consistent with every other Moon panel. Keeps row shapes
+ * close to .app-row (SettingsAppsPanel.css) so the visual weight is familiar.
+ */
+.launcher-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+  gap: 10px;
+  overflow: hidden;
+}
+
+/* ── Search input ─────────────────────────────────────────────────────────── */
+.launcher-search-wrap {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  padding: 6px 12px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.launcher-search-icon {
+  font-size: 0.88rem;
+  color: var(--muted);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.launcher-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  caret-color: #8ab4f8;
+}
+
+.launcher-search-input::placeholder {
+  color: var(--muted);
+}
+
+/* ── Results list ─────────────────────────────────────────────────────────── */
+.launcher-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Thin scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
+}
+
+.launcher-section-label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 8px 3px;
+  user-select: none;
+}
+
+.launcher-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.launcher-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.launcher-row.launcher-row--active {
+  background: rgba(138, 180, 248, 0.12);
+  border-color: rgba(138, 180, 248, 0.28);
+}
+
+.launcher-row-badge {
+  font-size: 0.55rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.launcher-row-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.launcher-row-title {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launcher-row-desc {
+  font-size: 0.70rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Empty / no-match state ───────────────────────────────────────────────── */
+.launcher-empty {
+  font-size: 0.80rem;
+  color: var(--muted);
+  padding: 18px 10px;
+  text-align: center;
+}
