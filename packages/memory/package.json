@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@luna/core": "workspace:*",
-    "effect": "^3.21.0",
+    "effect": "4.0.0-rc.111",
     "vectorlite": "^0.2.0"
   },
   "devDependencies": {

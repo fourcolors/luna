@@ -14,10 +14,10 @@
     "@luna/core": "workspace:*",
     "@luna/chat-service": "workspace:*",
     "@luna/capabilities": "workspace:*",
-    "effect": "^3.21.0"
+    "effect": "4.0.0-rc.111"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
+    "typescript": "7.0.2",
     "vitest": "^2.1.5"
   }
 }
