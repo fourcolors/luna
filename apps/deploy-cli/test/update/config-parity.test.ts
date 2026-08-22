@@ -265,16 +265,20 @@ interface ToolsOptions {
 }
 
 /**
- * A hermetic PATH. `dirname` is the only external the truncated block runs
- * (:39). `launchctl` and `bun` are stubs so the two PATH probes in this block
- * answer identically on macOS and Linux - without this, /bin/launchctl makes
- * the launchctl-missing refusal untestable on a developer machine.
+ * A hermetic PATH. `dirname` is the only external the truncated block ran
+ * historically (:39); `tr` is also required now that config validation calls
+ * `luna_parse_systemd_duration` (bash-3.2-safe lowercase via `tr`). `launchctl`
+ * and `bun` are stubs so the two PATH probes in this block answer identically
+ * on macOS and Linux - without this, /bin/launchctl makes the launchctl-missing
+ * refusal untestable on a developer machine.
  */
 const makeTools = (opts: ToolsOptions = {}): string => {
   const dir = makeTemp("deploy-cli-config-tools-")
-  const dirnameBin = ["/usr/bin/dirname", "/bin/dirname"].find((p) => existsSync(p))
-  if (dirnameBin === undefined) throw new Error("config-parity: no dirname on this host")
-  symlinkSync(dirnameBin, join(dir, "dirname"))
+  for (const name of ["dirname", "tr"] as const) {
+    const bin = [`/usr/bin/${name}`, `/bin/${name}`].find((p) => existsSync(p))
+    if (bin === undefined) throw new Error(`config-parity: no ${name} on this host`)
+    symlinkSync(bin, join(dir, name))
+  }
   for (const [name, wanted] of [["launchctl", opts.launchctl], ["bun", opts.bun]] as const) {
     if (wanted !== true) continue
     const p = join(dir, name)

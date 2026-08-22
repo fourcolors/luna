@@ -368,10 +368,8 @@ luna_now_epoch() {
 # Returns non-zero on garbage.
 luna_parse_systemd_duration() {
   local raw="${1:-}" total=0 tok num unit
-  # Bash-native lowercasing (no `tr`): config-parity drives a hermetic PATH that
-  # only holds dirname/launchctl stubs, so an external `tr` would abort every
-  # accepted/refused row with a probe path on stderr.
-  raw="${raw,,}"
+  # Lowercase via tr (bash 3.2-safe; macOS /bin/bash has no ${var,,}).
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
   raw="${raw#"${raw%%[![:space:]]*}"}"
   raw="${raw%"${raw##*[![:space:]]}"}"
   [[ -n "$raw" ]] || return 1
