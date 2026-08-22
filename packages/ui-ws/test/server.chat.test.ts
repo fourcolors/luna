@@ -482,18 +482,22 @@ describe("UIWebSocketServer (chat routing)", () => {
 
   it("user-message to unknown thread surfaces assistant-error kind:'unknown-thread'", async () => {
     rig = await startChatRig()
+    // ChatService emits a ChatUnknownThread obs event on the same path as
+    // the wire assistant-error; take enough frames that the error is present
+    // even when the obs `event` wins the race for slot 1.
     const frames = await collectFrames(
       rig.url,
-      2, // hello + assistant-error
+      3, // hello + (event | assistant-error) + the other
       [
         { type: "user-message", threadId: "thr_does_not_exist", text: "hi" },
       ],
     )
     expect(frames[0]?.type).toBe("hello")
-    expect(frames[1]?.type).toBe("assistant-error")
-    if (frames[1]?.type === "assistant-error") {
-      expect(frames[1].error.kind).toBe("unknown-thread")
-      expect(frames[1].threadId).toBe("thr_does_not_exist")
+    const err = frames.find((f) => f.type === "assistant-error")
+    expect(err).toBeDefined()
+    if (err?.type === "assistant-error") {
+      expect(err.error.kind).toBe("unknown-thread")
+      expect(err.threadId).toBe("thr_does_not_exist")
     }
   })
 

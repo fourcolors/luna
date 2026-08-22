@@ -28,6 +28,7 @@
  */
 import {
   Cause,
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -261,12 +262,13 @@ export interface UIWebSocketServerConfig {
    *     translating ChatFrame → ServerFrame on the wire
    *
    * The base obs path (event/drop/ping) keeps working unchanged when
-   * this is unset. Pass the resolved service handle (not the Tag) so
-   * the server's environment doesn't grow a `ChatService` dependency.
+   * this is unset. Pass the resolved service handle (not the
+   * `Context.Service` key) so the server's environment doesn't grow a
+   * `ChatService` dependency.
    * Pass `null` explicitly in setup-mode (same as absent — server
    * advertises `setup:true, chat:false`).
    */
-  readonly chatService?: ChatService | null
+  readonly chatService?: Context.Service.Shape<typeof ChatService> | null
   /**
    * Optional AccountBroker handle. When provided, the server sends an
    * `account-list` frame to each client immediately after the `hello`
