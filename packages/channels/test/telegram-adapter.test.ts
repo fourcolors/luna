@@ -14,13 +14,13 @@ import { Buffer } from "node:buffer"
 import { describe, expect, it, vi } from "vitest"
 import {
   Effect,
-  Either,
   Fiber,
   Layer,
   Option,
   PubSub,
   Redacted,
   Ref,
+  Result,
   Stream,
 } from "effect"
 import { Clock } from "@luna/core"
@@ -355,7 +355,7 @@ describe("inbound: getUpdates → ChannelMessage", () => {
       Effect.scoped(
         Effect.gen(function* () {
           // Run start() with a scope; let it spin briefly then interrupt.
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             Effect.scoped(adapter.start()),
           )
           // Give the poll loop time to run one iteration
@@ -392,7 +392,7 @@ describe("inbound: getUpdates → ChannelMessage", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Effect.scoped(adapter.start()),
         )
         yield* Effect.sleep("80 millis")
@@ -433,7 +433,7 @@ describe("inbound: non-ingestible / non-message updates ignored", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -467,7 +467,7 @@ describe("inbound: non-ingestible / non-message updates ignored", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -522,7 +522,7 @@ describe("inbound: attachments (photo / document)", () => {
     adapter.setMessageHandler((msg) => Effect.sync(() => { received.push(msg) }))
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep(`${opts.runMillis ?? 60} millis`)
         yield* Fiber.interrupt(fiber)
         yield* adapter.stop()
@@ -1050,8 +1050,8 @@ describe("makeRealFileTransport (stubbed fetch — no network)", () => {
     vi.stubGlobal("fetch", stub)
     try {
       const ft = makeRealFileTransport(Redacted.make(TOKEN))
-      const result = await Effect.runPromise(Effect.either(ft(filePath)))
-      return { error: Either.isLeft(result) ? result.left : null, urls }
+      const result = await Effect.runPromise(Effect.result(ft(filePath)))
+      return { error: Result.isFailure(result) ? result.failure : null, urls }
     } finally {
       vi.unstubAllGlobals()
     }
@@ -1297,7 +1297,7 @@ describe("reconnection: transient poll errors are retried", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         // Need enough time for: first poll failure + 1 second backoff + second poll success
         yield* Effect.sleep("2500 millis")
         yield* Fiber.interrupt(fiber)
@@ -1314,7 +1314,7 @@ describe("reconnection: transient poll errors are retried", () => {
 
     // (c) The RETRY call used the SAME offset as the failing call (offset was NOT
     // advanced after the error — the adapter correctly preserves the offset via
-    // the catchAllCause fallback in the loop).
+    // the catchCause fallback in the loop).
     // First call: offset 0 (no prior successful polls).
     expect(getUpdatesOffsets[0]).toBe(0)
     // Second call (the retry): same offset 0 — not advanced past the failed poll.
@@ -1340,7 +1340,7 @@ describe("dedup key: platformMessageId === update_id", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -1368,7 +1368,7 @@ describe("dedup key: platformMessageId === update_id", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("80 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -1423,10 +1423,10 @@ const makeStubChatService = () => {
     subscribe: (threadId: string): Stream.Stream<ChatFrame, never> => {
       const pub = threads.get(threadId)
       if (pub === undefined) return Stream.empty
-      return Stream.unwrapScoped(
+      return Stream.unwrap(
         Effect.gen(function* () {
-          const q = yield* PubSub.subscribe(pub)
-          return Stream.fromQueue(q)
+          const sub = yield* PubSub.subscribe(pub)
+          return Stream.fromSubscription(sub)
         }),
       )
     },
@@ -1639,7 +1639,7 @@ describe("buildChannelMessage: extended metadata", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -1682,7 +1682,7 @@ describe("buildChannelMessage: extended metadata", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -1893,7 +1893,7 @@ describe("typing indicator", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("80 millis")
 
         const typingCalls = calls.filter((c) => c.method === "sendChatAction")
@@ -1924,7 +1924,7 @@ describe("typing indicator", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
         yield* adapter.stop()
@@ -1949,7 +1949,7 @@ describe("start(): command registration", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("30 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -1989,7 +1989,7 @@ describe("start(): command registration", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("60 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2038,7 +2038,7 @@ describe("start(): lifecycle-call resilience", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2104,7 +2104,7 @@ describe("inbound allowlist", () => {
     )
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2168,7 +2168,7 @@ describe("poll-loop error logging", () => {
       adapter.setMessageHandler(() => Effect.void)
       await Effect.runPromise(
         Effect.gen(function* () {
-          const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+          const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
           yield* Effect.sleep("120 millis") // enough for the failing poll to log once
           yield* Fiber.interrupt(fiber)
         }),
@@ -2210,7 +2210,7 @@ describe("tap-to-stop inline button (callback_query)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2240,7 +2240,7 @@ describe("tap-to-stop inline button (callback_query)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2261,7 +2261,7 @@ describe("tap-to-stop inline button (callback_query)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2292,7 +2292,7 @@ describe("tap-to-stop inline button (callback_query)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("60 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2381,7 +2381,7 @@ describe("\"working\" reaction glyph (setMessageReaction)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2408,7 +2408,7 @@ describe("\"working\" reaction glyph (setMessageReaction)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2429,7 +2429,7 @@ describe("\"working\" reaction glyph (setMessageReaction)", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2466,7 +2466,7 @@ describe("\"working\" reaction glyph (setMessageReaction)", () => {
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
-          const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+          const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
           yield* Effect.sleep("50 millis")
           yield* Fiber.interrupt(fiber)
         }),
@@ -2498,7 +2498,7 @@ describe("\"working\" reaction glyph (setMessageReaction)", () => {
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
-          const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+          const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
           yield* Effect.sleep("50 millis")
           yield* Fiber.interrupt(fiber)
         }),
@@ -2532,7 +2532,7 @@ describe("forum-topic session scoping", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2557,7 +2557,7 @@ describe("forum-topic session scoping", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2576,7 +2576,7 @@ describe("forum-topic session scoping", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
@@ -2596,7 +2596,7 @@ describe("forum-topic session scoping", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("60 millis")
         yield* Fiber.interrupt(fiber)
       }),

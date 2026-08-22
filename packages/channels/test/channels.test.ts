@@ -191,10 +191,10 @@ const makeStubChatService = (
 
       if (pub === undefined) return Stream.empty
 
-      return Stream.unwrapScoped(
+      return Stream.unwrap(
         Effect.gen(function* () {
-          const queue = yield* PubSub.subscribe(pub)
-          return Stream.fromQueue(queue)
+          const sub = yield* PubSub.subscribe(pub)
+          return Stream.fromSubscription(sub)
         }),
       )
     },
@@ -639,7 +639,7 @@ describe("delivery — final-only", () => {
     const fakeCtx = makeFakeAdapterClean("final-1", "final-only", 100)
 
     // IMPORTANT: use Effect.provide(wholeEffect, layer) so the service scope
-    // (captured by Layer.scoped via yield* Effect.scope) stays alive for the
+    // (captured by Layer.effect via yield* Effect.scope) stays alive for the
     // entire test. yield* Effect.provide(ChannelService, layer) would close the
     // layer scope immediately after tag resolution, interrupting delivery fibers
     // that were forked into serviceScope.
@@ -1123,7 +1123,7 @@ describe("delivery via Effect.runFork (production adapter path)", () => {
           yield* Fiber.await(rootFiber)
 
           // At this point the transient runFork root fiber is DONE. If the fix
-          // is not applied (Effect.fork instead of forkIn(serviceScope)), the
+          // is not applied (Effect.forkChild instead of forkIn(serviceScope)), the
           // delivery fiber was auto-interrupted when the root completed.
           // Give the system a moment to reflect that interruption if it happened.
           yield* Effect.sleep("50 millis")

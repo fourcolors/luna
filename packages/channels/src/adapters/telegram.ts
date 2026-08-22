@@ -163,7 +163,7 @@
  * threading since it targets an existing message_id whose topic is fixed.
  */
 import { Buffer } from "node:buffer"
-import { Cause, Effect, Either, Fiber, Redacted, Ref, Schedule } from "effect"
+import { Cause, Effect, Fiber, Redacted, Ref, Result, Schedule, Semaphore } from "effect"
 import {
   ALLOWED_ATTACHMENT_MEDIA_TYPES,
   MAX_IMAGE_RAW_BYTES,
@@ -406,7 +406,7 @@ const reactWorking = (
       result.ok ? Effect.void : Effect.sync(() => onFailure(result.description ?? "unknown error")),
     ),
     Effect.asVoid,
-    Effect.catchAllCause((cause) =>
+    Effect.catchCause((cause) =>
       Effect.sync(() => onFailure(Cause.pretty(cause))),
     ),
   )
@@ -461,7 +461,7 @@ export const makeRealTransport = (token: Redacted.Redacted<string>): TelegramHtt
     }).pipe(
       // Surface HTTP-level errors as TelegramApiResult { ok: false } so the
       // adapter's error handling is uniform.
-      Effect.catchAll((e) =>
+      Effect.catch((e) =>
         Effect.succeed<TelegramApiResult>({ ok: false, description: String(e) }),
       ),
     )
@@ -742,10 +742,10 @@ const fetchTelegramAttachment = (
     // own (undici defaults run to minutes) and a hang is not an error, so
     // without this the fiber could be pinned far longer than the download cap.
     const info = yield* transport("getFile", { file_id: ref.fileId }).pipe(
-      Effect.timeoutTo({
+      Effect.timeoutOrElse({
         duration: "30 seconds",
-        onTimeout: (): TelegramApiResult => ({ ok: false, description: "getFile timed out" }),
-        onSuccess: (r: TelegramApiResult) => r,
+        orElse: () =>
+          Effect.succeed<TelegramApiResult>({ ok: false, description: "getFile timed out" }),
       }),
     )
     const fileInfo = (info.ok ? info.result : undefined) as TelegramFileInfo | undefined
@@ -768,27 +768,27 @@ const fetchTelegramAttachment = (
       return fetchFailed(tooLargeReply(fileInfo.file_size, cap))
     }
     const bytes = yield* fileTransport(fileInfo.file_path).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: "60 seconds",
-        onTimeout: () => new Error("download timed out"),
+        orElse: () => Effect.fail(new Error("download timed out")),
       }),
-      Effect.either,
+      Effect.result,
     )
-    if (Either.isLeft(bytes)) {
+    if (Result.isFailure(bytes)) {
       return fetchFailed(
-        `⚠️ I couldn't download that file (${bytes.left.message}). Please try sending it again.`,
+        `⚠️ I couldn't download that file (${bytes.failure.message}). Please try sending it again.`,
       )
     }
-    if (bytes.right.byteLength === 0) {
+    if (bytes.success.byteLength === 0) {
       return fetchFailed("⚠️ That file came back empty from Telegram. Please try sending it again.")
     }
-    if (bytes.right.byteLength > cap) {
-      return fetchFailed(tooLargeReply(bytes.right.byteLength, cap))
+    if (bytes.success.byteLength > cap) {
+      return fetchFailed(tooLargeReply(bytes.success.byteLength, cap))
     }
     // Verify the bytes against the declared type; correct a misnamed file
     // when the actual type is itself ingestible (report.pdf that is really a
     // JPEG becomes an image block instead of a mid-turn Anthropic rejection).
-    const sniffed = sniffMediaType(bytes.right)
+    const sniffed = sniffMediaType(bytes.success)
     let mediaType = ref.mediaType
     if (sniffed !== ref.mediaType) {
       if (sniffed === null || !ALLOWED_ATTACHMENT_MEDIA_TYPES.has(sniffed)) {
@@ -800,20 +800,20 @@ const fetchTelegramAttachment = (
       // The corrected type may carry a smaller cap (PDF-labelled JPEG:
       // 20 MB claimed cap, 10 MB actual image cap).
       const correctedCap = attachmentByteCap(sniffed)
-      if (bytes.right.byteLength > correctedCap) {
-        return fetchFailed(tooLargeReply(bytes.right.byteLength, correctedCap))
+      if (bytes.success.byteLength > correctedCap) {
+        return fetchFailed(tooLargeReply(bytes.success.byteLength, correctedCap))
       }
     }
     return {
       _tag: "ok",
       attachment: {
         mediaType,
-        data: Buffer.from(bytes.right).toString("base64"),
+        data: Buffer.from(bytes.success).toString("base64"),
       },
     } satisfies AttachmentFetchOutcome
   }).pipe(
     // A dying injected transport (or any defect) must not kill the poll loop.
-    Effect.catchAllCause(() =>
+    Effect.catchCause(() =>
       Effect.succeed(
         fetchFailed("⚠️ Something went wrong downloading that file. Please try sending it again."),
       ),
@@ -878,9 +878,10 @@ export interface TelegramAdapterConfig {
 const POLL_TIMEOUT_SECONDS = 20
 
 /** Retry schedule for the poll loop: exponential from 1 s, capped at 30 s. */
-const pollRetrySchedule = Schedule.exponential("1 second").pipe(
-  Schedule.union(Schedule.spaced("30 seconds")),
-)
+const pollRetrySchedule = Schedule.min([
+  Schedule.exponential("1 second"),
+  Schedule.spaced("30 seconds"),
+])
 
 /* -------------------------------------------------------------------------- */
 /* Factory                                                                     */
@@ -965,7 +966,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // Bound on concurrent attachment downloads. Media units run as forked
   // fibers off the poll loop; the semaphore keeps a photo flood from turning
   // into unbounded parallel 20 MB downloads (it degrades to queuing instead).
-  const downloadSemaphore = Effect.unsafeMakeSemaphore(3)
+  const downloadSemaphore = Semaphore.makeUnsafe(3)
 
   // Per-chat FIFO dispatch. Media units run off the poll fiber (so downloads
   // never starve other chats), but messages for the SAME chat must reach the
@@ -975,10 +976,10 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // is strict while different chats stay fully concurrent. Entries are
   // removed when their chain drains, so the map stays bounded by the number
   // of chats with in-flight work.
-  const chatChains = new Map<string, Fiber.RuntimeFiber<void, never>>()
+  const chatChains = new Map<string, Fiber.Fiber<void, never>>()
   const dispatchChained = (chatId: string, unit: Effect.Effect<void>): void => {
     const safeUnit = unit.pipe(
-      Effect.catchAllCause((cause) =>
+      Effect.catchCause((cause) =>
         Effect.sync(() => {
           try {
             console.warn(
@@ -1011,7 +1012,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
   // Loading indication: chat_id → the "typing…" refresh fiber. Started when
   // an inbound message is accepted, interrupted by the first deliver() to
   // that chat (Telegram clears the indicator on send anyway) or by stop().
-  const typingFibers = new Map<string, Fiber.RuntimeFiber<void, unknown>>()
+  const typingFibers = new Map<string, Fiber.Fiber<void, unknown>>()
 
   // Set by stop(). The poll loop is interrupted by the service scope closing
   // around the same time stop() runs as a finalizer, with no ordering
@@ -1192,7 +1193,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
    * because service.ts forks start() via Effect.forkIn(adapter.start(), scope).
    */
   const makePollLoop = (transport: TelegramHttpTransport): Effect.Effect<never, never> => {
-    const offsetRef = Ref.unsafeMake<number>(0)
+    const offsetRef = Ref.makeUnsafe<number>(0)
 
     // A single getUpdates call. Returns the new offset after consuming updates.
     // Error channel is `Error` (non-ok responses are surfaced as failures so
@@ -1233,7 +1234,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             Effect.runFork(
               transport("answerCallbackQuery", { callback_query_id: cb.id }).pipe(
                 Effect.asVoid,
-                Effect.catchAllCause(() => Effect.void),
+                Effect.catchCause(() => Effect.void),
               ),
             )
             const cbMessage = cb.message
@@ -1340,7 +1341,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
                   },
                   media.userReply,
                 ).pipe(
-                  Effect.catchAllCause((cause) =>
+                  Effect.catchCause((cause) =>
                     Effect.sync(() => {
                       try {
                         console.warn(
@@ -1453,7 +1454,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         // getUpdates consumer is polling this bot token (a second server
         // instance or a leaked webhook) and will NOT clear on its own — flag it
         // distinctly. Logging only; the retry/offset behavior is unchanged.
-        Effect.tapErrorCause((cause) =>
+        Effect.tapCause((cause) =>
           Effect.sync(() => {
             const text = Cause.pretty(cause)
             if (/\b409\b/.test(text) || text.toLowerCase().includes("conflict")) {
@@ -1471,9 +1472,9 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         ),
         // Retry on any error with exponential backoff (1 s → 30 s).
         // After retry, the error channel is `never` for our scheduling purposes —
-        // we cast via catchAllCause to satisfy the type system.
+        // we cast via catchCause to satisfy the type system.
         Effect.retry(pollRetrySchedule),
-        Effect.catchAllCause(() => Effect.succeed(offset)), // fallback: keep same offset
+        Effect.catchCause(() => Effect.succeed(offset)), // fallback: keep same offset
       )
       yield* Ref.set(offsetRef, nextOffset)
       return yield* loop
@@ -1502,7 +1503,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       // so the blocking behavior is correct — the fiber stays alive until the
       // service scope closes (which interrupts the fiber).
       //
-      // When called in unit tests as Effect.fork(Effect.scoped(adapter.start())),
+      // When called in unit tests as Effect.forkChild(Effect.scoped(adapter.start())),
       // the fork keeps the loop alive; the outer fiber (the test) interrupts it
       // via Fiber.interrupt(fiber) after assertions are collected.
       return Effect.gen(function* () {
@@ -1554,7 +1555,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         // transport that dies — must still not take down start(): catch the
         // full cause so polling always begins.
         const me = yield* transport("getMe", {}).pipe(
-          Effect.catchAllCause(() =>
+          Effect.catchCause(() =>
             Effect.succeed<TelegramApiResult>({ ok: false, description: "getMe failed" }),
           ),
         )
@@ -1571,7 +1572,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             command: c.id,
             description: c.description,
           })),
-        }).pipe(Effect.catchAllCause(() => Effect.void))
+        }).pipe(Effect.catchCause(() => Effect.void))
 
         // Run the poll loop directly — this never returns normally.
         // The loop is uninterruptible at the inner level (only interrupted
@@ -1712,7 +1713,7 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         } else {
           // Edit the existing message in place (stream-edit progress or the
           // finalization pass). Telegram 400 "message is not modified" is
-          // silently ignored; delivery.ts wraps deliver in catchAllCause.
+          // silently ignored; delivery.ts wraps deliver in catchCause.
           yield* sendFormatted(
             transport,
             "editMessageText",

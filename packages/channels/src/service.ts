@@ -14,13 +14,13 @@
  *      reuses the existing fiber (no double-fan-out).
  *   5. Call each adapter's stop() on service teardown.
  *
- * ChatService is an injected dependency (Effect Context/Tag). Tests supply a
+ * ChatService is an injected dependency (Context.Service). Tests supply a
  * stub via Layer so no real SDK subprocess is involved.
  *
- * Effect discipline follows packages/connectors/src/service.ts: scoped
- * Layer, Effect.gen throughout, finalizers for teardown.
+ * Effect discipline follows packages/connectors/src/service.ts: Layer.effect
+ * with Scope finalizers, Effect.gen throughout.
  */
-import { Effect, Fiber, Layer, Option, Ref, Scope } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Ref, Scope } from "effect"
 import { Clock } from "@luna/core"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelAdapter, ChannelMessage, DeliveryTarget } from "./types.js"
@@ -63,10 +63,10 @@ export interface ChannelServiceApi {
   readonly handleMessage: (msg: ChannelMessage) => Effect.Effect<boolean>
 }
 
-export class ChannelService extends Effect.Tag("luna/ChannelService")<
+export class ChannelService extends Context.Service<
   ChannelService,
   ChannelServiceApi
->() {}
+>()("luna/ChannelService") {}
 
 const metadataString = (msg: ChannelMessage, key: string): string | undefined => {
   const value = msg.metadata?.[key]
@@ -120,7 +120,7 @@ export const ChannelServiceLayer: Layer.Layer<
   ChannelService,
   never,
   ChannelSessionStore | InboundDedupStore | ChatService | Clock
-> = Layer.scoped(
+> = Layer.effect(
   ChannelService,
   Effect.gen(function* () {
     const sessionStore = yield* ChannelSessionStore
@@ -136,7 +136,7 @@ export const ChannelServiceLayer: Layer.Layer<
     // One fiber per (thread, adapter) pair. Idempotent — the second inbound
     // on the same thread+adapter reuses the existing fiber.
     const deliveryFibers = yield* Ref.make<
-      ReadonlyMap<string, Fiber.RuntimeFiber<void, never>>
+      ReadonlyMap<string, Fiber.Fiber<void, never>>
     >(new Map())
 
     // ── Inbound message pipeline ────────────────────────────────────────────
@@ -188,7 +188,7 @@ export const ChannelServiceLayer: Layer.Layer<
                   chunkIndex: 0,
                   totalChunks: 1,
                 })
-                .pipe(Effect.catchAllCause(() => Effect.void))
+                .pipe(Effect.catchCause(() => Effect.void))
             }
           }
           return true
@@ -280,7 +280,7 @@ export const ChannelServiceLayer: Layer.Layer<
           // one adapter failure must not prevent others from running.
           yield* Effect.forkIn(
             adapter.start().pipe(
-              Effect.catchAllCause((cause) =>
+              Effect.catchCause((cause) =>
                 Effect.sync(() => {
                   console.warn(
                     `[luna/channels] adapter '${adapter.id}' start failed: ${String(cause)}`,
@@ -297,7 +297,7 @@ export const ChannelServiceLayer: Layer.Layer<
       Effect.gen(function* () {
         const adapterList = yield* Ref.get(adapters)
         for (const adapter of adapterList) {
-          yield* adapter.stop().pipe(Effect.catchAllCause(() => Effect.void))
+          yield* adapter.stop().pipe(Effect.catchCause(() => Effect.void))
         }
         // Interrupt all delivery fibers
         const fibers = yield* Ref.get(deliveryFibers)

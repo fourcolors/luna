@@ -17,7 +17,7 @@
  *
  * Follows the same bun:sqlite + WAL pattern as packages/connectors/src/store.ts.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock, ConfigError, LunaSqliteBootstrap, applyMigration, ensureSchemaVersions } from "@luna/core"
 
 /* -------------------------------------------------------------------------- */
@@ -73,9 +73,10 @@ export interface InboundDedupStoreApi {
   ) => Effect.Effect<void>
 }
 
-export class InboundDedupStore extends Effect.Tag(
-  "luna/InboundDedupStore",
-)<InboundDedupStore, InboundDedupStoreApi>() {
+export class InboundDedupStore extends Context.Service<
+  InboundDedupStore,
+  InboundDedupStoreApi
+>()("luna/InboundDedupStore") {
   /** In-memory variant for unit tests. */
   static readonly Memory: Layer.Layer<InboundDedupStore> = Layer.effect(
     InboundDedupStore,
@@ -102,7 +103,7 @@ export class InboundDedupStore extends Effect.Tag(
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<InboundDedupStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       InboundDedupStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap
