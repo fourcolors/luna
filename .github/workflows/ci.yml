@@ -72,9 +72,36 @@
 
 name: CI
 
+# TRIGGERS + CONCURRENCY (see #556). These two blocks are load-bearing on a
+# single self-hosted runner - `runs-on: [self-hosted, jax-box]` below means
+# every run here SERIALIZES, so a duplicate run is not a free parallel run,
+# it is queue time taken from the next PR.
+#
+# `push` is scoped to master on purpose. A bare `push:` alongside `pull_request:`
+# ran the whole suite TWICE on byte-identical content for every PR branch - a
+# 100-run sample (2026-08-13..22) had 37 of 62 distinct head_shas running under
+# both events, burning 28.7h of runner wall-clock and pushing p90 run latency to
+# 377 min, nearly all of it queue wait. PR branches stay covered by the
+# `pull_request` run, which is the better of the two anyway: it tests the MERGE
+# ref, i.e. what master will actually look like. Scoping to master also stops
+# this workflow firing on `moon-v*` tag pushes, which release-moon.yml already
+# owns and which point at a commit master has tested.
 on:
   push:
+    branches: [master]
   pull_request:
+
+# cancel-in-progress is deliberately OFF for master and ON everywhere else.
+# Superseded PR pushes are worth dropping - only the tip commit matters. Master
+# is NOT: every commit on the integration branch is a potential release point,
+# and each one must be verified on its own. On 2026-08-21 six PRs merged in
+# sequence and 77bb2814 came back red - a regression that existed only in the
+# COMBINATION of two individually-green PRs. Had master runs superseded each
+# other, that run would have been cancelled by the next merge and the breakage
+# would have shipped silently. Do not "optimize" this to a bare true.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read

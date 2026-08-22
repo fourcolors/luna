@@ -35,6 +35,13 @@ on:
       - "install.sh"
       - ".github/workflows/shell-gate.yml"
 
+# Superseded PR pushes are worth dropping here too (see #556) - only the tip
+# commit matters. Unconditional, unlike ci.yml's: this workflow only ever runs
+# on `pull_request`, so there is no master run that needs protecting.
+concurrency:
+  group: shell-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
