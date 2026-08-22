@@ -32,6 +32,7 @@ import { isSettingsConnectionPanelType, mountSettingsConnectionPanel } from "./p
 import { isSettingsVaultPanelType, mountSettingsVaultPanel } from "./panels/settings-vault-mount"
 import { isSettingsConnectorsPanelType, mountSettingsConnectorsPanel } from "./panels/settings-connectors-mount"
 import { isSettingsUpdatesPanelType, mountSettingsUpdatesPanel } from "./panels/settings-updates/settings-updates-mount"
+import { isLauncherPanelType, mountLauncherPanel } from "./panels/launcher/launcher-mount"
 
 /** Returns true if `type` was a React-owned panel type this dispatched. */
 export function mountReactPanel(type: string, ctx: PanelCtx): boolean {
@@ -101,6 +102,10 @@ export function mountReactPanel(type: string, ctx: PanelCtx): boolean {
   }
   if (isSettingsUpdatesPanelType(type)) {
     mountSettingsUpdatesPanel(type, ctx)
+    return true
+  }
+  if (isLauncherPanelType(type)) {
+    mountLauncherPanel(type, ctx)
     return true
   }
   return false

@@ -233,6 +233,7 @@ Ship with Luna; designed UI; live data subscriptions. Opened from the moon
 | Workflows gallery | `panel.html?type=workflows` | `workflow-list` (+ `workflow-refresh`) | full catalog; rows open the inspector; opened via `/workflows`, the launcher, or agent summon |
 | Workflow inspector | `panel.html?type=flow&jobId=…` | `workflow-runs` (+ request frame) | per-job step view |
 | Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pinned to another thread (spawned via `open_widget kind:chat, params:{thread}`); its thread sidebar is hidden (one-thread-forever) |
+| Quick launcher | `panel.html?type=launcher` | registry fetch + `artifact-list` | Cmd+K palette; merges system panels with pinned artifacts. Summoned window-locally by `vendor/moon-cmdk.js` (NOT a global shortcut — that would take Cmd+K OS-wide). Dismisses on Esc/blur/activation via `close_widget`, and is excluded from `layout.json` so it never boot-restores |
 
 ### System widgets: settings panels (v3)
 

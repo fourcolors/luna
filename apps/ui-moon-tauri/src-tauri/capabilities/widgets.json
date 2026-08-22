@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "widgets",
-  "description": "Permission set for artifact widget windows (the deck — PRD Part C / W2). Each `widget-*` window renders one pinned artifact and moves independently with native window dragging. The glob means any other label gets no IPC. These windows deliberately get a narrower set than system panels: they may move, resize, close themselves, connect to the same WS server, and hand external links to the system browser.",
+  "description": "Permission set for artifact widget windows (the deck — PRD Part C / W2). Each `widget-*` window renders one pinned artifact and moves independently with native window dragging. The glob means any other label gets no IPC. These windows deliberately get a narrower set than system panels: they may move, resize, close themselves, connect to the same WS server, and hand external links to the system browser. `allow-open-widget` is granted for exactly one reason: vendor/moon-cmdk.js binds Cmd+K in EVERY shell, and without this grant the invoke is rejected and swallowed by its .catch() - the key would be silently eaten inside artifact windows. The Rust side still validates the kind against the registry and refuses non-system trust, so this does not widen what can actually be opened.",
   "windows": [
     "widget-*"
   ],
@@ -23,6 +23,7 @@
     "allow-migrate-legacy-connection",
     "allow-get-platform",
     "allow-close-widget",
+    "allow-open-widget",
     "allow-collapse-to-moon",
     "allow-begin-native-resize",
     "allow-open-external-url"
