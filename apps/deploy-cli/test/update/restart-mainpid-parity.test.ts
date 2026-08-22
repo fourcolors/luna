@@ -62,9 +62,23 @@ import { type RestartOutcome, type RestartServiceOptions, restartServiceSync } f
 import { type GuardVerdict, guardVerdictLine } from "../../src/update/session-guard.js"
 import { INFO_PREFIX, WARN_PREFIX, bashLogLine } from "./bash-source-oracle.js"
 import { READINESS_PORT, cleanupTempDirs, makeFixture, runUpdate } from "./bash-fixtures.js"
-import { repoRoot } from "./temp-dirs.js"
+import { repoRoot, makeTempDir } from "./temp-dirs.js"
 
 const SERVICE = "luna-chat-server.service"
+
+/** Minimal guard fields newly required for deploy.maxSessionDefer parity. */
+const guardDefaults = {
+  profile: "stable" as const,
+  maxSessionDefer: "4h",
+  updateStateDir: () => makeTempDir(),
+}
+
+const idleGuard = () => ({
+  guardSessions: true as const,
+  ...{ profile: guardDefaults.profile, maxSessionDefer: guardDefaults.maxSessionDefer, updateStateDir: guardDefaults.updateStateDir() },
+  readinessPort: READINESS_PORT,
+  queryActiveWsCount: () => 0,
+})
 
 afterEach(() => {
   cleanupTempDirs()
@@ -166,6 +180,9 @@ const runRestart = (rig: Rig, opts: RunOptions = {}): RestartOutcome => {
     },
     guard: {
       guardSessions: true,
+      profile: "stable",
+      maxSessionDefer: "4h",
+      updateStateDir: makeTempDir(),
       readinessPort: READINESS_PORT,
       queryActiveWsCount: () => 0,
       ...opts.guard,
@@ -244,7 +261,7 @@ describe("the settle triple, at the function level", () => {
       serviceName: SERVICE,
       dryRun: false,
       sleepSync: () => ({ ok: true }),
-      guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+      guard: idleGuard(),
       runSystemctl: () => ({ status: 0 }),
       info: (line) => rig.infos.push(line),
       warn: (line) => rig.warns.push(line),
@@ -349,7 +366,7 @@ describe("sup_start's start-limit warn", () => {
       serviceName: SERVICE,
       dryRun: false,
       settleSecs: "0",
-      guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+      guard: idleGuard(),
       runSystemctl: (args) => {
         const verb = args[0] ?? ""
         rig.events.push(`systemctl:${verb}`)
@@ -425,7 +442,7 @@ describe("the MainPID postcondition, crossed over every pre/post shape", () => {
         serviceName: SERVICE,
         dryRun: false,
         settleSecs: "0",
-        guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+        guard: idleGuard(),
         runSystemctl: () => ({ status: 0 }),
         mainPid: () => {
           reads.push(pre)
@@ -456,7 +473,7 @@ describe("the MainPID postcondition, crossed over every pre/post shape", () => {
       serviceName: SERVICE,
       dryRun: true,
       settleSecs: "6",
-      guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+      guard: idleGuard(),
       runSystemctl: () => ({ status: 0 }),
       mainPid: () => {
         reads += 1
@@ -483,7 +500,7 @@ describe("the MainPID postcondition, crossed over every pre/post shape", () => {
         serviceName: SERVICE,
         dryRun: false,
         settleSecs: "0",
-        guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+        guard: idleGuard(),
         runSystemctl: () => ({ status: 0 }),
         mainPid,
         info: (line) => rig.infos.push(line),

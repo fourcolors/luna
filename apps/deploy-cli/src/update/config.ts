@@ -119,6 +119,9 @@ export interface ConfigSeams {
 export const CONFIG_ERRORS = {
   /** :246-247 */
   operatorOverrideEmpty: "--operator-override requires a non-empty reason",
+  /** scripts/luna-update-server maxSessionDefer validation after the override check */
+  maxSessionDeferInvalid: (span: string): string =>
+    `--max-session-defer / LUNA_MAX_SESSION_DEFER '${span}' is not a plain systemd time span`,
   /** scripts/lib/luna-deploy.sh:183-184, reached through :248 */
   invalidProfile: "profile must contain only letters, numbers, dot, underscore, or dash",
   /** :253-254 */
@@ -180,6 +183,8 @@ export interface UpdateConfig {
   /** `ROLLBACK` (:65); false under --no-rollback. */
   readonly rollback: boolean
   readonly operatorOverrideReason: string
+  /** `MAX_SESSION_DEFER` (:80) — deploy.maxSessionDefer / LUNA_MAX_SESSION_DEFER / --max-session-defer. */
+  readonly maxSessionDefer: string
   readonly restartOnly: boolean
 
   /** Readiness knobs, kept as written - see the header on why these are not numbers. */
@@ -324,6 +329,62 @@ const configError = (message: string): ParseOutcome => ({
 const DIGITS = /^[0-9]+$/
 
 /**
+ * Minimal port of `luna_parse_systemd_duration` for config validation only.
+ * session-guard.ts owns the production parse used at apply time; this copy
+ * exists so config.ts stays free of a session-guard import (and so a typo in
+ * --max-session-defer dies before the lock, matching bash).
+ */
+const parseSystemdDurationSpan = (span: string): number | null => {
+  const raw = span.trim().toLowerCase()
+  if (raw === "") return null
+  if (raw === "infinity") return 0
+  let total = 0
+  for (const tok of raw.split(/\s+/)) {
+    const m = /^([0-9]+)([a-z]*)$/.exec(tok)
+    if (!m) return null
+    const num = Number(m[1])
+    const unit = m[2] ?? ""
+    switch (unit) {
+      case "":
+      case "s":
+      case "sec":
+      case "secs":
+      case "second":
+      case "seconds":
+        total += num
+        break
+      case "m":
+      case "min":
+      case "mins":
+      case "minute":
+      case "minutes":
+        total += num * 60
+        break
+      case "h":
+      case "hr":
+      case "hrs":
+      case "hour":
+      case "hours":
+        total += num * 3600
+        break
+      case "d":
+      case "day":
+      case "days":
+        total += num * 86400
+        break
+      case "w":
+      case "week":
+      case "weeks":
+        total += num * 604800
+        break
+      default:
+        return null
+    }
+  }
+  return total
+}
+
+/**
  * The 18 parse-loop flags that consume the NEXT argv word (`shift 2` in bash).
  * Kept beside the loop, and `config-flag-vocabulary` in
  * assembly-fidelity.test.ts reads every `case "-..."` label out of THIS file
@@ -343,6 +404,7 @@ const VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--readiness-port",
   "--restart-settle",
   "--operator-override",
+  "--max-session-defer",
   "--layout",
   "--deploy-root",
   "--releases-keep",
@@ -430,6 +492,7 @@ export function parseUpdateConfig(
   let dryRun = false
   let rollback = true
   let operatorOverrideReason = ""
+  let maxSessionDefer = envOr(env, "LUNA_MAX_SESSION_DEFER", "4h")
   let restartOnly = false
   let readinessPort = envOr(env, "LUNA_READINESS_PORT", "4753")
   let readinessTimeout = envOr(env, "LUNA_READINESS_TIMEOUT", "60")
@@ -553,6 +616,13 @@ export function parseUpdateConfig(
         i += 2
         break
       }
+      case "--max-session-defer": {
+        const v = valueAt(i)
+        if (v === null) return missingValue(arg, "missing --max-session-defer value")
+        maxSessionDefer = v
+        i += 2
+        break
+      }
       case "--restart-only":
         restartOnly = true
         i += 1
@@ -630,6 +700,9 @@ export function parseUpdateConfig(
   // passes bash's check; reproduce that rather than the "obvious" trim.
   if (operatorOverrideReason !== "" && operatorOverrideReason.split(" ").join("") === "") {
     return configError(CONFIG_ERRORS.operatorOverrideEmpty)
+  }
+  if (parseSystemdDurationSpan(maxSessionDefer) === null) {
+    return configError(CONFIG_ERRORS.maxSessionDeferInvalid(maxSessionDefer))
   }
 
   // :248
@@ -737,6 +810,7 @@ export function parseUpdateConfig(
     dryRun,
     rollback,
     operatorOverrideReason,
+    maxSessionDefer,
     restartOnly,
     readinessPort,
     readinessTimeout,

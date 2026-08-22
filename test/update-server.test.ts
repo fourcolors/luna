@@ -1219,6 +1219,36 @@ exec "${realGit}" "$@"
     expect(existsSync(join(updateState, "transaction-stable"))).toBe(false)
   })
 
+  it("session guard: after maxSessionDefer, standing sessions apply as staleness (not operator override)", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    const updateState = join(temp, "update-state")
+    mkdirSync(updateState, { recursive: true })
+    writeFileSync(join(updateState, "session-defer-stable"), "since=1000\n")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work, prevSha, targetSha, readyAtTarget: true, readyAtPrev: false,
+    })
+
+    const r = runUpdate(
+      [...guardArgs(temp, work, serviceDir), "--max-session-defer", "1h"],
+      {
+        PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_TEST_BUN_PATH: join(bin, "bun"),
+        LUNA_TEST_WS_COUNT: "2",
+        LUNA_UPDATE_STATE_DIR: updateState,
+        LUNA_TEST_NOW_EPOCH: String(1000 + 3600),
+      },
+    )
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stderr).toContain("staleness, not an operator override")
+    expect(r.stderr).not.toContain("SESSION GUARD OVERRIDDEN by operator")
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    expect(readLog(systemctlLog)).toContain("stop")
+  })
+
   it("session guard: unknown count while the unit answers 'active' defers (blip fail-closed)", () => {
     const temp = makeTempDir()
     const { work, prevSha, targetSha } = makeDeployRepo(temp)

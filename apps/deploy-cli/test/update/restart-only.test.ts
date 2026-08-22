@@ -66,6 +66,7 @@ import { type RestartOnlyOptions, restartOnlySync } from "../../src/update/resta
 import { type RestartOutcome, restartServiceSync } from "../../src/update/restart.js"
 import { guardVerdictLine } from "../../src/update/session-guard.js"
 import { exitCodeFor, journalDispositionFor } from "../../src/update/terminals.js"
+import { makeTempDir } from "./temp-dirs.js"
 
 const SERVICE = "luna-server.service"
 /** RAW string, exactly as `config.ts` holds it - `007` must print `007`. */
@@ -429,6 +430,9 @@ describe("restartOnlySync - composed with the real restart primitive", () => {
         settleSecs: "0",
         guard: {
           guardSessions: cfg.guardSessions ?? false,
+          profile: "stable",
+          maxSessionDefer: "4h",
+          updateStateDir: makeTempDir(),
           readinessPort: "4753",
           queryActiveWsCount: () => cfg.wsCount ?? 0,
         },

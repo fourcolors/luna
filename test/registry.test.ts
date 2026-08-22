@@ -75,6 +75,7 @@ const loadServer = (
     'echo "P_TIMER_ALLOWED=$P_TIMER_ALLOWED"',
     'echo "P_AUTO_UPDATE=$P_AUTO_UPDATE"',
     'echo "P_TIMER_INTERVAL=$P_TIMER_INTERVAL"',
+    'echo "P_MAX_SESSION_DEFER=$P_MAX_SESSION_DEFER"',
     'echo "P_SERVICE_NAME=$P_SERVICE_NAME"',
     'echo "P_LAYOUT=$P_LAYOUT"',
     'echo "P_DEPLOY_ROOT=$P_DEPLOY_ROOT"',
@@ -242,6 +243,56 @@ describe("luna_load_server — field extraction", () => {
     const result = loadServer("stable", { registryFile: reg })
     expect(result.status, result.stdout + result.stderr).toBe(2)
     expect(result.stderr).toContain("timerInterval")
+  })
+
+  it("deploy.maxSessionDefer ABSENT → P_MAX_SESSION_DEFER=4h (standing Moon cannot starve forever)", () => {
+    // Fixture omits the key on purpose — absent must default to a few hours.
+    for (const profile of ["stable", "dev"]) {
+      const result = loadServer(profile)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toMatch(/^P_MAX_SESSION_DEFER=4h$/m)
+    }
+  })
+
+  it("deploy.maxSessionDefer = 2h → P_MAX_SESSION_DEFER=2h", () => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `runtime.target.incus.container = "luna-stable"`,
+        `deploy.timer = true`,
+        `deploy.maxSessionDefer = "2h"`,
+      ].join("\n") + "\n",
+    )
+    const result = loadServer("stable", { registryFile: reg })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^P_MAX_SESSION_DEFER=2h$/m)
+  })
+
+  it("deploy.maxSessionDefer with unit-file metacharacters → refused, exit 2", () => {
+    const temp = makeTempDir()
+    const reg = join(temp, "servers.toml")
+    writeFileSync(
+      reg,
+      [
+        `kind = "registry"`,
+        `[[server]]`,
+        `name = "stable"`,
+        `update.params.hostRepoDir = "/root/luna/stable/repo"`,
+        `update.params.ref = "origin/master"`,
+        `deploy.timer = true`,
+        `deploy.maxSessionDefer = "4h; touch /tmp/evil"`,
+      ].join("\n") + "\n",
+    )
+    const result = loadServer("stable", { registryFile: reg })
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(result.stderr).toContain("maxSessionDefer")
   })
 
   it("stable: P_SERVICE_NAME=luna-chat-server.service", () => {
@@ -650,6 +701,41 @@ describe("deploy.autoUpdate knob (--from-timer runs)", () => {
     expect(result.stdout).not.toContain("DRY-RUN")
   })
 
+  it("timer run applies as STALE SESSION DEFER after deploy.maxSessionDefer elapses", () => {
+    // Standing Moon (hub+chat) must not starve origin forever. Seed a defer
+    // marker in the past and pin now so the first tick past the cap applies.
+    const temp = makeTempDir()
+    const stateDir = join(temp, "update")
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, "session-defer-stable"), "since=1000\n")
+    const result = runDryRun("stable", {
+      extraArgs: ["--from-timer"],
+      extraEnv: {
+        LUNA_TEST_WS_COUNT: "2",
+        LUNA_UPDATE_STATE_DIR: stateDir,
+        LUNA_TEST_NOW_EPOCH: "1000", // will be overridden below after marking aged
+      },
+    })
+    // First call with now==since still defers (age 0 < 4h).
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain("DEFERRED")
+
+    const aged = runDryRun("stable", {
+      extraArgs: ["--from-timer"],
+      extraEnv: {
+        LUNA_TEST_WS_COUNT: "2",
+        LUNA_UPDATE_STATE_DIR: stateDir,
+        // 4h = 14400s after first defer
+        LUNA_TEST_NOW_EPOCH: String(1000 + 14400),
+      },
+    })
+    expect(aged.status, aged.stderr).toBe(0)
+    expect(aged.stdout).toContain("STALE SESSION DEFER")
+    expect(aged.stdout).toContain("staleness, not an operator override")
+    expect(aged.stdout).toContain("DRY-RUN")
+    expect(aged.stdout).not.toContain("--operator-override")
+  })
+
   it("timer run fails closed when active-session count is unknown", () => {
     const result = runDryRun("stable", {
       extraArgs: ["--from-timer"],
@@ -658,6 +744,7 @@ describe("deploy.autoUpdate knob (--from-timer runs)", () => {
     expect(result.status, result.stderr).toBe(0)
     expect(result.stderr).toContain("count UNKNOWN")
     expect(result.stdout).not.toContain("DRY-RUN")
+    expect(result.stdout).not.toContain("STALE SESSION DEFER")
   })
 
   it("an existing legacy timer self-migrates before an up-to-date no-op", () => {

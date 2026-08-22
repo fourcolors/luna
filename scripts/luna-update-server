@@ -77,6 +77,11 @@ ROLLBACK=true
 # began in a prior run).
 GUARD_SESSIONS=true
 OPERATOR_OVERRIDE_REASON=""
+# deploy.maxSessionDefer (registry / LUNA_MAX_SESSION_DEFER / --max-session-defer).
+# Caps how long standing WS sessions may starve an unattended update. Default
+# 4h matches the registry absent-key default. Logged as staleness, never as an
+# operator override. "0" / "infinity" disables the escape (classic forever-defer).
+MAX_SESSION_DEFER="${LUNA_MAX_SESSION_DEFER:-4h}"
 RESTART_ONLY=false
 FORWARD_RESTART_RAN=false
 # Readiness probe knobs (overridable so the hermetic tests run in ~seconds and
@@ -140,6 +145,13 @@ Options:
                             guard. Requires a non-empty reason, which is logged
                             (journalctl of the invoking unit) as the audit
                             trail. Automation must never construct this flag.
+  --max-session-defer <span>
+                            Cap on standing-session deferral (systemd time span,
+                            e.g. 4h). After this many wall-clock seconds of
+                            continuous live-session defer for the profile, the
+                            guard applies anyway and logs staleness — not an
+                            operator override. Default: env LUNA_MAX_SESSION_DEFER
+                            or 4h. 0 / infinity disables the escape.
   --restart-only            Repair rung 1: plain guarded stop -> settle -> start
                             + readiness probe. No checkout mutation, no bun
                             install/build, no rollback. A pending update
@@ -225,6 +237,7 @@ while [[ $# -gt 0 ]]; do
     --restart-settle) RESTART_SETTLE_SECS="${2:?missing --restart-settle value}"; shift 2 ;;
     --no-rollback) ROLLBACK=false; shift ;;
     --operator-override) OPERATOR_OVERRIDE_REASON="${2:?missing --operator-override reason}"; shift 2 ;;
+    --max-session-defer) MAX_SESSION_DEFER="${2:?missing --max-session-defer value}"; shift 2 ;;
     --restart-only) RESTART_ONLY=true; shift ;;
     --layout) LAYOUT="${2:?missing --layout value}"; shift 2 ;;
     --deploy-root) DEPLOY_ROOT="${2:?missing --deploy-root value}"; shift 2 ;;
@@ -244,6 +257,10 @@ done
 # whitespace-only "reason" — an override without a reason is not an override.
 [[ -z "$OPERATOR_OVERRIDE_REASON" || -n "${OPERATOR_OVERRIDE_REASON// }" ]] ||
   luna_die "--operator-override requires a non-empty reason"
+
+if ! luna_parse_systemd_duration "$MAX_SESSION_DEFER" >/dev/null; then
+  luna_die "--max-session-defer / LUNA_MAX_SESSION_DEFER '$MAX_SESSION_DEFER' is not a plain systemd time span"
+fi
 
 luna_validate_profile "$PROFILE"
 
@@ -1446,7 +1463,10 @@ _systemctl_user_flag() {
 # Decision procedure (ws-count FIRST — an answered kernel count is authoritative
 # in both directions):
 #   1. count answered, n > 0  -> DEFER even if systemd reports non-active
-#                                (protects against orphaned/lingering holders).
+#                                (protects against orphaned/lingering holders),
+#                                UNLESS deploy.maxSessionDefer has elapsed since
+#                                the first live-session defer for this profile
+#                                (staleness apply — not an operator override).
 #   2. count answered, n == 0 -> PERMIT without consulting systemd at all
 #                                (the common dead-but-reachable repair case; the
 #                                kernel socket table proves nothing can drop).
@@ -1457,7 +1477,7 @@ _systemctl_user_flag() {
 #      may accept sockets pre-READY. Empty output means transport never reached
 #      systemd — DEFER (a restart through the same transport could not succeed
 #      anyway). A crash-looping unit in a reachable container still clears via
-#      step 2 (ss answers 0).
+#      step 2 (ss answers 0). Unknown never consults maxSessionDefer.
 restart_session_guard() {
   [[ "$DRY_RUN" == true ]] && return 0
   [[ "$GUARD_SESSIONS" == true ]] || return 0
@@ -1468,19 +1488,26 @@ restart_session_guard() {
     luna_warn "SESSION GUARD OVERRIDDEN by operator: $OPERATOR_OVERRIDE_REASON"
     return 0
   fi
-  local n state
+  local n state max_defer_secs
   # NOTE: counts READINESS_PORT, which is the ws session port (container-internal
   # 4753 for both profiles; a single port serves ws+health). If a profile ever
   # splits them, this must learn the ws port explicitly.
   if n="$(luna_active_ws_count "$READINESS_PORT" "$INCUS_CONTAINER")"; then
     if (( n > 0 )); then
+      max_defer_secs="$(luna_parse_systemd_duration "${MAX_SESSION_DEFER:-${LUNA_MAX_SESSION_DEFER:-4h}}")" || max_defer_secs=14400
+      if luna_session_defer_aged "$PROFILE" "$max_defer_secs"; then
+        luna_warn "session guard: $n active session(s) on :$READINESS_PORT — deploy.maxSessionDefer=${MAX_SESSION_DEFER:-${LUNA_MAX_SESSION_DEFER:-4h}} elapsed; applying despite standing sessions (staleness, not an operator override)"
+        return 0
+      fi
       luna_warn "session guard: $n active session(s) on :$READINESS_PORT — deferring restart"
       return 3
     fi
+    luna_session_defer_clear "$PROFILE"
     return 0   # kernel socket table answered 0: no established session can be dropped
   fi
   # Count UNKNOWN (probe transport failed). Ask systemd whether a serving process
-  # can even exist. Do NOT use sup_is_active here: it maps failure to the string
+  # can even exist. Do NOT use maxSessionDefer here: unknown stays fail-closed.
+  # Do NOT use sup_is_active here: it maps failure to the string
   # 'unknown', which would be indistinguishable from a real non-active answer.
   state="$(run_target_capture systemctl $(_systemctl_user_flag) is-active "$SERVICE_NAME" 2>/dev/null || true)"
   case "$state" in

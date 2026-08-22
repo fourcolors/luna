@@ -106,6 +106,7 @@ const DUMPED: ReadonlyArray<readonly [keyof UpdateConfig | "bunBin", string]> = 
   ["dryRun", '$DRY_RUN'],
   ["rollback", '$ROLLBACK'],
   ["operatorOverrideReason", '$OPERATOR_OVERRIDE_REASON'],
+  ["maxSessionDefer", '$MAX_SESSION_DEFER'],
   ["restartOnly", '$RESTART_ONLY'],
   ["readinessPort", '$READINESS_PORT'],
   ["readinessTimeout", '$READINESS_TIMEOUT'],
