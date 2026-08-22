@@ -104,6 +104,56 @@ export function installWiring(ctx: WiringCtx) {
     moonDragDebugNote,
   } = ctx.engines
 
+  // ── Boot params FIRST (0.0.71 / #563 ignition isolation) ───────────────
+  // Composer chrome wiring (attach menu, scope, form listeners, …) used to
+  // run BEFORE these were derived. A throw in that chrome path (e.g. #563
+  // attach-plus addEventListener / missing node .contains) aborted
+  // installWiring entirely, so bootChat never reached wire.boot() —
+  // panel-chat stuck on HTML "Disconnected" + MoonBar "waking up…".
+  // Derive URL params and stamp State.pinnedThread BEFORE any chrome bind
+  // so a later throw cannot skip the return value wire.boot needs.
+  const _threadParam = new URLSearchParams(location.search).get('thread') || null;
+  const SPAWN_FRESH = _threadParam === 'new';
+  const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
+  const REDOCK_TO = new URLSearchParams(location.search).get('redockTo') || null;
+  const INITIAL_VIEW_MODE = new URLSearchParams(location.search).get('viewMode') === 'true';
+  const MAX_REATTACH_ROUNDS = 3;
+  State.pinnedThread = PINNED_THREAD;
+
+  try {
+    installWiringChromeAndWindow(ctx, {
+      ArtifactsEngine, Attachments, ChatEngine, ChatLoop, ChatState,
+      ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
+      LocalShell, SecretPromptEngine, SlashMenu, SuggestedActionsEngine,
+      SurveyEngine, ThreadCache, ThreadDrawerEngine, VoiceEngine,
+      moonDragDebugNote,
+      SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE, MAX_REATTACH_ROUNDS,
+    });
+  } catch (err) {
+    Logger.error(
+      'installWiring: chrome/window wiring failed; wire.boot() will still dial:',
+      err,
+    );
+  }
+
+  return { SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE }
+}
+
+/**
+ * All DOM listeners + drawer/dock/hub-event wiring. Isolated so a throw here
+ * cannot skip the boot-param return that lets wire.boot() run.
+ */
+function installWiringChromeAndWindow(ctx, engines) {
+  const { Logger, DOM, State } = ctx
+  const {
+    ArtifactsEngine, Attachments, ChatEngine, ChatLoop, ChatState,
+    ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
+    LocalShell, SecretPromptEngine, SlashMenu, SuggestedActionsEngine,
+    SurveyEngine, ThreadCache, ThreadDrawerEngine, VoiceEngine,
+    moonDragDebugNote,
+    PINNED_THREAD, REDOCK_TO,
+  } = engines
+
   // (StreamRender stayed in chat.html: it is a test-hook alias this file
   // never used, and LunaMarkdown is still reachable there.)
 
@@ -431,7 +481,8 @@ export function installWiring(ctx: WiringCtx) {
   if (DOM.scopeBtn) {
     DOM.scopeBtn.addEventListener('click', (e) => {
       e.stopPropagation(); // don't let the document outside-click handler re-close it
-      const willOpen = !DOM.scopeMenu.classList.contains('open');
+      // scopeMenu may be absent (composer toggle removed in #563); never throw
+      const willOpen = !(DOM.scopeMenu && DOM.scopeMenu.classList.contains('open'));
       if (willOpen && typeof SlashMenu !== 'undefined' && SlashMenu) SlashMenu.close(); // same anchor — mutually exclusive
       LocalShell.openMenu(willOpen);
     });
@@ -459,49 +510,56 @@ export function installWiring(ctx: WiringCtx) {
   // ---- Attachment composer wiring (Grok-style +: menu → Attachment → picker) ----
   // (The hub's suppressBlurClose guard around the native picker is gone:
   // this window has no close-on-blur behavior to trip.)
-  if (DOM.attachPlusBtn) {
-    DOM.attachPlusBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const willOpen = !(DOM.attachMenu && DOM.attachMenu.classList.contains('open'));
-      if (willOpen) {
-        if (typeof SlashMenu !== 'undefined' && SlashMenu) SlashMenu.close();
-        if (typeof ComposerConfig !== 'undefined' && ComposerConfig && ComposerConfig.anyMenuOpen()) {
-          ComposerConfig.closeAllMenus();
+  // Isolated: a throw here must NOT abort installWiring / wire.boot() (0.0.71).
+  try {
+    if (DOM.attachPlusBtn) {
+      DOM.attachPlusBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const willOpen = !(DOM.attachMenu && DOM.attachMenu.classList.contains('open'));
+        if (willOpen) {
+          if (typeof SlashMenu !== 'undefined' && SlashMenu) SlashMenu.close();
+          if (typeof ComposerConfig !== 'undefined' && ComposerConfig && typeof ComposerConfig.anyMenuOpen === 'function' && ComposerConfig.anyMenuOpen()) {
+            ComposerConfig.closeAllMenus();
+          }
+          if (LocalShell) LocalShell.openMenu(false);
         }
-        LocalShell.openMenu(false);
-      }
-      openAttachMenu(willOpen);
-    });
-  }
-  if (DOM.attachMenuAttachment) {
-    DOM.attachMenuAttachment.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openAttachMenu(false);
-      if (DOM.fileInput) DOM.fileInput.click();
-    });
-    DOM.attachMenuAttachment.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
+        openAttachMenu(willOpen);
+      });
+    }
+    if (DOM.attachMenuAttachment) {
+      DOM.attachMenuAttachment.addEventListener('click', (e) => {
+        e.stopPropagation();
         openAttachMenu(false);
         if (DOM.fileInput) DOM.fileInput.click();
-      }
+      });
+      DOM.attachMenuAttachment.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openAttachMenu(false);
+          if (DOM.fileInput) DOM.fileInput.click();
+        }
+      });
+    }
+    document.addEventListener('click', (e) => {
+      if (!DOM.attachMenu || !DOM.attachMenu.classList.contains('open')) return;
+      if (DOM.attachMenu.contains(e.target)) return;
+      if (DOM.attachPlusBtn && DOM.attachPlusBtn.contains(e.target)) return;
+      openAttachMenu(false);
     });
-  }
-  document.addEventListener('click', (e) => {
-    if (!DOM.attachMenu || !DOM.attachMenu.classList.contains('open')) return;
-    if (DOM.attachMenu.contains(e.target)) return;
-    if (DOM.attachPlusBtn && DOM.attachPlusBtn.contains(e.target)) return;
-    openAttachMenu(false);
-  });
-  if (DOM.fileInput) {
-    DOM.fileInput.addEventListener('change', (e) => {
-      const files = e.target.files;
-      if (files && files.length) Attachments.addFiles(files);
-      e.target.value = '';            // allow re-picking the same file
-    });
+    if (DOM.fileInput) {
+      DOM.fileInput.addEventListener('change', (e) => {
+        const files = e.target.files;
+        if (files && files.length && Attachments && typeof Attachments.addFiles === 'function') {
+          Attachments.addFiles(files);
+        }
+        e.target.value = '';            // allow re-picking the same file
+      });
+    }
+  } catch (err) {
+    Logger.error('attach-menu wiring failed (non-fatal; connect continues):', err);
   }
 
-  DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
+  if (DOM.chatForm) DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
   /**
    * Slash-command menu (UI-owned client commands) - drives the /command
    * popover above the composer. Converted to a typed React module (stack23
@@ -527,8 +585,8 @@ export function installWiring(ctx: WiringCtx) {
   // declaration travelled inside this span and is no longer needed here.
   // Textarea: Enter sends, Shift+Enter inserts a newline. When the slash menu is
   // open, Arrow/Tab/Enter/Esc drive the menu instead (and never send/newline).
-  DOM.messageInput.addEventListener('keydown', (e) => {
-    if (SlashMenu.isOpen() && !e.isComposing) {
+  if (DOM.messageInput) DOM.messageInput.addEventListener('keydown', (e) => {
+    if (SlashMenu && SlashMenu.isOpen() && !e.isComposing) {
       if (e.key === 'ArrowDown') { e.preventDefault(); SlashMenu.move(1); return; }
       if (e.key === 'ArrowUp')   { e.preventDefault(); SlashMenu.move(-1); return; }
       // Tab only consumes the key when it actually completes; a no-op Tab falls
@@ -547,18 +605,18 @@ export function installWiring(ctx: WiringCtx) {
   });
   // Auto-grow on every content change: typing, deleting, IME composition.
   // Also re-filter the slash menu (no-op unless the line starts with '/').
-  DOM.messageInput.addEventListener('input', () => {
+  if (DOM.messageInput) DOM.messageInput.addEventListener('input', () => {
     ChatEngine.autoGrowMessageInput();
-    SlashMenu.onInput();
+    if (SlashMenu) SlashMenu.onInput();
   });
   // Close the menu when the composer loses focus so its aria-expanded /
   // aria-activedescendant never go stale on an unfocused control (Tab-out, click
   // elsewhere). Row mousedown preventDefaults focus, so mouse-accept doesn't trip this.
-  DOM.messageInput.addEventListener('blur', () => SlashMenu.close());
+  if (DOM.messageInput) DOM.messageInput.addEventListener('blur', () => { if (SlashMenu) SlashMenu.close(); });
   // Markdown links must never navigate the webview in place (that would replace
   // this window's UI). preventDefault() keeps the page intact; window.open is
   // best-effort.
-  DOM.chatMessages.addEventListener('click', (e) => {
+  if (DOM.chatMessages) DOM.chatMessages.addEventListener('click', (e) => {
     // Activity-timeline collapse toggle. State lives on the turn
     // (ChatModel), not the DOM, so it survives the per-frame re-render.
     // Delegated here because MessageList.tsx rebuilds the header node
@@ -603,10 +661,10 @@ export function installWiring(ctx: WiringCtx) {
   });
 
   // Paste an image straight into the composer (e.g. a screenshot).
-  DOM.messageInput.addEventListener('paste', (e) => {
+  if (DOM.messageInput) DOM.messageInput.addEventListener('paste', (e) => {
     queueMicrotask(() => ChatEngine.autoGrowMessageInput());
     const cd = e.clipboardData;
-    if (!cd) return;
+    if (!cd || !Attachments || !Attachments.IMAGE_TYPES) return;
     const imageFiles = Array.from(cd.items)
       .filter((it) => Attachments.IMAGE_TYPES.has(it.type))
       .map((it) => it.getAsFile())
@@ -621,26 +679,30 @@ export function installWiring(ctx: WiringCtx) {
   // hands OS file drops to the webview, so these HTML5 events fire normally.
   // A depth counter avoids flicker as the pointer crosses child elements.
   let dragDepth = 0;
-  DOM.chatPanel.addEventListener('dragenter', (e) => {
-    e.preventDefault();
-    dragDepth++;
-    DOM.chatPanel.classList.add('drag-over');
-  });
-  DOM.chatPanel.addEventListener('dragover', (e) => {
-    e.preventDefault();             // required to allow a drop
-  });
-  DOM.chatPanel.addEventListener('dragleave', (e) => {
-    e.preventDefault();
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) DOM.chatPanel.classList.remove('drag-over');
-  });
-  DOM.chatPanel.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dragDepth = 0;
-    DOM.chatPanel.classList.remove('drag-over');
-    const files = e.dataTransfer && e.dataTransfer.files;
-    if (files && files.length) Attachments.addFiles(files);
-  });
+  if (DOM.chatPanel) {
+    DOM.chatPanel.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragDepth++;
+      DOM.chatPanel.classList.add('drag-over');
+    });
+    DOM.chatPanel.addEventListener('dragover', (e) => {
+      e.preventDefault();             // required to allow a drop
+    });
+    DOM.chatPanel.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) DOM.chatPanel.classList.remove('drag-over');
+    });
+    DOM.chatPanel.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      DOM.chatPanel.classList.remove('drag-over');
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length && Attachments && typeof Attachments.addFiles === 'function') {
+        Attachments.addFiles(files);
+      }
+    });
+  }
 
   // GEAR → the settings launcher panel window (the hub's modal is gone from
   // this page; settings are system widgets now).
@@ -664,8 +726,8 @@ export function installWiring(ctx: WiringCtx) {
       openAttachMenu(false);
       return;
     }
-    if (SlashMenu.isOpen()) { SlashMenu.close(); return; }
-    if (ComposerConfig.anyMenuOpen()) {
+    if (SlashMenu && SlashMenu.isOpen()) { SlashMenu.close(); return; }
+    if (ComposerConfig && typeof ComposerConfig.anyMenuOpen === 'function' && ComposerConfig.anyMenuOpen()) {
       ComposerConfig.closeAllMenus();
       return;
     }
@@ -673,7 +735,7 @@ export function installWiring(ctx: WiringCtx) {
       LocalShell.openMenu(false);
       return;
     }
-    VoiceEngine.handleEscape();
+    if (VoiceEngine) VoiceEngine.handleEscape();
   });
 
   // Cross-window storage fan-out: the settings.voice panel persists the
@@ -682,7 +744,7 @@ export function installWiring(ctx: WiringCtx) {
   window.addEventListener('storage', (e) => {
     if (!e || !e.key) return;
     if (e.key === 'luna_voice_speak_replies' && e.newValue === '0') {
-      VoiceEngine.stopSpeaking();
+      if (VoiceEngine) VoiceEngine.stopSpeaking();
     }
   });
 
@@ -694,35 +756,10 @@ export function installWiring(ctx: WiringCtx) {
   // tick later is equivalent; a classic-top-level call cannot see a
   // module-published global.)
 
-  // Phase 8 — direct lines: chat.html?thread=<id> pins this WINDOW to one
-  // thread (its own open_widget instance label). Null = the main line.
-  // Declared here, consumed at runtime by syncThread / the snapshot
-  // persist (same IIFE scope; TDZ is safe — both run after evaluation).
-  // A spawned "new thread" panel arrives as ?thread=new — a SENTINEL, not a
-  // real id: it mints its OWN fresh thread on its own socket (see syncThread)
-  // rather than subscribing. Any other value is a Phase 8 direct line pinned
-  // to that thread; null = the main line.
-  const _threadParam = new URLSearchParams(location.search).get('thread') || null;
-  const SPAWN_FRESH = _threadParam === 'new';
-  const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
-  // Owner label for a drag-out floater (#380). When set, the Redock button
-  // folds this window back into that owner via redock_thread.
-  const REDOCK_TO = new URLSearchParams(location.search).get('redockTo') || null;
-  // View mode (plan Step 3): a detached floater's open_widget params carry
-  // 'viewMode' when its SOURCE window was verbose at the moment of detach
-  // (see threadDrawer.ts's openInNewWindow) - this window boots verbose
-  // from it. Read once, here, alongside every other `?`-derived boot param;
-  // applied later in bootChat.ts once wire.ViewMode exists (installWiring
-  // runs before createWire - see this file's module doc on ordering).
-  const INITIAL_VIEW_MODE = new URLSearchParams(location.search).get('viewMode') === 'true';
-  // Max stall-recovery rounds before we give up and surface "Reattach stalled".
-  // 3 rounds covers: one tombstone advance + one validation miss + one final retry.
-  const MAX_REATTACH_ROUNDS = 3;
-
-  // Wire the injectable State.pinnedThread from the URL-derived PINNED_THREAD.
-  // Tests set m.State.pinnedThread directly to exercise the pinned guard without
-  // needing to reload the page with a ?thread= param.
-  State.pinnedThread = PINNED_THREAD;
+  // Boot params (SPAWN_FRESH / PINNED_THREAD / REDOCK_TO / INITIAL_VIEW_MODE)
+  // and State.pinnedThread were derived at the TOP of installWiring so a
+  // chrome throw cannot skip them — see installWiring's ignition-isolation
+  // note. PINNED_THREAD / REDOCK_TO arrive via the engines bag here.
 
   // Phase C: consume ThreadCache seed written by the owner on detach so a
   // floater paints transcript immediately (before first WS snapshot).
@@ -1016,6 +1053,5 @@ export function installWiring(ctx: WiringCtx) {
   // panel — this window just reads the stored creds and connects.)
   // (The connection boot moved to src/chat/wire.ts and is ignited by
   // main-chat.tsx - stack23 S20a. See the note on `var WebSocketEngine`.)
-
-  return { SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE }
+  // Boot params are returned by installWiring (outer), not here.
 }
