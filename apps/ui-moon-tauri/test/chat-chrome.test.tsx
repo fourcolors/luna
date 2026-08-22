@@ -64,7 +64,6 @@ describe('mountChatChrome', () => {
         <div class="bar-start" aria-hidden="true"></div>
         <span class="bar-title" id="bar-title-root">Luna</span>
         <button class="redock-btn" id="redock-btn" type="button" hidden></button>
-        <button class="newthread-btn" id="new-thread-btn"></button>
         <span id="collapse-moon-btn-root"></span>
       </div>
     `
@@ -109,17 +108,15 @@ describe('mountChatChrome', () => {
     expect(invoke).toHaveBeenCalledWith('collapse_to_moon')
   })
 
-  it('leaves the redock-btn / new-thread-btn DOM completely untouched (outside this mount)', () => {
+  it('leaves the redock-btn DOM completely untouched (outside this mount)', () => {
     domFixture()
     const invoke = vi.fn(async () => null)
     act(() => {
       mountChatChrome({ invoke })
     })
     const redock = document.getElementById('redock-btn')
-    const newThread = document.getElementById('new-thread-btn')
     expect(redock).toBeTruthy()
     expect(redock!.hidden).toBe(true)
-    expect(newThread).toBeTruthy()
   })
 
   it('degrades to a no-op mount when a slot is missing (matches every mount*Panel guard)', () => {
@@ -147,8 +144,9 @@ describe('chat.html chrome markup', () => {
     expect(html).not.toContain("invoke('collapse_to_moon')")
     // …and the inline script never reads/writes the old #bar-title id.
     expect(html).not.toContain("getElementById('bar-title')")
-    // …while the redock-btn / new-thread-btn stay vanilla-owned, unchanged.
+    // …while the redock-btn stays vanilla-owned, unchanged.
     expect(html).toContain('id="redock-btn"')
-    expect(html).toContain('id="new-thread-btn"')
+    // …and the removed title-bar + button stays removed.
+    expect(html).not.toContain('id="new-thread-btn"')
   })
 })

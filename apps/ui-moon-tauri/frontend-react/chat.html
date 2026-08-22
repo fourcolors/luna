@@ -540,35 +540,17 @@
     /* (`.chat-panel .close-btn` and `.header-actions` were removed with the
        header cluster itself: #toggle-threads and #toggle-settings now live in
        #title-bar and take the shared `.close-btn` base from moon-theme.css,
-       which is already 22px — matching .newthread-btn and .collapse-moon-btn
+       which is already 22px — matching .collapse-moon-btn
        beside them, instead of the header's odd-one-out 24px.) */
 
-    /* Native controls own the left cluster; New thread and Collapse own the
-       right. The title remains centered between those balanced zones. */
+    /* Native controls own the left cluster; .bar-end owns the right. Both
+       reserve the same 68px footprint (moon-theme.css), so the title stays
+       centered between balanced zones — the same structure panel.html and
+       widget.html already use. */
     #title-bar { position: relative; }
-
-    /* New-thread button — the promoted action, accent-tinted to invite. Sits at
-       the right (the flex:1 bar-title pushes it there). */
-    #title-bar .newthread-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--accent);
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.12s, color 0.12s;
-    }
-    #title-bar .newthread-btn:hover {
-      background: color-mix(in oklab, var(--accent) 16%, transparent);
-    }
-    /* Pinned windows hide the + via [hidden]; the class's display:flex beats
-       the UA [hidden]{display:none} by cascade, so force it. */
-    #title-bar .newthread-btn[hidden] { display: none !important; }
+    /* moon-theme.css's .bar-end has no gap of its own; chat is the only bar
+       that can show two glyphs at once (redock on a pinned floater). */
+    #title-bar .bar-end { gap: 8px; }
 
     /* Watercolor scrollbar styling — applied to every scrolling container in
        the moon. `width` covers vertical, `height` covers horizontal. The
@@ -2116,48 +2098,44 @@
          apply to a direct child of `.title-bar`'s flex box) - "Luna" is the
          pre-mount fallback, identical to the pre-conversion static text. -->
     <span class="bar-title" id="bar-title-root">Luna</span>
-    <!-- Redock — pinned floaters only (#380). Folds this window's thread back
-         into the owner main-line chat (panel-chat or redockTo), then closes. -->
-    <button class="redock-btn" id="redock-btn" type="button" hidden
-            title="Redock into main window" aria-label="Redock into main window">
-      <!-- Lucide "panel-left-close" (ISC) — fold floater back into the owner. -->
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect width="18" height="18" x="3" y="3" rx="2"/>
-        <path d="M9 3v18"/>
-        <path d="m16 15-3-3 3-3"/>
-      </svg>
-    </button>
-    <!-- New thread — the promoted action, alone on the right. Mints a fresh
-         thread in THIS window (single-window model; same as the sidebar's
-         "+ New"). Hidden and inert in pinned ?thread=<id> windows. -->
-    <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New thread">
-      <!-- Lucide "plus" (ISC). -->
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 5v14"/><path d="M5 12h14"/>
-      </svg>
-    </button>
-    <!-- Collapse the whole workspace back into the moon orb (Luna-specific
-         gesture; the yellow native button does OS-minimize instead). Sits at
-         the far right so it clears the native traffic lights on the left.
-         React-owned (src/chat/chat-chrome-mount.tsx, reusing widget.html's
-         CollapseMoonButton verbatim - same affordance, same ctx contract).
-         Bare host: no class of its own, so it adds zero box-model footprint
-         as a `.title-bar` flex child - the mounted Astryx Button carries the
-         original `collapse-moon-btn` class itself. -->
-    <!-- Settings gear — summons the settings LAUNCHER panel window
-         (open_widget kind 'settings'). Grouped with the other promoted
-         title-bar actions (+ / collapse-moon) rather than living alone in the
-         chat header. Kept BEFORE the moon so the collapse gesture stays the
-         far-right control. -->
-    <button class="close-btn" id="toggle-settings" aria-label="Settings" title="Settings">
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3"></circle>
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-    </button>
-    <span id="collapse-moon-btn-root"></span>
+    <!-- Right cluster balances the traffic lights so the title stays centered
+         (same .bar-end structure as panel.html / widget.html). New thread lives
+         ONLY in the thread drawer ("+ New", #thread-drawer-new) — the title bar
+         used to carry a duplicate + button here, and it was removed. -->
+    <div class="bar-end">
+      <!-- Redock — pinned floaters only (#380). Folds this window's thread back
+           into the owner main-line chat (panel-chat or redockTo), then closes. -->
+      <button class="redock-btn" id="redock-btn" type="button" hidden
+              title="Redock into main window" aria-label="Redock into main window">
+        <!-- Lucide "panel-left-close" (ISC) — fold floater back into the owner. -->
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="18" height="18" x="3" y="3" rx="2"/>
+          <path d="M9 3v18"/>
+          <path d="m16 15-3-3 3-3"/>
+        </svg>
+      </button>
+      <!-- Settings gear — summons the settings LAUNCHER panel window
+           (open_widget kind 'settings'). Grouped with the other promoted
+           title-bar actions (collapse-moon) rather than living alone in the
+           chat header. Kept BEFORE the moon so the collapse gesture stays the
+           far-right control. -->
+      <button class="close-btn" id="toggle-settings" aria-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+      </button>
+      <!-- Collapse the whole workspace back into the moon orb (Luna-specific
+           gesture; the yellow native button does OS-minimize instead). Sits at
+           the far right so it clears the native traffic lights on the left.
+           React-owned (src/chat/chat-chrome-mount.tsx, reusing widget.html's
+           CollapseMoonButton verbatim - same affordance, same ctx contract).
+           Bare host: no class of its own, so it adds zero box-model footprint
+           as a `.bar-end` flex child - the mounted Astryx Button carries the
+           original `collapse-moon-btn` class itself. -->
+      <span id="collapse-moon-btn-root"></span>
+    </div>
   </div>
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
