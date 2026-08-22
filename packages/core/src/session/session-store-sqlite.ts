@@ -308,7 +308,7 @@ export const makeSessionStoreSqlite = (
         | (new (p: string) => BunDb)
         | undefined
       if (!Database) {
-        return yield* Effect.dieMessage("bun:sqlite has no Database export")
+        return yield* Effect.die("bun:sqlite has no Database export")
       }
       const db = new Database(dbPath)
 

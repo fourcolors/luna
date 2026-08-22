@@ -2140,7 +2140,7 @@ describe("JobTicker", () => {
           Effect.timeout(Duration.millis(150)),
           Effect.result,
         )
-        expect(raced._tag).toBe("Left")
+        expect(raced._tag).toBe("Failure")
 
         // Now release "b" too - awaitIdle resolves promptly.
         yield* Deferred.succeed(latchB, undefined)

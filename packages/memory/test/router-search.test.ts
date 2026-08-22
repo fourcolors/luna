@@ -85,7 +85,7 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
         }),
       ).pipe(Effect.provide(layer), Effect.result),
     )
-    expect(result._tag).toBe("Left")
+    expect(result._tag).toBe("Failure")
     if (result._tag === "Failure") {
       expect((result.failure as { backend: string; op: string }).backend).toBe(
         "router",
@@ -196,6 +196,6 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
     const result = await Effect.runPromise(
       Stream.runCollect(router.search({ queryText: "x" })).pipe(Effect.result),
     )
-    expect(result._tag).toBe("Left")
+    expect(result._tag).toBe("Failure")
   })
 })

@@ -51,7 +51,7 @@ describe("TaskList — Tier-2 simulation", () => {
           const fibers = yield* Effect.forEach(
             claimants,
             (name) =>
-              Effect.forkChild(
+              Effect.forkDetach(
                 Effect.gen(function* () {
                   yield* Deferred.await(gate)
                   return yield* tl.claim(id, name).pipe(
@@ -63,7 +63,9 @@ describe("TaskList — Tier-2 simulation", () => {
           )
           yield* Deferred.succeed(gate, void 0)
 
-          const results = yield* Effect.forEach(fibers, (f) => Fiber.join(f))
+          const results = yield* Effect.forEach(fibers, (f) => Fiber.join(f), {
+            concurrency: 1,
+          })
 
           const wins = results.filter((r) => r._tag === "Success")
           const fails = results.filter((r) => r._tag === "Failure")

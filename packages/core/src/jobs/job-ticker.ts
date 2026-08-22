@@ -519,7 +519,7 @@ export const JobTickerLayer = (
       // invocation ever runs at a time. The executor dispatch itself runs on
       // the FORKED fiber, not in the critical section: `FiberMap.run` returns
       // as soon as the fiber exists, and the executor's first op is
-      // `Effect.yieldNow()` so its body does not run synchronously inside the
+      // `Effect.yieldNow` so its body does not run synchronously inside the
       // fork. The critical section is therefore the fast producer loop (claim
       // / guard / claimAndStartRun writes), not any worker dispatch - see the
       // fork site's "honest scope" comment for the one residual (a synchronous

@@ -886,7 +886,7 @@ dSqlite("AgentNotesService (SQLite layer) — unparseable payload_json", () => {
       }),
     )
 
-    expect(result._tag).toBe("Left")
+    expect(result._tag).toBe("Failure")
     if (result._tag === "Failure") {
       expect(result.failure._tag).toBe("NoteError")
       expect(result.failure.op).toBe("record")

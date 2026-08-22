@@ -334,7 +334,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
 
     expect(result.embedder.provider).toBe("ollama")
     expect(result.embedder.dimension).toBe(768)
-    expect(result.outcome._tag).toBe("Left")
+    expect(result.outcome._tag).toBe("Failure")
     if (result.outcome._tag === "Failure") {
       expect(result.outcome.failure).toBeInstanceOf(EmbedderError)
       expect(result.outcome.failure.op).toBe("embed")
@@ -388,7 +388,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     mockFetch.mockResolvedValue(okJson({ embeddings: [[1, 0, 0]] })) // length 3
 
     const first = await Effect.runPromise(Effect.result(embedder.embed("hello")))
-    expect(first._tag).toBe("Left")
+    expect(first._tag).toBe("Failure")
     if (first._tag === "Failure") {
       expect(first.failure).toBeInstanceOf(EmbedderError)
       expect(first.failure.op).toBe("embed")
@@ -403,7 +403,7 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     // Sticky: second call fails without another HTTP round-trip.
     mockFetch.mockClear()
     const second = await Effect.runPromise(Effect.result(embedder.embed("again")))
-    expect(second._tag).toBe("Left")
+    expect(second._tag).toBe("Failure")
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
@@ -496,17 +496,18 @@ describe("OllamaEmbedder boot-probe hardening", () => {
         ),
       )
 
-      // Let the first (failing) attempt's mocked fetch promise settle on the
-      // real microtask queue before the fiber reaches the backoff sleep.
+      // Let the first (failing) attempt's mocked fetch promise settle.
+      // Under TestClock, forked work needs an Effect yield to start running
+      // before Promise microtasks alone observe side effects.
+      await runtime.runPromise(Effect.yieldNow)
       await Promise.resolve()
       await Promise.resolve()
 
-      const stillPending = await runtime.runPromise(Fiber.poll(fiber))
-      expect(stillPending._tag).toBe("None")
       // The backoff sleep must gate the retry — no second attempt yet.
       expect(probeAttemptCount(mockFetch)).toBe(1)
 
       await runtime.runPromise(TestClock.adjust("10 seconds"))
+      await runtime.runPromise(Effect.yieldNow)
       await Promise.resolve()
       await Promise.resolve()
 

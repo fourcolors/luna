@@ -375,7 +375,7 @@ export const makeDrainOnce = (
         // `FiberMap.run` call itself - and a worker's synchronous prefix
         // would run to completion right here, inside the producer's
         // permit-held `drainOnce`, extending the tick by that worker's sync
-        // duration. `Effect.yieldNow()` as the fiber's first op prevents
+        // duration. `Effect.yieldNow` as the fiber's first op prevents
         // that: the fork returns to the producer before any executor body
         // runs.
         //
@@ -415,7 +415,7 @@ export const makeDrainOnce = (
         yield* FiberMap.run(
           executors,
           job.id,
-          Effect.yieldNow().pipe(
+          Effect.yieldNow.pipe(
             Effect.andThen(
               executor(job, started.run, entry, isOneShot, nextRunAt),
             ),

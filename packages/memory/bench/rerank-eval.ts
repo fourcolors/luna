@@ -441,7 +441,7 @@ async function retrieveCandidates(
     Clock.Default,
     LunaSqliteBootstrapLive,
   )
-  const layer = Layer.unwrapEffect(
+  const layer = Layer.unwrap(
     Effect.gen(function* () {
       const backend = yield* SqliteVectorBackend
       return MemoryLayer({ rules: [{ pattern: "*", backend }] })

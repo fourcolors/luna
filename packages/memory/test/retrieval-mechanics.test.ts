@@ -34,7 +34,7 @@ describe.skipIf(!hasBunSqlite)("retrieval mechanics (stub embedder)", () => {
   )
 
   const buildLayer = () =>
-    Layer.unwrapEffect(
+    Layer.unwrap(
       Effect.gen(function* () {
         const backend = yield* SqliteVectorBackend
         return MemoryLayer({ rules: [{ pattern: "*", backend }] })

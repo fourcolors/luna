@@ -65,7 +65,7 @@ describe("supervised-pool (Phase 11.5a)", () => {
             yield* pool.submit({ id, run: job(id) })
           }
 
-          const exit = yield* collector.await
+          const exit = yield* Fiber.await(collector)
           const results = Exit.isSuccess(exit) ? exit.value : []
           const peakN = yield* Ref.get(peak)
           return { results, peakN }
@@ -97,21 +97,30 @@ describe("supervised-pool (Phase 11.5a)", () => {
             ),
           )
 
-          const forked = yield* Effect.forEach(
-            ["x", "y", "z"],
-            (id) =>
-              Effect.forkChild(
-                pool.submit({
-                  id,
-                  run: Effect.sleep(Duration.millis(20)).pipe(
-                    Effect.as(id),
-                  ),
-                }),
-              ),
-            { concurrency: "unbounded" },
-          )
-          const outcomes = yield* Effect.forEach(forked, (f) => Fiber.join(f))
-          const exit = yield* collector.await
+          const forked = [
+            yield* Effect.forkChild(
+              pool.submit({
+                id: "x",
+                run: Effect.sleep(Duration.millis(20)).pipe(Effect.as("x")),
+              }),
+            ),
+            yield* Effect.forkChild(
+              pool.submit({
+                id: "y",
+                run: Effect.sleep(Duration.millis(20)).pipe(Effect.as("y")),
+              }),
+            ),
+            yield* Effect.forkChild(
+              pool.submit({
+                id: "z",
+                run: Effect.sleep(Duration.millis(20)).pipe(Effect.as("z")),
+              }),
+            ),
+          ]
+          const outcomes = yield* Effect.forEach(forked, (f) => Fiber.join(f), {
+            concurrency: 1,
+          })
+          const exit = yield* Fiber.await(collector)
           const results = Exit.isSuccess(exit) ? exit.value : []
           return { outcomes, results }
         }),

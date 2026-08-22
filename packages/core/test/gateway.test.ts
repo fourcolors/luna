@@ -146,7 +146,7 @@ describe("GatewayService", () => {
 
           const gateway = yield* GatewayService
           yield* gateway.registerAdapter(adapter)
-          yield* gateway.setHandler(() => Effect.dieMessage("boom"))
+          yield* gateway.setHandler(() => Effect.die("boom"))
 
           yield* Effect.forkDetach(
             gateway.start.pipe(Effect.catchCause(() => Effect.void)),
@@ -242,7 +242,7 @@ describe("GatewayService", () => {
 
           // No adapters registered; start() should complete right away
           yield* Effect.timeout(gateway.start, Duration.millis(100)).pipe(
-            Effect.catchTag("TimeoutException", () => Effect.succeed("timeout")),
+            Effect.catchTag("TimeoutError", () => Effect.succeed("timeout")),
           )
           return "ok"
         }).pipe(Effect.provide(makeTestRuntime())),

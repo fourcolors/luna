@@ -19,7 +19,7 @@ describe("WorkerRegistry", () => {
       const result = yield* Effect.result(
         reg.dispatch("nope", {}, idCtx),
       )
-      expect(result._tag).toBe("Left")
+      expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
         expect(result.failure.reason).toBe("unknown_kind")
         expect(result.failure.kind).toBe("nope")
@@ -103,7 +103,7 @@ describe("WorkerRegistry", () => {
       const reg = yield* WorkerRegistry
       yield* reg.register("badp", failing)
       const result = yield* Effect.result(reg.dispatch("badp", {}, idCtx))
-      expect(result._tag).toBe("Left")
+      expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
         expect(result.failure.reason).toBe("bad_payload")
         expect(result.failure.message).toBe("missing field")

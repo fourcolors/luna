@@ -2,7 +2,7 @@
  * TaskList Tier-1 unit tests — DESIGN §4 / §5.1 / §6.3 / §7.
  */
 import { describe, expect, it } from "vitest"
-import { Chunk, Effect, Exit, Stream } from "effect"
+import { Chunk, Effect, Exit, Stream, Fiber} from "effect"
 import {
   TaskList,
   TaskAlreadyClaimedError,
@@ -260,7 +260,7 @@ describe("TaskList — Tier-1", () => {
         yield* tl.setStatus(id, "in_progress")
         yield* tl.complete(id)
 
-        const earlyEvents = yield* earlyFiber.await
+        const earlyEvents = yield* Fiber.await(earlyFiber)
 
         // Late subscriber attached AFTER all events fire — must not see them.
         const lateFiber = yield* Effect.forkChild(
@@ -271,7 +271,7 @@ describe("TaskList — Tier-1", () => {
             Effect.timeoutOption("50 millis"),
           ),
         )
-        const lateEvents = yield* lateFiber.await
+        const lateEvents = yield* Fiber.await(lateFiber)
 
         return { earlyEvents, lateEvents }
       }),

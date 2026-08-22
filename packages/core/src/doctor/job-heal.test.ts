@@ -48,7 +48,7 @@ describe("JobHealApi", () => {
               payload: { max_turns: 15 },
             }),
           )
-          expect(exit._tag).toBe("Left")
+          expect(exit._tag).toBe("Failure")
           rmSync(root, { recursive: true, force: true })
         }),
       ),

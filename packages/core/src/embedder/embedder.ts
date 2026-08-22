@@ -343,15 +343,17 @@ export const makeOllamaEmbedderLayer = (
 
       // Bounded retry - Schedule.recurs is a hard cap, never Schedule.union,
       // so a persistently-flaky link can't eat the boot readiness budget.
-      const retrySchedule = Schedule.recurs(maxProbeAttempts - 1).pipe(
-        Schedule.intersect(Schedule.spaced(probeBackoffMs)),
+      const retrySchedule = Schedule.max([
+        Schedule.spaced(probeBackoffMs),
+        Schedule.recurs(maxProbeAttempts - 1),
+      ]).pipe(
         Schedule.jittered,
-        Schedule.tapInput((cause: unknown) =>
+        Schedule.tap((meta) =>
           Effect.sync(() => {
             if (attempts < maxProbeAttempts) {
               console.error(
                 `[embedder] ollama probe attempt ${attempts}/${maxProbeAttempts} failed, retrying: ` +
-                  `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts} cause=${errorMessage(cause)}`,
+                  `provider=ollama baseUrl=${baseUrl} model=${model} attempts=${attempts} cause=${errorMessage(meta.input)}`,
               )
             }
           }),

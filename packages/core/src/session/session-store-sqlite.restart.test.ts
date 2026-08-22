@@ -15,7 +15,7 @@
  * DO NOT run under vitest/node — bun:sqlite is not resolvable there.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Stream } from "effect"
+import { Cause, Effect, Layer, Stream } from "effect"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -321,10 +321,11 @@ describe("SessionStore SQLite restart-fidelity", () => {
       ),
     )
 
-    // Must be Failure with cause._tag === "Fail" (typed), NOT "Die" (defect).
+    // Must be Failure with a typed Fail cause, NOT a Die (defect).
     expect(exitA._tag).toBe("Failure")
     if (exitA._tag === "Failure") {
-      expect(exitA.cause._tag).toBe("Fail")
+      expect(Cause.hasFails(exitA.cause)).toBe(true)
+      expect(Cause.hasDies(exitA.cause)).toBe(false)
     }
 
     // ── B. Duplicate messageId INSERT → UNIQUE constraint violation ───────────
@@ -367,7 +368,8 @@ describe("SessionStore SQLite restart-fidelity", () => {
 
     expect(exitB._tag).toBe("Failure")
     if (exitB._tag === "Failure") {
-      expect(exitB.cause._tag).toBe("Fail")
+      expect(Cause.hasFails(exitB.cause)).toBe(true)
+      expect(Cause.hasDies(exitB.cause)).toBe(false)
     }
 
     // ── C. After a ROLLBACK the session store is still usable ────────────────

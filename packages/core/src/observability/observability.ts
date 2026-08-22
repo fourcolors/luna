@@ -23,7 +23,7 @@
  *   - §3.4 #1 no cross-Scope refs: writer fiber is a daemon.
  *   - emit() is always Effect<void, never> — failure is swallowed.
  */
-import { Context, Effect, Result, Layer, PubSub, Queue, Stream } from "effect"
+import { Context, Effect, Result, Layer, PubSub, Stream } from "effect"
 import { appendFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -68,8 +68,8 @@ export class ObservabilityService extends Context.Service<ObservabilityService, 
         yield* Effect.forkDetach(
           Effect.scoped(
             Effect.gen(function* () {
-              const sub = yield* hub.subscribe
-              yield* Stream.fromQueue(sub).pipe(
+              const sub = yield* PubSub.subscribe(hub)
+              yield* Stream.fromEffectRepeat(PubSub.take(sub)).pipe(
                 Stream.runForEach((ev: ObsEvent) =>
                   Effect.gen(function* () {
                     if (levelOrder[ev.level] < minLevelOrd) return
@@ -169,9 +169,9 @@ export class ObservabilityService extends Context.Service<ObservabilityService, 
         // be delivered to the returned Stream.
         const subscribeEvents: ObservabilityApi["subscribeEvents"] = Effect.gen(
           function* () {
+            // Pins a Subscription to the caller's Scope (cleaned up on close).
             const sub = yield* PubSub.subscribe(hub)
-            yield* Effect.addFinalizer(() => Queue.shutdown(sub))
-            return Stream.fromQueue(sub)
+            return Stream.fromEffectRepeat(PubSub.take(sub))
           },
         )
 

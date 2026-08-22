@@ -61,7 +61,7 @@ describe("JobsStoreService (Memory layer)", () => {
           payload: { label: "second" },
         }),
       )
-      expect(second._tag).toBe("Left")
+      expect(second._tag).toBe("Failure")
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
@@ -1078,7 +1078,7 @@ dSqlite("JobsStoreService (SQLite layer) - claimAndStartRun rollback", () => {
           attempt: null as unknown as number,
         }),
       )
-      expect(result._tag).toBe("Left")
+      expect(result._tag).toBe("Failure")
 
       // The claim was rolled back - a subsequent claim with the ORIGINAL
       // previousLastRun (null) still succeeds, proving jobs.last_run was

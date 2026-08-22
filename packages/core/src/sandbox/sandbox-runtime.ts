@@ -128,7 +128,7 @@ function spawnToEffect(
     `${timeoutMs} millis`,
   ).pipe(
     Effect.mapError((e) => {
-      if (e._tag === "TimeoutException") {
+      if (e._tag === "TimeoutError") {
         return new SandboxError({
           reason: "timeout",
           command: job.command,

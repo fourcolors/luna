@@ -21,7 +21,7 @@
  */
 import { Schema } from "effect"
 
-const Level = Schema.Literal("info", "warn", "error")
+const Level = Schema.Literals(["info", "warn", "error"])
 
 const Base = {
   ts: Schema.String,
@@ -53,7 +53,7 @@ export const ToolCallSchema = Schema.Struct({
   toolName: Schema.String,
   inputDigest: Schema.optionalKey(Schema.String),
   durationMs: Schema.Number,
-  status: Schema.Literal("success", "error", "permission_denied"),
+  status: Schema.Literals(["success", "error", "permission_denied"]),
 })
 
 export const HookFireSchema = Schema.Struct({
@@ -129,11 +129,11 @@ const RetrievalCallBase = {
   kind: Schema.Literal("RetrievalCall"),
   sessionId: Schema.optionalKey(Schema.String),
   namespace: Schema.optionalKey(Schema.String),
-  mode: Schema.Literal("vec", "hybrid", "bm25", "hybrid-terms"),
+  mode: Schema.Literals(["vec", "hybrid", "bm25", "hybrid-terms"]),
   candidateCount: Schema.Number,
   topScore: Schema.optionalKey(Schema.Number),
   durationMs: Schema.Number,
-  status: Schema.Literal("success", "error"),
+  status: Schema.Literals(["success", "error"]),
 } as const
 
 // Reranker widening (Phase 3 production reranker, PR #332 bench): a rerank
@@ -150,7 +150,7 @@ const RetrievalCallBase = {
 // An object satisfying NEITHER variant (e.g. missing embedderModel and not
 // marked reranked: true) is correctly rejected - this preserves the
 // pre-existing "rejects RetrievalCall missing embedderModel" guardrail.
-const RetrievalCallSchema = Schema.Union(
+const RetrievalCallSchema = Schema.Union([
   Schema.Struct({
     ...RetrievalCallBase,
     queryDigest: Schema.String,
@@ -167,17 +167,17 @@ const RetrievalCallSchema = Schema.Union(
     kept: Schema.Number,
     dropped: Schema.Number,
   }),
-)
+])
 
 export const ErrorEventSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("Error"),
   errorTag: Schema.String,
   message: Schema.String,
-  context: Schema.optionalKey(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  context: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown )),
 })
 
-export const ObsEventSchema = Schema.Union(
+export const ObsEventSchema = Schema.Union([
   SessionStartSchema,
   SessionEndSchema,
   ToolCallSchema,
@@ -191,7 +191,7 @@ export const ObsEventSchema = Schema.Union(
   CostAccruedSchema,
   RetrievalCallSchema,
   ErrorEventSchema,
-)
+])
 
 /**
  * Decode (validate) an unknown payload as an ObsEvent.

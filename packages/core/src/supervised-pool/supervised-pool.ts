@@ -7,10 +7,11 @@
  * helper with their own typed error channels / id generators / status maps.
  *
  * Invariants honored (cite §-anchor):
- *   - §3.4 #4 LIFO finalizer ordering: `Queue.shutdown` finalizer registered
+ *   - §3.4 #4 LIFO finalizer ordering: `Queue.end` finalizer registered
  *     BEFORE `FiberSet.make` so the FiberSet finalizer runs FIRST (interrupts
  *     in-flight fibers, allowing their `onExit` to push final PoolResults)
- *     and the queue-shutdown finalizer runs AFTER, closing the results queue.
+ *     and the queue-end finalizer runs AFTER. Prefer `end` over `shutdown` —
+ *     v4 `shutdown` discards buffered messages before consumers can drain.
  *   - §3.4 #1 no cross-Scope fiber refs: `RunningEntry` stays internal; the
  *     public `SupervisedPool` API exposes only string ids.
  *   - Ref-shadow-size: `Effect.Semaphore` has no sync `available` accessor,
@@ -25,6 +26,7 @@
  *     explicit code.
  */
 import {
+  Cause,
   Effect,
   Exit,
   Fiber,
@@ -45,7 +47,7 @@ import type {
 
 interface RunningEntry {
   readonly id: string
-  readonly fiber: Fiber.RuntimeFiber<unknown, unknown>
+  readonly fiber: Fiber.Fiber<unknown, unknown>
 }
 
 export const makeSupervisedPool = (
@@ -56,17 +58,18 @@ export const makeSupervisedPool = (
     const policy = config.policy
 
     // Unbounded outbound results channel — producers (per-job onExit) must
-    // never block on slow Stream consumers.
-    const resultsQueue = yield* Queue.unbounded<PoolResult>()
+    // never block on slow Stream consumers. Done-typed so Queue.end can
+    // signal completion while preserving buffered PoolResults for drain.
+    const resultsQueue = yield* Queue.unbounded<PoolResult, Cause.Done>()
 
-    // Register queue-shutdown FIRST so LIFO ordering runs it AFTER the
+    // Register queue-end FIRST so LIFO ordering runs it AFTER the
     // FiberSet finalizer (registered next). Critical for §3.4 #4: fibers
     // get interrupted while the queue is still open so their onExit can
-    // push the final interrupted PoolResult.
-    yield* Effect.addFinalizer(() => Queue.shutdown(resultsQueue))
+    // push the final interrupted PoolResult; `end` keeps those buffered.
+    yield* Effect.addFinalizer(() => Queue.end(resultsQueue))
 
     // Supervised pool — Scope-attached. Closing the Scope interrupts every
-    // member fiber (§3.4 #4). Its finalizer runs BEFORE the queue-shutdown
+    // member fiber (§3.4 #4). Its finalizer runs BEFORE the queue-end
     // finalizer by LIFO order.
     const fiberSet = yield* FiberSet.make<unknown, unknown>()
 
@@ -116,7 +119,7 @@ export const makeSupervisedPool = (
     const forkJob = (
       id: string,
       run: Effect.Effect<unknown, unknown, Scope.Scope>,
-    ): Effect.Effect<Fiber.RuntimeFiber<unknown, unknown>> =>
+    ): Effect.Effect<Fiber.Fiber<unknown, unknown>> =>
       Effect.gen(function* () {
         yield* Ref.update(inFlightCount, (n) => n + 1)
         const fiber = yield* FiberSet.run(fiberSet, wrappedRun(id, run))
@@ -177,7 +180,7 @@ export const makeSupervisedPool = (
             }
             const oldest = xs[0]!
             const evictedId = oldest.id
-            yield* Fiber.interruptFork(oldest.fiber)
+            yield* Effect.forkDetach(Fiber.interrupt(oldest.fiber))
             yield* slots.take(1)
             yield* forkJob(job.id, job.run)
             return {

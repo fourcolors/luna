@@ -573,7 +573,7 @@ export const runDream = (now: number, opts: RunDreamOptions = {}) =>
       watermark,
     } satisfies RunDreamSummary
   }).pipe(
-    Effect.tapErrorCause((cause) =>
+    Effect.tapCause((cause) =>
       Effect.logError(`[luna/dream] runDream FAILED`, { cause }),
     ),
   )

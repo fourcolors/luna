@@ -23,7 +23,7 @@ describe("FakeWakeReasoner", () => {
       Effect.gen(function* () {
         const r = yield* WakeReasoner
         return yield* r.reason(inputs)
-      }).pipe(Effect.provideService(FakeWakeReasoner, FakeWakeReasoner.of(digest))),
+      }).pipe(Effect.provide(FakeWakeReasoner.of(digest))),
     )
     expect(out).toEqual(digest)
   })

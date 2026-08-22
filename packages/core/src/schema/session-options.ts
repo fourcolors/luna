@@ -16,7 +16,7 @@ import * as S from "effect/Schema"
 const PositiveInt = S.Int.check(S.isGreaterThan(0))
 const NonNegInt = S.Int.check(S.isGreaterThanOrEqualTo(0))
 
-export const SystemPromptSchema = S.Union(
+export const SystemPromptSchema = S.Union([
   S.String,
   S.Array(S.String),
   S.Struct({
@@ -25,7 +25,7 @@ export const SystemPromptSchema = S.Union(
     append: S.optionalKey(S.String),
     excludeDynamicSections: S.optionalKey(S.Boolean),
   }),
-)
+])
 export type SystemPromptSpec = typeof SystemPromptSchema.Type
 
 export const SessionOptionsSchema = S.Struct({

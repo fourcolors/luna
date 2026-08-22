@@ -101,11 +101,17 @@ export class MetricsFlusher extends Context.Service<MetricsFlusher, MetricsFlush
         }).pipe(Effect.catchCause(() => Effect.void))
 
         // ── 3. Background daemon fiber ────────────────────────────────────────
-        // Polls on a fixed interval. forkDaemon per §3.4 #1.
+        // Polls on a fixed interval. Delay the first tick so Layer build does
+        // not race a flush against test setup (v4 forkDetach schedules the
+        // initial Effect.repeat body immediately).
         yield* Effect.forkDetach(
-          flush.pipe(
-            Effect.repeat(Schedule.fixed(flushIntervalMs)),
-            Effect.catchCause(() => Effect.void),
+          Effect.sleep(flushIntervalMs).pipe(
+            Effect.andThen(
+              flush.pipe(
+                Effect.repeat(Schedule.fixed(flushIntervalMs)),
+                Effect.catchCause(() => Effect.void),
+              ),
+            ),
           ),
         )
 
