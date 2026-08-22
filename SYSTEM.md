@@ -141,7 +141,7 @@ Always trust `obs_runtime()`'s paths over any hardcoded assumption.
 Luna runs autonomous background work via a job scheduler backed by
 `luna.db → jobs` and `luna.db → job_runs`, built on the **Claude Agent SDK**.
 
-> **SDK:** `@anthropic-ai/claude-agent-sdk ^0.3.167`
+> **SDK:** `@anthropic-ai/claude-agent-sdk ^0.3.239`
 > **Source:** `packages/adapter-sdk/src/` (`prompt-worker.ts`,
 > `workflow-worker.ts`) + `packages/core/src/` (`dream/dream-worker.ts`,
 > `wake/wake-worker.ts`) + `packages/core/src/jobs/` (ticker, store)
