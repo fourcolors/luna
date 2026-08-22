@@ -17,7 +17,6 @@ import {
   Deferred,
   Effect,
   Queue,
-  Ref,
   Stream,
 } from "effect"
 import * as http from "node:http"
@@ -43,11 +42,8 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
   // The gateway calls send(response) which resolves the deferred.
   let pendingResponses: Map<string, Deferred.Deferred<string, never>> = new Map()
 
-  const messages: GatewayAdapter["messages"] = Stream.asyncScoped((emit) =>
+  const messages: GatewayAdapter["messages"] = Stream.callback<GatewayMessage>((queue) =>
     Effect.gen(function* () {
-      const q = yield* Queue.unbounded<GatewayMessage | null>()
-      yield* Effect.addFinalizer(() => Queue.shutdown(q))
-
       const server = http.createServer((req, res) => {
         if (req.method !== "POST" || req.url !== "/message") {
           res.writeHead(404)
@@ -77,7 +73,7 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
             Effect.gen(function* () {
               const deferred = yield* Deferred.make<string, never>()
               pendingResponses.set(msgId, deferred)
-              yield* Queue.offer(q, msg)
+              yield* Queue.offer(queue, msg)
               // Wait for the response then write it
               const responseText = yield* Deferred.await(deferred)
               res.writeHead(200, { "Content-Type": "application/json" })
@@ -93,22 +89,12 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
 
       server.listen(port, host)
       yield* Effect.addFinalizer(() =>
-        Effect.callback<void>((resume) => {
-          server.close(() => resume(Effect.void))
-        }),
-      )
-
-      return yield* Effect.forkDetach(
         Effect.gen(function* () {
-          while (true) {
-            const item = yield* Queue.take(q)
-            if (item === null) {
-              emit.end()
-              return
-            }
-            emit.single(item)
-          }
-        }).pipe(Effect.catchCause(() => Effect.void)),
+          yield* Effect.callback<void>((resume) => {
+            server.close(() => resume(Effect.void))
+          })
+          yield* Queue.end(queue).pipe(Effect.catchCause(() => Effect.void))
+        }),
       )
     }),
   )

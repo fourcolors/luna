@@ -24,7 +24,7 @@
  *     events; cleared when task transitions to `completed`.
  *
  * Scope design (critical):
- *   Each team gets its own private `teamScope: Scope.CloseableScope`. ALL
+ *   Each team gets its own private `teamScope: Scope.Closeable`. ALL
  *   per-team finalizers (orphan-emit, fiber-interrupt, mailbox-shutdown) are
  *   registered into `teamScope` via `Scope.addFinalizer`. This isolates team
  *   finalizers from the broker's layer scope.
@@ -38,7 +38,7 @@
  *   eventsQ during teardown. Prefer `end` over v4 `shutdown` (which discards
  *   buffered messages before Stream consumers can drain).
  *
- * Reuses the forkDaemon + explicit interrupt pattern of the SupervisedPool
+ * Reuses the forkDetach + explicit interrupt pattern of the SupervisedPool
  * helper (packages/core/src/supervised-pool/).
  */
 import { Context,
@@ -86,7 +86,7 @@ interface TeamRecord {
    * Per-team private scope. Closing it tears down the team: interrupts
    * fibers, shuts down mailboxes, emits orphan events.
    */
-  readonly teamScope: Scope.CloseableScope
+  readonly teamScope: Scope.Closeable
   /** Set true when explicit `dissolve` is called. Distinguishes orphan reason. */
   readonly dissolvedRef: Ref.Ref<boolean>
   /** Guard: ensures we only run per-team teardown once. */
@@ -229,7 +229,7 @@ export class TeamBroker extends Context.Service<TeamBroker, TeamBrokerApi>()("lu
               })
             }
 
-            // Fork each teammate loop. Use forkDaemon so the fiber is
+            // Fork each teammate loop. Use forkDetach so the fiber is
             // independent of the calling fiber's scope. We'll interrupt it
             // from the teamScope finalizer.
             for (const teammate of spec.teammates) {

@@ -9,7 +9,7 @@
  *   - Testing: inject messages programmatically via a passthrough stream.
  *
  * Implementation:
- *   - `messages` is a Stream.asyncScoped that reads from stdin line-by-line.
+ *   - `messages` is a Stream.callback that reads from stdin line-by-line.
  *   - `send` writes the response text to stdout.
  *   - The stream completes when stdin closes (EOF).
  */
@@ -41,12 +41,15 @@ export function makeStdioAdapter(opts?: {
   const inputStream = opts?.input ?? process.stdin
   const writer = opts?.output ?? ((line: string) => process.stdout.write(line + "\n"))
 
-  const messages: GatewayAdapter["messages"] = Stream.asyncScoped((emit) =>
+  const messages: GatewayAdapter["messages"] = Stream.callback<GatewayMessage>((queue) =>
     Effect.gen(function* () {
-      const q = yield* Queue.unbounded<GatewayMessage | null>()
-      yield* Effect.addFinalizer(() => Queue.shutdown(q))
-
       const rl = readline.createInterface({ input: inputStream, crlfDelay: Infinity })
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          rl.close()
+        }),
+      )
 
       rl.on("line", (line: string) => {
         const trimmed = line.trim()
@@ -60,32 +63,16 @@ export function makeStdioAdapter(opts?: {
           metadata: {},
           ts: new Date().toISOString(),
         }
-        // Queue.offer is async; we use unsafeRunSync-like approach via
-        // the emit callback.
-        void Effect.runPromise(Queue.offer(q, msg))
+        void Effect.runPromise(Queue.offer(queue, msg))
       })
 
       rl.on("close", () => {
-        void Effect.runPromise(Queue.offer(q, null))
+        void Effect.runPromise(Queue.end(queue))
       })
 
       rl.on("error", () => {
-        void Effect.runPromise(Queue.offer(q, null))
+        void Effect.runPromise(Queue.end(queue))
       })
-
-      // Drain queue and emit messages.
-      return yield* Effect.forkDetach(
-        Effect.gen(function* () {
-          while (true) {
-            const item = yield* Queue.take(q)
-            if (item === null) {
-              emit.end()
-              return
-            }
-            emit.single(item)
-          }
-        }).pipe(Effect.catchCause(() => Effect.void)),
-      )
     }),
   )
 
