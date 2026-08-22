@@ -54,8 +54,17 @@
        is absent (browser / jsdom). -->
   <script src="/vendor/moon-session.js"></script>
   <style>
+    /* Cascade-layer order. Astryx ships every rule inside @layer reset /
+       astryx-base / astryx-theme, and UNLAYERED author rules beat LAYERED ones
+       regardless of specificity - so the universal reset below has to live in a
+       layer of its own, ordered FIRST, or its `*` selector stomps the padding
+       and margin of every Astryx component in Moon. See
+       src/styles/astryx-layer-order.css for the full rationale. */
+    @layer moon-reset, reset, astryx-base, astryx-theme;
     /* ── Widget-window base (panel.html conventions) ─────────────────────── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    @layer moon-reset {
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    }
     * { user-select: none; -webkit-user-drag: none; }
 
     html, body {
