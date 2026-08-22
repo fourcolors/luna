@@ -377,7 +377,7 @@ const demo = Effect.gen(function* () {
           message: String(e),
         }),
     }).pipe(
-      Effect.catchAll((e) => {
+      Effect.catch((e) => {
         warn(`Live proof failed: ${e.message}`)
         return Effect.succeed(null)
       }),

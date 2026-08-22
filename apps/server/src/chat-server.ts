@@ -188,7 +188,7 @@ const bootShadowedEnvKeys = new Set<string>()
   // thread. Self-heals all start paths (autodeploy, manual restart, rebuild).
   applyClaudeExecutablePreflight()
 }
-import { Context, Effect, Layer, ManagedRuntime, Option, Redacted, Runtime, Stream } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Option, Redacted, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
@@ -775,7 +775,7 @@ export const ThreadToolsProviderLayer = (
   // layer's dependency graph. Default undefined: byte-identical to before.
   bulletinHolder?: { readonly current: string },
 ) => {
-  const base = Layer.scoped(
+  const base = Layer.effect(
     ThreadToolsProviderTag,
     Effect.gen(function* () {
       const memTools = yield* MemoryToolsService
@@ -941,10 +941,9 @@ export const ThreadToolsProviderLayer = (
       //     and assigns `beliefsContent = rendered` (closes over the `let`).
       //   - Run refreshBeliefs ONCE at boot (correct from t=0).
       //   - Fork a supervised loop: sleep(interval) → refreshBeliefs, forever.
-      //     forkScoped ties the fiber to THIS layer's Scope (Layer.scoped
+      //     forkScoped ties the fiber to THIS layer's Scope (Layer.effect
       //     provides the Scope; it is interrupted on layer release — no
-      //     unmanaged/leaked fiber). Layer.scoped is required; Layer.effect
-      //     does not supply a Scope and forkScoped would fail to build.
+      //     unmanaged/leaked fiber).
       //
       // Net: a belief activated by a survey appears in the NEXT thread
       // WITHOUT a server restart (within ~refreshIntervalMs, default 30s).
@@ -999,7 +998,7 @@ export const ThreadToolsProviderLayer = (
       // up when the layer releases. No bare Effect.runFork (would leak).
       yield* Effect.forkScoped(
         Effect.forever(
-          Effect.sleep(refreshIntervalMs).pipe(Effect.zipRight(refreshBeliefs)),
+          Effect.sleep(refreshIntervalMs).pipe(Effect.andThen(refreshBeliefs)),
         ),
       )
 
@@ -2307,7 +2306,7 @@ export const buildBaseLayer = (
   const skillPrefsL = SkillPrefsStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
-  const skillRegistryL = Layer.scoped(
+  const skillRegistryL = Layer.effect(
     SkillRegistry,
     Effect.gen(function* () {
       const prefs = yield* SkillPrefsStore
@@ -2356,7 +2355,7 @@ export const buildBaseLayer = (
       }).pipe(
         // Never take the boot/loop down — but never swallow silently either
         // (review finding): squashed causes get an operator-visible line.
-        Effect.catchAllCause((cause) =>
+        Effect.catchCause((cause) =>
           Effect.sync(() =>
             console.warn("[luna/skills] user-skill sync failed:", String(cause)),
           ),
@@ -2365,7 +2364,7 @@ export const buildBaseLayer = (
       yield* refreshUserSkills
       yield* Effect.forkScoped(
         Effect.forever(
-          Effect.sleep(30_000).pipe(Effect.zipRight(refreshUserSkills)),
+          Effect.sleep(30_000).pipe(Effect.andThen(refreshUserSkills)),
         ),
       )
 
@@ -2537,8 +2536,8 @@ export const buildBaseLayer = (
     JobRunToolsProviderTag,
     Effect.gen(function* () {
       const store = yield* JobsStoreService
-      const runtime = yield* Effect.runtime<never>()
-      const runPromise = Runtime.runPromise(runtime)
+      const runtime = yield* Effect.context<never>()
+      const runPromise = Effect.runPromiseWith(runtime)
       return createJobInputToolsProvider({
         bridge: jobInputBridge,
         // Best-effort flip: a store failure resolves false (the tool treats
@@ -2547,7 +2546,7 @@ export const buildBaseLayer = (
           runPromise(
             store
               .updateRunStatus(runId, status)
-              .pipe(Effect.catchAll(() => Effect.succeed(false))),
+              .pipe(Effect.catch(() => Effect.succeed(false))),
           ),
       })
     }),
@@ -2566,9 +2565,9 @@ export const buildBaseLayer = (
 
   // Boot migration: one-shot import from the legacy JSON map into the
   // ThreadRegistry. Runs once at server boot (inside the ThreadRegistry's
-  // Layer.scoped, so it's part of the boot sequence). Idempotent — existing
+  // Layer.effect, so it's part of the boot sequence). Idempotent — existing
   // rows are skipped.
-  const threadRegistryWithMigrationL = Layer.scoped(
+  const threadRegistryWithMigrationL = Layer.effect(
     ThreadRegistryService,
     Effect.gen(function* () {
       // Build the SQLite-backed registry (which runs the migration DDL).
@@ -2586,7 +2585,7 @@ export const buildBaseLayer = (
         // async importJsonMap must be awaited via Effect.tryPromise + yield*,
         // NOT a bare `await` (which is a syntax error in a non-async generator
         // and only slips past tsc's top-level-await handling).
-        const importResult = yield* Effect.either(
+        const importResult = yield* Effect.result(
           Effect.tryPromise({
             try: () =>
               importJsonMap(reg, lunaHome, defaultCwd, nowMs, {
@@ -2598,8 +2597,8 @@ export const buildBaseLayer = (
             catch: (e) => e as Error,
           }),
         )
-        if (importResult._tag === "Right") {
-          const result = importResult.right
+        if (importResult._tag === "Success") {
+          const result = importResult.success
           if (result.inserted > 0) {
             console.log(
               `[luna/thread-registry] boot import: inserted=${result.inserted} skippedNoSid=${result.skippedNoSid} skippedClaudeTest=${result.skippedClaudeTest} skippedAlreadyPresent=${result.skippedAlreadyPresent}`,
@@ -2607,7 +2606,7 @@ export const buildBaseLayer = (
           }
         } else {
           console.warn(
-            `[luna/thread-registry] boot import failed (best-effort): ${String(importResult.left)}`,
+            `[luna/thread-registry] boot import failed (best-effort): ${String(importResult.failure)}`,
           )
         }
       }
@@ -2644,14 +2643,14 @@ export const buildBaseLayer = (
   // ChatThreadPosterTag via Effect.serviceOption; this layer provides it,
   // bridging the worker's finished result back into ChatService.deliverResult
   // (which persists it + pushes a frame to live subscribers + emits a global
-  // toast notification). Same Effect.runtime/runPromise escape hatch as
+  // toast notification). Same Effect.context/runPromiseWith escape hatch as
   // jobInputToolsL above. Provided `chatL` so it can resolve ChatService.
   const chatThreadPosterL = Layer.effect(
     ChatThreadPosterTag,
     Effect.gen(function* () {
       const chat = yield* ChatService
-      const runtime = yield* Effect.runtime<never>()
-      const runPromise = Runtime.runPromise(runtime)
+      const runtime = yield* Effect.context<never>()
+      const runPromise = Effect.runPromiseWith(runtime)
       return {
         post: (delivery) =>
           // Best-effort: deliverResult never fails (returns Option.none on a
@@ -2666,7 +2665,7 @@ export const buildBaseLayer = (
                   source: delivery.source ?? "background-job",
                   ...(delivery.label ? { label: delivery.label } : {}),
                 })
-                .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void)),
+                .pipe(Effect.asVoid, Effect.catchCause(() => Effect.void)),
             ),
           ),
       }
@@ -2684,7 +2683,7 @@ export const buildBaseLayer = (
   // threads (#306) - the exclusion the eval fixture's leak probes test.
   const bulletinRefresherL = !bulletinEnabled
     ? Layer.empty
-    : Layer.scopedDiscard(
+    : Layer.effectDiscard(
         Effect.gen(function* () {
           const chat = yield* ChatService
           const store = yield* SessionStore
@@ -2725,7 +2724,7 @@ export const buildBaseLayer = (
             // A thread not yet upserted into the registry is conservatively
             // excluded until its first turn registers it.
             const activeRows = yield* registry.listByStatus("active").pipe(
-              Effect.catchAllDefect((defect) =>
+              Effect.catchDefect((defect) =>
                 Effect.fail(
                   new Error(`registry active-list unavailable (fail-closed, keeping previous digest): ${String(defect)}`),
                 ),
@@ -2759,7 +2758,7 @@ export const buildBaseLayer = (
                 Stream.runCollect,
                 Effect.map((c) => Array.from(c)),
                 // A single unreadable thread must not sink the whole tick.
-                Effect.catchAll(() => Effect.succeed([] as ChatMessage[])),
+                Effect.catch(() => Effect.succeed([] as ChatMessage[])),
               )
               const texts = msgs
                 .filter((m) => m.text.trim().length > 0)
@@ -2802,7 +2801,7 @@ export const buildBaseLayer = (
               `[luna/bulletin] refreshed: ~${estimateBulletinTokens(digest)} tokens from ${snapshot.length} thread(s)`,
             )
           }).pipe(
-            Effect.catchAllCause((cause) =>
+            Effect.catchCause((cause) =>
               Effect.sync(() =>
                 console.warn(
                   "[luna/bulletin] tick failed (keeping previous digest):",
@@ -2816,9 +2815,9 @@ export const buildBaseLayer = (
           // cadence. forkScoped ties the fiber to this layer's Scope.
           yield* Effect.forkScoped(
             Effect.sleep("20 seconds").pipe(
-              Effect.zipRight(tick),
-              Effect.zipRight(
-                Effect.forever(Effect.sleep(refreshMs).pipe(Effect.zipRight(tick))),
+              Effect.andThen(tick),
+              Effect.andThen(
+                Effect.forever(Effect.sleep(refreshMs).pipe(Effect.andThen(tick))),
               ),
             ),
           )
@@ -2942,10 +2941,10 @@ export const buildBaseLayer = (
   )
 }
 
-class ServerHandle extends Effect.Tag("dev/ChatServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number; readonly host: string }
->() {}
+>()("dev/ChatServerHandle") {}
 
 // ── Graceful shutdown helper ─────────────────────────────────────────────
 //
@@ -3071,7 +3070,7 @@ export const buildSetupServerLayer = (
           },
         }
 
-  return Layer.scopedDiscard(
+  return Layer.effectDiscard(
     Effect.gen(function* () {
       yield* startControlServer(controlPort, TOKEN, BUILD_SHA)
       yield* startUIWebSocketServer({
@@ -3209,7 +3208,7 @@ export const resolveUiFeedbackSessionId = (threadId: string | undefined): string
 const buildServerLayer = (
   baseLayer: ReturnType<typeof buildBaseLayer>,
 ): Layer.Layer<ServerHandle> =>
-  Layer.scoped(
+  Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       // ChatService already has per-thread tool wiring baked in via the
@@ -3228,9 +3227,9 @@ const buildServerLayer = (
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
       const suggestedActionsService = yield* SuggestedActions // suggest_action
       const mem = yield* MemoryRouterTag // memory-browser mcp-app tools (below)
-      // Capture Effect runtime so the HTTP /readyz path can sync-read ticker
+      // Capture Effect context so the HTTP /readyz path can sync-read ticker
       // health without holding an Effect fiber (ui-ws is plain node:http).
-      const effectRuntime = yield* Effect.runtime<JobTicker>()
+      const effectRuntime = yield* Effect.context<JobTicker>()
       // AcceptHandler is always wired (see the merge above), so this resolves.
       // Kept as serviceOption for defensive symmetry with SuggestedActions.respond
       // (absent → accept would leave the action at `accepted`).
@@ -3260,10 +3259,10 @@ const buildServerLayer = (
         if (Option.isNone(threadRegistryOption)) return
         const reg = threadRegistryOption.value
         const nowMs = Date.now()
-        // Effect.either wraps errors so a failure in runAutoArchive can never
+        // Effect.result wraps errors so a failure in runAutoArchive can never
         // propagate out — this is the canonical best-effort escape hatch.
         Effect.runPromise(
-          Effect.either(
+          Effect.result(
             runAutoArchive(reg, nowMs).pipe(
               Effect.flatMap((archived) =>
                 archived.length > 0
@@ -3282,7 +3281,7 @@ const buildServerLayer = (
             ),
           ),
         ).catch(() => {
-          // Effect.either means errors appear as Left, not as Promise rejection.
+          // Effect.result means errors appear as Failure, not as Promise rejection.
           // This catch is a belt-and-suspenders guard; it should never fire.
         })
       }
@@ -3296,7 +3295,7 @@ const buildServerLayer = (
       yield* Effect.forkScoped(
         Effect.forever(
           Effect.sleep(TWENTY_FOUR_HOURS_MS).pipe(
-            Effect.zipRight(Effect.sync(runAutoArchiveBestEffort)),
+            Effect.andThen(Effect.sync(runAutoArchiveBestEffort)),
           ),
         ),
       )
@@ -3308,9 +3307,9 @@ const buildServerLayer = (
       yield* Effect.forkScoped(
         Effect.forever(
           Effect.sleep(10 * 60 * 1000).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               connectorServiceHandle.refreshMounts().pipe(
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                   Effect.sync(() =>
                     console.warn("[luna/connectors] mount refresh failed:", String(cause)),
                   ),
@@ -3440,7 +3439,7 @@ const buildServerLayer = (
           console.log(`[luna/vault] adopted ${toAdopt.length} pre-existing credential(s) into the registry`)
         }
       }).pipe(
-        Effect.catchAllCause((cause) =>
+        Effect.catchCause((cause) =>
           Effect.sync(() =>
             console.warn("[luna/vault] boot reconcile failed:", String(cause)),
           ),
@@ -3528,7 +3527,7 @@ const buildServerLayer = (
       yield* Effect.forkScoped(
         Effect.forever(
           Effect.sleep(30 * 1000).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               Effect.promise(async () => {
                 const cfg = await vaultSyncStoreFacade.getSyncConfig()
                 if (cfg === null || !cfg.enabled) return
@@ -3557,7 +3556,7 @@ const buildServerLayer = (
                     `[luna/vault] sync failed (${vaultSyncConsecutiveFailures} consecutive): ${r.message}\n`,
                   )
                 }
-              }).pipe(Effect.catchAllCause(() => Effect.void)),
+              }).pipe(Effect.catchCause(() => Effect.void)),
             ),
           ),
         ),
@@ -3787,7 +3786,7 @@ const buildServerLayer = (
             // swallows the ONE distinction the memory-browser panel needs:
             // "no vector backend configured" (safe to silently fall back to
             // memory-list) vs any other failure (a real error banner).
-            const either = yield* Effect.either(
+            const searchResult = yield* Effect.result(
               Stream.runCollect(
                 mem.search({
                   queryText: args.query,
@@ -3798,8 +3797,8 @@ const buildServerLayer = (
                 }),
               ),
             )
-            if (either._tag === "Left") {
-              const err = either.left as { cause?: unknown; message?: unknown }
+            if (searchResult._tag === "Failure") {
+              const err = searchResult.failure as { cause?: unknown; message?: unknown }
               const causeMsg =
                 typeof err.cause === "object" && err.cause !== null
                   ? (err.cause as { message?: string }).message
@@ -3824,7 +3823,7 @@ const buildServerLayer = (
                 error: { kind, message: msg },
               }
             }
-            const all = Array.from(either.right)
+            const all = Array.from(searchResult.success)
             const filtered =
               args.kind !== undefined
                 ? all.filter((h) => h.record.kind === args.kind)
@@ -3943,7 +3942,7 @@ const buildServerLayer = (
 
       // Completion observer: folds a feedback job's terminal run status back
       // onto the note (queued -> resolved | job-failed). Best-effort, forked
-      // for the life of this Layer.scoped's Scope — mirrors AcceptHandler's
+      // for the life of this Layer.effect's Scope — mirrors AcceptHandler's
       // own completion observer (acceptHandlerL above). No-op (nothing to
       // observe) when the status store failed to open at boot.
       if (uiFeedbackStatusStore !== null) {
@@ -3987,7 +3986,7 @@ const buildServerLayer = (
                 }`,
               ),
           }).pipe(
-            Effect.catchAll((err) => {
+            Effect.catch((err) => {
               writeSync(
                 1,
                 `[luna/mcp-apps] G4: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -4168,7 +4167,7 @@ const buildServerLayer = (
             Effect.map((jobs) => jobs.map(toGalleryItem)),
             // Degrade to empty so the connection survives, but LOG first — a
             // chronically-failing jobs DB must be observable (review G3).
-            Effect.catchAll((e) =>
+            Effect.catch((e) =>
               Effect.sync(() => {
                 console.warn("[luna/workflows] gallery list failed:", String(e))
                 return [] as ReturnType<typeof toGalleryItem>[]
@@ -4178,7 +4177,7 @@ const buildServerLayer = (
         runs: (jobId: string, limit?: number) =>
           jobsStore.listRuns(jobId, limit ?? 25).pipe(
             Effect.map((runs) => runs.map(toRunItem)),
-            Effect.catchAll((e) =>
+            Effect.catch((e) =>
               Effect.sync(() => {
                 console.warn("[luna/workflows] gallery runs failed:", String(e))
                 return [] as ReturnType<typeof toRunItem>[]
@@ -4207,7 +4206,7 @@ const buildServerLayer = (
             : base
           return withHandler.pipe(
             Effect.asVoid,
-            Effect.catchAll((e) =>
+            Effect.catch((e) =>
               Effect.sync(() => {
                 console.warn("[luna/suggested-actions] respond failed:", String(e))
               }),
@@ -4302,9 +4301,9 @@ const buildServerLayer = (
             }
           }).pipe(
             // The E channel here is `never` (every yielded effect above is
-            // infallible) - this handler can't actually run, but catchAll
+            // infallible) - this handler can't actually run, but catch
             // still requires a total callback.
-            Effect.catchAll((e) =>
+            Effect.catch((e) =>
               Effect.succeed({
                 ok: false as const,
                 message: String(e),
@@ -4469,10 +4468,10 @@ const buildServerLayer = (
                     id,
                     (message) => writeSync(1, `[luna/ui-feedback] ${message}\n`),
                   ),
-                ).pipe(Effect.catchAllCause(() => Effect.void))
+                ).pipe(Effect.catchCause(() => Effect.void))
               }),
               Effect.as({ ok: true as const }),
-              Effect.catchAll(() =>
+              Effect.catch(() =>
                 Effect.succeed({
                   ok: false as const,
                   message: "Could not record feedback.",
@@ -4621,7 +4620,7 @@ const buildServerLayer = (
         // captured runtime — HTTP handlers are not Effect fibers.
         getSchedulerHealth: () => {
           try {
-            return Runtime.runSync(effectRuntime)(jobTicker.health)
+            return Effect.runSyncWith(effectRuntime)(jobTicker.health)
           } catch {
             return null
           }
@@ -4894,7 +4893,7 @@ export const bootstrap = async (): Promise<void> => {
             ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
             lunaHome: paths.lunaHome,
           })
-        }).pipe(Effect.zipRight(Effect.never)),
+        }).pipe(Effect.andThen(Effect.never)),
       )
       .catch((err) => {
         console.error("❌ setup-mode server crashed:", err)
@@ -5003,9 +5002,9 @@ export const bootstrap = async (): Promise<void> => {
         )
         // PreToolUse covers tools that never hit canUseTool (auto-approved
         // mcp__*, and calls under permission modes that skip the callback).
-        // forkDaemon + scoped + never keeps the registration's Scope open for
+        // forkDetach + scoped + never keeps the registration's Scope open for
         // the process lifetime so the hook is not torn down after install.
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           Effect.scoped(
             Effect.gen(function* () {
               yield* adapter.registerHook(

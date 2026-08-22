@@ -51,8 +51,8 @@ const expectedUtcNext = (expr: string, now: number): number => {
   process.env.TZ = "UTC"
   try {
     const parsed = Cron.parse(expr)
-    if (parsed._tag === "Left") throw new Error(`bad cron ${expr}`)
-    return Cron.next(parsed.right, new Date(now)).getTime()
+    if (parsed._tag === "Failure") throw new Error(`bad cron ${expr}`)
+    return Cron.next(parsed.success, new Date(now)).getTime()
   } finally {
     if (prev === undefined) delete process.env.TZ
     else process.env.TZ = prev

@@ -144,8 +144,8 @@ const buildPayload = () => ({
  */
 const computeNextRunAtUtc = (now: number): number | null => {
   const parsed = Cron.parse(CRON_EXPR, "UTC")
-  if (parsed._tag === "Left") return null
-  return Cron.next(parsed.right, new Date(now)).getTime()
+  if (parsed._tag === "Failure") return null
+  return Cron.next(parsed.success, new Date(now)).getTime()
 }
 
 const jobsStoreL = JobsStoreService.makeLayer(paths.lunaDbPath).pipe(
