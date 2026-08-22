@@ -224,10 +224,10 @@ export const makeEnvSecretResolver =
     const program = Effect.gen(function* () {
       const ctx = yield* Layer.build(layer)
       const provider = Context.get(ctx, SecretProvider)
-      const result = yield* Effect.either(provider.get(`env:${name}`))
-      if (result._tag === "Right") return result.right
-      if (result.left.message.startsWith(LUNA_VAULT_INTEGRITY_PREFIX)) {
-        return yield* Effect.fail(result.left)
+      const result = yield* Effect.result(provider.get(`env:${name}`))
+      if (result._tag === "Success") return result.success
+      if (result.failure.message.startsWith(LUNA_VAULT_INTEGRITY_PREFIX)) {
+        return yield* Effect.fail(result.failure)
       }
       return undefined
     })

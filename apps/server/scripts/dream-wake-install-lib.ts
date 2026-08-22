@@ -115,8 +115,8 @@ export const computeNextRunAtUtc = (
   process.env.TZ = "UTC"
   try {
     const parsed = Cron.parse(expr)
-    if (parsed._tag === "Left") return null
-    return Cron.next(parsed.right, new Date(now)).getTime()
+    if (parsed._tag === "Failure") return null
+    return Cron.next(parsed.success, new Date(now)).getTime()
   } finally {
     if (prevTz === undefined) delete process.env.TZ
     else process.env.TZ = prevTz
