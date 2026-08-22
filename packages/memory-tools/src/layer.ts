@@ -166,9 +166,9 @@ export const makeMemoryRouterLayer = <
   R,
 >(
   backendLayer: Layer.Layer<BackendId, E, R>,
-  backendTag: Context.Tag<BackendId, BackendApi>,
+  backendTag: Context.Service<BackendId, BackendApi>,
 ) =>
-  Layer.unwrapEffect(
+  Layer.unwrap(
     Effect.gen(function* () {
       const backend = yield* backendTag
       return MemoryLayer({ rules: [{ pattern: "*", backend }] })
@@ -201,9 +201,7 @@ export interface MemoryToolsConfig extends MemoryToolsSessionConfig {
   readonly createSessionBinding: () => MemoryToolsSessionConfig
 }
 
-export class MemoryToolsService extends Effect.Tag(
-  "luna/MemoryToolsService",
-)<MemoryToolsService, MemoryToolsConfig>() {}
+export class MemoryToolsService extends Context.Service<MemoryToolsService, MemoryToolsConfig>()("luna/MemoryToolsService") {}
 
 export const MEMORY_SYSTEM_PROMPT_ADDENDUM =
   "You have three memory tools on MCP server `memory`. Use their fully " +
@@ -278,7 +276,7 @@ export const MemoryToolsLayer = (
     }),
     systemPromptAddendum: MEMORY_SYSTEM_PROMPT_ADDENDUM,
   })
-  const base = Layer.scoped(
+  const base = Layer.effect(
     MemoryToolsService,
     Effect.gen(function* () {
       const router = yield* MemoryRouterTag

@@ -12,7 +12,7 @@
  * Memory variant for unit tests; SQLite for production — same idioms as
  * ConnectorInstanceStore / skill-prefs-store.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import {
   Clock,
   ConfigError,
@@ -99,10 +99,7 @@ export interface VaultStoreApi {
   readonly setSyncConfig: (cfg: VaultSyncConfig) => Effect.Effect<void>
 }
 
-export class VaultStore extends Effect.Tag("luna/VaultStore")<
-  VaultStore,
-  VaultStoreApi
->() {
+export class VaultStore extends Context.Service<VaultStore, VaultStoreApi>()("luna/VaultStore") {
   /** In-memory variant — unit tests. */
   static readonly Memory: Layer.Layer<VaultStore> = Layer.effect(
     VaultStore,
@@ -166,7 +163,7 @@ export class VaultStore extends Effect.Tag("luna/VaultStore")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<VaultStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       VaultStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

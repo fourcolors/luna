@@ -11,7 +11,7 @@
  * disclosure, injected by decorate()) already carries the usage
  * instruction — duplicating it here would spend context twice.
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { defineToolPackage } from "@luna/tools"
 import { SkillRegistry } from "@luna/core"
 import type {
@@ -33,10 +33,7 @@ export interface SkillToolsConfig extends SkillToolsSessionConfig {
   readonly createSessionBinding: () => SkillToolsSessionConfig
 }
 
-export class SkillToolsService extends Effect.Tag("luna/SkillToolsService")<
-  SkillToolsService,
-  SkillToolsConfig
->() {}
+export class SkillToolsService extends Context.Service<SkillToolsService, SkillToolsConfig>()("luna/SkillToolsService") {}
 
 const createSkillToolsConfig = (
   registry: (typeof SkillRegistry)["Service"],

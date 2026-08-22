@@ -8,7 +8,7 @@
  * Memory variant for unit tests; SQLite for production — same idioms as
  * skill-prefs-store / agent-notes (dynamic bun:sqlite, WAL, close-on-scope).
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock, ConfigError, LunaSqliteBootstrap, applyMigration, ensureSchemaVersions } from "@luna/core"
 import type { ConnectorInstance, ConnectorStatus } from "./types.js"
 
@@ -50,9 +50,7 @@ export interface ConnectorInstanceStoreApi {
   readonly remove: (id: string) => Effect.Effect<boolean>
 }
 
-export class ConnectorInstanceStore extends Effect.Tag(
-  "luna/ConnectorInstanceStore",
-)<ConnectorInstanceStore, ConnectorInstanceStoreApi>() {
+export class ConnectorInstanceStore extends Context.Service<ConnectorInstanceStore, ConnectorInstanceStoreApi>()("luna/ConnectorInstanceStore") {
   /** In-memory variant — unit tests. */
   static readonly Memory: Layer.Layer<ConnectorInstanceStore> = Layer.effect(
     ConnectorInstanceStore,
@@ -90,7 +88,7 @@ export class ConnectorInstanceStore extends Effect.Tag(
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<ConnectorInstanceStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       ConnectorInstanceStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

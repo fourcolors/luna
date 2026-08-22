@@ -5,7 +5,7 @@
  * subscribe to `changes` and project wire frames. Proposals are not durable
  * across process restarts (v1); a restart simply drops unaccepted markers.
  */
-import { Effect, Layer, PubSub, Ref, Stream } from "effect"
+import { Context, Effect, Layer, PubSub, Ref, Stream } from "effect"
 import type {
   AcceptForkResult,
   ForkProposal,
@@ -49,11 +49,8 @@ export interface ForkProposalStoreApi {
   readonly changes: Stream.Stream<ForkProposal>
 }
 
-export class ForkProposalStore extends Effect.Tag("luna/ForkProposalStore")<
-  ForkProposalStore,
-  ForkProposalStoreApi
->() {
-  static readonly Memory: Layer.Layer<ForkProposalStore> = Layer.scoped(
+export class ForkProposalStore extends Context.Service<ForkProposalStore, ForkProposalStoreApi>()("luna/ForkProposalStore") {
+  static readonly Memory: Layer.Layer<ForkProposalStore> = Layer.effect(
     ForkProposalStore,
     Effect.gen(function* () {
       const rows = yield* Ref.make(new Map<string, ForkProposal>())

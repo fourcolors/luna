@@ -81,7 +81,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
   // Build the in-memory sqlite-vector router fresh per test so save/delete
   // state can't leak between cases. We use a ManagedRuntime to keep the
   // Layer scope alive across handler invocations within one test.
-  const baseLayer = Layer.unwrapEffect(
+  const baseLayer = Layer.unwrap(
     Effect.gen(function* () {
       const backend = yield* SqliteVectorBackend
       return MemoryLayer({ rules: [{ pattern: "*", backend }] })
@@ -564,7 +564,7 @@ describe("selectEmbedderLayer", () => {
 // fallback-on-failure, and the unscored-candidate-stays-ungated policy.
 // ---------------------------------------------------------------------------
 describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
-  const baseLayer = Layer.unwrapEffect(
+  const baseLayer = Layer.unwrap(
     Effect.gen(function* () {
       const backend = yield* SqliteVectorBackend
       return MemoryLayer({ rules: [{ pattern: "*", backend }] })

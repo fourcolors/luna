@@ -105,7 +105,7 @@ const supportLayer = Layer.mergeAll(
  * merely that SOME mode happened to return hits.
  */
 function makeSpyingRouterLayer(modesSeen: string[]) {
-  return Layer.unwrapEffect(
+  return Layer.unwrap(
     Effect.gen(function* () {
       const backend = yield* TestVectorBackend
       const spying: typeof backend = {

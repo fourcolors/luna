@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { defineToolPackage } from "@luna/tools"
 import type {
   AnyZodRawShape,
@@ -22,10 +22,7 @@ export interface ThreadToolsConfig extends ThreadToolsSessionConfig {
   readonly store: ForkProposalStoreApi
 }
 
-export class ThreadToolsService extends Effect.Tag("luna/ThreadToolsService")<
-  ThreadToolsService,
-  ThreadToolsConfig
->() {}
+export class ThreadToolsService extends Context.Service<ThreadToolsService, ThreadToolsConfig>()("luna/ThreadToolsService") {}
 
 export const THREAD_TOOLS_SYSTEM_PROMPT_ADDENDUM =
   "You have a thread-tools MCP server (`thread_tools`) with the tool " +
@@ -84,7 +81,7 @@ const createConfig = (
  */
 export const ThreadToolsLayer: Layer.Layer<
   ThreadToolsService | ForkProposalStore
-> = Layer.scoped(
+> = Layer.effect(
   ThreadToolsService,
   Effect.gen(function* () {
     const store = yield* ForkProposalStore

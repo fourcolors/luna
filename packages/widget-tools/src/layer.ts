@@ -6,7 +6,7 @@
  * store handle is process-wide and writes apply immediately), so
  * bindSession/clearSession are no-ops kept for uniformity.
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { defineToolPackage } from "@luna/tools"
 import { ArtifactStore } from "@luna/core"
 import type {
@@ -36,10 +36,7 @@ export interface WidgetToolsConfig extends WidgetToolsSessionConfig {
   readonly createSessionBinding: () => WidgetToolsSessionConfig
 }
 
-export class WidgetToolsService extends Effect.Tag("luna/WidgetToolsService")<
-  WidgetToolsService,
-  WidgetToolsConfig
->() {}
+export class WidgetToolsService extends Context.Service<WidgetToolsService, WidgetToolsConfig>()("luna/WidgetToolsService") {}
 
 /**
  * Kept as a thin wrapper (not inlined into createWidgetToolsConfig) because

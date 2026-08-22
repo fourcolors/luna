@@ -43,7 +43,7 @@ const hasBunSqlite = (() =>
   typeof (process.versions as { bun?: string }).bun === "string")()
 
 /** Minimal layer stack that mirrors what MemoryToolsLayer uses internally. */
-const baseLayer = Layer.unwrapEffect(
+const baseLayer = Layer.unwrap(
   Effect.gen(function* () {
     const backend = yield* SqliteVectorBackend
     return MemoryLayer({ rules: [{ pattern: "*", backend }] })
