@@ -312,8 +312,8 @@ describe("DreamReasonerDefault", () => {
     )
     expect(exit._tag).toBe("Failure")
     if (exit._tag === "Failure") {
-      // Extract the DreamError using Cause.failureOption (typed channel)
-      const maybeError = Cause.failureOption(exit.cause)
+      // Extract the DreamError using Cause.findErrorOption (typed channel)
+      const maybeError = Cause.findErrorOption(exit.cause)
       expect(maybeError._tag).toBe("Some")
       if (maybeError._tag === "Some") {
         const error = maybeError.value
@@ -329,7 +329,7 @@ describe("DreamReasonerDefault", () => {
     )
     expect(exit._tag).toBe("Failure")
     if (exit._tag === "Failure") {
-      const maybeError = Cause.failureOption(exit.cause)
+      const maybeError = Cause.findErrorOption(exit.cause)
       expect(maybeError._tag).toBe("Some")
       if (maybeError._tag === "Some") {
         const error = maybeError.value
@@ -355,7 +355,7 @@ describe("DreamReasonerDefault", () => {
     )
     expect(exit._tag).toBe("Failure")
     if (exit._tag === "Failure") {
-      const maybeError = Cause.failureOption(exit.cause)
+      const maybeError = Cause.findErrorOption(exit.cause)
       expect(maybeError._tag).toBe("Some")
       if (maybeError._tag === "Some") {
         const error = maybeError.value
@@ -395,7 +395,7 @@ describe("DreamReasonerDefault", () => {
         )
         expect(exit._tag).toBe("Failure")
         if (exit._tag === "Failure") {
-          const maybeError = Cause.failureOption(exit.cause)
+          const maybeError = Cause.findErrorOption(exit.cause)
           expect(maybeError._tag).toBe("Some")
           if (maybeError._tag === "Some") {
             const error = maybeError.value
@@ -584,7 +584,7 @@ describe("DreamReasonerDefault", () => {
       process.env["LUNA_DREAM_MODEL"] = "gemini-2.5-flash"
       try {
         const result = await Effect.runPromise(
-          Effect.either(
+          Effect.result(
             runReason(
               EMPTY_INPUTS,
               recordingClient(sink),
@@ -593,10 +593,10 @@ describe("DreamReasonerDefault", () => {
             ),
           ),
         )
-        expect(result._tag).toBe("Left")
-        if (result._tag === "Left") {
-          expect(result.left).toBeInstanceOf(DreamError)
-          expect((result.left as DreamError).op).toBe("reason")
+        expect(result._tag).toBe("Failure")
+        if (result._tag === "Failure") {
+          expect(result.failure).toBeInstanceOf(DreamError)
+          expect((result.failure as DreamError).op).toBe("reason")
         }
         // The SDK was never invoked because acquire failed first.
         expect(sink.last).toBeNull()
@@ -838,7 +838,7 @@ describe("buildDreamPrompt — distilled sessions + bounded memories (S4)", () =
     )
     expect(exit._tag).toBe("Failure")
     if (exit._tag === "Failure") {
-      const maybeError = Cause.failureOption(exit.cause)
+      const maybeError = Cause.findErrorOption(exit.cause)
       expect(maybeError._tag).toBe("Some")
       if (maybeError._tag === "Some") {
         const error = maybeError.value

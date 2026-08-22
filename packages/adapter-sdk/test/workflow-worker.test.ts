@@ -141,7 +141,7 @@ describe("buildWorkflowWorker — shell steps", () => {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildWorkflowWorker(sdk, notes)
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         worker(
           {
             steps: [
@@ -153,13 +153,13 @@ describe("buildWorkflowWorker — shell steps", () => {
           ctx,
         ),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left).toBeInstanceOf(WorkerError)
-        expect(result.left.reason).toBe("worker_failed")
-        expect(result.left.message).toMatch(/halted at step 1/)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure).toBeInstanceOf(WorkerError)
+        expect(result.failure.reason).toBe("worker_failed")
+        expect(result.failure.message).toMatch(/halted at step 1/)
         // The cause should carry the partial step results
-        const cause = result.left.cause as { steps: ShellStepResult[]; halted_at: number }
+        const cause = result.failure.cause as { steps: ShellStepResult[]; halted_at: number }
         expect(cause.steps.length).toBe(2)
         expect(cause.steps[1]?.exit_code).toBe(7)
         expect(cause.halted_at).toBe(1)
@@ -204,7 +204,7 @@ describe("buildWorkflowWorker — shell steps", () => {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildWorkflowWorker(sdk, notes)
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         worker(
           {
             steps: [{ kind: "shell", cmd: "sleep 5", timeout_ms: 100 }],
@@ -212,9 +212,9 @@ describe("buildWorkflowWorker — shell steps", () => {
           ctx,
         ),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        const cause = result.left.cause as { steps: ShellStepResult[] }
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const cause = result.failure.cause as { steps: ShellStepResult[] }
         expect(cause.steps[0]?.status).toBe("timeout")
       }
     })
@@ -276,7 +276,7 @@ describe("buildWorkflowWorker — prompt steps", () => {
         const sdk = yield* SDKClient
         const notes = yield* AgentNotesService
         const worker = buildWorkflowWorker(sdk, notes)
-        const result = yield* Effect.either(
+        const result = yield* Effect.result(
           worker(
             {
               steps: [
@@ -287,9 +287,9 @@ describe("buildWorkflowWorker — prompt steps", () => {
           ),
         )
         // halt_on_failure defaults true → a non-success step fails the worker.
-        expect(result._tag).toBe("Left")
-        if (result._tag === "Left") {
-          const cause = result.left.cause as {
+        expect(result._tag).toBe("Failure")
+        if (result._tag === "Failure") {
+          const cause = result.failure.cause as {
             steps: PromptStepResult[]
             halted_at: number
           }
@@ -339,13 +339,13 @@ describe("buildWorkflowWorker — payload validation", () => {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildWorkflowWorker(sdk, notes)
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         worker({ steps: [] /* empty */ }, ctx),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left.reason).toBe("bad_payload")
-        expect(result.left.kind).toBe("workflow")
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("bad_payload")
+        expect(result.failure.kind).toBe("workflow")
       }
     })
     await Effect.runPromise(prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))))
@@ -456,7 +456,7 @@ describe("buildWorkflowWorker - shell step process-group kill (issue #277 Seam B
         // Fork (not yield*) - we need a live Fiber to interrupt mid-flight,
         // which the existing tests never needed (they always run the
         // worker to completion).
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           worker({ steps: [{ kind: "shell", cmd }] }, ctx),
         )
 
@@ -502,12 +502,12 @@ describe("buildWorkflowWorker - shell step process-group kill (issue #277 Seam B
         // timeout_ms must outlast shell startup: on a loaded box, 100ms killed
         // the group before `echo $! > pidFile` ran, so the pidfile read below
         // hit ENOENT. 1500ms still fires long before the 30s grandchild exits.
-        const result = yield* Effect.either(
+        const result = yield* Effect.result(
           worker({ steps: [{ kind: "shell", cmd, timeout_ms: 1500 }] }, ctx),
         )
-        expect(result._tag).toBe("Left")
-        if (result._tag === "Left") {
-          const cause = result.left.cause as { steps: ShellStepResult[] }
+        expect(result._tag).toBe("Failure")
+        if (result._tag === "Failure") {
+          const cause = result.failure.cause as { steps: ShellStepResult[] }
           expect(cause.steps[0]?.status).toBe("timeout")
         }
 

@@ -554,7 +554,7 @@ export const DreamReasonerDefault: Layer.Layer<
      * (/usr/local/bin/claude on the container) and ChatService.callSDK
      * reads it on every chat turn. Dream did NOT — so every 3am cron tick
      * was firing, throwing this exact error, getting swallowed by the
-     * trigger agent's Effect.either, and leaving dream_state + dream_audit
+     * trigger agent's Effect.result, and leaving dream_state + dream_audit
      * empty with zero log lines. This line is the fix: same env var, same
      * shape, read at call time so tests can override it.
      */

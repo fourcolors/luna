@@ -19,6 +19,8 @@
  *      handle dropped from Ref.
  */
 import {
+  Cause,
+  Context,
   Duration,
   Effect,
   Layer,
@@ -967,14 +969,16 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             Option.Option<SDKError>
           > = !idleTimeoutDisabled
             ? Queue.take(queue).pipe(
-                Effect.timeoutFail({
-                  onTimeout: (): Option.Option<SDKError> =>
-                    Option.some(
-                      new SDKError({
-                        op: "idle-timeout",
-                        sessionId: sessionIdForErr,
-                        cause: `no message for ${idleMs}ms`,
-                      }),
+                Effect.timeoutOrElse({
+                  orElse: () =>
+                    Effect.fail(
+                      Option.some(
+                        new SDKError({
+                          op: "idle-timeout",
+                          sessionId: sessionIdForErr,
+                          cause: `no message for ${idleMs}ms`,
+                        }),
+                      ),
                     ),
                   duration: idleMs,
                 }),
@@ -1044,8 +1048,19 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                   }
                 })
 
-          const consumer: Stream.Stream<SDKMessage, SDKError> =
-            Stream.repeatEffectOption(pullOne)
+          // v4: repeatEffectOption → fromEffectRepeat; Option.none ends via
+          // Cause.done(), Option.some(err) fails the stream with err.
+          const consumer = Stream.fromEffectRepeat(
+            pullOne.pipe(
+              Effect.catch(
+                (opt): Effect.Effect<SDKMessage, SDKError | Cause.Done<void>> =>
+                  Option.match(opt, {
+                    onNone: () => Cause.done(),
+                    onSome: (err) => Effect.fail(err),
+                  }),
+              ),
+            ),
+          ) as Stream.Stream<SDKMessage, SDKError>
 
           // Capture the SDK's own session_id from the first message that
           // carries one. Fires the optional onSdkSessionId callback exactly
@@ -1084,7 +1099,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                 // streamed), but it must NOT be swallowed silently either —
                 // surface it to onMirrorError (default: Effect.logError).
                 .pipe(
-                  Effect.catchAll((cause) =>
+                  Effect.catch((cause) =>
                     (req.onMirrorError ?? defaultMirrorError)(msg, cause),
                   ),
                 ),
@@ -1111,10 +1126,9 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       } satisfies SDKAdapterService
     })
 
-export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
-  SDKAdapter,
-  SDKAdapterService
->() {
+export class SDKAdapter extends Context.Service<SDKAdapter, SDKAdapterService>()(
+  "luna/SDKAdapter",
+) {
   /**
    * Default layer — no broker integration. Preserves existing behavior:
    * the caller is responsible for providing `CLAUDE_CODE_OAUTH_TOKEN`
@@ -1124,7 +1138,7 @@ export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
     SDKAdapter,
     never,
     SDKClient | SessionStore
-  > = Layer.scoped(SDKAdapter, makeAdapter(null))
+  > = Layer.effect(SDKAdapter, makeAdapter(null))
 
   /**
    * WithBroker layer — adds AccountBroker as a required dependency and
@@ -1136,7 +1150,7 @@ export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
     SDKAdapter,
     never,
     SDKClient | SessionStore | AccountBroker
-  > = Layer.scoped(
+  > = Layer.effect(
     SDKAdapter,
     Effect.gen(function* () {
       const brokerApi = yield* AccountBroker

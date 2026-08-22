@@ -226,19 +226,19 @@ describe("parseDigest", () => {
         { action: "do x", priority: 99, rationale: "huh" },
       ],
     })
-    const result = await Effect.runPromise(Effect.either(parseDigest("luna", text)))
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(WakeError)
-      expect(result.left.op).toBe("wake/parse")
+    const result = await Effect.runPromise(Effect.result(parseDigest("luna", text)))
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(result.failure).toBeInstanceOf(WakeError)
+      expect(result.failure.op).toBe("wake/parse")
     }
   })
 
   it("fails with WakeError on non-JSON output", async () => {
     const result = await Effect.runPromise(
-      Effect.either(parseDigest("luna", "not json at all")),
+      Effect.result(parseDigest("luna", "not json at all")),
     )
-    expect(result._tag).toBe("Left")
+    expect(result._tag).toBe("Failure")
   })
 })
 
@@ -261,12 +261,12 @@ describe("WakeReasonerDefault", () => {
   it("fails with WakeError when SDK yields no success result", async () => {
     const sdkLayer = fakeClientNoSuccess()
     const result = await Effect.runPromise(
-      Effect.either(runReason(baseInputs, sdkLayer)),
+      Effect.result(runReason(baseInputs, sdkLayer)),
     )
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(WakeError)
-      expect(result.left.op).toBe("wake/sdk-stream")
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(result.failure).toBeInstanceOf(WakeError)
+      expect(result.failure.op).toBe("wake/sdk-stream")
     }
   })
 
@@ -295,13 +295,13 @@ describe("WakeReasonerDefault", () => {
       process.env["LUNA_WAKE_TIMEOUT_MS"] = "50"
       try {
         const result = await Effect.runPromise(
-          Effect.either(runReason(baseInputs, sdkHang)),
+          Effect.result(runReason(baseInputs, sdkHang)),
         )
-        expect(result._tag).toBe("Left")
-        if (result._tag === "Left") {
-          expect(result.left).toBeInstanceOf(WakeError)
-          expect(result.left.op).toBe("wake/sdk-stream")
-          expect(result.left.message).toMatch(/timed out/)
+        expect(result._tag).toBe("Failure")
+        if (result._tag === "Failure") {
+          expect(result.failure).toBeInstanceOf(WakeError)
+          expect(result.failure.op).toBe("wake/sdk-stream")
+          expect(result.failure.message).toMatch(/timed out/)
         }
         expect(captured?.signal.aborted).toBe(true)
       } finally {
@@ -401,14 +401,14 @@ describe("WakeReasonerDefault", () => {
       process.env["LUNA_WAKE_MODEL"] = "gemini-2.5-flash"
       try {
         const result = await Effect.runPromise(
-          Effect.either(
+          Effect.result(
             runReason(baseInputs, recordingClient(sink), anthropicOnlyBroker),
           ),
         )
-        expect(result._tag).toBe("Left")
-        if (result._tag === "Left") {
-          expect(result.left).toBeInstanceOf(WakeError)
-          expect(result.left.op).toBe("wake/acquire")
+        expect(result._tag).toBe("Failure")
+        if (result._tag === "Failure") {
+          expect(result.failure).toBeInstanceOf(WakeError)
+          expect(result.failure.op).toBe("wake/acquire")
         }
         // The SDK was never invoked because acquire failed first.
         expect(sink.last).toBeNull()
@@ -585,9 +585,9 @@ describe("WakeReasonerDefault — structured output flag ON (end-to-end)", () =>
     // Control: the OLD text-parse path on that same garbage text DOES fail —
     // this is the failure class the structured path eliminates.
     const control = await Effect.runPromise(
-      Effect.either(parseDigest("luna", "Sure! Here is the digest you asked for: (see attached)")),
+      Effect.result(parseDigest("luna", "Sure! Here is the digest you asked for: (see attached)")),
     )
-    expect(control._tag).toBe("Left")
+    expect(control._tag).toBe("Failure")
 
     await withFlag("1", async () => {
       const digest = await Effect.runPromise(

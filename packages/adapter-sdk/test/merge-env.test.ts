@@ -4,7 +4,7 @@
  * which always overwrite (with a warning on collision).
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Logger, LogLevel } from "effect"
+import { Effect, Logger } from "effect"
 import { mergeEnvOverlay, mergeEnvOverlayLogged } from "../src/merge-env.js"
 
 describe("mergeEnvOverlay (pure)", () => {
@@ -53,15 +53,14 @@ describe("mergeEnvOverlayLogged (effectful)", () => {
 
   it("emits a Warning log on collision while still returning merged env", async () => {
     const captured: Array<{ level: string; message: string }> = []
-    const captureLayer = Logger.replace(
-      Logger.defaultLogger,
+    const captureLayer = Logger.layer([
       Logger.make(({ message, logLevel }) => {
         captured.push({
-          level: logLevel.label,
+          level: String(logLevel),
           message: String(message),
         })
       }),
-    )
+    ])
     const env = await Effect.runPromise(
       mergeEnvOverlayLogged(
         { TOKEN: "caller", X: "y" },
@@ -69,19 +68,18 @@ describe("mergeEnvOverlayLogged (effectful)", () => {
       ).pipe(Effect.provide(captureLayer)),
     )
     expect(env.TOKEN).toBe("broker")
-    const warns = captured.filter((c) => c.level === LogLevel.Warning.label)
+    const warns = captured.filter((c) => c.level === "Warn")
     expect(warns.length).toBeGreaterThanOrEqual(1)
     expect(warns.some((w) => w.message.includes("TOKEN"))).toBe(true)
   })
 
   it("does not include secret values in warning messages", async () => {
     const captured: string[] = []
-    const captureLayer = Logger.replace(
-      Logger.defaultLogger,
+    const captureLayer = Logger.layer([
       Logger.make(({ message }) => {
         captured.push(String(message))
       }),
-    )
+    ])
     const SECRET_OLD = "S3CR3T_C4LL3R_VALUE_b9f7c3"
     const SECRET_NEW = "S3CR3T_BR0K3R_VALUE_a1b2c4"
     await Effect.runPromise(
