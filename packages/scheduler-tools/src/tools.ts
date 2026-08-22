@@ -14,7 +14,7 @@
  * table every tick — there is nothing to re-register at boot. schedule_cancel
  * deletes the row so it stops firing and does not come back.
  */
-import { Cron, Effect, Either } from "effect"
+import { Cron, Effect, Result } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
 import type { JobsStoreApi } from "@luna/core"
@@ -41,9 +41,9 @@ const isFiveFieldCron = (expr: string): boolean =>
  */
 const nextRunAtUtc = (expr: string): number | null => {
   const parsed = Cron.parse(expr, "UTC")
-  if (Either.isLeft(parsed)) return null
+  if (Result.isFailure(parsed)) return null
   try {
-    return Cron.next(parsed.right, new Date()).getTime()
+    return Cron.next(parsed.success, new Date()).getTime()
   } catch {
     return null
   }

@@ -207,7 +207,7 @@ function rerankHits(
     // context. catchAllDefect deliberately does NOT catch interrupts, so
     // genuine cancellation still propagates (a sandbox+either combo would
     // swallow it and return fallback results instead of cancelling).
-    Effect.catchAllDefect((defect) =>
+    Effect.catchDefect((defect) =>
       Effect.fail(
         new RerankError({
           op: "defect",
@@ -216,10 +216,10 @@ function rerankHits(
         }),
       ),
     ),
-    Effect.either,
+    Effect.result,
     Effect.flatMap((outcome) => {
-      if (outcome._tag === "Left") {
-        return logRerankFailureOnce("recallForTurn", outcome.left).pipe(
+      if (outcome._tag === "Failure") {
+        return logRerankFailureOnce("recallForTurn", outcome.failure).pipe(
           Effect.as(packRecallContext(hits, args.options)),
         )
       }
@@ -228,7 +228,7 @@ function rerankHits(
       const byId = new Map(hits.map((h) => [h.record.id, h] as const))
       const { kept, droppedCount } = applyRerank(
         hits.map((h) => ({ id: h.record.id })),
-        outcome.right,
+        outcome.success,
         { threshold },
       )
       const reordered = kept.map(({ candidate }) => byId.get(candidate.id)!)
@@ -301,7 +301,7 @@ export function recallForTurn(input: {
           })
         : Effect.succeed(packRecallContext(hits, options))
     }),
-    Effect.catchAllCause((cause) =>
+    Effect.catchCause((cause) =>
       Effect.logWarning(
         `[luna/memory] automatic recall failed; continuing without context: ${String(cause)}`,
       ).pipe(Effect.as(null)),

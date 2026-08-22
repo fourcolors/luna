@@ -135,7 +135,7 @@ export const makeWidgetTools = (
         // The store operations are infallible by type (E = never); a real disk
         // failure surfaces as a defect, which we convert to a clean ToolError
         // so the SDK reports it as an error result rather than crashing the turn.
-        Effect.catchAllDefect((d) =>
+        Effect.catchDefect((d) =>
           Effect.fail(
             new ToolError({
               tool: "widget_write",
@@ -255,7 +255,7 @@ export const makeMcpAppTools = (
           opened,
         }
       }).pipe(
-        Effect.catchAllDefect((d) =>
+        Effect.catchDefect((d) =>
           Effect.fail(
             new ToolError({
               tool: "mcp_app_write",
@@ -423,7 +423,7 @@ export const makeSearchArtifactsTool = (
           }))
         return { count: artifacts.length, artifacts }
       }).pipe(
-        Effect.catchAllDefect((d) =>
+        Effect.catchDefect((d) =>
           Effect.fail(
             new ToolError({
               tool: "search_artifacts",
@@ -478,7 +478,7 @@ export const makeOpenArtifactTool = (
         const result = summoner.openArtifact(art.id, art.title, art.kind)
         return { ok: result.ok, message: result.message }
       }).pipe(
-        Effect.catchAllDefect((d) =>
+        Effect.catchDefect((d) =>
           Effect.fail(
             new ToolError({
               tool: "open_artifact",
@@ -608,7 +608,7 @@ export const makeShowArtifactTool = (
           message: opened.message,
         }
       }).pipe(
-        Effect.catchAllDefect((d) =>
+        Effect.catchDefect((d) =>
           Effect.fail(
             new ToolError({
               tool: "show_artifact",

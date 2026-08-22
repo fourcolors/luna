@@ -14,7 +14,7 @@
  * Memory variant for unit tests; SQLite for production — same idioms as
  * ConnectorInstanceStore / VaultStore.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import {
   Clock,
   ConfigError,
@@ -178,10 +178,7 @@ const toRow = (r: DbRow): McpServerRow => ({
 // Effect service
 // ---------------------------------------------------------------------------
 
-export class McpServerStore extends Effect.Tag("luna/McpServerStore")<
-  McpServerStore,
-  McpServerStoreApi
->() {
+export class McpServerStore extends Context.Service<McpServerStore, McpServerStoreApi>()("luna/McpServerStore") {
   // -------------------------------------------------------------------------
   // In-memory variant — unit tests
   // -------------------------------------------------------------------------
@@ -316,7 +313,7 @@ export class McpServerStore extends Effect.Tag("luna/McpServerStore")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<McpServerStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       McpServerStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

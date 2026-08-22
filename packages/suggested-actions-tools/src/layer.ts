@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { defineToolPackage } from "@luna/tools"
 import { SuggestedActions } from "@luna/core"
 import type { SuggestedActionsApi } from "@luna/core"
@@ -21,9 +21,7 @@ export interface SuggestedActionToolsConfig extends SuggestedActionToolsSessionC
   readonly createSessionBinding: () => SuggestedActionToolsSessionConfig
 }
 
-export class SuggestedActionToolsService extends Effect.Tag(
-  "luna/SuggestedActionToolsService",
-)<SuggestedActionToolsService, SuggestedActionToolsConfig>() {}
+export class SuggestedActionToolsService extends Context.Service<SuggestedActionToolsService, SuggestedActionToolsConfig>()("luna/SuggestedActionToolsService") {}
 
 export const SUGGESTED_ACTION_TOOLS_SYSTEM_PROMPT_ADDENDUM =
   "You have a suggested-actions MCP server (`suggested_actions`) with the tool " +
@@ -74,7 +72,7 @@ export const SuggestedActionToolsLayer: Layer.Layer<
   SuggestedActionToolsService,
   never,
   SuggestedActions
-> = Layer.scoped(
+> = Layer.effect(
   SuggestedActionToolsService,
   Effect.gen(function* () {
     const service = yield* SuggestedActions

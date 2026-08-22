@@ -35,7 +35,7 @@
  */
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import {
   AgentNotesService,
   AnalyticsService,
@@ -95,10 +95,7 @@ export interface ObsToolsConfig extends ObsToolsSessionConfig {
   readonly createSessionBinding: () => ObsToolsSessionConfig
 }
 
-export class ObsToolsService extends Effect.Tag("luna/ObsToolsService")<
-  ObsToolsService,
-  ObsToolsConfig
->() {}
+export class ObsToolsService extends Context.Service<ObsToolsService, ObsToolsConfig>()("luna/ObsToolsService") {}
 
 export const OBS_SYSTEM_PROMPT_ADDENDUM =
   "You have five observability tools on MCP server `observability` for self-observation " +
@@ -196,7 +193,7 @@ export const ObsToolsLayer = (
   // AgentNotesService requires Clock + LunaSqliteBootstrap.
   const agentNotesL = AgentNotesService.makeLayer(lunaDbPath)
 
-  return Layer.scoped(
+  return Layer.effect(
     ObsToolsService,
     Effect.gen(function* () {
       const notes = yield* AgentNotesService

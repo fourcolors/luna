@@ -57,12 +57,11 @@ describe("logRerankFailureOnce", () => {
   beforeEach(() => resetRerankFailureLogState())
 
   const captureLogger = (messages: string[]) =>
-    Logger.replace(
-      Logger.defaultLogger,
+    Logger.layer([
       Logger.make(({ message }) => {
         messages.push(String(message))
       }),
-    )
+    ])
 
   it("logs the first failure on a lane and suppresses subsequent ones", async () => {
     const messages: string[] = []

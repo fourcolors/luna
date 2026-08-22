@@ -12,7 +12,7 @@
  * register and nothing to reload at boot — the jobs table IS the durable state,
  * so a restart looks like a zero-tick gap.
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { JobsStoreService, type JobsStoreApi } from "@luna/core"
 import { defineToolPackage } from "@luna/tools"
 import type {
@@ -39,9 +39,7 @@ export interface SchedulerToolsConfig extends SchedulerToolsSessionConfig {
   readonly createSessionBinding: () => SchedulerToolsSessionConfig
 }
 
-export class SchedulerToolsService extends Effect.Tag(
-  "luna/SchedulerToolsService",
-)<SchedulerToolsService, SchedulerToolsConfig>() {}
+export class SchedulerToolsService extends Context.Service<SchedulerToolsService, SchedulerToolsConfig>()("luna/SchedulerToolsService") {}
 
 export const SCHEDULER_SYSTEM_PROMPT_ADDENDUM =
   "You have three scheduler tools on MCP server `scheduler`. Use their fully " +

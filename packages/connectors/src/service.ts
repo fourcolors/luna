@@ -21,7 +21,7 @@
  *
  * OAuth (begin/complete) is M2: it plugs in via ConnectorServiceOptions.
  */
-import { Effect, Layer, Redacted } from "effect"
+import { Context, Effect, Layer, Semaphore, Redacted } from "effect"
 import { SecretProvider, Clock } from "@luna/core"
 import {
   buildAuthorizeUrl,
@@ -128,10 +128,7 @@ export interface ConnectorServiceApi {
   readonly mountSnapshotSync: () => Readonly<Record<string, McpServerConfigLike>>
 }
 
-export class ConnectorService extends Effect.Tag("luna/ConnectorService")<
-  ConnectorService,
-  ConnectorServiceApi
->() {}
+export class ConnectorService extends Context.Service<ConnectorService, ConnectorServiceApi>()("luna/ConnectorService") {}
 
 export interface ConnectorServiceOptions {
   /** The curated, in-repo catalog. */
@@ -196,7 +193,7 @@ export const ConnectorServiceLayer = (
       // and therefore every token mint/refresh — runs under one permit.
       // Concurrent triggers (boot, connect, the chat-server's rotation
       // timer) serialize instead of double-refreshing the same instance.
-      const refreshGate = yield* Effect.makeSemaphore(1)
+      const refreshGate = yield* Semaphore.make(1)
 
       const oauthEnv = (name: string): string | null => {
         const v = oauth?.env[name]
@@ -284,7 +281,7 @@ export const ConnectorServiceLayer = (
           }
           const refreshToken = yield* secrets.get(instance.secretRef).pipe(
             Effect.map(Redacted.value),
-            Effect.catchAll(() => Effect.succeed(null)),
+            Effect.catch(() => Effect.succeed(null)),
           )
           if (refreshToken === null) {
             yield* store.setStatus(instance.id, "needs-reauth")
@@ -301,7 +298,7 @@ export const ConnectorServiceLayer = (
               ...(clientSecret !== null ? { clientSecret } : {}),
               refreshToken,
             })
-            .pipe(Effect.catchAll(() => Effect.succeed(null)))
+            .pipe(Effect.catch(() => Effect.succeed(null)))
           if (minted === null) {
             // Revoked/expired refresh token (or provider down) — flag and
             // exclude; the settings UI offers Reconnect (PRD §08).
@@ -335,7 +332,7 @@ export const ConnectorServiceLayer = (
           } else {
             credential = yield* secrets.get(instance.secretRef).pipe(
               Effect.map(Redacted.value),
-              Effect.catchAll(() =>
+              Effect.catch(() =>
                 Effect.gen(function* () {
                   // Resolution failure → error status, excluded from mounts.
                   yield* store.setStatus(instance.id, "error")
@@ -718,7 +715,7 @@ export const ConnectorServiceLayer = (
               if (definition !== undefined && definition.auth.kind === "oauth2") {
                 const refreshToken = yield* secrets.get(instance.secretRef).pipe(
                   Effect.map(Redacted.value),
-                  Effect.catchAll(() => Effect.succeed(null)),
+                  Effect.catch(() => Effect.succeed(null)),
                 )
                 // Best-effort provider revocation BEFORE dropping local
                 // state (PRD §16: disconnect revokes, not just deletes).
@@ -739,7 +736,7 @@ export const ConnectorServiceLayer = (
                   if (varName !== null) {
                     yield* oauth
                       .clearSecret(varName)
-                      .pipe(Effect.catchAll(() => Effect.void))
+                      .pipe(Effect.catch(() => Effect.void))
                   }
                 }
               }

@@ -328,7 +328,7 @@ export const makeMemoryTools = (
             })),
           })
           .pipe(
-            Effect.catchAllDefect((defect) =>
+            Effect.catchDefect((defect) =>
               Effect.fail(
                 new RerankError({
                   op: "defect",
@@ -337,11 +337,11 @@ export const makeMemoryTools = (
                 }),
               ),
             ),
-            Effect.either,
+            Effect.result,
           )
 
-        if (outcome._tag === "Left") {
-          yield* logRerankFailureOnce("memory_search", outcome.left)
+        if (outcome._tag === "Failure") {
+          yield* logRerankFailureOnce("memory_search", outcome.failure)
           return filtered.slice(0, limit).map((h) => toSearchHitDTO(h))
         }
 
@@ -349,7 +349,7 @@ export const makeMemoryTools = (
         const byId = new Map(filtered.map((h) => [h.record.id, h] as const))
         const { kept, droppedCount } = applyRerank(
           rerankPool.map((h) => ({ id: h.record.id })),
-          outcome.right,
+          outcome.success,
           { threshold },
         )
         const rerankMs = Date.now() - startMs

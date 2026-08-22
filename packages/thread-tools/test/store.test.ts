@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Fiber, Stream } from "effect"
 import { ForkProposalStore, toForkProposalWire } from "../src/store.js"
 
 const run = <A>(effect: Effect.Effect<A, never, ForkProposalStore>) =>
@@ -89,7 +89,7 @@ describe("ForkProposalStore", () => {
         const store = yield* ForkProposalStore
         // Subscribe first, then propose, then take 1 — avoids a race where
         // the event fires before anyone is listening.
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Stream.take(store.changes, 1).pipe(Stream.runCollect),
         )
         yield* Effect.sleep("20 millis")
@@ -100,7 +100,7 @@ describe("ForkProposalStore", () => {
           seed: "seed",
           nowMs: 42,
         })
-        const collected = yield* fiber
+        const collected = yield* Fiber.join(fiber)
         expect([...collected]).toHaveLength(1)
         expect([...collected][0]!.title).toBe("T")
       }),

@@ -70,7 +70,7 @@ const support = Layer.mergeAll(
 // than echoing the active dimension back at itself.
 const dbDir = mkdtempSync(join(tmpdir(), "luna-pipeline-eval-"))
 const dbPath = join(dbDir, "memory.db")
-const layer = Layer.unwrapEffect(
+const layer = Layer.unwrap(
   Effect.gen(function* () {
     const backend = yield* SqliteVectorBackend
     return MemoryLayer({ rules: [{ pattern: "*", backend }] })

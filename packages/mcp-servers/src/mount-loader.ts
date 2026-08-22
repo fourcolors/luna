@@ -157,7 +157,7 @@ export const syncMcpMounts = (
 
     // 1. Fetch the desired set from the durable store.
     const rows = yield* store.listEnabledTrusted().pipe(
-      Effect.catchAll(() => Effect.succeed([])),
+      Effect.catch(() => Effect.succeed([])),
     )
 
     const registered: string[] = []
@@ -209,12 +209,12 @@ export const syncMcpMounts = (
           value,
           row.slug,
           secretProvider,
-        ).pipe(Effect.either)
-        if (result._tag === "Left") {
-          skip = result.left
+        ).pipe(Effect.result)
+        if (result._tag === "Failure") {
+          skip = result.failure
           break
         }
-        resolvedHeaders[headerName] = result.right
+        resolvedHeaders[headerName] = result.success
       }
 
       if (skip !== undefined) {
@@ -236,13 +236,13 @@ export const syncMcpMounts = (
 
     // 3. Reconcile: get current registry names, unregister stale entries.
     const currentNames = Object.keys(
-      yield* registry.list().pipe(Effect.catchAll(() => Effect.succeed({}))),
+      yield* registry.list().pipe(Effect.catch(() => Effect.succeed({}))),
     )
     const desiredNames = new Set(desired.keys())
 
     for (const name of currentNames) {
       if (!desiredNames.has(name)) {
-        yield* registry.unregister(name).pipe(Effect.catchAll(() => Effect.void))
+        yield* registry.unregister(name).pipe(Effect.catch(() => Effect.void))
       }
     }
 
@@ -252,10 +252,10 @@ export const syncMcpMounts = (
     // registry.register() Effect was caught (failed silently).
     for (const [slug, config] of desired) {
       // Always unregister first to pick up rotated tokens / url changes.
-      yield* registry.unregister(slug).pipe(Effect.catchAll(() => Effect.void))
+      yield* registry.unregister(slug).pipe(Effect.catch(() => Effect.void))
       let registerOk = true
       yield* registry.register(slug, config).pipe(
-        Effect.catchAll(() => {
+        Effect.catch(() => {
           registerOk = false
           return Effect.void
         }),

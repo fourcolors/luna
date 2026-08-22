@@ -560,13 +560,13 @@ export const makeObsTools = (
         const eventSink = pipelineHealth.eventSink
           ? yield* pipelineHealth.eventSink.pipe(
               Effect.map((h) => h as EventSinkHealth | null),
-              Effect.catchAllCause(() => Effect.succeed<EventSinkHealth | null>(null)),
+              Effect.catchCause(() => Effect.succeed<EventSinkHealth | null>(null)),
             )
           : null
         const sessionSync = pipelineHealth.sessionSync
           ? yield* pipelineHealth.sessionSync.pipe(
               Effect.map((h) => h as SessionSyncHealth | null),
-              Effect.catchAllCause(() => Effect.succeed<SessionSyncHealth | null>(null)),
+              Effect.catchCause(() => Effect.succeed<SessionSyncHealth | null>(null)),
             )
           : null
         const result: { eventSink: JSONOutput; sessionSync: JSONOutput } = {
