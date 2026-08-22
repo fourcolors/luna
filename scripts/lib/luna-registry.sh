@@ -45,6 +45,9 @@
 #                      auto-update is ON by default, opt-out is explicit)
 #   P_TIMER_INTERVAL — systemd time span from deploy.timerInterval ("" = unset;
 #                      install-timer falls back to its own default)
+#   P_MAX_SESSION_DEFER — systemd time span from deploy.maxSessionDefer
+#                      (ABSENT = "4h"). Caps how long standing WS sessions may
+#                      starve origin/<branch>; 0/infinity disables the escape.
 #   P_LAYOUT         — "inplace" (default) or "releases" from deploy.layout.
 #                      A TOPOLOGY RAIL like deploy.timer: NO env override, and
 #                      any value other than absent/"inplace"/"releases" is a
@@ -332,6 +335,15 @@ luna_load_server() {
   local _timer_interval
   _timer_interval="$(_get "deploy.timerInterval")" || _timer_interval=""
 
+  # max session defer: deploy.maxSessionDefer (systemd time span). ABSENT → 4h
+  # so a standing Moon desktop cannot starve origin forever. 0 / infinity keep
+  # the classic forever-defer behaviour (fail closed toward not dropping users).
+  local _max_session_defer
+  _max_session_defer="$(_get "deploy.maxSessionDefer")" || _max_session_defer=""
+  if [[ -z "$_max_session_defer" ]]; then
+    _max_session_defer="4h"
+  fi
+
   # deploy layout: absent/"inplace" → inplace; "releases" → releases; anything
   # else is a hard exit 2 (the loader's fail-closed posture — a typo must not
   # silently degrade to inplace while the operator believes releases is live).
@@ -423,6 +435,22 @@ luna_load_server() {
       "$profile" "$_timer_interval" >&2
     exit 2
   fi
+  if [[ ! "$_max_session_defer" =~ $_interval_re ]]; then
+    printf 'luna-registry: profile "%s" — deploy.maxSessionDefer "%s" is not a plain systemd time span.\n' \
+      "$profile" "$_max_session_defer" >&2
+    exit 2
+  fi
+  # Semantic parse when the shared helper is already sourced (autodeploy loads
+  # luna-deploy.sh first). Charset alone already blocked unit-file injection;
+  # this catches "4hours" / unknown units that would otherwise become a silent
+  # wrong seconds value at the session-defer gate.
+  if declare -F luna_parse_systemd_duration >/dev/null 2>&1; then
+    if ! luna_parse_systemd_duration "$_max_session_defer" >/dev/null; then
+      printf 'luna-registry: profile "%s" — deploy.maxSessionDefer "%s" is not a plain systemd time span.\n' \
+        "$profile" "$_max_session_defer" >&2
+      exit 2
+    fi
+  fi
 
   # ── apply env overrides (same as profile_config() today) ─────────────────
   # luna-autodeploy lets operators override repo/branch/incus/port via env vars.
@@ -457,6 +485,8 @@ luna_load_server() {
   P_AUTO_UPDATE="$_auto_update"
   # shellcheck disable=SC2034  # P_TIMER_INTERVAL is an output variable consumed by the caller
   P_TIMER_INTERVAL="$_timer_interval"
+  # shellcheck disable=SC2034  # P_MAX_SESSION_DEFER is an output variable consumed by the caller
+  P_MAX_SESSION_DEFER="$_max_session_defer"
 
   # Deploy layout (no env override — a topology rail, same rationale as
   # deploy.timer: what tree the units serve is never a per-shell convenience).

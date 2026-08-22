@@ -3209,6 +3209,51 @@ esac
       expect(result.stdout.trim()).toBe("0")
     })
 
+    it("luna_parse_systemd_duration accepts 4h / 1h 30min / infinity", () => {
+      const run = (span: string) =>
+        spawnSync(
+          "bash",
+          ["-c", `set -uo pipefail; source "${LIB}"; luna_parse_systemd_duration "$1"`, "_", span],
+          { cwd: repoRoot, encoding: "utf8", env: process.env },
+        )
+      expect(run("4h").stdout.trim()).toBe("14400")
+      expect(run("1h 30min").stdout.trim()).toBe("5400")
+      expect(run("infinity").stdout.trim()).toBe("0")
+      expect(run("0").stdout.trim()).toBe("0")
+      expect(run("4hours").status).not.toBe(0)
+    })
+
+    it("luna_session_defer_aged is false until maxSecs, then true (shared clock)", () => {
+      const temp = makeTempDir()
+      const stateDir = join(temp, "update")
+      mkdirSync(stateDir, { recursive: true })
+      const run = (now: string, max: string) =>
+        spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -uo pipefail; source "${LIB}"; luna_session_defer_aged "$1" "$2"; echo rc=$?`,
+            "_",
+            "stable",
+            max,
+          ],
+          {
+            cwd: repoRoot,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              LUNA_UPDATE_STATE_DIR: stateDir,
+              LUNA_TEST_NOW_EPOCH: now,
+            },
+          },
+        )
+      const first = run("1000", "3600")
+      expect(first.stdout).toContain("rc=1")
+      expect(existsSync(join(stateDir, "session-defer-stable"))).toBe(true)
+      const aged = run(String(1000 + 3600), "3600")
+      expect(aged.stdout).toContain("rc=0")
+    })
+
     /**
      * THE SELF-CONNECTION CASE, which froze a live channel for 154 commits.
      *

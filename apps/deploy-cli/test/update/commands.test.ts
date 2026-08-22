@@ -138,12 +138,12 @@ describe("the incus claude re-pin, against the bash source (:1236-1237)", () => 
   it("is anchored on the right two lines, so a shifted file fails loudly rather than mis-extracting", () => {
     // Cheap guard: if the script moves, these assertions name the problem
     // instead of the payload comparison reporting a mystery diff.
-    expect(bashLine(1236).trim()).toBe("run_target bash -lc \\")
-    expect(bashLine(1237)).toContain("luna_configure_claude_executable")
+    expect(bashLine(1253).trim()).toBe("run_target bash -lc \\")
+    expect(bashLine(1254)).toContain("luna_configure_claude_executable")
   })
 
   it("reproduces the payload byte for byte", () => {
-    expect(incusRepinPayload).toBe(extractPayload(bashLine(1237)))
+    expect(incusRepinPayload).toBe(extractPayload(bashLine(1254)))
   })
 
   it("keeps the container-hardcoded paths and the exit 9 sentinel", () => {

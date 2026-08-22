@@ -131,6 +131,9 @@ const baseGuard = (serviceName: string, readinessPort: string): SessionGuardOpti
   guardSessions: true,
   supervisor: "systemd",
   serviceName,
+  profile: "stable",
+  maxSessionDefer: "4h",
+  updateStateDir: makeTempDir("deploy-cli-guard-defer-"),
   readinessPort,
 })
 
@@ -684,6 +687,50 @@ describe("session guard: fail-closed decision matrix, parity with the real bash 
       permitted: true,
       reason: "operator-override",
       auditLine: operatorOverrideLogLine("drill reason"),
+    })
+  })
+
+  it("standing sessions past maxSessionDefer permit as session-defer-stale (not operator-override)", () => {
+    const stateDir = makeTempDir("deploy-cli-guard-stale-")
+    writeFileSync(join(stateDir, "session-defer-stable"), "since=1000\n")
+    const early = restartSessionGuardSync({
+      ...baseGuard("luna-chat-server.service", READINESS_PORT),
+      updateStateDir: stateDir,
+      maxSessionDefer: "1h",
+      nowEpoch: 1000 + 60,
+      queryActiveWsCount: () => 2,
+    })
+    expect(early).toEqual({ permitted: false, reason: "live-sessions", sessionCount: 2 })
+
+    const aged = restartSessionGuardSync({
+      ...baseGuard("luna-chat-server.service", READINESS_PORT),
+      updateStateDir: stateDir,
+      maxSessionDefer: "1h",
+      nowEpoch: 1000 + 3600,
+      queryActiveWsCount: () => 2,
+    })
+    expect(aged.permitted).toBe(true)
+    if (!aged.permitted) throw new Error("expected permit")
+    expect(aged.reason).toBe("session-defer-stale")
+    expect(aged.auditLine).toContain("staleness, not an operator override")
+    expect(aged.auditLine).not.toContain("SESSION GUARD OVERRIDDEN")
+  })
+
+  it("unknown ws count never consults maxSessionDefer (still fail-closed)", () => {
+    const stateDir = makeTempDir("deploy-cli-guard-unknown-")
+    writeFileSync(join(stateDir, "session-defer-stable"), "since=1\n")
+    const verdict = restartSessionGuardSync({
+      ...baseGuard("luna-chat-server.service", READINESS_PORT),
+      updateStateDir: stateDir,
+      maxSessionDefer: "1s",
+      nowEpoch: 1_000_000,
+      queryActiveWsCount: unknownWsCount,
+      readUnitState: () => "active",
+    })
+    expect(verdict).toEqual({
+      permitted: false,
+      reason: "unit-state-uncertain",
+      unitState: "active",
     })
   })
 

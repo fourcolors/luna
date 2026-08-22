@@ -16,7 +16,12 @@ eligible legacy host hand control to the guardian:
   branch actually moved.
 - **Connect-aware** — by default it **defers** (exit 0, retry next tick) when the
   channel has active WebSocket sessions, so it never drops you mid-conversation.
-  `--allow-active` / `--force` override — and are never baked into a timer unit.
+  Standing Moon sockets (hub + panel-chat) used to defer **forever**;
+  `deploy.maxSessionDefer` (default `4h`, systemd time span) caps that window:
+  after continuous live-session defer past the cap, the apply proceeds and logs
+  **staleness** (not an operator override). Unknown session counts still fail
+  closed. `--allow-active` / `--force` remain the human-only override levers —
+  and are never baked into a timer unit.
 - **Auditable** — every run logs to the unit journal:
   `journalctl -u luna-autodeploy-stable.service`.
 

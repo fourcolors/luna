@@ -99,22 +99,22 @@ const PROFILE = "stable"
 
 /** `scripts/luna-update-server:985`. The line an engine prints when the OTHER engine's lock is genuinely held. */
 const CONTENDED_LINE = bashLogLine({
-  line: 985,
+  line: 1002,
   fn: "luna_warn",
   anchor: "is already running",
   vars: { PROFILE },
 })
 
-/** `scripts/luna-update-server:988`. The line that makes obligation 4 visible instead of silent. */
+/** `scripts/luna-update-server:1005`. The line that makes obligation 4 visible instead of silent. */
 const STALE_TAKEOVER_LINE = bashLogLine({
-  line: 988,
+  line: 1005,
   fn: "luna_warn",
   anchor: "removing stale update lock",
   vars: { PROFILE },
 })
 
 /**
- * `scripts/luna-update-server:1932` carries `${PREV:0:9}` and `${REF:0:9}`,
+ * `scripts/luna-update-server:1959` carries `${PREV:0:9}` and `${REF:0:9}`,
  * substring expansions `bashLogLine` deliberately refuses to evaluate (it
  * throws on any surviving `$`), so this ONE expectation is composed here rather
  * than extracted. The wording is still guarded: the anchor below asserts the
@@ -127,9 +127,9 @@ const recoveringLine = (phase: string, prev: string, target: string): string => 
     .map((line, index) => ({ text: line.replace(/^\s+/, ""), line: index + 1 }))
     .filter((entry) => entry.text.startsWith(prefix))
   const only = hits[0]
-  if (hits.length !== 1 || only === undefined || only.line !== 1932) {
+  if (hits.length !== 1 || only === undefined || only.line !== 1959) {
     throw new Error(
-      `interop-parity: expected exactly ONE ${JSON.stringify(prefix)} line at scripts/luna-update-server:1932, ` +
+      `interop-parity: expected exactly ONE ${JSON.stringify(prefix)} line at scripts/luna-update-server:1959, ` +
         `found ${hits.length} at ${JSON.stringify(hits.map((h) => h.line))} - update the citation and this expectation.`,
     )
   }

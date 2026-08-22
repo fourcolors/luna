@@ -67,6 +67,8 @@
  * restart_service's very first statement (:1509).
  */
 import { spawnSync } from "node:child_process"
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 
 export type GuardPermittedReason =
   | "dry-run"
@@ -75,6 +77,7 @@ export type GuardPermittedReason =
   | "operator-override"
   | "zero-sessions"
   | "dead-server-exception"
+  | "session-defer-stale"
 
 export type GuardDeferredReason = "live-sessions" | "transport-unreachable" | "unit-state-uncertain"
 
@@ -93,12 +96,9 @@ export type GuardVerdict =
       /** Set only when the ws count was unknown and a systemd is-active read was consulted (dead-server-exception). */
       readonly unitState?: string
       /**
-       * Set only when reason is "operator-override": the byte-exact
-       * operatorOverrideLogLine text for this override (scripts/luna-update-
-       * server:1467-1469's luna_warn payload), carried on the verdict itself
-       * so granting the bypass and logging its audit line cannot come apart
-       * - a caller reads this off the verdict instead of reconstructing it
-       * by hand.
+       * Set when reason is "operator-override" or "session-defer-stale": the
+       * byte-exact luna_warn payload for this permit, carried on the verdict
+       * so granting the bypass and logging its audit line cannot come apart.
        */
       readonly auditLine?: string
     }
@@ -118,6 +118,30 @@ export interface SessionGuardOptions {
   /** Non-empty means the operator explicitly overrode the guard (--operator-override). */
   readonly operatorOverrideReason?: string
   readonly serviceName: string
+  /**
+   * Profile name for the session-defer state file
+   * (`$UPDATE_STATE_DIR/session-defer-$PROFILE`), matching bash's
+   * `luna_session_defer_*` helpers. Required whenever maxSessionDefer can
+   * fire (production wiring always passes config.profile).
+   */
+  readonly profile: string
+  /**
+   * `deploy.maxSessionDefer` / `--max-session-defer` / `LUNA_MAX_SESSION_DEFER`
+   * as the raw systemd time span string (default "4h"). Parsed to seconds by
+   * parseSystemdDuration — "0" / "infinity" disables the staleness escape.
+   */
+  readonly maxSessionDefer: string
+  /**
+   * `$UPDATE_STATE_DIR` (config.updateStateDir). Session-defer markers live
+   * here beside the transaction journal so outer autodeploy and the engine
+   * share one clock.
+   */
+  readonly updateStateDir: string
+  /**
+   * Optional pinned wall-clock seconds (mirrors bash `LUNA_TEST_NOW_EPOCH`).
+   * Production omits this and uses `Date.now()/1000`.
+   */
+  readonly nowEpoch?: number
   /**
    * `READINESS_PORT` as the RAW STRING config.ts holds (config.ts:186/:358).
    * The value is interpolated into the ss(8) filter `( sport = :<port> )` and
@@ -209,6 +233,12 @@ export const guardVerdictLine = (verdict: GuardVerdict, readinessPort: string): 
     /** :1477. */
     case "live-sessions":
       return `session guard: ${verdict.sessionCount ?? ""} active session(s) on :${readinessPort} — deferring restart`
+    /** Staleness apply after deploy.maxSessionDefer (bash restart_session_guard). */
+    case "session-defer-stale":
+      return (
+        verdict.auditLine ??
+        `session guard: ${verdict.sessionCount ?? ""} active session(s) on :${readinessPort} — deploy.maxSessionDefer elapsed; applying despite standing sessions (staleness, not an operator override)`
+      )
     /** :1491, the only guard line that appears on a PERMITTED run. */
     case "dead-server-exception":
       return `session guard: ws count unknown but unit answered '${verdict.unitState ?? ""}' — no server process; restart permitted`
@@ -346,6 +376,135 @@ const unitStateVerdict = (state: string): GuardVerdict => {
   return { permitted: false, reason: "unit-state-uncertain", unitState: state }
 }
 
+/**
+ * Port of `luna_parse_systemd_duration` (scripts/lib/luna-deploy.sh).
+ * Returns seconds, or null on garbage. "0" / "infinity" → 0 (disabled escape).
+ */
+export const parseSystemdDuration = (span: string): number | null => {
+  const raw = span.trim().toLowerCase()
+  if (raw === "") return null
+  if (raw === "infinity") return 0
+  let total = 0
+  for (const tok of raw.split(/\s+/)) {
+    const m = /^([0-9]+)([a-z]*)$/.exec(tok)
+    if (!m) return null
+    const num = Number(m[1])
+    const unit = m[2] ?? ""
+    switch (unit) {
+      case "":
+      case "s":
+      case "sec":
+      case "secs":
+      case "second":
+      case "seconds":
+        total += num
+        break
+      case "m":
+      case "min":
+      case "mins":
+      case "minute":
+      case "minutes":
+        total += num * 60
+        break
+      case "h":
+      case "hr":
+      case "hrs":
+      case "hour":
+      case "hours":
+        total += num * 3600
+        break
+      case "d":
+      case "day":
+      case "days":
+        total += num * 86400
+        break
+      case "w":
+      case "week":
+      case "weeks":
+        total += num * 604800
+        break
+      default:
+        return null
+    }
+  }
+  return total
+}
+
+/** Port of `luna_session_defer_state_path`. */
+export const sessionDeferStatePath = (updateStateDir: string, profile: string): string =>
+  join(updateStateDir, `session-defer-${profile}`)
+
+const readSince = (path: string): number | null => {
+  try {
+    const text = readFileSync(path, "utf8")
+    const line = text.split("\n").find((l) => l.startsWith("since="))
+    if (!line) return null
+    const raw = line.slice("since=".length).trim()
+    if (!/^[0-9]+$/.test(raw)) return null
+    return Number(raw)
+  } catch {
+    return null
+  }
+}
+
+/** Port of `luna_session_defer_mark` — idempotent first-seen stamp. */
+export const sessionDeferMark = (updateStateDir: string, profile: string, nowEpoch: number): void => {
+  const path = sessionDeferStatePath(updateStateDir, profile)
+  if (readSince(path) !== null) return
+  try {
+    mkdirSync(updateStateDir, { recursive: true, mode: 0o700 })
+  } catch {
+    /* best-effort */
+  }
+  const tmp = `${path}.tmp.${process.pid}`
+  try {
+    writeFileSync(tmp, `since=${nowEpoch}\n`, { mode: 0o600 })
+    renameSync(tmp, path)
+  } catch {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Port of `luna_session_defer_clear`. */
+export const sessionDeferClear = (updateStateDir: string, profile: string): void => {
+  try {
+    unlinkSync(sessionDeferStatePath(updateStateDir, profile))
+  } catch {
+    /* ignore missing */
+  }
+}
+
+/**
+ * Port of `luna_session_defer_aged`. True when the defer window has aged past
+ * maxSecs (caller may apply as staleness). False while within the window, or
+ * when maxSecs is 0 (disabled). Marks the clock on every call.
+ */
+export const sessionDeferAged = (
+  updateStateDir: string,
+  profile: string,
+  maxSecs: number,
+  nowEpoch: number,
+): boolean => {
+  if (!Number.isInteger(maxSecs) || maxSecs <= 0) return false
+  sessionDeferMark(updateStateDir, profile, nowEpoch)
+  const since = readSince(sessionDeferStatePath(updateStateDir, profile))
+  if (since === null) return false
+  let age = nowEpoch - since
+  if (age < 0) age = 0
+  return age >= maxSecs
+}
+
+export const sessionDeferStaleLogLine = (
+  sessionCount: number,
+  readinessPort: string,
+  maxSessionDefer: string,
+): string =>
+  `session guard: ${sessionCount} active session(s) on :${readinessPort} — deploy.maxSessionDefer=${maxSessionDefer} elapsed; applying despite standing sessions (staleness, not an operator override)`
+
 export const restartSessionGuardSync = (opts: SessionGuardOptions): GuardVerdict => {
   if (opts.dryRun) return { permitted: true, reason: "dry-run" }
   if (!opts.guardSessions) return { permitted: true, reason: "guard-disabled" }
@@ -357,6 +516,8 @@ export const restartSessionGuardSync = (opts: SessionGuardOptions): GuardVerdict
       auditLine: operatorOverrideLogLine(opts.operatorOverrideReason),
     }
   }
+
+  const nowEpoch = opts.nowEpoch ?? Math.floor(Date.now() / 1000)
 
   let n: number
   try {
@@ -378,7 +539,7 @@ export const restartSessionGuardSync = (opts: SessionGuardOptions): GuardVerdict
     // fall through to the systemd fallback read. That read is itself
     // wrapped - it never throws in practice (see queryUnitStateSync), but a
     // defensive catch here keeps this function's fail-closed guarantee
-    // independent of that promise.
+    // independent of that promise. Unknown NEVER consults maxSessionDefer.
     let state = ""
     try {
       state = (opts.readUnitState ?? queryUnitStateSync)(opts.serviceName)
@@ -387,6 +548,18 @@ export const restartSessionGuardSync = (opts: SessionGuardOptions): GuardVerdict
     }
     return unitStateVerdict(state)
   }
-  if (n > 0) return { permitted: false, reason: "live-sessions", sessionCount: n }
+  if (n > 0) {
+    const maxSecs = parseSystemdDuration(opts.maxSessionDefer) ?? 14400
+    if (sessionDeferAged(opts.updateStateDir, opts.profile, maxSecs, nowEpoch)) {
+      return {
+        permitted: true,
+        reason: "session-defer-stale",
+        sessionCount: n,
+        auditLine: sessionDeferStaleLogLine(n, opts.readinessPort, opts.maxSessionDefer),
+      }
+    }
+    return { permitted: false, reason: "live-sessions", sessionCount: n }
+  }
+  sessionDeferClear(opts.updateStateDir, opts.profile)
   return { permitted: true, reason: "zero-sessions", sessionCount: n }
 }

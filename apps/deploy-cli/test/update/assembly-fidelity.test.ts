@@ -137,13 +137,13 @@ describe("the journal writes bash guards with `|| true`", () => {
     // The three this port binds to the swallowing seam. :1749/:1756/:1789 are
     // do_rollback_releases', which config.ts delegates whole, so they are
     // guarded in the bash and unreachable from this binary.
-    expect(guarded).toEqual([1749, 1756, 1789, 1816, 1856, 1865])
+    expect(guarded).toEqual([1776, 1783, 1816, 1843, 1883, 1892])
     // The four the port deliberately lets throw: under `set -euo pipefail` an
     // unguarded failure aborts the bash run, so a throw is the faithful port.
-    expect(bare).toEqual([2002, 2043, 2045, 2071])
+    expect(bare).toEqual([2029, 2070, 2072, 2098])
     // And the apply-phase checkout, which is neither: wiring.ts turns its
     // throw into a FAILED apply (`onCheckout`), not into a swallow.
-    expect(returning).toEqual([1165, 1196])
+    expect(returning).toEqual([1182, 1213])
   })
 
   it("a failed `rollback-failed` write still exits CRITICAL (2) and still prints the CRITICAL line", () => {

@@ -62,9 +62,23 @@ import { type RestartOutcome, type RestartServiceOptions, restartServiceSync } f
 import { type GuardVerdict, guardVerdictLine } from "../../src/update/session-guard.js"
 import { INFO_PREFIX, WARN_PREFIX, bashLogLine } from "./bash-source-oracle.js"
 import { READINESS_PORT, cleanupTempDirs, makeFixture, runUpdate } from "./bash-fixtures.js"
-import { repoRoot } from "./temp-dirs.js"
+import { repoRoot, makeTempDir } from "./temp-dirs.js"
 
 const SERVICE = "luna-chat-server.service"
+
+/** Minimal guard fields newly required for deploy.maxSessionDefer parity. */
+const guardDefaults = {
+  profile: "stable" as const,
+  maxSessionDefer: "4h",
+  updateStateDir: () => makeTempDir("deploy-cli-mainpid-defer-"),
+}
+
+const idleGuard = () => ({
+  guardSessions: true as const,
+  ...{ profile: guardDefaults.profile, maxSessionDefer: guardDefaults.maxSessionDefer, updateStateDir: guardDefaults.updateStateDir() },
+  readinessPort: READINESS_PORT,
+  queryActiveWsCount: () => 0,
+})
 
 afterEach(() => {
   cleanupTempDirs()
@@ -76,7 +90,7 @@ afterEach(() => {
 
 const settleInvalidOracle = (secs: string): string =>
   bashLogLine({
-    line: 1276,
+    line: 1293,
     fn: "luna_warn",
     anchor: "is not a non-negative number of seconds",
     vars: { RESTART_SETTLE_SECS: secs },
@@ -84,7 +98,7 @@ const settleInvalidOracle = (secs: string): string =>
 
 const settlingOracle = (secs: string): string =>
   bashLogLine({
-    line: 1279,
+    line: 1296,
     fn: "luna_info",
     anchor: "after stop so DuckDB/SQLite release",
     vars: { RESTART_SETTLE_SECS: secs },
@@ -92,7 +106,7 @@ const settlingOracle = (secs: string): string =>
 
 const settleSleepFailedOracle = (secs: string): string =>
   bashLogLine({
-    line: 1283,
+    line: 1300,
     fn: "luna_warn",
     anchor: "post-stop settle sleep failed",
     vars: { RESTART_SETTLE_SECS: secs },
@@ -100,18 +114,18 @@ const settleSleepFailedOracle = (secs: string): string =>
 
 const startLimitOracle = (serviceName: string): string =>
   bashLogLine({
-    line: 1375,
+    line: 1392,
     fn: "luna_warn",
     anchor: "is start-limit latched failed",
     vars: { SERVICE_NAME: serviceName },
   })
 
 const mainPidInconclusiveOracle = (): string =>
-  bashLogLine({ line: 1559, fn: "luna_warn", anchor: "restart postcondition INCONCLUSIVE" })
+  bashLogLine({ line: 1586, fn: "luna_warn", anchor: "restart postcondition INCONCLUSIVE" })
 
 const mainPidUnchangedOracle = (prePid: string, postPid: string): string =>
   bashLogLine({
-    line: 1563,
+    line: 1590,
     fn: "luna_warn",
     anchor: "restart did not replace the server process",
     vars: { pre_pid: prePid, post_pid: postPid },
@@ -166,6 +180,9 @@ const runRestart = (rig: Rig, opts: RunOptions = {}): RestartOutcome => {
     },
     guard: {
       guardSessions: true,
+      profile: "stable",
+      maxSessionDefer: "4h",
+      updateStateDir: makeTempDir("deploy-cli-mainpid-defer-"),
       readinessPort: READINESS_PORT,
       queryActiveWsCount: () => 0,
       ...opts.guard,
@@ -244,7 +261,7 @@ describe("the settle triple, at the function level", () => {
       serviceName: SERVICE,
       dryRun: false,
       sleepSync: () => ({ ok: true }),
-      guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+      guard: idleGuard(),
       runSystemctl: () => ({ status: 0 }),
       info: (line) => rig.infos.push(line),
       warn: (line) => rig.warns.push(line),
@@ -349,7 +366,7 @@ describe("sup_start's start-limit warn", () => {
       serviceName: SERVICE,
       dryRun: false,
       settleSecs: "0",
-      guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+      guard: idleGuard(),
       runSystemctl: (args) => {
         const verb = args[0] ?? ""
         rig.events.push(`systemctl:${verb}`)
@@ -425,7 +442,7 @@ describe("the MainPID postcondition, crossed over every pre/post shape", () => {
         serviceName: SERVICE,
         dryRun: false,
         settleSecs: "0",
-        guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+        guard: idleGuard(),
         runSystemctl: () => ({ status: 0 }),
         mainPid: () => {
           reads.push(pre)
@@ -456,7 +473,7 @@ describe("the MainPID postcondition, crossed over every pre/post shape", () => {
       serviceName: SERVICE,
       dryRun: true,
       settleSecs: "6",
-      guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+      guard: idleGuard(),
       runSystemctl: () => ({ status: 0 }),
       mainPid: () => {
         reads += 1
@@ -483,7 +500,7 @@ describe("the MainPID postcondition, crossed over every pre/post shape", () => {
         serviceName: SERVICE,
         dryRun: false,
         settleSecs: "0",
-        guard: { guardSessions: true, readinessPort: READINESS_PORT, queryActiveWsCount: () => 0 },
+        guard: idleGuard(),
         runSystemctl: () => ({ status: 0 }),
         mainPid,
         info: (line) => rig.infos.push(line),
@@ -509,9 +526,9 @@ describe("the guard verdict line is emitted from inside the primitive, before an
 
     expect(outcome.code).toBe(3)
     const expected = bashLogLine({
-      line: 1477,
+      line: 1502,
       fn: "luna_warn",
-      anchor: "active session(s) on",
+      anchor: "deferring restart",
       vars: { n: "2", READINESS_PORT: READINESS_PORT },
     })
     expect(rig.events).toEqual([`warn:${expected}`])
@@ -530,7 +547,7 @@ describe("the guard verdict line is emitted from inside the primitive, before an
 
     expect(outcome.code).toBe(0)
     const expected = bashLogLine({
-      line: 1491,
+      line: 1518,
       fn: "luna_warn",
       anchor: "no server process; restart permitted",
       vars: { state: "failed" },
@@ -555,14 +572,14 @@ describe("the guard verdict line is emitted from inside the primitive, before an
     const unreachable = makeRig()
     expect(runRestart(unreachable, { guard: { queryActiveWsCount: unknown }, unitState: "" }).code).toBe(3)
     expect(unreachable.warns).toEqual([
-      bashLogLine({ line: 1494, fn: "luna_warn", anchor: "transport never reached systemd" }),
+      bashLogLine({ line: 1521, fn: "luna_warn", anchor: "transport never reached systemd" }),
     ])
 
     const uncertain = makeRig()
     expect(runRestart(uncertain, { guard: { queryActiveWsCount: unknown }, unitState: "activating\n" }).code).toBe(3)
     expect(uncertain.warns).toEqual([
       bashLogLine({
-        line: 1497,
+        line: 1524,
         fn: "luna_warn",
         anchor: "may be serving; deferring",
         vars: { state: "activating" },
@@ -576,7 +593,7 @@ describe("the guard verdict line is emitted from inside the primitive, before an
 
     expect(outcome.code).toBe(0)
     const expected = bashLogLine({
-      line: 1468,
+      line: 1488,
       fn: "luna_warn",
       anchor: "SESSION GUARD OVERRIDDEN by operator",
       vars: { OPERATOR_OVERRIDE_REASON: "incident 42" },

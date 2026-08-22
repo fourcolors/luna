@@ -341,6 +341,112 @@ printf "%s" "$n"
   printf '%s' "$n"
 }
 
+# ── session-defer staleness (deploy.maxSessionDefer) ──────────────────────────
+# Standing Moon sockets (hub + panel-chat) are ESTABLISHED forever and used to
+# starve origin/master forever while every timer tick exited 0 looking healthy.
+# luna_active_ws_count still counts those sockets (self-sessions already
+# subtracted); this pair of helpers is the complementary gate: after
+# deploy.maxSessionDefer wall-clock since the FIRST live-session defer for a
+# profile, unattended apply proceeds and logs STALENESS — never an operator
+# override. Unknown counts stay fail-closed and do not advance this clock.
+#
+# Test seam: LUNA_TEST_NOW_EPOCH pins wall-clock seconds (hermetic aged tests).
+
+# luna_now_epoch — wall-clock seconds; LUNA_TEST_NOW_EPOCH wins when set.
+luna_now_epoch() {
+  if [[ "${LUNA_TEST_NOW_EPOCH+set}" == "set" && "$LUNA_TEST_NOW_EPOCH" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$LUNA_TEST_NOW_EPOCH"
+    return 0
+  fi
+  date +%s
+}
+
+# luna_parse_systemd_duration <span>
+# Prints integer seconds. Accepts systemd-style spans ("4h", "1h 30min", "90m",
+# bare seconds). "infinity" / "0" / "0s" print 0 (caller treats 0 as "never
+# force-apply on standing sessions" — fail closed toward not dropping users).
+# Returns non-zero on garbage.
+luna_parse_systemd_duration() {
+  local raw="${1:-}" total=0 tok num unit
+  # Lowercase via tr (bash 3.2-safe; macOS /bin/bash has no ${var,,}).
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  [[ -n "$raw" ]] || return 1
+  if [[ "$raw" == "infinity" ]]; then
+    printf '0'
+    return 0
+  fi
+  # shellcheck disable=SC2086  # intentional word-split on space-separated tokens
+  for tok in $raw; do
+    if [[ "$tok" =~ ^([0-9]+)([a-z]*)$ ]]; then
+      num="${BASH_REMATCH[1]}"
+      unit="${BASH_REMATCH[2]}"
+      case "$unit" in
+        ""|s|sec|secs|second|seconds) total=$((total + num)) ;;
+        m|min|mins|minute|minutes) total=$((total + num * 60)) ;;
+        h|hr|hrs|hour|hours) total=$((total + num * 3600)) ;;
+        d|day|days) total=$((total + num * 86400)) ;;
+        w|week|weeks) total=$((total + num * 604800)) ;;
+        *) return 1 ;;
+      esac
+    else
+      return 1
+    fi
+  done
+  printf '%s' "$total"
+}
+
+# luna_session_defer_state_path <profile>
+luna_session_defer_state_path() {
+  local profile="$1"
+  local dir="${LUNA_UPDATE_STATE_DIR:-${LUNA_HOME:-${HOME:-/root}/.luna}/update}"
+  printf '%s/session-defer-%s' "$dir" "$profile"
+}
+
+# luna_session_defer_mark <profile> — record first live-session defer (idempotent).
+luna_session_defer_mark() {
+  local profile="$1" path dir tmp since
+  path="$(luna_session_defer_state_path "$profile")"
+  dir="$(dirname "$path")"
+  # shellcheck disable=SC2174  # mkdir -p -m 0700 applies mode to deepest dir only - acknowledged; known-red follow-up
+  mkdir -p -m 0700 "$dir" 2>/dev/null || true
+  if [[ -f "$path" ]]; then
+    since="$(grep -E '^since=' "$path" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+    [[ "$since" =~ ^[0-9]+$ ]] && return 0
+  fi
+  tmp="$path.tmp.$$"
+  if ! ( umask 077; printf 'since=%s\n' "$(luna_now_epoch)" > "$tmp" 2>/dev/null ); then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  mv "$tmp" "$path" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+# luna_session_defer_clear <profile>
+luna_session_defer_clear() {
+  rm -f "$(luna_session_defer_state_path "$1")" 2>/dev/null || true
+}
+
+# luna_session_defer_aged <profile> <max_secs>
+# Returns 0 when a prior live-session defer window has aged past max_secs
+# (caller may apply as staleness). Returns 1 while still within the window, or
+# when max_secs is 0 (disabled / infinity). Marks the clock on every call with
+# a known live-session count so the first defer starts the window.
+luna_session_defer_aged() {
+  local profile="$1" max_secs="$2" path since now age
+  [[ "$max_secs" =~ ^[0-9]+$ ]] || return 1
+  (( max_secs > 0 )) || return 1
+  luna_session_defer_mark "$profile"
+  path="$(luna_session_defer_state_path "$profile")"
+  since="$(grep -E '^since=' "$path" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+  [[ "$since" =~ ^[0-9]+$ ]] || return 1
+  now="$(luna_now_epoch)"
+  age=$((now - since))
+  (( age < 0 )) && age=0
+  (( age >= max_secs ))
+}
+
 # Classify `systemctl is-active` output. Empty means the command never reached
 # systemd (incus exec died, or systemctl is missing) — verified on this host
 # that a *missing unit* still prints "inactive" with rc=4, so non-empty output

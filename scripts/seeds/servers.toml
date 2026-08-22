@@ -48,13 +48,18 @@ ports.proxy = 4753
 
 # Guardian: ON BY DEFAULT (owner decision 2026-07). Its health timer runs even
 # when branch movement is disabled; updates only restart when origin/master
-# moved AND no WebSocket sessions are active. Set deploy.autoUpdate=false to
-# keep health/repair but disable updates, or `luna-guardian uninstall stable`
+# moved AND (no WebSocket sessions are active, OR standing sessions have aged
+# past deploy.maxSessionDefer). Set deploy.autoUpdate=false to keep
+# health/repair but disable updates, or `luna-guardian uninstall stable`
 # to remove the control plane. Manual `luna-autodeploy stable` always works.
 deploy.timer         = true
 deploy.timerInterval = "15min"
 deploy.autoUpdate    = true
 deploy.trackBranch   = "master"
+# Cap standing-session deferral so a daily-driver Moon (hub+chat sockets) cannot
+# starve origin/master forever. Absent key = 4h. "0" / "infinity" = classic
+# forever-defer. Logged as staleness, never as an operator override.
+deploy.maxSessionDefer = "4h"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # dev — auto-deployed on a timer via incus container luna-dev.
@@ -76,3 +81,4 @@ deploy.timer         = true
 deploy.timerInterval = "3min"
 deploy.autoUpdate    = true
 deploy.trackBranch   = "dev"
+deploy.maxSessionDefer = "4h"
