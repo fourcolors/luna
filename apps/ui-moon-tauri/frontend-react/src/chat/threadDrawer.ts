@@ -159,6 +159,20 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         DOM.chatPanel.classList.toggle('sidebar-collapsed', w === 0);
       }
       if (DOM.threadDrawer) DOM.threadDrawer.setAttribute('aria-hidden', w > 0 ? 'false' : 'true');
+      // Keep the title-bar toggle in lockstep with the drawer it controls.
+      // _applyWidth is the ONE chokepoint every open/close path funnels
+      // through (click, drag-to-zero, restore-on-boot, reclamp), so the button
+      // cannot drift out of sync with the panel the way a click-site-only
+      // update would. aria-expanded is the actual disclosure contract; the
+      // label flips so the control always names what the NEXT press does.
+      if (DOM.toggleThreads) {
+        const drawerOpen = w > 0;
+        const label = drawerOpen ? 'Hide threads' : 'Show threads';
+        DOM.toggleThreads.classList.toggle('is-open', drawerOpen);
+        DOM.toggleThreads.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
+        DOM.toggleThreads.setAttribute('aria-label', label);
+        DOM.toggleThreads.setAttribute('title', label);
+      }
       if (DOM.threadDivider) {
         DOM.threadDivider.setAttribute('aria-valuenow', String(w));
         DOM.threadDivider.setAttribute('aria-valuemax', String(this._maxWidth()));
