@@ -15,7 +15,7 @@
  * boot-order reload + telemetry. Adding additive columns is permitted by
  * DESIGN.md §10.3 (workspaces follows the same pattern).
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -168,10 +168,7 @@ interface BunStmt {
 
 // ── Service Tag ──────────────────────────────────────────────────────────────
 
-export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
-  JobsStoreService,
-  JobsStoreApi
->() {
+export class JobsStoreService extends Context.Service<JobsStoreService, JobsStoreApi>()("luna/JobsStoreService") {
   // ── Memory Layer ───────────────────────────────────────────────────────────
 
   /** Fresh isolated Ref<Map> per build. No SQLite. */
@@ -639,7 +636,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<JobsStoreService, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       JobsStoreService,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

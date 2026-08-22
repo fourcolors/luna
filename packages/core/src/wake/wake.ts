@@ -240,12 +240,12 @@ export const runWake = (
       )
 
     // Step 1: read state. Failure logged + returned early.
-    const inputsResult = yield* Effect.either(readWakeInputs(opts))
-    if (inputsResult._tag === "Left") {
-      const errSummary = `wake aborted: ${inputsResult.left.message}`
+    const inputsResult = yield* Effect.result(readWakeInputs(opts))
+    if (inputsResult._tag === "Failure") {
+      const errSummary = `wake aborted: ${inputsResult.failure.message}`
       const errArtifacts = JSON.stringify({
         stage: "read-inputs",
-        error: inputsResult.left.message,
+        error: inputsResult.failure.message,
       })
       yield* Effect.ignore(
         store.append({
@@ -263,17 +263,17 @@ export const runWake = (
       })
       return
     }
-    const read = inputsResult.right
+    const read = inputsResult.success
 
     // Step 1b: skip path — workspace not wake-enabled (no goals/next_actions).
     // Record a `skipped` outcome, but ONLY on transition: once the most recent
     // wake_log row is already `skipped`, stay silent so an un-enabled workspace
     // doesn't write a row every tick. The reasoner is never invoked.
     if (read._tag === "skip") {
-      const recentResult = yield* Effect.either(store.recent(1))
+      const recentResult = yield* Effect.result(store.recent(1))
       const lastOutcome =
-        recentResult._tag === "Right" && recentResult.right.length > 0
-          ? recentResult.right[0]!.outcome
+        recentResult._tag === "Success" && recentResult.success.length > 0
+          ? recentResult.success[0]!.outcome
           : undefined
       if (lastOutcome === "skipped") return
       const skipSummary = `wake skipped: ${read.reason}`
@@ -300,12 +300,12 @@ export const runWake = (
     const inputs = read.inputs
 
     // Step 2: reason. Reasoner failure logged + returned.
-    const reasonResult = yield* Effect.either(reasoner.reason(inputs))
-    if (reasonResult._tag === "Left") {
-      const errSummary = `wake reasoner failed: ${reasonResult.left.message}`
+    const reasonResult = yield* Effect.result(reasoner.reason(inputs))
+    if (reasonResult._tag === "Failure") {
+      const errSummary = `wake reasoner failed: ${reasonResult.failure.message}`
       const errArtifacts = JSON.stringify({
         stage: "reason",
-        error: reasonResult.left.message,
+        error: reasonResult.failure.message,
       })
       yield* Effect.ignore(
         store.append({
@@ -323,7 +323,7 @@ export const runWake = (
       })
       return
     }
-    const digest = reasonResult.right
+    const digest = reasonResult.success
 
     // Step 3: write the successful row.
     const successSummary = summarizeDigest(digest)

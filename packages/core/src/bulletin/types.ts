@@ -1,4 +1,4 @@
-import { Data, Effect } from "effect"
+import { Context, Data, Effect } from "effect"
 
 /**
  * The hot-tier bulletin (see packages/memory/bench/BULLETIN.md): a
@@ -47,7 +47,4 @@ export interface BulletinWriterApi {
   readonly write: (args: BulletinWriterArgs) => Effect.Effect<string, BulletinError>
 }
 
-export class BulletinWriter extends Effect.Tag("luna/BulletinWriter")<
-  BulletinWriter,
-  BulletinWriterApi
->() {}
+export class BulletinWriter extends Context.Service<BulletinWriter, BulletinWriterApi>()("luna/BulletinWriter") {}

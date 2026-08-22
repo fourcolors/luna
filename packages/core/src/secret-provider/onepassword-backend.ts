@@ -79,7 +79,7 @@ const spawnOpRead = (
   token: string | undefined,
   timeoutMs: number,
 ): Effect.Effect<string, ConfigError> =>
-  Effect.async<string, ConfigError>((resume) => {
+  Effect.callback<string, ConfigError>((resume) => {
     const env: NodeJS.ProcessEnv = { ...process.env }
     if (token !== undefined) env.OP_SERVICE_ACCOUNT_TOKEN = token
     let child

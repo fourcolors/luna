@@ -53,7 +53,7 @@ describe("JobsStoreService (Memory layer)", () => {
         spec: "0 * * * *",
         payload: { label: "first" },
       })
-      const second = yield* Effect.either(
+      const second = yield* Effect.result(
         store.record({
           id: "dup",
           kind: "cron",
@@ -1069,7 +1069,7 @@ dSqlite("JobsStoreService (SQLite layer) - claimAndStartRun rollback", () => {
       // together with the failed insert, `jobs.last_run` would advance with
       // no `job_runs` row to show for it, exactly the orphan window this
       // method exists to close.
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         store.claimAndStartRun("cs-rollback", {
           claimAt: 5000,
           nextRunAt: 5600,

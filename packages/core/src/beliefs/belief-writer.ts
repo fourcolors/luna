@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { Clock } from "../clock.js"
@@ -35,10 +35,7 @@ export interface BeliefWriterApi {
   ) => Effect.Effect<boolean, MemoryBackendError>
 }
 
-export class BeliefWriter extends Effect.Tag("luna/BeliefWriter")<
-  BeliefWriter,
-  BeliefWriterApi
->() {
+export class BeliefWriter extends Context.Service<BeliefWriter, BeliefWriterApi>()("luna/BeliefWriter") {
   static readonly Default = Layer.effect(
     BeliefWriter,
     Effect.gen(function* () {

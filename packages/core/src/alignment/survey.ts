@@ -47,7 +47,7 @@
  * unrecoverable double-count. `SurveyVerdict` gains an optional `at` field
  * (backward-compatible).
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
 import { BeliefWriter } from "../beliefs/belief-writer.js"
 import type { BeliefValidation, BeliefVerdict } from "../beliefs/types.js"
@@ -92,7 +92,7 @@ export interface SurveyApi {
   readonly pendingSurvey: (now: number) => Effect.Effect<PendingSurvey | null, AlignmentError | MemoryBackendError>
 }
 
-export class Survey extends Effect.Tag("luna/Survey")<Survey, SurveyApi>() {
+export class Survey extends Context.Service<Survey, SurveyApi>()("luna/Survey") {
   static readonly Default = Layer.effect(
     Survey,
     Effect.gen(function* () {

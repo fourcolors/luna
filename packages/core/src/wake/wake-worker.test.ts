@@ -140,7 +140,7 @@ describe("WakeWorkerLayer", () => {
     )
     expect(exit._tag).toBe("Failure")
     if (exit._tag === "Failure") {
-      const failure = Cause.failureOption(exit.cause)
+      const failure = Cause.findErrorOption(exit.cause)
       expect(failure._tag).toBe("Some")
       if (failure._tag === "Some") {
         expect(failure.value).toBeInstanceOf(WorkerError)

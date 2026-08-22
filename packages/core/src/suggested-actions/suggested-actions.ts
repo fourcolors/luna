@@ -10,7 +10,7 @@
  * Mirrors alignment/survey.ts: an Effect.Tag service over a store, with status
  * state-machine transitions guarded in the store layer.
  */
-import { Effect, Layer, Option, PubSub, Stream } from "effect"
+import { Context, Effect, Layer, Option, PubSub, Stream } from "effect"
 import { SuggestedActionsStore } from "./suggested-actions-store.js"
 import { SuggestedActionsError } from "./types.js"
 import type {
@@ -37,10 +37,7 @@ export interface RespondInput {
 export interface AcceptHandlerApi {
   readonly accept: (row: SuggestedActionRow) => Effect.Effect<void, SuggestedActionsError>
 }
-export class AcceptHandler extends Effect.Tag("luna/SuggestedActionsAcceptHandler")<
-  AcceptHandler,
-  AcceptHandlerApi
->() {}
+export class AcceptHandler extends Context.Service<AcceptHandler, AcceptHandlerApi>()("luna/SuggestedActionsAcceptHandler") {}
 
 export interface SuggestedActionsApi {
   /** Stage a proposed action (idempotent on content). Emits on `changes`. */
@@ -80,10 +77,7 @@ export interface SuggestedActionsApi {
   readonly changes: Stream.Stream<SuggestedActionRow>
 }
 
-export class SuggestedActions extends Effect.Tag("luna/SuggestedActions")<
-  SuggestedActions,
-  SuggestedActionsApi
->() {
+export class SuggestedActions extends Context.Service<SuggestedActions, SuggestedActionsApi>()("luna/SuggestedActions") {
   static readonly layer: Layer.Layer<SuggestedActions, never, SuggestedActionsStore> =
     Layer.effect(
       SuggestedActions,
@@ -123,12 +117,12 @@ export class SuggestedActions extends Effect.Tag("luna/SuggestedActions")<
             // simply rests at `accepted` (dismiss-only / test deployments).
             const handler = yield* Effect.serviceOption(AcceptHandler)
             if (Option.isSome(handler)) {
-              const outcome = yield* Effect.either(handler.value.accept(accepted))
-              if (outcome._tag === "Left") {
+              const outcome = yield* Effect.result(handler.value.accept(accepted))
+              if (outcome._tag === "Failure") {
                 const failed = yield* store.recordTerminal(
                   accepted.id,
                   "failed",
-                  outcome.left.message,
+                  outcome.failure.message,
                 )
                 yield* emit(failed)
                 return failed ?? accepted

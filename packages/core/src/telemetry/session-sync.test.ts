@@ -1,7 +1,7 @@
 /**
  * SessionSync tests — TDD PING phase.
  *
- * SessionSync is a side-effect-only Layer.scoped that:
+ * SessionSync is a side-effect-only Layer.effect that:
  *   1. Eagerly subscribes to ObservabilityService.subscribeEvents
  *   2. Runs a forkDaemon background fiber filtering for SessionStart/SessionEnd
  *   3. On SessionStart: INSERT OR IGNORE into sessions table (idempotent upsert)

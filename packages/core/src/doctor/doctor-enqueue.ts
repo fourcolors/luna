@@ -184,7 +184,7 @@ export const maybeEnqueueDoctor = (
       })
       .pipe(
         Effect.map((j) => j.id),
-        Effect.catchAll((err) =>
+        Effect.catch((err) =>
           Effect.as(
             Effect.logWarning(
               `[luna/sched] doctor enqueue failed patient=${job.id}: ${err.message}`,
@@ -204,7 +204,7 @@ export const maybeEnqueueDoctor = (
         healState: "healing",
         enabled: false,
       })
-      .pipe(Effect.catchAll(() => Effect.succeed(false)))
+      .pipe(Effect.catch(() => Effect.succeed(false)))
 
     yield* Effect.logInfo(
       `[luna/sched] doctor enqueued job=${recorded} patient=${job.id} attempt=${attempt}`,
@@ -237,7 +237,7 @@ export const handleDoctorWorkflowFailure = (
     }
     const patient = yield* store
       .getById(patientId)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .pipe(Effect.catch(() => Effect.succeed(null)))
     if (!patient) {
       return { enqueued: false, reason: "patient_missing" } as const
     }
@@ -248,10 +248,10 @@ export const handleDoctorWorkflowFailure = (
           enabled: false,
           healState: "escalated",
         })
-        .pipe(Effect.catchAll(() => Effect.succeed(false)))
+        .pipe(Effect.catch(() => Effect.succeed(false)))
       yield* store
         .touch(patientId, { lastStatus: "errored" })
-        .pipe(Effect.catchAll(() => Effect.void))
+        .pipe(Effect.catch(() => Effect.void))
       yield* Effect.logWarning(
         `[luna/sched] doctor escalated patient=${patientId} heal_attempts=${patient.healAttempts} last_error=${lastError.slice(0, 200)}`,
       )
@@ -270,7 +270,7 @@ export const handleDoctorWorkflowFailure = (
         healState: "healing",
         enabled: false,
       })
-      .pipe(Effect.catchAll(() => Effect.succeed(false)))
+      .pipe(Effect.catch(() => Effect.succeed(false)))
 
     const finding = buildAutoFinding(
       {
@@ -302,7 +302,7 @@ export const handleDoctorWorkflowFailure = (
       })
       .pipe(
         Effect.map((j) => j.id),
-        Effect.catchAll((err) =>
+        Effect.catch((err) =>
           Effect.as(
             Effect.logWarning(
               `[luna/sched] doctor re-enqueue failed patient=${patientId}: ${err.message}`,

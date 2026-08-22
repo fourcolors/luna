@@ -13,7 +13,7 @@ import {
   ObservabilityService,
   decodeObsEvent,
 } from "../src/observability/index.js"
-import { Either } from "effect"
+import { Result } from "effect"
 
 const makeLayer = () =>
   ObservabilityService.makeLayer({ logToConsole: false }).pipe(
@@ -36,7 +36,7 @@ describe("ObsEvent schema validation", () => {
       status: "ok", // wrong — should be "success" | "error" | "permission_denied"
     }
     const result = decodeObsEvent(bad)
-    expect(Either.isLeft(result)).toBe(true)
+    expect(Result.isFailure(result)).toBe(true)
   })
 
   it("decodeObsEvent accepts a well-formed ToolCall", () => {
@@ -49,7 +49,7 @@ describe("ObsEvent schema validation", () => {
       status: "success",
     }
     const result = decodeObsEvent(good)
-    expect(Either.isRight(result)).toBe(true)
+    expect(Result.isSuccess(result)).toBe(true)
   })
 
   it("emit() drops a malformed event and emits a synthetic ObsSchemaViolation Error", async () => {
@@ -57,11 +57,10 @@ describe("ObsEvent schema validation", () => {
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
         const stream = yield* obs.subscribeEvents
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           ),
         )
         yield* Effect.sleep(Duration.millis(10))
@@ -102,7 +101,7 @@ describe("ObsEvent schema validation", () => {
       durationMs: 12,
       status: "success",
     }
-    expect(Either.isLeft(decodeObsEvent(bad))).toBe(true)
+    expect(Result.isFailure(decodeObsEvent(bad))).toBe(true)
   })
 
   it("decodeObsEvent accepts a well-formed RetrievalCall", () => {
@@ -120,7 +119,7 @@ describe("ObsEvent schema validation", () => {
       durationMs: 12,
       status: "success",
     }
-    expect(Either.isRight(decodeObsEvent(good))).toBe(true)
+    expect(Result.isSuccess(decodeObsEvent(good))).toBe(true)
   })
 
   it("decodeObsEvent accepts a well-formed rerank-stage RetrievalCall (no embedder fields)", () => {
@@ -137,7 +136,7 @@ describe("ObsEvent schema validation", () => {
       kept: 5,
       dropped: 12,
     }
-    expect(Either.isRight(decodeObsEvent(good))).toBe(true)
+    expect(Result.isSuccess(decodeObsEvent(good))).toBe(true)
   })
 
   it("decodeObsEvent rejects a RetrievalCall with reranked:true but missing rerank stats", () => {
@@ -153,7 +152,7 @@ describe("ObsEvent schema validation", () => {
       // rerankMs / kept / dropped missing - and no embedder fields either,
       // so it satisfies neither union member.
     }
-    expect(Either.isLeft(decodeObsEvent(bad))).toBe(true)
+    expect(Result.isFailure(decodeObsEvent(bad))).toBe(true)
   })
 
   it("emit() passes through a well-formed event unchanged", async () => {
@@ -161,11 +160,10 @@ describe("ObsEvent schema validation", () => {
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
         const stream = yield* obs.subscribeEvents
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           ),
         )
         yield* Effect.sleep(Duration.millis(10))

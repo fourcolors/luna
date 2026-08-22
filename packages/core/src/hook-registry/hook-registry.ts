@@ -13,7 +13,7 @@
  * the spec shape — values are opaque (§4: core MUST NOT import from
  * `@anthropic-ai/claude-agent-sdk`).
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { ValidationError } from "../errors.js"
 
 /**
@@ -42,10 +42,7 @@ export interface HookRegistryApi {
   readonly list: () => Effect.Effect<Readonly<Record<string, HookSpecLike>>>
 }
 
-export class HookRegistry extends Effect.Tag("luna/HookRegistry")<
-  HookRegistry,
-  HookRegistryApi
->() {
+export class HookRegistry extends Context.Service<HookRegistry, HookRegistryApi>()("luna/HookRegistry") {
   static readonly Default: Layer.Layer<HookRegistry> = Layer.effect(
     HookRegistry,
     Effect.gen(function* () {
@@ -113,6 +110,6 @@ export const registerScoped = (
     const reg = yield* HookRegistry
     yield* reg.register(name, spec)
     yield* Effect.addFinalizer(() =>
-      reg.unregister(name).pipe(Effect.catchAll(() => Effect.void)),
+      reg.unregister(name).pipe(Effect.catch(() => Effect.void)),
     )
   })

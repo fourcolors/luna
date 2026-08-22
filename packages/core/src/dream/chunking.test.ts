@@ -128,7 +128,7 @@ const textPayload = (role: "user" | "assistant", content: string) => ({
 const EXCERPT_CHARS = 393
 
 const seedSession = (
-  sessions: Effect.Effect.Success<typeof SessionStore>,
+  sessions: Effect.Success<typeof SessionStore>,
   id: string,
   ts: number,
   chars: number = EXCERPT_CHARS,
@@ -146,7 +146,7 @@ const NEW_TS = 200
 const NOW = 1000
 
 /** Two ~100-token sessions, ascending by lastMessageAt. */
-const seedTwoSessions = (sessions: Effect.Effect.Success<typeof SessionStore>) =>
+const seedTwoSessions = (sessions: Effect.Success<typeof SessionStore>) =>
   Effect.gen(function* () {
     yield* seedSession(sessions, "s-old", OLD_TS)
     yield* seedSession(sessions, "s-new", NEW_TS)
@@ -388,7 +388,6 @@ describe("runDream chunking — deadline-aware stop (S7)", () => {
     const clockLayer: Layer.Layer<Clock> = Layer.succeed(
       Clock,
       Clock.of({
-        _tag: "luna/Clock",
         nowMs: () => Ref.get(clockRef),
         nowIso: () => Ref.get(clockRef).pipe(Effect.map((t) => new Date(t).toISOString())),
       }),
@@ -506,7 +505,6 @@ describe("runDream chunking — tie-group cohesion (auditor defect 1)", () => {
     const clockLayer: Layer.Layer<Clock> = Layer.succeed(
       Clock,
       Clock.of({
-        _tag: "luna/Clock",
         nowMs: () => Ref.get(clockRef),
         nowIso: () => Ref.get(clockRef).pipe(Effect.map((t) => new Date(t).toISOString())),
       }),
@@ -592,7 +590,7 @@ describe("runDream chunking — per-session overhead floor (auditor defect 2)", 
   // unconditional) but distills to an EMPTY excerpt (stream_event is a noise
   // kind dropped by distillMessage).
   const seedNoiseSession = (
-    sessions: Effect.Effect.Success<typeof SessionStore>,
+    sessions: Effect.Success<typeof SessionStore>,
     id: string,
     ts: number,
   ) =>

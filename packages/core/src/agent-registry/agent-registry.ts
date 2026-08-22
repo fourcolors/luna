@@ -13,7 +13,7 @@
  * fields like `tools` / `skills` / `mcpServers`; the SDK resolves those
  * at query time.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { ValidationError } from "../errors.js"
 
 /**
@@ -52,10 +52,7 @@ export interface AgentRegistryApi {
   >
 }
 
-export class AgentRegistry extends Effect.Tag("luna/AgentRegistry")<
-  AgentRegistry,
-  AgentRegistryApi
->() {
+export class AgentRegistry extends Context.Service<AgentRegistry, AgentRegistryApi>()("luna/AgentRegistry") {
   static readonly Default: Layer.Layer<AgentRegistry> = Layer.effect(
     AgentRegistry,
     Effect.gen(function* () {
@@ -131,6 +128,6 @@ export const registerScoped = (
     const reg = yield* AgentRegistry
     yield* reg.register(name, def)
     yield* Effect.addFinalizer(() =>
-      reg.unregister(name).pipe(Effect.catchAll(() => Effect.void)),
+      reg.unregister(name).pipe(Effect.catch(() => Effect.void)),
     )
   })

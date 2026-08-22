@@ -146,7 +146,7 @@ describe("FakeReranker", () => {
           queryText: "q",
           candidates: candidatesOf(["a", "b", "c"]),
         })
-      }).pipe(Effect.provide(FakeReranker.of({ a: 91, c: 12 }))),
+      }).pipe(Effect.provideService(FakeReranker, FakeReranker.of({ a: 91, c: 12 }))),
     )
     expect(out).toEqual(
       expect.arrayContaining([
@@ -162,7 +162,7 @@ describe("FakeReranker", () => {
       Effect.gen(function* () {
         const r = yield* MemoryReranker
         return yield* r.rerank({ queryText: "q", candidates: candidatesOf(["x"]) })
-      }).pipe(Effect.provide(FakeReranker.of({ a: 91 }))),
+      }).pipe(Effect.provideService(FakeReranker, FakeReranker.of({ a: 91 }))),
     )
     expect(out).toEqual([])
   })

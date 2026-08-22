@@ -440,7 +440,7 @@ describe("DuckDbService", () => {
           Effect.provide(
             layer as Layer.Layer<DuckDbService, never, never>,
           ),
-          Scope.extend(scope),
+          Scope.provide(scope),
         ),
       )
 

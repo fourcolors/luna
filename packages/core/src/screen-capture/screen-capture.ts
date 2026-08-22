@@ -25,7 +25,7 @@ import { readFile, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { ScreenCaptureError } from "./errors.js"
 import type { CaptureOptions, CaptureResult, ScreenCaptureApi } from "./types.js"
 
@@ -102,20 +102,17 @@ function captureImpl(opts: CaptureOptions = {}): Effect.Effect<CaptureResult, Sc
   })
 
   return runCapture.pipe(
-    Effect.timeoutFail({
+    Effect.timeoutOrElse({
       duration: `${timeoutMs} millis`,
-      onTimeout: () =>
-        new ScreenCaptureError({
+      orElse: () => Effect.fail(new ScreenCaptureError({
           reason: "timeout",
           message: `Screenshot timed out after ${timeoutMs}ms`,
-        }),
+        })),
     }),
   )
 }
 
-export class ScreenCapture extends Effect.Tag(
-  "luna/ScreenCapture",
-)<ScreenCapture, ScreenCaptureApi>() {
+export class ScreenCapture extends Context.Service<ScreenCapture, ScreenCaptureApi>()("luna/ScreenCapture") {
   static readonly Default: Layer.Layer<ScreenCapture> = Layer.succeed(
     ScreenCapture,
     {

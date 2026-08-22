@@ -40,7 +40,7 @@
  * Reuses the forkDaemon + explicit interrupt pattern of the SupervisedPool
  * helper (packages/core/src/supervised-pool/).
  */
-import {
+import { Context,
   Effect,
   Exit,
   Fiber,
@@ -94,12 +94,9 @@ interface TeamRecord {
 const DEFAULT_LAG_MS = 60_000
 const DEFAULT_TICK_MS = 5_000
 
-export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
-  TeamBroker,
-  TeamBrokerApi
->() {
+export class TeamBroker extends Context.Service<TeamBroker, TeamBrokerApi>()("luna/TeamBroker") {
   static readonly Default: Layer.Layer<TeamBroker, never, Clock | TaskList> =
-    Layer.scoped(
+    Layer.effect(
       TeamBroker,
       Effect.gen(function* () {
         const clock = yield* Clock
@@ -235,7 +232,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
             // from the teamScope finalizer.
             for (const teammate of spec.teammates) {
               const init = initialEntries.get(teammate.name)!
-              const fiber = yield* Effect.forkDaemon(teammate.loop(init.mailbox))
+              const fiber = yield* Effect.forkDetach(teammate.loop(init.mailbox))
               const entry: RunningEntry = {
                 fiber,
                 mailbox: init.mailbox,
@@ -256,7 +253,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
             }
 
             // ── TaskList subscriber: keep claimedAt + laggedTaskIds in sync ──
-            const subscriberFiber = yield* Effect.forkDaemon(
+            const subscriberFiber = yield* Effect.forkDetach(
               taskList.subscribe().pipe(
                 Stream.runForEach((ev) =>
                   Effect.gen(function* () {
@@ -285,7 +282,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
             )
 
             // ── Watchdog: lag detection ──
-            const watchdogFiber = yield* Effect.forkDaemon(
+            const watchdogFiber = yield* Effect.forkDetach(
               Effect.gen(function* () {
                 while (true) {
                   yield* Effect.sleep(`${orphanCheckIntervalMs} millis`)

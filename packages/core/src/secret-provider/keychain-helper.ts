@@ -116,7 +116,7 @@ export const readKeychainToken = (
   const ef = internals._execFile ?? execFile
   const timeoutMs = internals._timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-  return Effect.async<string, ConfigError>((resume) => {
+  return Effect.callback<string, ConfigError>((resume) => {
     let settled = false
     const settle = (e: Effect.Effect<string, ConfigError>): void => {
       if (settled) return
@@ -206,7 +206,7 @@ export const writeKeychainSecret = (
   const ef = internals._execFile ?? execFile
   const timeoutMs = internals._timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-  return Effect.async<void, ConfigError>((resume) => {
+  return Effect.callback<void, ConfigError>((resume) => {
     let settled = false
     const settle = (e: Effect.Effect<void, ConfigError>): void => {
       if (settled) return
@@ -284,7 +284,7 @@ export const deleteKeychainSecret = (
   const ef = internals._execFile ?? execFile
   const timeoutMs = internals._timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-  return Effect.async<void, ConfigError>((resume) => {
+  return Effect.callback<void, ConfigError>((resume) => {
     let settled = false
     const settle = (e: Effect.Effect<void, ConfigError>): void => {
       if (settled) return

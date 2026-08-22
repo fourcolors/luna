@@ -40,7 +40,7 @@ import { makeRecord, type MemoryRecord } from "../src/types.js"
  * Shared Tag every `makeLayer` factory targets. Exported so callers build
  * their backend's Layer wiring as `Layer.effect(BackendUnderTest, TheTag).pipe(Layer.provide(TheTag.Default))`.
  */
-export const BackendUnderTest = Context.GenericTag<MemoryBackend>(
+export const BackendUnderTest = Context.Service<MemoryBackend>(
   "luna/memory/test/BackendUnderTest",
 )
 
@@ -251,9 +251,7 @@ export interface TestVectorBackendApi extends MemoryVectorBackend {
   readonly backendName: "test-vector"
 }
 
-export class TestVectorBackend extends Effect.Tag(
-  "luna/memory/test/TestVectorBackend",
-)<TestVectorBackend, TestVectorBackendApi>() {
+export class TestVectorBackend extends Context.Service<TestVectorBackend, TestVectorBackendApi>()("luna/memory/test/TestVectorBackend") {
   // Keyed half (put/get/query/delete/exportAll/importAll) is InMemoryBackend
   // itself, decorated with `search` and a distinct `backendName` - the
   // subject under test is the router/tools seam, not the keyed storage

@@ -21,7 +21,7 @@
  * requirement — including `SDKAdapter.Default` from adapter-sdk.
  */
 import { Clock } from "../clock.js"
-import { Context, Effect, Queue, Ref, Scope, Stream } from "effect"
+import { Layer, Context, Effect, Queue, Ref, Scope, Stream } from "effect"
 import { IntegrityError } from "../errors.js"
 import type {
   ScopedSession,
@@ -56,18 +56,37 @@ export interface SDKAdapterLike {
  * Local Tag alias for the SDK adapter. Uses the EXACT identifier string
  * `"luna/SDKAdapter"` so it resolves to the same Context slot
  * as the adapter-sdk's own `SDKAdapter` Tag — Effect v3 keys Tags by
- * identifier (see `Effect.Tag(id)` behavior).
+ * identifier (see `Context.Service(id)` behavior).
  */
-export const SDKAdapter = Context.GenericTag<SDKAdapterLike>(
+export const SDKAdapter = Context.Service<SDKAdapterLike>(
   "luna/SDKAdapter",
-) as Context.Tag<SDKAdapterLike, SDKAdapterLike> & {
-  readonly key: "luna/SDKAdapter"
+) 
+
+
+export interface SessionServiceApi {
+  readonly open: (
+    opts: SessionOptions,
+  ) => Effect.Effect<SessionSummary, IntegrityError>
+  readonly resume: (
+    id: string,
+  ) => Effect.Effect<SessionSummary, IntegrityError>
+  readonly fork: (
+    id: string,
+    overrides?: Partial<SessionOptions>,
+  ) => Effect.Effect<SessionSummary, IntegrityError>
+  readonly list: (q?: SessionQuery) => Stream.Stream<SessionSummary>
+  readonly close: (id: string) => Effect.Effect<void, IntegrityError>
+  readonly openScoped: (
+    opts: SessionOptions,
+  ) => Effect.Effect<ScopedSession, IntegrityError, SDKAdapterLike | Scope.Scope>
 }
 
-export class SessionService extends Effect.Service<SessionService>()(
+export class SessionService extends Context.Service<SessionService, SessionServiceApi>()(
   "luna/SessionService",
-  {
-    effect: Effect.gen(function* () {
+) {
+  static readonly Default = Layer.effect(
+    SessionService,
+    Effect.gen(function* () {
       const store = yield* SessionStore
       const clock = yield* Clock
       /** In-process guard: prevent double-close of the same id. */
@@ -249,14 +268,14 @@ export class SessionService extends Effect.Service<SessionService>()(
             msg: SDKUserMessageLike,
           ): Effect.Effect<void, never> => Queue.offer(mailbox, msg).pipe(
             Effect.asVoid,
-            Effect.catchAllCause(() => Effect.void), // post-close offers no-op
+            Effect.catchCause(() => Effect.void), // post-close offers no-op
           )
 
           const handle: ScopedSession = {
             id: summary.id,
             send,
             replies: replies.pipe(
-              Stream.catchAllCause(() => Stream.empty),
+              Stream.catchCause(() => Stream.empty),
             ) as Stream.Stream<SDKMessageLike, never>,
             close: close(summary.id).pipe(Effect.orDie),
           }
@@ -269,5 +288,5 @@ export class SessionService extends Effect.Service<SessionService>()(
 
       return { open, resume, fork, list, close, openScoped } as const
     }),
-  },
-) {}
+  )
+}

@@ -16,13 +16,13 @@ describe("WorkerRegistry", () => {
   it("dispatch on unknown kind fails with WorkerError({reason:'unknown_kind'})", async () => {
     const prog = Effect.gen(function* () {
       const reg = yield* WorkerRegistry
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         reg.dispatch("nope", {}, idCtx),
       )
       expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left.reason).toBe("unknown_kind")
-        expect(result.left.kind).toBe("nope")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("unknown_kind")
+        expect(result.failure.kind).toBe("nope")
       }
     })
     await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
@@ -102,11 +102,11 @@ describe("WorkerRegistry", () => {
     const prog = Effect.gen(function* () {
       const reg = yield* WorkerRegistry
       yield* reg.register("badp", failing)
-      const result = yield* Effect.either(reg.dispatch("badp", {}, idCtx))
+      const result = yield* Effect.result(reg.dispatch("badp", {}, idCtx))
       expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left.reason).toBe("bad_payload")
-        expect(result.left.message).toBe("missing field")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("bad_payload")
+        expect(result.failure.message).toBe("missing field")
       }
     })
     await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))

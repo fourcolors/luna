@@ -3,7 +3,7 @@
  * status back onto the `ui_feedback_status` row that spawned it.
  *
  * Mirrors ../suggested-actions/accept-handler.ts's completion observer
- * (Layer.scoped + Effect.forkScoped poller on Schedule.fixed): the durable
+ * (Layer.effect + Effect.forkScoped poller on Schedule.fixed): the durable
  * jobs path has no push-notify, so this forks a background fiber that polls
  * JobsStore.listRuns(resolvedRef) for every feedback row still `status:
  * 'queued'` and folds a terminal run (success / failed / cancelled) back
@@ -77,7 +77,7 @@ export interface FeedbackJobObserverDeps {
 
 export interface FeedbackJobObserverOptions {
   /** Completion-poll cadence. Default 10s. */
-  readonly pollInterval?: Duration.DurationInput
+  readonly pollInterval?: Duration.Input
   /** Per-tick queued-row fetch bound. Default 100. */
   readonly queueLimit?: number
 }
@@ -158,10 +158,10 @@ export const pollFeedbackJobsOnce = async (
  * layer's Scope so it stops when the server shuts down. No service Tag is
  * provided here (nothing needs to *resolve* this observer — it is pure
  * background wiring, like WakeWorkerLayer/DreamWorkerLayer), so
- * Layer.scopedDiscard is the right constructor: it strips Scope out of the
+ * Layer.effectDiscard is the right constructor: it strips Scope out of the
  * layer's own requirements once the fork is set up, exactly as
  * AcceptHandlerLayer's own forkScoped completion observer does inside its
- * Layer.scoped(AcceptHandler, ...).
+ * Layer.effect(AcceptHandler, ...).
  */
 export const FeedbackJobObserverLayer = (
   deps: FeedbackJobObserverDeps,
@@ -175,7 +175,7 @@ export const FeedbackJobObserverLayer = (
     catch: () => undefined,
   }).pipe(Effect.ignore)
 
-  return Layer.scopedDiscard(
+  return Layer.effectDiscard(
     tick.pipe(Effect.repeat(Schedule.fixed(pollInterval)), Effect.forkScoped),
   )
 }

@@ -282,13 +282,13 @@ interface BunStmt {
 
 /**
  * Build a sqlite-backed SessionStore Layer. `dbPath` accepts `":memory:"`
- * for ephemeral tests. The Layer is `Layer.scoped` so the DB handle is
+ * for ephemeral tests. The Layer is `Layer.effect` so the DB handle is
  * closed when the surrounding scope finalizes.
  */
 export const makeSessionStoreSqlite = (
   dbPath: string,
 ): Layer.Layer<SessionStore, never, LunaSqliteBootstrap> =>
-  Layer.scoped(
+  Layer.effect(
     SessionStore,
     Effect.gen(function* () {
       // Phase 27a: pull the bootstrap Tag BEFORE opening any Database so
@@ -553,7 +553,7 @@ export const makeSessionStoreSqlite = (
           // so that SQLITE_BUSY / SQLITE_IOERR on any statement surfaces as a
           // typed IntegrityError (Effect.fail) rather than a raw throw that
           // propagates as a defect through Effect.suspend.  A defect would
-          // escape adapter.ts's `Effect.catchAll` (which catches only typed
+          // escape adapter.ts's `Effect.catch` (which catches only typed
           // failures) and could kill the live streaming fiber.
           try {
             const exists = sessionExists.get(input.sessionId) as
@@ -784,7 +784,6 @@ export const makeSessionStoreSqlite = (
         )
 
       return SessionStore.of({
-        _tag: "luna/SessionStore",
         create,
         get,
         getOptions,

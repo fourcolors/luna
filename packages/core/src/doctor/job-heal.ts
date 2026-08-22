@@ -197,7 +197,7 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
       } else if (patch.enabled === true) {
         yield* opts.jobs
           .touch(jobId, { lastStatus: "fired" })
-          .pipe(Effect.catchAll(() => Effect.void))
+          .pipe(Effect.catch(() => Effect.void))
       }
 
       backups.updateApplyStatus(backupId, "applied")
@@ -255,7 +255,7 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
       if (job.lastStatus) {
         yield* opts.jobs
           .touch(jobId, { lastStatus: job.lastStatus })
-          .pipe(Effect.catchAll(() => Effect.void))
+          .pipe(Effect.catch(() => Effect.void))
       }
       backups.updateApplyStatus(backupId, "rolled_back", "restored from before snapshot")
     })
@@ -267,7 +267,7 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
         .pipe(Effect.mapError((e) => e.message))
       yield* opts.jobs
         .touch(jobId, { lastStatus: "errored" })
-        .pipe(Effect.catchAll(() => Effect.void))
+        .pipe(Effect.catch(() => Effect.void))
       if (opts.notes) {
         const summary = [
           `Job heal escalation: ${jobId}`,
@@ -284,7 +284,7 @@ export const makeJobHealApi = (opts: MakeJobHealApiOptions): JobHealApi => {
             summary,
             payload: report,
           })
-          .pipe(Effect.catchAll(() => Effect.void))
+          .pipe(Effect.catch(() => Effect.void))
       }
     })
 

@@ -52,7 +52,7 @@ export function ingestSample(
       })
       yield* router.put(rec).pipe(
         Effect.tap(() => Effect.sync(() => { count++ })),
-        Effect.catchAll((cause) =>
+        Effect.catch((cause) =>
           Effect.logWarning(`locomo-eval: put failed for ${rec.id}: ${String(cause)}`),
         ),
       )

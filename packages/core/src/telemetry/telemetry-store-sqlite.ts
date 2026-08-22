@@ -21,7 +21,7 @@
  *     drifts. `n` is integer-by-convention.
  *
  * Architecture:
- *   - Layer.scoped opens the DB, runs migrations (per-component
+ *   - Layer.effect opens the DB, runs migrations (per-component
  *     `schema_versions` ledger, §5.2 / Phase 25e), registers `db.close`
  *     finalizer (LIFO §3.4 #4 — only
  *     finalizer needed: no daemon, see §16). Then prepared statements.
@@ -30,7 +30,7 @@
  *     store-sqlite patterns.
  *
  * Invariants:
- *   §3.4 #4    — Layer.scoped + `db.close` finalizer registered FIRST
+ *   §3.4 #4    — Layer.effect + `db.close` finalizer registered FIRST
  *                (only finalizer; Telemetry has no daemon — §16).
  *   §5.2       — per-component `schema_versions` ledger (Phase 25e), idempotent.
  *   §6         — ConfigError raised at boot if `bun:sqlite` is unavailable.
@@ -113,7 +113,7 @@ interface BunStmt {
 
 /**
  * Build a sqlite-backed TelemetryService Layer. `dbPath` accepts
- * `":memory:"` for ephemeral tests. The Layer is `Layer.scoped` so the DB
+ * `":memory:"` for ephemeral tests. The Layer is `Layer.effect` so the DB
  * handle is closed when the surrounding scope finalizes (LIFO §3.4 #4).
  *
  * Layer error channel = `ConfigError` (boot-time only): raised when
@@ -125,7 +125,7 @@ export const makeTelemetrySqlite = (
   dbPath: string,
   options: TelemetrySqliteOptions = {},
 ): Layer.Layer<TelemetryService, ConfigError, Clock | LunaSqliteBootstrap> =>
-  Layer.scoped(
+  Layer.effect(
     TelemetryService,
     Effect.gen(function* () {
       // Phase 27a: pull the bootstrap Tag BEFORE opening any Database so

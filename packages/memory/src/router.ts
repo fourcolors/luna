@@ -14,7 +14,7 @@ import { Context, Effect, Stream } from "effect"
 import { createHash } from "node:crypto"
 import {
   MemoryBackendError,
-  type Clock,
+  type ClockService,
   type ObservabilityApi,
 } from "@luna/core"
 import { hasVectorSearch, type MemoryBackend } from "./backend.js"
@@ -39,7 +39,7 @@ export interface Rule {
  */
 export interface RouterOptions {
   readonly observability: ObservabilityApi
-  readonly clock: Clock
+  readonly clock: ClockService
   readonly embedderInfo: {
     readonly provider: string
     readonly model: string
@@ -264,11 +264,11 @@ export function makeRouter(
  * `makeRouter` factory are unchanged. Use the `MemoryLayer` composition
  * helper (`./layer.ts`) to build a Layer that provides this Tag.
  *
- * Note: uses `Context.GenericTag` rather than `Effect.Tag` because the
+ * Note: uses `Context.Service` rather than a class Tag because the
  * Service identity is structural (the `MemoryRouter` interface), not a
  * class wrapping its own implementation — mirroring the SDKAdapter
  * Tag-aliasing convention in `packages/core/src/session/session-service.ts`.
  */
-export const MemoryRouterTag = Context.GenericTag<MemoryRouter>(
+export const MemoryRouterTag = Context.Service<MemoryRouter>(
   "luna/MemoryRouter",
 )

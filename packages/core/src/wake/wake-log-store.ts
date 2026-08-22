@@ -14,7 +14,7 @@
 // avoids @types/bun — see DESIGN.md §6.2).
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { ConfigError } from "../errors.js"
 import type { WakeLogRow, WakeLogRowInput, WakeOutcome } from "./types.js"
 import { WakeError } from "./types.js"
@@ -60,10 +60,7 @@ export interface WakeLogStoreApi {
   ) => Effect.Effect<number, WakeError>
 }
 
-export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
-  WakeLogStore,
-  WakeLogStoreApi
->() {
+export class WakeLogStore extends Context.Service<WakeLogStore, WakeLogStoreApi>()("luna/WakeLogStore") {
   /**
    * Live layer opening the given workspace.db. The table must exist (created
    * by scripts/bootstrap-workspace.ts at workspace creation time). Opening a
@@ -74,7 +71,7 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
   static readonly makeLayer = (
     dbPath: string,
   ): Layer.Layer<WakeLogStore, ConfigError> =>
-    Layer.scoped(
+    Layer.effect(
       WakeLogStore,
       Effect.gen(function* () {
         const bunSqliteSpec = "bun:sqlite"

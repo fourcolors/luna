@@ -261,7 +261,7 @@ describe("AcceptHandler run_workflow + error paths", () => {
         return yield* sa.respond({ threadId: "t1", actionId: row.id, decision: "accept" })
       }),
     )
-    // handler.accept fails → respond's Effect.either path records a failed terminal.
+    // handler.accept fails → respond's Effect.result path records a failed terminal.
     expect(out?.status).toBe("failed")
     expect(out?.error).toBeTruthy()
   })

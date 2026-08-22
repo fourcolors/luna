@@ -10,14 +10,11 @@
  * every §16 consumer uses subscribeEvents to avoid pre-consumption
  * event loss.
  */
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import { ObservabilityService } from "../observability/index.js"
 import { DEFAULT_UI_KINDS, type UIApi, type UIConfig } from "./types.js"
 
-export class UIService extends Effect.Tag("luna/UIService")<
-  UIService,
-  UIApi
->() {
+export class UIService extends Context.Service<UIService, UIApi>()("luna/UIService") {
   static makeLayer(
     config?: UIConfig,
   ): Layer.Layer<UIService, never, ObservabilityService> {

@@ -1,7 +1,7 @@
 /**
  * MetricsFlusher — Phase 19.
  *
- * A Layer.scoped service that periodically flushes TelemetryService counter
+ * A Layer.effect service that periodically flushes TelemetryService counter
  * snapshots into the DuckDB `metric_snapshots` table.
  *
  * Architecture:
@@ -20,7 +20,7 @@
  * §3.4 #1  — daemon fiber (forkDaemon), not forkScoped.
  * §16      — MetricsFlusher emits NO observability events itself.
  */
-import { Effect, Layer, Schedule } from "effect"
+import { Context, Effect, Layer, Schedule } from "effect"
 import { Clock } from "../clock.js"
 import { DuckDbService } from "../db/duckdb-service.js"
 import { TelemetryService } from "./telemetry.js"
@@ -60,10 +60,7 @@ interface MetricsFlusherApi {
 
 // ── Service tag ───────────────────────────────────────────────────────────────
 
-export class MetricsFlusher extends Effect.Tag("luna/MetricsFlusher")<
-  MetricsFlusher,
-  MetricsFlusherApi
->() {
+export class MetricsFlusher extends Context.Service<MetricsFlusher, MetricsFlusherApi>()("luna/MetricsFlusher") {
   static makeLayer(config?: MetricsFlusherConfig): Layer.Layer<
     MetricsFlusher,
     never,
@@ -71,7 +68,7 @@ export class MetricsFlusher extends Effect.Tag("luna/MetricsFlusher")<
   > {
     const flushIntervalMs = config?.flushIntervalMs ?? 60_000
 
-    return Layer.scoped(
+    return Layer.effect(
       MetricsFlusher,
       Effect.gen(function* () {
         const tel = yield* TelemetryService
@@ -80,7 +77,7 @@ export class MetricsFlusher extends Effect.Tag("luna/MetricsFlusher")<
 
         // ── 1. Schema migration at boot ──────────────────────────────────────
         yield* db.migrate("metrics-flusher", 1, METRIC_SNAPSHOTS_SCHEMA_V1).pipe(
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         )
 
         // ── 2. Core flush logic ───────────────────────────────────────────────
@@ -98,17 +95,17 @@ export class MetricsFlusher extends Effect.Tag("luna/MetricsFlusher")<
               : null
 
             yield* db.write(INSERT_SQL, [nowIso, snap.name, tagsJson, snap.value, snapshotRun]).pipe(
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
             )
           }
-        }).pipe(Effect.catchAllCause(() => Effect.void))
+        }).pipe(Effect.catchCause(() => Effect.void))
 
         // ── 3. Background daemon fiber ────────────────────────────────────────
         // Polls on a fixed interval. forkDaemon per §3.4 #1.
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           flush.pipe(
             Effect.repeat(Schedule.fixed(flushIntervalMs)),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Effect, Either } from "effect"
+import { Effect, Result } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -117,7 +117,7 @@ describe.skipIf(NOT_BUN)("WakeLogStore.makeLayer (disk, un-bootstrapped workspac
             artifacts: "{}",
           })
           // next_actions does NOT exist → must be a caught WakeError, not a throw.
-          const filed = yield* Effect.either(
+          const filed = yield* Effect.result(
             store.appendNextActions(
               [{ goalSlug: null, action: "do the thing", priority: 3 }],
               1_000,
@@ -128,9 +128,9 @@ describe.skipIf(NOT_BUN)("WakeLogStore.makeLayer (disk, un-bootstrapped workspac
       )
       // Reaching here at all proves the layer BUILT (the boot-crash bug is gone).
       expect(out.id).toBe(1)
-      expect(Either.isLeft(out.filed)).toBe(true)
-      if (Either.isLeft(out.filed)) {
-        expect(out.filed.left._tag).toBe("WakeError")
+      expect(Result.isFailure(out.filed)).toBe(true)
+      if (Result.isFailure(out.filed)) {
+        expect(out.filed.failure._tag).toBe("WakeError")
       }
     } finally {
       rmSync(root, { recursive: true, force: true })

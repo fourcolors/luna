@@ -246,11 +246,10 @@ describe("TaskList — Tier-1", () => {
         //   setStatus(ip)   → statusChanged(claimed→in_progress)
         //   complete()      → statusChanged(in_progress→completed) + completed
         // = 5 total
-        const earlyFiber = yield* Effect.fork(
+        const earlyFiber = yield* Effect.forkChild(
           tl.subscribe().pipe(
             Stream.take(5),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           ),
         )
         // Give the fiber a tick to attach.
@@ -264,11 +263,10 @@ describe("TaskList — Tier-1", () => {
         const earlyEvents = yield* earlyFiber.await
 
         // Late subscriber attached AFTER all events fire — must not see them.
-        const lateFiber = yield* Effect.fork(
+        const lateFiber = yield* Effect.forkChild(
           tl.subscribe().pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
             // Race against a short timeout; if no event arrives, return [].
             Effect.timeoutOption("50 millis"),
           ),

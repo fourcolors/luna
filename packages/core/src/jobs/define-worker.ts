@@ -94,7 +94,7 @@ export const buildWorker = <Ctx>(
   return (payload, jobCtx) =>
     spec.run(kind, payload, jobCtx).pipe(
       Effect.provide(ctx),
-      Effect.catchAll((e) =>
+      Effect.catch((e) =>
         e instanceof WorkerError
           ? Effect.fail(e)
           : Effect.fail(

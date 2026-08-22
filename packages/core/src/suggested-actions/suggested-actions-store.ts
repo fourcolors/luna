@@ -14,7 +14,7 @@
  * Layers mirror AlignmentStore: Memory (Ref) for tests, makeLayer(dbPath) over
  * bun:sqlite requiring Clock + LunaSqliteBootstrap.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -165,9 +165,7 @@ export interface SuggestedActionsStoreApi {
   ) => Effect.Effect<SuggestedActionRow | null, SuggestedActionsError>
 }
 
-export class SuggestedActionsStore extends Effect.Tag(
-  "luna/SuggestedActionsStore",
-)<SuggestedActionsStore, SuggestedActionsStoreApi>() {
+export class SuggestedActionsStore extends Context.Service<SuggestedActionsStore, SuggestedActionsStoreApi>()("luna/SuggestedActionsStore") {
   /** Ref-backed in-memory layer for tests. No SQLite. */
   static readonly Memory: Layer.Layer<SuggestedActionsStore, never, Clock> =
     Layer.effect(
@@ -309,7 +307,7 @@ export class SuggestedActionsStore extends Effect.Tag(
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<SuggestedActionsStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       SuggestedActionsStore,
       Effect.gen(function* () {
         // Pull the bootstrap marker BEFORE opening any Database so the

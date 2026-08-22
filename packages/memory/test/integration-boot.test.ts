@@ -61,7 +61,7 @@ describe.skipIf(!hasBunSqlite)(
           // Mirror the chat-server composition: AccountBroker.fromSql +
           // sqlite SessionStore + SqliteVectorBackend, all on :memory:. The
           // bug is that AccountBroker / SessionStore open `bun:sqlite`
-          // Databases inside their own Layer.scoped before the
+          // Databases inside their own Layer.effect before the
           // SqliteVectorBackend Layer gets a chance to call
           // setCustomSQLite() — so Vectorlite init fails.
           const brokerL = AccountBrokerLayer.fromSql({
@@ -85,7 +85,7 @@ describe.skipIf(!hasBunSqlite)(
           // opens before vectorL's initVectorlite() runs, exercising the
           // race the bootstrap fix is meant to eliminate.
           const baseEff = Effect.gen(function* () {
-            // Yield broker + session FIRST so their Layer.scoped gens
+            // Yield broker + session FIRST so their Layer.effect gens
             // fully evaluate (each opens a bun:sqlite Database) before
             // we ask for SqliteVectorBackend, which will then attempt
             // setCustomSQLite() too late.

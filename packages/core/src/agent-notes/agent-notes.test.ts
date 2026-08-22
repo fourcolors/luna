@@ -875,7 +875,7 @@ dSqlite("AgentNotesService (SQLite layer) — unparseable payload_json", () => {
         const svc = yield* AgentNotesService
         const circular: Record<string, unknown> = { a: 1 }
         circular["self"] = circular
-        return yield* Effect.either(
+        return yield* Effect.result(
           svc.record({
             sessionId: "sess-circular",
             kind: "progress",
@@ -887,9 +887,9 @@ dSqlite("AgentNotesService (SQLite layer) — unparseable payload_json", () => {
     )
 
     expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left._tag).toBe("NoteError")
-      expect(result.left.op).toBe("record")
+    if (result._tag === "Failure") {
+      expect(result.failure._tag).toBe("NoteError")
+      expect(result.failure.op).toBe("record")
     }
   })
 })

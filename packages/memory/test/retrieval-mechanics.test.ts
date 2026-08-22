@@ -184,14 +184,13 @@ describe.skipIf(!hasBunSqlite)("retrieval mechanics (stub embedder)", () => {
           const router = yield* MemoryRouterTag
           // Eagerly subscribe BEFORE the search so we don't miss the event.
           const stream = yield* obs.subscribeEvents
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             stream.pipe(
               Stream.filter((ev): ev is ObsEvent & { kind: "RetrievalCall" } =>
                 ev.kind === "RetrievalCall",
               ),
               Stream.take(1),
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
             ),
           )
           yield* router.put(

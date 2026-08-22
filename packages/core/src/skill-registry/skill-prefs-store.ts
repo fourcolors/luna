@@ -18,7 +18,7 @@
  * Mirrors agent-notes.ts SQLite idioms exactly: dynamic bun:sqlite import,
  * WAL pragmas, ensureSchemaVersions + applyMigration, close-on-scope.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -59,10 +59,7 @@ export interface SkillPrefsApi {
   readonly setEnabled: (id: string, enabled: boolean) => Effect.Effect<void>
 }
 
-export class SkillPrefsStore extends Effect.Tag("luna/SkillPrefsStore")<
-  SkillPrefsStore,
-  SkillPrefsApi
->() {
+export class SkillPrefsStore extends Context.Service<SkillPrefsStore, SkillPrefsApi>()("luna/SkillPrefsStore") {
   /** In-memory variant for tests — same semantics, no SQLite. */
   static readonly Memory: Layer.Layer<SkillPrefsStore> = Layer.effect(
     SkillPrefsStore,
@@ -92,7 +89,7 @@ export class SkillPrefsStore extends Effect.Tag("luna/SkillPrefsStore")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<SkillPrefsStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       SkillPrefsStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

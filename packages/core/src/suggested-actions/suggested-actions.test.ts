@@ -87,7 +87,7 @@ describe("SuggestedActions service", () => {
           yield* Effect.sleep("10 millis")
           yield* svc.propose(input())
           const chunk = yield* Fiber.join(fiber)
-          return Chunk.toReadonlyArray(chunk)
+          return chunk
         }),
       ),
     )

@@ -9,7 +9,7 @@
  *   - No async/await — fully Effect-native
  */
 
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { DuckDbService } from "../db/duckdb-service.js"
 import type {
   AnalyticsApi,
@@ -76,10 +76,7 @@ interface ToolCountRow {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export class AnalyticsService extends Effect.Tag("AnalyticsService")<
-  AnalyticsService,
-  AnalyticsApi
->() {
+export class AnalyticsService extends Context.Service<AnalyticsService, AnalyticsApi>()("AnalyticsService") {
   /**
    * Build an AnalyticsService Layer that requires DuckDbService.
    * @param _config reserved for future options (dbPath is provided via DuckDbService)
@@ -95,10 +92,10 @@ export class AnalyticsService extends Effect.Tag("AnalyticsService")<
         // Boot: ensure tables exist (idempotent)
         yield* db
           .migrate("analytics-sessions", 1, SESSIONS_DDL)
-          .pipe(Effect.catchAllCause(() => Effect.void))
+          .pipe(Effect.catchCause(() => Effect.void))
         yield* db
           .migrate("analytics-events", 1, EVENTS_DDL)
-          .pipe(Effect.catchAllCause(() => Effect.void))
+          .pipe(Effect.catchCause(() => Effect.void))
 
         // ── querySessionMetrics ───────────────────────────────────────────────
         const querySessionMetrics = (

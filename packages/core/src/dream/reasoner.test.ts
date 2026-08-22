@@ -12,7 +12,7 @@ describe("FakeReasoner", () => {
       Effect.gen(function* () {
         const r = yield* DreamReasoner
         return yield* r.reason({ sessions: [], memories: [] })
-      }).pipe(Effect.provide(FakeReasoner.of(ops))),
+      }).pipe(Effect.provideService(FakeReasoner, FakeReasoner.of(ops))),
     )
     expect(out).toEqual(ops)
   })

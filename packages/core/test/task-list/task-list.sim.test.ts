@@ -9,6 +9,7 @@
  *   4. PubSub backpressure / slow subscriber — slow subscriber does not
  *      block fast subscriber or writers.
  */
+import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
 import {
   Chunk,
@@ -50,11 +51,11 @@ describe("TaskList — Tier-2 simulation", () => {
           const fibers = yield* Effect.forEach(
             claimants,
             (name) =>
-              Effect.fork(
+              Effect.forkChild(
                 Effect.gen(function* () {
                   yield* Deferred.await(gate)
                   return yield* tl.claim(id, name).pipe(
-                    Effect.either,
+                    Effect.result,
                   )
                 }),
               ),
@@ -64,14 +65,14 @@ describe("TaskList — Tier-2 simulation", () => {
 
           const results = yield* Effect.forEach(fibers, (f) => Fiber.join(f))
 
-          const wins = results.filter((r) => r._tag === "Right")
-          const fails = results.filter((r) => r._tag === "Left")
+          const wins = results.filter((r) => r._tag === "Success")
+          const fails = results.filter((r) => r._tag === "Failure")
           const finalTask = yield* tl.get(id)
           return {
             wins: wins.length,
             fails: fails.length,
             failTags: fails.map((f) =>
-              f._tag === "Left" ? (f.left as { _tag: string })._tag : "?",
+              f._tag === "Failure" ? (f.failure as { _tag: string })._tag : "?",
             ),
             finalAssignee: finalTask?.assignee,
           }
@@ -99,11 +100,10 @@ describe("TaskList — Tier-2 simulation", () => {
           const expectedTotal = 12
 
           const collect = () =>
-            Effect.fork(
+            Effect.forkChild(
               tl.subscribe().pipe(
                 Stream.take(expectedTotal),
                 Stream.runCollect,
-                Effect.map(Chunk.toReadonlyArray),
               ),
             )
 
@@ -190,7 +190,6 @@ describe("TaskList — Tier-2 simulation", () => {
       const advancingClock = Layer.succeed(
         Clock,
         Clock.of({
-          _tag: "luna/Clock",
           nowMs: () =>
             Ref.get(ticker).pipe(
               Effect.tap(() => Ref.update(ticker, (n) => n + 1_000)),
@@ -257,7 +256,7 @@ describe("TaskList — Tier-2 simulation", () => {
           // Slow subscriber: maps each event through a small sleep so it
           // drains FAR slower than the fast one.
           const slowSeen = yield* Ref.make(0)
-          const slowFiber = yield* Effect.fork(
+          const slowFiber = yield* Effect.forkChild(
             tl.subscribe().pipe(
               Stream.take(N),
               Stream.mapEffect((ev) =>
@@ -268,16 +267,14 @@ describe("TaskList — Tier-2 simulation", () => {
                 }),
               ),
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
             ),
           )
 
           // Fast subscriber: drains as fast as possible.
-          const fastFiber = yield* Effect.fork(
+          const fastFiber = yield* Effect.forkChild(
             tl.subscribe().pipe(
               Stream.take(N),
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
             ),
           )
 

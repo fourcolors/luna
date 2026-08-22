@@ -7,7 +7,7 @@
  *   AgentNotesService.makeLayer(dbPath) — SQLite-backed Layer.
  *     Mirrors telemetry-store-sqlite.ts patterns exactly.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -61,10 +61,7 @@ interface BunStmt {
 
 // ── Service Tag ──────────────────────────────────────────────────────────────
 
-export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
-  AgentNotesService,
-  AgentNotesApi
->() {
+export class AgentNotesService extends Context.Service<AgentNotesService, AgentNotesApi>()("luna/AgentNotesService") {
   // ── Memory Layer ───────────────────────────────────────────────────────────
 
   /**
@@ -187,7 +184,7 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<AgentNotesService, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       AgentNotesService,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

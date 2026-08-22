@@ -27,7 +27,7 @@
  * Core stays SDK-free at runtime (§4): this module imports nothing from
  * `@anthropic-ai/claude-agent-sdk`.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { ValidationError } from "../errors.js"
 
 export type SkillCategory =
@@ -354,10 +354,7 @@ const make = (
     } satisfies SkillRegistryApi
   })
 
-export class SkillRegistry extends Effect.Tag("luna/SkillRegistry")<
-  SkillRegistry,
-  SkillRegistryApi
->() {
+export class SkillRegistry extends Context.Service<SkillRegistry, SkillRegistryApi>()("luna/SkillRegistry") {
   /** Configurable layer — seeds, disclosure mode, hydration, write-through. */
   static readonly layer = (
     options: SkillRegistryOptions = {},
@@ -385,6 +382,6 @@ export const registerScoped = (
     const reg = yield* SkillRegistry
     yield* reg.register(manifest)
     yield* Effect.addFinalizer(() =>
-      reg.unregister(manifest.id).pipe(Effect.catchAll(() => Effect.void)),
+      reg.unregister(manifest.id).pipe(Effect.catch(() => Effect.void)),
     )
   })

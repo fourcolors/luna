@@ -14,7 +14,7 @@
  *   - `idx_session_history_tool_name` covers filtered toolName lookups.
  *
  * Architecture:
- *   - `makeLayer(dbPath)` — Layer.scoped. Pulls `LunaSqliteBootstrap`
+ *   - `makeLayer(dbPath)` — Layer.effect. Pulls `LunaSqliteBootstrap`
  *     first (process-wide setCustomSQLite), opens DB, runs migrations via
  *     `ensureSchemaVersions + applyMigration`, registers `db.close`
  *     finalizer (LIFO §3.4 #4). Then prepares statements.
@@ -23,12 +23,12 @@
  * Invariants:
  *   §1         — no raw Promises at module boundaries; all API methods
  *                return Effect.Effect.
- *   §3.4 #4   — Layer.scoped + finalizer registered FIRST.
+ *   §3.4 #4   — Layer.effect + finalizer registered FIRST.
  *   §5.2       — per-component schema_versions ledger (Phase 25e), idempotent.
  *   §6         — ConfigError raised at boot if bun:sqlite unavailable.
  */
 
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -122,10 +122,7 @@ const randomUuid = (): string => crypto.randomUUID()
 
 // ── Service class ─────────────────────────────────────────────────────────────
 
-export class SessionHistoryService extends Effect.Tag("SessionHistoryService")<
-  SessionHistoryService,
-  SessionHistoryApi
->() {
+export class SessionHistoryService extends Context.Service<SessionHistoryService, SessionHistoryApi>()("SessionHistoryService") {
   /**
    * SQLite-backed Layer. `dbPath` may be `":memory:"` for ephemeral use.
    * Requires `Clock` and `LunaSqliteBootstrap` in the environment.
@@ -133,7 +130,7 @@ export class SessionHistoryService extends Effect.Tag("SessionHistoryService")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<SessionHistoryService, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       SessionHistoryService,
       Effect.gen(function* () {
         // Pull bootstrap marker BEFORE opening any Database so the

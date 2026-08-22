@@ -15,7 +15,7 @@
  * Future (deferred): Anthropic / OpenAI / fastembed-onnx Layers. Add only
  * when a real cost case appears.
  */
-import { Effect, Either, Layer, Schedule } from "effect"
+import { Context, Effect, Result, Layer, Schedule } from "effect"
 import { EmbedderError } from "../errors.js"
 
 export interface EmbedderApi {
@@ -33,10 +33,7 @@ export interface EmbedderApi {
   ) => Effect.Effect<Float32Array, EmbedderError>
 }
 
-export class EmbedderService extends Effect.Tag("luna/EmbedderService")<
-  EmbedderService,
-  EmbedderApi
->() {}
+export class EmbedderService extends Context.Service<EmbedderService, EmbedderApi>()("luna/EmbedderService") {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // StubLayer — deterministic, collision-resistant, zero I/O.
@@ -363,11 +360,11 @@ export const makeOllamaEmbedderLayer = (
 
       const probeOutcome = yield* singleProbe.pipe(
         Effect.retry(retrySchedule),
-        Effect.either,
+        Effect.result,
       )
 
-      if (Either.isLeft(probeOutcome)) {
-        const cause = probeOutcome.left
+      if (Result.isFailure(probeOutcome)) {
+        const cause = probeOutcome.failure
         if (degradeOnProbeFailure && knownDimension !== undefined) {
           console.error(
             `[embedder] DEGRADED MODE: ollama probe failed after ${attempts} attempts, ` +
@@ -382,7 +379,7 @@ export const makeOllamaEmbedderLayer = (
         )
       }
 
-      const probe = probeOutcome.right
+      const probe = probeOutcome.success
 
       // Deterministic config-error check - never retried, never degraded.
       // A declared dimension that doesn't match what the model actually

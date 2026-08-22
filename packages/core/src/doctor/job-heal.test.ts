@@ -43,7 +43,7 @@ describe("JobHealApi", () => {
             jobs,
             backups: new DoctorBackupStore({ rootDir: root }),
           })
-          const exit = yield* Effect.either(
+          const exit = yield* Effect.result(
             heal.patchPatient("j1", "no-such-backup", {
               payload: { max_turns: 15 },
             }),

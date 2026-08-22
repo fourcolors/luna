@@ -232,8 +232,8 @@ describe("readKeychainToken — live (darwin only, primary entry)", () => {
         expect(json).toContain("ConfigError")
         return
       }
-      expect(result.value.startsWith("ops_")).toBe(true)
-      expect(result.value.length).toBeGreaterThan(20)
+      expect(result.success.startsWith("ops_")).toBe(true)
+      expect(result.success.length).toBeGreaterThan(20)
     },
   )
 })

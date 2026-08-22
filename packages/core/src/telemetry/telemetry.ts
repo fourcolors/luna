@@ -5,7 +5,7 @@
  * tag key is the JSON-stringified sorted tag map. Pull-based snapshots
  * via `snapshot()`; no automatic emission into ObservabilityService.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import type {
   CounterSnapshot,
@@ -28,10 +28,7 @@ export function counterKey(name: string, tags: MetricTags): string {
   return `${name}\u0000${parts.join("\u0001")}`
 }
 
-export class TelemetryService extends Effect.Tag("TelemetryService")<
-  TelemetryService,
-  TelemetryApi
->() {
+export class TelemetryService extends Context.Service<TelemetryService, TelemetryApi>()("TelemetryService") {
   static makeLayer(_config?: TelemetryConfig): Layer.Layer<TelemetryService, never, Clock> {
     return Layer.effect(
       TelemetryService,

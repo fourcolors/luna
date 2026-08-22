@@ -83,14 +83,14 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
             }),
           )
         }),
-      ).pipe(Effect.provide(layer), Effect.either),
+      ).pipe(Effect.provide(layer), Effect.result),
     )
     expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect((result.left as { backend: string; op: string }).backend).toBe(
+    if (result._tag === "Failure") {
+      expect((result.failure as { backend: string; op: string }).backend).toBe(
         "router",
       )
-      expect((result.left as { op: string }).op).toBe("search")
+      expect((result.failure as { op: string }).op).toBe("search")
     }
   })
 
@@ -194,7 +194,7 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
     )
     const router = makeRouter([{ pattern: "*", backend: keyed }])
     const result = await Effect.runPromise(
-      Stream.runCollect(router.search({ queryText: "x" })).pipe(Effect.either),
+      Stream.runCollect(router.search({ queryText: "x" })).pipe(Effect.result),
     )
     expect(result._tag).toBe("Left")
   })

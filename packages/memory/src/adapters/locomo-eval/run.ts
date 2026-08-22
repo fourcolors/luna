@@ -499,7 +499,7 @@ async function main(): Promise<void> {
               },
               catch: (cause) => cause,
             }).pipe(
-              Effect.catchAll((cause) => {
+              Effect.catch((cause) => {
                 if (cause instanceof LocomoHardStopError) {
                   hardStop.current = { reason: cause.reason, message: cause.message }
                   console.error(`[locomo-eval] HARD STOP (${cause.reason}): ${cause.message}`)

@@ -21,7 +21,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { makeSessionStoreSqlite } from "./session-store-sqlite.js"
-import { SessionStore } from "./session-store.js"
+import { SessionStore, type SessionStoreApi } from "./session-store.js"
 
 // ── Bootstrap stub ───────────────────────────────────────────────────────────
 // The SQLite layer requires LunaSqliteBootstrap (the vectorlite marker).
@@ -43,7 +43,7 @@ const makeTmp = () => {
 
 /** Append N frames to a session and return the written messages. */
 const appendFrames = (
-  store: SessionStore["Type"],
+  store: SessionStoreApi,
   sessionId: string,
   n: number,
 ) =>
@@ -291,7 +291,7 @@ describe("SessionStore SQLite restart-fidelity", () => {
   // sessionGetMeta.get) were outside the try/catch, so SQLITE_BUSY / SQLITE_IOERR
   // from any of those reads would propagate as a raw JS throw through
   // Effect.suspend — which becomes a defect (die), not a typed failure.  A defect
-  // escapes Effect.catchAll in adapter.ts's onMirrorError handler and can kill the
+  // escapes Effect.catch in adapter.ts's onMirrorError handler and can kill the
   // live streaming fiber.  After the fix the outer try/catch covers all reads.
   //
   // We exercise two concrete SQLite-level error paths:

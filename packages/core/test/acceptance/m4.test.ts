@@ -18,7 +18,7 @@
  *
  * Invariants honored:
  *   §16 (eager subscribe): `ui.subscribe`/`obs.subscribeEvents` always
- *     followed by `Effect.fork(...Stream.take(N).runCollect)` then
+ *     followed by `Effect.forkChild(...Stream.take(N).runCollect)` then
  *     `Effect.sleep("10 millis")` BEFORE emitting.
  *   §3.4 #1 (no cross-Scope refs): every fiber is `forkScoped`/
  *     `forkDaemon` inside the test's `Effect.scoped` boundary.
@@ -159,11 +159,10 @@ describe("F1 — Gateway→Harness→Cost→UI", () => {
 
           // Eager UI subscription (§16) BEFORE any emit.
           const uiStream = yield* ui.subscribe
-          const uiFiber = yield* Effect.fork(
+          const uiFiber = yield* Effect.forkChild(
             uiStream.pipe(
               Stream.take(2), // expect ToolCall + CostAccrued
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
             ),
           )
           yield* Effect.sleep(Duration.millis(20))
@@ -202,7 +201,7 @@ describe("F1 — Gateway→Harness→Cost→UI", () => {
 
           // Run gateway in background.
           yield* Effect.forkScoped(
-            gateway.start.pipe(Effect.catchAllCause(() => Effect.void)),
+            gateway.start.pipe(Effect.catchCause(() => Effect.void)),
           )
 
           // Inject the message.
@@ -271,11 +270,10 @@ describe("F1 — Gateway→Harness→Cost→UI", () => {
             const netsec = yield* NetSecClient
 
             const uiStream = yield* ui.subscribe
-            const uiFiber = yield* Effect.fork(
+            const uiFiber = yield* Effect.forkChild(
               uiStream.pipe(
                 Stream.take(1),
                 Stream.runCollect,
-                Effect.map(Chunk.toReadonlyArray),
               ),
             )
             yield* Effect.sleep(Duration.millis(20))

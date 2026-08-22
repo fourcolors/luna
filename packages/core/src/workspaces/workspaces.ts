@@ -14,7 +14,7 @@
  * by code that actually operates inside the workspace, not by the
  * registry.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -58,9 +58,7 @@ interface BunStmt {
 
 // ── Service Tag ──────────────────────────────────────────────────────────────
 
-export class WorkspaceRegistryService extends Effect.Tag(
-  "luna/WorkspaceRegistryService",
-)<WorkspaceRegistryService, WorkspaceRegistryApi>() {
+export class WorkspaceRegistryService extends Context.Service<WorkspaceRegistryService, WorkspaceRegistryApi>()("luna/WorkspaceRegistryService") {
   // ── Memory Layer ───────────────────────────────────────────────────────────
 
   /**
@@ -184,7 +182,7 @@ export class WorkspaceRegistryService extends Effect.Tag(
     ConfigError,
     Clock | LunaSqliteBootstrap
   > {
-    return Layer.scoped(
+    return Layer.effect(
       WorkspaceRegistryService,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

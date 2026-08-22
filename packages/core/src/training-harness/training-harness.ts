@@ -5,7 +5,7 @@
  * stub) and produces Score records. Layer.effect — no Scope-attached
  * resources beyond what the Runner itself owns.
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
 import {
   exactMatchScore,
@@ -16,9 +16,7 @@ import {
   type TrainingHarnessConfig,
 } from "./types.js"
 
-export class TrainingHarness extends Effect.Tag(
-  "luna/TrainingHarness",
-)<TrainingHarness, TrainingHarnessApi>() {
+export class TrainingHarness extends Context.Service<TrainingHarness, TrainingHarnessApi>()("luna/TrainingHarness") {
   /**
    * Construct a Layer that provides TrainingHarness using the given
    * Runner. The Runner is treated as an externally-managed resource.

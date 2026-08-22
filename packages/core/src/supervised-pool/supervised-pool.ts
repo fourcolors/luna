@@ -33,6 +33,7 @@ import {
   Ref,
   Stream,
 } from "effect"
+import * as Semaphore from "effect/Semaphore"
 import type * as Scope from "effect/Scope"
 import type {
   PoolJob,
@@ -75,12 +76,12 @@ export const makeSupervisedPool = (
 
     // Capacity permit. Effect v3 Semaphore has no sync `available`, so we
     // maintain a Ref shadow for policy decisions.
-    const slots = yield* Effect.makeSemaphore(capacity)
+    const slots = yield* Semaphore.make(capacity)
     const inFlightCount = yield* Ref.make(0)
 
     // Serializes drop-policy decisions so "read size → evict → offer" is
     // atomic w.r.t. other concurrent submits.
-    const submitMutex = yield* Effect.makeSemaphore(1)
+    const submitMutex = yield* Semaphore.make(1)
 
     // Shutdown flag — flipped by explicit `shutdown` and by Scope close.
     // Late submits after either path return `rejected-shutdown`.
@@ -166,7 +167,7 @@ export const makeSupervisedPool = (
               } satisfies SubmitOutcome
             }
             // drop-oldest: interrupt oldest. Its onExit releases the slot
-            // AND surfaces Exit.isInterrupted via the results Stream.
+            // AND surfaces Exit.hasInterrupts via the results Stream.
             const xs = yield* Ref.get(running)
             if (xs.length === 0) {
               // Defensive fallback: counter says full but no entries.
