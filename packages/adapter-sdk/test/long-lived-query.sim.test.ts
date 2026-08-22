@@ -154,7 +154,7 @@ describe("SDKAdapter long-lived Query simulation (Tier-2 architecture proof)", (
               yield* Queue.offer(inbox, userMsg(`turn-${i}`))
               yield* Effect.sleep("10 millis")
             }
-            yield* Queue.shutdown(inbox)
+            yield* Queue.end(inbox)
           })
 
           yield* Effect.all([consumer, producer], { concurrency: 2 })
@@ -228,7 +228,7 @@ describe("SDKAdapter long-lived Query simulation (Tier-2 architecture proof)", (
             yield* Effect.sleep("300 millis")
             yield* Queue.offer(inbox, userMsg("second"))
             yield* Effect.sleep("50 millis")
-            yield* Queue.shutdown(inbox)
+            yield* Queue.end(inbox)
           })
 
           const [collected] = yield* Effect.all([consumer, producer], {
@@ -283,7 +283,7 @@ describe("SDKAdapter long-lived Query simulation (Tier-2 architecture proof)", (
             yield* Effect.sleep("200 millis")
             yield* Queue.offer(inbox, userMsg("second"))
             yield* Effect.sleep("200 millis")
-            yield* Queue.shutdown(inbox)
+            yield* Queue.end(inbox)
           })
 
           const [collected] = yield* Effect.all([consumer, producer], {

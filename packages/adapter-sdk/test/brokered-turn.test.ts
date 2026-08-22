@@ -118,7 +118,7 @@ const runTurn = (model: string) =>
       baseOptions: { maxTurns: 1 },
       timeoutMs: 5_000,
       errors: ERRORS,
-    }).pipe(Effect.either)
+    }).pipe(Effect.result)
     const accounts = yield* broker._inspect()
     return { text, accounts }
   })
@@ -143,10 +143,10 @@ describe("runBrokeredReasonerTurn — structured output passthrough", () => {
           Effect.provide(brokerWith()),
         ),
       )
-      expect(out.text._tag).toBe("Right")
-      if (out.text._tag === "Right") {
-        expect(out.text.right.structuredOutput).toEqual(structured)
-        expect(out.text.right.text).toBe(JSON.stringify(structured))
+      expect(out.text._tag).toBe("Success")
+      if (out.text._tag === "Success") {
+        expect(out.text.success.structuredOutput).toEqual(structured)
+        expect(out.text.success.text).toBe(JSON.stringify(structured))
       }
     } finally {
       delete process.env[GOOGLE_TOK_ENV]
@@ -162,10 +162,10 @@ describe("runBrokeredReasonerTurn — structured output passthrough", () => {
           Effect.provide(brokerWith()),
         ),
       )
-      expect(out.text._tag).toBe("Right")
-      if (out.text._tag === "Right") {
-        expect(out.text.right.text).toBe("plain text")
-        expect(out.text.right.structuredOutput).toBeUndefined()
+      expect(out.text._tag).toBe("Success")
+      if (out.text._tag === "Success") {
+        expect(out.text.success.text).toBe("plain text")
+        expect(out.text.success.structuredOutput).toBeUndefined()
       }
     } finally {
       delete process.env[GOOGLE_TOK_ENV]
@@ -184,7 +184,7 @@ describe("runBrokeredReasonerTurn — spend metering (B4 parity)", () => {
           Effect.provide(brokerWith(0.1)),
         ),
       )
-      expect(out.text._tag).toBe("Right")
+      expect(out.text._tag).toBe("Success")
       const g1 = out.accounts.find((a) => a.id === "g1")
       // 1M input tokens at gemini-2.5-flash's $0.30/M.
       expect(g1?.usage?.spentUsd).toBeCloseTo(0.3, 5)
@@ -212,7 +212,7 @@ describe("runBrokeredReasonerTurn — spend metering (B4 parity)", () => {
           Effect.provide(brokerWith()),
         ),
       )
-      expect(out.text._tag).toBe("Right")
+      expect(out.text._tag).toBe("Success")
       const g1 = out.accounts.find((a) => a.id === "g1")
       // 1M input tokens at the REAL model's $1.50/M — not the floor's $0.30.
       expect(g1?.usage?.spentUsd).toBeCloseTo(1.5, 5)
@@ -237,7 +237,7 @@ describe("runBrokeredReasonerTurn — spend metering (B4 parity)", () => {
           Effect.provide(brokerWith()),
         ),
       )
-      expect(out.text._tag).toBe("Right")
+      expect(out.text._tag).toBe("Success")
       const g1 = out.accounts.find((a) => a.id === "g1")
       // Mixed-model turn → lane model's rate (0.30/M), not either real id.
       expect(g1?.usage?.spentUsd).toBeCloseTo(0.3, 5)
@@ -258,7 +258,7 @@ describe("runBrokeredReasonerTurn — throttle reporting (B9 parity)", () => {
         ),
       )
       // The turn still fails with the caller-mapped stream error …
-      expect(out.text._tag).toBe("Left")
+      expect(out.text._tag).toBe("Failure")
       // … but the sole account is NOT cooled (failoverPossible=false), so the
       // next tick can retry instead of self-inflicting an outage.
       const g1 = out.accounts.find((a) => a.id === "g1")
@@ -293,7 +293,7 @@ describe("runBrokeredReasonerTurn — throttle reporting with viable failover", 
           Effect.provide(broker2),
         ),
       )
-      expect(out.text._tag).toBe("Left")
+      expect(out.text._tag).toBe("Failure")
       // failoverPossible=true (g2 survives g1's exclusion) → the 429 cools g1
       // with the parsed retry-after, so the next tick advances the chain.
       const g1 = out.accounts.find((a) => a.id === "g1")

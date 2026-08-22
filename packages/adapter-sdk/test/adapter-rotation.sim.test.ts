@@ -673,7 +673,7 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
                 },
                 onAccountAcquired: (info) => acquiredCalls.push(info),
               })
-              yield* Stream.runDrain(out).pipe(Effect.either)
+              yield* Stream.runDrain(out).pipe(Effect.result)
             }),
           )
         }).pipe(Effect.provide(layer)),
@@ -751,7 +751,7 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
                 },
                 onAccountAcquired: (info) => acquiredCalls.push(info),
               })
-              yield* Stream.runDrain(out).pipe(Effect.either)
+              yield* Stream.runDrain(out).pipe(Effect.result)
             }),
           )
         }).pipe(Effect.provide(layer)),

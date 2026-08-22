@@ -50,6 +50,6 @@ export interface JobRunToolsProvider {
   readonly forRun: (run: JobRunIdentity) => JobRunToolsBinding
 }
 
-export const JobRunToolsProviderTag = Context.GenericTag<JobRunToolsProvider>(
+export const JobRunToolsProviderTag = Context.Service<JobRunToolsProvider>(
   "luna/JobRunToolsProvider",
 )

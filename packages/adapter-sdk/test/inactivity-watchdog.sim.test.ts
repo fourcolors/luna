@@ -463,7 +463,7 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
               yield* Effect.sleep("300 millis")
               yield* Queue.offer(inbox, userMsg("second"))
               yield* Effect.sleep("50 millis")
-              yield* Queue.shutdown(inbox)
+              yield* Queue.end(inbox)
             })
             const [c] = yield* Effect.all([consumer, producer], {
               concurrency: 2,

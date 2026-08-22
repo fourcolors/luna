@@ -19,6 +19,7 @@
  *      handle dropped from Ref.
  */
 import {
+  Context,
   Duration,
   Effect,
   Layer,
@@ -1084,7 +1085,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                 // streamed), but it must NOT be swallowed silently either —
                 // surface it to onMirrorError (default: Effect.logError).
                 .pipe(
-                  Effect.catchAll((cause) =>
+                  Effect.catch((cause) =>
                     (req.onMirrorError ?? defaultMirrorError)(msg, cause),
                   ),
                 ),
@@ -1111,10 +1112,9 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       } satisfies SDKAdapterService
     })
 
-export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
-  SDKAdapter,
-  SDKAdapterService
->() {
+export class SDKAdapter extends Context.Service<SDKAdapter, SDKAdapterService>()(
+  "luna/SDKAdapter",
+) {
   /**
    * Default layer — no broker integration. Preserves existing behavior:
    * the caller is responsible for providing `CLAUDE_CODE_OAUTH_TOKEN`
@@ -1124,7 +1124,7 @@ export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
     SDKAdapter,
     never,
     SDKClient | SessionStore
-  > = Layer.scoped(SDKAdapter, makeAdapter(null))
+  > = Layer.effect(SDKAdapter, makeAdapter(null))
 
   /**
    * WithBroker layer — adds AccountBroker as a required dependency and
@@ -1136,7 +1136,7 @@ export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
     SDKAdapter,
     never,
     SDKClient | SessionStore | AccountBroker
-  > = Layer.scoped(
+  > = Layer.effect(
     SDKAdapter,
     Effect.gen(function* () {
       const brokerApi = yield* AccountBroker

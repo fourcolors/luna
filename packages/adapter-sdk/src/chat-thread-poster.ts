@@ -48,6 +48,6 @@ export interface ChatThreadPoster {
   readonly post: (delivery: ChatThreadDelivery) => Effect.Effect<void, never>
 }
 
-export const ChatThreadPosterTag = Context.GenericTag<ChatThreadPoster>(
+export const ChatThreadPosterTag = Context.Service<ChatThreadPoster>(
   "luna/ChatThreadPoster",
 )

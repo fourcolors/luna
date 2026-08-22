@@ -10,7 +10,7 @@
  * implementation without needing a real OAuth token. `SDKClient.Default`
  * uses the real SDK; `SDKClient.fake(...)` supplies an in-memory stub.
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { query as realQuery } from "@anthropic-ai/claude-agent-sdk"
 import type {
   SDKMessage,
@@ -45,10 +45,9 @@ export interface SDKClientService {
   readonly query: (params: QueryParams) => Effect.Effect<Query, never>
 }
 
-export class SDKClient extends Effect.Tag("luna/SDKClient")<
-  SDKClient,
-  SDKClientService
->() {
+export class SDKClient extends Context.Service<SDKClient, SDKClientService>()(
+  "luna/SDKClient",
+) {
   /** Real SDK-backed layer. */
   static readonly Default: Layer.Layer<SDKClient> = Layer.succeed(SDKClient, {
     query: (params) => Effect.sync(() => realQuery(params)),

@@ -360,7 +360,7 @@ export const buildPromptWorker = (
           const deliverTo = parsed.deliver_to
           // .asVoid collapses the success channel too (notes.record resolves
           // an AgentNote, but WorkerResult.postCommit requires A=void) -
-          // catchAll alone would leave an `AgentNote | void` success type.
+          // catch alone would leave an `AgentNote | void` success type.
           postCommit = notes
             .record({
               sessionId: deliverTo.session_id ?? `prompt-worker:${ctx.jobId}`,
@@ -369,7 +369,7 @@ export const buildPromptWorker = (
               payload: { jobId: ctx.jobId, runId: ctx.runId },
             })
             .pipe(
-              Effect.catchAll((err) =>
+              Effect.catch((err) =>
                 Effect.logWarning(
                   `[luna/prompt-worker] obs_note delivery failed for job=${ctx.jobId}: ${err.message}`,
                 ),

@@ -309,7 +309,7 @@ describe("buildPromptWorker", () => {
     const sdkLayer = fakeClientWithText("Body.")
     // Simulates a poster that violates its own `never`-fails contract (a
     // runtime bug, not a typed error) - proves postCommit is still safe to
-    // wrap the way job-ticker.ts wraps it (catchAll + catchAllDefect), even
+    // wrap the way job-ticker.ts wraps it (catch + catchAllDefect), even
     // though prompt-worker.ts itself does not (and should not) swallow a
     // defect on the worker's behalf.
     const brokenPoster: ChatThreadPoster = {
@@ -330,7 +330,7 @@ describe("buildPromptWorker", () => {
 
       let loggedDefect: unknown
       yield* result.postCommit!.pipe(
-        Effect.catchAll(() => Effect.void),
+        Effect.catch(() => Effect.void),
         Effect.catchAllDefect((defect) =>
           Effect.sync(() => {
             loggedDefect = defect
@@ -371,14 +371,14 @@ describe("buildPromptWorker", () => {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildPromptWorker(sdk, notes)
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         worker({ /* no user_prompt */ }, ctx),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left).toBeInstanceOf(WorkerError)
-        expect(result.left.reason).toBe("bad_payload")
-        expect(result.left.kind).toBe("prompt")
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure).toBeInstanceOf(WorkerError)
+        expect(result.failure.reason).toBe("bad_payload")
+        expect(result.failure.kind).toBe("prompt")
       }
     })
     await Effect.runPromise(
@@ -392,13 +392,13 @@ describe("buildPromptWorker", () => {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildPromptWorker(sdk, notes)
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         worker({ user_prompt: "x" }, ctx),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left.reason).toBe("worker_failed")
-        expect(result.left.message).toMatch(/no type:result/)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("worker_failed")
+        expect(result.failure.message).toMatch(/no type:result/)
       }
     })
     await Effect.runPromise(
@@ -412,12 +412,12 @@ describe("buildPromptWorker", () => {
       const sdk = yield* SDKClient
       const notes = yield* AgentNotesService
       const worker = buildPromptWorker(sdk, notes)
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         worker({ user_prompt: "x" }, ctx),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left.reason).toBe("worker_failed")
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("worker_failed")
       }
     })
     await Effect.runPromise(
@@ -447,14 +447,14 @@ describe("buildPromptWorker", () => {
         const sdk = yield* SDKClient
         const notes = yield* AgentNotesService
         const worker = buildPromptWorker(sdk, notes)
-        const result = yield* Effect.either(
+        const result = yield* Effect.result(
           worker({ user_prompt: "hang", timeout_ms: 50 }, ctx),
         )
-        expect(result._tag).toBe("Left")
-        if (result._tag === "Left") {
-          expect(result.left).toBeInstanceOf(WorkerError)
-          expect(result.left.reason).toBe("worker_failed")
-          expect(result.left.message).toMatch(/timed out/)
+        expect(result._tag).toBe("Failure")
+        if (result._tag === "Failure") {
+          expect(result.failure).toBeInstanceOf(WorkerError)
+          expect(result.failure.reason).toBe("worker_failed")
+          expect(result.failure.message).toMatch(/timed out/)
         }
         expect(captured?.signal.aborted).toBe(true)
       })

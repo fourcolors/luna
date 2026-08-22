@@ -222,14 +222,14 @@ export function runBoundedQuery(
       Effect.timeoutOption(Duration.millis(timeoutMs)),
       // Covers an OUTER interruption (e.g. the ticker scope is torn down).
       Effect.onInterrupt(() => Effect.sync(() => abortQuietly(abort))),
-      Effect.either,
+      Effect.result,
     )
 
-    if (outcome._tag === "Left") {
+    if (outcome._tag === "Failure") {
       abortQuietly(abort)
-      return { _tag: "error", cause: outcome.left } satisfies BoundedQueryOutcome
+      return { _tag: "error", cause: outcome.failure } satisfies BoundedQueryOutcome
     }
-    const opt = outcome.right // Option<{text, usage?} | null>
+    const opt = outcome.success // Option<{text, usage?} | null>
     if (Option.isNone(opt)) {
       abortQuietly(abort)
       return { _tag: "timeout", timeoutMs } satisfies BoundedQueryOutcome
