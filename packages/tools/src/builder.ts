@@ -93,7 +93,7 @@ export const defineTool = <Schema extends AnyZodRawShape>(
       }
       // MCP cancelled the request - fiber was interrupted via AbortSignal.
       // Surface a clear cancelled result rather than a generic failure string.
-      if (Cause.isInterruptedOnly(exit.cause)) {
+      if (Cause.hasInterruptsOnly(exit.cause)) {
         return {
           isError: true,
           content: [
@@ -105,9 +105,10 @@ export const defineTool = <Schema extends AnyZodRawShape>(
         }
       }
       // Failure: render ToolError (and any defects) as an MCP error result.
+      const maybeError = Cause.findErrorOption(exit.cause)
       const message =
-        exit.cause._tag === "Fail" && exit.cause.error instanceof ToolError
-          ? `${exit.cause.error.tool}.${exit.cause.error.op}: ${String(exit.cause.error.cause)}`
+        maybeError._tag === "Some" && maybeError.value instanceof ToolError
+          ? `${maybeError.value.tool}.${maybeError.value.op}: ${String(maybeError.value.cause)}`
           : `tool "${spec.name}" failed: ${String(exit.cause)}`
       return {
         isError: true,

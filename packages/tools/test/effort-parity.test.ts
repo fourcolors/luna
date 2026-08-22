@@ -16,7 +16,14 @@
  * server's. Never "fix" it by editing the expectation.
  */
 import { describe, expect, it } from "vitest"
-import { EFFORT_LEVELS, ULTRACODE, isEffortOption as isEffortOptionServer } from "@luna/chat-service"
+// Import effort leaf directly — the `@luna/chat-service` barrel still loads
+// Context.GenericTag (chat-service layer not yet migrated). Effort module is
+// Tag-free and is the actual source of truth this parity test pins against.
+import {
+  EFFORT_LEVELS,
+  ULTRACODE,
+  isEffortOption as isEffortOptionServer,
+} from "../../chat-service/src/effort.js"
 import { EFFORT_OPTIONS, isEffortOption } from "../src/protocol-descriptor.js"
 
 describe("effort vocabulary parity: @luna/tools leaf vs @luna/chat-service", () => {

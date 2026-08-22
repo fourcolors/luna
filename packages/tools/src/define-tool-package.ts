@@ -17,7 +17,7 @@
  * thread-tools' fork-child tagging — keep their own closures for those two
  * hooks; this factory only removes the boilerplate shared by all ten
  * packages, not the bespoke parts. Wrapping the result in a package's own
- * `Effect.Tag` service class and `Layer` is unchanged.
+ * `Context.Service` service class and `Layer` is unchanged.
  */
 import { makeSdkMcpServer } from "./builder.js"
 import type {

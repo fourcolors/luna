@@ -95,7 +95,7 @@ describe("composeInterceptors", () => {
     const track = (label: string, inner: ToolInterceptor): ToolInterceptor =>
       (n, i) =>
         Effect.sync(() => calls.push(label)).pipe(
-          Effect.zipRight(inner(n, i)),
+          Effect.andThen(inner(n, i)),
         )
 
     const fn = composeInterceptors([
