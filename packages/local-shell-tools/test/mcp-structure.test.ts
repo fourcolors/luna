@@ -14,11 +14,9 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     const bridge = createLocalShellBridge()
 
     const config = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          return yield* LocalShellToolsService
-        }),
-      ).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
+      Effect.gen(function* () {
+        return yield* LocalShellToolsService
+      }).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
     )
 
     expect(config.serverName).toBe("local_shell")
@@ -37,11 +35,9 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     const bridge = createLocalShellBridge()
 
     const config = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          return yield* LocalShellToolsService
-        }),
-      ).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
+      Effect.gen(function* () {
+        return yield* LocalShellToolsService
+      }).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
     )
     const first = config.createSessionBinding()
     const second = config.createSessionBinding()
@@ -60,11 +56,9 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     const bridge = createLocalShellBridge()
 
     const config = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          return yield* LocalShellToolsService
-        }),
-      ).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
+      Effect.gen(function* () {
+        return yield* LocalShellToolsService
+      }).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
     )
     const first = config.createSessionBinding()
     const second = config.createSessionBinding()
