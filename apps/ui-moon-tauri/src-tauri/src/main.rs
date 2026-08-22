@@ -251,7 +251,9 @@ fn main() {
             // FIRST: if this is the first launch after an app update, purge the
             // WKWebView cache so the new embedded frontend loads (WKWebView
             // otherwise serves the tauri:// assets it cached under the old build).
-            // Runs before any panel webview opens on demand, so panels load fresh.
+            // Waits for the purge completion (bounded timeout) BEFORE any panel
+            // webview opens — otherwise the hub can load stale JS and never SYN
+            // jax-box (exp_moon_cache_race).
             lifecycle::clear_webview_cache_if_updated();
 
             // Restore open system panels from ~/.luna/layout.json (design doc

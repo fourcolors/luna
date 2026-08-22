@@ -112,11 +112,14 @@ version = "0.6"
 [target.'cfg(target_os = "macos")'.dependencies.objc2-core-foundation]
 version = "0.3.2"
 default-features = false
-features = ["CFCGTypes"]
+# CFRunLoop + CFString: clear_webview_disk_cache pumps the main run loop while
+# waiting for WKWebsiteDataStore's completion (MainRunLoopCallbackAggregator)
+# so a sync mpsc wait cannot deadlock the main thread. CFRunLoopMode = CFString.
+features = ["CFCGTypes", "CFRunLoop", "CFString"]
 
 # Always-on (NOT voice-gated): the webview cache-bust (clear_webview_disk_cache,
-# main.rs) needs NSString/NSSet/NSDate to build the WKWebsiteDataStore clear call
-# on every build, voice or not.
+# lifecycle.rs) needs NSString/NSSet/NSDate to build the WKWebsiteDataStore clear
+# call on every build, voice or not.
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
 version = "0.3.2"
 default-features = false
@@ -125,7 +128,7 @@ features = ["std", "NSString", "NSArray", "NSEnumerator", "NSObject", "NSSet", "
 # macOS WKWebView data store — WKWebsiteDataStore::removeDataOfTypes: clears the
 # webview DISK/MEMORY cache so an app update never serves stale embedded frontend
 # (WKWebView otherwise keeps caching tauri:// assets across versions). Used by
-# clear_webview_disk_cache in main.rs; preserves localStorage/IndexedDB.
+# clear_webview_disk_cache in lifecycle.rs; preserves localStorage/IndexedDB.
 [target.'cfg(target_os = "macos")'.dependencies.objc2-web-kit]
 version = "0.3.2"
 default-features = false
