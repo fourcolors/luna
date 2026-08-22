@@ -29,7 +29,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // (React 19 warns without it - see https://react.dev/warnings/react-dom-test-utils).
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
-import { mountChatChrome } from '../frontend-react/src/chat/chat-chrome-mount'
+import { mountChatChrome, unmountChatChrome } from '../frontend-react/src/chat/chat-chrome-mount'
 
 let container: HTMLDivElement | null = null
 let root: Root | null = null
@@ -45,6 +45,14 @@ function mount(el: React.ReactElement) {
 }
 
 afterEach(() => {
+  // mountChatChrome() creates its OWN roots on #bar-title-root /
+  // #collapse-moon-btn-root - separate from the `root` this file creates
+  // below. Unmounting only `root` left those alive, and React 19's scheduler
+  // then fired them after this file's environment was torn down, throwing
+  // `window is not defined` against the NEXT test file in the worker.
+  act(() => {
+    unmountChatChrome()
+  })
   if (root && container) {
     act(() => {
       root!.unmount()
