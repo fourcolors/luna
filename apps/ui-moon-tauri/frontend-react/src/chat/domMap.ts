@@ -19,7 +19,9 @@ export function createDom() {
       messageInput: document.getElementById('message-input'),
       chatMessages: document.getElementById('chat-messages'),
       fileInput: document.getElementById('file-input'),
-      attachBtn: document.getElementById('attach-btn'),
+      attachPlusBtn: document.getElementById('attach-plus-btn'),
+      attachMenu: document.getElementById('attach-menu'),
+      attachMenuAttachment: document.getElementById('attach-menu-attachment'),
       toggleSettings: document.getElementById('toggle-settings'),
       connectionStatus: document.getElementById('connection-status'),
       buildSha: document.getElementById('build-sha'),
@@ -89,9 +91,7 @@ export function createDom() {
       lunaQuip:           document.getElementById('luna-quip'),
       lunaSuggestion:     document.getElementById('luna-suggestion'),
       lunaSuggestionText: document.getElementById('luna-suggestion-text'),
-      // Voice (mic button only — the controls live in the settings.voice panel).
-      voiceMicBtn: document.getElementById('voice-mic-btn'),
-      // local-shell machine-access scope controls.
+      // local-shell machine-access scope controls (menu kept; composer toggle removed).
       scopeBtn: document.getElementById('scope-btn'),
       scopeMenu: document.getElementById('scope-menu'),
       scopeFullAccess: document.getElementById('scope-full-access'),

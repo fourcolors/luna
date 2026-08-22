@@ -555,7 +555,6 @@ export function bootChat() {
       messageInput: document.getElementById("message-input"),
       chatForm: document.getElementById("chat-form"),
       moonWrapper: document.getElementById("moon-wrapper"),
-      voiceMicBtn: document.getElementById("voice-mic-btn"),
     },
     State: getChatHost()?.state() as never,
     WebSocketEngine: {

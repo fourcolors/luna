@@ -409,11 +409,12 @@ export function installWiring(ctx: WiringCtx) {
    * VoiceEngine — webview half of the local voice pipeline (VOICE.md).
    *
    * Owns: the availability probe (degrades silently on an older Rust core),
-   * persisted settings (localStorage) + their boot re-apply, the mic button,
+   * persisted settings (localStorage) + boot force-off (no hands-free re-arm),
    * the moon's data-voice-state visuals, the transcript → send-path rule,
-   * and the assistant-delta → sentence → speak_text pipeline. Every Tauri
-   * surface is guarded (window.__TAURI__ && …) so jsdom and plain-browser
-   * dev keep working with voice simply unavailable.
+   * and the assistant-delta → sentence → speak_text pipeline. Composer mic
+   * chrome is gone; Settings → Voice owns mode toggles. Every Tauri surface
+   * is guarded so jsdom and plain-browser dev keep working with voice simply
+   * unavailable.
    */
   // VoiceEngine arrives through ctx.engines now (S20c); its chat.html forward
   // declaration travelled inside this span and is no longer needed here.
@@ -421,8 +422,8 @@ export function installWiring(ctx: WiringCtx) {
   // ── INITIALIZATION & BINDINGS ────────────────────────────────────────────
   // =========================================================================
 
-  // Local-shell machine-access controls (computer-icon button in the composer
-  // + its popover).
+  // Local-shell machine-access controls. Composer no longer shows #scope-btn;
+  // the menu + full-access row stay for LocalShell / capability paths.
   // (LocalShell.refreshPlatform() moved to the construction site in
   // main-chat.tsx - stack23 S19h. A classic-top-level call cannot see a
   // module-published global, and the platform string is only read when the
@@ -447,6 +448,58 @@ export function installWiring(ctx: WiringCtx) {
     if (DOM.scopeMenu.contains(e.target) || (DOM.scopeBtn && DOM.scopeBtn.contains(e.target))) return;
     LocalShell.openMenu(false);
   });
+
+  function openAttachMenu(open) {
+    if (!DOM.attachMenu) return;
+    DOM.attachMenu.classList.toggle('open', open);
+    DOM.attachMenu.setAttribute('aria-hidden', String(!open));
+    if (DOM.attachPlusBtn) DOM.attachPlusBtn.setAttribute('aria-expanded', String(!!open));
+  }
+
+  // ---- Attachment composer wiring (Grok-style +: menu → Attachment → picker) ----
+  // (The hub's suppressBlurClose guard around the native picker is gone:
+  // this window has no close-on-blur behavior to trip.)
+  if (DOM.attachPlusBtn) {
+    DOM.attachPlusBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !(DOM.attachMenu && DOM.attachMenu.classList.contains('open'));
+      if (willOpen) {
+        if (typeof SlashMenu !== 'undefined' && SlashMenu) SlashMenu.close();
+        if (typeof ComposerConfig !== 'undefined' && ComposerConfig && ComposerConfig.anyMenuOpen()) {
+          ComposerConfig.closeAllMenus();
+        }
+        LocalShell.openMenu(false);
+      }
+      openAttachMenu(willOpen);
+    });
+  }
+  if (DOM.attachMenuAttachment) {
+    DOM.attachMenuAttachment.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAttachMenu(false);
+      if (DOM.fileInput) DOM.fileInput.click();
+    });
+    DOM.attachMenuAttachment.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openAttachMenu(false);
+        if (DOM.fileInput) DOM.fileInput.click();
+      }
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (!DOM.attachMenu || !DOM.attachMenu.classList.contains('open')) return;
+    if (DOM.attachMenu.contains(e.target)) return;
+    if (DOM.attachPlusBtn && DOM.attachPlusBtn.contains(e.target)) return;
+    openAttachMenu(false);
+  });
+  if (DOM.fileInput) {
+    DOM.fileInput.addEventListener('change', (e) => {
+      const files = e.target.files;
+      if (files && files.length) Attachments.addFiles(files);
+      e.target.value = '';            // allow re-picking the same file
+    });
+  }
 
   DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
   /**
@@ -549,18 +602,6 @@ export function installWiring(ctx: WiringCtx) {
     }
   });
 
-  // ---- Attachment composer wiring ----
-  // (The hub's suppressBlurClose guard around the native picker is gone:
-  // this window has no close-on-blur behavior to trip.)
-  DOM.attachBtn.addEventListener('click', () => {
-    DOM.fileInput.click();
-  });
-  DOM.fileInput.addEventListener('change', (e) => {
-    const files = e.target.files;
-    if (files && files.length) Attachments.addFiles(files);
-    e.target.value = '';            // allow re-picking the same file
-  });
-
   // Paste an image straight into the composer (e.g. a screenshot).
   DOM.messageInput.addEventListener('paste', (e) => {
     queueMicrotask(() => ChatEngine.autoGrowMessageInput());
@@ -612,16 +653,24 @@ export function installWiring(ctx: WiringCtx) {
     });
   }
 
-  // Esc — layered dismissal: an OPEN composer-config popover consumes the
-  // key (close it, done); otherwise Esc stops the spoken reply as before
+  // Esc — layered dismissal: attach / slash / composer-config popovers
+  // consume the key first; otherwise Esc stops the spoken reply as before
   // (unconditional + idempotent — it must work even when the pipeline died
   // and no 'speaking' state will be emitted again). A second Esc after
   // closing a menu still reaches VoiceEngine.
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (DOM.attachMenu && DOM.attachMenu.classList.contains('open')) {
+      openAttachMenu(false);
+      return;
+    }
     if (SlashMenu.isOpen()) { SlashMenu.close(); return; }
     if (ComposerConfig.anyMenuOpen()) {
       ComposerConfig.closeAllMenus();
+      return;
+    }
+    if (DOM.scopeMenu && DOM.scopeMenu.classList.contains('open')) {
+      LocalShell.openMenu(false);
       return;
     }
     VoiceEngine.handleEscape();

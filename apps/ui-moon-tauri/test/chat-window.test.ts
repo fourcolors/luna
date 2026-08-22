@@ -3309,25 +3309,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ])
     })
 
-    it('Scenario: mic click toggles hands-free listening WITHOUT rewriting the persisted preference', () => {
-      const { invoke } = voiceOn()
-      const mic = document.getElementById('voice-mic-btn')!
-      mic.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })   // pause
-      mic.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })  // resume
-      expect(localStorage.getItem('luna_voice_mode')).toBeNull()               // runtime-only
-    })
-
-    it('Scenario: press-and-hold on the mic is push-to-talk in ptt mode', () => {
-      const { invoke, V } = voiceOn()
-      V.mode = 'ptt'
-      const mic = document.getElementById('voice-mic-btn')!
-      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-      expect(called(invoke, 'voice_ptt_down')).toBe(true)
-      expect(called(invoke, 'voice_ptt_up')).toBe(false)
-      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
-      expect(called(invoke, 'voice_ptt_up')).toBe(true)
+    it('Scenario: composer has no microphone button (voice lives in Settings → Voice)', () => {
+      expect(document.getElementById('voice-mic-btn')).toBeNull()
     })
 
     it('Scenario: voice-error surfaces a non-blocking transcript banner', () => {
@@ -3342,15 +3325,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   // Behavioral Feature: Voice — availability probe + boot wiring (chat window).
   // Voice events arrive WINDOW-TARGETED here (getCurrentWindow().listen), not
   // via the global event API — they are broadcast app-wide by the Rust core.
+  // Composer mic is gone: boot/hub force luna_voice_mode off (no hands-free re-arm).
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Voice availability + boot wiring (chat window)', () => {
     const M = () => (window as any).__MoonInternals
 
-    it('Scenario: without a Tauri voice backend the window degrades (mic hidden, engine unavailable)', () => {
+    it('Scenario: without a Tauri voice backend the window degrades (no mic, engine unavailable)', () => {
       // The shared beforeEach has no __TAURI__.core: VoiceEngine.init() lands
       // in "unavailable" synchronously at boot.
       expect(M().VoiceEngine.available).toBe(false)
-      expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
+      expect(document.getElementById('voice-mic-btn')).toBeNull()
     })
 
     it('Scenario: a Rust core whose voice_status REJECTS (older build) degrades silently, no throw', async () => {
@@ -3358,12 +3342,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as any).__TAURI__.core = { invoke }
       await M().VoiceEngine.init()
       expect(M().VoiceEngine.available).toBe(false)
-      expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
+      expect(document.getElementById('voice-mic-btn')).toBeNull()
       // Only the probe was attempted — no follow-up voice commands to spam.
       expect(invoke.mock.calls.map((c) => c[0]).filter(c => c !== 'list_widget_windows')).toEqual(['voice_status'])
     })
 
-    it('Scenario: with a voice backend, boot probes status, subscribes WINDOW-TARGETED events, re-applies persisted settings', async () => {
+    it('Scenario: with a voice backend, boot probes status, forces mode off even if persisted auto, subscribes WINDOW-TARGETED events', async () => {
       localStorage.setItem('luna_voice_mode', 'auto')
       localStorage.setItem('luna_voice_silence_hang_ms', '800')
       const invoke = vi.fn(async (cmd: string) => {
@@ -3375,23 +3359,24 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await M().VoiceEngine.init()
 
       expect(invoke).toHaveBeenCalledWith('voice_status')
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
       expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 800 })
+      expect(localStorage.getItem('luna_voice_mode')).toBe('off')
+      expect(M().VoiceEngine.mode).toBe('off')
       // Voice events ride getCurrentWindow().listen — window-targeted, no
       // model-progress here (that is the settings.voice panel's concern).
       expect(Object.keys(windowEventHandlers)).toEqual(expect.arrayContaining([
         'voice-state', 'voice-transcript', 'voice-error',
       ]))
       expect(windowEventHandlers['voice-model-progress']).toBeUndefined()
-      expect(document.getElementById('voice-mic-btn')!.hidden).toBe(false)
+      expect(document.getElementById('voice-mic-btn')).toBeNull()
 
-      // A captured voice-transcript event routes through the real send path.
-      // handleTranscript dispatches a form submit, so it needs the same
-      // connected-socket gate as ChatEngine.handleSubmit (see
-      // WebSocketEngine.isConnected's doc comment).
+      // A captured voice-transcript event routes through the real send path
+      // only when mode is live (Settings can still arm auto mid-session).
       setWs(M(), { readyState: WebSocket.OPEN, send: () => {} })
       const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.activeThreadId = 'th-boot'
+      M().VoiceEngine.mode = 'auto'
       M().VoiceEngine.micPaused = false
       windowEventHandlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -3399,65 +3384,32 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       }))
     })
 
-    it('Scenario: voice-state events drive the MIC visuals (no moon wrapper in this window)', () => {
+    it('Scenario: voice-state events still drive MoonFace (no composer mic)', () => {
       const V = M().VoiceEngine
-      const mic = document.getElementById('voice-mic-btn')!
+      const face = M().MoonFace
+      const setVoice = vi.spyOn(face, 'setVoice')
       V.onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
-      expect(mic.dataset.voiceState).toBe('listening')
+      expect(setVoice).toHaveBeenCalledWith('listening')
       V.onStateEvent({ state: 'speaking', mode: 'auto' })
-      expect(mic.dataset.voiceState).toBe('speaking')
+      expect(setVoice).toHaveBeenCalledWith('speaking')
       V.onStateEvent({ state: 'off', mode: 'off' })
-      expect(mic.dataset.voiceState).toBe('')
+      expect(setVoice).toHaveBeenCalledWith('')
     })
 
-    // Regression (finding: inverted first mic click): when Rust REFUSES a
-    // mode (model missing → VoiceStatus.mode 'off'), the engine must park
-    // the mic so the next click RESUMES (set_mode 'auto') instead of
-    // "pausing" a pipeline that was never live.
-    it('Scenario: a refused voice_set_mode parks the mic; the first mic click resumes', async () => {
-      const invoke = vi.fn(async (cmd: string) => {
-        if (cmd === 'voice_set_mode') {
-          return { state: 'off', mode: 'off', modelPresent: false, silenceHangMs: 600 }
-        }
-        return null
-      })
-      ;(window as any).__TAURI__.core = { invoke }
-      const V = M().VoiceEngine
-      V.available = true
-
-      V.setMode('auto')                          // user picked Hands-free, no model yet
-      await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
-      expect(V.micPaused).toBe(true)
-      expect(V.rustMode).toBe('off')
-
-      invoke.mockClear()
-      V.onMicClick()                             // first click must START voice…
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
-      expect(invoke).not.toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })  // …not "pause" it
-    })
-
-    // Task #59 ("voice button doesn't work at all"): this used to open the
-    // settings.voice panel window and leave voice off — from the composer
-    // that read as a dead button, since nothing in THIS window changed. A
-    // click while off now switches straight into hands-free mode.
-    it('Scenario: mic click while voice is OFF switches straight into hands-free mode', () => {
+    // Task #59 rewrite: mic removed; boot forces off even if Settings wrote auto.
+    it('Scenario: Task #59 — no #voice-mic-btn; luna_voice_mode is off after init even if previously auto', async () => {
+      expect(document.getElementById('voice-mic-btn')).toBeNull()
+      localStorage.setItem('luna_voice_mode', 'auto')
       const invoke = vi.fn(async (cmd: string) =>
-        cmd === 'voice_set_mode' ? { state: 'starting', mode: 'auto', modelPresent: true, silenceHangMs: 600 } : null)
+        cmd === 'voice_status' ? { state: 'off', mode: 'off', modelPresent: true } : null)
       ;(window as any).__TAURI__.core = { invoke }
-      const V = M().VoiceEngine
-      V.available = true
-      V.mode = 'off'
-      document.getElementById('voice-mic-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
-      expect(invoke.mock.calls.some((c: any[]) => c[0] === 'open_widget')).toBe(false)
-      expect(V.mode).toBe('auto')
-      expect(localStorage.getItem('luna_voice_mode')).toBe('auto')
+      await M().VoiceEngine.init()
+      expect(M().VoiceEngine.mode).toBe('off')
+      expect(localStorage.getItem('luna_voice_mode')).toBe('off')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
     })
 
-    // Task #59: voice must default OFF with no persisted preference — the
-    // dimmed mic ('voice-mode-off') is the only affordance before the first
-    // click, no separate hidden "on by default" state to trip over.
-    it('Scenario: with no persisted preference, voice boots OFF and the mic reflects it as dimmed', async () => {
+    it('Scenario: with no persisted preference, voice boots OFF', async () => {
       expect(localStorage.getItem('luna_voice_mode')).toBeNull()
       const invoke = vi.fn(async (cmd: string) =>
         cmd === 'voice_status' ? { state: 'off', mode: 'off', modelPresent: true } : null)
@@ -3465,34 +3417,65 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await M().VoiceEngine.init()
       expect(M().VoiceEngine.mode).toBe('off')
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
-      expect(document.getElementById('voice-mic-btn')!.classList.contains('voice-mode-off')).toBe(true)
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Composer chrome — no mic/scope; Grok-style + attach
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Composer chrome (mic/scope removed, + attach menu)', () => {
+    it('Scenario: no #voice-mic-btn and no #scope-btn in the DOM', () => {
+      expect(document.getElementById('voice-mic-btn')).toBeNull()
+      expect(document.getElementById('scope-btn')).toBeNull()
+    })
+
+    it('Scenario: + opens the attach menu and Attachment triggers the file input', () => {
+      const plus = document.getElementById('attach-plus-btn')!
+      const menu = document.getElementById('attach-menu')!
+      const item = document.getElementById('attach-menu-attachment')!
+      const fileInput = document.getElementById('file-input') as HTMLInputElement
+      expect(plus).not.toBeNull()
+      expect(plus.getAttribute('type')).toBe('button')
+      expect(menu.classList.contains('open')).toBe(false)
+
+      plus.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu.classList.contains('open')).toBe(true)
+      expect(plus.getAttribute('aria-expanded')).toBe('true')
+
+      const clickSpy = vi.spyOn(fileInput, 'click').mockImplementation(() => {})
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(clickSpy).toHaveBeenCalled()
+      expect(menu.classList.contains('open')).toBe(false)
+      clickSpy.mockRestore()
+    })
+
+    it('Scenario: Esc closes an open attach menu the same way other popovers close', () => {
+      const plus = document.getElementById('attach-plus-btn')!
+      const menu = document.getElementById('attach-menu')!
+      plus.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu.classList.contains('open')).toBe(true)
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      expect(menu.classList.contains('open')).toBe(false)
     })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Voice — hidden-attribute CSS overrides (regression)
+  // Mic chrome removed; keep the setting-item [hidden] override pin.
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Voice hidden-attribute CSS overrides', () => {
     // jsdom computes no layout, so the DOM-property assertions elsewhere
     // cannot catch this class of bug: the UA's `[hidden] {display:none}` is
     // NON-important, so ANY author `display:` rule on the same element wins
-    // by cascade — .close-btn{display:flex} kept the dead mic button visible
-    // and .setting-item{display:flex} kept the "Voice isn't available" note
-    // visible in every real (WebKit) build. Assert the !important overrides
-    // exist in the stylesheet source.
-    it('mic button: .mic-btn[hidden] forces display:none over .close-btn display:flex', () => {
-      expect(htmlContent).toMatch(/\.mic-btn\[hidden\]\s*\{\s*display:\s*none\s*!important/)
-    })
-
+    // by cascade — .setting-item{display:flex} kept the "Voice isn't available"
+    // note visible in every real (WebKit) build. Assert the !important override
+    // exists in the stylesheet source.
     it('settings rows: .setting-item[hidden] forces display:none over display:flex', () => {
       expect(htmlContent).toMatch(/\.setting-item\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
 
-    it('the mic button still carries the hidden attribute by default', () => {
-      // The override only matters because the element SHIPS hidden and is
-      // toggled via the property; keep that contract pinned. (The
-      // voice-unavailable note moved to the voice panel: test/panel-voice.test.ts.)
-      expect(htmlContent).toMatch(/id="voice-mic-btn"[^>]*hidden/)
+    it('the mic button is absent from chat.html (no #voice-mic-btn)', () => {
+      expect(htmlContent).not.toMatch(/id="voice-mic-btn"/)
     })
   })
 

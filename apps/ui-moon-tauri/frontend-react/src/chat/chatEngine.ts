@@ -449,9 +449,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
 
     setAvailable(av) {
       this.available = !!av;
-      // The mic button is the only voice control in this window — the
-      // mode segment / sliders / model row live in the settings.voice PANEL.
-      if (DOM.voiceMicBtn) DOM.voiceMicBtn.hidden = !this.available;
+      // Composer mic removed — availability is for spoken-reply / transcript
+      // paths only. Settings → Voice owns the hands-free UI.
     },
 
     applyStatus(s) {
@@ -484,40 +483,34 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     },
 
     // ── Settings (persisted; VOICE.md keys) ─────────────────────────────
+    // Boot/hub MUST NOT re-arm hands-free. Settings → Voice can still write
+    // luna_voice_mode=auto; the next boot forces off and persists that.
     loadSettings() {
       const m = localStorage.getItem('luna_voice_mode');
-      this.mode = (m === 'ptt' || m === 'auto') ? m : 'off';
+      if (m === 'ptt' || m === 'auto') {
+        try { localStorage.setItem('luna_voice_mode', 'off'); } catch (_) { /* quota */ }
+      }
+      this.mode = 'off';
       this.speakReplies = localStorage.getItem('luna_voice_speak_replies') !== '0';
       this.voiceId = localStorage.getItem('luna_voice_id') || '';
       const hang = parseInt(localStorage.getItem('luna_voice_silence_hang_ms') || '', 10);
       this.silenceHangMs = Number.isFinite(hang)
         ? Math.max(300, Math.min(1200, hang))
         : 600;
-      this.reflectSettings();
-    },
-
-    reflectSettings() {
-      // Only the mic reflects settings here (the controls live in the
-      // settings.voice panel); dim it while the persisted mode is off.
-      if (DOM.voiceMicBtn) DOM.voiceMicBtn.classList.toggle('voice-mode-off', this.mode === 'off');
     },
 
     // Rust can refuse a requested mode (a missing model forces off):
     // consume the returned VoiceStatus so the UI knows the EFFECTIVE mode.
-    // When the pipeline stayed off against an on-mode request, park the
-    // mic (micPaused) — that way the FIRST mic click resumes (set_mode
-    // 'auto', which either starts voice or re-surfaces the model-missing
-    // error) instead of "pausing" a pipeline that was never live.
     _applyModeResult(requested, st) {
       if (!st || typeof st.mode !== 'string') return;
       this.rustMode = st.mode;
       if (requested !== 'off' && st.mode === 'off') this.micPaused = true;
     },
 
-    // Re-apply persisted settings to the Rust core each session (VOICE.md).
+    // Re-apply to the Rust core each session — always off at boot.
     async applyPersisted() {
-      const st = await this.invoke('voice_set_mode', { mode: this.mode });
-      this._applyModeResult(this.mode, st);
+      const st = await this.invoke('voice_set_mode', { mode: 'off' });
+      this._applyModeResult('off', st);
       if (this.voiceId) await this.invoke('voice_set_voice', { id: this.voiceId });
       await this.invoke('voice_set_config', { silenceHangMs: this.silenceHangMs });
     },
@@ -527,7 +520,6 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       this.mode = m;
       this.micPaused = false;
       localStorage.setItem('luna_voice_mode', m);
-      this.reflectSettings();
       if (this.available) {
         this.invoke('voice_set_mode', { mode: m })
           .then((st) => this._applyModeResult(m, st));
@@ -535,67 +527,10 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (m === 'off') this.stopSpeaking();
     },
 
-    // ── UI wiring (mic button + settings controls) ──────────────────────
+    // Composer mic is gone — no UI bind. Settings → Voice owns mode toggles.
     bindUI() {
       if (this._uiBound) return;
       this._uiBound = true;
-      const mic = DOM.voiceMicBtn;
-      if (mic) {
-        mic.addEventListener('click', () => this.onMicClick());
-        // Press-and-hold = PTT (ptt mode only). pointerup is window-level
-        // so releasing outside the button still ends the capture window.
-        mic.addEventListener('pointerdown', (e) => {
-          if (this.available && this.mode === 'ptt') {
-            e.preventDefault();
-            this.pttDown();
-          }
-        });
-        window.addEventListener('pointerup', () => this.pttUp());
-        mic.addEventListener('pointercancel', () => this.pttUp());
-      }
-      // (Mode segment / speak-replies / voice picker / silence slider /
-      // model download wiring → settings.voice panel.)
-    },
-
-    onMicClick() {
-      if (!this.available) return;
-      if (this.mode === 'ptt') return;           // press-and-hold owns ptt
-      if (this.mode === 'off') {
-        // Task #59 ("voice button doesn't work at all"): a click used to
-        // just open the settings.voice panel window and leave voice off —
-        // from the composer the button LOOKED dead since nothing in this
-        // window changed. The whole point of a mic sitting next to send is
-        // "switch between voice mode and texting" in one click, so it now
-        // flips straight into hands-free (auto) mode here. Push-to-talk /
-        // voice-picker / silence-hang tuning stay reachable via the normal
-        // Settings → Voice navigation.
-        this.setMode('auto');
-        return;
-      }
-      // auto: toggle listening. Runtime-only pause — the persisted
-      // preference stays "auto" so the next launch re-arms hands-free.
-      // micPaused is also set when Rust REFUSED the mode (model missing),
-      // so the resume branch doubles as the retry path.
-      if (this.micPaused) {
-        this.micPaused = false;
-        this.invoke('voice_set_mode', { mode: 'auto' })
-          .then((st) => this._applyModeResult('auto', st));
-      } else {
-        this.micPaused = true;
-        this.invoke('voice_set_mode', { mode: 'off' });
-      }
-    },
-
-    pttDown() {
-      if (!this.available || this.mode !== 'ptt' || this._ptt) return;
-      this._ptt = true;
-      this.invoke('voice_ptt_down');
-    },
-
-    pttUp() {
-      if (!this._ptt) return;
-      this._ptt = false;
-      this.invoke('voice_ptt_up');
     },
 
     // ── Transcript → the EXACT existing send path ───────────────────────
@@ -604,9 +539,9 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     // Non-empty draft: append with a space, do NOT send (they were mid-edit).
     handleTranscript(text) {
       // Mode gate: a transcript landing AFTER the user turned voice off
-      // (mic-pause click, settings toggle) must never auto-send. The Rust
-      // side suppresses transcripts whose inference a Stop rode through,
-      // but an event already over the IPC bridge still arrives here.
+      // (settings toggle) must never auto-send. The Rust side suppresses
+      // transcripts whose inference a Stop rode through, but an event already
+      // over the IPC bridge still arrives here.
       if (this.mode === 'off' || this.micPaused) return;
       const t = String(text == null ? '' : text).trim();
       if (!t) return;
@@ -709,7 +644,6 @@ export function createChatEngine(ctx: ChatEngineCtx) {
           w.style.removeProperty('--voice-level');
         }
       }
-      if (DOM.voiceMicBtn) DOM.voiceMicBtn.dataset.voiceState = visual;
       MoonFace.setVoice(visual);   // wide eyes when listening, chatter when speaking
     },
 
