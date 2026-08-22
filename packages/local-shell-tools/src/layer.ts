@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { defineToolPackage } from "@luna/tools"
 import type { LocalShellBridge } from "@luna/ui-ws"
 import type {
@@ -20,9 +20,10 @@ export interface LocalShellToolsConfig extends LocalShellToolsSessionConfig {
   readonly createSessionBinding: () => LocalShellToolsSessionConfig
 }
 
-export class LocalShellToolsService extends Effect.Tag(
-  "luna/LocalShellToolsService",
-)<LocalShellToolsService, LocalShellToolsConfig>() {}
+export class LocalShellToolsService extends Context.Service<
+  LocalShellToolsService,
+  LocalShellToolsConfig
+>()("luna/LocalShellToolsService") {}
 
 export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
   "You have one local shell MCP server (`local_shell`) with tools " +
@@ -86,7 +87,7 @@ export const buildLocalShellMcpServer = (
 export const LocalShellToolsLayer = (
   opts: LocalShellToolsLayerOptions,
 ): Layer.Layer<LocalShellToolsService> =>
-  Layer.scoped(
+  Layer.effect(
     LocalShellToolsService,
     Effect.gen(function* () {
       const config = createLocalShellToolsConfig(opts.bridge)

@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { defineToolPackage } from "@luna/tools"
 import type { SecretRequestBridge } from "@luna/ui-ws"
 import type {
@@ -20,10 +20,10 @@ export interface SecretToolsConfig extends SecretToolsSessionConfig {
   readonly createSessionBinding: () => SecretToolsSessionConfig
 }
 
-export class SecretToolsService extends Effect.Tag("luna/SecretToolsService")<
+export class SecretToolsService extends Context.Service<
   SecretToolsService,
   SecretToolsConfig
->() {}
+>()("luna/SecretToolsService") {}
 
 export const SECRET_TOOLS_SYSTEM_PROMPT_ADDENDUM =
   "You have a secret-entry MCP server (`secret_tools`) with the tool " +
@@ -75,7 +75,7 @@ const createSecretToolsConfig = (
 export const SecretToolsLayer = (
   opts: SecretToolsLayerOptions,
 ): Layer.Layer<SecretToolsService> =>
-  Layer.scoped(
+  Layer.effect(
     SecretToolsService,
     Effect.gen(function* () {
       const config = createSecretToolsConfig(opts.bridge)
