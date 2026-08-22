@@ -51,14 +51,17 @@
  */
 import {
   Chunk,
+  Context,
   Duration,
   Effect,
   Exit,
+  Layer,
   Option,
   PubSub,
   Queue,
   Ref,
   Scope,
+  Semaphore,
   Stream,
 } from "effect"
 import {
@@ -308,10 +311,7 @@ const buildUserMessage = (
 /* Service                                                                    */
 /* -------------------------------------------------------------------------- */
 
-export class ChatService extends Effect.Service<ChatService>()(
-  "luna/ChatService",
-  {
-    scoped: Effect.gen(function* () {
+const makeChatService = Effect.gen(function* () {
       const store = yield* SessionStore
       const adapter = yield* SDKAdapter
       const clock = yield* CoreClock
@@ -389,7 +389,7 @@ export class ChatService extends Effect.Service<ChatService>()(
       // simultaneously for the same reaped thread) from both running createThread
       // and orphaning a subprocess. One permit, service-wide (threads are keyed
       // by id so contention is brief and infrequent).
-      const resumeGate = yield* Effect.makeSemaphore(1)
+      const resumeGate = yield* Semaphore.make(1)
 
       // Background-delivery notifications (#124). `deliverResult` publishes one
       // per delivered result; the WS layer runs `deliveries` once at boot and
@@ -420,7 +420,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                 })
               }),
             ),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
             Effect.forkIn(serviceScope),
             Effect.asVoid,
           ),
@@ -431,7 +431,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         tags: Readonly<Record<string, string>> = {},
         n = 1,
       ): Effect.Effect<void, never> =>
-        tel.inc(name, tags, n).pipe(Effect.catchAllCause(() => Effect.void))
+        tel.inc(name, tags, n).pipe(Effect.catchCause(() => Effect.void))
 
       // Thread creation + Case A/B/C resume recovery — see
       // chat-service-thread-lifecycle.ts. It shares the resources built
@@ -510,7 +510,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               kind: "user",
               payload: userPayload,
             })
-            .pipe(Effect.catchAll(() => Effect.succeed(null as StoredMessage | null)))
+            .pipe(Effect.catch(() => Effect.succeed(null as StoredMessage | null)))
           if (stored === null) {
             yield* inc("luna.chat.user_messages.rejected", {
               reason: "store_append_failed",
@@ -554,10 +554,11 @@ export class ChatService extends Effect.Service<ChatService>()(
                   })
                   return recallTimeoutMs > 0
                     ? recall.pipe(
-                        Effect.timeout(Duration.millis(recallTimeoutMs)),
-                        Effect.catchAll(() =>
-                          inc("luna.chat.recall.timeouts").pipe(Effect.as(null)),
-                        ),
+                        Effect.timeoutOrElse({
+                          duration: Duration.millis(recallTimeoutMs),
+                          orElse: () =>
+                            inc("luna.chat.recall.timeouts").pipe(Effect.as(null)),
+                        }),
                       )
                     : recall
                 })()
@@ -567,12 +568,12 @@ export class ChatService extends Effect.Service<ChatService>()(
           yield* Queue.offer(entry.pendingTurns, {
             userMessageId: messageId,
             userText: text,
-          }).pipe(Effect.catchAllCause(() => Effect.void))
+          }).pipe(Effect.catchCause(() => Effect.void))
           yield* Queue.offer(entry.inbox, {
             payload: userPayload,
             memoryContext: recalled,
           }).pipe(
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           )
 
           // Phase 3: bump last_active_at on every turn (best-effort, off hot path).
@@ -580,7 +581,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           if (Option.isSome(threadRegistry)) {
             yield* threadRegistry.value
               .touch(threadId)
-              .pipe(Effect.catchAllCause(() => Effect.void))
+              .pipe(Effect.catchCause(() => Effect.void))
 
             // Phase 3 title heuristic: on the first turn, if the thread has no
             // title yet, derive one from the user message text — first line,
@@ -593,7 +594,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   yield* threadRegistry.value.upsert({ id: threadId, title: derived })
                 }
               }
-            }).pipe(Effect.catchAllCause(() => Effect.void))
+            }).pipe(Effect.catchCause(() => Effect.void))
           }
 
           return projected !== null
@@ -664,7 +665,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               kind: "assistant",
               payload,
             })
-            .pipe(Effect.catchAll(() => Effect.succeed(null as StoredMessage | null)))
+            .pipe(Effect.catch(() => Effect.succeed(null as StoredMessage | null)))
           if (stored === null) {
             yield* inc("luna.chat.deliveries.dropped", { reason: "no_session" })
             yield* obs.emit({
@@ -732,7 +733,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           // Best-effort interrupt; SDK rejects mid-flight cancellation
           // sometimes — swallow.
           yield* Effect.tryPromise(() => handle.interrupt()).pipe(
-            Effect.catchAll(() => Effect.void),
+            Effect.catch(() => Effect.void),
           )
           const turnId = yield* Ref.get(entry.inFlightTurnId)
           yield* PubSub.publish(entry.pubsub, {
@@ -763,7 +764,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                 isError: true,
               })
               .pipe(
-                Effect.catchAllCause(() => Effect.void),
+                Effect.catchCause(() => Effect.void),
                 Effect.forkIn(entry.scope),
               )
           }
@@ -872,7 +873,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               if (handle !== null) {
                 liveOk = yield* Effect.tryPromise(() =>
                   handle.applyFlagSettings(ultracodeFlagSettings()),
-                ).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)))
+                ).pipe(Effect.as(true), Effect.catch(() => Effect.succeed(false)))
               }
               if (liveOk) {
                 applied.push("effort")
@@ -888,7 +889,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                 delete mergedSdk["effort"]
                 yield* store
                   .setOptions(threadId, { sdkOptions: mergedSdk })
-                  .pipe(Effect.catchAll(() => Effect.void))
+                  .pipe(Effect.catch(() => Effect.void))
                 yield* Option.match(threadRegistry, {
                   onNone: () => {
                     const lunaHome = process.env["LUNA_HOME"]
@@ -900,7 +901,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { effort: ULTRACODE })
-                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                      .pipe(Effect.catchCause(() => Effect.void)),
                 })
               } else {
                 rejected.push({ field: "effort", reason: "live ultracode switch failed" })
@@ -952,7 +953,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   handle.applyFlagSettings({ effortLevel: settingsLevel }),
                 ).pipe(
                   Effect.as(true),
-                  Effect.catchAll(() => Effect.succeed(false)),
+                  Effect.catch(() => Effect.succeed(false)),
                 )
               }
               if (liveOk) {
@@ -964,7 +965,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                 const existingOpts = yield* store.getOptions(threadId)
                 const mergedSdk = { ...(existingOpts?.sdkOptions ?? {}), effort: effective }
                 yield* store.setOptions(threadId, { sdkOptions: mergedSdk }).pipe(
-                  Effect.catchAll(() => Effect.void),
+                  Effect.catch(() => Effect.void),
                 )
                 yield* Option.match(threadRegistry, {
                   onNone: () => {
@@ -977,7 +978,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { effort: effective })
-                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                      .pipe(Effect.catchCause(() => Effect.void)),
                 })
               } else {
                 // The SDK call threw — the ack must NOT report success, and
@@ -1017,7 +1018,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { model })
-                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                      .pipe(Effect.catchCause(() => Effect.void)),
                 })
               } else if (handle !== null) {
                 // Same lane + live handle → hot-swap via setModel. Success-
@@ -1025,7 +1026,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                 // and the unapplied value is not persisted.
                 const liveOk = yield* Effect.tryPromise(() => handle.setModel(model)).pipe(
                   Effect.as(true),
-                  Effect.catchAll(() => Effect.succeed(false)),
+                  Effect.catch(() => Effect.succeed(false)),
                 )
                 if (liveOk) {
                   applied.push("model")
@@ -1033,7 +1034,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   const existingOpts2 = yield* store.getOptions(threadId)
                   const mergedSdk2 = { ...(existingOpts2?.sdkOptions ?? {}), model }
                   yield* store.setOptions(threadId, { model, sdkOptions: mergedSdk2 }).pipe(
-                    Effect.catchAll(() => Effect.void),
+                    Effect.catch(() => Effect.void),
                   )
                   yield* Option.match(threadRegistry, {
                     onNone: () => {
@@ -1046,7 +1047,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                     onSome: (reg) =>
                       reg
                         .setConfig(threadId, { model })
-                        .pipe(Effect.catchAllCause(() => Effect.void)),
+                        .pipe(Effect.catchCause(() => Effect.void)),
                   })
                 } else {
                   rejected.push({ field: "model", reason: "live model switch failed" })
@@ -1068,7 +1069,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { model })
-                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                      .pipe(Effect.catchCause(() => Effect.void)),
                 })
               }
             }
@@ -1142,7 +1143,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               sa
                 .listByThread(threadId, { status: ACTIVE_STATUSES })
                 .pipe(
-                  Effect.catchAll(() => Effect.succeed([] as const)),
+                  Effect.catch(() => Effect.succeed([] as const)),
                   Effect.map((rows) => {
                     if (rows.length > 0) {
                       frames.push({
@@ -1285,13 +1286,13 @@ export class ChatService extends Effect.Service<ChatService>()(
               if (s.title !== null && s.title !== "") return Effect.succeed(s)
               const regTitle = regTitles.get(s.id)
               if (regTitle) return Effect.succeed({ ...s, title: regTitle })
-              // catchAllCause (not catchAll): readFirstUserMessage/rowToMessage
+              // catchCause (not catch): readFirstUserMessage/rowToMessage
               // do a JSON.parse in Effect.sync, so a corrupt content_json is a
-              // DEFECT, not a typed failure. catchAll misses defects — one bad
+              // DEFECT, not a typed failure. catch misses defects — one bad
               // row would then abort the whole forEach and brick the sidebar
-              // list. catchAllCause degrades that row to "untitled" instead.
+              // list. catchCause degrades that row to "untitled" instead.
               return store.readFirstUserMessage(s.id).pipe(
-                Effect.catchAllCause(() => Effect.succeed(null)),
+                Effect.catchCause(() => Effect.succeed(null)),
                 Effect.flatMap((first): Effect.Effect<SessionSummary, never> => {
                   const text = first ? extractText(first.payload) : null
                   const derived = text
@@ -1325,12 +1326,12 @@ export class ChatService extends Effect.Service<ChatService>()(
           // (transient over-inclusion) rather than fail the whole sidebar.
           const archivedRows = yield* reg.listByStatus("archived").pipe(
             Effect.map((rows) => rows.map((r) => ({ id: r.id }))),
-            Effect.catchAllCause(() =>
+            Effect.catchCause(() =>
               reg.list().pipe(
                 Effect.map((all) =>
                   all.filter((r) => r.status === "archived").map((r) => ({ id: r.id })),
                 ),
-                Effect.catchAllCause(() =>
+                Effect.catchCause(() =>
                   Effect.succeed([] as ReadonlyArray<{ readonly id: string }>),
                 ),
               ),
@@ -1340,7 +1341,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           const [sessions, activeRows] = yield* Effect.all([
             listActive([...archivedIds]),
             reg.listByStatus("active").pipe(
-              Effect.catchAllCause(() =>
+              Effect.catchCause(() =>
                 Effect.succeed([] as readonly { readonly id: string; readonly title: string | null }[]),
               ),
             ),
@@ -1354,7 +1355,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           const persist = (id: string, title: string) =>
             reg
               .setTitleIfNull(id, title)
-              .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void))
+              .pipe(Effect.asVoid, Effect.catchCause(() => Effect.void))
           return yield* resolveTitles(sessions, regTitles, persist)
         })
       }
@@ -1370,7 +1371,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           yield* Scope.close(entry.scope, Exit.void)
           yield* store
             .setStatus(threadId, "closed", yield* clock.nowMs())
-            .pipe(Effect.catchAll(() => Effect.void))
+            .pipe(Effect.catch(() => Effect.void))
         })
 
       /** Release a thread's RUNTIME only: close its scope (which interrupts the
@@ -1407,9 +1408,9 @@ export class ChatService extends Effect.Service<ChatService>()(
           const collect = Stream.runCollect(
             memoryRouter.search({ queryText: args.queryText, topK: args.topK ?? 10 }),
           )
-          const either = yield* Effect.either(collect)
-          if (either._tag === "Left") {
-            const err = either.left
+          const outcome = yield* Effect.result(collect)
+          if (outcome._tag === "Failure") {
+            const err = outcome.failure
             // MemoryBackendError carries the underlying cause. Extract the
             // message by checking cause first (the real discriminating text
             // lives in cause.message), then fall back to err.message / String.
@@ -1426,7 +1427,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               : "internal"
             return { error: { message: msg, kind } }
           }
-          const hits = Array.from(either.right).map(({ record, score }) => ({
+          const hits = Array.from(outcome.success).map(({ record, score }) => ({
             id: record.id,
             kind: record.kind,
             content:
@@ -1448,7 +1449,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         Option.match(threadRegistry, {
           onNone: () => Effect.succeed(false),
           onSome: (reg) =>
-            reg.archive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
+            reg.archive(threadId).pipe(Effect.catchCause(() => Effect.succeed(false))),
         })
 
       /**
@@ -1459,7 +1460,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         Option.match(threadRegistry, {
           onNone: () => Effect.succeed(false),
           onSome: (reg) =>
-            reg.unarchive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
+            reg.unarchive(threadId).pipe(Effect.catchCause(() => Effect.succeed(false))),
         })
 
       // ── Idle-thread reaper ────────────────────────────────────────────────
@@ -1537,9 +1538,14 @@ export class ChatService extends Effect.Service<ChatService>()(
          *  runs this once at boot and broadcasts each item to all clients. */
         deliveries: Stream.fromPubSub(deliveriesHub),
       } as const
-    }),
-  },
-) {}
+})
+
+export class ChatService extends Context.Service<
+  ChatService,
+  Effect.Effect.Success<typeof makeChatService>
+>()("luna/ChatService") {
+  static readonly Default = Layer.effect(ChatService, makeChatService)
+}
 
 /** Re-export the chat-shaped projection helper from core for downstream
  *  consumers (ui-ws server, Tauri shell) that don't otherwise pull core. */

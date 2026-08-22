@@ -113,7 +113,7 @@ const MAX_STREAM_FAILURE_CHARS = 400
 export const formatStreamFailureReason = (
   cause: Cause.Cause<unknown>,
 ): string => {
-  const failure = Cause.failureOption(cause)
+  const failure = Cause.findErrorOption(cause)
   const reason = Option.match(failure, {
     onSome: (e) =>
       e instanceof Error && e.message.length > 0 ? e.message : String(e),
@@ -161,7 +161,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
           }
           return null
         }),
-        Effect.catchAll(() => Effect.succeed(null as StoredMessage | null)),
+        Effect.catch(() => Effect.succeed(null as StoredMessage | null)),
       )
 
   /**
@@ -462,7 +462,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
               isError: m.is_error === true,
             })
             .pipe(
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
               Effect.forkIn(args.threadScope),
             )
         }

@@ -32,6 +32,7 @@ import {
   Ref,
   Runtime,
   Scope,
+  Semaphore,
   Stream,
 } from "effect"
 import {
@@ -164,7 +165,7 @@ export interface ThreadLifecycleDeps {
   /** Guards ensureThreadLive's get→create critical section (one permit,
    *  service-wide) so two concurrent callers racing on the same reaped
    *  thread cannot both spawn a second SDK subprocess. */
-  readonly resumeGate: Effect.Semaphore
+  readonly resumeGate: Semaphore.Semaphore
   readonly inc: (
     name: string,
     tags?: Readonly<Record<string, string>>,
@@ -667,7 +668,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 ? { effort: persistEffort }
                 : {}),
             })
-            .pipe(Effect.catchAllCause(() => Effect.void)),
+            .pipe(Effect.catchCause(() => Effect.void)),
       })
 
       // Legacy fallback: when no ThreadRegistry, write the JSON map.
@@ -710,7 +711,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                         `[chat] setSid(${id}) matched no row — this thread will lose model context on resume`,
                       ).pipe(Effect.zipRight(inc("luna.chat.sdk_sid_persist.failures"))),
                 ),
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                   Effect.logWarning(
                     `[chat] setSid(${id}) failed: ${Cause.pretty(cause)}`,
                   ).pipe(Effect.zipRight(inc("luna.chat.sdk_sid_persist.failures"))),
@@ -755,7 +756,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             message: `SessionStore mirror append failed: ${String(cause).slice(0, 200)}`,
             context: { threadId: id },
           })
-        }).pipe(Effect.catchAllCause(() => Effect.void))
+        }).pipe(Effect.catchCause(() => Effect.void))
 
       const handleAdapterFailure = (cause: Cause.Cause<unknown>) => {
         const message = `adapter stream failed: ${formatStreamFailureReason(cause)}`
@@ -802,7 +803,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               assistantText: failedAssistantText,
               isError: true,
             }).pipe(
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
               Effect.forkIn(threadScope),
             )
           }
@@ -928,7 +929,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 })
                 .pipe(
                   Effect.flatMap(consumeReplies),
-                  Effect.catchAllCause(handleAdapterFailure),
+                  Effect.catchCause(handleAdapterFailure),
                 ),
             ),
           ),
@@ -1041,7 +1042,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                     `[chat] ensureThreadLive: ThreadRegistry.get(${threadId}) failed — treating as unknown: ${Cause.pretty(cause)}`,
                   ),
                 ),
-                Effect.catchAllCause(() => Effect.succeed(null)),
+                Effect.catchCause(() => Effect.succeed(null)),
               )
             if (row !== null) {
               savedCwd = row.cwd ?? undefined
@@ -1146,7 +1147,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               `[chat] ensureThreadLive: recovery for ${threadId} failed — reporting unknown thread: ${Cause.pretty(cause)}`,
             ),
           ),
-          Effect.catchAllCause(() => Effect.succeed(Option.none<ThreadEntry>())),
+          Effect.catchCause(() => Effect.succeed(Option.none<ThreadEntry>())),
         ),
       )
     })

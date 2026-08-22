@@ -198,7 +198,7 @@ const collectFramesFailing = (
         const t = yield* chat.createThread({ model: "claude-test" })
         const sub = chat.subscribe(t.id)
         const collected: ChatFrame[] = []
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           sub.pipe(
             Stream.tap((f) => Effect.sync(() => collected.push(f))),
             Stream.runDrain,
@@ -228,7 +228,7 @@ const collectFrames = (
         const t = yield* chat.createThread({ model: "claude-test" })
         const sub = chat.subscribe(t.id)
         const collected: ChatFrame[] = []
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           sub.pipe(
             Stream.tap((f) => Effect.sync(() => collected.push(f))),
             Stream.runDrain,

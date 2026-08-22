@@ -103,7 +103,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
         const t = yield* chat.createThread({ model: "claude-test", title: "T" })
 
         const sub = chat.subscribe(t.id)
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Stream.runCollect(Stream.take(sub, 2)), // snapshot + update
         )
         yield* Effect.sleep("30 millis") // let the subscriber attach
@@ -138,7 +138,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
         const t = yield* chat.createThread({ model: "claude-test", title: "T" })
 
         const sub = chat.subscribe(t.id)
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Stream.runCollect(Stream.take(sub, 3)), // snapshot + proposed + dismissed
         )
         yield* Effect.sleep("30 millis")
@@ -201,7 +201,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
 
         // Propose for a DIFFERENT, never-created thread id — no live pubsub.
         const sub = chat.subscribe(t.id)
-        const fiber = yield* Effect.fork(Stream.runCollect(Stream.take(sub, 2)))
+        const fiber = yield* Effect.forkChild(Stream.runCollect(Stream.take(sub, 2)))
         yield* Effect.sleep("30 millis")
         yield* sa.propose({
           threadId: "thr_offline",

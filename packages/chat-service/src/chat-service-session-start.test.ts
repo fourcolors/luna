@@ -9,7 +9,7 @@
  *   5. Integration: emit() with all new fields passes them through subscribeEvents.
  */
 import { describe, expect, it } from "vitest"
-import { Chunk, Duration, Effect, Either, Fiber, Layer, Stream } from "effect"
+import { Chunk, Duration, Effect, Fiber, Layer, Result, Stream } from "effect"
 import { Clock, ObservabilityService, decodeObsEvent } from "@luna/core"
 
 /* -------------------------------------------------------------------------- */
@@ -44,9 +44,9 @@ describe("SessionStartEvent schema — optional fields", () => {
       title: "My session",
     }
     const result = decodeObsEvent(event)
-    expect(Either.isRight(result)).toBe(true)
-    if (Either.isRight(result)) {
-      const ev = result.right
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) {
+      const ev = result.success
       if (ev.kind === "SessionStart") {
         expect(ev.parentId).toBe("sess-000")
         expect(ev.tags).toEqual(["prod", "chat"])
@@ -64,7 +64,7 @@ describe("SessionStartEvent schema — optional fields", () => {
       model: "claude-3-5-sonnet",
     }
     const result = decodeObsEvent(event)
-    expect(Either.isRight(result)).toBe(true)
+    expect(Result.isSuccess(result)).toBe(true)
   })
 
   it("rejects a SessionStart with `tags` as a string (not an array)", () => {
@@ -77,7 +77,7 @@ describe("SessionStartEvent schema — optional fields", () => {
       tags: "not-an-array",
     }
     const result = decodeObsEvent(event)
-    expect(Either.isLeft(result)).toBe(true)
+    expect(Result.isFailure(result)).toBe(true)
   })
 
   it("decodeObsEvent correctly decodes SessionStart with all new fields", () => {
@@ -92,9 +92,9 @@ describe("SessionStartEvent schema — optional fields", () => {
       title: "Decode test session",
     }
     const result = decodeObsEvent(event)
-    expect(Either.isRight(result)).toBe(true)
-    if (Either.isRight(result)) {
-      const ev = result.right
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) {
+      const ev = result.success
       expect(ev.kind).toBe("SessionStart")
       if (ev.kind === "SessionStart") {
         expect(ev.sessionId).toBe("sess-decode-001")
@@ -117,7 +117,7 @@ describe("SessionStartEvent — ObservabilityService integration", () => {
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
         const stream = yield* obs.subscribeEvents
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
@@ -156,7 +156,7 @@ describe("SessionStartEvent — ObservabilityService integration", () => {
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
         const stream = yield* obs.subscribeEvents
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
