@@ -24,19 +24,20 @@
  */
 import {
   Cause,
+  Context,
   Effect,
   Exit,
   Option,
   PubSub,
   Queue,
   Ref,
-  Runtime,
   Scope,
+  Semaphore,
   Stream,
 } from "effect"
 import {
-  type SessionStore,
-  type Clock as CoreClock,
+  SessionStore,
+  Clock as CoreClock,
   type ObservabilityApi,
   type ThreadRegistryApi,
   type SessionSummary,
@@ -149,14 +150,14 @@ export const withTurnMemoryContext = (
  *  and wires into every factory (the same pattern the job-ticker split
  *  uses: shared-resource construction stays in the composition root). */
 export interface ThreadLifecycleDeps {
-  readonly store: SessionStore
+  readonly store: Context.Service.Shape<typeof SessionStore>
   readonly adapter: SDKAdapterService
-  readonly clock: CoreClock
+  readonly clock: Context.Service.Shape<typeof CoreClock>
   readonly obs: ObservabilityApi
   readonly threadToolsProvider: Option.Option<ThreadToolsProvider>
   readonly threadRegistry: Option.Option<ThreadRegistryApi>
   readonly serviceScope: Scope.Scope
-  readonly runtime: Runtime.Runtime<never>
+  readonly runtime: Context.Context<never>
   readonly threads: Ref.Ref<ReadonlyMap<string, ThreadEntry>>
   readonly getOrCreatePubSub: (
     id: string,
@@ -164,7 +165,7 @@ export interface ThreadLifecycleDeps {
   /** Guards ensureThreadLive's get→create critical section (one permit,
    *  service-wide) so two concurrent callers racing on the same reaped
    *  thread cannot both spawn a second SDK subprocess. */
-  readonly resumeGate: Effect.Semaphore
+  readonly resumeGate: Semaphore.Semaphore
   readonly inc: (
     name: string,
     tags?: Readonly<Record<string, string>>,
@@ -525,7 +526,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               // resulting cause and sends the client a `thread-create-error`
               // frame (server.ts), so the user is never left hanging.
               .pipe(
-                Effect.tapErrorCause((cause) =>
+                Effect.tapCause((cause) =>
                   Effect.logError(
                     `[chat] createThread: session store create failed for ${id}: ${Cause.pretty(cause)}`,
                   ),
@@ -615,8 +616,8 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
       // everything via LIFO finalizers.
       const threadScope = yield* Scope.fork(
         serviceScope,
-        // ParallelFinalizers — siblings finalize concurrently.
-        { _tag: "Parallel" },
+        // Parallel finalizers — siblings finalize concurrently.
+        "parallel",
       )
 
       // Persist creation-time metadata in ThreadRegistry (when available)
@@ -667,7 +668,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 ? { effort: persistEffort }
                 : {}),
             })
-            .pipe(Effect.catchAllCause(() => Effect.void)),
+            .pipe(Effect.catchCause(() => Effect.void)),
       })
 
       // Legacy fallback: when no ThreadRegistry, write the JSON map.
@@ -701,19 +702,19 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             // matches no row, the user gets a full on-screen transcript in
             // front of an amnesiac model. That silence is why the
             // sdk_session_id clobber survived six weeks undetected.
-            Runtime.runFork(runtime)(
+            Effect.runForkWith(runtime)(
               reg.setSid(id, sdkSid).pipe(
                 Effect.tap((ok) =>
                   ok
                     ? Effect.void
                     : Effect.logWarning(
                         `[chat] setSid(${id}) matched no row — this thread will lose model context on resume`,
-                      ).pipe(Effect.zipRight(inc("luna.chat.sdk_sid_persist.failures"))),
+                      ).pipe(Effect.andThen(inc("luna.chat.sdk_sid_persist.failures"))),
                 ),
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                   Effect.logWarning(
                     `[chat] setSid(${id}) failed: ${Cause.pretty(cause)}`,
-                  ).pipe(Effect.zipRight(inc("luna.chat.sdk_sid_persist.failures"))),
+                  ).pipe(Effect.andThen(inc("luna.chat.sdk_sid_persist.failures"))),
                 ),
               ),
             )
@@ -755,7 +756,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             message: `SessionStore mirror append failed: ${String(cause).slice(0, 200)}`,
             context: { threadId: id },
           })
-        }).pipe(Effect.catchAllCause(() => Effect.void))
+        }).pipe(Effect.catchCause(() => Effect.void))
 
       const handleAdapterFailure = (cause: Cause.Cause<unknown>) => {
         const message = `adapter stream failed: ${formatStreamFailureReason(cause)}`
@@ -802,7 +803,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               assistantText: failedAssistantText,
               isError: true,
             }).pipe(
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
               Effect.forkIn(threadScope),
             )
           }
@@ -905,6 +906,10 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
           inc,
         })
         yield* runOrdinaryQuery(1, []).pipe(Effect.forkIn(threadScope))
+        // v4: forked fibers start on the next scheduler turn. Yield so the
+        // query acquire (and SDKClient.fake capture) runs before createThread
+        // returns — tests and onSdkSessionId callers rely on that ordering.
+        yield* Effect.yieldNow
       } else {
         // Recall context cannot live in a long-lived prompt stream: every
         // injected user block would remain in the SDK conversation. Run a
@@ -928,12 +933,13 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 })
                 .pipe(
                   Effect.flatMap(consumeReplies),
-                  Effect.catchAllCause(handleAdapterFailure),
+                  Effect.catchCause(handleAdapterFailure),
                 ),
             ),
           ),
           Effect.forkIn(threadScope),
         )
+        yield* Effect.yieldNow
       }
 
       // Track the entry. Removed from the map when the scope closes —
@@ -1036,12 +1042,12 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             const row = yield* threadRegistry.value
               .get(threadId)
               .pipe(
-                Effect.tapErrorCause((cause) =>
+                Effect.tapCause((cause) =>
                   Effect.logError(
                     `[chat] ensureThreadLive: ThreadRegistry.get(${threadId}) failed — treating as unknown: ${Cause.pretty(cause)}`,
                   ),
                 ),
-                Effect.catchAllCause(() => Effect.succeed(null)),
+                Effect.catchCause(() => Effect.succeed(null)),
               )
             if (row !== null) {
               savedCwd = row.cwd ?? undefined
@@ -1108,7 +1114,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
             })
             const m2 = yield* Ref.get(threads)
-            return Option.fromNullable(m2.get(threadId) ?? null)
+            return Option.fromNullishOr(m2.get(threadId) ?? null)
           }
 
           // Case A: known + has sdk_session_id → resume via SDK
@@ -1130,7 +1136,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
             })
             const m2 = yield* Ref.get(threads)
-            return Option.fromNullable(m2.get(threadId) ?? null)
+            return Option.fromNullishOr(m2.get(threadId) ?? null)
           }
 
           // Case C: not in registry or JSON map → unknown
@@ -1141,12 +1147,12 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
           // must not masquerade as Case C silently: callers report
           // Option.none as "unknown thread", so without this log a
           // resume failure is indistinguishable from a missing row.
-          Effect.tapErrorCause((cause) =>
+          Effect.tapCause((cause) =>
             Effect.logError(
               `[chat] ensureThreadLive: recovery for ${threadId} failed — reporting unknown thread: ${Cause.pretty(cause)}`,
             ),
           ),
-          Effect.catchAllCause(() => Effect.succeed(Option.none<ThreadEntry>())),
+          Effect.catchCause(() => Effect.succeed(Option.none<ThreadEntry>())),
         ),
       )
     })

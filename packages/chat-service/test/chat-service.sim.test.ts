@@ -18,7 +18,6 @@
  */
 import { afterAll, describe, expect, it } from "vitest"
 import {
-  Chunk,
   Effect,
   Fiber,
   Layer,
@@ -520,12 +519,12 @@ describe("ChatService (Tier-2 sim)", () => {
           const collectN = (s: Stream.Stream<ChatFrame, never>, n: number) =>
             s.pipe(Stream.take(n), Stream.runCollect)
 
-          const aFiber = yield* Effect.fork(collectN(subA, 1 + TURNS * 3))
-          const bFiber = yield* Effect.fork(collectN(subB, 1 + TURNS * 3))
-          const cFiber = yield* Effect.fork(collectN(subC, 1)) // just snapshot
+          const aFiber = yield* Effect.forkChild(collectN(subA, 1 + TURNS * 3))
+          const bFiber = yield* Effect.forkChild(collectN(subB, 1 + TURNS * 3))
+          const cFiber = yield* Effect.forkChild(collectN(subC, 1)) // just snapshot
 
           // Let the forked subscribers attach to their PubSub before any
-          // send fires — `Stream.unwrapScoped` only opens the underlying
+          // send fires — `Stream.unwrap` only opens the underlying
           // PubSub.subscribe lazily on first pull.
           yield* Effect.sleep("30 millis")
 
@@ -539,9 +538,9 @@ describe("ChatService (Tier-2 sim)", () => {
           const bChunk = yield* Fiber.join(bFiber)
           const cChunk = yield* Fiber.join(cFiber)
           return {
-            aFrames: Array.from(Chunk.toReadonlyArray(aChunk)),
-            bFrames: Array.from(Chunk.toReadonlyArray(bChunk)),
-            cFrames: Array.from(Chunk.toReadonlyArray(cChunk)),
+            aFrames: Array.from(aChunk),
+            bFrames: Array.from(bChunk),
+            cFrames: Array.from(cChunk),
           }
         }),
         fakeLayer,
@@ -622,14 +621,14 @@ describe("ChatService (Tier-2 sim)", () => {
           const sub = chat.subscribe(t.id)
 
           // Push one more turn live.
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(Stream.take(3), Stream.runCollect),
           )
           // Wait for the subscriber to attach to PubSub before sending.
           yield* Effect.sleep("30 millis")
           yield* chat.send(t.id, "third")
           const chunk = yield* Fiber.join(fiber)
-          const frames = Array.from(Chunk.toReadonlyArray(chunk))
+          const frames = Array.from(chunk)
           return frames
         }),
         fakeLayer,
@@ -681,7 +680,7 @@ describe("ChatService (Tier-2 sim)", () => {
             title: "int",
           })
           const sub = chat.subscribe(t.id)
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(
               Stream.filter((f) => f.type === "assistant-error"),
               Stream.take(1),
@@ -691,7 +690,7 @@ describe("ChatService (Tier-2 sim)", () => {
           yield* Effect.sleep("5 millis")
           yield* chat.interrupt(t.id)
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))[0]!
+          return Array.from(chunk)[0]!
         }),
         fakeLayer,
       )
@@ -722,13 +721,13 @@ describe("ChatService (Tier-2 sim)", () => {
             title: "streaming",
           })
           const sub = chat.subscribe(t.id)
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(Stream.take(5), Stream.runCollect),
           )
           yield* Effect.sleep("30 millis")
           yield* chat.send(t.id, "reply ok")
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))
+          return Array.from(chunk)
         }),
         fakeLayer,
       )
@@ -793,7 +792,7 @@ describe("ChatService (Tier-2 sim)", () => {
             title: "reset",
           })
           const sub = chat.subscribe(t.id)
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(
               Stream.filter((f) => f.type === "assistant-delta"),
               Stream.take(4),
@@ -805,7 +804,7 @@ describe("ChatService (Tier-2 sim)", () => {
           yield* Effect.sleep("40 millis")
           yield* chat.send(t.id, "turn two")
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))
+          return Array.from(chunk)
         }),
         fakeLayer,
       )
@@ -868,7 +867,7 @@ describe("ChatService (Tier-2 sim)", () => {
             title: "int-reset",
           })
           const sub = chat.subscribe(t.id)
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(
               Stream.filter((f) => f.type === "assistant-delta"),
               Stream.take(3),
@@ -882,7 +881,7 @@ describe("ChatService (Tier-2 sim)", () => {
           yield* Effect.sleep("10 millis")
           yield* chat.send(t.id, "turn two")
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))
+          return Array.from(chunk)
         }),
         fakeLayer,
       )
@@ -1228,7 +1227,7 @@ describe("ChatService (Tier-2 sim)", () => {
             // Subscribe to a thread we never created — should trigger
             // the auto-resume path.
             const sub = chat.subscribe(RESUMED_ID)
-            const fiber = yield* Effect.fork(
+            const fiber = yield* Effect.forkChild(
               sub.pipe(
                 Stream.take(1),
                 Stream.runCollect,
@@ -1298,7 +1297,7 @@ describe("ChatService (Tier-2 sim)", () => {
             // Subscribe to a thread the in-memory map forgot — recovery
             // must rebuild createThread from the persisted entry.
             const sub = chat.subscribe(RESUMED_ID)
-            const fiber = yield* Effect.fork(
+            const fiber = yield* Effect.forkChild(
               sub.pipe(
                 Stream.take(1),
                 Stream.runCollect,
@@ -1577,7 +1576,7 @@ describe("ChatService (Tier-2 sim)", () => {
           const obs = yield* ObservabilityService
           // Eagerly subscribe BEFORE creating the thread so we don't miss the event.
           const evStream = yield* obs.subscribeEvents
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             evStream.pipe(
               Stream.filter((e) => e.kind === "SessionStart"),
               Stream.take(1),
@@ -1589,7 +1588,7 @@ describe("ChatService (Tier-2 sim)", () => {
           yield* chat.createThread({ model: "claude-sonnet-test", title: "obs-start" })
 
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))
+          return Array.from(chunk)
         }),
         fakeLayer,
       )
@@ -1655,7 +1654,7 @@ describe("ChatService (Tier-2 sim)", () => {
         Effect.gen(function* () {
           const obs = yield* ObservabilityService
           const evStream = yield* obs.subscribeEvents
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             evStream.pipe(
               Stream.filter((e) => e.kind === "ToolCall"),
               Stream.take(2),
@@ -1669,7 +1668,7 @@ describe("ChatService (Tier-2 sim)", () => {
           yield* chat.send(t.id, "go")
 
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))
+          return Array.from(chunk)
         }),
         fakeLayer,
       )
@@ -1804,7 +1803,7 @@ describe("ChatService (Tier-2 sim)", () => {
               prompt: Stream.empty as Stream.Stream<SDKUserMessage>,
               sessionOptions: forkShapedOptions as SessionOptions,
             })
-            yield* Stream.runDrain(replies).pipe(Effect.catchAll(() => Effect.void))
+            yield* Stream.runDrain(replies).pipe(Effect.catch(() => Effect.void))
           }),
         ).pipe(Effect.provide(fullLayer(fakeLayer))),
       )
@@ -1830,7 +1829,7 @@ describe("ChatService (Tier-2 sim)", () => {
         Effect.gen(function* () {
           const obs = yield* ObservabilityService
           const evStream = yield* obs.subscribeEvents
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             evStream.pipe(
               Stream.filter(
                 (e) => e.kind === "CostAccrued" || e.kind === "SessionEnd",
@@ -1846,7 +1845,7 @@ describe("ChatService (Tier-2 sim)", () => {
           yield* chat.send(t.id, "ping")
 
           const chunk = yield* Fiber.join(fiber)
-          return Array.from(Chunk.toReadonlyArray(chunk))
+          return Array.from(chunk)
         }),
         fakeLayer,
       )
@@ -1897,11 +1896,11 @@ describe("ChatService.deliverResult (#124)", () => {
           const sub = chat.subscribe(t1.id)
           // Collect: snapshot + assistant-done = 2 frames. (A delivery does NOT
           // emit turn-complete — it must not settle a concurrent live run.)
-          const framesFiber = yield* Effect.fork(
+          const framesFiber = yield* Effect.forkChild(
             sub.pipe(Stream.take(2), Stream.runCollect),
           )
           // Capture the cross-thread notification stream too.
-          const notesFiber = yield* Effect.fork(
+          const notesFiber = yield* Effect.forkChild(
             chat.deliveries.pipe(Stream.take(1), Stream.runCollect),
           )
           yield* Effect.sleep("30 millis")
@@ -1917,8 +1916,8 @@ describe("ChatService.deliverResult (#124)", () => {
           const framesChunk = yield* Fiber.join(framesFiber)
           const notesChunk = yield* Fiber.join(notesFiber)
           return {
-            frames: Array.from(Chunk.toReadonlyArray(framesChunk)),
-            notes: Array.from(Chunk.toReadonlyArray(notesChunk)),
+            frames: Array.from(framesChunk),
+            notes: Array.from(notesChunk),
           }
         }),
         idleFake,
@@ -1969,7 +1968,7 @@ describe("ChatService.deliverResult (#124)", () => {
           // is the not-live / replay-on-subscribe path the issue requires.
           const sub = chat.subscribe(t1.id)
           const chunk = yield* sub.pipe(Stream.take(1), Stream.runCollect)
-          return Array.from(Chunk.toReadonlyArray(chunk))[0]!
+          return Array.from(chunk)[0]!
         }),
         idleFake,
       )
@@ -1997,7 +1996,7 @@ describe("ChatService.deliverResult (#124)", () => {
           const chat = yield* ChatService
           const t1 = yield* chat.createThread({ model: "claude-test", title: "T1" })
           // Watch the toast stream — it must NOT fire for an empty result.
-          const notesFiber = yield* Effect.fork(
+          const notesFiber = yield* Effect.forkChild(
             chat.deliveries.pipe(Stream.take(1), Stream.runCollect),
           )
           yield* Effect.sleep("20 millis")
@@ -2021,8 +2020,8 @@ describe("ChatService.deliverResult (#124)", () => {
             .pipe(Stream.take(1), Stream.runCollect)
           return {
             emptyPosted: posted,
-            notes: Array.from(Chunk.toReadonlyArray(notesChunk)),
-            snapshot: Array.from(Chunk.toReadonlyArray(snap))[0]!,
+            notes: Array.from(notesChunk),
+            snapshot: Array.from(snap)[0]!,
           }
         }),
         idleFake,
@@ -2254,7 +2253,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           })
 
           const chat = yield* ChatService
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             chat.subscribe(THREAD_ID).pipe(Stream.take(1), Stream.runCollect),
           )
           yield* Effect.sleep("100 millis")
@@ -2314,7 +2313,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           // Capture Effect.logWarning output by subscribing to obs events.
           const obs = yield* ObservabilityService
           const evStream = yield* obs.subscribeEvents
-          const warnFiber = yield* Effect.fork(
+          const warnFiber = yield* Effect.forkChild(
             evStream.pipe(
               Stream.filter((e) =>
                 e.kind === "ToolCall" ||
@@ -2329,7 +2328,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
 
           // subscribe() on the sid-less known thread — should NOT return empty stream
           const sub = chat.subscribe(THREAD_ID)
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(
               // Take the snapshot frame — Case B re-creates live so the stream
               // is non-empty (snapshot arrives immediately).
@@ -2348,8 +2347,8 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           yield* Fiber.interrupt(warnFiber)
 
           // The subscribe must have yielded at least a snapshot frame (not empty).
-          expect(Chunk.size(frames)).toBeGreaterThan(0)
-          const first = Chunk.unsafeHead(frames)
+          expect((frames).length).toBeGreaterThan(0)
+          const first = (frames)[0]!
           expect(first.type).toBe("snapshot")
 
           // The re-creation path must have called the SDK (queryCallCount > 0).
@@ -2395,7 +2394,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
 
           const chat = yield* ChatService
           const sub = chat.subscribe(THREAD_ID)
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             sub.pipe(Stream.take(1), Stream.runCollect),
           )
           yield* Effect.sleep("100 millis")
@@ -2445,7 +2444,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           })
 
           const chat = yield* ChatService
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             chat.subscribe(THREAD_ID).pipe(Stream.take(1), Stream.runCollect),
           )
           yield* Effect.sleep("100 millis")
@@ -2502,8 +2501,8 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
           // the first frame arrives and Fiber.join then throws.
           const frames = yield* sub.pipe(Stream.take(1), Stream.runCollect)
           // Must still produce a snapshot (not empty/error).
-          expect(Chunk.size(frames)).toBeGreaterThan(0)
-          expect(Chunk.unsafeHead(frames).type).toBe("snapshot")
+          expect((frames).length).toBeGreaterThan(0)
+          expect((frames)[0]!.type).toBe("snapshot")
         }),
         fakeLayer,
       )
@@ -2543,7 +2542,7 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
         })
       })
 
-      let frames: Chunk.Chunk<import("../src/types.js").ChatFrame> | undefined
+      let frames: ReadonlyArray<import("../src/types.js").ChatFrame> | undefined
 
       try {
         await runScopedWithRegistry(
@@ -2591,8 +2590,8 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
       expect(threwError).toBe(false)
       // Must have emitted at least one frame (the snapshot).
       expect(frames).toBeDefined()
-      expect(Chunk.size(frames!)).toBeGreaterThan(0)
-      const first = Chunk.unsafeHead(frames!)
+      expect((frames!).length).toBeGreaterThan(0)
+      const first = (frames!)[0]!
       expect(first.type).toBe("snapshot")
       // SDK must have been called — the thread was re-created live.
       expect(queryCallCount).toBeGreaterThan(0)
@@ -3195,7 +3194,7 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
             const store = yield* SessionStore
             const msgs = yield* store.readMessages(t.id).pipe(
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
+              Effect.map((c) => Array.from(c)),
             )
 
             return { sendResult, msgs, createCallCount, capturedResume }
@@ -3247,7 +3246,7 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
 
             // Subscribe to obs events to check ChatUnknownThread is NOT emitted.
             const evStream = yield* obs.subscribeEvents
-            yield* Effect.fork(
+            yield* Effect.forkChild(
               evStream.pipe(
                 Stream.runForEach((e) =>
                   Effect.sync(() => {
@@ -3317,7 +3316,7 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
           const obs = yield* ObservabilityService
 
           const evStream = yield* obs.subscribeEvents
-          yield* Effect.fork(
+          yield* Effect.forkChild(
             evStream.pipe(
               Stream.runForEach((e) =>
                 Effect.sync(() => {
@@ -3380,7 +3379,7 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
           const api: typeof inner = {
             ...inner,
             get: (id: string) =>
-              Effect.sleep("5 millis").pipe(Effect.zipRight(inner.get(id))),
+              Effect.sleep("5 millis").pipe(Effect.andThen(inner.get(id))),
           }
           return api
         }),
@@ -3429,7 +3428,7 @@ describe("ChatService — send() resumes evicted threads (ensureThreadLive)", ()
               const store = yield* SessionStore
               const msgs = yield* store.readMessages(t.id).pipe(
                 Stream.runCollect,
-                Effect.map((c) => Array.from(Chunk.toReadonlyArray(c)).filter((m) => m.kind === "user")),
+                Effect.map((c) => Array.from(c).filter((m) => m.kind === "user")),
               )
 
               return { r1, r2, msgs, createCallCount }

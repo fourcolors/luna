@@ -94,7 +94,7 @@ describe("ChatService mirror-failure observability", () => {
           const obs = yield* ObservabilityService
           const evStream = yield* obs.subscribeEvents
           const events: Array<{ kind: string; errorTag?: string }> = []
-          const collector = yield* Effect.fork(
+          const collector = yield* Effect.forkChild(
             evStream.pipe(
               Stream.runForEach((e) =>
                 Effect.sync(() => {

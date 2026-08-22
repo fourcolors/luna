@@ -41,6 +41,6 @@ export const LUNA_ALLOWED_MCP_TOOLS = [
  * path bypassed — leaving resumed threads with `allowedTools` set but zero
  * MCP servers. Wiring at the service seam covers both paths.
  */
-export const ThreadToolsProviderTag = Context.GenericTag<ThreadToolsProvider>(
+export const ThreadToolsProviderTag = Context.Service<ThreadToolsProvider>(
   "luna/ThreadToolsProvider",
 )

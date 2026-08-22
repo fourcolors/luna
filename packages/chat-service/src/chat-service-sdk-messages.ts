@@ -12,11 +12,11 @@
  * this module's `makeSdkMessageHandling` deps object, exactly the "deps
  * object" pattern used for the job-ticker split.
  */
-import { Cause, Chunk, Effect, Option, PubSub, Queue, Ref, Scope, Stream } from "effect"
+import { Cause, Context, Effect, Option, PubSub, Queue, Ref, Scope, Stream } from "effect"
 import {
-  type Clock as CoreClock,
+  Clock as CoreClock,
+  SessionStore,
   type ObservabilityApi,
-  type SessionStore,
   type StoredMessage,
   projectOne,
 } from "@luna/core"
@@ -113,7 +113,7 @@ const MAX_STREAM_FAILURE_CHARS = 400
 export const formatStreamFailureReason = (
   cause: Cause.Cause<unknown>,
 ): string => {
-  const failure = Cause.failureOption(cause)
+  const failure = Cause.findErrorOption(cause)
   const reason = Option.match(failure, {
     onSome: (e) =>
       e instanceof Error && e.message.length > 0 ? e.message : String(e),
@@ -127,9 +127,9 @@ export const formatStreamFailureReason = (
 /** Deps `handleSdkMessage` / `findStoredById` close over — everything else
  *  they need arrives as an explicit `args` object at the call site. */
 export interface SdkMessageHandlingDeps {
-  readonly clock: CoreClock
+  readonly clock: Context.Service.Shape<typeof CoreClock>
   readonly obs: ObservabilityApi
-  readonly store: SessionStore
+  readonly store: Context.Service.Shape<typeof SessionStore>
   readonly inc: (
     name: string,
     tags?: Readonly<Record<string, string>>,
@@ -155,13 +155,13 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
       .pipe(
         Stream.runCollect,
         Effect.map((chunk) => {
-          const arr = Chunk.toReadonlyArray(chunk)
+          const arr = Array.from(chunk)
           for (let i = arr.length - 1; i >= 0; i--) {
             if (arr[i]!.id === messageId) return arr[i]!
           }
           return null
         }),
-        Effect.catchAll(() => Effect.succeed(null as StoredMessage | null)),
+        Effect.catch(() => Effect.succeed(null as StoredMessage | null)),
       )
 
   /**
@@ -188,7 +188,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
     /** Set true here on `result` - see the `hasCompletedATurn` decl above. */
     readonly hasCompletedATurn: Ref.Ref<boolean>
     readonly observeTurn?: ThreadToolsBinding["observeTurn"]
-    readonly threadScope: Scope.CloseableScope
+    readonly threadScope: Scope.Closeable
   }): Effect.Effect<void, never> =>
     Effect.gen(function* () {
       // Any SDK traffic counts as activity — keeps a thread "warm" during
@@ -462,7 +462,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
               isError: m.is_error === true,
             })
             .pipe(
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
               Effect.forkIn(args.threadScope),
             )
         }

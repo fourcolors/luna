@@ -72,7 +72,7 @@ export interface AccountRotationDeps {
   readonly setActiveSdkSessionId: (sdkSessionId: string | null) => void
   readonly obs: ObservabilityApi
   readonly pubsub: PubSub.PubSub<ChatFrame>
-  readonly threadScope: Scope.CloseableScope
+  readonly threadScope: Scope.Closeable
   readonly queryBase: Omit<
     QueryRequest,
     "prompt" | "sessionOptions" | "onAccountAcquired" | "resumeFromSessionId"
@@ -168,7 +168,7 @@ export const makeRunOrdinaryQuery = (
       if (seedTurns.length > 0) {
         yield* Queue.offerAll(attemptQueue, seedTurns)
       }
-      const forwarderFiber = yield* Effect.fork(
+      const forwarderFiber = yield* Effect.forkChild(
         Effect.forever(
           Queue.take(inbox).pipe(
             Effect.flatMap((turn) =>
@@ -176,7 +176,7 @@ export const makeRunOrdinaryQuery = (
                 Ref.update(inFlightPrompts, (xs) => [
                   ...xs,
                   turn,
-                ]).pipe(Effect.zipRight(Queue.offer(attemptQueue, turn))),
+                ]).pipe(Effect.andThen(Queue.offer(attemptQueue, turn))),
               ),
             ),
           ),
@@ -277,7 +277,7 @@ export const makeRunOrdinaryQuery = (
       }
 
       // A fresh CHILD scope per attempt (BLOCKER #2), not
-      // `Scope.extend(threadScope)` directly: the old code
+      // `Scope.provide(threadScope)` directly: the old code
       // attached every attempt's `abortController.abort()`
       // finalizer and the broker's `inFlight` release finalizer
       // straight onto the THREAD scope, so a failed attempt's
@@ -287,9 +287,7 @@ export const makeRunOrdinaryQuery = (
       // `inFlight` count. `Scope.close` below runs those
       // finalizers as soon as WE decide this attempt is done
       // (rotate or terminal), not when the thread eventually ends.
-      const attemptScope = yield* Scope.fork(threadScope, {
-        _tag: "Parallel",
-      })
+      const attemptScope = yield* Scope.fork(threadScope, "parallel")
       const queryEffect = adapter
         .query({
           ...queryBase,
@@ -300,7 +298,7 @@ export const makeRunOrdinaryQuery = (
             ? { resumeFromSessionId }
             : {}),
         })
-        .pipe(Scope.extend(attemptScope))
+        .pipe(Scope.provide(attemptScope))
 
       let replies: Stream.Stream<SDKMessage, unknown>
       if (attemptNum === 1) {
@@ -346,7 +344,7 @@ export const makeRunOrdinaryQuery = (
       if (Exit.isSuccess(exit)) return
 
       const cause = exit.cause
-      const failure = Cause.failureOption(cause)
+      const failure = Cause.findErrorOption(cause)
       const inFlight = yield* Ref.get(inFlightPrompts)
       const currentAssistantText = yield* Ref.get(assistantText)
       const rotationAttemptsUsed = yield* Ref.get(rotationAttempts)

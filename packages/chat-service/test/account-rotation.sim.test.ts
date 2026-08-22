@@ -496,7 +496,7 @@ describe("account rotation - realistic SDK input/output shape (regression: indep
 
 /**
  * BLOCKER #2 regression (prior-attempt rejection): every rotation attempt
- * was scoped with `Scope.extend(threadScope)`, so a failed attempt's
+ * was scoped with `Scope.provide(threadScope)`, so a failed attempt's
  * finalizers - `abortController.abort()` (adapter.ts) and the broker
  * credential's `inFlight` release (documented in adapter.ts as attaching to
  * the query Scope) - never ran until the THREAD died. Each rotation
@@ -679,7 +679,7 @@ describe("account rotation - exhausted rotated-to pool (BLOCKER #4)", () => {
               model: "claude-test",
               title: "account-rotation-blocker4",
             })
-            const collector = yield* Effect.fork(
+            const collector = yield* Effect.forkChild(
               chat.subscribe(thread.id).pipe(
                 Stream.runForEach((f) => Effect.sync(() => frames.push(f))),
               ),
@@ -1058,7 +1058,7 @@ describe("account rotation - single-account pool has no viable failover", () => 
               model: "claude-test",
               title: "rotation-solo",
             })
-            const collector = yield* Effect.fork(
+            const collector = yield* Effect.forkChild(
               chat.subscribe(thread.id).pipe(
                 Stream.runForEach((f) => Effect.sync(() => frames.push(f))),
               ),
@@ -1130,12 +1130,12 @@ describe("account rotation - history-drop notice gated on genuine history", () =
               title: "rotation-history-drop-first-turn",
             })
             const evStream = yield* obs.subscribeEvents
-            const frameCollector = yield* Effect.fork(
+            const frameCollector = yield* Effect.forkChild(
               chat.subscribe(thread.id).pipe(
                 Stream.runForEach((f) => Effect.sync(() => frames.push(f))),
               ),
             )
-            const obsCollector = yield* Effect.fork(
+            const obsCollector = yield* Effect.forkChild(
               evStream.pipe(
                 Stream.runForEach((e) =>
                   Effect.sync(() =>
@@ -1227,12 +1227,12 @@ describe("account rotation - history-drop notice gated on genuine history", () =
               title: "rotation-history-drop-after-completion",
             })
             const evStream = yield* obs.subscribeEvents
-            const frameCollector = yield* Effect.fork(
+            const frameCollector = yield* Effect.forkChild(
               chat.subscribe(thread.id).pipe(
                 Stream.runForEach((f) => Effect.sync(() => frames.push(f))),
               ),
             )
-            const obsCollector = yield* Effect.fork(
+            const obsCollector = yield* Effect.forkChild(
               evStream.pipe(
                 Stream.runForEach((e) =>
                   Effect.sync(() =>
@@ -1520,7 +1520,7 @@ describe("account rotation - the rotation cap is a real bound in both directions
               model: "claude-test",
               title: "rotation-cap-real-bound",
             })
-            const collector = yield* Effect.fork(
+            const collector = yield* Effect.forkChild(
               chat.subscribe(thread.id).pipe(
                 Stream.runForEach((f) => Effect.sync(() => frames.push(f))),
               ),
