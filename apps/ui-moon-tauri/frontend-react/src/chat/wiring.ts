@@ -409,11 +409,12 @@ export function installWiring(ctx: WiringCtx) {
    * VoiceEngine — webview half of the local voice pipeline (VOICE.md).
    *
    * Owns: the availability probe (degrades silently on an older Rust core),
-   * persisted settings (localStorage) + their boot re-apply, the mic button,
+   * persisted settings (localStorage) + boot force-off (no hands-free re-arm),
    * the moon's data-voice-state visuals, the transcript → send-path rule,
-   * and the assistant-delta → sentence → speak_text pipeline. Every Tauri
-   * surface is guarded (window.__TAURI__ && …) so jsdom and plain-browser
-   * dev keep working with voice simply unavailable.
+   * and the assistant-delta → sentence → speak_text pipeline. Composer mic
+   * chrome is gone; Settings → Voice owns mode toggles. Every Tauri surface
+   * is guarded so jsdom and plain-browser dev keep working with voice simply
+   * unavailable.
    */
   // VoiceEngine arrives through ctx.engines now (S20c); its chat.html forward
   // declaration travelled inside this span and is no longer needed here.
