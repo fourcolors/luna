@@ -792,7 +792,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(invoke.mock.calls.map((c) => c[0])).toEqual(['voice_status'])
     })
 
-    it('Scenario: with a voice backend, boot re-applies persisted settings and subscribes ONLY voice-state', async () => {
+    it('Scenario: with a voice backend, boot forces mode off even if persisted auto and subscribes ONLY voice-state', async () => {
       localStorage.setItem('luna_voice_mode', 'auto')
       localStorage.setItem('luna_voice_silence_hang_ms', '800')
       const handlers: Record<string, (e: any) => void> = {}
@@ -807,8 +807,9 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await M().VoiceEngine.init()
 
       expect(invoke).toHaveBeenCalledWith('voice_status')
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
       expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 800 })
+      expect(localStorage.getItem('luna_voice_mode')).toBe('off')
       // Phase 6: the hub paints the moon only — transcripts / errors / model
       // progress are the chat window's and voice panel's listeners.
       expect(Object.keys(handlers)).toEqual(['voice-state'])

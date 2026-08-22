@@ -594,11 +594,19 @@ export class HubController {
 
   async applyPersistedVoice(): Promise<void> {
     const m = localStorage.getItem("luna_voice_mode")
-    const mode = m === "ptt" || m === "auto" ? m : "off"
+    // Boot/hub must NOT re-arm hands-free. Settings → Voice may write auto;
+    // the next hub boot forces off and persists that.
+    if (m === "ptt" || m === "auto") {
+      try {
+        localStorage.setItem("luna_voice_mode", "off")
+      } catch {
+        /* quota */
+      }
+    }
     const voiceId = localStorage.getItem("luna_voice_id") || ""
     const hang = parseInt(localStorage.getItem("luna_voice_silence_hang_ms") || "", 10)
     const silenceHangMs = Number.isFinite(hang) ? Math.max(300, Math.min(1200, hang)) : 600
-    await this.voiceInvoke("voice_set_mode", { mode })
+    await this.voiceInvoke("voice_set_mode", { mode: "off" })
     if (voiceId) await this.voiceInvoke("voice_set_voice", { id: voiceId })
     await this.voiceInvoke("voice_set_config", { silenceHangMs })
   }
