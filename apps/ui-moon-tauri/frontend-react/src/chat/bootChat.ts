@@ -510,6 +510,11 @@ export function bootChat() {
       threadDrawerList: document.getElementById("thread-drawer-list"),
       threadDrawerEmpty: document.getElementById("thread-drawer-empty"),
       threadDivider: document.getElementById("thread-divider"),
+      // The title-bar disclosure control for this drawer. _applyWidth keeps
+      // its lit/aria-expanded state in lockstep with the panel, so it has to
+      // be in the drawer's OWN DOM slice - the global map is not what this
+      // module reads.
+      toggleThreads: document.getElementById("toggle-threads"),
     },
     State: getChatHost()?.state() as never,
     WebSocketEngine: {

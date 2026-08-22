@@ -1398,6 +1398,29 @@
        still render the toggle as a dead button. */
     #toggle-threads[hidden] { display: none !important; }
 
+    /* ── Threads toggle: make it read as the drawer's handle ────────────────
+       POSITION. .bar-start reserves a 68px traffic-light footprint and
+       .title-bar adds a 7px flex gap, so the toggle landed 89px from the
+       content edge - a good ~20px clear of where the native lights actually
+       end. That dead space made it read as a free-floating glyph rather than
+       the handle for the drawer that opens directly beneath it. Pulling the
+       flex gap back sits it flush against the reserved footprint, on the same
+       edge the drawer emerges from. Scoped to #title-bar's instance so the
+       shared .bar-start (panel.html / widget.html) is untouched.
+       -14px = the 7px .title-bar gap + 7px of the footprint's slack. */
+    #title-bar #toggle-threads { margin-left: -14px; }
+
+    /* STATE. The control had no open state at all - clicking it slid the
+       drawer out but the button looked identical either way, so nothing tied
+       the two together. Staying lit while the drawer is open is what makes it
+       a disclosure control instead of a button that happens to do something.
+       Matches .close-btn:hover's treatment at a higher weight so the open
+       state does not disappear the moment the pointer leaves. */
+    #title-bar #toggle-threads.is-open {
+      background: color-mix(in oklab, var(--ink) 14%, transparent);
+      color: var(--ink);
+    }
+
     /* ── Artifacts panel (PRD Part C W1) — slide-in overlay anchored inside
        #chat-panel. Hidden until ArtifactsEngine.openPanel(). Uses the same
        watercolor palette as user-ask-panel and skill rows. ── */
@@ -2086,7 +2109,8 @@
          cluster, diagonally opposite its own drawer.) The drawer's own ✕
          (#thread-drawer-close) closes it from the inside; this toggles.
          Hidden in ?thread=<id> pinned pop-out windows. -->
-    <button class="close-btn" id="toggle-threads" aria-label="Threads" title="Threads">
+    <button class="close-btn" id="toggle-threads" aria-label="Show threads"
+            title="Show threads" aria-expanded="false" aria-controls="thread-drawer">
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="3" width="18" height="18" rx="2"></rect>
         <path d="M9 3v18"></path>
