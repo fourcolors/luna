@@ -1,0 +1,49 @@
+/*
+ * astryx-layer-order.css - pins the cascade-layer ORDER Moon relies on. Must be
+ * the FIRST stylesheet imported by any Moon entry that loads Astryx CSS.
+ *
+ * WHY THIS FILE EXISTS: Moon's HTML shells each carry a universal reset
+ * (`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }`)
+ * in their inline <style>. @astryxdesign/core ships ALL of its CSS inside
+ * cascade layers (`@layer reset` in reset.css, `@layer astryx-base` in
+ * astryx.css, `@layer astryx-theme` for themes). Per the CSS cascade-layers
+ * spec, UNLAYERED author rules beat LAYERED author rules regardless of
+ * specificity or source order - so while that reset was unlayered, its
+ * zero-specificity `*` selector silently stomped the padding and margin of
+ * EVERY Astryx component mounted anywhere in Moon.
+ *
+ * Concretely: Astryx's Button declares paddingInline: var(--spacing-3) and
+ * paddingBlock: var(--spacing-2), and rendered at `padding: 0` - text touching
+ * the button edges (the visibly squished Record / Start fresh buttons in the
+ * General settings panel). The spacing TOKENS were always fine; only
+ * reset-covered properties were lost, which is why height and gap looked
+ * correct while padding and margin did not.
+ *
+ * THE FIX: the shells now wrap that reset in `@layer moon-reset`, and this
+ * file declares the order those layers cascade in. Later layers win, so
+ * naming `moon-reset` first means Astryx's own rules beat the reset, while
+ * everything Astryx does NOT style still gets the reset's zeroing - so no UA
+ * default margins (body 8px, ul padding-inline 40px, ...) leak back in.
+ *
+ * Moon's OWN css is unaffected: it stays unlayered and therefore still beats
+ * every Astryx layer, which is exactly the property astryx-moon-bridge.css and
+ * the per-panel stylesheets already depend on. Nothing that previously won
+ * against the reset loses now - only rules that LOST to it (i.e. Astryx's)
+ * start winning, which is the entire point.
+ *
+ * WHY BOTH HERE AND IN THE SHELLS: layer order is fixed by where a layer name
+ * is FIRST seen. Each shell's inline <style> opens with this same statement,
+ * pinning the order at parse time in the normal case. This file repeats it for
+ * the bundle-side module graph so the order is identical regardless of whether
+ * the inline <style> or Vite's stylesheet parses first (dev injects CSS via JS
+ * at runtime; build emits a <link>). A repeated @layer statement is a no-op, so
+ * the two can never disagree - and if the ordering were ever lost entirely the
+ * failure mode is the old squish, never new breakage.
+ *
+ * NOTE the deliberately narrow scope: only `box-sizing`/`margin`/`padding` moved
+ * into the layer. The shells' `user-select`/`-webkit-user-drag` reset stays
+ * UNLAYERED on purpose - Moon wants its own non-selectable-chrome behavior to
+ * keep beating Astryx there, and folding it in would have been an unrelated
+ * behavior change riding along with a spacing fix.
+ */
+@layer moon-reset, reset, astryx-base, astryx-theme;
