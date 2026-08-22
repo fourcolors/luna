@@ -9,10 +9,10 @@
  *   - `ChannelMessage`         — normalized inbound message
  *   - `ChannelAttachment`      — inline binary attachment (image/PDF) on a message
  *   - `DeliveryCapability`     — how a platform accepts output
- *   - `ChannelService`         — orchestrator (Effect Tag + API)
+ *   - `ChannelService`         — orchestrator (Context.Service + API)
  *   - `ChannelServiceLayer`    — production Layer (inject ChatService et al.)
- *   - `ChannelSessionStore`    — session-map store (Tag + Memory + makeLayer)
- *   - `InboundDedupStore`      — dedup store (Tag + Memory + makeLayer)
+ *   - `ChannelSessionStore`    — session-map store (Context.Service + Memory + makeLayer)
+ *   - `InboundDedupStore`      — dedup store (Context.Service + Memory + makeLayer)
  *   - `lookupOrCreate`         — session-map primary API
  *   - `splitToChunks`          — delivery chunking utility
  *   - `subscribeAndDeliver`    — low-level delivery primitive

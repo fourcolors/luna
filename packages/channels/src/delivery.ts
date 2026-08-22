@@ -294,7 +294,7 @@ const deliverChunks = (
         chunkIndex: i,
         totalChunks: total,
         ...(standalone ? { standalone: true as const } : {}),
-      }).pipe(Effect.catchAllCause(() => Effect.void)),
+      }).pipe(Effect.catchCause(() => Effect.void)),
     { discard: true },
   )
 }
@@ -308,7 +308,7 @@ export const subscribeAndDeliver = (
   adapter: ChannelAdapter,
   target: DeliveryTarget,
   serviceScope: Scope.Scope,
-): Effect.Effect<Fiber.RuntimeFiber<void, never>, never, ChatService> =>
+): Effect.Effect<Fiber.Fiber<void, never>, never, ChatService> =>
   Effect.gen(function* () {
     const chat = yield* ChatService
 
@@ -322,7 +322,7 @@ export const subscribeAndDeliver = (
     // Whether we have sent the initial placeholder in stream-edit mode.
     const editStarted = yield* Ref.make<boolean>(false)
     // Throttle fiber for stream-edit (we cancel and restart it on each delta).
-    const throttleFiber = yield* Ref.make<Fiber.RuntimeFiber<void, never> | null>(null)
+    const throttleFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null)
     // Tool steps of the current turn, in invocation order (Moon's timeline).
     const toolSteps = yield* Ref.make<ReadonlyArray<ToolStep>>([])
     // Current rendered tool-status block for stream-edit adapters.
@@ -353,7 +353,7 @@ export const subscribeAndDeliver = (
           chunkIndex: 0,
           totalChunks: 1,
         })
-        .pipe(Effect.catchAllCause(() => Effect.void))
+        .pipe(Effect.catchCause(() => Effect.void))
 
     const scheduleThrottledEdit = Effect.gen(function* () {
       yield* cancelPendingEdit
@@ -366,9 +366,9 @@ export const subscribeAndDeliver = (
           yield* deliverStreamEdit(current, false)
           yield* Ref.set(lastEditedText, current)
         }
-      }).pipe(Effect.fork)
+      }).pipe(Effect.forkChild)
 
-      yield* Ref.set(throttleFiber, editFiber as Fiber.RuntimeFiber<void, never>)
+      yield* Ref.set(throttleFiber, editFiber as Fiber.Fiber<void, never>)
     })
 
     /**
@@ -419,7 +419,7 @@ export const subscribeAndDeliver = (
                         chunkIndex: 0,
                         totalChunks: 1,
                       })
-                      .pipe(Effect.catchAllCause(() => Effect.void))
+                      .pipe(Effect.catchCause(() => Effect.void))
                     yield* Ref.set(lastEditedText, "…")
                   }
 
@@ -550,7 +550,7 @@ export const subscribeAndDeliver = (
                             chunkIndex: idx,
                             totalChunks: total,
                           })
-                          .pipe(Effect.catchAllCause(() => Effect.void)),
+                          .pipe(Effect.catchCause(() => Effect.void)),
                       { discard: true },
                     )
                   }
@@ -579,11 +579,11 @@ export const subscribeAndDeliver = (
             }
           }),
         ),
-        Effect.catchAllCause(() => Effect.void),
+        Effect.catchCause(() => Effect.void),
         Effect.forkIn(serviceScope),
       )
 
-    return fiber as Fiber.RuntimeFiber<void, never>
+    return fiber as Fiber.Fiber<void, never>
   })
 /* -------------------------------------------------------------------------- */
 /* Stream-edit throttle schedule (exported for tests)                         */

@@ -25,7 +25,7 @@
  *
  * Follows the same bun:sqlite + WAL pattern as packages/connectors/src/store.ts.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock, ConfigError, LunaSqliteBootstrap, applyMigration, ensureSchemaVersions } from "@luna/core"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelMessage } from "./types.js"
@@ -106,9 +106,10 @@ export interface ChannelSessionStoreApi {
   ) => Effect.Effect<void>
 }
 
-export class ChannelSessionStore extends Effect.Tag(
-  "luna/ChannelSessionStore",
-)<ChannelSessionStore, ChannelSessionStoreApi>() {
+export class ChannelSessionStore extends Context.Service<
+  ChannelSessionStore,
+  ChannelSessionStoreApi
+>()("luna/ChannelSessionStore") {
   /** In-memory variant for unit tests. */
   static readonly Memory: Layer.Layer<ChannelSessionStore> = Layer.effect(
     ChannelSessionStore,
@@ -148,7 +149,7 @@ export class ChannelSessionStore extends Effect.Tag(
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<ChannelSessionStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       ChannelSessionStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap
