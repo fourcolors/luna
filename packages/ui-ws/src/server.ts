@@ -14,7 +14,7 @@
  *     keeps the rest healthy.
  *   - On overflow, emit a `{type:"drop", n, since}` frame so the client knows
  *     it missed events and can re-fetch from a durable source if needed.
- *   - Lifetime: server is a Layer.scoped resource; on Scope close it
+ *   - Lifetime: server is a Layer.effect resource; on Scope close it
  *     gracefully closes the http server + every active WebSocket + the per-
  *     connection forwarder fibers.
  *   - Each connection forks into the SERVER's scope (not the request's) so
@@ -28,6 +28,7 @@
  */
 import {
   Cause,
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -35,8 +36,8 @@ import {
   Layer,
   Option,
   Ref,
-  Runtime,
   Schedule,
+  Semaphore,
   Stream,
 } from "effect"
 import type * as Scope from "effect/Scope"
@@ -261,12 +262,13 @@ export interface UIWebSocketServerConfig {
    *     translating ChatFrame → ServerFrame on the wire
    *
    * The base obs path (event/drop/ping) keeps working unchanged when
-   * this is unset. Pass the resolved service handle (not the Tag) so
-   * the server's environment doesn't grow a `ChatService` dependency.
+   * this is unset. Pass the resolved service handle (not the
+   * `Context.Service` key) so the server's environment doesn't grow a
+   * `ChatService` dependency.
    * Pass `null` explicitly in setup-mode (same as absent — server
    * advertises `setup:true, chat:false`).
    */
-  readonly chatService?: ChatService | null
+  readonly chatService?: Context.Service.Shape<typeof ChatService> | null
   /**
    * Optional AccountBroker handle. When provided, the server sends an
    * `account-list` frame to each client immediately after the `hello`
@@ -766,7 +768,7 @@ const toWireSkill = (
  * is not a UI message, and must never leak internals to clients).
  */
 const failureMessage = (cause: Cause.Cause<unknown>): string => {
-  const failure = Cause.failureOption(cause)
+  const failure = Cause.findErrorOption(cause)
   if (Option.isSome(failure)) {
     const f = failure.value
     if (typeof f === "object" && f !== null && "message" in f) {
@@ -1021,12 +1023,12 @@ export const startUIWebSocketServer = (
     })
 
     // Track active sockets so we can close them on shutdown.
-    const activeFibers = yield* Ref.make<ReadonlyArray<Fiber.RuntimeFiber<unknown, unknown>>>([])
+    const activeFibers = yield* Ref.make<ReadonlyArray<Fiber.Fiber<unknown, unknown>>>([])
     const activeSockets = yield* Ref.make<ReadonlyArray<WebSocket>>([])
 
     // Capture the surrounding runtime — connection handlers run via this
     // runtime so they share the UIService PubSub etc.
-    const runtime = yield* Effect.runtime<UIService>()
+    const runtime = yield* Effect.context<UIService>()
 
     // PRD Part B: out-of-band catalog changes (user-skills hot-load) →
     // broadcast a fresh skill-catalog to every connected client. The toggle
@@ -1035,7 +1037,7 @@ export const startUIWebSocketServer = (
       const reg = skillRegistry
       const registerChanges = skillRegistry.changes
       registerChanges(() => {
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           Effect.gen(function* () {
             const skills = yield* reg.catalog()
             const wire = skills.map(toWireSkill)
@@ -1043,7 +1045,7 @@ export const startUIWebSocketServer = (
             for (const sock of sockets) {
               send(sock, { type: "skill-catalog", skills: wire })
             }
-          }).pipe(Effect.catchAllCause(() => Effect.void)),
+          }).pipe(Effect.catchCause(() => Effect.void)),
         )
       })
     }
@@ -1060,7 +1062,7 @@ export const startUIWebSocketServer = (
     ) {
       const registerArchiveChanges = threadArchiveNotifier.changes
       registerArchiveChanges((threadIds) => {
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           Effect.gen(function* () {
             const sockets = yield* Ref.get(activeSockets)
             for (const sock of sockets) {
@@ -1068,7 +1070,7 @@ export const startUIWebSocketServer = (
                 send(sock, { type: "thread-archived", threadId })
               }
             }
-          }).pipe(Effect.catchAllCause(() => Effect.void)),
+          }).pipe(Effect.catchCause(() => Effect.void)),
         )
       })
     }
@@ -1080,14 +1082,14 @@ export const startUIWebSocketServer = (
       const store = artifactStore
       const registerArtifactChanges = artifactStore.changes
       registerArtifactChanges(() => {
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           Effect.gen(function* () {
             const artifacts = yield* store.list()
             const sockets = yield* Ref.get(activeSockets)
             for (const sock of sockets) {
               send(sock, { type: "artifact-list", artifacts })
             }
-          }).pipe(Effect.catchAllCause(() => Effect.void)),
+          }).pipe(Effect.catchCause(() => Effect.void)),
         )
       })
     }
@@ -1101,7 +1103,7 @@ export const startUIWebSocketServer = (
       const vsvc = vaultService
       const registerVaultChanges = vaultService.changes
       registerVaultChanges(() => {
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           Effect.gen(function* () {
             const items = yield* Effect.promise(() => vsvc.list())
             const sync = yield* Effect.promise(() => vsvc.syncState())
@@ -1115,7 +1117,7 @@ export const startUIWebSocketServer = (
                 ...(storage !== null ? { storage } : {}),
               })
             }
-          }).pipe(Effect.catchAllCause(() => Effect.void)),
+          }).pipe(Effect.catchCause(() => Effect.void)),
         )
       })
     }
@@ -1129,7 +1131,7 @@ export const startUIWebSocketServer = (
     // Forked into the SERVER SCOPE (not detached) so the consumer is
     // interrupted deterministically on server teardown — mirroring the
     // connector-refresh loop's `Effect.forkScoped`. (The nearby `.changes`
-    // hooks use Runtime.runFork because they run inside synchronous notify
+    // hooks use Effect.runForkWith because they run inside synchronous notify
     // callbacks; this one is a long-lived runForEach in the gen body.)
     if (chat !== null) {
       yield* Effect.forkScoped(
@@ -1149,7 +1151,7 @@ export const startUIWebSocketServer = (
               }
             }),
           ),
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         ),
       )
     }
@@ -1171,7 +1173,7 @@ export const startUIWebSocketServer = (
               }
             }),
           ),
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         ),
       )
     }
@@ -1362,7 +1364,7 @@ export const startUIWebSocketServer = (
               // A swallowed defect here leaves the client believing the server supports
               // commands (hello said so) while no catalog ever arrives. Log it like the
               // per-message handler backstop instead of failing silently.
-              Effect.tapErrorCause((c) =>
+              Effect.tapCause((c) =>
                 Effect.sync(() => console.error("[ui-ws] capability-catalog send defect:", Cause.pretty(c))),
               ),
             ),
@@ -1378,7 +1380,7 @@ export const startUIWebSocketServer = (
               const instances = yield* svc.list()
               send(ws, { type: "connector-catalog", connectors })
               send(ws, { type: "connector-list", instances })
-            }).pipe(Effect.catchAllCause(() => Effect.void)),
+            }).pipe(Effect.catchCause(() => Effect.void)),
           )
         }
 
@@ -1391,7 +1393,7 @@ export const startUIWebSocketServer = (
               Effect.sync(() => {
                 send(ws, { type: "artifact-list", artifacts })
               }),
-            ).pipe(Effect.catchAllCause(() => Effect.void)),
+            ).pipe(Effect.catchCause(() => Effect.void)),
           )
         }
 
@@ -1404,7 +1406,7 @@ export const startUIWebSocketServer = (
               Effect.sync(() => {
                 send(ws, { type: "workflow-list", workflows })
               }),
-            ).pipe(Effect.catchAllCause(() => Effect.void)),
+            ).pipe(Effect.catchCause(() => Effect.void)),
           )
         }
 
@@ -1417,7 +1419,7 @@ export const startUIWebSocketServer = (
             Effect.sync(() => {
               const listFrame = mrSvc.list()
               send(ws, listFrame)
-            }).pipe(Effect.catchAllCause(() => Effect.void)),
+            }).pipe(Effect.catchCause(() => Effect.void)),
           )
         }
 
@@ -1437,7 +1439,7 @@ export const startUIWebSocketServer = (
                 ...(sync !== null ? { sync } : {}),
                 ...(storage !== null ? { storage } : {}),
               })
-            }).pipe(Effect.catchAllCause(() => Effect.void)),
+            }).pipe(Effect.catchCause(() => Effect.void)),
           )
         }
 
@@ -1466,12 +1468,12 @@ export const startUIWebSocketServer = (
         // issuedAt differs).
         //
         // Scope: both fibers are forked into the connection scope via
-        // Effect.fork, so closing the connection interrupts them. No
+        // Effect.forkChild, so closing the connection interrupts them. No
         // detached `Effect.runFork` here — that would let the poller
         // outlive its ws.
         //
         // Errors: pendingSurvey failures (alignment-store IO, etc.) collapse
-        // to Effect.void via catchAllCause. A transient backend hiccup must
+        // to Effect.void via catchCause. A transient backend hiccup must
         // never tear down the connection or stop future ticks.
         if (survey !== null) {
           const s = survey
@@ -1488,10 +1490,10 @@ export const startUIWebSocketServer = (
               })
               lastSentIssuedAt = pending.issuedAt
             }
-          }).pipe(Effect.catchAllCause(() => Effect.void))
+          }).pipe(Effect.catchCause(() => Effect.void))
 
           // 1. Immediate connect-time check (preserves Phase 3 D3 latency).
-          yield* Effect.fork(checkAndPush)
+          yield* Effect.forkChild(checkAndPush)
 
           // 2. Recurring re-check. 0 disables the poller (tests / setup-mode
           //    use this); otherwise we re-check on a fixed cadence for the
@@ -1500,7 +1502,7 @@ export const startUIWebSocketServer = (
           //    never duplicates the immediate check above on the same tick.
           const surveyPollMs = config.surveyPollIntervalMs ?? 60_000
           if (surveyPollMs > 0) {
-            yield* Effect.fork(
+            yield* Effect.forkChild(
               checkAndPush.pipe(
                 Effect.repeat(Schedule.spaced(Duration.millis(surveyPollMs))),
               ),
@@ -1539,13 +1541,13 @@ export const startUIWebSocketServer = (
         // Per-connection chat state.
         //   - `chatFibers`: forwarder fibers, one per subscribed threadId.
         //     Interrupting the fiber releases the underlying PubSub
-        //     subscription via Stream.unwrapScoped (chat-service.ts:444).
+        //     subscription via Stream.unwrap (chat-service.ts:444).
         //   - The connection's Effect.scoped wrapper owns these fibers,
         //     and we install a finalizer that interrupts the lot on
         //     close — belt-and-suspenders against any case where an
         //     individual fiber misses its cancel signal.
         const chatFibers = yield* Ref.make<
-          ReadonlyMap<string, Fiber.RuntimeFiber<unknown, unknown>>
+          ReadonlyMap<string, Fiber.Fiber<unknown, unknown>>
         >(new Map())
         // Per-connection mutex for subscribeChatThread. The map check + fiber
         // fork + Ref.update is NOT atomic against a `Ref<Map<...>>`; without
@@ -1558,7 +1560,7 @@ export const startUIWebSocketServer = (
         // assistant-done is sent to the wire TWICE — the user-reported
         // "messages being processed multiple times" bug. The semaphore
         // makes check-and-stake atomic at the connection level.
-        const subscribeMutex = yield* Effect.makeSemaphore(1)
+        const subscribeMutex = yield* Semaphore.make(1)
         if (chat !== null) {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
@@ -1617,7 +1619,7 @@ export const startUIWebSocketServer = (
         // kept low-frequency (20s) to avoid hammering git. Forked into the
         // connection scope so it stops when the socket closes.
         const smartBarIntervalMs = 20_000
-        yield* Effect.fork(
+        yield* Effect.forkChild(
           Effect.forever(
             Effect.gen(function* () {
               yield* Effect.sleep(`${smartBarIntervalMs} millis`)
@@ -1896,12 +1898,12 @@ export const startUIWebSocketServer = (
                   send(ws, chatFrameToWire(f))
                 }),
               ),
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
               Effect.forkIn(connectionScope),
             )
             yield* Ref.update(chatFibers, (mm) => {
               const next = new Map(mm)
-              next.set(threadId, fiber as Fiber.RuntimeFiber<unknown, unknown>)
+              next.set(threadId, fiber as Fiber.Fiber<unknown, unknown>)
               return next
             })
             // When the fiber finishes naturally (e.g. ChatService.subscribe
@@ -1972,7 +1974,7 @@ export const startUIWebSocketServer = (
             // new connection on hello). Extracted so every vault mutation
             // case can broadcast without duplicating the list/syncState
             // fetch. Refresh errors are silently swallowed (isolated
-            // catchAllCause) so they cannot produce a second vault-status
+            // catchCause) so they cannot produce a second vault-status
             // for the same requestId (finding 6).
             const pushVaultList = (
               vsvc: NonNullable<typeof vaultService>,
@@ -1990,7 +1992,7 @@ export const startUIWebSocketServer = (
                     ...(storage !== null ? { storage } : {}),
                   })
                 }
-              }).pipe(Effect.catchAllCause(() => Effect.void))
+              }).pipe(Effect.catchCause(() => Effect.void))
 
             const handle = (): Effect.Effect<void, never> =>
               Effect.gen(function* () {
@@ -2091,7 +2093,7 @@ export const startUIWebSocketServer = (
                           actionId: frame.actionId,
                           decision: frame.decision,
                         })
-                        .pipe(Effect.catchAllCause(() => Effect.void))
+                        .pipe(Effect.catchCause(() => Effect.void))
                     }
                     return
                   }
@@ -2106,7 +2108,7 @@ export const startUIWebSocketServer = (
                           decision: frame.decision,
                         })
                         .pipe(
-                          Effect.catchAllCause(() =>
+                          Effect.catchCause(() =>
                             Effect.succeed({
                               ok: false as const,
                               message: "fork respond failed",
@@ -2138,7 +2140,7 @@ export const startUIWebSocketServer = (
                     if (threadForks !== null) {
                       const proposals = yield* threadForks
                         .listPending(frame.threadId)
-                        .pipe(Effect.catchAllCause(() => Effect.succeed([])))
+                        .pipe(Effect.catchCause(() => Effect.succeed([])))
                       send(ws, {
                         type: "fork-proposal-set",
                         threadId: frame.threadId,
@@ -2256,7 +2258,7 @@ export const startUIWebSocketServer = (
                       // Smart bar will be pushed when the snapshot frame arrives
                       // in the forwarder fiber — no extra push needed here.
                     }).pipe(
-                      Effect.catchAllCause((cause) =>
+                      Effect.catchCause((cause) =>
                         Effect.sync(() => {
                           console.error(
                             "[ui-ws] new-thread failed:",
@@ -2371,7 +2373,7 @@ export const startUIWebSocketServer = (
                       at: frame.issuedAt,
                     }))
                     yield* survey.submitVerdicts(frame.surveyId, frame.issuedAt, pinnedVerdicts).pipe(
-                      Effect.catchAllCause(() => Effect.void),
+                      Effect.catchCause(() => Effect.void),
                     )
                     return
                   }
@@ -2420,7 +2422,7 @@ export const startUIWebSocketServer = (
                           }
                         }),
                       ),
-                      Effect.catchAllCause((cause) =>
+                      Effect.catchCause((cause) =>
                         Effect.sync(() => {
                           send(ws, {
                             type: "skill-status",
@@ -2551,7 +2553,7 @@ export const startUIWebSocketServer = (
                             }),
                           ),
                         ),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() =>
                             send(ws, {
                               type: "feedback-ack",
@@ -2616,7 +2618,7 @@ export const startUIWebSocketServer = (
                             })
                           }),
                         ),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() => {
                             send(ws, {
                               type: "capability-execute-result",
@@ -2673,7 +2675,7 @@ export const startUIWebSocketServer = (
                             authUrl: begun.authUrl,
                           })
                         }),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
@@ -2723,7 +2725,7 @@ export const startUIWebSocketServer = (
                             }
                           }),
                         ),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
@@ -2766,7 +2768,7 @@ export const startUIWebSocketServer = (
                             }
                           }),
                         ),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
@@ -2799,7 +2801,7 @@ export const startUIWebSocketServer = (
                             }
                           }),
                         ),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
@@ -2855,7 +2857,7 @@ export const startUIWebSocketServer = (
                             }
                           }),
                         ),
-                        Effect.catchAllCause((cause) =>
+                        Effect.catchCause((cause) =>
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
@@ -2907,7 +2909,7 @@ export const startUIWebSocketServer = (
                             }
                           }),
                         ),
-                        Effect.catchAllCause(() => Effect.void),
+                        Effect.catchCause(() => Effect.void),
                       )
                     return
                   }
@@ -2932,7 +2934,7 @@ export const startUIWebSocketServer = (
                             }
                           }),
                         ),
-                        Effect.catchAllCause(() => Effect.void),
+                        Effect.catchCause(() => Effect.void),
                       )
                     return
                   }
@@ -2963,7 +2965,7 @@ export const startUIWebSocketServer = (
                           }
                         }),
                       ),
-                      Effect.catchAllCause(() => Effect.void),
+                      Effect.catchCause(() => Effect.void),
                     )
                     return
                   }
@@ -2979,7 +2981,7 @@ export const startUIWebSocketServer = (
                             send(ws, { type: "workflow-list", workflows })
                           }),
                         ),
-                        Effect.catchAllCause(() => Effect.void),
+                        Effect.catchCause(() => Effect.void),
                       )
                     return
                   }
@@ -3011,13 +3013,13 @@ export const startUIWebSocketServer = (
                             send(ws, { type: "workflow-runs", jobId, runs })
                           }),
                         ),
-                        Effect.catchAllCause(() => Effect.void),
+                        Effect.catchCause(() => Effect.void),
                       )
                     return
                   }
                   case "mcp-resource-read": {
                     // MCP Apps relay (Phase 7): resolve a ui:// app resource.
-                    // The host NEVER rejects by contract; the catchAllCause is
+                    // The host NEVER rejects by contract; the catchCause is
                     // belt-and-suspenders so a defect can't kill the socket
                     // loop — it collapses to a generic ok:false reply.
                     if (mcpAppHost === null) return
@@ -3025,7 +3027,7 @@ export const startUIWebSocketServer = (
                     const out = yield* Effect.promise(() =>
                       host.handleResourceRead(frame),
                     ).pipe(
-                      Effect.catchAllCause(() =>
+                      Effect.catchCause(() =>
                         Effect.succeed<ServerFrame>({
                           type: "mcp-resource-result",
                           requestId: String(
@@ -3048,7 +3050,7 @@ export const startUIWebSocketServer = (
                     const out = yield* Effect.promise(() =>
                       host.handleToolCall(frame),
                     ).pipe(
-                      Effect.catchAllCause(() =>
+                      Effect.catchCause(() =>
                         Effect.succeed<ServerFrame>({
                           type: "mcp-tool-result",
                           requestId: String(
@@ -3127,7 +3129,7 @@ export const startUIWebSocketServer = (
                       })
                       return res.ok
                     }).pipe(
-                      Effect.catchAllCause((cause) =>
+                      Effect.catchCause((cause) =>
                         Effect.sync(() => {
                           send(ws, {
                             type: "vault-status",
@@ -3179,7 +3181,7 @@ export const startUIWebSocketServer = (
                       })
                       return res.ok
                     }).pipe(
-                      Effect.catchAllCause((cause) =>
+                      Effect.catchCause((cause) =>
                         Effect.sync(() => {
                           send(ws, {
                             type: "vault-status",
@@ -3237,7 +3239,7 @@ export const startUIWebSocketServer = (
                       })
                       return res.ok
                     }).pipe(
-                      Effect.catchAllCause((cause) =>
+                      Effect.catchCause((cause) =>
                         Effect.sync(() => {
                           send(ws, {
                             type: "vault-status",
@@ -3299,7 +3301,7 @@ export const startUIWebSocketServer = (
                       })
                       return res.ok
                     }).pipe(
-                      Effect.catchAllCause((cause) =>
+                      Effect.catchCause((cause) =>
                         Effect.sync(() => {
                           send(ws, {
                             type: "vault-status",
@@ -3349,7 +3351,7 @@ export const startUIWebSocketServer = (
                         for (const sock of sockets) {
                           send(sock, freshList)
                         }
-                      }).pipe(Effect.catchAllCause(() => Effect.void))
+                      }).pipe(Effect.catchCause(() => Effect.void))
                       // Schedule restart so the resolver feeds the engine.
                       mrSvc.scheduleRestart?.()
                     }
@@ -3383,9 +3385,9 @@ export const startUIWebSocketServer = (
             // additionally expected to catch their own failures and send the
             // client a typed error frame; this logger is the backstop for any
             // they miss.
-            Runtime.runFork(runtime)(
+            Effect.runForkWith(runtime)(
               handle().pipe(
-                Effect.tapErrorCause((c) =>
+                Effect.tapCause((c) =>
                   Effect.sync(() =>
                     console.error("[ui-ws] handler defect:", Cause.pretty(c)),
                   ),
@@ -3412,13 +3414,13 @@ export const startUIWebSocketServer = (
         yield* Effect.race(
           forwarder,
           Effect.race(pinger, Deferred.await(closed)),
-        ).pipe(Effect.catchAllCause(() => Effect.void))
+        ).pipe(Effect.catchCause(() => Effect.void))
       })
 
-    const runFork = Runtime.runFork(runtime)
+    const runFork = Effect.runForkWith(runtime)
     wss.on("connection", (ws) => {
       const fiber = runFork(Effect.scoped(handleConnection(ws)))
-      const typed = fiber as Fiber.RuntimeFiber<unknown, unknown>
+      const typed = fiber as Fiber.Fiber<unknown, unknown>
       runFork(Ref.update(activeFibers, (xs) => [...xs, typed]))
       // Remove from activeFibers when the fiber finishes (natural close,
       // forwarder error, etc.) — otherwise long-lived servers leak completed
@@ -3429,7 +3431,7 @@ export const startUIWebSocketServer = (
     })
 
     // Listen.
-    yield* Effect.async<void, Error>((resume) => {
+    yield* Effect.callback<void, Error>((resume) => {
       const onError = (err: Error) => resume(Effect.fail(err))
       httpServer.once("error", onError)
       httpServer.listen(port, host, () => {
@@ -3456,7 +3458,7 @@ export const startUIWebSocketServer = (
         }
         const fibers = yield* Ref.get(activeFibers)
         yield* Fiber.interruptAll(fibers)
-        yield* Effect.async<void>((resume) => {
+        yield* Effect.callback<void>((resume) => {
           wss.close(() => resume(Effect.void))
         })
         // Force-close all tracked connections before calling httpServer.close().
@@ -3465,7 +3467,7 @@ export const startUIWebSocketServer = (
         // closeAllConnections() (Node 18.2+ / Bun compat) destroys them so the
         // callback fires promptly.
         try { (httpServer as { closeAllConnections?: () => void }).closeAllConnections?.() } catch { /* not critical */ }
-        yield* Effect.async<void>((resume) => {
+        yield* Effect.callback<void>((resume) => {
           // Safety-valve: resolve after 500ms even if the callback never fires
           // (Bun #14946 in environments that don't support closeAllConnections).
           const t = setTimeout(() => resume(Effect.void), 500)
@@ -3489,4 +3491,4 @@ export const startUIWebSocketServer = (
 export const UIWebSocketServerLayer = (
   config: UIWebSocketServerConfig,
 ): Layer.Layer<never, Error, UIService> =>
-  Layer.scopedDiscard(startUIWebSocketServer(config).pipe(Effect.asVoid))
+  Layer.effectDiscard(startUIWebSocketServer(config).pipe(Effect.asVoid))

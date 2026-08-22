@@ -11,7 +11,7 @@
  *   - firing notify with zero connected clients does NOT throw
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -26,10 +26,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/VaultChangesServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/VaultChangesServerHandle") {}
 
 /* -------------------------------------------------------------------------- */
 /* Shared item factory                                                         */
@@ -79,7 +79,7 @@ const startVaultChangesRig = async (
     pollSeconds: 300,
   }
 
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({

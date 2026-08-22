@@ -16,10 +16,10 @@
  *     and never throws / tears down the connection
  *   - OR-guard regression: the case fires on a capabilities-ONLY server (no
  *     chat) — proving it is not dead-registered
- *   - an execute DEFECT acks ok:false (catchAllCause) without killing the conn
+ *   - an execute DEFECT acks ok:false (catchCause) without killing the conn
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -36,10 +36,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/CapabilityServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/CapabilityServerHandle") {}
 
 const makeCatalog = (): WireCapabilityCatalog => ({
   generation: 1,
@@ -70,12 +70,12 @@ interface Rig {
  * Capabilities-ONLY server rig: a fake capabilityRegistry and NO chat service.
  * Running execute here proves the OR-guard fires (handler attached without a
  * chat). `executeCalls` records every forwarded request for args-passthrough
- * assertions. `id:"boom"` returns a DEFECT to exercise the catchAllCause path.
+ * assertions. `id:"boom"` returns a DEFECT to exercise the catchCause path.
  */
 const startCapabilitiesRig = async (): Promise<Rig> => {
   const executeCalls: Rig["executeCalls"] = []
 
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({
@@ -110,7 +110,7 @@ const startCapabilitiesRig = async (): Promise<Rig> => {
 
 /** A server with NO capabilityRegistry — hello must report commands:false. */
 const startBareRig = async (): Promise<Rig> => {
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({
@@ -322,7 +322,7 @@ describe("capability layer ui-ws server (live)", () => {
     client.close()
   })
 
-  it("acks unknown ids ok:false and survives an execute DEFECT (catchAllCause)", async () => {
+  it("acks unknown ids ok:false and survives an execute DEFECT (catchCause)", async () => {
     activeRig = await startCapabilitiesRig()
     const client = await openClient(activeRig.url)
     await client.waitFor((f) => f.type === "capability-catalog")
@@ -342,7 +342,7 @@ describe("capability layer ui-ws server (live)", () => {
       unknown.type === "capability-execute-result" ? unknown.message : "",
     ).toContain("unknown capability ghost")
 
-    // Defect → catchAllCause acks ok:false without tearing down the conn.
+    // Defect → catchCause acks ok:false without tearing down the conn.
     client.send({
       type: "capability-execute",
       requestId: "boom1",

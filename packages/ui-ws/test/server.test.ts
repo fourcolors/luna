@@ -14,16 +14,12 @@
  *   - startup validation: refuses short token
  *
  * Slow-consumer drop and scope-leak shutdown are covered indirectly by
- * the bounded-buffer + Layer.scoped finalizer; an explicit drop test is
+ * the bounded-buffer + Layer.effect finalizer; an explicit drop test is
  * left as a follow-up because reliably stalling a localhost ws send
  * buffer in a unit test is flaky.
  */
 import { afterEach, beforeEach, afterAll, describe, expect, it, vi } from "vitest"
-import {
-  Effect,
-  Layer,
-  ManagedRuntime,
-} from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import { WebSocket } from "ws"
 import net from "node:net"
 import { randomBytes } from "node:crypto"
@@ -191,17 +187,17 @@ interface TestRig {
 // Service tag for the running server handle, so we can compose it as a
 // Layer with the rest of the runtime — that way Layer scope owns the
 // server's lifetime, and ManagedRuntime.dispose() shuts it down cleanly.
-class ServerHandle extends Effect.Tag("test/ServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number; readonly host: string }
->() {}
+>()("test/ServerHandle") {}
 
 const startRig = async (
   uiConfig?: Parameters<typeof UIService.makeLayer>[0],
   serverConfig?: Partial<Parameters<typeof startUIWebSocketServer>[0]>,
 ): Promise<TestRig> => {
   const baseLayer = makeFullLayer(uiConfig)
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     startUIWebSocketServer({
       port: 0,
@@ -878,7 +874,7 @@ describe("UIWebSocketServer", () => {
 
   it("refuses to start with token shorter than 16 chars", async () => {
     const baseLayer = makeFullLayer()
-    const badLayer = Layer.scoped(
+    const badLayer = Layer.effect(
       ServerHandle,
       startUIWebSocketServer({ port: 0, token: "short" }),
     ).pipe(Layer.provide(baseLayer))
