@@ -1,3 +1,7 @@
+/**
+ * Effect v4-compatible already: no Tag / Either / catchAll* / Layer.scoped.
+ * Stream.runCollect (tests) is consumed via Array.from — no Chunk API rewrite.
+ */
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
