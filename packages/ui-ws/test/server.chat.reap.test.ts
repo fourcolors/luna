@@ -22,12 +22,7 @@
  * deterministically instead of waiting on the background sweep.
  */
 import { afterEach, describe, expect, it } from "vitest"
-import {
-  Effect,
-  Layer,
-  ManagedRuntime,
-  Stream,
-} from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import { MemoryRouterTag, type MemoryRouter } from "@luna/memory"
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -137,10 +132,10 @@ const noopMemoryRouter: MemoryRouter = {
   exportAll: () => Effect.die("noopMemoryRouter.exportAll"),
 }
 
-class ServerHandle extends Effect.Tag("test/ReapChatServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number; readonly host: string }
->() {}
+>()("test/ReapChatServerHandle") {}
 
 interface ReapRig {
   readonly url: string
@@ -196,7 +191,7 @@ const startReapRig = async (params: {
     ),
     baseLayer,
   )
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const chat = yield* ChatService

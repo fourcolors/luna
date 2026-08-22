@@ -15,12 +15,7 @@
  * thin and only verifies the WS layer's frame mapping + routing.
  */
 import { afterAll, afterEach, describe, expect, it } from "vitest"
-import {
-  Effect,
-  Layer,
-  ManagedRuntime,
-  Stream,
-} from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import { MemoryRouterTag, type MemoryRouter } from "@luna/memory"
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -178,10 +173,10 @@ interface ChatRig {
 // Service tag for the running server handle, so we can compose the
 // scoped server start as a Layer with the rest of the runtime — the
 // Layer scope owns the server's lifetime, dispose() shuts it down.
-class ServerHandle extends Effect.Tag("test/ChatServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number; readonly host: string }
->() {}
+>()("test/ChatServerHandle") {}
 
 const startChatRig = async (
   responseFor: (text: string) => string = (t) => `echo:${t}`,
@@ -199,7 +194,7 @@ const startChatRig = async (
   // resolved handle to startUIWebSocketServer via config. This keeps
   // the server's own requirement set narrow (no ChatService dep on
   // the server effect itself).
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const chat = yield* ChatService
@@ -642,7 +637,7 @@ describe("UIWebSocketServer (chat routing)", () => {
       })
     })
     const baseChatLayer = fullLayer(fakeLayer)
-    const serverLayer = Layer.scoped(
+    const serverLayer = Layer.effect(
       ServerHandle,
       Effect.gen(function* () {
         const chat = yield* ChatService
@@ -748,7 +743,7 @@ describe("UIWebSocketServer (chat routing)", () => {
       })
     })
     const baseChatLayer = fullLayer(fakeLayer)
-    const serverLayer = Layer.scoped(
+    const serverLayer = Layer.effect(
       ServerHandle,
       Effect.gen(function* () {
         const chat = yield* ChatService

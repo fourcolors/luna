@@ -10,7 +10,7 @@
  * `registerClient` would surface here, not in the unit tests.
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -29,10 +29,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/WidgetSummonServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/WidgetSummonServerHandle") {}
 
 interface Rig {
   readonly url: string
@@ -44,7 +44,7 @@ const startRig = async (): Promise<Rig> => {
   // The SAME bridge the agent tools would call — the test drives it directly
   // (openArtifact is normally invoked by widget_write/open_artifact).
   const bridge = createWidgetSummonBridge()
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({

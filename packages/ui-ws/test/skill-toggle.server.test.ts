@@ -14,7 +14,7 @@
  *   - the wire-projection strips smuggled body fields (defence-in-depth)
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime, Ref } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Ref } from "effect"
 import WebSocket from "ws"
 import {
   Clock,
@@ -38,10 +38,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/SkillServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/SkillServerHandle") {}
 
 interface Rig {
   readonly url: string
@@ -81,7 +81,7 @@ const startSkillsRig = async (): Promise<Rig> => {
   ]
   let notify: (() => void) | null = null
 
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const enabledA = yield* Ref.make(true)

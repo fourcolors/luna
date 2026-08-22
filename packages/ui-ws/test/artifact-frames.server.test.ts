@@ -17,7 +17,7 @@
  *   - the `changes` hook broadcasts to every client
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { ArtifactStore, Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -34,10 +34,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/ArtifactServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/ArtifactServerHandle") {}
 
 interface Rig {
   readonly url: string
@@ -57,7 +57,7 @@ const startArtifactsRig = async (): Promise<Rig> => {
   // SAME store the server reads (an agent edit, out of band from any client).
   let editSeed: () => Promise<void> = async () => {}
 
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const store = yield* ArtifactStore

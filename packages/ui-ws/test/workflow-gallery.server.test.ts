@@ -14,7 +14,7 @@
  *   - a malformed runs-request (no jobId) is ignored, not crashed
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -35,10 +35,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/WorkflowServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/WorkflowServerHandle") {}
 
 const GALLERY: WorkflowGalleryItem[] = [
   {
@@ -81,7 +81,7 @@ interface Rig {
 }
 
 const startWorkflowsRig = async (): Promise<Rig> => {
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({

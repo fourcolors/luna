@@ -11,11 +11,11 @@
  *     target and the client receives feedback-ack { ok:true } echoing requestId
  *   - malformed frames (blank requestId / non-string note / missing
  *     target.selector) are rejected with ok:false and the sink is NEVER called
- *   - a sink defect acks ok:false via catchAllCause and does NOT tear the
+ *   - a sink defect acks ok:false via catchCause and does NOT tear the
  *     connection down
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -32,10 +32,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/FeedbackServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/FeedbackServerHandle") {}
 
 type SinkInput = {
   readonly note: string
@@ -63,7 +63,7 @@ const startFeedbackRig = async (
   mode: "ok" | "sinkErr" | "defect" = "ok",
 ): Promise<Rig> => {
   const recorded: SinkInput[] = []
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({
@@ -259,7 +259,7 @@ describe("feedback-only ui-ws server (live)", () => {
     client.close()
   })
 
-  it("a sink defect acks ok:false (catchAllCause) and keeps the connection alive", async () => {
+  it("a sink defect acks ok:false (catchCause) and keeps the connection alive", async () => {
     activeRig = await startFeedbackRig("defect")
     const client = await openClient(activeRig.url)
     await client.waitFor((f) => f.type === "hello")

@@ -18,11 +18,7 @@
  *      still runs).
  */
 import { afterEach, describe, expect, it } from "vitest"
-import {
-  Effect,
-  Layer,
-  ManagedRuntime,
-} from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import { WebSocket } from "ws"
 import { Clock } from "@luna/core"
 import {
@@ -47,10 +43,10 @@ const makeFullLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/ServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number; readonly host: string }
->() {}
+>()("test/ServerHandle") {}
 
 interface PollerRig {
   url: string
@@ -62,7 +58,7 @@ const startPollerRig = async (
   surveyPollIntervalMs: number,
 ): Promise<PollerRig> => {
   const baseLayer = makeFullLayer()
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     startUIWebSocketServer({
       port: 0,

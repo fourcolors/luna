@@ -17,7 +17,7 @@
  *     no model-routing-list pushed; model-routing-save frames are silently ignored
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import WebSocket from "ws"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
@@ -40,10 +40,10 @@ const baseLayer = () => {
   return Layer.mergeAll(uiL, obsL, clockL)
 }
 
-class ServerHandle extends Effect.Tag("test/ModelRoutingServerHandle")<
+class ServerHandle extends Context.Service<
   ServerHandle,
   { readonly port: number }
->() {}
+>()("test/ModelRoutingServerHandle") {}
 
 /* -------------------------------------------------------------------------- */
 /* Fake modelRoutingService                                                    */
@@ -100,7 +100,7 @@ interface Rig {
 const startModelRoutingRig = async (
   modelRoutingService: ReturnType<typeof makeFakeModelRoutingService>["svc"] | null,
 ): Promise<Rig> => {
-  const serverLayer = Layer.scoped(
+  const serverLayer = Layer.effect(
     ServerHandle,
     Effect.gen(function* () {
       const handle = yield* startUIWebSocketServer({
