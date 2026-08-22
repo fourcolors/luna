@@ -304,10 +304,60 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     },
 
     // --- data ---------------------------------------------------------------
+    /**
+     * Insert (or refresh) ONE locally-known thread, by id.
+     *
+     * The server deliberately hides never-typed-in threads from `thread-list`:
+     * listThreads queries with `hasUserMessage: true`, whose predicate requires
+     * a top-level user message (packages/core/src/session/session-store-sqlite
+     * .ts) - "a thread is not a conversation until the user types". A thread you
+     * just minted therefore CANNOT come back in a list until you send a first
+     * message, so the drawer has to carry it locally in the meantime. The web
+     * client already does exactly this (packages/ui-shared/src/reducer.ts's
+     * `thread-created` case prepends the summary), and Moon was the odd one out.
+     *
+     * Upsert-by-id, never blind-prepend: once the server's list legitimately
+     * contains the thread, this must not leave a duplicate behind.
+     *
+     * NO pin-at-top: `ThreadListLogic.threadTimestamp` already falls back
+     * lastMessageAt -> updatedAt -> createdAt, and a fresh summary's createdAt
+     * is now, so it sorts first on its own. Forcing position here would misplace
+     * an OLD thread that legitimately fell off the server's page.
+     */
+    upsertThread(summary) {
+      if (!summary || !summary.id) return;
+      const rest = (Array.isArray(State.threads) ? State.threads : [])
+        .filter((t) => t && t.id !== summary.id);
+      State.threads = [summary, ...rest];
+      this.render();
+    },
+
     // Fed by the thread-list frame (see the augmented handler below). Renders
     // regardless of active-thread state; the reattach logic stays untouched.
     applyList(list) {
-      State.threads = Array.isArray(list) ? list.slice() : [];
+      const incoming = Array.isArray(list) ? list.slice() : [];
+      // MEMBERSHIP-PRESERVING, deliberately narrow. `thread-list` is still the
+      // drawer's data source for everything it contains; this only keeps the
+      // ACTIVE thread from being wiped while the server is legitimately still
+      // hiding it (see upsertThread above for why it is hidden). Without this,
+      // the very next list - the drawer opening, a reconnect nudge - would
+      // erase the row the user is literally typing into.
+      //
+      // Scope notes:
+      //  - active-only. A non-active locally-known thread absent from the list
+      //    is a thread the user abandoned; it drops, matching the server.
+      //  - membership only, no reordering: the carried row sorts by its own
+      //    real recency, exactly as if the server had sent it.
+      //  - cannot resurrect an archived thread: the `thread-archived` handler
+      //    nulls State.activeThreadId synchronously, before any refreshed list
+      //    can arrive, so there is no active id left to match.
+      const activeId = State.activeThreadId;
+      if (activeId && !incoming.some((t) => t && t.id === activeId)) {
+        const carried = (Array.isArray(State.threads) ? State.threads : [])
+          .find((t) => t && t.id === activeId);
+        if (carried) incoming.push(carried);
+      }
+      State.threads = incoming;
       this.render();
     },
 

@@ -332,8 +332,21 @@ export function createFrames(ctx: FramesCtx) {
       // Now that this thread is active, reflect ITS model/effort in the
       // composer (recorded above, before activeThreadId was set).
       ComposerConfig.refreshComposer();
-      // Surface the brand-new thread in the drawer if it's open.
-      try { if (State.threadDrawerOpen) ThreadDrawerEngine.requestList(); } catch (_) { /* best-effort */ }
+      // Surface the brand-new thread in the drawer.
+      //
+      // This used to call requestList(), which could NEVER work: the server
+      // hides threads with no top-level user message from `thread-list`
+      // (chat-service's `hasUserMessage: true`), so the refetch provably came
+      // back without the thread that had just been created, and applyList's
+      // wholesale replace then left the drawer with no row for it at all.
+      // Insert the summary the server just handed us instead - the same thing
+      // the web client's reducer already does on this frame.
+      //
+      // Unconditional, NOT gated on threadDrawerOpen: the drawer must be
+      // correct when it is next opened, not only while it happens to be open.
+      // Only on the attach branch - a create the user already moved on from is
+      // an abandoned empty probe, and letting it drop matches the server.
+      try { ThreadDrawerEngine.upsertThread(frame.thread); } catch (_) { /* best-effort */ }
 
       // Bind the stash to THIS mint so a later snapshot for another thread
       // cannot steal it, then attempt an immediate flush.

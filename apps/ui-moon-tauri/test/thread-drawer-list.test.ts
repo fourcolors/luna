@@ -222,6 +222,136 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       incoming.push({ id: 'sneaky' })
       expect(ids()).toEqual(['a'])
     })
+
+    // ── the just-created-thread carve-out ───────────────────────────────────
+    // The server hides threads with no top-level user message from
+    // `thread-list` (chat-service's `hasUserMessage: true`). So between minting
+    // a thread and typing the first message, the ONLY record of it is local -
+    // and a wholesale replace would erase the row the user is typing into.
+    it('preserves the ACTIVE thread when the server list omits it', () => {
+      eng().upsertThread({ id: 'fresh', createdAt: 3_000 })
+      State().activeThreadId = 'fresh'
+      // A server list that legitimately cannot contain 'fresh' yet.
+      eng().applyList([{ id: 'a', lastMessageAt: 2_000 }])
+      expect(ids().sort()).toEqual(['a', 'fresh'])
+    })
+
+    it('still DROPS a locally-known thread that is not the active one', () => {
+      // The carve-out is deliberately narrow: an abandoned empty probe must
+      // follow the server and disappear, exactly as before.
+      eng().upsertThread({ id: 'abandoned', createdAt: 3_000 })
+      State().activeThreadId = null
+      eng().applyList([{ id: 'a' }])
+      expect(ids()).toEqual(['a'])
+    })
+
+    it('does not resurrect a thread the server dropped once it is no longer active', () => {
+      eng().upsertThread({ id: 'fresh', createdAt: 3_000 })
+      State().activeThreadId = 'fresh'
+      eng().applyList([{ id: 'a' }])
+      expect(ids().sort()).toEqual(['a', 'fresh'])
+      // `thread-archived` nulls activeThreadId synchronously before any
+      // refreshed list arrives; the next list must then let 'fresh' go.
+      State().activeThreadId = null
+      eng().applyList([{ id: 'a' }])
+      expect(ids()).toEqual(['a'])
+    })
+
+    it('yields exactly ONE row once the server list finally carries the thread', () => {
+      eng().upsertThread({ id: 'fresh', createdAt: 3_000 })
+      State().activeThreadId = 'fresh'
+      // First user message landed, so the server now returns it - with the
+      // real title/preview the local stub never had.
+      eng().applyList([{ id: 'fresh', title: 'Real title', lastMessagePreview: 'hi', lastMessageAt: 4_000 }])
+      expect(ids()).toEqual(['fresh'])
+      const rows = State().threads.filter((t: any) => t.id === 'fresh')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].title).toBe('Real title')
+    })
+  })
+
+  // ── the `thread-created` frame, end to end ────────────────────────────────
+  // The operator-visible bug: "after starting a new thread, the sidebar doesn't
+  // update with the new thread". The handler used to call requestList(), which
+  // could never work - the refetch provably comes back WITHOUT a thread that
+  // has no user message yet, and applyList's wholesale replace then left no row
+  // for it at all.
+  describe('thread-created', () => {
+    const created = (id: string, extra: Record<string, unknown> = {}) => ({
+      type: 'thread-created',
+      thread: { id, model: 'claude-sonnet-4-5', createdAt: 9_000, tags: [], ...extra },
+    })
+
+    it('an ATTACHED create puts the new thread in the drawer immediately', () => {
+      eng().applyList([{ id: 'a', lastMessageAt: 1_000 }])
+      M().ThreadCreateState.begin(State())      // "+ New" pressed
+      M().handleFrame(created('fresh'))
+      expect(ids().sort()).toEqual(['a', 'fresh'])
+      expect(State().activeThreadId).toBe('fresh')
+    })
+
+    it('the new thread survives the very next thread-list', () => {
+      // The regression in one assertion: a drawer-open or reconnect nudge fires
+      // a list that cannot contain 'fresh', and the row must not vanish.
+      M().ThreadCreateState.begin(State())
+      M().handleFrame(created('fresh'))
+      eng().applyList([{ id: 'a', lastMessageAt: 1_000 }])
+      expect(ids()).toContain('fresh')
+    })
+
+    it('inserts even while the drawer is CLOSED', () => {
+      // The old requestList() was gated on threadDrawerOpen. The drawer has to
+      // be correct when it is next opened, not only while it happens to be open.
+      State().threadDrawerOpen = false
+      M().ThreadCreateState.begin(State())
+      M().handleFrame(created('fresh'))
+      expect(ids()).toContain('fresh')
+    })
+
+    it('a BACKGROUNDED create inserts nothing', () => {
+      // The user clicked another row while the mint was in flight, so this is an
+      // abandoned empty probe. Inserting it would flash a row in and straight
+      // back out on the next list.
+      eng().applyList([{ id: 'a' }])
+      M().ThreadCreateState.begin(State())
+      M().ThreadCreateState.moveToBackground(State())
+      M().handleFrame(created('probe'))
+      expect(ids()).toEqual(['a'])
+    })
+  })
+
+  // ── upsertThread ──────────────────────────────────────────────────────────
+  describe('upsertThread', () => {
+    it('adds a thread the list has never carried', () => {
+      eng().applyList([{ id: 'a', lastMessageAt: 1_000 }])
+      eng().upsertThread({ id: 'fresh', createdAt: 2_000 })
+      expect(ids().sort()).toEqual(['a', 'fresh'])
+    })
+
+    it('REPLACES by id rather than duplicating', () => {
+      eng().applyList([{ id: 'fresh', title: 'stale' }])
+      eng().upsertThread({ id: 'fresh', title: 'fresher' })
+      expect(ids()).toEqual(['fresh'])
+      expect(State().threads).toHaveLength(1)
+      expect(State().threads[0].title).toBe('fresher')
+    })
+
+    it('sorts first by its own createdAt, with no pin-at-top special case', () => {
+      // threadTimestamp falls back lastMessageAt -> updatedAt -> createdAt, so
+      // a fresh mint leads on merit. Pinning would misplace an OLD thread that
+      // merely fell off the server's page.
+      eng().applyList([{ id: 'old', lastMessageAt: 1_000 }, { id: 'newer', lastMessageAt: 5_000 }])
+      eng().upsertThread({ id: 'fresh', createdAt: 9_000 })
+      expect(eng()._visibleThreads().map((t: any) => t.id)[0]).toBe('fresh')
+    })
+
+    it('ignores a malformed summary instead of poisoning the list', () => {
+      eng().applyList([{ id: 'a' }])
+      for (const bad of [null, undefined, {}, { id: '' }]) {
+        expect(() => eng().upsertThread(bad)).not.toThrow()
+      }
+      expect(ids()).toEqual(['a'])
+    })
   })
 
   // ── _insertIndexForRatio: where a redock drop lands ───────────────────────
