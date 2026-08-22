@@ -13,6 +13,7 @@
  * the public `drain` / auto-tick loop body.
  */
 import { Cron, Effect, Result, FiberMap, Ref, Schedule } from "effect"
+import * as Semaphore from "effect/Semaphore"
 import type { ClockService } from "../clock.js"
 import type { JobRun, JobsStoreApi, PersistedJob } from "./jobs-store-types.js"
 import type { TickSummary } from "./job-ticker.js"
@@ -53,7 +54,7 @@ export interface ProducerDeps {
   readonly dispatchConcurrency: number
   readonly executors: FiberMap.FiberMap<string, void, never>
   readonly dispatchedOneShots: Set<string>
-  readonly producerSemaphore: Effect.Semaphore
+  readonly producerSemaphore: Semaphore.Semaphore
   readonly retentionSweepIntervalMs: number
   readonly retentionMaxAgeMs: number
   readonly lastPruneAt: Ref.Ref<number>
