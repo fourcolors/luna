@@ -72,7 +72,7 @@ export interface AccountRotationDeps {
   readonly setActiveSdkSessionId: (sdkSessionId: string | null) => void
   readonly obs: ObservabilityApi
   readonly pubsub: PubSub.PubSub<ChatFrame>
-  readonly threadScope: Scope.CloseableScope
+  readonly threadScope: Scope.Closeable
   readonly queryBase: Omit<
     QueryRequest,
     "prompt" | "sessionOptions" | "onAccountAcquired" | "resumeFromSessionId"
@@ -176,7 +176,7 @@ export const makeRunOrdinaryQuery = (
                 Ref.update(inFlightPrompts, (xs) => [
                   ...xs,
                   turn,
-                ]).pipe(Effect.zipRight(Queue.offer(attemptQueue, turn))),
+                ]).pipe(Effect.andThen(Queue.offer(attemptQueue, turn))),
               ),
             ),
           ),
@@ -287,9 +287,7 @@ export const makeRunOrdinaryQuery = (
       // `inFlight` count. `Scope.close` below runs those
       // finalizers as soon as WE decide this attempt is done
       // (rotate or terminal), not when the thread eventually ends.
-      const attemptScope = yield* Scope.fork(threadScope, {
-        _tag: "Parallel",
-      })
+      const attemptScope = yield* Scope.fork(threadScope, "parallel")
       const queryEffect = adapter
         .query({
           ...queryBase,

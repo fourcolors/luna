@@ -18,7 +18,7 @@
  *                                       per-thread-id `pubsubs` map, so
  *                                       subscriptions survive idle-reap →
  *                                       resume (see `pubsubs` below)
- *   - scope: Scope.CloseableScope     — the per-thread sub-scope; closing it
+ *   - scope: Scope.Closeable     — the per-thread sub-scope; closing it
  *                                       interrupts the SDK subprocess for
  *                                       that thread only (Operator's "stop"
  *                                       button + thread deletion)
@@ -50,7 +50,6 @@
  * subscribe, listThreads, …) directly.
  */
 import {
-  Chunk,
   Context,
   Duration,
   Effect,
@@ -123,7 +122,7 @@ export interface ThreadEntry {
    *  subscriptions taken before an idle reap keep receiving frames after the
    *  thread is re-created. Never shut it down when the entry dies. */
   readonly pubsub: PubSub.PubSub<ChatFrame>
-  readonly scope: Scope.CloseableScope
+  readonly scope: Scope.Closeable
   /** Stable turn id of the in-flight assistant turn, or null if idle. */
   readonly inFlightTurnId: Ref.Ref<string | null>
   /** Cumulative assistant text within the in-flight turn (for delta snapshots). */
@@ -345,7 +344,7 @@ const makeChatService = Effect.gen(function* () {
       // stream drives the per-thread frames below.
       const suggestedActions = yield* Effect.serviceOption(SuggestedActions)
       const serviceScope = yield* Effect.scope
-      const runtime = yield* Effect.runtime<never>()
+      const runtime = yield* Effect.context<never>()
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
 
@@ -1091,7 +1090,7 @@ const makeChatService = Effect.gen(function* () {
        *  so callers don't need to handle the absent case before piping.
        *
        *  The PubSub subscription's Scope is tied to the Stream's own scope
-       *  via `Stream.unwrapScoped` — when the consumer terminates the
+       *  via `Stream.unwrap` — when the consumer terminates the
        *  Stream, the subscription is released. Callers do NOT need a Scope
        *  in their Effect environment. */
       /**
@@ -1117,7 +1116,7 @@ const makeChatService = Effect.gen(function* () {
               snapshotMessageLimit > 0 ? { limit: snapshotMessageLimit } : undefined,
             )
             .pipe(Stream.runCollect, Effect.orDie)
-          const stored = Array.from(Chunk.toReadonlyArray(collected))
+          const stored = Array.from(collected)
           const projected: ChatMessage[] = []
           let throughSeq = -1
           for (const s of stored) {
@@ -1176,7 +1175,7 @@ const makeChatService = Effect.gen(function* () {
       const subscribe = (
         threadId: string,
       ): Stream.Stream<ChatFrame, never> =>
-        Stream.unwrapScoped(
+        Stream.unwrap(
           Effect.gen(function* () {
             // Cache-miss recovery: the chat-server was restarted (or the idle
             // reaper evicted this thread). ensureThreadLive handles Cases A/B/C
@@ -1189,8 +1188,8 @@ const makeChatService = Effect.gen(function* () {
             // Subscribe FIRST (PubSub buffers from subscribe-time forward),
             // then read the snapshot, then concat in order. Client dedupes
             // via `seq <= throughSeq` if any frames overlap.
-            const liveQueue = yield* PubSub.subscribe(entry.pubsub)
-            const liveStream = Stream.fromQueue(liveQueue)
+            const liveSub = yield* PubSub.subscribe(entry.pubsub)
+            const liveStream = Stream.fromSubscription(liveSub)
             const prefix = yield* buildSnapshotFrames(threadId)
 
             return Stream.concat(
@@ -1263,7 +1262,7 @@ const makeChatService = Effect.gen(function* () {
         ): Effect.Effect<ReadonlyArray<SessionSummary>, never> =>
           store
             .list({ orderBy: "lastMessageAt", limit, hasUserMessage: true, excludeIds })
-            .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+            .pipe(Stream.runCollect)
         // Resolve a display title for each (already-real) row. Preference order:
         //   1. the SessionStore title (explicitly set at creation);
         //   2. the ThreadRegistry title (first-turn heuristic, Phase 3);
@@ -1512,7 +1511,7 @@ const makeChatService = Effect.gen(function* () {
           sweepMs,
         })
         yield* Effect.sleep(sweepMs).pipe(
-          Effect.zipRight(reapIdleThreadsOnce()),
+          Effect.andThen(reapIdleThreadsOnce()),
           Effect.asVoid,
           Effect.forever,
           Effect.forkIn(serviceScope),
@@ -1542,7 +1541,7 @@ const makeChatService = Effect.gen(function* () {
 
 export class ChatService extends Context.Service<
   ChatService,
-  Effect.Effect.Success<typeof makeChatService>
+  Effect.Success<typeof makeChatService>
 >()("luna/ChatService") {
   static readonly Default = Layer.effect(ChatService, makeChatService)
 }

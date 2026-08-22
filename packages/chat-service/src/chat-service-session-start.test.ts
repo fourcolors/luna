@@ -9,7 +9,7 @@
  *   5. Integration: emit() with all new fields passes them through subscribeEvents.
  */
 import { describe, expect, it } from "vitest"
-import { Chunk, Duration, Effect, Fiber, Layer, Result, Stream } from "effect"
+import { Duration, Effect, Fiber, Layer, Result, Stream } from "effect"
 import { Clock, ObservabilityService, decodeObsEvent } from "@luna/core"
 
 /* -------------------------------------------------------------------------- */
@@ -121,7 +121,7 @@ describe("SessionStartEvent — ObservabilityService integration", () => {
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
+            Effect.map((c) => Array.from(c)),
           ),
         )
         yield* Effect.sleep(Duration.millis(10))
@@ -160,7 +160,7 @@ describe("SessionStartEvent — ObservabilityService integration", () => {
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
+            Effect.map((c) => Array.from(c)),
           ),
         )
         yield* Effect.sleep(Duration.millis(10))

@@ -10,7 +10,7 @@
  * the changes-consumer.
  */
 import { describe, expect, it } from "vitest"
-import { Chunk, Effect, Fiber, Layer, Scope, Stream } from "effect"
+import { Effect, Fiber, Layer, Scope, Stream } from "effect"
 import {
   SessionStore,
   Clock as CoreClock,
@@ -115,7 +115,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
           payload: { prompt: "go research X" },
         })
         const chunk = yield* Fiber.join(fiber)
-        return Array.from(Chunk.toReadonlyArray(chunk)) as ChatFrame[]
+        return Array.from(chunk) as ChatFrame[]
       }),
     )
 
@@ -151,7 +151,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
         })
         yield* sa.respond({ threadId: t.id, actionId: row.id, decision: "dismiss" })
         const chunk = yield* Fiber.join(fiber)
-        return Array.from(Chunk.toReadonlyArray(chunk))
+        return Array.from(chunk)
           .filter((f): f is Extract<ChatFrame, { type: "suggested-action-update" }> =>
             f.type === "suggested-action-update",
           )
@@ -180,7 +180,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
         // A fresh subscribe should replay it after the snapshot.
         const sub = chat.subscribe(t.id)
         const chunk = yield* Stream.runCollect(Stream.take(sub, 2))
-        return Array.from(Chunk.toReadonlyArray(chunk)) as ChatFrame[]
+        return Array.from(chunk) as ChatFrame[]
       }),
     )
     expect(frames[0]?.type).toBe("snapshot")
@@ -219,7 +219,7 @@ describe("SuggestedActions ↔ ChatService bridge", () => {
           payload: { prompt: "now" },
         })
         const chunk = yield* Fiber.join(fiber)
-        return Array.from(Chunk.toReadonlyArray(chunk)) as ChatFrame[]
+        return Array.from(chunk) as ChatFrame[]
       }),
     )
     const updates = frames.filter((f) => f.type === "suggested-action-update")

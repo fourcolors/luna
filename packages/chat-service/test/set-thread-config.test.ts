@@ -18,6 +18,7 @@
 import { afterAll, describe, expect, it } from "vitest"
 import {
   Effect,
+  Fiber,
   Layer,
   Ref,
   Scope,
@@ -203,7 +204,7 @@ describe("ChatService.setThreadConfig", () => {
           )
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           // Now switch effort.
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "high" })
@@ -245,7 +246,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "max" })
 
@@ -286,7 +287,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, model: "claude-haiku-4-5" })
 
@@ -328,7 +329,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, model: "gemini-2.5-flash" })
 
@@ -397,7 +398,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "max" })
 
@@ -440,7 +441,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "xhigh" })
 
@@ -483,7 +484,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "high" })
 
@@ -586,7 +587,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "ultracode" })
 
@@ -633,7 +634,7 @@ describe("ChatService.setThreadConfig", () => {
           const fiber = yield* Effect.forkChild(sub.pipe(Stream.take(3), Stream.runCollect))
           yield* Effect.sleep("20 millis")
           yield* chat.send(t.id, "hi")
-          yield* fiber
+          yield* Fiber.join(fiber)
 
           const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "ultracode" })
 
