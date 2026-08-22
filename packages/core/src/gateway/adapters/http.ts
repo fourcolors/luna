@@ -96,6 +96,12 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
           yield* Queue.end(queue).pipe(Effect.catchCause(() => Effect.void))
         }),
       )
+
+      // Keep the callback fiber alive until interrupt/scope close.
+      // Setup completion alone does not end the stream in rc.111 (asyncQueue
+      // forks `f`), but parking here matches the old asyncScoped drain-fiber
+      // lifetime and makes teardown via finalizer + Queue.end explicit.
+      yield* Effect.never
     }),
   )
 
