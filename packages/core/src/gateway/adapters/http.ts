@@ -82,7 +82,7 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
               const responseText = yield* Deferred.await(deferred)
               res.writeHead(200, { "Content-Type": "application/json" })
               res.end(JSON.stringify({ text: responseText }))
-            }).pipe(Effect.catchAllCause(() => {
+            }).pipe(Effect.catchCause(() => {
               res.writeHead(500)
               res.end()
               return Effect.void
@@ -93,12 +93,12 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
 
       server.listen(port, host)
       yield* Effect.addFinalizer(() =>
-        Effect.async<void>((resume) => {
+        Effect.callback<void>((resume) => {
           server.close(() => resume(Effect.void))
         }),
       )
 
-      return yield* Effect.forkDaemon(
+      return yield* Effect.forkDetach(
         Effect.gen(function* () {
           while (true) {
             const item = yield* Queue.take(q)
@@ -108,7 +108,7 @@ export function makeHttpAdapter(config?: HttpAdapterConfig): GatewayAdapter {
             }
             emit.single(item)
           }
-        }).pipe(Effect.catchAllCause(() => Effect.void)),
+        }).pipe(Effect.catchCause(() => Effect.void)),
       )
     }),
   )

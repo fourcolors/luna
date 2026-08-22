@@ -41,7 +41,7 @@ describe.skipIf(!hasToken)(
         )
         return
       }
-      const value = Redacted.value(result.value)
+      const value = Redacted.value(result.success)
       // Shape assertions ONLY — never print or include the value.
       expect(value.length).toBeGreaterThan(20)
       // GitHub classic PATs typically begin with "ghp_". We allow the

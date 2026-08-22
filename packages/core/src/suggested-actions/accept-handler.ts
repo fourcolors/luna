@@ -106,7 +106,7 @@ export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
 
 export interface AcceptHandlerOptions {
   /** Completion-poll cadence. Default 10s. */
-  readonly pollInterval?: Duration.DurationInput
+  readonly pollInterval?: Duration.Input
 }
 
 /**
@@ -123,7 +123,7 @@ export const AcceptHandlerLayer = (
   JobsStoreService | SuggestedActions | Clock
 > => {
   const pollInterval = options?.pollInterval ?? DEFAULT_POLL_INTERVAL
-  return Layer.scoped(
+  return Layer.effect(
     AcceptHandler,
     Effect.gen(function* () {
       const jobs = yield* JobsStoreService
@@ -200,12 +200,12 @@ export const AcceptHandlerLayer = (
       const pollOnce: Effect.Effect<void> = Effect.gen(function* () {
         const inProgress = yield* sa
           .listInProgress()
-          .pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<SuggestedActionRow>)))
+          .pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<SuggestedActionRow>)))
         for (const row of inProgress) {
           if (!row.executionId) continue
           const runs = yield* jobs
             .listRuns(row.executionId, 1)
-            .pipe(Effect.catchAll(() => Effect.succeed([])))
+            .pipe(Effect.catch(() => Effect.succeed([])))
           const latest = runs[0]
           if (!latest || latest.finishedAt === null) continue
           if (latest.status === "success") {
@@ -219,7 +219,7 @@ export const AcceptHandlerLayer = (
       })
 
       yield* pollOnce.pipe(
-        Effect.catchAllCause(() => Effect.void),
+        Effect.catchCause(() => Effect.void),
         Effect.repeat(Schedule.fixed(pollInterval)),
         Effect.forkScoped,
       )

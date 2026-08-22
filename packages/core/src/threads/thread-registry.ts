@@ -23,7 +23,7 @@
  * One-shot boot migration imports rows from the legacy JSON file; after that
  * all writes go to the DB and the JSON file is never written again.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -282,7 +282,7 @@ export const runAutoArchive = (
       // (treated as not-live, i.e. safe to archive).
       if (isLive?.(thread.id)) continue
       const ok = yield* registry.archive(thread.id).pipe(
-        Effect.catchAllCause(() => Effect.succeed(false)),
+        Effect.catchCause(() => Effect.succeed(false)),
       )
       if (ok) archived.push(thread.id)
     }
@@ -291,9 +291,7 @@ export const runAutoArchive = (
 
 // ── Service Tag ──────────────────────────────────────────────────────────────
 
-export class ThreadRegistryService extends Effect.Tag(
-  "luna/ThreadRegistryService",
-)<ThreadRegistryService, ThreadRegistryApi>() {
+export class ThreadRegistryService extends Context.Service<ThreadRegistryService, ThreadRegistryApi>()("luna/ThreadRegistryService") {
   // ── Memory Layer ───────────────────────────────────────────────────────────
 
   /** Fresh isolated Ref<Map> per build. No SQLite. Used in unit tests. */
@@ -477,7 +475,7 @@ export class ThreadRegistryService extends Effect.Tag(
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<ThreadRegistryService, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       ThreadRegistryService,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

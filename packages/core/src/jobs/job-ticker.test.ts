@@ -2,6 +2,7 @@
  * JobTicker tests — deterministic via TestClock + Memory JobsStore + stub
  * WorkerRegistry. No SQLite, no real sleep, no real model calls.
  */
+import { TestClock } from "effect/testing"
 import { describe, expect, it, afterEach } from "vitest"
 import {
   existsSync,
@@ -1696,7 +1697,7 @@ describe("JobTicker", () => {
                   observedStatus = runs[0]?.status ?? null
                 }),
               ),
-              Effect.catchAll(() => Effect.void),
+              Effect.catch(() => Effect.void),
               Effect.asVoid,
             ),
           } satisfies WorkerResult)
@@ -1760,7 +1761,7 @@ describe("JobTicker", () => {
           // simulates a worker that failed to collapse its own typed error
           // channel to E=never (the documented contract on
           // WorkerResult.postCommit), proving the ticker's own
-          // Effect.catchAll defends against it anyway.
+          // Effect.catch defends against it anyway.
           postCommit: Effect.fail(
             new Error("delivery boom"),
           ) as unknown as Effect.Effect<void>,
@@ -1769,7 +1770,7 @@ describe("JobTicker", () => {
         Effect.succeed({
           outputText: "ok",
           // Same idea for a synchronous defect (Effect.die) - covered by
-          // the ticker's Effect.catchAllDefect.
+          // the ticker's Effect.catchDefect.
           postCommit: Effect.die(
             new Error("delivery kaboom"),
           ) as unknown as Effect.Effect<void>,
@@ -2137,9 +2138,9 @@ describe("JobTicker", () => {
         yield* Deferred.succeed(latchA, undefined)
         const raced = yield* ticker.awaitIdle.pipe(
           Effect.timeout(Duration.millis(150)),
-          Effect.either,
+          Effect.result,
         )
-        expect(raced._tag).toBe("Left")
+        expect(raced._tag).toBe("Failure")
 
         // Now release "b" too - awaitIdle resolves promptly.
         yield* Deferred.succeed(latchB, undefined)

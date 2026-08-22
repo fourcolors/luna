@@ -1587,7 +1587,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       Effect.scoped(
         Effect.gen(function* () {
           const b = yield* SqliteVectorBackend
-          const result = yield* Effect.either(
+          const result = yield* Effect.result(
             b.put(
               makeRecord({
                 id: "atomic-1",
@@ -1598,7 +1598,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
             ),
           )
           const fetched = yield* b.get("atomic-1")
-          return { failed: result._tag === "Left", fetched }
+          return { failed: result._tag === "Failure", fetched }
         }),
       ).pipe(Effect.provide(failLayer)),
     )
@@ -1669,7 +1669,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
             }),
           )
           // Second put with SAME id — embed fails, txn must roll back.
-          const result = yield* Effect.either(
+          const result = yield* Effect.result(
             b.put(
               makeRecord({
                 id: "swap",
@@ -1692,7 +1692,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
           )
           return {
             beforeIds: Array.from(beforeSearch).map((r) => r.record.id),
-            failed: result._tag === "Left",
+            failed: result._tag === "Failure",
             fetched,
             afterIds: Array.from(afterSearch).map((r) => r.record.id),
           }
@@ -1728,7 +1728,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       Effect.scoped(
         Effect.gen(function* () {
           const b = yield* SqliteVectorBackend
-          const result = yield* Effect.either(
+          const result = yield* Effect.result(
             b.put(
               makeRecord({
                 id: "wrong-dim",
@@ -1739,7 +1739,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
             ),
           )
           const fetched = yield* b.get("wrong-dim")
-          return { failed: result._tag === "Left", fetched }
+          return { failed: result._tag === "Failure", fetched }
         }),
       ).pipe(Effect.provide(wrongLayer)),
     )

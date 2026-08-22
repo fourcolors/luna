@@ -13,7 +13,7 @@
  * Layers:
  *   - `DreamStore.Memory` — Ref-backed, in-process layer. Zero SQLite deps;
  *     used in all unit/vitest tests.
- *   - `DreamStore.makeLayer(dbPath)` — Layer.scoped over `bun:sqlite`. Requires
+ *   - `DreamStore.makeLayer(dbPath)` — Layer.effect over `bun:sqlite`. Requires
  *     `Clock` and `LunaSqliteBootstrap` in the Effect environment.
  *
  * Idempotency:
@@ -27,7 +27,7 @@
  *   before any prepared statements are created (LIFO teardown order).
  */
 
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -97,10 +97,7 @@ export interface DreamStoreApi {
   readonly setWatermark: (ms: number) => Effect.Effect<void, DreamError>
 }
 
-export class DreamStore extends Effect.Tag("luna/DreamStore")<
-  DreamStore,
-  DreamStoreApi
->() {
+export class DreamStore extends Context.Service<DreamStore, DreamStoreApi>()("luna/DreamStore") {
   /** Ref-backed in-memory layer for tests. No SQLite. */
   static readonly Memory: Layer.Layer<DreamStore, never, Clock> = Layer.effect(
     DreamStore,
@@ -184,7 +181,7 @@ export class DreamStore extends Effect.Tag("luna/DreamStore")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<DreamStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       DreamStore,
       Effect.gen(function* () {
         // Pull bootstrap marker BEFORE opening any Database so the

@@ -34,9 +34,7 @@ export interface SecretProviderApi {
   readonly get: (ref: SecretRef) => Effect.Effect<SecretValue, ConfigError>
 }
 
-export class SecretProvider extends Effect.Tag(
-  "luna/SecretProvider",
-)<SecretProvider, SecretProviderApi>() {}
+export class SecretProvider extends Context.Service<SecretProvider, SecretProviderApi>()("luna/SecretProvider") {}
 
 /**
  * Compose multiple SecretProvider layers into a single layer that tries
@@ -92,14 +90,14 @@ export const firstOf = (
         Effect.gen(function* () {
           let lastErr: ConfigError | undefined
           for (const p of providers) {
-            const result = yield* Effect.either(p.get(ref))
-            if (result._tag === "Right") return result.right
+            const result = yield* Effect.result(p.get(ref))
+            if (result._tag === "Success") return result.success
             // Integrity-class failure: fail the whole chain now rather than
             // degrading into a fall-through miss that resolves stale plaintext.
-            if (options?.stopOn?.(result.left) === true) {
-              return yield* Effect.fail(result.left)
+            if (options?.stopOn?.(result.failure) === true) {
+              return yield* Effect.fail(result.failure)
             }
-            lastErr = result.left
+            lastErr = result.failure
           }
           return yield* Effect.fail(
             lastErr ??

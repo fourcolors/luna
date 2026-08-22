@@ -141,7 +141,7 @@ export const applyOps = (
                   skillChipBudget -= 1
                   return Effect.void
                 }),
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                   Effect.logWarning(
                     `[luna/dream] skill chip propose failed (non-fatal): ${String(cause)}`,
                   ),
@@ -229,7 +229,7 @@ export const gatherInputs = (
           ),
           // A failed readMessages still surfaces the session as an empty-message
           // distillation (not a dropped session — see header comment).
-          Effect.catchAll(() =>
+          Effect.catch(() =>
             Effect.succeed(distillSession(summary, [], { watermark, now }, DEFAULT_DISTILL_OPTIONS)),
           ),
         ),
@@ -573,7 +573,7 @@ export const runDream = (now: number, opts: RunDreamOptions = {}) =>
       watermark,
     } satisfies RunDreamSummary
   }).pipe(
-    Effect.tapErrorCause((cause) =>
+    Effect.tapCause((cause) =>
       Effect.logError(`[luna/dream] runDream FAILED`, { cause }),
     ),
   )

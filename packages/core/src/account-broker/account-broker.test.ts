@@ -64,7 +64,7 @@ describe("AccountBroker.acquireSession", () => {
         const outer = yield* Scope.make()
         const acq = yield* broker
           .acquireSession({ model: "claude-sonnet-4-5" })
-          .pipe(Scope.extend(outer))
+          .pipe(Scope.provide(outer))
         const during = yield* broker._inspect()
         yield* Scope.close(outer, Exit.void)
         const after = yield* broker._inspect()
@@ -129,10 +129,10 @@ describe("AccountBroker.acquireSession", () => {
         const outer = yield* Scope.make()
         const c1 = yield* broker
           .acquireSession({ model: "m" })
-          .pipe(Scope.extend(outer))
+          .pipe(Scope.provide(outer))
         const c2 = yield* broker
           .acquireSession({ model: "m" })
-          .pipe(Scope.extend(outer))
+          .pipe(Scope.provide(outer))
         yield* Scope.close(outer, Exit.void)
         return { c1, c2 }
       }).pipe(Effect.provide(buildLayer())),

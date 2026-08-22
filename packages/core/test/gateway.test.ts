@@ -61,8 +61,8 @@ describe("GatewayService", () => {
           yield* gateway.registerAdapter(adapter)
           yield* gateway.setHandler((msg) => Effect.succeed(`ECHO: ${msg.text}`))
 
-          yield* Effect.forkDaemon(
-            gateway.start.pipe(Effect.catchAllCause(() => Effect.void)),
+          yield* Effect.forkDetach(
+            gateway.start.pipe(Effect.catchCause(() => Effect.void)),
           )
 
           // Inject a message
@@ -108,8 +108,8 @@ describe("GatewayService", () => {
             Effect.succeed(`[${msg.transport}] ${msg.text}`),
           )
 
-          yield* Effect.forkDaemon(
-            gateway.start.pipe(Effect.catchAllCause(() => Effect.void)),
+          yield* Effect.forkDetach(
+            gateway.start.pipe(Effect.catchCause(() => Effect.void)),
           )
 
           yield* Queue.offer(q1, {
@@ -146,10 +146,10 @@ describe("GatewayService", () => {
 
           const gateway = yield* GatewayService
           yield* gateway.registerAdapter(adapter)
-          yield* gateway.setHandler(() => Effect.dieMessage("boom"))
+          yield* gateway.setHandler(() => Effect.die("boom"))
 
-          yield* Effect.forkDaemon(
-            gateway.start.pipe(Effect.catchAllCause(() => Effect.void)),
+          yield* Effect.forkDetach(
+            gateway.start.pipe(Effect.catchCause(() => Effect.void)),
           )
 
           yield* Queue.offer(q, {
@@ -182,8 +182,8 @@ describe("GatewayService", () => {
           yield* gateway.registerAdapter(adapter)
           // No setHandler
 
-          yield* Effect.forkDaemon(
-            gateway.start.pipe(Effect.catchAllCause(() => Effect.void)),
+          yield* Effect.forkDetach(
+            gateway.start.pipe(Effect.catchCause(() => Effect.void)),
           )
 
           yield* Queue.offer(q, {
@@ -215,8 +215,8 @@ describe("GatewayService", () => {
           yield* gateway.registerAdapter(adapter)
           yield* gateway.setHandler((msg) => Effect.succeed(`echo: ${msg.text}`))
 
-          yield* Effect.forkDaemon(
-            gateway.start.pipe(Effect.catchAllCause(() => Effect.void)),
+          yield* Effect.forkDetach(
+            gateway.start.pipe(Effect.catchCause(() => Effect.void)),
           )
 
           // Push via gateway.send (not via adapter queue)
@@ -242,7 +242,7 @@ describe("GatewayService", () => {
 
           // No adapters registered; start() should complete right away
           yield* Effect.timeout(gateway.start, Duration.millis(100)).pipe(
-            Effect.catchTag("TimeoutException", () => Effect.succeed("timeout")),
+            Effect.catchTag("TimeoutError", () => Effect.succeed("timeout")),
           )
           return "ok"
         }).pipe(Effect.provide(makeTestRuntime())),

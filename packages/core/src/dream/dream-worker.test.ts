@@ -23,6 +23,7 @@
  *   - packages/core/src/dream/types.ts
  * The only new file is packages/core/src/dream/dream-worker.ts (+ an index export).
  */
+import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
 import { Effect, Layer, Ref, Stream } from "effect"
 import { Clock } from "../clock.js"

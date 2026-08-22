@@ -14,7 +14,7 @@ import { DuckDbService, makeDuckDbLayer } from "../db/duckdb-service.js"
 
 // ── Test layer helpers ────────────────────────────────────────────────────────
 
-// A single shared DuckDb layer. Layer.scoped means it's re-created per test
+// A single shared DuckDb layer. Layer.effect means it's re-created per test
 // run when we call makeTestLayer(). ":memory:" gives an isolated in-process DB.
 const makeDuckDb = () => makeDuckDbLayer({ dbPath: ":memory:" })
 

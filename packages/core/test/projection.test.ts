@@ -389,7 +389,7 @@ describe("projectChatMessages (stream)", () => {
     const out = await Effect.runPromise(
       Stream.runCollect(projectChatMessages(Stream.fromIterable(input))),
     )
-    const arr = Array.from(Chunk.toReadonlyArray(out))
+    const arr = out
     expect(arr.map((m) => m.id)).toEqual(["u1", "a1", "u2"])
     expect(arr.map((m) => m.role)).toEqual(["user", "assistant", "user"])
   })

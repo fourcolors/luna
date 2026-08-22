@@ -43,12 +43,12 @@ describe("JobHealApi", () => {
             jobs,
             backups: new DoctorBackupStore({ rootDir: root }),
           })
-          const exit = yield* Effect.either(
+          const exit = yield* Effect.result(
             heal.patchPatient("j1", "no-such-backup", {
               payload: { max_turns: 15 },
             }),
           )
-          expect(exit._tag).toBe("Left")
+          expect(exit._tag).toBe("Failure")
           rmSync(root, { recursive: true, force: true })
         }),
       ),

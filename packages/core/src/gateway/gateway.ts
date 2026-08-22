@@ -22,7 +22,7 @@
  *   - §6.2 frozen errors: GatewayError; handlers never fail externally.
  *   - No external dependencies beyond Effect and Clock.
  */
-import {
+import { Context,
   Effect,
   Layer,
   Ref,
@@ -39,16 +39,14 @@ import type {
   TransportKind,
 } from "./types.js"
 
-export class GatewayService extends Effect.Tag(
-  "luna/GatewayService",
-)<GatewayService, GatewayApi>() {
+export class GatewayService extends Context.Service<GatewayService, GatewayApi>()("luna/GatewayService") {
   static readonly Default: Layer.Layer<GatewayService, never, Clock> =
     GatewayService.makeLayer({})
 
   static makeLayer(
     config: GatewayConfig,
   ): Layer.Layer<GatewayService, never, Clock> {
-    return Layer.scoped(
+    return Layer.effect(
       GatewayService,
       Effect.gen(function* () {
         const clock = yield* Clock
@@ -69,9 +67,9 @@ export class GatewayService extends Effect.Tag(
           // Run each adapter's start() in a scoped daemon if provided.
           for (const adapter of adapters) {
             if (adapter.start !== undefined) {
-              yield* Effect.forkDaemon(
+              yield* Effect.forkDetach(
                 Effect.scoped(adapter.start).pipe(
-                  Effect.catchAllCause(() => Effect.void),
+                  Effect.catchCause(() => Effect.void),
                 ),
               )
             }
@@ -98,7 +96,7 @@ export class GatewayService extends Effect.Tag(
 
                 // Run handler; catch all causes so gateway never crashes.
                 const responseText = yield* handler(msg).pipe(
-                  Effect.catchAllCause((cause) =>
+                  Effect.catchCause((cause) =>
                     Effect.logError(`Gateway handler error: ${String(cause)}`).pipe(
                       Effect.as(`Error: handler failed (${String(cause)})`),
                     ),
@@ -113,12 +111,12 @@ export class GatewayService extends Effect.Tag(
                     text: responseText,
                   }
                   yield* adapter.send(response).pipe(
-                    Effect.catchAllCause(() => Effect.void),
+                    Effect.catchCause(() => Effect.void),
                   )
                 }
               }),
             ),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           )
         })
 
@@ -142,7 +140,7 @@ export class GatewayService extends Effect.Tag(
               inReplyTo: fakeMsg,
               text,
               ...(metadata !== undefined ? { metadata } : {}),
-            }).pipe(Effect.catchAllCause(() => Effect.void))
+            }).pipe(Effect.catchCause(() => Effect.void))
           })
 
         return {

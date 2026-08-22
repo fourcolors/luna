@@ -321,7 +321,7 @@ async function main(): Promise<void> {
     Clock.Default,
     LunaSqliteBootstrapLive,
   )
-  const layer = Layer.unwrapEffect(
+  const layer = Layer.unwrap(
     Effect.gen(function* () {
       const backend = yield* SqliteVectorBackend
       return MemoryLayer({ rules: [{ pattern: "*", backend }] })
@@ -499,7 +499,7 @@ async function main(): Promise<void> {
               },
               catch: (cause) => cause,
             }).pipe(
-              Effect.catchAll((cause) => {
+              Effect.catch((cause) => {
                 if (cause instanceof LocomoHardStopError) {
                   hardStop.current = { reason: cause.reason, message: cause.message }
                   console.error(`[locomo-eval] HARD STOP (${cause.reason}): ${cause.message}`)

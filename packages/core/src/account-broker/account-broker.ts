@@ -25,7 +25,7 @@
  *   - `tool-<toolName>` → matches `acquireTool(toolName)`
  *   `acquireTool("foo")` looks up `kind: "tool-foo"`.
  */
-import { Effect, Layer, Redacted, Ref } from "effect"
+import { Context, Effect, Layer, Redacted, Ref } from "effect"
 import type * as Scope from "effect/Scope"
 import {
   AllAccountsExhaustedError,
@@ -186,9 +186,7 @@ export interface AccountBrokerApi {
   }) => Effect.Effect<boolean>
 }
 
-export class AccountBroker extends Effect.Tag(
-  "luna/AccountBroker",
-)<AccountBroker, AccountBrokerApi>() {}
+export class AccountBroker extends Context.Service<AccountBroker, AccountBrokerApi>()("luna/AccountBroker") {}
 
 const DEFAULT_COOLDOWN_MS = 60_000
 

@@ -106,7 +106,7 @@ describe("SkillRegistry — catalog & lifecycle", () => {
       Effect.gen(function* () {
         const reg = yield* SkillRegistry
         const scope = yield* Scope.make()
-        yield* registerScoped(manifest("scoped")).pipe(Scope.extend(scope))
+        yield* registerScoped(manifest("scoped")).pipe(Scope.provide(scope))
         const during = yield* reg.catalog()
         yield* Scope.close(scope, Exit.void)
         const after = yield* reg.catalog()

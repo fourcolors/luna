@@ -92,7 +92,7 @@ describe("AgentRegistry", () => {
         const reg = yield* AgentRegistry
         const scope = yield* Scope.make()
         yield* registerScoped("scoped", def("scoped-desc")).pipe(
-          Scope.extend(scope),
+          Scope.provide(scope),
         )
         const duringScope = yield* reg.list()
         yield* Scope.close(scope, Exit.void)

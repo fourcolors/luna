@@ -21,7 +21,7 @@
  */
 import { Schema } from "effect"
 
-const Level = Schema.Literal("info", "warn", "error")
+const Level = Schema.Literals(["info", "warn", "error"])
 
 const Base = {
   ts: Schema.String,
@@ -33,10 +33,10 @@ export const SessionStartSchema = Schema.Struct({
   kind: Schema.Literal("SessionStart"),
   sessionId: Schema.String,
   model: Schema.String,
-  optionsDigest: Schema.optional(Schema.String),
-  parentId: Schema.optional(Schema.String),
-  tags: Schema.optional(Schema.Array(Schema.String)),
-  title: Schema.optional(Schema.String),
+  optionsDigest: Schema.optionalKey(Schema.String),
+  parentId: Schema.optionalKey(Schema.String),
+  tags: Schema.optionalKey(Schema.Array(Schema.String)),
+  title: Schema.optionalKey(Schema.String),
 })
 
 export const SessionEndSchema = Schema.Struct({
@@ -49,18 +49,18 @@ export const SessionEndSchema = Schema.Struct({
 export const ToolCallSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("ToolCall"),
-  sessionId: Schema.optional(Schema.String),
+  sessionId: Schema.optionalKey(Schema.String),
   toolName: Schema.String,
-  inputDigest: Schema.optional(Schema.String),
+  inputDigest: Schema.optionalKey(Schema.String),
   durationMs: Schema.Number,
-  status: Schema.Literal("success", "error", "permission_denied"),
+  status: Schema.Literals(["success", "error", "permission_denied"]),
 })
 
 export const HookFireSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("HookFire"),
   event: Schema.String,
-  matcher: Schema.optional(Schema.String),
+  matcher: Schema.optionalKey(Schema.String),
   decision: Schema.String,
 })
 
@@ -114,9 +114,9 @@ export const AccountSwitchSchema = Schema.Struct({
 export const CostAccruedSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("CostAccrued"),
-  sessionId: Schema.optional(Schema.String),
-  teamName: Schema.optional(Schema.String),
-  workflowId: Schema.optional(Schema.String),
+  sessionId: Schema.optionalKey(Schema.String),
+  teamName: Schema.optionalKey(Schema.String),
+  workflowId: Schema.optionalKey(Schema.String),
   tokensIn: Schema.Number,
   tokensOut: Schema.Number,
   cacheRead: Schema.Number,
@@ -127,13 +127,13 @@ export const CostAccruedSchema = Schema.Struct({
 const RetrievalCallBase = {
   ...Base,
   kind: Schema.Literal("RetrievalCall"),
-  sessionId: Schema.optional(Schema.String),
-  namespace: Schema.optional(Schema.String),
-  mode: Schema.Literal("vec", "hybrid", "bm25", "hybrid-terms"),
+  sessionId: Schema.optionalKey(Schema.String),
+  namespace: Schema.optionalKey(Schema.String),
+  mode: Schema.Literals(["vec", "hybrid", "bm25", "hybrid-terms"]),
   candidateCount: Schema.Number,
-  topScore: Schema.optional(Schema.Number),
+  topScore: Schema.optionalKey(Schema.Number),
   durationMs: Schema.Number,
-  status: Schema.Literal("success", "error"),
+  status: Schema.Literals(["success", "error"]),
 } as const
 
 // Reranker widening (Phase 3 production reranker, PR #332 bench): a rerank
@@ -150,34 +150,34 @@ const RetrievalCallBase = {
 // An object satisfying NEITHER variant (e.g. missing embedderModel and not
 // marked reranked: true) is correctly rejected - this preserves the
 // pre-existing "rejects RetrievalCall missing embedderModel" guardrail.
-const RetrievalCallSchema = Schema.Union(
+const RetrievalCallSchema = Schema.Union([
   Schema.Struct({
     ...RetrievalCallBase,
     queryDigest: Schema.String,
     embedderProvider: Schema.String,
     embedderModel: Schema.String,
     embedderDimension: Schema.Number,
-    reranked: Schema.optional(Schema.Literal(false)),
+    reranked: Schema.optionalKey(Schema.Literal(false)),
   }),
   Schema.Struct({
     ...RetrievalCallBase,
-    queryDigest: Schema.optional(Schema.String),
+    queryDigest: Schema.optionalKey(Schema.String),
     reranked: Schema.Literal(true),
     rerankMs: Schema.Number,
     kept: Schema.Number,
     dropped: Schema.Number,
   }),
-)
+])
 
 export const ErrorEventSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("Error"),
   errorTag: Schema.String,
   message: Schema.String,
-  context: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  context: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown )),
 })
 
-export const ObsEventSchema = Schema.Union(
+export const ObsEventSchema = Schema.Union([
   SessionStartSchema,
   SessionEndSchema,
   ToolCallSchema,
@@ -191,12 +191,12 @@ export const ObsEventSchema = Schema.Union(
   CostAccruedSchema,
   RetrievalCallSchema,
   ErrorEventSchema,
-)
+])
 
 /**
  * Decode (validate) an unknown payload as an ObsEvent.
- * Returns Either<ObsEvent, ParseError>. We use Either to avoid a hard
+ * Returns Result<ObsEvent, ParseError>. We use Result to avoid a hard
  * dependency on Effect at the validation site — the caller (emit) decides
  * what to do with the failure.
  */
-export const decodeObsEvent = Schema.decodeUnknownEither(ObsEventSchema)
+export const decodeObsEvent = Schema.decodeUnknownResult(ObsEventSchema)

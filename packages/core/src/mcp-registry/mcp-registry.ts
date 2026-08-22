@@ -12,7 +12,7 @@
  * package graph to adapter-sdk. The adapter passes concrete
  * `McpServerConfig` values through; this registry treats them as opaque.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { ValidationError } from "../errors.js"
 
 /**
@@ -60,10 +60,7 @@ export interface MCPRegistryApi {
   readonly snapshotSync: () => Record<string, McpServerConfigLike>
 }
 
-export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
-  MCPRegistry,
-  MCPRegistryApi
->() {
+export class MCPRegistry extends Context.Service<MCPRegistry, MCPRegistryApi>()("luna/MCPRegistry") {
   static readonly Default: Layer.Layer<MCPRegistry> = Layer.effect(
     MCPRegistry,
     Effect.gen(function* () {
@@ -154,6 +151,6 @@ export const registerScoped = (
     const reg = yield* MCPRegistry
     yield* reg.register(name, config)
     yield* Effect.addFinalizer(() =>
-      reg.unregister(name).pipe(Effect.catchAll(() => Effect.void)),
+      reg.unregister(name).pipe(Effect.catch(() => Effect.void)),
     )
   })

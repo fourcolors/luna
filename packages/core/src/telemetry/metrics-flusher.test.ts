@@ -1,7 +1,7 @@
 /**
  * MetricsFlusher tests — TDD PING phase.
  *
- * MetricsFlusher is a Layer.scoped service that:
+ * MetricsFlusher is a Layer.effect service that:
  *   1. Migrates the `metric_snapshots` DuckDB table at boot
  *   2. Runs a forkDaemon background fiber that polls TelemetryService.snapshot()
  *      on a Schedule.fixed interval

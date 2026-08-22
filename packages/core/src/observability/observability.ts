@@ -18,19 +18,12 @@
  *   - Clock dependency for timestamps.
  *
  * Invariants:
- *   - §3.4 #4 interruption: Layer.scoped finalizer shuts down the PubSub,
+ *   - §3.4 #4 interruption: Layer.effect finalizer shuts down the PubSub,
  *     which terminates all subscriber queues and their fibers cleanly.
  *   - §3.4 #1 no cross-Scope refs: writer fiber is a daemon.
  *   - emit() is always Effect<void, never> — failure is swallowed.
  */
-import {
-  Effect,
-  Either,
-  Layer,
-  PubSub,
-  Queue,
-  Stream,
-} from "effect"
+import { Context, Effect, Result, Layer, PubSub, Stream } from "effect"
 import { appendFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -49,16 +42,14 @@ const DEFAULT_JSONL_PATH = join(homedir(), ".luna", "events.jsonl")
 const DEFAULT_PRICE_PER_M_INPUT = 3.0  // $3/M tokens
 const DEFAULT_PRICE_PER_M_OUTPUT = 15.0 // $15/M tokens
 
-export class ObservabilityService extends Effect.Tag(
-  "luna/ObservabilityService",
-)<ObservabilityService, ObservabilityApi>() {
+export class ObservabilityService extends Context.Service<ObservabilityService, ObservabilityApi>()("luna/ObservabilityService") {
   static readonly Default: Layer.Layer<ObservabilityService, never, Clock> =
     ObservabilityService.makeLayer({})
 
   static makeLayer(
     config: ObservabilityConfig,
   ): Layer.Layer<ObservabilityService, never, Clock> {
-    return Layer.scoped(
+    return Layer.effect(
       ObservabilityService,
       Effect.gen(function* () {
         const clock = yield* Clock
@@ -74,11 +65,11 @@ export class ObservabilityService extends Effect.Tag(
         const levelOrder = { info: 0, warn: 1, error: 2 } as const
         const minLevelOrd = levelOrder[minLevel]
 
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           Effect.scoped(
             Effect.gen(function* () {
-              const sub = yield* hub.subscribe
-              yield* Stream.fromQueue(sub).pipe(
+              const sub = yield* PubSub.subscribe(hub)
+              yield* Stream.fromEffectRepeat(PubSub.take(sub)).pipe(
                 Stream.runForEach((ev: ObsEvent) =>
                   Effect.gen(function* () {
                     if (levelOrder[ev.level] < minLevelOrd) return
@@ -98,7 +89,7 @@ export class ObservabilityService extends Effect.Tag(
                 ),
               )
             }),
-          ).pipe(Effect.catchAllCause(() => Effect.void)),
+          ).pipe(Effect.catchCause(() => Effect.void)),
         )
 
         const buildBase = (
@@ -116,11 +107,9 @@ export class ObservabilityService extends Effect.Tag(
             // protocol. On failure: drop the malformed event, publish a
             // synthetic Error event so the violation is observable.
             const decoded = decodeObsEvent(event as unknown)
-            if (Either.isRight(decoded)) {
-              // Schema.optional decodes to `field?: T | undefined`, but our
-              // domain types use `field?: T` (exactOptionalPropertyTypes).
-              // The shapes are equivalent at runtime; cast through unknown.
-              yield* PubSub.publish(hub, decoded.right as unknown as ObsEvent).pipe(
+            if (Result.isSuccess(decoded)) {
+              // optionalKey matches exactOptionalPropertyTypes (`field?: T`).
+              yield* PubSub.publish(hub, decoded.success as unknown as ObsEvent).pipe(
                 Effect.asVoid,
                 Effect.ignore,
               )
@@ -132,7 +121,7 @@ export class ObservabilityService extends Effect.Tag(
               kind: "Error",
               level: "error",
               errorTag: "ObsSchemaViolation",
-              message: `Malformed ObsEvent dropped: ${decoded.left.message}`,
+              message: `Malformed ObsEvent dropped: ${decoded.failure.message}`,
               context: {
                 offendingKind: (event as { kind?: unknown })?.kind ?? null,
               },
@@ -180,9 +169,9 @@ export class ObservabilityService extends Effect.Tag(
         // be delivered to the returned Stream.
         const subscribeEvents: ObservabilityApi["subscribeEvents"] = Effect.gen(
           function* () {
+            // Pins a Subscription to the caller's Scope (cleaned up on close).
             const sub = yield* PubSub.subscribe(hub)
-            yield* Effect.addFinalizer(() => Queue.shutdown(sub))
-            return Stream.fromQueue(sub)
+            return Stream.fromEffectRepeat(PubSub.take(sub))
           },
         )
 

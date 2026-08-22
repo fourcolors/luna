@@ -8,7 +8,7 @@
  * suitable for tests and the first few milestones. The SQLite-backed layer
  * per §5.1 lands in Phase 5 alongside the memory backends (same driver).
  */
-import { Effect, Ref, Stream } from "effect"
+import { Context, Layer, Effect, Ref, Stream } from "effect"
 import type {
   SessionOptions,
   SessionQuery,
@@ -81,10 +81,48 @@ const toSummary = (row: SessionRow): SessionSummary => {
   }
 }
 
-export class SessionStore extends Effect.Service<SessionStore>()(
+
+export interface SessionStoreApi {
+  readonly create: (input: {
+    readonly id: string
+    readonly options: SessionOptions
+    readonly createdAt: number
+  }) => Effect.Effect<SessionSummary, IntegrityError>
+  readonly get: (id: string) => Effect.Effect<SessionSummary | null>
+  readonly getOptions: (id: string) => Effect.Effect<SessionOptions | null>
+  readonly setStatus: (
+    id: string,
+    status: SessionStatus,
+    endedAt?: number | null,
+  ) => Effect.Effect<void, IntegrityError>
+  readonly appendMessage: (input: {
+    readonly sessionId: string
+    readonly messageId: string
+    readonly ts: number
+    readonly parentId: string | null
+    readonly kind: MessageKind
+    readonly payload: unknown
+  }) => Effect.Effect<StoredMessage, IntegrityError>
+  readonly readMessages: (
+    sessionId: string,
+    opts?: { readonly limit?: number },
+  ) => Stream.Stream<StoredMessage, IntegrityError>
+  readonly readFirstUserMessage: (
+    sessionId: string,
+  ) => Effect.Effect<StoredMessage | null, IntegrityError>
+  readonly list: (q?: SessionQuery) => Stream.Stream<SessionSummary>
+  readonly setOptions: (
+    id: string,
+    patch: Partial<SessionOptions>,
+  ) => Effect.Effect<void>
+}
+
+export class SessionStore extends Context.Service<SessionStore, SessionStoreApi>()(
   "luna/SessionStore",
-  {
-    effect: Effect.gen(function* () {
+) {
+  static readonly Default = Layer.effect(
+    SessionStore,
+    Effect.gen(function* () {
       const ref = yield* Ref.make<StoreState>(emptyState())
 
       const create = (input: {
@@ -386,6 +424,6 @@ export class SessionStore extends Effect.Service<SessionStore>()(
         list,
       } as const
     }),
-  },
-) {}
+  )
+}
 

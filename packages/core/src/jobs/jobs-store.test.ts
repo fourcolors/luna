@@ -53,7 +53,7 @@ describe("JobsStoreService (Memory layer)", () => {
         spec: "0 * * * *",
         payload: { label: "first" },
       })
-      const second = yield* Effect.either(
+      const second = yield* Effect.result(
         store.record({
           id: "dup",
           kind: "cron",
@@ -61,7 +61,7 @@ describe("JobsStoreService (Memory layer)", () => {
           payload: { label: "second" },
         }),
       )
-      expect(second._tag).toBe("Left")
+      expect(second._tag).toBe("Failure")
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
@@ -1069,7 +1069,7 @@ dSqlite("JobsStoreService (SQLite layer) - claimAndStartRun rollback", () => {
       // together with the failed insert, `jobs.last_run` would advance with
       // no `job_runs` row to show for it, exactly the orphan window this
       // method exists to close.
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         store.claimAndStartRun("cs-rollback", {
           claimAt: 5000,
           nextRunAt: 5600,
@@ -1078,7 +1078,7 @@ dSqlite("JobsStoreService (SQLite layer) - claimAndStartRun rollback", () => {
           attempt: null as unknown as number,
         }),
       )
-      expect(result._tag).toBe("Left")
+      expect(result._tag).toBe("Failure")
 
       // The claim was rolled back - a subsequent claim with the ORIGINAL
       // previousLastRun (null) still succeeds, proving jobs.last_run was

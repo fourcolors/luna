@@ -58,7 +58,7 @@ const run = <A, E>(
 const startCollector = (broker: { events: Stream.Stream<TeamEvent> }) =>
   Effect.gen(function* () {
     const sink = yield* Ref.make<ReadonlyArray<TeamEvent>>([])
-    const fiber = yield* Effect.forkDaemon(
+    const fiber = yield* Effect.forkDetach(
       broker.events.pipe(
         Stream.runForEach((e) => Ref.update(sink, (xs) => [...xs, e])),
       ),
@@ -288,11 +288,11 @@ describe("TeamBroker — Tier-2", () => {
 
         const drainer = yield* Effect.gen(function* () {
           const broker = yield* TeamBroker
-          const drainer = yield* Effect.forkDaemon(
+          const drainer = yield* Effect.forkDetach(
             broker.events.pipe(
               Stream.runForEach((e) => Ref.update(sink, (xs) => [...xs, e])),
               // ignore stream termination when queue shuts down
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
             ),
           )
           const noopLoop: TeammateSpec["loop"] = () => Effect.never

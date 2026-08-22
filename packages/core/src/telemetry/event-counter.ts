@@ -6,21 +6,18 @@
  * low-cardinality counters that MetricsFlusher can persist into
  * metric_snapshots for quick operational summaries.
  */
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import { ObservabilityService } from "../observability/observability.js"
 import type { ObsEvent } from "../observability/types.js"
 import { TelemetryService } from "./telemetry.js"
 
-export class EventCounter extends Effect.Tag("luna/EventCounter")<
-  EventCounter,
-  Record<string, never>
->() {
+export class EventCounter extends Context.Service<EventCounter, Record<string, never>>()("luna/EventCounter") {
   static makeLayer(): Layer.Layer<
     EventCounter,
     never,
     ObservabilityService | TelemetryService
   > {
-    return Layer.scoped(
+    return Layer.effect(
       EventCounter,
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
@@ -32,7 +29,7 @@ export class EventCounter extends Effect.Tag("luna/EventCounter")<
           tags: Readonly<Record<string, string>> = {},
           n = 1,
         ): Effect.Effect<void, never> =>
-          tel.inc(name, tags, n).pipe(Effect.catchAllCause(() => Effect.void))
+          tel.inc(name, tags, n).pipe(Effect.catchCause(() => Effect.void))
 
         const countEvent = (event: ObsEvent): Effect.Effect<void, never> =>
           Effect.gen(function* () {
@@ -75,10 +72,10 @@ export class EventCounter extends Effect.Tag("luna/EventCounter")<
             }
           })
 
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           stream.pipe(
             Stream.runForEach(countEvent),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 

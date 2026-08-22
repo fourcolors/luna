@@ -16,7 +16,7 @@
  *   - Handler errors are caught and sent as error responses (never crash the
  *     gateway).
  *   - Each adapter gets its own Scope; adapter failure doesn't crash others.
- *   - GatewayService is Layer.scoped; teardown interrupts all adapter fibers.
+ *   - GatewayService is Layer.effect; teardown interrupts all adapter fibers.
  */
 import type { Effect, Scope, Stream } from "effect"
 

@@ -90,7 +90,9 @@
  * `enabled=1 AND next_run_at <= now` and skips `kind="cron"` rows defensively
  * so any stragglers left in an existing DB stay inert.
  */
-import { Duration, Effect, FiberMap, Layer, Ref, Schedule } from "effect"
+import { TestClock } from "effect/testing"
+import { Context, Duration, Effect, FiberMap, Layer, Ref, Schedule } from "effect"
+import * as Semaphore from "effect/Semaphore"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
 import {
@@ -204,10 +206,7 @@ export interface TickSummary {
   readonly pruned: number
 }
 
-export class JobTicker extends Effect.Tag("luna/JobTicker")<
-  JobTicker,
-  JobTickerApi
->() {}
+export class JobTicker extends Context.Service<JobTicker, JobTickerApi>()("luna/JobTicker") {}
 
 // ── Layer config ────────────────────────────────────────────────────────────
 
@@ -216,27 +215,27 @@ export interface JobTickerOptions {
    * Tick cadence. Default 60 seconds (DESIGN.md §5.3.2). Tests pass a
    * smaller value + TestClock.adjust to verify multiple drains.
    */
-  readonly tickInterval?: Duration.DurationInput
+  readonly tickInterval?: Duration.Input
 
   /**
    * Per-worker deadline. ENFORCED: a dispatch that overruns is interrupted via
    * `Effect.timeoutFail` and closed as a `deadline_passed` failure (also fills
    * `WorkerContext.deadline`). Default 5 minutes.
    */
-  readonly workerDeadline?: Duration.DurationInput
+  readonly workerDeadline?: Duration.Input
 
   /**
    * Retention: closed `job_runs` rows older than this are pruned so the audit
    * ledger does not grow without bound. Default 30 days.
    */
-  readonly retentionMaxAge?: Duration.DurationInput
+  readonly retentionMaxAge?: Duration.Input
 
   /**
    * How often the retention sweep actually runs. The ticker checks on every
    * drain but only prunes once this interval has elapsed since the last sweep,
    * so a 60s tick does not issue a DELETE every minute. Default 6 hours.
    */
-  readonly retentionSweepInterval?: Duration.DurationInput
+  readonly retentionSweepInterval?: Duration.Input
 
   /**
    * Whether to fork the supervised auto-tick loop. Default true (production).
@@ -254,7 +253,7 @@ export interface JobTickerOptions {
    * before this seam) uses `workerDeadline` exactly as before, with NO grace
    * added, so existing deployments and tests are unaffected. Default 30s.
    */
-  readonly grace?: Duration.DurationInput
+  readonly grace?: Duration.Input
 
   /**
    * job-ticker-oban-deadlines (Seam 1). Hard outer cap on the per-dispatch
@@ -263,7 +262,7 @@ export interface JobTickerOptions {
    * a misconfigured per-kind timeout from starving the ticker of a bounded
    * ceiling. Default 30 min.
    */
-  readonly maxWorkerDeadline?: Duration.DurationInput
+  readonly maxWorkerDeadline?: Duration.Input
 
   /**
    * job-ticker-oban-deadlines (Seam 4), meaning CHANGED by
@@ -290,7 +289,7 @@ export interface JobTickerOptions {
    * capped at 30 min. One-shot jobs never retry — see the one-shot guard in
    * `drainOnce`.
    */
-  readonly retryBackoff?: (attempt: number) => Duration.DurationInput
+  readonly retryBackoff?: (attempt: number) => Duration.Input
 
   /**
    * job-ticker-oban-deadlines (Seam 3). Ceiling on total attempts for a
@@ -405,7 +404,7 @@ export const JobTickerLayer = (
     options?.doctor,
   )
 
-  return Layer.scoped(
+  return Layer.effect(
     JobTicker,
     Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -520,12 +519,12 @@ export const JobTickerLayer = (
       // invocation ever runs at a time. The executor dispatch itself runs on
       // the FORKED fiber, not in the critical section: `FiberMap.run` returns
       // as soon as the fiber exists, and the executor's first op is
-      // `Effect.yieldNow()` so its body does not run synchronously inside the
+      // `Effect.yieldNow` so its body does not run synchronously inside the
       // fork. The critical section is therefore the fast producer loop (claim
       // / guard / claimAndStartRun writes), not any worker dispatch - see the
       // fork site's "honest scope" comment for the one residual (a synchronous
       // CPU-bound worker, which Luna has none of).
-      const producerSemaphore = yield* Effect.makeSemaphore(1)
+      const producerSemaphore = yield* Semaphore.make(1)
 
       // job-ticker-producer-executor-276 - the EXECUTOR (job-ticker-executor.ts):
       // the forked tail of a real dispatch. See that file for the full doc.
@@ -598,7 +597,7 @@ export const JobTickerLayer = (
       // explicit drain on the shared store).
       const supervisedLoop = Effect.gen(function* () {
         const summary = yield* drainOnce.pipe(
-          Effect.catchAllDefect((defect) =>
+          Effect.catchDefect((defect) =>
             Effect.gen(function* () {
               yield* Effect.logError(
                 `[luna/sched] tick defect (swallowed to keep the loop alive): ${String(defect)}`,

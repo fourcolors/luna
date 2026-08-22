@@ -18,7 +18,7 @@
  * Memory layer for unit tests, a dynamic-`bun:sqlite` makeLayer for prod,
  * both satisfying the same Effect.Tag service.
  */
-import { Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
@@ -125,10 +125,7 @@ export interface ArtifactStoreApi {
 const resolveKind = (input: PinInput) =>
   input.kind ?? deriveArtifactKind(input.lang, null)
 
-export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
-  ArtifactStore,
-  ArtifactStoreApi
->() {
+export class ArtifactStore extends Context.Service<ArtifactStore, ArtifactStoreApi>()("luna/ArtifactStore") {
   /** In-memory variant for tests — same semantics, no SQLite. */
   static readonly Memory: Layer.Layer<ArtifactStore, never, Clock> =
     Layer.effect(
@@ -275,7 +272,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
   static makeLayer(
     dbPath: string,
   ): Layer.Layer<ArtifactStore, ConfigError, Clock | LunaSqliteBootstrap> {
-    return Layer.scoped(
+    return Layer.effect(
       ArtifactStore,
       Effect.gen(function* () {
         yield* LunaSqliteBootstrap

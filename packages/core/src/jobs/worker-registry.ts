@@ -22,7 +22,7 @@
  *   - The JobTicker dispatches each worker bounded by
  *     `Effect.timeoutFail(...)` (per-kind `defaultTimeoutMs` + grace, or the
  *     ticker's global `workerDeadline` fallback) and wrapped in
- *     `Effect.catchAllDefect` so an overrun or a panicking worker is
+ *     `Effect.catchDefect` so an overrun or a panicking worker is
  *     converted to a typed WorkerError and closed into job_runs — it cannot
  *     kill the ticker fiber. Since job-ticker-oban-deadlines, dispatches
  *     within a tick run with BOUNDED concurrency (`Effect.forEach(...,
@@ -34,7 +34,7 @@
  * new kinds at runtime, especially once `workflow` payloads embed `prompt`
  * sub-steps). A Map dispatched by string keeps that surface flat.
  */
-import { Data, Effect, Layer, Ref } from "effect"
+import { Context, Data, Effect, Layer, Ref } from "effect"
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -187,10 +187,7 @@ export interface WorkerRegistryApi {
 
 // ── Tag + Layer ─────────────────────────────────────────────────────────────
 
-export class WorkerRegistry extends Effect.Tag("luna/WorkerRegistry")<
-  WorkerRegistry,
-  WorkerRegistryApi
->() {
+export class WorkerRegistry extends Context.Service<WorkerRegistry, WorkerRegistryApi>()("luna/WorkerRegistry") {
   /**
    * Empty registry. Tests or chat-server boot composes additional Layers
    * that call `WorkerRegistry.register(kind, worker)` at construction time

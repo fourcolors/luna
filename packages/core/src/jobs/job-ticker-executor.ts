@@ -11,7 +11,7 @@
  * `executors` FiberMap.
  */
 import { Duration, Effect } from "effect"
-import type { Clock } from "../clock.js"
+import type { ClockService } from "../clock.js"
 import {
   handleDoctorWorkflowFailure,
   isDoctorWorkflowJob,
@@ -113,11 +113,11 @@ const MIN_RESOLVED_TIMEOUT_MS = 1_000
 export interface ExecutorDeps {
   readonly store: JobsStoreApi
   readonly registry: WorkerRegistryApi
-  readonly clock: Clock
+  readonly clock: ClockService
   readonly workerDeadlineMs: number
   readonly graceMs: number
   readonly maxWorkerDeadlineMs: number
-  readonly retryBackoff: (attempt: number) => Duration.DurationInput
+  readonly retryBackoff: (attempt: number) => Duration.Input
   readonly defaultMaxAttempts: number
   readonly doctorCfg: DoctorEnqueueConfig
 }
@@ -130,8 +130,8 @@ export interface ExecutorDeps {
  * either)`, close `job_runs` (Seam 3 retry/reset), `touch`, then
  * `postCommit` (issue #277). Typed `Effect.Effect<void>` (E=never) to
  * satisfy `FiberMap<string, void, never>` (see job-ticker.ts's `executors`
- * doc) - every store call stays wrapped in `Effect.catchAll`/
- * `Effect.catchAllDefect` for exactly the reason the old `handleJob` doc
+ * doc) - every store call stays wrapped in `Effect.catch`/
+ * `Effect.catchDefect` for exactly the reason the old `handleJob` doc
  * gave: an escaped typed failure here would only kill THIS fiber (FiberMap
  * doesn't cascade fiber failures between entries), but an escaped DEFECT
  * would still need catching so the fiber closes cleanly and frees its
@@ -189,7 +189,7 @@ export const makeExecutor = (
     // between-chunk stop gate (e.g. the dream worker) fires with the
     // full `graceMs` still in hand before the ticker's hard backstop
     // below. `backstopMs` is the grace-INCLUSIVE outer kill used only by
-    // `Effect.timeoutFail`. Both share the same `maxWorkerDeadlineMs` cap
+    // `Effect.timeoutOrElse`. Both share the same `maxWorkerDeadlineMs` cap
     // so `effectiveMs <= backstopMs` always holds (min is monotonic in
     // its first argument), even when `resolvedKindTimeoutMs` itself
     // exceeds the cap.
@@ -208,7 +208,7 @@ export const makeExecutor = (
           )
         : workerDeadlineMs
 
-    // Dispatch the worker. Errors caught into Either so the ticker keeps
+    // Dispatch the worker. Errors caught into Result so the ticker keeps
     // draining; the result is closed into job_runs regardless of outcome.
     // ctx.deadline is computed from a fresh clock read (NOT tickAt) so it
     // matches the relative `timeoutFail(backstopMs)` below. It is set to
@@ -230,13 +230,12 @@ export const makeExecutor = (
         // behaviour — the deadline was advisory only). The timeout
         // surfaces as a deadline_passed WorkerError and is closed into
         // job_runs like any other failure.
-        Effect.timeoutFail({
-          onTimeout: () =>
-            new WorkerError({
+        Effect.timeoutOrElse({
+          orElse: () => Effect.fail(new WorkerError({
               reason: "deadline_passed",
               kind: job.kind,
               message: `worker for kind "${job.kind}" exceeded the ${backstopMs}ms deadline and was interrupted`,
-            }),
+            })),
           duration: Duration.millis(backstopMs),
         }),
         // Convert an uncaught worker DEFECT (a synchronous throw /
@@ -248,7 +247,7 @@ export const makeExecutor = (
         // leaving the run stuck 'running' until boot reconcile. `Effect
         // .either` only traps the typed E channel, not defects - this
         // MUST run before it.
-        Effect.catchAllDefect((defect) =>
+        Effect.catchDefect((defect) =>
           Effect.fail(
             new WorkerError({
               reason: "defect",
@@ -257,17 +256,17 @@ export const makeExecutor = (
             }),
           ),
         ),
-        Effect.either,
+        Effect.result,
       )
 
     const finishedAt = yield* clock.nowMs()
-    if (result._tag === "Right") {
+    if (result._tag === "Success") {
       yield* store.recordRunEnd(run.id, {
         finishedAt,
         status: "success",
-        outputText: result.right.outputText,
-        stepsJson: result.right.stepsJson ?? null,
-      }).pipe(Effect.catchAll(() => Effect.void))
+        outputText: result.success.outputText,
+        stepsJson: result.success.stepsJson ?? null,
+      }).pipe(Effect.catch(() => Effect.void))
       // Seam 3 + Phase B1 — clear retry + doctor streaks on recovery.
       // Only write when something is non-zero / non-ok so healthy ticks
       // stay free of redundant UPDATEs.
@@ -286,10 +285,10 @@ export const makeExecutor = (
             healAttempts: 0,
             healState: "ok",
           })
-          .pipe(Effect.catchAll(() => Effect.void))
+          .pipe(Effect.catch(() => Effect.void))
       }
     } else {
-      const err = result.left as WorkerError
+      const err = result.failure as WorkerError
       const errMsg = `${err.reason}: ${err.message}`
       yield* store.recordRunEnd(run.id, {
         finishedAt,
@@ -299,7 +298,7 @@ export const makeExecutor = (
         // (e.g. workflow worker on halt) — persist it so the operator
         // can see which step failed without rerunning.
         stepsJson: err.stepsJson ?? null,
-      }).pipe(Effect.catchAll(() => Effect.void))
+      }).pipe(Effect.catch(() => Effect.void))
       // Seam 3 — retry a RECURRING job sooner than its natural next
       // cron fire. Gated on THREE explicit conditions, ALL required:
       //   1. err.reason is RETRYABLE (deadline_passed/worker_failed/
@@ -341,7 +340,7 @@ export const makeExecutor = (
           if (retryAt < nextRunAt) patch.nextRunAt = retryAt
           yield* store
             .setV2Fields(job.id, patch)
-            .pipe(Effect.catchAll(() => Effect.void))
+            .pipe(Effect.catch(() => Effect.void))
           retryScheduled = true
         }
       }
@@ -355,7 +354,7 @@ export const makeExecutor = (
       if (!retryScheduled && job.retryAttempt !== 0) {
         yield* store
           .setV2Fields(job.id, { retryAttempt: 0 })
-          .pipe(Effect.catchAll(() => Effect.void))
+          .pipe(Effect.catch(() => Effect.void))
       }
 
       // Phase B1 — doctor auto-heal. Doctor workflow jobs never
@@ -369,19 +368,19 @@ export const makeExecutor = (
           errMsg,
           doctorCfg,
           finishedAt,
-        ).pipe(Effect.catchAllDefect(() => Effect.void))
+        ).pipe(Effect.catchDefect(() => Effect.void))
       } else {
         const newFailStreak = job.failStreak + 1
         yield* store
           .setV2Fields(job.id, { failStreak: newFailStreak })
-          .pipe(Effect.catchAll(() => Effect.void))
+          .pipe(Effect.catch(() => Effect.void))
         yield* maybeEnqueueDoctor(
           store,
           { ...job, failStreak: newFailStreak },
           errMsg,
           doctorCfg,
           finishedAt,
-        ).pipe(Effect.catchAllDefect(() => Effect.void))
+        ).pipe(Effect.catchDefect(() => Effect.void))
       }
     }
     // recordRunEnd closes the job_runs row but does NOT touch jobs.last_status,
@@ -389,9 +388,9 @@ export const makeExecutor = (
     // recurring schedule isn't shown as perpetually 'running' between fires.
     yield* store
       .touch(job.id, {
-        lastStatus: result._tag === "Right" ? "fired" : "errored",
+        lastStatus: result._tag === "Success" ? "fired" : "errored",
       })
-      .pipe(Effect.catchAll(() => Effect.void))
+      .pipe(Effect.catch(() => Effect.void))
 
     // issue #277 - postCommit (deferred delivery) runs LAST, strictly
     // AFTER every durable job-state write above (recordRunEnd, the
@@ -415,15 +414,15 @@ export const makeExecutor = (
     // alternative (running postCommit BEFORE the durable writes, or
     // retrying it) reintroduces the double-delivery race #277 exists
     // to kill. At-most-once here beats at-least-once.
-    if (result._tag === "Right" && result.right.postCommit) {
-      yield* result.right.postCommit.pipe(
+    if (result._tag === "Success" && result.success.postCommit) {
+      yield* result.success.postCommit.pipe(
         Effect.timeout(Duration.seconds(30)),
-        Effect.catchAll((err) =>
+        Effect.catch((err) =>
           Effect.logWarning(
             `[luna/sched] postCommit failed for job=${job.id}: ${String(err)}`,
           ),
         ),
-        Effect.catchAllDefect((defect) =>
+        Effect.catchDefect((defect) =>
           Effect.logWarning(
             `[luna/sched] postCommit raised a defect for job=${job.id}: ${String(defect)}`,
           ),

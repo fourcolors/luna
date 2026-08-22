@@ -21,7 +21,7 @@
  *   - Clock dependency: creation/update timestamps use Clock.nowMs();
  *     id generation uses Clock.genId() — same as TaskList, SessionStore.
  */
-import {
+import { Context,
   Effect,
   Layer,
   Ref,
@@ -47,9 +47,7 @@ const makeEmpty = (): InternalState => ({
   events: new Map(),
 })
 
-export class WorkflowState extends Effect.Tag(
-  "luna/WorkflowState",
-)<WorkflowState, WorkflowStateApi>() {
+export class WorkflowState extends Context.Service<WorkflowState, WorkflowStateApi>()("luna/WorkflowState") {
   static readonly Default: Layer.Layer<WorkflowState, never, Clock> =
     Layer.effect(
       WorkflowState,

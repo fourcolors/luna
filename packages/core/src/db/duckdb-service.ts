@@ -11,7 +11,7 @@
  *      to match the DuckDB callback-based API.
  *
  * Architecture:
- *   - Layer.scoped opens the DB, creates schema_versions, writes lock file,
+ *   - Layer.effect opens the DB, creates schema_versions, writes lock file,
  *     starts background writer fiber, registers finalizers (LIFO).
  *   - All ops (exec, write, query, migrate) are routed through a single
  *     job queue so the underlying connection is always accessed from one
@@ -23,7 +23,7 @@
  *   - Lock file (`${dbPath}.lock`) is written at boot and deleted in the
  *     finalizer. Boot fails with ConfigError if the file already exists.
  */
-import { Deferred, Effect, Fiber, Layer, Queue, Ref } from "effect"
+import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref } from "effect"
 import { Data } from "effect"
 import * as fs from "node:fs"
 import { ConfigError } from "../errors.js"
@@ -82,10 +82,7 @@ export interface DuckDbApi {
 
 // ── Service tag ──────────────────────────────────────────────────────────────
 
-export class DuckDbService extends Effect.Tag("luna/DuckDbService")<
-  DuckDbService,
-  DuckDbApi
->() {}
+export class DuckDbService extends Context.Service<DuckDbService, DuckDbApi>()("luna/DuckDbService") {}
 
 // ── Layer factory ─────────────────────────────────────────────────────────────
 
@@ -100,7 +97,7 @@ export function makeDuckDbLayer(config: {
     driverSpecifier = "bun:sqlite",
   } = config
 
-  return Layer.scoped(
+  return Layer.effect(
     DuckDbService,
     Effect.gen(function* () {
       // ── 1. Dynamic import of the DB driver ────────────────────────────────
@@ -186,7 +183,7 @@ export function makeDuckDbLayer(config: {
 
       // ── 7. Background writer fiber ────────────────────────────────────────
       // Drains the queue sequentially. All DB access is serialized here.
-      const writerFiber = yield* Effect.forkDaemon(
+      const writerFiber = yield* Effect.forkDetach(
         Effect.forever(
           Effect.gen(function* () {
             const job = yield* Queue.take(queue)
@@ -200,12 +197,12 @@ export function makeDuckDbLayer(config: {
                     cause instanceof Error ? cause.message : String(cause),
                   cause,
                 }),
-            }).pipe(Effect.either)
+            }).pipe(Effect.result)
 
-            if (result._tag === "Left") {
-              yield* Deferred.fail(job.deferred, result.left)
+            if (result._tag === "Failure") {
+              yield* Deferred.fail(job.deferred, result.failure)
             } else {
-              yield* Deferred.succeed(job.deferred, result.right)
+              yield* Deferred.succeed(job.deferred, result.success)
             }
           }),
         ),

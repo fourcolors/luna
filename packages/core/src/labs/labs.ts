@@ -7,7 +7,7 @@
  * Pull-based: results returned in the ExperimentReport. No §16 events
  * are emitted from this layer (advisor: keep storage-agnostic).
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
 import { CostAccountingService } from "../cost-accounting/index.js"
 import {
@@ -22,10 +22,7 @@ import type {
   LabsConfig,
 } from "./types.js"
 
-export class LabsService extends Effect.Tag("luna/LabsService")<
-  LabsService,
-  LabsApi
->() {
+export class LabsService extends Context.Service<LabsService, LabsApi>()("luna/LabsService") {
   static makeLayer(
     _config?: LabsConfig,
   ): Layer.Layer<LabsService, never, Clock | CostAccountingService> {

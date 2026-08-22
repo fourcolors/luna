@@ -66,7 +66,7 @@ describe("HookRegistry", () => {
       Effect.gen(function* () {
         const reg = yield* HookRegistry
         const scope = yield* Scope.make()
-        yield* registerScoped("scoped", spec("Stop")).pipe(Scope.extend(scope))
+        yield* registerScoped("scoped", spec("Stop")).pipe(Scope.provide(scope))
         const duringScope = yield* reg.list()
         yield* Scope.close(scope, Exit.void)
         const afterScope = yield* reg.list()

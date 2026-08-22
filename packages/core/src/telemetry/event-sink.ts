@@ -1,7 +1,7 @@
 /**
  * EventSink — Phase 14b.
  *
- * A side-effect-only Layer.scoped service that subscribes to ObservabilityService
+ * A side-effect-only Layer.effect service that subscribes to ObservabilityService
  * and persists every ObsEvent to the DuckDB `events` table via DuckDbService.
  *
  * Architecture:
@@ -11,7 +11,7 @@
  *     refs) that drains the subscription stream indefinitely.
  *   - For each ObsEvent, normalizes it into a flat row and calls
  *     DuckDbService.write(). Write errors are swallowed
- *     (Effect.catchAllCause(() => Effect.void)) — observability must never
+ *     (Effect.catchCause(() => Effect.void)) — observability must never
  *     kill the host.
  *   - Schema migration is applied at boot via DuckDbService.migrate().
  *
@@ -20,10 +20,10 @@
  *
  * Invariants:
  *   §3.4 #1  — daemon fiber (forkDaemon), not forkScoped.
- *   §3.4 #4  — Layer.scoped scope handles subscription cleanup via addFinalizer.
+ *   §3.4 #4  — Layer.effect scope handles subscription cleanup via addFinalizer.
  *   §16      — EventSink emits NO observability events itself (no circular loop).
  */
-import { Effect, Layer, Ref, Stream } from "effect"
+import { Context, Effect, Layer, Ref, Stream } from "effect"
 import { Clock } from "../clock.js"
 import { DuckDbService } from "../db/duckdb-service.js"
 import { ObservabilityService } from "../observability/observability.js"
@@ -163,16 +163,13 @@ interface EventSinkApi {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export class EventSink extends Effect.Tag("luna/EventSink")<
-  EventSink,
-  EventSinkApi
->() {
+export class EventSink extends Context.Service<EventSink, EventSinkApi>()("luna/EventSink") {
   static makeLayer(): Layer.Layer<
     EventSink,
     never,
     ObservabilityService | DuckDbService | Clock
   > {
-    return Layer.scoped(
+    return Layer.effect(
       EventSink,
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
@@ -193,11 +190,11 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
 
         // ── 1. Run schema migration at boot ─────────────────────────────────
         yield* db.migrate("event-sink", 1, EVENTS_SCHEMA_V1).pipe(
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         )
 
         // ── 2. Eagerly subscribe (Scope-pinned) ──────────────────────────────
-        // subscribeEvents requires a Scope; Layer.scoped provides one.
+        // subscribeEvents requires a Scope; Layer.effect provides one.
         // Any events emitted after this resolves are guaranteed to be delivered.
         const stream = yield* obs.subscribeEvents
 
@@ -206,7 +203,7 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
         // Write errors are swallowed — fire-and-forget per §16 — but we now
         // count them and log the FIRST failure once per process so a broken
         // pipeline is at least visible in stderr.
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           stream.pipe(
             Stream.runForEach((event: ObsEvent) => {
               const row = normalizeEvent(event)
@@ -214,7 +211,7 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
                 ...h,
                 eventsReceived: h.eventsReceived + 1,
               })).pipe(
-                Effect.zipRight(
+                Effect.andThen(
                   db.write(INSERT_SQL, [
                     row.id,
                     row.ts,
@@ -240,7 +237,7 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
                     lastWriteAt: row.ts,
                   })),
                 ),
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                   Effect.gen(function* () {
                     const reason = cause.toString().slice(0, 240)
                     yield* Ref.update(stateRef, (h) => ({
@@ -262,7 +259,7 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
                 ),
               )
             }),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 

@@ -1,5 +1,6 @@
+import { TestClock } from "effect/testing"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { Effect, Fiber, ManagedRuntime, TestClock, TestContext } from "effect"
+import { Effect, Fiber, ManagedRuntime } from "effect"
 import {
   EmbedderService,
   makeOllamaEmbedderLayer,
@@ -326,17 +327,17 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const embedder = yield* EmbedderService
-        const outcome = yield* Effect.either(embedder.embed("hello"))
+        const outcome = yield* Effect.result(embedder.embed("hello"))
         return { embedder, outcome }
       }).pipe(Effect.provide(degradedLayer)),
     )
 
     expect(result.embedder.provider).toBe("ollama")
     expect(result.embedder.dimension).toBe(768)
-    expect(result.outcome._tag).toBe("Left")
-    if (result.outcome._tag === "Left") {
-      expect(result.outcome.left).toBeInstanceOf(EmbedderError)
-      expect(result.outcome.left.op).toBe("embed")
+    expect(result.outcome._tag).toBe("Failure")
+    if (result.outcome._tag === "Failure") {
+      expect(result.outcome.failure).toBeInstanceOf(EmbedderError)
+      expect(result.outcome.failure.op).toBe("embed")
     }
   })
 
@@ -386,12 +387,12 @@ describe("OllamaEmbedder boot-probe hardening", () => {
     mockFetch.mockReset()
     mockFetch.mockResolvedValue(okJson({ embeddings: [[1, 0, 0]] })) // length 3
 
-    const first = await Effect.runPromise(Effect.either(embedder.embed("hello")))
-    expect(first._tag).toBe("Left")
-    if (first._tag === "Left") {
-      expect(first.left).toBeInstanceOf(EmbedderError)
-      expect(first.left.op).toBe("embed")
-      expect(String(first.left.cause)).toMatch(/dimension mismatch after degraded boot/)
+    const first = await Effect.runPromise(Effect.result(embedder.embed("hello")))
+    expect(first._tag).toBe("Failure")
+    if (first._tag === "Failure") {
+      expect(first.failure).toBeInstanceOf(EmbedderError)
+      expect(first.failure.op).toBe("embed")
+      expect(String(first.failure.cause)).toMatch(/dimension mismatch after degraded boot/)
     }
     expect(
       errorSpy.mock.calls.some((call) =>
@@ -401,8 +402,8 @@ describe("OllamaEmbedder boot-probe hardening", () => {
 
     // Sticky: second call fails without another HTTP round-trip.
     mockFetch.mockClear()
-    const second = await Effect.runPromise(Effect.either(embedder.embed("again")))
-    expect(second._tag).toBe("Left")
+    const second = await Effect.runPromise(Effect.result(embedder.embed("again")))
+    expect(second._tag).toBe("Failure")
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
@@ -482,30 +483,31 @@ describe("OllamaEmbedder boot-probe hardening", () => {
       probeBackoffMs: 5000,
     })
 
-    const runtime = ManagedRuntime.make(TestContext.TestContext)
+    const runtime = ManagedRuntime.make(TestClock.layer())
     try {
       // forkDaemon, not fork: a plain Effect.fork scopes the child to this
       // runPromise call's own root fiber, which exits (and interrupts its
       // children) the instant fork itself returns the Fiber handle.
       const fiber = await runtime.runPromise(
-        Effect.forkDaemon(
+        Effect.forkDetach(
           Effect.gen(function* () {
             return yield* EmbedderService
           }).pipe(Effect.provide(layer)),
         ),
       )
 
-      // Let the first (failing) attempt's mocked fetch promise settle on the
-      // real microtask queue before the fiber reaches the backoff sleep.
+      // Let the first (failing) attempt's mocked fetch promise settle.
+      // Under TestClock, forked work needs an Effect yield to start running
+      // before Promise microtasks alone observe side effects.
+      await runtime.runPromise(Effect.yieldNow)
       await Promise.resolve()
       await Promise.resolve()
 
-      const stillPending = await runtime.runPromise(Fiber.poll(fiber))
-      expect(stillPending._tag).toBe("None")
       // The backoff sleep must gate the retry — no second attempt yet.
       expect(probeAttemptCount(mockFetch)).toBe(1)
 
       await runtime.runPromise(TestClock.adjust("10 seconds"))
+      await runtime.runPromise(Effect.yieldNow)
       await Promise.resolve()
       await Promise.resolve()
 

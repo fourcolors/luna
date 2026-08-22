@@ -12,7 +12,7 @@
  *   - Budget rules stored in Ref<Map<...>>; checked on-demand (no reactive
  *     triggers — callers poll isBudgetExceeded).
  *   - forkDaemon: background fiber does not propagate failures to host.
- *   - Layer.scoped: Scope close terminates the subscriber via Queue.shutdown
+ *   - Layer.effect: Scope close terminates the subscriber via Queue.shutdown
  *     (propagated by PubSub shutdown on ObservabilityService teardown).
  *
  * Invariants:
@@ -22,7 +22,7 @@
  *   - §6.2 frozen errors: no new TaggedErrors — all operations are
  *     Effect<T, never, ...>; bad state returns null / Infinity gracefully.
  */
-import {
+import { Context,
   Effect,
   Layer,
   Ref,
@@ -44,9 +44,7 @@ type BudgetMap = ReadonlyMap<BucketKey, number> // → budgetUsd
 const makeBucketKey = (dimension: CostBucket["dimension"], key: string): BucketKey =>
   `${dimension}:${key}`
 
-export class CostAccountingService extends Effect.Tag(
-  "luna/CostAccountingService",
-)<CostAccountingService, CostAccountingApi>() {
+export class CostAccountingService extends Context.Service<CostAccountingService, CostAccountingApi>()("luna/CostAccountingService") {
   static readonly Default: Layer.Layer<
     CostAccountingService,
     never,
@@ -56,7 +54,7 @@ export class CostAccountingService extends Effect.Tag(
   static makeLayer(
     config: CostAccountingConfig,
   ): Layer.Layer<CostAccountingService, never, ObservabilityService | Clock> {
-    return Layer.scoped(
+    return Layer.effect(
       CostAccountingService,
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
@@ -69,7 +67,7 @@ export class CostAccountingService extends Effect.Tag(
         const eventStream = yield* obs.subscribeEvents
 
         // Background fiber: consume CostAccrued events and update buckets.
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           eventStream.pipe(
             Stream.filter((e) => e.kind === "CostAccrued"),
             Stream.runForEach((ev) =>
@@ -117,7 +115,7 @@ export class CostAccountingService extends Effect.Tag(
                 })
               }),
             ),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 
@@ -166,7 +164,7 @@ export class CostAccountingService extends Effect.Tag(
           })
 
         const reset: CostAccountingApi["reset"] = Ref.set(bucketsRef, new Map()).pipe(
-          Effect.zipRight(Ref.set(budgetsRef, new Map())),
+          Effect.andThen(Ref.set(budgetsRef, new Map())),
         )
 
         return {

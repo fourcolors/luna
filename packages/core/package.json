@@ -11,7 +11,12 @@
   "scripts": {
     "build": "echo '@luna/core: build not needed'",
     "test": "vitest run",
-    "test:bun": "bun test"
+    "test:bun": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "^2.1.5"
   },
   "dependencies": {
     "@luna/memory": "workspace:*",

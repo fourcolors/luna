@@ -16,7 +16,7 @@
  * keeping 93.7% of good hits (holdout). This module is the production seam
  * for that result - `rerank()` scores candidates, `applyRerank()` gates them.
  */
-import { Data, Effect, Layer } from "effect"
+import { Context, Data, Effect, Layer } from "effect"
 
 /** One retrieval candidate to be scored, as the caller (memory_search /
  * recallForTurn) already has it: id + text + the retrieval-stage score. */
@@ -61,10 +61,7 @@ export class RerankError extends Data.TaggedError("RerankError")<{
   readonly cause?: unknown
 }> {}
 
-export class MemoryReranker extends Effect.Tag("luna/MemoryReranker")<
-  MemoryReranker,
-  MemoryRerankerApi
->() {}
+export class MemoryReranker extends Context.Service<MemoryReranker, MemoryRerankerApi>()("luna/MemoryReranker") {}
 
 /** Test/wiring double - returns a fixed score for every id present in
  * `scoresById`; candidates whose id is absent from the map come back

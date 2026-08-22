@@ -279,7 +279,7 @@ d("luna.db schema-continuity contract (docs/next/luna-db-contract.md)", () => {
     const dbPath = tmpDbPath("luna")
     try {
       // Boot every component's REAL makeLayer() against the SAME physical
-      // file, one at a time (each Layer.scoped closes its connection when
+      // file, one at a time (each Layer.effect closes its connection when
       // its own scope ends, so there is no cross-component lock contention).
       // This exercises the exact per-component `schema_versions` ledger that
       // fixed the Phase 25e migration-collision bug - if a future change

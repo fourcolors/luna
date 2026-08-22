@@ -440,7 +440,7 @@ describe("DuckDbService", () => {
           Effect.provide(
             layer as Layer.Layer<DuckDbService, never, never>,
           ),
-          Scope.extend(scope),
+          Scope.provide(scope),
         ),
       )
 
@@ -489,7 +489,7 @@ describe("DuckDbService", () => {
     await withTempDb(async (dbPath) => {
       const lockPath = dbPath + ".lock"
       const holder = spawn("sleep", ["10"], { stdio: "ignore" })
-      holder.unref()
+      holder.unref?.()
       await new Promise<void>((resolve, reject) => {
         holder.once("spawn", resolve)
         holder.once("error", reject)

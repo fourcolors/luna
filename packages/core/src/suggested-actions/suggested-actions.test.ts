@@ -82,12 +82,14 @@ describe("SuggestedActions service", () => {
         Effect.gen(function* () {
           const svc = yield* SuggestedActions
           // Start the subscription BEFORE proposing so we don't miss the publish.
-          const fiber = yield* Stream.runCollect(Stream.take(svc.changes, 1)).pipe(Effect.fork)
+          const fiber = yield* Stream.runCollect(Stream.take(svc.changes, 1)).pipe(
+            Effect.forkChild,
+          )
           // Let the subscriber register on the hub.
           yield* Effect.sleep("10 millis")
           yield* svc.propose(input())
           const chunk = yield* Fiber.join(fiber)
-          return Chunk.toReadonlyArray(chunk)
+          return chunk
         }),
       ),
     )

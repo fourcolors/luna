@@ -22,7 +22,7 @@
  *   - Strict mode off = open pass-through (allowlist for pinning only).
  *   - Strict mode on = default-deny, only allowlisted hosts pass.
  */
-import {
+import { Context,
   Effect,
   Layer,
   Ref,
@@ -62,9 +62,7 @@ function parseHostname(url: string): string {
   }
 }
 
-export class NetSecClient extends Effect.Tag(
-  "luna/NetSecClient",
-)<NetSecClient, NetSecClientApi>() {
+export class NetSecClient extends Context.Service<NetSecClient, NetSecClientApi>()("luna/NetSecClient") {
   static readonly Default: Layer.Layer<NetSecClient> =
     NetSecClient.makeLayer({})
 

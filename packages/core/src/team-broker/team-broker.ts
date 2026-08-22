@@ -5,7 +5,7 @@
  *
  * Invariants honored (cite §-anchor):
  *   - §3.4 #1 no cross-Scope Fiber refs: per-teammate `RunningEntry` keeps
- *     `Fiber.RuntimeFiber` INTERNAL only. Public API exposes names + Status
+ *     `Fiber.Fiber` INTERNAL only. Public API exposes names + Status
  *     only. `members()` returns `ReadonlyArray<TeammateName>`.
  *   - §3.4 #4 interruption cascades: `spawnIn(spec, leadScope)` links the
  *     team's private scope to a caller-supplied lead Scope so closing the
@@ -30,17 +30,19 @@
  *   finalizers from the broker's layer scope.
  *
  *   Layer-scope finalizer registration order (LIFO = last registered runs first):
- *     1. Queue.shutdown(eventsQ)       ← registered FIRST → runs LAST
+ *     1. Queue.end(eventsQ)            ← registered FIRST → runs LAST
  *     2. close all surviving teamScopes ← registered SECOND → runs FIRST
  *
  *   LIFO ensures: team teardown (orphan-emit, fiber-interrupt) runs BEFORE
- *   Queue.shutdown — so orphan events can be published into the still-open
- *   eventsQ during teardown.
+ *   Queue.end — so orphan events can be published into the still-open
+ *   eventsQ during teardown. Prefer `end` over v4 `shutdown` (which discards
+ *   buffered messages before Stream consumers can drain).
  *
  * Reuses the forkDaemon + explicit interrupt pattern of the SupervisedPool
  * helper (packages/core/src/supervised-pool/).
  */
-import {
+import { Context,
+  Cause,
   Effect,
   Exit,
   Fiber,
@@ -68,7 +70,7 @@ import type {
 
 interface RunningEntry {
   // INTERNAL only — never exposed (§3.4 #1).
-  readonly fiber: Fiber.RuntimeFiber<unknown, unknown>
+  readonly fiber: Fiber.Fiber<unknown, unknown>
   readonly mailbox: Queue.Queue<TeamMsg>
   readonly claimedTaskIds: Set<TaskId>
   readonly claimedAt: Map<TaskId, number>
@@ -94,12 +96,9 @@ interface TeamRecord {
 const DEFAULT_LAG_MS = 60_000
 const DEFAULT_TICK_MS = 5_000
 
-export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
-  TeamBroker,
-  TeamBrokerApi
->() {
+export class TeamBroker extends Context.Service<TeamBroker, TeamBrokerApi>()("luna/TeamBroker") {
   static readonly Default: Layer.Layer<TeamBroker, never, Clock | TaskList> =
-    Layer.scoped(
+    Layer.effect(
       TeamBroker,
       Effect.gen(function* () {
         const clock = yield* Clock
@@ -110,7 +109,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
         // when a subscriber fiber is concurrently being interrupted. Queue.offer
         // on an unbounded queue is sync; queue shutdown sends an interrupt which
         // is handled gracefully by Stream consumers.
-        const eventsQ = yield* Queue.unbounded<TeamEvent>()
+        const eventsQ = yield* Queue.unbounded<TeamEvent, Cause.Done>()
 
         // teamName → record.
         const teams = yield* Ref.make<ReadonlyMap<TeamName, TeamRecord>>(
@@ -119,7 +118,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
 
         // ── Layer-scope finalizer LIFO ordering ──────────────────────────────
         // Registered FIRST → runs LAST (after team teardowns complete).
-        yield* Effect.addFinalizer(() => Queue.shutdown(eventsQ))
+        yield* Effect.addFinalizer(() => Queue.end(eventsQ))
 
         // Registered SECOND → runs FIRST (tears down all surviving teams
         // before queue shutdown). LIFO ensures orphan events can be published
@@ -235,7 +234,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
             // from the teamScope finalizer.
             for (const teammate of spec.teammates) {
               const init = initialEntries.get(teammate.name)!
-              const fiber = yield* Effect.forkDaemon(teammate.loop(init.mailbox))
+              const fiber = yield* Effect.forkDetach(teammate.loop(init.mailbox))
               const entry: RunningEntry = {
                 fiber,
                 mailbox: init.mailbox,
@@ -256,7 +255,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
             }
 
             // ── TaskList subscriber: keep claimedAt + laggedTaskIds in sync ──
-            const subscriberFiber = yield* Effect.forkDaemon(
+            const subscriberFiber = yield* Effect.forkDetach(
               taskList.subscribe().pipe(
                 Stream.runForEach((ev) =>
                   Effect.gen(function* () {
@@ -285,7 +284,7 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
             )
 
             // ── Watchdog: lag detection ──
-            const watchdogFiber = yield* Effect.forkDaemon(
+            const watchdogFiber = yield* Effect.forkDetach(
               Effect.gen(function* () {
                 while (true) {
                   yield* Effect.sleep(`${orphanCheckIntervalMs} millis`)

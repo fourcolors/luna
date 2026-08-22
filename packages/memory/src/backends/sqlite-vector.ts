@@ -50,7 +50,7 @@
  *
  * Tests skip-if when not running under bun (same pattern as SqliteBackend).
  */
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import {
   EmbedderService,
   LunaSqliteBootstrap,
@@ -209,10 +209,7 @@ function extractEnrichmentPhrases(content: unknown): ReadonlyArray<string> {
   return []
 }
 
-export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
-  SqliteVectorBackend,
-  SqliteVectorBackendApi
->() {
+export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, SqliteVectorBackendApi>()("luna/SqliteVectorBackend") {
   /**
    * Build a sqlite-vector-backed Layer. Requires `EmbedderService` from
    * environment. `dbPath` can be `":memory:"` for ephemeral databases.
@@ -224,7 +221,7 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
     MemoryBackendError,
     EmbedderService | LunaSqliteBootstrap
   > {
-    return Layer.scoped(
+    return Layer.effect(
       SqliteVectorBackend,
       Effect.gen(function* () {
         const embedder = yield* EmbedderService

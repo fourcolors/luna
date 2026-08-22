@@ -15,7 +15,7 @@
  *     default; pass `allowNonZero: true` to get the result regardless.
  */
 import { spawn } from "node:child_process"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { SandboxError } from "./errors.js"
 import type { SandboxJob, SandboxResult, SandboxRuntimeApi } from "./types.js"
 
@@ -30,7 +30,7 @@ function spawnToEffect(
   const maxBytes = job.maxOutputBytes ?? DEFAULT_MAX_BYTES
   const allowNonZero = opts?.allowNonZero ?? false
 
-  const runEffect = Effect.async<SandboxResult, SandboxError>((resume) => {
+  const runEffect = Effect.callback<SandboxResult, SandboxError>((resume) => {
     const startMs = Date.now()
     let stdoutBuf = ""
     let stderrBuf = ""
@@ -119,7 +119,7 @@ function spawnToEffect(
       )
     })
 
-    // Return cleanup function for Effect.async interrupt handling
+    // Return cleanup function for Effect.callback interrupt handling
     return Effect.sync(kill)
   })
 
@@ -128,7 +128,7 @@ function spawnToEffect(
     `${timeoutMs} millis`,
   ).pipe(
     Effect.mapError((e) => {
-      if (e._tag === "TimeoutException") {
+      if (e._tag === "TimeoutError") {
         return new SandboxError({
           reason: "timeout",
           command: job.command,
@@ -140,9 +140,7 @@ function spawnToEffect(
   )
 }
 
-export class SandboxRuntime extends Effect.Tag(
-  "luna/SandboxRuntime",
-)<SandboxRuntime, SandboxRuntimeApi>() {
+export class SandboxRuntime extends Context.Service<SandboxRuntime, SandboxRuntimeApi>()("luna/SandboxRuntime") {
   static readonly Default: Layer.Layer<SandboxRuntime> = Layer.succeed(
     SandboxRuntime,
     {

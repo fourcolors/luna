@@ -201,7 +201,7 @@ const fromSql = (
   ConfigError,
   SecretProvider | Clock | LunaSqliteBootstrap
 > =>
-  Layer.scoped(
+  Layer.effect(
     AccountBroker,
     Effect.gen(function* () {
       // Phase 27a: pull the bootstrap Tag BEFORE the dynamic

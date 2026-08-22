@@ -1,7 +1,7 @@
 /**
  * EventSink tests — TDD PING phase.
  *
- * EventSink is a side-effect-only Layer.scoped that:
+ * EventSink is a side-effect-only Layer.effect that:
  *   1. Eagerly subscribes to ObservabilityService.subscribeEvents
  *   2. Runs a background daemon fiber draining the subscription stream
  *   3. Normalizes each ObsEvent into a flat row and calls DuckDbService.write()

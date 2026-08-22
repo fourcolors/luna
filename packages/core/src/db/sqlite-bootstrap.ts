@@ -46,6 +46,7 @@ export type VectorliteInitResult =
  * its `R` channel. The Live Layer (`LunaSqliteBootstrapLive`) lives in
  * `@luna/memory` to avoid a `@luna/core` → `vectorlite` dependency.
  */
-export class LunaSqliteBootstrap extends Context.Tag(
-  "luna/LunaSqliteBootstrap",
-)<LunaSqliteBootstrap, VectorliteInitResult>() {}
+export class LunaSqliteBootstrap extends Context.Service<
+  LunaSqliteBootstrap,
+  VectorliteInitResult
+>()("luna/LunaSqliteBootstrap") {}

@@ -86,7 +86,7 @@ export const LunaVaultSecretProvider = {
               // Map integrity failures to a DISTINCT ConfigError; anything else
               // (unexpected fs error) also fails closed but as a generic config
               // error - never leak the value, never treat integrity as a miss.
-              Effect.catchAll((cause) => {
+              Effect.catch((cause) => {
                 if (cause instanceof LunaVaultIntegrityError) {
                   return Effect.fail(
                     new ConfigError({

@@ -79,7 +79,7 @@ const spawnOpRead = (
   token: string | undefined,
   timeoutMs: number,
 ): Effect.Effect<string, ConfigError> =>
-  Effect.async<string, ConfigError>((resume) => {
+  Effect.callback<string, ConfigError>((resume) => {
     const env: NodeJS.ProcessEnv = { ...process.env }
     if (token !== undefined) env.OP_SERVICE_ACCOUNT_TOKEN = token
     let child
@@ -211,30 +211,36 @@ const make = (
   // the error in the Layer's error channel without forcing every
   // caller into Effect.gen at the make() call site.
   if (typeof opts.accountLabel !== "string") {
-    return Layer.fail(
-      new ConfigError({
-        module: "OnePasswordSecretProvider",
-        key: "accountLabel",
-        message: `accountLabel is required`,
-      }),
+    return Layer.unwrap(
+      Effect.fail(
+        new ConfigError({
+          module: "OnePasswordSecretProvider",
+          key: "accountLabel",
+          message: `accountLabel is required`,
+        }),
+      ),
     )
   }
   if (RESERVED_LABELS.has(opts.accountLabel)) {
-    return Layer.fail(
-      new ConfigError({
-        module: "OnePasswordSecretProvider",
-        key: "accountLabel",
-        message: `account label "${opts.accountLabel}" is reserved (env, file, op)`,
-      }),
+    return Layer.unwrap(
+      Effect.fail(
+        new ConfigError({
+          module: "OnePasswordSecretProvider",
+          key: "accountLabel",
+          message: `account label "${opts.accountLabel}" is reserved (env, file, op)`,
+        }),
+      ),
     )
   }
   if (!ACCOUNT_LABEL_RE.test(opts.accountLabel)) {
-    return Layer.fail(
-      new ConfigError({
-        module: "OnePasswordSecretProvider",
-        key: "accountLabel",
-        message: `account label "${opts.accountLabel}" does not match ${ACCOUNT_LABEL_RE.source}`,
-      }),
+    return Layer.unwrap(
+      Effect.fail(
+        new ConfigError({
+          module: "OnePasswordSecretProvider",
+          key: "accountLabel",
+          message: `account label "${opts.accountLabel}" does not match ${ACCOUNT_LABEL_RE.source}`,
+        }),
+      ),
     )
   }
   return Layer.effect(

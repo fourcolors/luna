@@ -15,7 +15,7 @@
  *     since budgets aren't event-derived.
  *
  * Architecture:
- *   - Layer.scoped opens the DB, runs migrations (per-component
+ *   - Layer.effect opens the DB, runs migrations (per-component
  *     `schema_versions` ledger, §5.2 / Phase 25e), registers the `db.close`
  *     finalizer FIRST (LIFO §3.4 #4), then prepared
  *     statements + the subscriber daemon.
@@ -26,7 +26,7 @@
  *     `session-store-sqlite.ts`); avoids hard-failing under stock node+vitest.
  *
  * Invariants:
- *   §3.1 + §3.4 #4 — Layer.scoped + `db.close` finalizer registered FIRST.
+ *   §3.1 + §3.4 #4 — Layer.effect + `db.close` finalizer registered FIRST.
  *   §5.1          — cost_events column names byte-exact; no new columns.
  *   §5.2          — per-component `schema_versions` ledger (Phase 25e).
  *   §6            — ConfigError raised at boot if `bun:sqlite` is unavailable;
@@ -142,7 +142,7 @@ interface AggRow {
 
 /**
  * Build a sqlite-backed CostAccountingService Layer. `dbPath` accepts
- * `":memory:"` for ephemeral tests. The Layer is `Layer.scoped` so the DB
+ * `":memory:"` for ephemeral tests. The Layer is `Layer.effect` so the DB
  * handle is closed when the surrounding scope finalizes (LIFO §3.4 #4).
  */
 export const makeCostAccountingSqlite = (
@@ -153,7 +153,7 @@ export const makeCostAccountingSqlite = (
   ConfigError,
   ObservabilityService | Clock | LunaSqliteBootstrap
 > =>
-  Layer.scoped(
+  Layer.effect(
     CostAccountingService,
     Effect.gen(function* () {
       // Phase 27a: pull the bootstrap Tag BEFORE opening any Database so
@@ -305,7 +305,7 @@ export const makeCostAccountingSqlite = (
       // Eager subscription so no events are missed after Layer init resolves.
       const eventStream = yield* obs.subscribeEvents
 
-      yield* Effect.forkDaemon(
+      yield* Effect.forkDetach(
         eventStream.pipe(
           Stream.filter((e) => e.kind === "CostAccrued"),
           Stream.runForEach((ev) =>
@@ -342,8 +342,8 @@ export const makeCostAccountingSqlite = (
                   db.run("COMMIT")
                 },
                 catch: (cause) => cause,
-              }).pipe(Effect.either)
-              if (insertResult._tag === "Left") {
+              }).pipe(Effect.result)
+              if (insertResult._tag === "Failure") {
                 try {
                   db.run("ROLLBACK")
                 } catch {
@@ -354,7 +354,7 @@ export const makeCostAccountingSqlite = (
                 // daemon does NOT crash the fiber — emit-and-continue mirrors
                 // the in-memory cost-accounting daemon's `catchAllCause(() =>
                 // Effect.void)` posture (cost-accounting.ts ~115-120).
-                const cause = insertResult.left
+                const cause = insertResult.failure
                 const reason =
                   cause instanceof Error ? cause.message : String(cause)
                 const integrityErr = integrity(
@@ -379,7 +379,7 @@ export const makeCostAccountingSqlite = (
               yield* Ref.update(writeCounter, (n) => n + 1)
             }),
           ),
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         ),
       )
 

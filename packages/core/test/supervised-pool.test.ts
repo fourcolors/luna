@@ -5,7 +5,7 @@
  *   (1) happy-path + capacity
  *   (2) block policy — submit suspends when full
  *   (3) drop-newest — second submit rejected
- *   (4) drop-oldest — oldest evicted with Exit.isInterrupted in results
+ *   (4) drop-oldest — oldest evicted with Exit.hasInterrupts in results
  *   (5) cascade-cancel — closing pool Scope interrupts all
  *   (6) supervisor-failure-no-auto-restart — failed job doesn't poison pool
  *   (7) post-shutdown submit — returns rejected-shutdown
@@ -54,11 +54,10 @@ describe("supervised-pool (Phase 11.5a)", () => {
               () => Ref.update(live, (x) => x - 1),
             )
 
-          const collector = yield* Effect.fork(
+          const collector = yield* Effect.forkChild(
             pool.results.pipe(
               Stream.take(5),
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
             ),
           )
 
@@ -66,7 +65,7 @@ describe("supervised-pool (Phase 11.5a)", () => {
             yield* pool.submit({ id, run: job(id) })
           }
 
-          const exit = yield* collector.await
+          const exit = yield* Fiber.await(collector)
           const results = Exit.isSuccess(exit) ? exit.value : []
           const peakN = yield* Ref.get(peak)
           return { results, peakN }
@@ -91,29 +90,37 @@ describe("supervised-pool (Phase 11.5a)", () => {
             policy: "block",
           })
 
-          const collector = yield* Effect.fork(
+          const collector = yield* Effect.forkChild(
             pool.results.pipe(
               Stream.take(3),
               Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
             ),
           )
 
-          const forked = yield* Effect.forEach(
-            ["x", "y", "z"],
-            (id) =>
-              Effect.fork(
-                pool.submit({
-                  id,
-                  run: Effect.sleep(Duration.millis(20)).pipe(
-                    Effect.as(id),
-                  ),
-                }),
-              ),
-            { concurrency: "unbounded" },
-          )
-          const outcomes = yield* Effect.forEach(forked, (f) => Fiber.join(f))
-          const exit = yield* collector.await
+          const forked = [
+            yield* Effect.forkChild(
+              pool.submit({
+                id: "x",
+                run: Effect.sleep(Duration.millis(20)).pipe(Effect.as("x")),
+              }),
+            ),
+            yield* Effect.forkChild(
+              pool.submit({
+                id: "y",
+                run: Effect.sleep(Duration.millis(20)).pipe(Effect.as("y")),
+              }),
+            ),
+            yield* Effect.forkChild(
+              pool.submit({
+                id: "z",
+                run: Effect.sleep(Duration.millis(20)).pipe(Effect.as("z")),
+              }),
+            ),
+          ]
+          const outcomes = yield* Effect.forEach(forked, (f) => Fiber.join(f), {
+            concurrency: 1,
+          })
+          const exit = yield* Fiber.await(collector)
           const results = Exit.isSuccess(exit) ? exit.value : []
           return { outcomes, results }
         }),
@@ -151,7 +158,6 @@ describe("supervised-pool (Phase 11.5a)", () => {
           const result = yield* pool.results.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
             Effect.map((xs) => xs[0]!),
           )
           return { a, b, result }
@@ -186,7 +192,6 @@ describe("supervised-pool (Phase 11.5a)", () => {
           const results = yield* pool.results.pipe(
             Stream.take(2),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           )
           return { a, b, results }
         }),
@@ -199,14 +204,14 @@ describe("supervised-pool (Phase 11.5a)", () => {
       expect(out.b.acceptedId).toBe("B")
     }
     const byId = new Map(out.results.map((r) => [r.id, r] as const))
-    expect(Exit.isInterrupted(byId.get("A")!.exit)).toBe(true)
+    expect(Exit.hasInterrupts(byId.get("A")!.exit)).toBe(true)
     expect(Exit.isSuccess(byId.get("B")!.exit)).toBe(true)
   })
 
   // ──────────────────────────────────────────────────────────────────────
   // (5) cascade-cancel — closing Scope interrupts every in-flight job
   // ──────────────────────────────────────────────────────────────────────
-  it("(5) cascade-cancel: closing pool Scope → all jobs Exit.isInterrupted", async () => {
+  it("(5) cascade-cancel: closing pool Scope → all jobs Exit.hasInterrupts", async () => {
     const collected = await Effect.runPromise(
       Effect.gen(function* () {
         const sink = yield* Ref.make<
@@ -215,7 +220,7 @@ describe("supervised-pool (Phase 11.5a)", () => {
         const scope = yield* Scope.make()
 
         // Build a Layer that provides the pool service-object in this scope.
-        const layer = Layer.scoped(
+        const layer = Layer.effect(
           SupervisedPoolTag,
           makeSupervisedPool({ capacity: 8, policy: "block" }),
         )
@@ -223,12 +228,12 @@ describe("supervised-pool (Phase 11.5a)", () => {
 
         const body = Effect.gen(function* () {
           const pool = yield* SupervisedPoolTag
-          const drainer = yield* Effect.fork(
+          const drainer = yield* Effect.forkChild(
             pool.results.pipe(
               Stream.runForEach((r: PoolResult) =>
                 Ref.update(sink, (xs) => [
                   ...xs,
-                  { id: r.id, interrupted: Exit.isInterrupted(r.exit) },
+                  { id: r.id, interrupted: Exit.hasInterrupts(r.exit) },
                 ]),
               ),
             ),
@@ -267,7 +272,6 @@ describe("supervised-pool (Phase 11.5a)", () => {
           const first = yield* pool.results.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
             Effect.map((xs) => xs[0]!),
           )
 
@@ -286,7 +290,6 @@ describe("supervised-pool (Phase 11.5a)", () => {
           const second = yield* pool.results.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
             Effect.map((xs) => xs[0]!),
           )
           return { first, reFire, second }
@@ -340,7 +343,7 @@ describe("supervised-pool (Phase 11.5a)", () => {
       Effect.gen(function* () {
         const sink = yield* Ref.make<ReadonlyArray<PoolResult>>([])
         const scope = yield* Scope.make()
-        const layer = Layer.scoped(
+        const layer = Layer.effect(
           SupervisedPoolTag,
           makeSupervisedPool({ capacity: 8, policy: "block" }),
         )
@@ -348,7 +351,7 @@ describe("supervised-pool (Phase 11.5a)", () => {
 
         const drainer = yield* Effect.gen(function* () {
           const pool = yield* SupervisedPoolTag
-          const d = yield* Effect.fork(
+          const d = yield* Effect.forkChild(
             pool.results.pipe(
               Stream.runForEach((r) =>
                 Ref.update(sink, (xs) => [...xs, r]),
@@ -369,7 +372,7 @@ describe("supervised-pool (Phase 11.5a)", () => {
     )
     // All three interrupts made it through the queue before shutdown.
     expect(collected).toHaveLength(3)
-    expect(collected.every((r) => Exit.isInterrupted(r.exit))).toBe(true)
+    expect(collected.every((r) => Exit.hasInterrupts(r.exit))).toBe(true)
   })
 
   // ──────────────────────────────────────────────────────────────────────
@@ -428,6 +431,6 @@ describe("supervised-pool (Phase 11.5a)", () => {
 // ─────────────────────────────────────────────────────────────────────────
 import { Context } from "effect"
 import type { SupervisedPool } from "../src/supervised-pool/index.js"
-const SupervisedPoolTag = Context.GenericTag<SupervisedPool>(
+const SupervisedPoolTag = Context.Service<SupervisedPool>(
   "test/SupervisedPool",
 )

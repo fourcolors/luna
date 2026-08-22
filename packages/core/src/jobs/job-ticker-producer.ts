@@ -12,8 +12,8 @@
  * `executors`, and returns the `drainOnce` effect job-ticker.ts exposes as
  * the public `drain` / auto-tick loop body.
  */
-import { Cron, Effect, Either, FiberMap, Ref, Schedule } from "effect"
-import type { Clock } from "../clock.js"
+import { Cron, Effect, Result, FiberMap, Ref, Schedule } from "effect"
+import type { ClockService } from "../clock.js"
 import type { JobRun, JobsStoreApi, PersistedJob } from "./jobs-store-types.js"
 import type { TickSummary } from "./job-ticker.js"
 import type { WorkerEntry, WorkerRegistryApi } from "./worker-registry.js"
@@ -36,9 +36,9 @@ const computeNextRunAt = (
   // schedule would fire at a different wall-clock time depending on where the
   // server runs. UTC keeps install-time and runtime computations identical.
   const parsed = Cron.parse(expr, "UTC")
-  if (Either.isLeft(parsed)) return null
+  if (Result.isFailure(parsed)) return null
   try {
-    const nextDate = Cron.next(parsed.right, new Date(fromMs))
+    const nextDate = Cron.next(parsed.success, new Date(fromMs))
     return nextDate.getTime()
   } catch {
     return null
@@ -49,7 +49,7 @@ const computeNextRunAt = (
 export interface ProducerDeps {
   readonly store: JobsStoreApi
   readonly registry: WorkerRegistryApi
-  readonly clock: Clock
+  readonly clock: ClockService
   readonly dispatchConcurrency: number
   readonly executors: FiberMap.FiberMap<string, void, never>
   readonly dispatchedOneShots: Set<string>
@@ -107,7 +107,7 @@ export const makeDrainOnce = (
     Effect.gen(function* () {
       const tickAt = yield* clock.nowMs()
       const due = yield* store.listDue(tickAt).pipe(
-        Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<PersistedJob>)),
+        Effect.catch(() => Effect.succeed([] as ReadonlyArray<PersistedJob>)),
       )
 
       // Backpressure (issue #276) - a START-OF-TICK snapshot of in-flight
@@ -191,14 +191,14 @@ export const makeDrainOnce = (
             claimAt: tickAt,
             nextRunAt,
             previousLastRun: job.lastRun,
-          }).pipe(Effect.catchAll(() => Effect.succeed(false)))
+          }).pipe(Effect.catch(() => Effect.succeed(false)))
           if (!won) {
             skippedClaimLost++
             continue
           }
           const disabledNow = yield* store
             .setV2Fields(job.id, { enabled: false })
-            .pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)))
+            .pipe(Effect.as(true), Effect.catch(() => Effect.succeed(false)))
           if (disabledNow) {
             dispatchedOneShots.delete(job.id)
           } else {
@@ -211,7 +211,7 @@ export const makeDrainOnce = (
           // 'running'.
           yield* store
             .touch(job.id, { lastStatus: "fired" })
-            .pipe(Effect.catchAll(() => Effect.void))
+            .pipe(Effect.catch(() => Effect.void))
           claimed++
           continue
         }
@@ -223,7 +223,7 @@ export const makeDrainOnce = (
             claimAt: tickAt,
             nextRunAt,
             previousLastRun: job.lastRun,
-          }).pipe(Effect.catchAll(() => Effect.succeed(false)))
+          }).pipe(Effect.catch(() => Effect.succeed(false)))
           if (!won) {
             skippedClaimLost++
             continue
@@ -232,7 +232,7 @@ export const makeDrainOnce = (
             .setV2Fields(job.id, { enabled: false })
             .pipe(
               Effect.retry(Schedule.recurs(2)),
-              Effect.catchAll((err) =>
+              Effect.catch((err) =>
                 Effect.logWarning(
                   `[luna/sched] quarantine of malformed-cron job=${job.id} failed: ${err.message} - it may re-fire next tick`,
                 ),
@@ -251,7 +251,7 @@ export const makeDrainOnce = (
           // perpetually 'running'.
           yield* store
             .touch(job.id, { lastStatus: "errored" })
-            .pipe(Effect.catchAll(() => Effect.void))
+            .pipe(Effect.catch(() => Effect.void))
           claimed++
           continue
         }
@@ -268,7 +268,7 @@ export const makeDrainOnce = (
             claimAt: tickAt,
             nextRunAt,
             previousLastRun: job.lastRun,
-          }).pipe(Effect.catchAll(() => Effect.succeed(false)))
+          }).pipe(Effect.catch(() => Effect.succeed(false)))
           if (!won) {
             skippedClaimLost++
             continue
@@ -280,7 +280,7 @@ export const makeDrainOnce = (
               .pipe(
                 Effect.retry(Schedule.recurs(2)),
                 Effect.as(true),
-                Effect.catchAll((err) =>
+                Effect.catch((err) =>
                   Effect.as(
                     Effect.logWarning(
                       `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} - in-memory guard will prevent a re-fire this process`,
@@ -297,7 +297,7 @@ export const makeDrainOnce = (
             startedAt: tickAt,
             attempt: attemptNumber,
           }).pipe(
-            Effect.catchAll((err) =>
+            Effect.catch((err) =>
               Effect.gen(function* () {
                 yield* Effect.logWarning(
                   `[luna/sched] recordRunStart failed for job=${job.id}: ${err.message}`,
@@ -310,7 +310,7 @@ export const makeDrainOnce = (
             // Claimed but no run row - don't leave it stuck 'running'.
             yield* store
               .touch(job.id, { lastStatus: "errored" })
-              .pipe(Effect.catchAll(() => Effect.void))
+              .pipe(Effect.catch(() => Effect.void))
             claimed++
             continue
           }
@@ -319,10 +319,10 @@ export const makeDrainOnce = (
             finishedAt,
             status: "failed",
             error: `no worker registered for kind "${job.kind}"`,
-          }).pipe(Effect.catchAll(() => Effect.void))
+          }).pipe(Effect.catch(() => Effect.void))
           yield* store
             .touch(job.id, { lastStatus: "errored" })
-            .pipe(Effect.catchAll(() => Effect.void))
+            .pipe(Effect.catch(() => Effect.void))
           claimed++
           failedInline++
           skippedUnknownKind++
@@ -353,7 +353,7 @@ export const makeDrainOnce = (
           startedAt: tickAt,
           attempt: attemptNumber,
         }).pipe(
-          Effect.catchAll((err) =>
+          Effect.catch((err) =>
             Effect.gen(function* () {
               yield* Effect.logWarning(
                 `[luna/sched] claimAndStartRun failed for job=${job.id}: ${err.message}`,
@@ -375,7 +375,7 @@ export const makeDrainOnce = (
         // `FiberMap.run` call itself - and a worker's synchronous prefix
         // would run to completion right here, inside the producer's
         // permit-held `drainOnce`, extending the tick by that worker's sync
-        // duration. `Effect.yieldNow()` as the fiber's first op prevents
+        // duration. `Effect.yieldNow` as the fiber's first op prevents
         // that: the fork returns to the producer before any executor body
         // runs.
         //
@@ -415,8 +415,8 @@ export const makeDrainOnce = (
         yield* FiberMap.run(
           executors,
           job.id,
-          Effect.yieldNow().pipe(
-            Effect.zipRight(
+          Effect.yieldNow.pipe(
+            Effect.andThen(
               executor(job, started.run, entry, isOneShot, nextRunAt),
             ),
           ),
@@ -438,7 +438,7 @@ export const makeDrainOnce = (
             .pipe(
               Effect.retry(Schedule.recurs(2)),
               Effect.as(true),
-              Effect.catchAll((err) =>
+              Effect.catch((err) =>
                 Effect.as(
                   Effect.logWarning(
                     `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} - in-memory guard will prevent a re-fire this process`,
@@ -466,13 +466,13 @@ export const makeDrainOnce = (
       if (tickAt - lastPrune >= retentionSweepIntervalMs) {
         const pruneResult = yield* store
           .pruneRuns(tickAt - retentionMaxAgeMs)
-          .pipe(Effect.either)
-        if (pruneResult._tag === "Right") {
-          pruned = pruneResult.right
+          .pipe(Effect.result)
+        if (pruneResult._tag === "Success") {
+          pruned = pruneResult.success
           yield* Ref.set(lastPruneAt, tickAt)
         } else {
           yield* Effect.logWarning(
-            `[luna/sched] retention prune failed: ${pruneResult.left.message} - will retry next tick`,
+            `[luna/sched] retention prune failed: ${pruneResult.failure.message} - will retry next tick`,
           )
         }
       }

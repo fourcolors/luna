@@ -6,7 +6,7 @@
  * serves file-based configs, env-based overrides, and in-memory test
  * fixtures. File/env readers live in adapter packages (Phase 15 gateway).
  */
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { ConfigError } from "../errors.js"
 import {
   decodeSessionOptions,
@@ -29,10 +29,7 @@ export interface ConfigServiceApi {
   ) => Effect.Effect<ValidatedSessionOptions, ConfigError>
 }
 
-export class ConfigService extends Effect.Tag("luna/ConfigService")<
-  ConfigService,
-  ConfigServiceApi
->() {
+export class ConfigService extends Context.Service<ConfigService, ConfigServiceApi>()("luna/ConfigService") {
   static fromSources(
     sources: ReadonlyArray<ConfigSource>,
   ): Layer.Layer<ConfigService> {

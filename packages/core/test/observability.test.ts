@@ -50,10 +50,10 @@ describe("ObservabilityService", () => {
         // subscribeEvents() eagerly registers the subscription before emit.
         const eventStream = yield* obs.subscribeEvents
 
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           eventStream.pipe(
             Stream.runForEach((e) => Ref.update(collected, (xs) => [...xs, e])),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 
@@ -83,10 +83,10 @@ describe("ObservabilityService", () => {
 
         const eventStream = yield* obs.subscribeEvents
 
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           eventStream.pipe(
             Stream.runForEach((e) => Ref.update(collected, (xs) => [...xs, e])),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 
@@ -110,10 +110,10 @@ describe("ObservabilityService", () => {
 
         const eventStream = yield* obs.subscribeEvents
 
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           eventStream.pipe(
             Stream.runForEach((e) => Ref.update(collected, (xs) => [...xs, e])),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 
@@ -164,10 +164,10 @@ describe("ObservabilityService", () => {
         Effect.gen(function* () {
           const obs = yield* ObservabilityService
           const eventStream = yield* obs.subscribeEvents
-          yield* Effect.forkDaemon(
+          yield* Effect.forkDetach(
             eventStream.pipe(
               Stream.runForEach((e) => Ref.update(outRef, (xs) => [...xs, e])),
-              Effect.catchAllCause(() => Effect.void),
+              Effect.catchCause(() => Effect.void),
             ),
           )
           const ts = new Date().toISOString()

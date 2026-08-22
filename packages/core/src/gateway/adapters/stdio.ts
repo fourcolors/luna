@@ -74,7 +74,7 @@ export function makeStdioAdapter(opts?: {
       })
 
       // Drain queue and emit messages.
-      return yield* Effect.forkDaemon(
+      return yield* Effect.forkDetach(
         Effect.gen(function* () {
           while (true) {
             const item = yield* Queue.take(q)
@@ -84,7 +84,7 @@ export function makeStdioAdapter(opts?: {
             }
             emit.single(item)
           }
-        }).pipe(Effect.catchAllCause(() => Effect.void)),
+        }).pipe(Effect.catchCause(() => Effect.void)),
       )
     }),
   )

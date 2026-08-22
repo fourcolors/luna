@@ -4,7 +4,7 @@
  * Storage: Map<id, MemoryRecord>. Not concurrency-safe across Effects
  * beyond single-threaded JS semantics; fine for Tier-1 testing.
  */
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import { MemoryBackendError } from "@luna/core"
 import {
   MEMORY_ENVELOPE_VERSION,
@@ -28,9 +28,7 @@ export interface InMemoryBackendApi {
   ) => Effect.Effect<number, MemoryBackendError>
 }
 
-export class InMemoryBackend extends Effect.Tag(
-  "luna/InMemoryBackend",
-)<InMemoryBackend, InMemoryBackendApi>() {
+export class InMemoryBackend extends Context.Service<InMemoryBackend, InMemoryBackendApi>()("luna/InMemoryBackend") {
   static readonly Default: Layer.Layer<InMemoryBackend> = Layer.sync(
     InMemoryBackend,
     () => {

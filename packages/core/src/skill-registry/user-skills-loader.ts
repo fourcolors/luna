@@ -191,11 +191,11 @@ export const syncUserSkills = (
       if (cur === undefined) {
         // Registers enabled (registry.register's default) — no quarantine
         // step. See module docstring for the 2026-07-22 decision.
-        yield* registry.register(manifest).pipe(Effect.catchAll(() => Effect.void))
+        yield* registry.register(manifest).pipe(Effect.catch(() => Effect.void))
         added++
       } else if (!sameManifest(cur, manifest)) {
         yield* registry.unregister(id)
-        yield* registry.register(manifest).pipe(Effect.catchAll(() => Effect.void))
+        yield* registry.register(manifest).pipe(Effect.catch(() => Effect.void))
         updated++
       }
     }

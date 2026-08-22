@@ -28,7 +28,7 @@
  * Out of scope (Phase 11a): SQL persistence, dependsOn DAG enforcement,
  * team-existence validation, pagination, authorization, mailbox semantics.
  */
-import { Effect, Layer, PubSub, Ref, Stream } from "effect"
+import { Context, Effect, Layer, PubSub, Ref, Stream } from "effect"
 import { Clock } from "../clock.js"
 import {
   TaskAlreadyClaimedError,
@@ -143,11 +143,8 @@ const validateTransition = (from: TaskStatus, to: TaskStatus): boolean => {
 
 // ─── Service Tag + Layer ────────────────────────────────────────────────────
 
-export class TaskList extends Effect.Tag("luna/TaskList")<
-  TaskList,
-  TaskListApi
->() {
-  static readonly Default: Layer.Layer<TaskList, never, Clock> = Layer.scoped(
+export class TaskList extends Context.Service<TaskList, TaskListApi>()("luna/TaskList") {
+  static readonly Default: Layer.Layer<TaskList, never, Clock> = Layer.effect(
     TaskList,
     Effect.gen(function* () {
       const clock = yield* Clock

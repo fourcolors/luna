@@ -1,7 +1,7 @@
 /**
  * SessionSync — Phase 14c.
  *
- * A side-effect-only Layer.scoped service that subscribes to ObservabilityService
+ * A side-effect-only Layer.effect service that subscribes to ObservabilityService
  * and keeps the DuckDB `sessions` table in sync with session lifecycle events.
  *
  * Architecture:
@@ -20,11 +20,11 @@
  *
  * Invariants:
  *   §3.4 #1  — daemon fiber (forkDaemon), not forkScoped.
- *   §3.4 #4  — Layer.scoped scope handles subscription cleanup via addFinalizer
+ *   §3.4 #4  — Layer.effect scope handles subscription cleanup via addFinalizer
  *               (inside subscribeEvents).
  *   §16      — SessionSync emits NO observability events itself.
  */
-import { Effect, Layer, Ref, Stream } from "effect"
+import { Context, Effect, Layer, Ref, Stream } from "effect"
 import { Clock } from "../clock.js"
 import { DuckDbService } from "../db/duckdb-service.js"
 import { ObservabilityService } from "../observability/observability.js"
@@ -84,16 +84,13 @@ interface SessionSyncApi {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export class SessionSync extends Effect.Tag("luna/SessionSync")<
-  SessionSync,
-  SessionSyncApi
->() {
+export class SessionSync extends Context.Service<SessionSync, SessionSyncApi>()("luna/SessionSync") {
   static makeLayer(): Layer.Layer<
     SessionSync,
     never,
     ObservabilityService | DuckDbService | Clock
   > {
-    return Layer.scoped(
+    return Layer.effect(
       SessionSync,
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
@@ -119,7 +116,7 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
             ...h,
             eventsReceived: h.eventsReceived + 1,
           })).pipe(
-            Effect.zipRight(writeEff),
+            Effect.andThen(writeEff),
             Effect.tap(() =>
               Ref.update(stateRef, (h) => ({
                 ...h,
@@ -127,7 +124,7 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
                 lastWriteAt: ts,
               })),
             ),
-            Effect.catchAllCause((cause) =>
+            Effect.catchCause((cause) =>
               Effect.gen(function* () {
                 const reason = cause.toString().slice(0, 240)
                 yield* Ref.update(stateRef, (h) => ({
@@ -151,11 +148,11 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
 
         // ── 1. Run schema migration at boot ─────────────────────────────────
         yield* db.migrate("session-sync", 1, SESSIONS_SCHEMA_V1).pipe(
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         )
 
         // ── 2. Eagerly subscribe (Scope-pinned) ──────────────────────────────
-        // subscribeEvents requires a Scope; Layer.scoped provides one.
+        // subscribeEvents requires a Scope; Layer.effect provides one.
         // Any events emitted after this resolves are guaranteed to be delivered.
         const stream = yield* obs.subscribeEvents
 
@@ -163,7 +160,7 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
         // forkDaemon per §3.4 #1 (not forkScoped).
         // Only handles SessionStart and SessionEnd; all other events fall through.
         // Write errors are swallowed — fire-and-forget per §16.
-        yield* Effect.forkDaemon(
+        yield* Effect.forkDetach(
           stream.pipe(
             Stream.runForEach((event: ObsEvent) => {
               if (event.kind === "SessionStart") {
@@ -199,7 +196,7 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
               // All other event kinds — ignore (not counted).
               return Effect.void
             }),
-            Effect.catchAllCause(() => Effect.void),
+            Effect.catchCause(() => Effect.void),
           ),
         )
 

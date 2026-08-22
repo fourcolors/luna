@@ -31,7 +31,7 @@
 import { unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { Effect } from "effect"
-import type { Clock } from "../clock.js"
+import type { ClockService } from "../clock.js"
 import type { JobsStoreApi } from "./jobs-store-types.js"
 
 export const CLEAN_SHUTDOWN_MARKER_NAME = ".luna-clean-shutdown"
@@ -70,7 +70,7 @@ const consumeCleanShutdownMarker = (lunaHome?: string): boolean => {
 
 export const runBootReconcile = (
   store: JobsStoreApi,
-  clock: Clock,
+  clock: ClockService,
   options?: { readonly lunaHome?: string | undefined },
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -79,7 +79,7 @@ export const runBootReconcile = (
     const reconcile = yield* store
       .reconcileAfterCrash({ finishedAt: bootNow, cleanShutdown })
       .pipe(
-        Effect.catchAll((err) =>
+        Effect.catch((err) =>
           Effect.as(
             Effect.logWarning(
               `[luna/sched] boot orphan reconcile failed: ${err.message}`,
@@ -108,7 +108,7 @@ export const runBootReconcile = (
     const quarantined = yield* store
       .quarantineUnparseablePayloads({ finishedAt: bootNow })
       .pipe(
-        Effect.catchAll((err) =>
+        Effect.catch((err) =>
           Effect.as(
             Effect.logWarning(
               `[luna/sched] payload quarantine pass failed: ${err.message}`,

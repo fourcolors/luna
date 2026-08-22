@@ -48,11 +48,10 @@ describe("UIService", () => {
         const stream = yield* ui.subscribe
 
         // Fork collector BEFORE emitting (eager subscribe contract).
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(2),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           ),
         )
 
@@ -97,11 +96,10 @@ describe("UIService", () => {
         const ui = yield* UIService
         const obs = yield* ObservabilityService
         const stream = yield* ui.subscribe // eager-attach happens here
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           ),
         )
         yield* Effect.sleep(Duration.millis(10))
@@ -126,11 +124,10 @@ describe("UIService", () => {
         const ui = yield* UIService
         const obs = yield* ObservabilityService
         const stream = yield* ui.subscribe
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           stream.pipe(
             Stream.take(1),
             Stream.runCollect,
-            Effect.map(Chunk.toReadonlyArray),
           ),
         )
         yield* Effect.sleep(Duration.millis(10))
