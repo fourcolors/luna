@@ -23,8 +23,7 @@
     "composite": false,
     "incremental": true,
     "allowImportingTsExtensions": false,
-    "noEmit": true,
-    "baseUrl": "."
+    "noEmit": true
   },
   "include": [
     "packages/*/src/**/*.ts",

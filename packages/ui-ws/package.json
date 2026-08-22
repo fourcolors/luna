@@ -15,7 +15,7 @@
     "@luna/core": "workspace:*",
     "@luna/server-registry": "workspace:*",
     "@luna/tools": "workspace:*",
-    "effect": "^3.21.0",
+    "effect": "4.0.0-rc.111",
     "ws": "^8.18.0"
   },
   "devDependencies": {

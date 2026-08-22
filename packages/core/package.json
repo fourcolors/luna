@@ -15,6 +15,6 @@
   },
   "dependencies": {
     "@luna/memory": "workspace:*",
-    "effect": "^3.21.0"
+    "effect": "4.0.0-rc.111"
   }
 }
