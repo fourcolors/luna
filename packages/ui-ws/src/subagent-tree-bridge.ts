@@ -113,7 +113,21 @@ const agentMeta = (input: unknown): { name: string; description: string } => {
   }
 }
 
-export const createSubagentTreeBridge = (): SubagentTreeBridge => {
+export interface SubagentTreeBridgeOptions {
+  /**
+   * Agent participation (PR2): fired once per OBSERVED subagent spawn with
+   * the thread and the spawned subagent_type. The bridge is the one place
+   * every delegation already passes through (this exact tool-call decode
+   * powers the live Agents panel), so involvement recording taps it
+   * instead of growing a second parser. Fire-and-forget: the callback must
+   * never throw into the frame path — the bridge guards it anyway.
+   */
+  readonly onDelegation?: (threadId: string, agentName: string) => void
+}
+
+export const createSubagentTreeBridge = (
+  options?: SubagentTreeBridgeOptions,
+): SubagentTreeBridge => {
   const clients = new Map<string, SendSubagentFrame>()
   const threads = new Map<string, ThreadState>()
 
@@ -194,6 +208,21 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
           if (frame.name && AGENT_TOOL_NAMES.has(frame.name)) {
             // A subagent spawn → a new node in the tree.
             const meta = agentMeta(frame.input)
+            // Agent participation (PR2): record involvement for NAMED
+            // subagent types only — an untyped general-purpose delegation
+            // is not "an agent the operator can look up", and agentMeta's
+            // "Agent" fallback must never masquerade as one.
+            if (options?.onDelegation) {
+              const rawType = (frame.input as { subagent_type?: unknown } | null | undefined)
+                ?.subagent_type
+              if (typeof rawType === "string" && rawType.trim()) {
+                try {
+                  options.onDelegation(threadId, rawType.trim())
+                } catch {
+                  /* observation must never break the frame path */
+                }
+              }
+            }
             t.nodes.set(frame.toolCallId, {
               id: frame.toolCallId,
               parentId: frame.parentToolUseId ?? null,

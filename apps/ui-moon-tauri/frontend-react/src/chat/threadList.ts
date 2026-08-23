@@ -36,6 +36,9 @@ export interface ThreadRow {
   /** Agent sidebar S5: the section this thread was created under (additive
    *  on SessionSummary; absent/null = the general section). */
   readonly agentName?: string | null
+  /** Agent participation (PR2): agents ever involved in this thread
+   *  (delegated to, or created-under), most-recently-involved first. */
+  readonly involvedAgents?: ReadonlyArray<string>
 }
 
 /** The slice of chat.html's `State` the selectors read. Passed in rather than
@@ -49,6 +52,10 @@ export interface ThreadListState {
   /** Session-local order from drag-to-redock inserts. Does not rewrite the
    *  server's ordering. */
   readonly threadOrder?: readonly string[] | null
+  /** Agent participation (PR2): when set, only threads this agent was
+   *  involved in are visible (the click-an-agent lookup). Composes with
+   *  the search filter. Null = no filter. */
+  readonly agentFilter?: string | null
 }
 
 /**
@@ -87,6 +94,21 @@ export function visibleThreads(state: ThreadListState): ThreadRow[] {
   const floated = state.floatedThreadIds
   if (floated) {
     rows = rows.filter((t) => !floated[t.id])
+  }
+
+  // Agent participation (PR2): the click-an-agent lookup. A thread matches
+  // when the agent was ever involved (delegated to) OR the thread was
+  // created under it — agentName is one more involvement signal, not a
+  // separate taxonomy. Applied BEFORE search so typing narrows within the
+  // agent's threads, matching how the search-over-visible rule already
+  // reads. Null/absent = the pre-PR2 behavior, untouched.
+  const agent = state.agentFilter
+  if (agent) {
+    rows = rows.filter(
+      (t) =>
+        t.agentName === agent ||
+        (Array.isArray(t.involvedAgents) && t.involvedAgents.includes(agent)),
+    )
   }
 
   if (q) {
@@ -179,8 +201,16 @@ export function shouldGroupThreads(
   state: ThreadListState & {
     readonly serverSupportsAgents?: boolean
     readonly agents?: ReadonlyArray<RosterAgent> | null
+    readonly sidebarSectionsEnabled?: boolean
   },
 ): boolean {
+  // PR2 (Mr. Cobb's pivot, 2026-08-23): sections are OPT-IN and default
+  // OFF — an agent is a person you look up (the agentFilter chips), not a
+  // folder you file into. The grouped renderer stays fully built and
+  // tested behind this flag (threadDrawer reads localStorage
+  // `luna.sidebarSections`), so flipping the product back is a one-line
+  // decision, not a rebuild.
+  if (state.sidebarSectionsEnabled !== true) return false
   if (state.serverSupportsAgents !== true) return false
   if ((state.threadSearch || "").trim()) return false
   const roster = state.agents || []

@@ -680,6 +680,17 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 : {}),
             })
             .pipe(
+              // PR2: being created under an agent IS involvement — the
+              // click-an-agent lookup must include threads minted from the
+              // agent's own "+", not only delegation-observed ones.
+              // Best-effort tap: a participation miss must not fail create.
+              Effect.tap(() =>
+                opts.agentName !== undefined
+                  ? reg
+                      .recordInvolvement(id, opts.agentName)
+                      .pipe(Effect.catchCause(() => Effect.succeed(false)))
+                  : Effect.void,
+              ),
               Effect.as(true),
               Effect.catchCause(() => Effect.succeed(false)),
             ),

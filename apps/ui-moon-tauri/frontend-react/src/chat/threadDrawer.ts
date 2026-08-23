@@ -135,6 +135,13 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     onDisconnect() { return ThreadCreateLogic.onDisconnect(State); },
   }
 
+  // PR2: sections are opt-in via localStorage (escape hatch for anyone who
+  // wants the grouped view back). Read once at construction — flipping it
+  // takes a reload, which keeps render() free of storage reads.
+  try {
+    if (State) State.sidebarSectionsEnabled = localStorage.getItem('luna.sidebarSections') === '1';
+  } catch (_) { /* private mode */ }
+
   const ThreadDrawerEngine = {
     // --- open / close / resize (Things-3-style split pane) ------------------
     MIN_W: 190,        // narrowest resting open width
@@ -436,10 +443,72 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         tagAgents: !!(State.threadSearch || '').trim() && State.serverSupportsAgents === true,
         // Sections when there is something to group by (see
         // shouldGroupThreads); undefined = the exact pre-S5 flat path.
+        // PR2: opt-in via luna.sidebarSections — default is the flat list.
         grouped: ThreadListLogic.shouldGroupThreads(State)
           ? this._buildGrouped(rows)
           : undefined,
       });
+      this.renderAgentChips();
+    },
+
+    /**
+     * PR2 — the click-an-agent lookup. One chip per roster agent (plus any
+     * orphan name still carried by a thread), painted into #agent-chips
+     * between the search box and the list. Click OR right-click toggles
+     * the involvement filter (Mr. Cobb asked for right-click; left-click
+     * costs nothing extra and is more discoverable). All text lands via
+     * textContent — agent names are server data.
+     */
+    renderAgentChips() {
+      const host = DOM.agentChips;
+      if (!host) return;
+      const roster = Array.isArray(State.agents) ? State.agents : [];
+      const rows = Array.isArray(State.threads) ? State.threads : [];
+      // Union: roster first (its order), then involved names the roster no
+      // longer carries — the data decides, the roster decorates (same rule
+      // as the dormant sections).
+      const names = [];
+      const seen = new Set();
+      for (const a of roster) {
+        if (a && a.name && !seen.has(a.name)) { seen.add(a.name); names.push(a.name); }
+      }
+      for (const t of rows) {
+        if (!t) continue;
+        if (t.agentName && !seen.has(t.agentName)) { seen.add(t.agentName); names.push(t.agentName); }
+        if (Array.isArray(t.involvedAgents)) {
+          for (const n of t.involvedAgents) {
+            if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+          }
+        }
+      }
+      const show = State.serverSupportsAgents === true && names.length > 0;
+      host.hidden = !show;
+      host.textContent = '';
+      if (!show) {
+        // A filter for an agent that vanished with its last thread must not
+        // strand an unfilterable empty list.
+        if (State.agentFilter) { State.agentFilter = null; }
+        return;
+      }
+      for (const name of names) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'agent-chip' + (State.agentFilter === name ? ' active' : '');
+        chip.textContent = '@' + name;
+        chip.title = State.agentFilter === name
+          ? 'Show all threads'
+          : `Threads @${name} was involved in`;
+        chip.setAttribute('aria-pressed', State.agentFilter === name ? 'true' : 'false');
+        const toggle = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          State.agentFilter = State.agentFilter === name ? null : name;
+          this.render();
+        };
+        chip.addEventListener('click', toggle);
+        chip.addEventListener('contextmenu', toggle);
+        host.appendChild(chip);
+      }
     },
 
     // --- agent sections (S5) ------------------------------------------------

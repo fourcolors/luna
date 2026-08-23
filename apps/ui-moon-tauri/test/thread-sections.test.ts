@@ -44,18 +44,72 @@ const ROSTER = [
 // ── Layer 1: pure grouping ──────────────────────────────────────────────────
 
 describe("shouldGroupThreads", () => {
-  it("requires the capability, no active search, and something to group by", () => {
+  it("is OFF by default (PR2 pivot): sections require the explicit opt-in", () => {
     const threads = [t("a", 1, "advisor")]
-    expect(shouldGroupThreads({ serverSupportsAgents: true, agents: ROSTER, threads: [] })).toBe(true)
-    expect(shouldGroupThreads({ serverSupportsAgents: true, agents: [], threads })).toBe(true)
+    // Even with a full roster and filed threads, no flag = flat.
+    expect(shouldGroupThreads({ serverSupportsAgents: true, agents: ROSTER, threads })).toBe(false)
+    expect(
+      shouldGroupThreads({
+        serverSupportsAgents: true,
+        agents: ROSTER,
+        threads,
+        sidebarSectionsEnabled: false,
+      }),
+    ).toBe(false)
+  })
+
+  it("opted-in: requires the capability, no active search, and something to group by", () => {
+    const on = { sidebarSectionsEnabled: true as const }
+    const threads = [t("a", 1, "advisor")]
+    expect(shouldGroupThreads({ ...on, serverSupportsAgents: true, agents: ROSTER, threads: [] })).toBe(true)
+    expect(shouldGroupThreads({ ...on, serverSupportsAgents: true, agents: [], threads })).toBe(true)
     // Nothing to group by → flat (one lonely General header reads worse).
-    expect(shouldGroupThreads({ serverSupportsAgents: true, agents: [], threads: [t("a", 1)] })).toBe(false)
+    expect(shouldGroupThreads({ ...on, serverSupportsAgents: true, agents: [], threads: [t("a", 1)] })).toBe(false)
     // No capability → flat, regardless of data.
-    expect(shouldGroupThreads({ serverSupportsAgents: false, agents: ROSTER, threads })).toBe(false)
+    expect(shouldGroupThreads({ ...on, serverSupportsAgents: false, agents: ROSTER, threads })).toBe(false)
     // Search always flattens.
     expect(
-      shouldGroupThreads({ serverSupportsAgents: true, agents: ROSTER, threads, threadSearch: "x" }),
+      shouldGroupThreads({ ...on, serverSupportsAgents: true, agents: ROSTER, threads, threadSearch: "x" }),
     ).toBe(false)
+  })
+})
+
+describe("visibleThreads agentFilter (PR2 — the click-an-agent lookup)", () => {
+  const inv = (id: string, at: number, involved: string[]): ThreadRow => ({
+    id,
+    title: id,
+    lastMessageAt: at,
+    involvedAgents: involved,
+  })
+
+  it("matches involvement OR created-under, and null leaves everything untouched", () => {
+    const threads = [
+      inv("delegated", 30, ["advisor", "auditor"]),
+      t("filed", 20, "advisor"),
+      inv("other", 10, ["dev-agent"]),
+      t("plain", 5),
+    ]
+    expect(visibleThreads({ threads, agentFilter: "advisor" }).map((r) => r.id)).toEqual([
+      "delegated",
+      "filed",
+    ])
+    expect(visibleThreads({ threads, agentFilter: null }).map((r) => r.id)).toEqual([
+      "delegated",
+      "filed",
+      "other",
+      "plain",
+    ])
+  })
+
+  it("composes with search: typing narrows within the agent's threads", () => {
+    const threads = [
+      { ...inv("alpha-report", 30, ["advisor"]), title: "alpha report" },
+      { ...inv("beta-note", 20, ["advisor"]), title: "beta note" },
+      { ...inv("alpha-other", 10, ["auditor"]), title: "alpha other" },
+    ]
+    expect(
+      visibleThreads({ threads, agentFilter: "advisor", threadSearch: "alpha" }).map((r) => r.id),
+    ).toEqual(["alpha-report"])
   })
 })
 

@@ -1224,11 +1224,43 @@ const makeChatService = Effect.gen(function* () {
         limit = 50,
         status?: "active" | "archived",
       ): Effect.Effect<ReadonlyArray<SessionSummary>, never> => {
+        // PR2: one involvement fetch per list call, mapped threadId → agent
+        // names (most-recently-involved first — listInvolvement's order).
+        // Best-effort: an involvement failure degrades to "no filter data",
+        // never a broken sidebar.
+        const involvementMap = (
+          reg: Context.Service.Shape<typeof ThreadRegistryService>,
+        ): Effect.Effect<ReadonlyMap<string, ReadonlyArray<string>>, never> =>
+          reg.listInvolvement().pipe(
+            Effect.map((rows) => {
+              const m = new Map<string, string[]>()
+              for (const r of rows) {
+                const bucket = m.get(r.threadId)
+                if (bucket) bucket.push(r.agentName)
+                else m.set(r.threadId, [r.agentName])
+              }
+              return m
+            }),
+            Effect.catchCause(() =>
+              Effect.succeed(new Map<string, ReadonlyArray<string>>()),
+            ),
+          )
+        const attachInvolvement = (
+          s: SessionSummary,
+          m: ReadonlyMap<string, ReadonlyArray<string>>,
+        ): SessionSummary => {
+          const names = m.get(s.id)
+          return names && names.length > 0 ? { ...s, involvedAgents: names } : s
+        }
+
         // For archived threads, pull from ThreadRegistry (it owns status).
         if (status === "archived" && Option.isSome(threadRegistry)) {
-          return threadRegistry.value.listByStatus("archived").pipe(
-            Effect.map((rows) =>
-              rows.slice(0, limit).map((r) => ({
+          return Effect.all([
+            threadRegistry.value.listByStatus("archived"),
+            involvementMap(threadRegistry.value),
+          ]).pipe(
+            Effect.map(([rows, inv]) =>
+              rows.slice(0, limit).map((r) => attachInvolvement({
                 id: r.id,
                 parentId: null,
                 title: r.title,
@@ -1243,7 +1275,7 @@ const makeChatService = Effect.gen(function* () {
                 // the registry row is the only source for these (some
                 // archived threads have no SessionStore row at all).
                 ...(r.agentName != null ? { agentName: r.agentName } : {}),
-              })),
+              }, inv)),
             ),
           )
         }
@@ -1341,7 +1373,7 @@ const makeChatService = Effect.gen(function* () {
             ),
           )
           const archivedIds = new Set(archivedRows.map((r) => r.id))
-          const [sessions, activeRows] = yield* Effect.all([
+          const [sessions, activeRows, inv] = yield* Effect.all([
             listActive([...archivedIds]),
             reg.listByStatus("active").pipe(
               Effect.catchCause(() =>
@@ -1354,6 +1386,7 @@ const makeChatService = Effect.gen(function* () {
                 ),
               ),
             ),
+            involvementMap(reg),
           ])
           const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
           // Agent sidebar S2: section membership, layered onto the store
@@ -1374,7 +1407,8 @@ const makeChatService = Effect.gen(function* () {
           const titled = yield* resolveTitles(sessions, regTitles, persist)
           return titled.map((s) => {
             const agentName = regAgents.get(s.id)
-            return agentName != null ? { ...s, agentName } : s
+            const withAgent = agentName != null ? { ...s, agentName } : s
+            return attachInvolvement(withAgent, inv)
           })
         })
       }

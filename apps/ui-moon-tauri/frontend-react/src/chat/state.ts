@@ -129,6 +129,13 @@ export function createState() {
       // MentionAgent[] ({name, description} only — the ui-ws projection
       // guarantees no prompts/tools ever reach this array) from agent-list.
       agents: [],
+      // PR2: the click-an-agent lookup — null = all threads; a name =
+      // only threads that agent was involved in (visibleThreads filter).
+      agentFilter: null,
+      // PR2: sections are opt-in (localStorage `luna.sidebarSections`,
+      // stamped by threadDrawer at construction). Default OFF — agents
+      // are people you look up, not folders you file into.
+      sidebarSectionsEnabled: false,
       // Model + effort switcher (§1 wire contract). effortSelection cap gates
       // whether the server accepts set-thread-config + computes efforts per model.
       // Defaults false; `hello` corrects to true when the server supports it.

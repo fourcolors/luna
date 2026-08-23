@@ -536,6 +536,8 @@ export function bootChat() {
       threadDrawer: document.getElementById("thread-drawer"),
       threadDrawerList: document.getElementById("thread-drawer-list"),
       threadDrawerEmpty: document.getElementById("thread-drawer-empty"),
+      // PR2: the click-an-agent chips strip (renderAgentChips paints it).
+      agentChips: document.getElementById("agent-chips"),
       threadDivider: document.getElementById("thread-divider"),
       // The title-bar disclosure control for this drawer. _applyWidth keeps
       // its lit/aria-expanded state in lockstep with the panel, so it has to

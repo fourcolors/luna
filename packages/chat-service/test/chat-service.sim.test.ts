@@ -2781,6 +2781,53 @@ describe("ChatService — listThreads excludes archived threads", () => {
     { timeout: 15_000 },
   )
 
+  // ── Agent participation (PR2): involvement projection ──────────────────────
+  it(
+    "involvement reaches listThreads: created-under records it, delegations add to it, archived branch carries it",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          // Created under advisor → involvement recorded at create.
+          const filed = yield* chat.createThread({
+            model: "claude-test",
+            title: "advisor-born",
+            agentName: "advisor",
+          })
+          // A later delegation observed in the same thread (what the
+          // subagent-tree bridge's onDelegation tap records).
+          yield* reg.recordInvolvement(filed.id, "auditor")
+
+          yield* store.appendMessage({
+            sessionId: filed.id,
+            messageId: "m-inv-1",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: { message: { content: "hello" } },
+          })
+
+          const active = yield* chat.listThreads(50)
+          const row = active.find((s) => s.id === filed.id)
+          expect(row?.involvedAgents).toEqual(
+            expect.arrayContaining(["advisor", "auditor"]),
+          )
+
+          // Archived branch (registry-only) keeps the lookup working.
+          yield* reg.archive(filed.id)
+          const archived = yield* chat.listThreads(50, "archived")
+          expect(
+            archived.find((s) => s.id === filed.id)?.involvedAgents,
+          ).toEqual(expect.arrayContaining(["advisor", "auditor"]))
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
   it(
     "an explicit creation title is seeded into the registry so the archived list shows it",
     async () => {
