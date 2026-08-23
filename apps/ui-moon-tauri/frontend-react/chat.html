@@ -242,10 +242,12 @@
 
 
     /* ── Orbit: the status channel ──────────────────────────────────────────
-       Rings sit AROUND the moon instead of eating into it, so the body stays
-       whole whatever the connection is doing - a broken ring says the link is
-       severed, not that Luna is unwell. Idle wears NO ring on purpose: one that
-       is always there cannot mean anything when it appears.
+       The CSS ellipse rings below sit AROUND the moon - a broken ring says the
+       link is severed, not that Luna is unwell. The JS gyroscope's front
+       halves DO cross the face: that occlusion order is the depth cue and is
+       intentional (they are dimmed and thinned rather than clipped, so the
+       features stay readable). Idle wears NO ring on purpose: one that is
+       always there cannot mean anything when it appears.
        Transform and opacity only, and stroke-dasharray, all compositor-cheap. */
     .luna-ring {
       fill: none;
@@ -280,8 +282,9 @@
        moonGyro.ts). Colours are LITERAL hexes on classes, never attr-level
        var(): WKWebView drops var() in SVG presentation attributes to black,
        and CSS-property strokes are the safe channel. Palette-independent like
-       --moon-bright, on purpose: per-palette tinting makes small shapes vanish
-       into cream paper. */
+       --moon-bright, on purpose - but palette-independent only works if every
+       stroke sits in the MID-luminance band, since the same literal hex must
+       survive both #1f242b and #faf6f0 paper. */
     .luna-gyro-arc {
       fill: none;
       stroke-width: 3.4;
@@ -290,15 +293,36 @@
     }
     .luna-gyro-c1 { stroke: #8fb0d4; } /* moonlight blue  */
     .luna-gyro-c2 { stroke: #b7a7e8; } /* lavender        */
-    .luna-gyro-c3 { stroke: #f3d9a2; } /* star gold       */
-    /* While the JS gyroscope is driving (moonLife sets data-gyro="on"), the
-       CSS ellipse rings stand down for thinking/long. They stay wired as the
-       reduced-motion / no-JS fallback: moonLife never starts under reduced
-       motion, so data-gyro is never set and these rules never fire. */
-    .luna-face[data-gyro="on"][data-orbit="thinking"] .luna-ring,
-    .luna-face[data-gyro="on"][data-orbit="long"] .luna-ring {
-      opacity: 0;
-      animation: none;
+    .luna-gyro-c3 { stroke: #c99a3f; } /* star gold - MID-TONE on purpose:
+       --paper runs from #1f242b (dark) to #faf6f0 (cream), and the original
+       near-white #f3d9a2 was invisible on all three light palettes. Keep all
+       three strokes in the same mid-luminance band or one of them dies on one
+       end of the paper range. */
+    /* The front halves cross the FACE (that is the depth cue - see the gyro
+       markup comment), so they are thinner than the occluded back halves:
+       at 44px a full-weight stroke over a 4-unit eye reads as a smudge. */
+    .luna-gyro-front .luna-gyro-arc { stroke-width: 2.4; }
+    /* Belt for driver latency: the driver parks arcs one ~33ms tick AFTER the
+       orbit state changes, and inline style outlives it. Outside thinking/long
+       nothing may paint, whatever the driver last wrote (!important beats the
+       inline style; this is the one place that needs it). */
+    .luna-face:not([data-orbit="thinking"]):not([data-orbit="long"]) .luna-gyro-arc {
+      opacity: 0 !important;
+    }
+    /* While the JS gyroscope owns the orbit channel (moonLife.start() sets
+       data-gyro="on"; it is a "driver is alive" flag, NOT "animating right
+       now" - set per-frame it lagged the state change by a tick and flashed
+       the old ellipse at every turn start), the CSS ellipse rings stand down
+       for thinking/long. Wrapped in no-preference so flipping Reduce Motion
+       MID-SESSION restores them live: moonLife samples the query once at
+       construction, so the boot-time "never starts under reduced motion"
+       guarantee does not cover a runtime toggle - CSS has to. */
+    @media (prefers-reduced-motion: no-preference) {
+      .luna-face[data-gyro="on"][data-orbit="thinking"] .luna-ring,
+      .luna-face[data-gyro="on"][data-orbit="long"] .luna-ring {
+        opacity: 0;
+        animation: none;
+      }
     }
 
     /* thinking: one ring, slow, unhurried */
@@ -431,6 +455,12 @@
       .luna-face[data-state] .luna-bob,
       .luna-face[data-state] .luna-mouth-o,
       .luna-face[data-state] .luna-sparkle { animation: none !important; }
+      /* The JS gyroscope writes inline opacity, which no plain rule can beat;
+         display kills it regardless. With the arcs gone and the stand-down
+         rule above scoped to no-preference, the frozen CSS ellipse ring is
+         what shows - the pre-gyro reduced-motion behavior, restored LIVE even
+         when Reduce Motion flips mid-session. */
+      .luna-gyro-arc { display: none !important; }
     }
 
     /* Watercolor: handwritten style title. */

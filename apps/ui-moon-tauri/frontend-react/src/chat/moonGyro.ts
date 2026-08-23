@@ -62,6 +62,11 @@ export const GYRO_LONG_MULT = 1.6
 /** The far half is dimmer - the second depth cue after occlusion. */
 export const GYRO_BACK_DIM = 0.55
 
+/** The near half is softened too: it crosses the FACE, and at 44px a
+ *  full-opacity stroke over a 4-unit eye reads as a smudge, not as depth.
+ *  Pairs with the thinner front stroke-width in chat.html. */
+export const GYRO_FRONT_DIM = 0.7
+
 /** Samples per arc. bloub uses 64 at full-screen size; 44 is indistinguishable
  *  at a 44px header and a third cheaper per frame. */
 const N = 44

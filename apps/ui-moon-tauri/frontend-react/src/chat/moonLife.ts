@@ -16,7 +16,7 @@
  * rather than claiming it stops.
  */
 
-import { GYRO_BACK_DIM, GYRO_LONG_MULT, GYRO_RINGS, gyroArc, gyroEntry } from "./moonGyro"
+import { GYRO_BACK_DIM, GYRO_FRONT_DIM, GYRO_LONG_MULT, GYRO_RINGS, gyroArc, gyroEntry } from "./moonGyro"
 
 export interface MoonLifeDom {
   readonly lunaFace: HTMLElement | null
@@ -85,6 +85,10 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
    *  (drives the staggered ring entry). */
   let gyroSince = -1
   let gyroLastNow = 0
+  /** Seconds since activation, ACCUMULATED from floored dt - never derived
+   *  from wall-time, so a backward timestamp cannot rewind the entry ramp
+   *  and blank the rings. */
+  let gyroT = 0
   /** Accumulated spin per ring, radians. Advanced by dt x speed each frame so
    *  the thinking->long speed change ACCELERATES instead of teleporting the
    *  rings to where a faster wall-clock formula says they should be. */
@@ -112,16 +116,22 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
   function driveGyro(face: HTMLElement, nowMs: number) {
     const back = DOM.gyroBack
     const front = DOM.gyroFront
-    if (!back?.length || !front?.length) return
+    // EXACT length: a seed with no matching <path> would silently drop a ring
+    // (or worse, misalign colours with seeds), so a mismatched markup edit
+    // no-ops the whole gyroscope loudly-in-tests instead of half-working.
+    if (back?.length !== GYRO_RINGS.length || front?.length !== GYRO_RINGS.length) return
     const orbit = face.dataset["orbit"] ?? ""
     const active = orbit === "thinking" || orbit === "long"
     if (!active) {
       if (gyroSince >= 0) {
         gyroSince = -1
-        delete face.dataset["gyro"]
         // Inline STYLE, not the opacity attribute: the stylesheet's
         // `.luna-gyro-arc { opacity: 0 }` base outranks any presentation
         // attribute, so attribute writes would never show at all.
+        // (data-gyro is NOT touched here - it means "the driver owns the
+        // orbit channel", set in start(), cleared in stop(). Managed per
+        // frame it lagged the state change and flashed the CSS ellipse at
+        // every turn start.)
         for (const p of back) p.style.opacity = "0"
         for (const p of front) p.style.opacity = "0"
       }
@@ -130,20 +140,22 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
     if (gyroSince < 0) {
       gyroSince = nowMs
       gyroLastNow = nowMs
-      face.dataset["gyro"] = "on"
+      gyroT = 0
     }
-    const dt = Math.min(0.1, (nowMs - gyroLastNow) / 1000) // clamp tab-wake jumps
+    // Floor as well as cap: nowMs is monotonic in production (see resume()),
+    // but the public _frame() seam takes arbitrary timestamps.
+    const dt = Math.max(0, Math.min(0.1, (nowMs - gyroLastNow) / 1000))
     gyroLastNow = nowMs
     const mult = orbit === "long" ? GYRO_LONG_MULT : 1
-    const tActive = (nowMs - gyroSince) / 1000
+    gyroT += dt
     GYRO_RINGS.forEach((seed, i) => {
       const angle = (gyroAngle[i] ?? 0) - dt * seed.speed * mult * Math.PI * 2
       gyroAngle[i] = angle
       const { front: fd, back: bd } = gyroArc(seed, angle)
-      const o = gyroEntry(tActive, i)
+      const o = gyroEntry(gyroT, i)
       const f = front[i]
       const b = back[i]
-      if (f) { f.setAttribute("d", fd); f.style.opacity = o.toFixed(2) }
+      if (f) { f.setAttribute("d", fd); f.style.opacity = (o * GYRO_FRONT_DIM).toFixed(2) }
       if (b) { b.setAttribute("d", bd); b.style.opacity = (o * GYRO_BACK_DIM).toFixed(2) }
     })
   }
@@ -188,7 +200,10 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
 
   function resume() {
     if (timer || !running) return
-    timer = setInterval(() => frame(Date.now()), TICK_MS)
+    // performance.now(), not Date.now(): every use of nowMs is a DELTA (dt,
+    // tActive, idle age), and a backward wall-clock step would blank the
+    // rings for the length of the step via a negative tActive.
+    timer = setInterval(() => frame(performance.now()), TICK_MS)
   }
   function pause() {
     if (timer) { clearInterval(timer); timer = null }
@@ -204,6 +219,14 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
       // of the setting is that nothing moves on its own.
       if (reduced || running) return
       running = true
+      // "The driver owns the orbit channel." The CSS ellipse stand-down keys
+      // on this, and it must be true from the FIRST paint of a busy state -
+      // set per-frame it arrived a tick late and flashed the old ellipse.
+      // Reduced motion returned above, so the flag doubles as "not reduced
+      // at boot" and the CSS fallback story holds.
+      if (DOM.lunaFace && DOM.gyroBack?.length && DOM.gyroFront?.length) {
+        DOM.lunaFace.dataset["gyro"] = "on"
+      }
       window.addEventListener("pointermove", onPointerMove, { passive: true })
       document.addEventListener("visibilitychange", onVisibility)
       resume()
