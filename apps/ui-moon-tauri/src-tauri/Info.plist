@@ -14,36 +14,23 @@
          .local / unqualified hosts can be dropped with no prompt and no
          TCP from the WebKit.Networking process — while Terminal curl to
          the same host still succeeds. Observed on Luna Moon 0.0.66
-         dialing ws://jax-box:4753/ui. -->
+         dialing your server's ws:// URL. -->
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Luna Moon connects to your Luna chat server on the local network or Tailscale (for example jax-box).</string>
+    <string>Luna Moon connects to your Luna chat server on your local network or Tailscale.</string>
 
     <!-- App Transport Security: keep default ATS for the rest of the app,
          but allow cleartext ws:// to local / Tailscale Luna endpoints.
-         Do NOT force wss; installer defaults stay on ws://jax-box:….
+         Do NOT force wss; the installer prompts for a ws:// host.
          NSAllowsLocalNetworking covers unqualified + .local + local IPs;
-         NSExceptionDomains cover MagicDNS FQDNs (*.ts.net) and the
-         jax-box short / .local names explicitly for insecure loads. -->
+     NSAllowsLocalNetworking covers unqualified + .local + LAN hosts;
+         the ts.net entry covers Tailscale MagicDNS FQDNs. No per-host
+         entries: the server host is operator-configured, not baked in. -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
         <key>NSExceptionDomains</key>
         <dict>
-            <key>jax-box</key>
-            <dict>
-                <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                <true/>
-                <key>NSIncludesSubdomains</key>
-                <true/>
-            </dict>
-            <key>jax-box.local</key>
-            <dict>
-                <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                <true/>
-                <key>NSIncludesSubdomains</key>
-                <true/>
-            </dict>
             <key>ts.net</key>
             <dict>
                 <key>NSExceptionAllowsInsecureHTTPLoads</key>

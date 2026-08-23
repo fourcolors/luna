@@ -69,15 +69,23 @@ describe("macOS Info.plist — Local Network + cleartext WS carve-out", () => {
     )
   })
 
-  it("allows insecure loads for jax-box, jax-box.local, and *.ts.net", () => {
-    for (const domain of ["jax-box", "jax-box.local", "ts.net"] as const) {
-      expect(plist).toContain(`<key>${domain}</key>`)
-    }
-    // Three insecure-load exceptions (one per domain above).
-    const insecure = plist.match(/NSExceptionAllowsInsecureHTTPLoads<\/key>\s*<true\/>/g)
-    expect(insecure?.length).toBeGreaterThanOrEqual(3)
-    const subdomains = plist.match(/NSIncludesSubdomains<\/key>\s*<true\/>/g)
-    expect(subdomains?.length).toBeGreaterThanOrEqual(3)
+  it("keeps the ts.net carve-out and declares NO per-host exception", () => {
+    // #588 removed the hardcoded host; the operator configures their own, so
+    // baking per-host ATS exceptions in is both useless and a hostname leak.
+    // NSAllowsLocalNetworking already covers unqualified / .local / LAN hosts.
+    expect(plist).toContain("<key>ts.net</key>")
+    expect(plist).toMatch(
+      /ts\.net<\/key>\s*<dict>\s*<key>NSExceptionAllowsInsecureHTTPLoads<\/key>\s*<true\/>/,
+    )
+    // Exactly one exception domain => exactly one insecure-loads grant.
+    expect(plist.match(/NSExceptionAllowsInsecureHTTPLoads/g) ?? []).toHaveLength(1)
+  })
+
+  it("ships no personal hostname in any user-visible plist string", () => {
+    // NSLocalNetworkUsageDescription is rendered verbatim in the macOS Local
+    // Network prompt — the most visible place a leaked hostname can land.
+    expect(plist).not.toMatch(/jax-box/i)
+    expect(plist).not.toMatch(/luna-server/i)
   })
 
   it("does not force wss / does not enable blanket arbitrary loads", () => {
@@ -127,9 +135,11 @@ describe("macOS signing — Info.plist must be codesign-bound", () => {
     expect(rebuildDoc).toContain("luna_moon_ui-")
     expect(rebuildDoc).toContain("com.luna.moon")
     expect(rebuildDoc).toContain("bun run install:macos")
-    // Scrubbed of the maintainer's personal hostname (this repo is public).
-    // The assertion guards that the verify table still names a concrete ws://
-    // dial target — not which host that target happens to be.
-    expect(rebuildDoc).toContain("ws://luna-server:4753/ui")
+    // Host-agnostic: #588 removed the default, so the gate names no host at
+    // all. What must survive is the never-retarget-localhost rule, which is
+    // the invariant the whole page exists to protect.
+    expect(rebuildDoc).toMatch(/ws:\/\/<your-host>:4753\/ui/)
+    expect(rebuildDoc).toContain("Do not retarget localhost")
+    expect(rebuildDoc).not.toMatch(/jax-box/i)
   })
 })

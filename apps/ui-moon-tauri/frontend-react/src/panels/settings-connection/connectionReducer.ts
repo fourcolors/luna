@@ -53,19 +53,24 @@ export interface SaveStatus {
   readonly kind: "ok" | "warn" | null
 }
 
-/** Named machine targets for Settings → Connection. jax-box is the intentional
- *  remote default (installer/README). Custom is freeform.
+/** Named machine targets for Settings -> Connection.
  *
- *  This Mac (loopback 127.0.0.1) is CUT until jax-box Connected is proven —
- *  writing loopback into moon-connection / .env / client.toml must not be the
- *  path operators use to get Connected. */
-export type MachineTarget = "jax-box" | "this-mac" | "custom"
+ *  There is no hardcoded remote default any more. #588 made the installer
+ *  prompt for the server host and removed its hardcoded-host fallback; the app now
+ *  LEARNS the host from the persisted connection. "server" therefore means
+ *  "the host you configured", not one particular machine.
+ *
+ *  This Mac (loopback 127.0.0.1) stays CUT. A loopback "Connected" is exempt
+ *  from Local Network TCC and from the bound-plist/ATS machinery, so it would
+ *  falsely certify a build that cannot actually reach a server -- the exact
+ *  hole docs/macos-local-rebuild.md exists to catch. */
+export type MachineTarget = "server" | "this-mac" | "custom"
 
-/** Gate for the named This Mac target. Keep false until jax-box Connected is proven. */
+/** Gate for the named This Mac target. Keep false (see above). */
 export const THIS_MAC_TARGET_ENABLED = false
 
 export const MACHINE_TARGET_OPTIONS: readonly { value: MachineTarget; label: string }[] = [
-  { value: "jax-box", label: "jax-box (default)" },
+  { value: "server", label: "Server (configured)" },
   ...(THIS_MAC_TARGET_ENABLED
     ? ([{ value: "this-mac", label: "This Mac" }] as const)
     : []),
@@ -77,28 +82,80 @@ export function portForChannel(channel: string): number {
   return channel === "dev" ? 5753 : 4753
 }
 
-/** Canonical jax-box stable UI URL — installer / README default. */
-export const JAX_BOX_STABLE_WS_URL = "ws://jax-box:4753/ui"
+const LOOPBACK_RE =
+  /^wss?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i
 
-export function urlForMachineTarget(target: MachineTarget, channel: string): string {
-  const port = portForChannel(channel)
-  if (target === "this-mac") {
-    // While gated, never emit loopback from a named target (adversary HOLD).
-    if (!THIS_MAC_TARGET_ENABLED) return `ws://jax-box:${port}/ui`
-    return `ws://127.0.0.1:${port}/ui`
+/** Hard preflight: only a well-formed ws:// or wss:// URL is dialable.
+ *  Anything else (http://, a bare hostname, empty) must never reach the
+ *  store. */
+export function isDialableWsUrl(url: string): boolean {
+  const trimmed = url.trim()
+  if (!/^wss?:\/\//i.test(trimmed)) return false
+  try {
+    const u = new URL(trimmed)
+    return Boolean(u.hostname) && (u.protocol === "ws:" || u.protocol === "wss:")
+  } catch {
+    return false
   }
-  // jax-box (and any caller that asked for the remote default)
-  return `ws://jax-box:${port}/ui`
 }
 
-export function detectMachineTarget(url: string): MachineTarget {
+/** True for a loopback URL, whatever the port/path. */
+export function isLoopbackWsUrl(url: string): boolean {
+  return LOOPBACK_RE.test(url.trim())
+}
+
+/** Swap in the channel's port, keeping the configured scheme/host/path. */
+export function urlForChannelFrom(serverUrl: string, channel: string): string {
+  if (!isDialableWsUrl(serverUrl)) return ""
+  try {
+    const u = new URL(serverUrl.trim())
+    u.port = String(portForChannel(channel))
+    return u.toString().replace(/\/$/, "")
+  } catch {
+    return ""
+  }
+}
+
+export function urlForMachineTarget(
+  target: MachineTarget,
+  channel: string,
+  serverUrl = "",
+): string {
+  if (target === "this-mac") {
+    // While gated, never emit loopback from a named target (adversary HOLD).
+    if (!THIS_MAC_TARGET_ENABLED) return urlForChannelFrom(serverUrl, channel)
+    return `ws://127.0.0.1:${portForChannel(channel)}/ui`
+  }
+  if (target === "custom") return serverUrl.trim()
+  return urlForChannelFrom(serverUrl, channel)
+}
+
+export function detectMachineTarget(url: string, serverUrl = ""): MachineTarget {
   const trimmed = url.trim()
-  if (/^wss?:\/\/jax-box(?:\.local)?:\d+\/ui\/?$/i.test(trimmed)) return "jax-box"
-  // Loopback is Custom while This Mac is cut — do not revive the named option.
-  if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) {
+  // Loopback is Custom while This Mac is cut - do not revive the named option.
+  if (isLoopbackWsUrl(trimmed)) {
     return THIS_MAC_TARGET_ENABLED ? "this-mac" : "custom"
   }
+  if (!isDialableWsUrl(trimmed)) return "custom"
+  if (serverUrl && isDialableWsUrl(serverUrl)) {
+    try {
+      const a = new URL(trimmed).hostname.toLowerCase()
+      const b = new URL(serverUrl.trim()).hostname.toLowerCase()
+      if (a === b) return "server"
+    } catch {
+      /* fall through to custom */
+    }
+  }
   return "custom"
+}
+
+/** True when no server host is configured yet. The panel must prompt, and
+ *  must NOT auto-persist anything -- notably not pickBootWsUrl's loopback
+ *  last resort -- until the operator supplies one. */
+export function needsServerSetup(serverUrl: string, wsUrl: string): boolean {
+  if (isDialableWsUrl(serverUrl) && !isLoopbackWsUrl(serverUrl)) return false
+  if (isDialableWsUrl(wsUrl) && !isLoopbackWsUrl(wsUrl)) return false
+  return true
 }
 
 export interface ConnectionPanelState {
@@ -142,8 +199,12 @@ export interface ConnectionPanelState {
   readonly model: string
   readonly effortOptions: readonly string[]
   readonly effort: string
-  /** Named machine target — drives the WS URL for jax-box (This Mac gated off). */
+  /** Named machine target - "server" resolves against `serverUrl`
+   *  (This Mac gated off). */
   readonly machineTarget: MachineTarget
+  /** The configured server URL, learned from the persisted connection. Empty
+   *  until the operator has been through setup - see needsServerSetup. */
+  readonly serverUrl: string
   /**
    * When true, Save also sets activeProfile + client.toml default to the
    * selected channel (mirrors `luna pair --activate`). Off by default so
@@ -268,7 +329,8 @@ export function initialConnectionPanelState(): ConnectionPanelState {
     model: savedModel,
     effortOptions,
     effort: savedEffort,
-    machineTarget: "jax-box",
+    machineTarget: "server",
+    serverUrl: "",
     activateOnSave: false,
     wsUrl: "",
     wsToken: "",
@@ -284,11 +346,21 @@ export function reduceConnectionPanel(
   switch (action.type) {
     case "connection-loaded": {
       const wsUrl = action.wsUrl ? action.wsUrl : state.wsUrl
+      // A real (non-loopback) persisted URL IS the configured server. Loopback
+      // never becomes the remembered host, or the boot fallback would quietly
+      // install itself as the default.
+      const serverUrl =
+        action.wsUrl && isDialableWsUrl(action.wsUrl) && !isLoopbackWsUrl(action.wsUrl)
+          ? action.wsUrl
+          : state.serverUrl
       return {
         ...state,
         wsUrl,
+        serverUrl,
         wsToken: action.wsToken !== null ? action.wsToken : state.wsToken,
-        machineTarget: action.wsUrl ? detectMachineTarget(action.wsUrl) : state.machineTarget,
+        machineTarget: action.wsUrl
+          ? detectMachineTarget(action.wsUrl, serverUrl)
+          : state.machineTarget,
       }
     }
     case "profile-loaded": {
@@ -341,11 +413,16 @@ export function reduceConnectionPanel(
       if (state.machineTarget === "custom") {
         return { ...state, channel, channelError: null }
       }
+      const recomputed = urlForMachineTarget(
+        state.machineTarget,
+        channel,
+        state.serverUrl || state.wsUrl,
+      )
       return {
         ...state,
         channel,
         channelError: null,
-        wsUrl: urlForMachineTarget(state.machineTarget, channel),
+        ...(recomputed ? { wsUrl: recomputed } : {}),
       }
     }
     case "profile-switch-succeeded": {
@@ -380,16 +457,17 @@ export function reduceConnectionPanel(
       let target = action.target
       // Refuse to select This Mac while the gate is off.
       if (target === "this-mac" && !THIS_MAC_TARGET_ENABLED) {
-        target = "jax-box"
+        target = "server"
       }
       if (target === "custom") {
         return { ...state, machineTarget: target }
       }
-      return {
-        ...state,
-        machineTarget: target,
-        wsUrl: urlForMachineTarget(target, state.channel),
-      }
+      const next = urlForMachineTarget(target, state.channel, state.serverUrl)
+      // Nothing configured yet -> leave the field alone so setup can prompt;
+      // never blank a URL the operator can still see and edit.
+      return next
+        ? { ...state, machineTarget: target, wsUrl: next }
+        : { ...state, machineTarget: target }
     }
     case "activate-on-save-changed":
       return { ...state, activateOnSave: action.value }

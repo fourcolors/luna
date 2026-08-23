@@ -1,15 +1,15 @@
 /**
  * tauriBoot.ts - bounded Tauri invoke + dial-credential helpers for Moon boot.
  *
- * Round-3 Mac evidence (signed com.luna.moon, Local Network on, jax-box
- * reachable, luna_ws_url still ws://jax-box:4753/ui, WebKit.Networking with
+ * Round-3 Mac evidence (signed com.luna.moon, Local Network on, the server
+ * reachable, luna_ws_url still the configured ws:// URL, WebKit.Networking with
  * ZERO TCP/SYN): the UI can sit forever on HTML "Disconnected" + MoonBar
  * default "waking up…" when boot awaits migrate/load_connection/list_routes
  * and never reaches new WebSocket. An invoke that never settles matches that
  * paint exactly (updateStatus('connecting') only runs inside connect()).
  *
  * These helpers cap every boot-time invoke so dial can proceed with the
- * cached jax-box URL from localStorage / moon-connection instead of hanging
+ * cached server URL from localStorage / moon-connection instead of hanging
  * before the socket constructor. They do NOT retarget the endpoint to
  * localhost.
  */
@@ -57,7 +57,7 @@ export function isUsableBearerToken(token: unknown): token is string {
 /**
  * Pick the WS URL to dial: prefer a non-empty loaded value, then the
  * localStorage cache (luna_ws_url), then the installer default. Never forces
- * 127.0.0.1 when a jax-box (or other) cache is present.
+ * 127.0.0.1 when a configured-host cache is present.
  */
 export function pickBootWsUrl(
   loadedUrl: string | null | undefined,

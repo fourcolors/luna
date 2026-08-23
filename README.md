@@ -207,7 +207,7 @@ Luna is designed to run with one local client and two server runtimes:
 | Stable | The agent you actually use day to day | `luna chat` | `ws://luna-server:4753/ui` | `ws://luna-server.local:4753/ui` |
 | Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://luna-server:5753/ui` | `ws://luna-server.local:5753/ui` |
 
-> **Note:** `luna-server` is the neutral placeholder used throughout this documentation. The `install.sh` installer still defaults to `jax-box` / `jax-box.local` as the shipped hostname — pass `--stable-url` / `--stable-fallback-url` (and the equivalent `--dev-*` flags) to supply your actual server hostname.
+> **Note:** `luna-server` is the neutral placeholder used throughout this documentation. There is no shipped default hostname: `install.sh` prompts for your server host, and you can pass `--stable-url` / `--stable-fallback-url` (and the equivalent `--dev-*` flags) to supply it non-interactively.
 
 Stable tracks the `master` branch. There is no long-lived `dev` branch — Luna is
 trunk-based: all work lands on `master` via PRs. The dev runtime is an optional
