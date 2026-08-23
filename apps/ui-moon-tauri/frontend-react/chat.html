@@ -275,6 +275,32 @@
     @keyframes luna-orbit-ccw { to { transform: rotate(-322deg); } }
     @keyframes luna-orbit-cw3 { to { transform: rotate(442deg); } }
 
+    /* ── Gyroscope rings (thinking/long) ────────────────────────────────────
+       Three depth-sorted 3D rings driven per-frame from moonLife (see
+       moonGyro.ts). Colours are LITERAL hexes on classes, never attr-level
+       var(): WKWebView drops var() in SVG presentation attributes to black,
+       and CSS-property strokes are the safe channel. Palette-independent like
+       --moon-bright, on purpose: per-palette tinting makes small shapes vanish
+       into cream paper. */
+    .luna-gyro-arc {
+      fill: none;
+      stroke-width: 3.4;
+      stroke-linecap: round;
+      opacity: 0; /* the driver owns opacity; empty d until it runs */
+    }
+    .luna-gyro-c1 { stroke: #8fb0d4; } /* moonlight blue  */
+    .luna-gyro-c2 { stroke: #b7a7e8; } /* lavender        */
+    .luna-gyro-c3 { stroke: #f3d9a2; } /* star gold       */
+    /* While the JS gyroscope is driving (moonLife sets data-gyro="on"), the
+       CSS ellipse rings stand down for thinking/long. They stay wired as the
+       reduced-motion / no-JS fallback: moonLife never starts under reduced
+       motion, so data-gyro is never set and these rules never fire. */
+    .luna-face[data-gyro="on"][data-orbit="thinking"] .luna-ring,
+    .luna-face[data-gyro="on"][data-orbit="long"] .luna-ring {
+      opacity: 0;
+      animation: none;
+    }
+
     /* thinking: one ring, slow, unhurried */
     .luna-face[data-orbit="thinking"] .luna-ring-1 {
       opacity: 0.92; animation: luna-orbit-cw 6.4s linear infinite;
@@ -2304,6 +2330,18 @@
               <ellipse class="luna-ring luna-ring-2" cx="60" cy="60" rx="52" ry="21"/>
               <ellipse class="luna-ring luna-ring-3" cx="60" cy="60" rx="46" ry="14"/>
             </g>
+            <!-- Gyroscope orbit (thinking/long): three depth-sorted 3D rings,
+                 driven from moonLife via moonGyro.ts. Each ring is TWO paths:
+                 this back half sits BEFORE .luna-bob so the moon occludes it,
+                 and the front half after, crossing the face - bloub's true
+                 depth sort, the thing a flat CSS ellipse can never do. Empty
+                 `d` until the driver runs; the CSS ellipse rings above remain
+                 the reduced-motion / no-JS fallback. -->
+            <g class="luna-gyro-back" aria-hidden="true">
+              <path class="luna-gyro-arc luna-gyro-c1"/>
+              <path class="luna-gyro-arc luna-gyro-c2"/>
+              <path class="luna-gyro-arc luna-gyro-c3"/>
+            </g>
             <g class="luna-bob">
               <circle cx="60" cy="60" r="47" fill="url(#lunaBody)"/>
               <circle class="luna-body-shade" cx="60" cy="60" r="47" fill="url(#lunaShade)"/>
@@ -2339,6 +2377,13 @@
               <!-- sparkle (thinking / suggesting); fill themed via CSS (.luna-sparkle),
                    hex below is the WebKit fallback for the same reason as the stops. -->
               <path class="luna-sparkle" d="M96 26 l2.4 5.6 5.6 2.4 -5.6 2.4 -2.4 5.6 -2.4 -5.6 -5.6 -2.4 5.6 -2.4 Z" fill="#f0f6ff"/>
+            </g>
+            <!-- Near halves of the gyroscope rings: after .luna-bob so they
+                 cross in FRONT of the moon's face. See .luna-gyro-back above. -->
+            <g class="luna-gyro-front" aria-hidden="true">
+              <path class="luna-gyro-arc luna-gyro-c1"/>
+              <path class="luna-gyro-arc luna-gyro-c2"/>
+              <path class="luna-gyro-arc luna-gyro-c3"/>
             </g>
           </svg>
         </div>

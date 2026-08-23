@@ -269,10 +269,17 @@ export function bootChat() {
     lunaFace: document.getElementById("luna-face"),
     lunaFaceStatus: document.getElementById("luna-face-status"),
   })
-  // Gaze is the only rAF loop on the face; everything else is a CSS keyframe.
+  // Gaze + the gyroscope orbit share the face's ONE timer loop; everything
+  // else is a CSS keyframe.
   const moonLife = createMoonLife({
     lunaFace: document.getElementById("luna-face"),
     lunaEyes: document.querySelector("#luna-face .luna-eyes"),
+    gyroBack: Array.from(
+      document.querySelectorAll<SVGPathElement>("#luna-face .luna-gyro-back .luna-gyro-arc"),
+    ),
+    gyroFront: Array.from(
+      document.querySelectorAll<SVGPathElement>("#luna-face .luna-gyro-front .luna-gyro-arc"),
+    ),
   })
   moonLife.start()
   const moonBar = createMoonBar({
