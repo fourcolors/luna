@@ -940,7 +940,14 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       }
       // Face follows the viewed thread only; background busy shows on the
       // sidebar row, not the moon face.
-      try { MoonFace.setBusy(!!State.busyThreads[id]); } catch (_) {}
+      try {
+        // Force a clean false->true edge. setBusy is edge-triggered, so a switch
+        // between two threads that are BOTH in flight would no-op and the new
+        // thread would inherit the old one's 45s long-turn clock - escalating to
+        // three rings seconds after you land, or never escalating at all.
+        MoonFace.setBusy(false);
+        MoonFace.setBusy(!!State.busyThreads[id]);
+      } catch (_) {}
       // The suggestion chip is per-thread, and SuggestedActionsEngine.refresh()
       // already implements that correctly - it was simply never called on a
       // switch. The server only pushes a set-frame when the new thread HAS

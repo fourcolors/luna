@@ -435,15 +435,16 @@ export function createWire(ctx: WireCtx) {
         // have a pending-assistant turn in ChatState. Once the placeholder
         // has been claimed by a real turn (assistant-delta arrived) we leave
         // any in-flight rendering alone.
-        // Clear busy FIRST, unconditionally. The self-suppression below is
-        // about whether to touch the transcript; it is never a reason to leave
-        // the face thinking. Below the early return this line was unreachable
-        // exactly when it was most needed - any path that drops the pending
-        // placeholder turned the safety net into a no-op.
+        // REACHING HERE MEANS 90s OF TOTAL SILENCE. Every sign of progress -
+        // delta, tool-call, tool-result, done - re-arms this timer, so there is
+        // no longer a case where the turn is alive but the placeholder is gone.
+        // That means the old self-suppression is not just unnecessary, it was
+        // harmful: it let the watchdog clear busy and then say nothing, leaving
+        // an idle face mid-turn with no explanation and no way back (the only
+        // setBusy(true) in the app is at send). Clear and explain together.
         MoonFace.setBusy(false);
-        if (!ChatState._findPending() && !State.activeTurnId) return;
         State.activeTurnId = null;
-        ChatState.dropPendingAssistant();
+        if (ChatState._findPending()) ChatState.dropPendingAssistant();
         ChatState.appendBanner('⚠️ No response from the server — try again.');
         ChatLoop.flush();
       }, 90000);
@@ -1322,13 +1323,11 @@ export function createWire(ctx: WireCtx) {
       this.clearTurnTimeout();
       State.turnTimeout = setTimeout(() => {
         State.turnTimeout = null;
-        // Same fix as WebSocketEngine's watchdog: clear busy unconditionally,
-        // above the self-suppression, or the face keeps thinking exactly when
-        // the safety net was supposed to catch it.
+        // Same contract as WebSocketEngine's watchdog: progress re-arms this
+        // timer, so firing means real silence - clear busy AND say so.
         MoonFace.setBusy(false);
-        if (!ChatState._findPending() && !State.activeTurnId) return;
         State.activeTurnId = null;
-        ChatState.dropPendingAssistant();
+        if (ChatState._findPending()) ChatState.dropPendingAssistant();
         ChatState.appendBanner('⚠️ No response from the server — try again.');
         ChatLoop.flush();
       }, 90000);

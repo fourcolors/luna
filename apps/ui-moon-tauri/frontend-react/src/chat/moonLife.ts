@@ -5,12 +5,15 @@
  * drift and blinking, NOT floating. Blinking is already a CSS keyframe; this is
  * the gaze half, plus the rare shooting star.
  *
- * THE ONLY rAF LOOP ON THE FACE. Everything else - rings, transients, blink,
+ * THE ONLY TIMER ON THE FACE. Everything else - rings, transients, blink,
  * mouth - is a CSS keyframe, because CSS is cheaper and already WKWebView-tuned.
- * Gaze cannot be, because it follows a pointer. So this loop is kept as small as
- * it can be: it writes two numbers onto one element, runs at 30fps, and stops
- * entirely when the document is hidden, when motion is reduced, or when the
- * face is not idle enough to be looking around.
+ * Gaze cannot be, because it follows a pointer. So the loop is kept small: it
+ * writes two numbers onto one element and runs at 30fps.
+ *
+ * It genuinely STOPS only for reduced motion (never starts) and while the
+ * document is hidden. When the face is busy it keeps ticking and early-returns
+ * after one dataset read - cheap, but not free, and worth stating accurately
+ * rather than claiming it stops.
  */
 
 export interface MoonLifeDom {

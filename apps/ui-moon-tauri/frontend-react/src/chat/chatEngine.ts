@@ -132,12 +132,15 @@ export interface ChatEngineCtx {
   readonly SlashMenu: Record<string, unknown>
   readonly Attachments: Record<string, unknown>
   readonly ThreadCache: { markBusy: (id: string) => void }
+  /** Late-bound; see threadDrawer's identical hook. Fired when the viewed
+   *  thread changes so per-thread surfaces can re-resolve. */
+  readonly onThreadSwitch?: (() => void) | undefined
 }
 
 export function createChatEngine(ctx: ChatEngineCtx) {
   const {
     Logger, DOM, State, WebSocketEngine, ChatState, ChatLoop,
-    MoonFace, MoonClient, SlashMenu, Attachments, ThreadCache,
+    MoonFace, MoonClient, SlashMenu, Attachments, ThreadCache, onThreadSwitch,
   } = ctx
 
   const ChatEngine = {
@@ -229,6 +232,11 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       // early-returns on the threadId mismatch before it reaches setBusy(false),
       // and the watchdog that would have caught it was just cleared above.
       MoonFace.setBusy(false);
+      // A NEW CONVERSATION IS A THREAD SWITCH. The suggestion chip is
+      // per-thread, and wiring refresh() only into the drawer's row-click left
+      // this door open: propose an action on thread A, hit new conversation,
+      // and A's chip plus the happy face stay up over an empty thread.
+      onThreadSwitch?.();
       State.pendingUserMessage = null;
       // The composer draft and staged attachments deliberately survive the
       // switch - they carry into the fresh thread, ready to send.

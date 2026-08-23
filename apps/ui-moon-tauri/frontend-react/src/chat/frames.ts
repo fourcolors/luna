@@ -548,6 +548,13 @@ export function createFrames(ctx: FramesCtx) {
 
   MoonFrames.register('tool-call', (frame) => {
     if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
+    // A TOOL STARTING IS PROGRESS. Without this the 90s watchdog can fire in the
+    // middle of a live turn: `assistant-done` on an intermediate step drops the
+    // pending placeholder, so when the watchdog wakes it clears busy and then
+    // self-suppresses before saying anything - and nothing re-asserts busy,
+    // because `setBusy(true)` exists only at send. Re-arming on every sign of
+    // work means the watchdog only fires on genuine silence.
+    WebSocketEngine.startTurnTimeout();
     // Tool the assistant is invoking. Reducer appends a tool segment
     // to the active turn (closing any open text segment first).
     // parentToolUseId is present when the activity occurred inside a subagent.
@@ -557,6 +564,7 @@ export function createFrames(ctx: FramesCtx) {
 
   MoonFrames.register('tool-result', (frame) => {
     if (frame && frame.threadId && State.activeThreadId && frame.threadId !== State.activeThreadId) return;
+    WebSocketEngine.startTurnTimeout();   // a tool finishing is progress too
     // Pair with the previously-emitted tool-call by toolCallId.
     ChatState.applyToolResult(
       frame.toolCallId,

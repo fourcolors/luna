@@ -31,7 +31,7 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react"
 import {
-  starsFor, starPos, linkPath, constellationWidth, constellationLabel,
+  starsFor, starPos, linkPath, constellationWidth, constellationLabel, toolStats,
   STAR_PATH, STRIP_HEIGHT,
 } from "./constellation"
 import { createRoot } from "react-dom/client"
@@ -366,6 +366,10 @@ function Constellation({
 }: { merged: readonly MergedStep[]; lastToolIndex: number; settled: boolean }) {
   const stars = starsFor(merged, lastToolIndex)
   if (stars.length === 0) return null
+  // Counted over ALL top-level tool calls, not the drawn ones and not the merged
+  // row index: the strip caps at six, and a failure past the cap still has to be
+  // announced.
+  const { total, failed } = toolStats(merged, lastToolIndex)
   const w = constellationWidth(stars.length)
   return (
     <svg
@@ -374,7 +378,7 @@ function Constellation({
       height={STRIP_HEIGHT}
       viewBox={`0 0 ${w} ${STRIP_HEIGHT}`}
       role="img"
-      aria-label={constellationLabel(stars, lastToolIndex + 1)}
+      aria-label={constellationLabel(stars, total, failed)}
     >
       {stars.length > 1 && <path className="star-link" d={linkPath(stars.length)} />}
       {stars.map((s, i) => {
