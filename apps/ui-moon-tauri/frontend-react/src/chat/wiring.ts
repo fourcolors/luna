@@ -1038,6 +1038,20 @@ function installWiringChromeAndWindow(ctx, engines) {
               await bridge();
             })
             .catch((err) => Logger.warn(`hub-event ${p.name} failed:`, err));
+        } else if (p.name === 'machine-access-changed') {
+          // The settings.connection panel toggled machine access. Re-read the
+          // persisted value into State.localShell and re-announce the capability
+          // so the server sees the updated fullAccess without a reconnect.
+          try {
+            const stored = localStorage.getItem('luna_machine_access');
+            const fullAccess = stored !== 'off';
+            State.localShell.fullAccess = fullAccess;
+            LocalShell.recomputeEnabled();
+            LocalShell.updateUI();
+            LocalShell.sendCapability();
+          } catch (err) {
+            Logger.warn('hub-event machine-access-changed failed:', err);
+          }
         }
       }).catch(() => {});
     }
