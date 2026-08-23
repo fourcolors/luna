@@ -30,6 +30,10 @@
  * "paint text, then enhanceCodeBlocks(node)" sequencing exactly.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react"
+import {
+  starsFor, starPos, linkPath, constellationWidth, constellationLabel,
+  STAR_PATH, STRIP_HEIGHT,
+} from "./constellation"
 import { createRoot } from "react-dom/client"
 import { flushSync } from "react-dom"
 import {
@@ -350,6 +354,55 @@ function TextItem({ msgKey, turn, seg }: { msgKey: string; turn: Turn; seg: Text
   )
 }
 
+/**
+ * The star map that replaced `Worked for N steps`.
+ *
+ * Declarative on purpose: a settled constellation never moves, and the one
+ * animated thing - the newest star while the turn runs - is a CSS keyframe on
+ * `.star-new`. So there is no driver, no rAF and nothing to clean up.
+ */
+function Constellation({
+  merged, lastToolIndex, settled,
+}: { merged: readonly MergedStep[]; lastToolIndex: number; settled: boolean }) {
+  const stars = starsFor(merged, lastToolIndex)
+  if (stars.length === 0) return null
+  const w = constellationWidth(stars.length)
+  return (
+    <svg
+      className={settled ? "constellation rest" : "constellation"}
+      width={w}
+      height={STRIP_HEIGHT}
+      viewBox={`0 0 ${w} ${STRIP_HEIGHT}`}
+      role="img"
+      aria-label={constellationLabel(stars, lastToolIndex + 1)}
+    >
+      {stars.length > 1 && <path className="star-link" d={linkPath(stars.length)} />}
+      {stars.map((s, i) => {
+        const p = starPos(i)
+        // Only the newest star pulses, and only while the turn is live. A red
+        // star throbbing forever in scrollback would be unbearable.
+        const isNew = !settled && i === stars.length - 1
+        // SIZE IS THE SECOND ENCODING. A failure has to be spottable in
+        // scrollback without hunting, and an Agent star is a whole
+        // sub-investigation rather than one call. Colour alone is too quiet at
+        // this size - verified against the real stylesheet at true scale.
+        const scale = s.kind === "bad" ? 0.3 : s.kind === "agent" ? 0.26 : isNew ? 0.29 : 0.19
+        return (
+          <path
+            // eslint-disable-next-line react/no-array-index-key
+            key={i}
+            className={`star star-${s.kind}${isNew ? " star-new" : ""}`}
+            d={STAR_PATH}
+            transform={`translate(${p.x.toFixed(2)} ${p.y.toFixed(2)}) scale(${scale})`}
+          >
+            <title>{s.label}</title>
+          </path>
+        )
+      })}
+    </svg>
+  )
+}
+
 interface TimelineItemProps {
   msgKey: string
   turn: Turn
@@ -369,16 +422,11 @@ function TimelineItem({ msgKey, turn, merged, lastToolIndex, settled, onOpenAgen
     >
       <div className="timeline-summary">
         <span className="timeline-chevron">▸</span>
-        <span className="timeline-summary-label">
-          {settled ? `Worked for ${lastToolIndex + 1} step${lastToolIndex + 1 === 1 ? "" : "s"}` : "Working on it…"}
-        </span>
-        {!settled && (
-          <div className="typing-dots">
-            <div className="dot" />
-            <div className="dot" />
-            <div className="dot" />
-          </div>
-        )}
+        {/* The count is gone: the constellation carries it, plus the kinds and
+            the failure, which the number never did. The label stays only while
+            the turn is running, where "how long" is the live question. */}
+        {!settled && <span className="timeline-summary-label">Working on it…</span>}
+        <Constellation merged={merged} lastToolIndex={lastToolIndex} settled={settled} />
       </div>
       {!collapsed && (
         <div className="timeline-body">

@@ -311,10 +311,54 @@
   border-radius: 50%;
   background: var(--paper); /* occlude the vertical connector line */
 }
+/* Status colours were hardcoded hex in three places. Tokenised here with the
+   SAME values, so nothing moves, but the constellation and these dots can no
+   longer drift into two different reds meaning the same thing.
+
+   DEFINED ON :root, NOT ON .chat-messages/.timeline. Scoped to a container they
+   look fine until something renders outside it, and then `fill: var(--status-error)`
+   is invalid at computed-value time and falls back to the initial value - BLACK.
+   Silently. That is the same failure mode as the WKWebView var()-in-attribute
+   scar, reached by scoping instead of by engine support, and it is worth one
+   line to make impossible. */
+:root {
+  --status-pending: #fcd34d;
+  --status-ok: #6ee7b7;
+  --status-error: #fda4af;
+}
 .timeline-step-icon .tl-dot { width: 8px; height: 8px; border-radius: 50%; }
-.timeline-step-icon .tl-dot.pending { background: #fcd34d; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
-.timeline-step-icon .tl-dot.ok { background: #6ee7b7; }
-.timeline-step-icon .tl-dot.error { background: #fda4af; }
+.timeline-step-icon .tl-dot.pending { background: var(--status-pending); box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+.timeline-step-icon .tl-dot.ok { background: var(--status-ok); }
+.timeline-step-icon .tl-dot.error { background: var(--status-error); }
+
+/* ── The constellation. One star per top-level tool call, replacing the step
+   count in the collapsed summary. Colour is kind, size is significance, red is
+   failure - and red is the same red the step dots use, by construction. ── */
+.constellation { display: block; overflow: visible; flex: 0 0 auto; }
+/* Resting is STILL. Nothing animates on a settled turn, failures included. */
+.constellation.rest { opacity: 0.85; transition: opacity 0.18s ease; }
+.timeline:hover .constellation.rest { opacity: 1; }
+
+.star-link { fill: none; stroke: var(--ink-soft); stroke-width: 1; opacity: 0.24; }
+.star-read  { fill: var(--ink-soft); }
+.star-write { fill: var(--accent); }
+.star-run   { fill: var(--status-pending); }
+.star-web   { fill: var(--status-ok); }
+.star-agent { fill: var(--ink-soft); }
+.star-bad   { fill: var(--status-error); }
+.star { opacity: 0.75; }
+.star-bad { opacity: 1; }
+/* Agent and failure stars are drawn LARGER (see MessageList's `scale`), not
+   given a sixth and seventh colour: five tints is already the most a 12px strip
+   can carry, and a failure has to be spottable without hunting. */
+.star-new { opacity: 1; animation: starPulse 1.1s ease-in-out infinite; }
+@keyframes starPulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .star-new { animation: none; opacity: 1; }
+}
 .timeline-step-content { flex: 1; min-width: 0; padding-top: 1px; }
 .timeline-step-text { color: var(--ink-soft); font-size: 0.82rem; line-height: 1.45; }
 

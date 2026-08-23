@@ -144,8 +144,11 @@
        layer (::before) — so nothing re-rasters a filter every frame (which is
        costly in WKWebView). ── */
     .luna-face {
-      width: 38px;
-      height: 38px;
+      /* 44 not 38: the orbit rings reach 1.24x the body radius, and .luna-face-svg
+         is overflow:visible, so a tight box would paint them over the name
+         instead of clipping them. The moon itself still renders at ~34px. */
+      width: 44px;
+      height: 44px;
       flex: 0 0 auto;
       position: relative;
       pointer-events: none;
@@ -153,6 +156,20 @@
       transition: filter 0.5s ease, opacity 0.5s ease;
     }
     .luna-face-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+
+    /* The face is aria-hidden, so every state it expresses was announced
+       nowhere. This is the text half of it. Clipped rather than display:none
+       or visibility:hidden, both of which take it out of the a11y tree and
+       stop a live region ever firing. */
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      margin: -1px; padding: 0; border: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
 
     /* Listening "breath" glow — a cheap radial gradient (no filter) painted
        BEHIND the moon (::before is the first pseudo-child, so it sits under the
@@ -196,9 +213,14 @@
       animation: luna-blink 5.1s ease-in-out infinite;
     }
     .luna-eye-r { animation-delay: 40ms; }
+    /* A CLOSED EYE IS A WIDER DASH, NOT A SQUASHED ELLIPSE. Measured off the
+       reference: 0.447 wide closed against 0.236 open, a ratio of 1.89. Pure
+       squash keeps the width and reads as a glitch or a rendering fault;
+       widening reads as a blink. Still transform-only, so still compositor-
+       cheap and still safe in WKWebView. */
     @keyframes luna-blink {
-      0%, 90%, 100% { transform: scaleY(1); }
-      94%           { transform: scaleY(0.1); }
+      0%, 90%, 100% { transform: scaleY(1) scaleX(1); }
+      94%           { transform: scaleY(0.12) scaleX(1.89); }
     }
     .luna-eyeball { fill: #222a44; }
     .luna-spark   { fill: var(--moon-bright); opacity: 0.95; }
@@ -217,6 +239,104 @@
     .luna-mouth-o { fill: #222a44; opacity: 0; transform-box: fill-box; transform-origin: center; }
     .luna-mouth-frown { fill: none; stroke: #222a44; stroke-width: 3.2; stroke-linecap: round; opacity: 0; }
     .luna-sparkle { fill: var(--moon-bright); opacity: 0; transform-box: fill-box; transform-origin: 60px 60px; }
+
+
+    /* ── Orbit: the status channel ──────────────────────────────────────────
+       Rings sit AROUND the moon instead of eating into it, so the body stays
+       whole whatever the connection is doing - a broken ring says the link is
+       severed, not that Luna is unwell. Idle wears NO ring on purpose: one that
+       is always there cannot mean anything when it appears.
+       Transform and opacity only, and stroke-dasharray, all compositor-cheap. */
+    .luna-ring {
+      fill: none;
+      /* Brightened off the accent, not the accent itself: at 34px a pure
+         --accent hairline on dark paper was effectively invisible, and the
+         rings are now the PRIMARY status channel, not decoration. Verified at
+         true size before these numbers were chosen. */
+      stroke: color-mix(in oklab, var(--accent) 55%, var(--moon-bright));
+      stroke-linecap: round;
+      transform-box: fill-box;
+      transform-origin: center;
+      opacity: 0;                       /* every state opts in */
+      /* circumference is ~250 at these radii; the dash makes each ring an ARC,
+         and a rotating arc has an obvious direction. */
+      stroke-dasharray: 168 999;
+      stroke-width: 3.4;
+    }
+    .luna-ring-1 { transform: rotate(-18deg); }
+    .luna-ring-2 { transform: rotate(38deg); }
+    .luna-ring-3 { transform: rotate(82deg); }
+    @keyframes luna-orbit-cw  { to { transform: rotate(342deg); } }
+    @keyframes luna-orbit-ccw { to { transform: rotate(-322deg); } }
+    @keyframes luna-orbit-cw3 { to { transform: rotate(442deg); } }
+
+    /* thinking: one ring, slow, unhurried */
+    .luna-face[data-orbit="thinking"] .luna-ring-1 {
+      opacity: 0.92; animation: luna-orbit-cw 6.4s linear infinite;
+    }
+    /* long turn: three rings, faster, different tilts - "this is a big one" */
+    .luna-face[data-orbit="long"] .luna-ring-1 { opacity: 0.95; animation: luna-orbit-cw 3.2s linear infinite; }
+    .luna-face[data-orbit="long"] .luna-ring-2 { opacity: 0.72; animation: luna-orbit-ccw 4.1s linear infinite; }
+    .luna-face[data-orbit="long"] .luna-ring-3 { opacity: 0.55; animation: luna-orbit-cw3 2.6s linear infinite; }
+    /* connecting: a short arc sweeping like radar, looking for something */
+    .luna-face[data-orbit="connecting"] .luna-ring-1 {
+      opacity: 0.9; stroke-dasharray: 54 999; animation: luna-orbit-cw 1.5s linear infinite;
+    }
+    /* offline: broken into dashes and stopped. The link, not Luna. */
+    .luna-face[data-orbit="offline"] .luna-ring-1 {
+      opacity: 0.7; stroke-dasharray: 9 15; animation: none;
+    }
+    /* listening: one whole ring breathing outward */
+    .luna-face[data-orbit="listening"] .luna-ring-1 {
+      opacity: 0.6; stroke-dasharray: none; animation: luna-orbit-breathe 2.2s ease-in-out infinite;
+    }
+    @keyframes luna-orbit-breathe {
+      0%, 100% { transform: rotate(-18deg) scale(0.9);  opacity: 0.62; }
+      50%      { transform: rotate(-18deg) scale(1.12); opacity: 0.28; }
+    }
+
+    /* ── Idle flourish: a shooting star, rationed ────────────────────────────
+       Only after several minutes of genuine idle, never during a turn, and
+       never twice in a row. It is the one purely-delightful thing on the face,
+       so it has to stay rare enough to stay delightful. */
+    .luna-shoot { opacity: 0; pointer-events: none; }
+    .luna-shoot-trail {
+      fill: none; stroke: var(--moon-bright); stroke-width: 1.6;
+      stroke-linecap: round; opacity: 0.5;
+    }
+    .luna-shoot-star { fill: var(--moon-bright); }
+    .luna-face.is-shooting .luna-shoot { animation: luna-shoot 2.4s ease-in-out 1; }
+    @keyframes luna-shoot {
+      0%   { opacity: 0;    transform: translate(0, 0); }
+      12%  { opacity: 0.95; }
+      78%  { opacity: 0.95; }
+      100% { opacity: 0;    transform: translate(190px, 74px); }
+    }
+
+    /* ── Transients: events, not states. They interrupt the face for a fixed
+       time and then hand control back to the resolver. ── */
+    .luna-face[data-transient] { transition: filter 0.18s ease; }
+    .luna-face[data-transient="alert"] {
+      filter: drop-shadow(0 0 12px color-mix(in oklab, var(--accent) 85%, transparent));
+    }
+    .luna-face[data-transient="alert"] .luna-bob { animation: luna-alert-shake 0.42s ease-in-out 3; }
+    @keyframes luna-alert-shake {
+      0%, 100% { transform: translateX(0) rotate(0); }
+      25%      { transform: translateX(-1.6px) rotate(-3deg); }
+      75%      { transform: translateX(1.6px) rotate(3deg); }
+    }
+    .luna-face[data-transient="eclipse"] .luna-ring-1 {
+      opacity: 0.9; stroke-dasharray: none; stroke-width: 3.4; animation: none;
+      transform: rotate(0deg) scale(0.82);
+    }
+    .luna-face[data-transient="eclipse"] { filter: grayscale(0.4) drop-shadow(0 0 10px rgba(0,0,0,0.4)); }
+    .luna-face[data-transient="wow"] .luna-bob { animation: luna-wow 0.62s cubic-bezier(.2,.9,.3,1.2) 1; }
+    @keyframes luna-wow {
+      0%   { transform: scale(1, 1); }
+      18%  { transform: scale(1.07, 0.92); }
+      55%  { transform: scale(0.94, 1.1); }
+      100% { transform: scale(1, 1); }
+    }
 
     /* thinking / busy (a turn is in flight) — eyes drift up, a little "hmm". */
     .luna-face[data-state="busy"] .luna-eyes    { transform: translate(-2px, -3px); }
@@ -272,6 +392,11 @@
     @media (prefers-reduced-motion: reduce) {
       .luna-bob, .luna-eye, .luna-mouth-o, .luna-sparkle,
       .luna-face[data-state="listening"]::before,   /* listening breath glow */
+      .luna-ring,
+      .luna-shoot,
+      .luna-suggestion,
+      .luna-face[data-transient] .luna-bob,
+      .luna-face[data-orbit] .luna-ring,
       .luna-face[data-state] .luna-bob,
       .luna-face[data-state] .luna-mouth-o,
       .luna-face[data-state] .luna-sparkle { animation: none !important; }
@@ -2159,6 +2284,21 @@
                 <stop offset="100%" stop-color="#0f1225" stop-opacity="0"/>
               </radialGradient>
             </defs>
+            <!-- Orbit rings: the status channel. Arcs rather than full ellipses,
+                 so rotation reads as direction without needing a bead (which
+                 cannot be done in CSS on an ellipse without distorting it).
+                 Behind .luna-bob so they orbit around the moon, not with it. -->
+            <!-- Idle flourish. Off-canvas until a class is added; the SVG is
+                 overflow:visible so it can cross outside the 120 box. -->
+            <g class="luna-shoot" aria-hidden="true">
+              <path class="luna-shoot-trail" d="M-34 -14 L-6 -3"/>
+              <path class="luna-shoot-star" d="M0 -4 Q.6 -.6 4 0 Q.6 .6 0 4 Q-.6 .6 -4 0 Q-.6 -.6 0 -4Z"/>
+            </g>
+            <g class="luna-orbit">
+              <ellipse class="luna-ring luna-ring-1" cx="60" cy="60" rx="58" ry="17"/>
+              <ellipse class="luna-ring luna-ring-2" cx="60" cy="60" rx="52" ry="21"/>
+              <ellipse class="luna-ring luna-ring-3" cx="60" cy="60" rx="46" ry="14"/>
+            </g>
             <g class="luna-bob">
               <circle cx="60" cy="60" r="47" fill="url(#lunaBody)"/>
               <circle class="luna-body-shade" cx="60" cy="60" r="47" fill="url(#lunaShade)"/>
@@ -2197,6 +2337,7 @@
             </g>
           </svg>
         </div>
+        <span id="luna-face-status" class="sr-only" role="status" aria-live="polite"></span>
         <div class="chat-meta">
           <h2>Luna Companion</h2>
           <div class="chat-status-row">

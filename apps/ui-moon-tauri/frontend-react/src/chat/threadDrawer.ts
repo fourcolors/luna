@@ -89,6 +89,10 @@ export interface ThreadDrawerCtx {
   readonly ThreadCreateLogic: unknown
   readonly ThreadDrag: unknown
   readonly formatRelTime: (ts: number, now?: number) => string
+  /** Called after the viewed thread changes. Late-bound on purpose: the
+   *  suggestion engine is constructed after this one, so the drawer holds a
+   *  callback rather than the engine. */
+  readonly onThreadSwitch?: (threadId: string) => void
   readonly LunaThreadDrag: unknown
 }
 
@@ -100,7 +104,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
   const {
     Logger, DOM, State, WebSocketEngine, ChatState, ChatLoop, MoonFace,
     ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic,
-    ThreadDrag, formatRelTime, LunaThreadDrag,
+    ThreadDrag, formatRelTime, LunaThreadDrag, onThreadSwitch,
   } = ctx
 
   const ThreadCache = {
@@ -937,6 +941,12 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       // Face follows the viewed thread only; background busy shows on the
       // sidebar row, not the moon face.
       try { MoonFace.setBusy(!!State.busyThreads[id]); } catch (_) {}
+      // The suggestion chip is per-thread, and SuggestedActionsEngine.refresh()
+      // already implements that correctly - it was simply never called on a
+      // switch. The server only pushes a set-frame when the new thread HAS
+      // actions, so moving to one with none left the old chip, and the happy
+      // face, up for a thread that never proposed anything.
+      try { onThreadSwitch?.(id); } catch (_) {}
       if (WebSocketEngine.isConnected()) {
         WebSocketEngine.send({ type: 'subscribe', threadId: id });
         WebSocketEngine.startSubscribeTimeout();

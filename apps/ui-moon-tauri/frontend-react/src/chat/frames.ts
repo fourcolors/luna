@@ -368,6 +368,7 @@ export function createFrames(ctx: FramesCtx) {
     State.activeTurnId = null;
     ChatState.dropPendingAssistant();
     MoonFace.setBusy(false);
+    MoonFace.pulse('eclipse');
     ChatEngine.appendMessage(
       'assistant',
       `⚠️ ${frame && frame.message ? frame.message : 'Could not create the thread. Please try again.'}`
@@ -469,6 +470,9 @@ export function createFrames(ctx: FramesCtx) {
         State.activeTurnId = null;
         ChatState.appendDelivered(frame.message);
         ChatLoop.flush();
+        // A delivered background result IS a complete turn, so the face stops
+        // here rather than waiting for a turn-complete that never comes.
+        MoonFace.setBusy(false);
       }
       // Raise an OS notification even for a non-active thread: this result
       // arrived from a background/scheduled task, so the user is likely not
@@ -479,7 +483,11 @@ export function createFrames(ctx: FramesCtx) {
     if (!sameThread) return;   // streamed done for another thread -> ignore
     // Finalize the active turn. flush() forces an immediate render so a
     // still-pending rAF frame can't overwrite the closed state.
-    WebSocketEngine.clearTurnTimeout();
+    // RE-ARM, do not clear. `assistant-done` fires once per intermediate step,
+    // so the turn is still running; clearing here removed the only backstop and
+    // left the face thinking forever if turn-complete never arrived. Re-arming
+    // keeps a 90s guard alive and pushes it out on every sign of progress.
+    WebSocketEngine.startTurnTimeout();
     const doneTurnId = frame.turnId || State.activeTurnId;
     State.activeTurnId = null;
     ChatState.finishTurn(
@@ -502,6 +510,7 @@ export function createFrames(ctx: FramesCtx) {
     ChatState.failTurn(errTurnId, frame.error && frame.error.message);
     ChatLoop.flush();
     MoonFace.setBusy(false);   // turn ended (error) → face stops thinking
+    MoonFace.pulse('eclipse');
   });
 
   MoonFrames.register('turn-complete', (frame) => {
@@ -559,6 +568,9 @@ export function createFrames(ctx: FramesCtx) {
   });
 
   MoonFrames.register('survey-request', (frame) => {
+    // Reaches the face at all for the first time: a survey is an explicit
+    // "I need you", and the avatar used to show nothing for it.
+    MoonFace.pulse('alert');
     // Phase 3 D3: alignment check-in pushed by the server. Hand to
     // SurveyEngine which paints the docked user-ask-panel; the user
     // submits with a Submit click (sends `survey-response`) or
@@ -572,6 +584,9 @@ export function createFrames(ctx: FramesCtx) {
 
 
   MoonFrames.register('secret-request', (frame) => {
+    // The highest-stakes prompt in the app - the agent wants a credential -
+    // and until now the face carried on as if nothing had happened.
+    MoonFace.pulse('alert');
     // Agent-summoned secure secret entry. SecretPromptEngine paints the
     // docked secret-prompt-panel; the user submits (sends `secret-result`
     // with the secret) or cancels (sends `secret-result` cancelled:true).

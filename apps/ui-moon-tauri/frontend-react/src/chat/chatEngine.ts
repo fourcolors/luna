@@ -224,6 +224,11 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       State.activeThreadId = null;
       State.activeTurnId = null;
       WebSocketEngine.clearTurnTimeout();
+      // ABANDONING A TURN IS A CLEAR. Without this the face sticks on "busy"
+      // forever: activeThreadId is now null, so the old thread's turn-complete
+      // early-returns on the threadId mismatch before it reaches setBusy(false),
+      // and the watchdog that would have caught it was just cleared above.
+      MoonFace.setBusy(false);
       State.pendingUserMessage = null;
       // The composer draft and staged attachments deliberately survive the
       // switch - they carry into the fresh thread, ready to send.

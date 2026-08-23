@@ -824,7 +824,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 1 step')
+      // The count is gone: the constellation carries it. One star per top-level
+      // tool call, resting (still) because the turn settled.
+      expect(tl.querySelector('.timeline-summary-label')).toBeNull()
+      expect(tl.querySelectorAll('.constellation.rest .star').length).toBe(1)
       expect(tl.querySelector('.typing-dots')).toBeNull() // no perpetual spinner
       expect(chat.textContent).not.toContain('Files: a, b, c.')
       // Reducer kept just the tool segment (no spurious text segment).
@@ -1328,8 +1331,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().handleFrame({ type: 'turn-complete', threadId: 't1' })
       const tl = chat.querySelector('.timeline') as HTMLElement
       expect(tl.classList.contains('collapsed')).toBe(true)
-      // Work = [text 'one ', tool] = 2 steps.
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 2 steps')
+      // A STAR IS A TOOL CALL, not a timeline row. The old pill counted rows,
+      // so this turn read as "2 steps" because the leading narration text
+      // counted as one. Work here is [text 'one ', tool Read] = one actual
+      // tool call, so one star. Deliberate: narration is not work.
+      expect(tl.querySelector('.timeline-summary-label')).toBeNull()
+      expect(tl.querySelectorAll('.constellation.rest .star').length).toBe(1)
     })
 
     it('timeline: clicking the summary toggles collapse', () => {
@@ -1408,8 +1415,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.querySelectorAll('.timeline').length).toBe(1)
       tl = chat.querySelector('.timeline') as HTMLElement
       expect(tl.classList.contains('collapsed')).toBe(true)
-      // Work = [textA, toolA, textB, toolB] = 4 steps.
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 4 steps')
+      // Rows are [textA, toolA, textB, toolB]; tool calls are [Read, Bash].
+      // The old pill said "4 steps"; the constellation shows the two tools.
+      expect(tl.querySelector('.timeline-summary-label')).toBeNull()
+      expect(tl.querySelectorAll('.constellation.rest .star').length).toBe(2)
+      // ...and it tints them by what they did, which the count never could.
+      expect(tl.querySelector('.star-read')).not.toBeNull()
+      expect(tl.querySelector('.star-run')).not.toBeNull()
       // The final answer is the bubble below the pill.
       const answer = chat.children[chat.children.length - 1] as HTMLElement
       expect(answer.className).toBe('msg assistant')
@@ -1429,7 +1441,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const tl = chat.querySelector('.timeline') as HTMLElement
       expect(tl.classList.contains('collapsed')).toBe(false)
       expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
-      expect(tl.querySelector('.typing-dots')).not.toBeNull() // still in flight
+      // The dots are gone; the live constellation is the in-flight signal, and
+      // it must NOT carry .rest while the turn is still running.
+      expect(tl.querySelector('.constellation')).not.toBeNull()
+      expect(tl.querySelector('.constellation.rest')).toBeNull()
+      expect(tl.querySelector('.star-new')).not.toBeNull()
 
       // Step 2 begins under a new turnId — still ONE timeline, still expanded.
       M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'More. ' })
@@ -1497,7 +1513,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(tls.length).toBe(2)
       expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
-      expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
+      expect(chat.querySelector('.timeline .timeline-summary-label')).toBeNull()
+      expect(chat.querySelector('.timeline .constellation.rest')).not.toBeNull()
     })
   })
 
