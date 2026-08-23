@@ -1112,12 +1112,12 @@ readiness_ok() {
             return 0
           fi
           READINESS_DETAIL="/readyz did not report \"mode\":\"normal\" (still booting or in setup-mode; http=$rcode)"
-          if printf '%s' "$readyz" | grep -q '"mode":"normal"'; then
+          if [[ "$readyz" == *'"mode":"normal"'* ]]; then  # builtin, not printf|grep -q: pipefail + an early-exiting reader raced on CI (readiness-parity)
             if [[ -z "$EXPECTED_BUILD_SHA" ]]; then
               return 0
             fi
-            local build_sha
-            build_sha="$(printf '%s' "$readyz" | sed -n 's/.*"buildSha":"\([0-9a-fA-F]*\)".*/\1/p' | head -1)"
+            local build_sha build_sha_re='"buildSha":"([0-9a-fA-F]*)"'  # no sed|head pipeline either; pattern in a var for bash-3.2 =~
+            build_sha=""; [[ "$readyz" =~ $build_sha_re ]] && build_sha="${BASH_REMATCH[1]}"
             if [[ -n "$build_sha" && ( "$EXPECTED_BUILD_SHA" == "$build_sha"* || "$build_sha" == "$EXPECTED_BUILD_SHA"* ) ]]; then
               return 0
             fi
