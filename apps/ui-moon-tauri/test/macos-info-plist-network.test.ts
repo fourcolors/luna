@@ -21,8 +21,10 @@
  * for the com.luna.moon identity.
  */
 import { describe, it, expect } from "vitest"
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import * as path from "node:path"
+import * as os from "node:os"
+import { execFileSync } from "node:child_process"
 
 const root = path.resolve(__dirname, "..")
 const plist = readFileSync(path.join(root, "src-tauri", "Info.plist"), "utf8")
@@ -36,6 +38,7 @@ const conf = JSON.parse(
       signingIdentity: string | null
       entitlements: string
       hardenedRuntime: boolean
+      minimumSystemVersion: string
     }
   }
 }
@@ -131,5 +134,74 @@ describe("macOS signing — Info.plist must be codesign-bound", () => {
     // The assertion guards that the verify table still names a concrete ws://
     // dial target — not which host that target happens to be.
     expect(rebuildDoc).toContain("ws://luna-server:4753/ui")
+  })
+})
+
+/**
+ * The CI release path rewrites tauri.conf.json before building. It used to
+ * REPLACE bundle.macOS wholesale with {signingIdentity, minimumSystemVersion},
+ * which silently dropped hardenedRuntime and entitlements — so every released
+ * build shipped `entitlements=none` and lost
+ * com.apple.security.device.audio-input, breaking mic/voice in shipped Moon
+ * while local `bun run install:macos` stayed fine. Verified on-Mac against the
+ * released 0.0.73: `codesign -d --entitlements` returned empty.
+ *
+ * This suite EXECUTES the workflow's real rewrite script against a copy of the
+ * real config rather than string-matching it, so any future regression is
+ * caught regardless of how the script is written.
+ */
+describe("release-moon.yml CI signing rewrite", () => {
+  const workflow = readFileSync(
+    path.resolve(root, "..", "..", ".github", "workflows", "release-moon.yml"),
+    "utf8",
+  )
+
+  /** The script has no single quotes, so matching to the closing quote is safe. */
+  function extractRewriteScript(): string {
+    const m = workflow.match(/node -e '([^']*)'/)
+    expect(m, "release-moon.yml must still rewrite the config via node -e").toBeTruthy()
+    return m![1]
+  }
+
+  function runRewriteOnRealConfig(): typeof conf {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "moon-ci-sign-"))
+    const target = path.join(dir, "tauri.conf.json")
+    writeFileSync(
+      target,
+      readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"),
+    )
+    execFileSync("node", ["-e", extractRewriteScript()], {
+      cwd: dir,
+      stdio: "pipe",
+    })
+    return JSON.parse(readFileSync(target, "utf8"))
+  }
+
+  it("forces ad-hoc signing (that is the step's actual job)", () => {
+    expect(runRewriteOnRealConfig().bundle.macOS.signingIdentity).toBe("-")
+  })
+
+  it("preserves entitlements — dropping it shipped a build with no mic", () => {
+    const out = runRewriteOnRealConfig()
+    expect(out.bundle.macOS.entitlements).toBe("entitlements.plist")
+    expect(
+      readFileSync(path.join(root, "src-tauri", "entitlements.plist"), "utf8"),
+    ).toContain("com.apple.security.device.audio-input")
+  })
+
+  it("preserves hardenedRuntime", () => {
+    expect(runRewriteOnRealConfig().bundle.macOS.hardenedRuntime).toBe(true)
+  })
+
+  it("preserves minimumSystemVersion (whisper.cpp needs >= 10.15)", () => {
+    expect(runRewriteOnRealConfig().bundle.macOS.minimumSystemVersion).toBe(
+      conf.bundle.macOS.minimumSystemVersion,
+    )
+  })
+
+  it("does not drop any macOS bundle key the committed config declares", () => {
+    const before = Object.keys(conf.bundle.macOS).sort()
+    const after = Object.keys(runRewriteOnRealConfig().bundle.macOS).sort()
+    expect(after).toEqual(before)
   })
 })
