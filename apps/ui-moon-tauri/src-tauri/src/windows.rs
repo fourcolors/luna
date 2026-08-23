@@ -326,6 +326,7 @@ const HUB_EVENT_NAMES: &[&str] = &[
     "fresh-thread",
     "profile-changed",
     "connection-changed",
+    "machine-access-changed",
     "open-wizard",
 ];
 
@@ -342,11 +343,20 @@ const HUB_EVENT_NAMES: &[&str] = &[
 ///   - "fresh-thread": UNCHANGED targeting. The chat window owns the thread
 ///     (Phase 4); the hub is the fallback opener when chat is closed. This
 ///     semantics must not move.
+///   - "machine-access-changed": fans out like the connection events, and for
+///     the same reason - every window carries its own LocalShell capability
+///     announcement, so a machine-access flip must reach all of them.
+///     (Until this arm existed the name was not even in HUB_EVENT_NAMES, so
+///     the settings toggle's invoke had been silently REJECTED since it
+///     shipped - wiring.ts's handler was unreachable and only the flipping
+///     window ever re-read the value. Found by the #598 review.)
 ///   - anything else (today: "open-wizard"): UNCHANGED, hub-owned, "main" only.
 fn hub_event_targets(name: &str, chat_open: bool, open_labels: &[String]) -> Vec<String> {
     match name {
         "fresh-thread" if chat_open => vec!["panel-chat".to_string()],
-        "profile-changed" | "connection-changed" => open_labels.to_vec(),
+        "profile-changed" | "connection-changed" | "machine-access-changed" => {
+            open_labels.to_vec()
+        }
         _ => vec!["main".to_string()],
     }
 }
@@ -2179,7 +2189,7 @@ mod tests {
     }
 
     // ── hub_event_targets (Step 1c fan-out) ──────────────────────────────────
-    // The four HUB_EVENT_NAMES x chat_open true/false x a label set spanning
+    // The five HUB_EVENT_NAMES x chat_open true/false x a label set spanning
     // main, panel-chat, a parallel chat instance (panel-chat-abc123), and a
     // non-chat panel (panel-vault) - the exact gap this plan closes (Step 0's
     // "What is missing" #2: parallel chat panels and the twelve panel kinds
@@ -2192,6 +2202,23 @@ mod tests {
             "panel-chat-abc123".to_string(),
             "panel-vault".to_string(),
         ]
+    }
+
+    #[test]
+    fn hub_event_targets_machine_access_changed_reaches_every_open_window() {
+        // Every window announces its own LocalShell capability, so a
+        // machine-access flip must fan out exactly like the connection events.
+        // This name was MISSING from HUB_EVENT_NAMES until the #598 review -
+        // the settings toggle's invoke was silently rejected - so this test is
+        // the tripwire against that regression.
+        let labels = open_label_set();
+        for chat_open in [true, false] {
+            let targets = hub_event_targets("machine-access-changed", chat_open, &labels);
+            assert_eq!(
+                targets, labels,
+                "machine-access-changed must fan out to every open window (chat_open={chat_open})"
+            );
+        }
     }
 
     #[test]
