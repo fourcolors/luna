@@ -34,14 +34,14 @@ luna doctor — profile=stable url=ws://<your-tailscale-ip>:4753/ui
 [ OK ] L4 CHAT   active chat probe succeeded (assistant responded)
 [ OK ] PASS — connection healthy; `luna chat` should work        (exit 0)
 ```
-NOTE — **a bare MagicDNS short name (e.g. `ws://jax-box:4753/ui`) ALSO prints a
+NOTE — **a bare MagicDNS short name (e.g. `ws://luna-server:4753/ui`) ALSO prints a
 transport WARN** and is otherwise identical:
 ```
-[WARN] L1 REACH  'jax-box' is not loopback/Tailscale — this plaintext ws:// connection (token in URL) relies on Tailscale/a private interface for security
+[WARN] L1 REACH  'luna-server' is not loopback/Tailscale — this plaintext ws:// connection (token in URL) relies on Tailscale/a private interface for security
 ```
 This is benign and exit-0: doctor can't confirm a *dotless* name is a tailnet
 address (it could be a LAN/`/etc/hosts` name), so it warns conservatively. If
-`jax-box` is your MagicDNS name the connection IS over Tailscale — use the `100.x`
+`luna-server` is your MagicDNS name the connection IS over Tailscale — use the `100.x`
 IP or full `*.ts.net` name to silence it.
 
 Failure modes it distinguishes (each tested live):
@@ -57,7 +57,7 @@ catches a credential that lapsed *after* boot.
 
 ## 2. `luna pair` — point CLI + Moon at a server in one command
 ```
-bun run src/luna.ts pair --url ws://jax-box:4753/ui --token <master-token>
+bun run src/luna.ts pair --url ws://luna-server:4753/ui --token <master-token>
 # bare `luna pair` → prompts for url + token
 ```
 Writes BOTH `~/.luna/.env` (LUNA_STABLE_WS_URL/_UI_WS_TOKEN, mode 600) and
@@ -136,7 +136,7 @@ temporarily rename a frame `type` literal in `packages/ui-ws/src/protocol.ts` (e
 ## 6. Verifying a live master deploy (the dogfood pattern)
 Stable uses the one-minute host-side guardian with connect-aware deferral. The
 manual apply command remains `luna-autodeploy stable`. After any deploy:
-1. `ssh root@jax-box` then check the deploy, not the host unit - the host `luna-chat-server.service`
+1. `ssh root@luna-server` then check the deploy, not the host unit - the host `luna-chat-server.service`
    is INACTIVE because stable runs inside the `luna-stable` incus container (host `:4753` is an
    incusd proxy). Confirm `luna-guardian-stable.timer` is active and the legacy
    timer is absent.
@@ -144,7 +144,7 @@ manual apply command remains `luna-autodeploy stable`. After any deploy:
    --expected-sha <full-master-sha> --min-cycles 2`. This is the host acceptance
    gate; it checks exact SHA, watchdog supervision, transaction state, timer
    handoff, `luna-doctor`, and two healthy cycles.
-3. **Authoritative client check — drive a real turn:** `luna doctor --url ws://jax-box:4753/ui --token <master-token>` → L1–L4 OK (use the `100.x` IP or full `*.ts.net` name for a fully-green run), run it 2–3× (cold start can WARN on L4 the first time).
+3. **Authoritative client check — drive a real turn:** `luna doctor --url ws://luna-server:4753/ui --token <master-token>` → L1–L4 OK (use the `100.x` IP or full `*.ts.net` name for a fully-green run), run it 2–3× (cold start can WARN on L4 the first time).
    This is what verified the dev→master promotion deploy — `/healthz` was 200 even though
    `bun install --frozen-lockfile` warned; only doctor's L4 real chat turn proved the server actually works.
 

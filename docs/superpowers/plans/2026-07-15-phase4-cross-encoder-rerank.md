@@ -36,7 +36,7 @@ with qwen3-reranker-0.6b.
   threshold must be reported.
 - D5. Rank-band blending (QMD style) is OUT of scope until the bench shows
   pure cross-encoder scores lose to blended scores. Measure first.
-- D6. Production/deploy wiring (systemd unit for the sidecar on jax-box) is
+- D6. Production/deploy wiring (systemd unit for the sidecar on luna-server) is
   Phase 5. Phase 4 ends at: works locally, bench-proven, variance-proven,
   real-DB-validated on a COPY.
 

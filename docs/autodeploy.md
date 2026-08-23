@@ -1,8 +1,8 @@
 # Auto-deploy (`luna-autodeploy`)
 
 `scripts/luna-autodeploy` is the pull-based deploy **trigger** that closes the
-"merged PR → running server" gap. GitHub can't reach jax-box (Tailscale) and CI
-can't reach jax-box, so the box polls GitHub: a systemd timer checks the upstream
+"merged PR → running server" gap. GitHub can't reach luna-server (Tailscale) and CI
+can't reach luna-server, so the box polls GitHub: a systemd timer checks the upstream
 branch and, when it has **moved**, runs the existing `scripts/luna-update-server`
 (fetch → `reset --hard` → conditional `bun install` → restart → `/healthz`+`/readyz`
 readiness probe → **auto-rollback** on failure).
@@ -210,7 +210,7 @@ From another Tailscale machine, run the portable probe under cron or an alerting
 runner (nonzero means page):
 
 ```sh
-scripts/luna-guardian-remote-check root@jax-box stable \
+scripts/luna-guardian-remote-check root@luna-server stable \
   --expected-sha <full-sha> --max-age 180
 ```
 

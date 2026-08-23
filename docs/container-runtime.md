@@ -41,15 +41,15 @@ Recommended stable/dev layout:
 The dev container exposes:
 
 ```text
-jax-box:5753 -> luna-dev:4753  WebSocket server
-jax-box:5754 -> luna-dev:4754  control server
+luna-server:5753 -> luna-dev:4753  WebSocket server
+luna-server:5754 -> luna-dev:4754  control server
 ```
 
 The stable runtime normally exposes:
 
 ```text
-jax-box:4753 -> stable WebSocket server
-jax-box:4754 -> stable control server
+luna-server:4753 -> stable WebSocket server
+luna-server:4754 -> stable control server
 ```
 
 ## Guardian Control Plane
@@ -82,14 +82,14 @@ scripts/luna-container-create \
   --branch master \
   --repo-path /root/luna/stable/repo \
   --state-path /root/.luna \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 6753 \
   --host-control-port 6754 \
   --skip-clone
 
 # 2. Verify candidate without touching the host stable service.
 curl -fsS http://127.0.0.1:6753/healthz
-luna chat --url ws://jax-box.local:6753/ui
+luna chat --url ws://luna-server.local:6753/ui
 
 # 3. Cut over the stable ports during a short maintenance window.
 systemctl --user status luna-chat-server.service --no-pager || true
@@ -114,7 +114,7 @@ incus restart luna-stable
 
 # 4. Verify stable after cutover.
 curl -fsS http://127.0.0.1:4753/healthz
-curl -fsS http://jax-box.local:4753/healthz
+curl -fsS http://luna-server.local:4753/healthz
 ```
 
 Rollback restores the previous host stable service and removes the stable
@@ -185,7 +185,7 @@ incus init images:ubuntu/24.04/cloud luna-dev \
 ```
 
 `security.nesting=true` is required for the current Bun/Vitest/server behavior
-inside unprivileged Incus containers on jax-box. The containers stay
+inside unprivileged Incus containers on luna-server. The containers stay
 unprivileged; host bind mounts use `shift=true`.
 
 Cloud-init is set before first start so the container can run

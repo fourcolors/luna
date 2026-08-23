@@ -1,6 +1,6 @@
-# jax-box Deployment
+# luna-server Deployment
 
-This is the intended operator flow for the Luna stable/dev split on jax-box.
+This is the intended operator flow for the Luna stable/dev split on luna-server.
 
 Branch policy:
 
@@ -19,13 +19,13 @@ On the MacBook:
 
 ```bash
 bash install.sh \
-  --stable-url ws://jax-box:4753/ui \
-  --stable-fallback-url ws://jax-box.local:4753/ui \
-  --dev-url ws://jax-box:5753/ui \
-  --dev-fallback-url ws://jax-box.local:5753/ui \
+  --stable-url ws://luna-server:4753/ui \
+  --stable-fallback-url ws://luna-server.local:4753/ui \
+  --dev-url ws://luna-server:5753/ui \
+  --dev-fallback-url ws://luna-server.local:5753/ui \
   --enable-ssh-recovery \
-  --ssh-host jax-box \
-  --fallback-ssh-host jax-box.local \
+  --ssh-host luna-server \
+  --fallback-ssh-host luna-server.local \
   --stable-token '<stable-ui-ws-token>' \
   --dev-token '<dev-ui-ws-token>'
 ```
@@ -49,7 +49,7 @@ Stable runs from:
 Install or repair the service:
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 cd /root/luna/stable/repo
 git pull --ff-only origin master
 incus exec luna-stable -- /root/luna/scripts/luna-server-install \
@@ -77,10 +77,10 @@ Luna can use a real local embedding model for memory by pointing the container
 at an Ollama daemon on the host. This keeps model downloads out of each
 container and lets stable/dev share the same embedding service.
 
-On jax-box:
+On luna-server:
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 ollama pull embeddinggemma
 
 INCUS_GW="$(incus exec luna-dev -- ip route | awk '/default/ {print $3; exit}')"
@@ -131,7 +131,7 @@ Optional Ollama probe knobs (written to `.env` as `LUNA_OLLAMA_*`):
 Create the dev container:
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 cd /root/luna/stable/repo
 scripts/luna-container-create \
   --profile dev \
@@ -140,7 +140,7 @@ scripts/luna-container-create \
   --branch <feature-branch-or-tag> \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 5753 \
   --host-control-port 5754 \
   --embedder ollama \
@@ -176,11 +176,11 @@ git push origin <feature-branch>
 gh pr create --base master --fill   # review, then squash-merge
 ```
 
-Update the dev runtime on jax-box. Point it at whatever ref you want to stage —
+Update the dev runtime on luna-server. Point it at whatever ref you want to stage —
 a feature branch or a `moon-v*` tag (substitute `<feature-branch-or-tag>` below):
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 cd /root/luna/dev/repo
 git fetch origin
 git checkout <feature-branch-or-tag>
@@ -204,12 +204,12 @@ PR and squash-merging it. There is no `dev`→`master` promotion:
 gh pr create --base master --fill   # review, then squash-merge
 ```
 
-Promote stable on jax-box. Stable normally updates through the guardian; this
+Promote stable on luna-server. Stable normally updates through the guardian; this
 drives the same connect-aware rollback path immediately and then proves live
 completion:
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 cd /root/luna/stable/repo
 git fetch origin master
 EXPECTED_SHA="$(git rev-parse origin/master)"
@@ -227,7 +227,7 @@ journaling, rollback, exact-SHA readiness, and the acceptance gate.
 If stable needs to roll back:
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 cd /root/luna/stable/repo
 git log --oneline -5
 git checkout <known-good-commit>

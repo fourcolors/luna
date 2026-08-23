@@ -46,13 +46,15 @@ bash install.sh \
 Tokens are written with `0600` permissions and are never printed by dry-runs.
 
 By default, the client installer writes Tailscale-style primary URLs and
-LAN-style fallback URLs:
+LAN-style fallback URLs (substitute your actual server hostname — the shipped
+`install.sh` default is `jax-box` / `jax-box.local`; `luna-server` is the
+neutral placeholder used in these docs):
 
 ```bash
-LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
-LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box.local:4753/ui
-LUNA_DEV_WS_URL=ws://jax-box:5753/ui
-LUNA_DEV_FALLBACK_WS_URL=ws://jax-box.local:5753/ui
+LUNA_STABLE_WS_URL=ws://luna-server:4753/ui
+LUNA_STABLE_FALLBACK_WS_URL=ws://luna-server.local:4753/ui
+LUNA_DEV_WS_URL=ws://luna-server:5753/ui
+LUNA_DEV_FALLBACK_WS_URL=ws://luna-server.local:5753/ui
 ```
 
 Use explicit URLs for another host:
@@ -71,8 +73,8 @@ If the client should also try SSH-based restart/repair, opt in explicitly:
 bash install.sh \
   --enable-ssh-recovery \
   --ssh-user root \
-  --ssh-host jax-box \
-  --fallback-ssh-host jax-box.local
+  --ssh-host luna-server \
+  --fallback-ssh-host luna-server.local
 ```
 
 ## Linux Server
@@ -126,7 +128,7 @@ scripts/luna-container-create \
   --branch <feature-branch-or-tag> \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 5753 \
   --host-control-port 5754 \
   --token '<dev-ui-ws-token>'
@@ -137,8 +139,8 @@ The dev container uses:
 ```text
 /root/luna/dev/repo         host repo checkout mounted to /root/luna
 /root/.luna-dev             host runtime state mounted to /root/.luna
-jax-box:5753 -> luna-dev:4753  WebSocket server
-jax-box:5754 -> luna-dev:4754  control server
+luna-server:5753 -> luna-dev:4753  WebSocket server
+luna-server:5754 -> luna-dev:4754  control server
 ```
 
 Inside the container, runtime state is addressed through container-local paths
@@ -163,7 +165,7 @@ scripts/luna-container-create \
   --branch master \
   --repo-path /root/luna/stable/repo \
   --state-path /root/.luna \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 6753 \
   --host-control-port 6754 \
   --skip-clone
@@ -174,8 +176,8 @@ The stable candidate uses:
 ```text
 /root/luna/stable/repo      host repo checkout mounted to /root/luna
 /root/.luna                 host runtime state mounted to /root/.luna
-jax-box:6753 -> luna-stable:4753  candidate WebSocket server
-jax-box:6754 -> luna-stable:4754  candidate control server
+luna-server:6753 -> luna-stable:4753  candidate WebSocket server
+luna-server:6754 -> luna-stable:4754  candidate control server
 ```
 
 After verification, use the stable cutover runbook in
@@ -215,6 +217,6 @@ bash -n install.sh scripts/luna-server-install scripts/luna-container-create
 Runtime health checks:
 
 ```bash
-curl -fsS http://jax-box:4753/healthz
-curl -fsS http://jax-box:5753/healthz
+curl -fsS http://luna-server:4753/healthz
+curl -fsS http://luna-server:5753/healthz
 ```

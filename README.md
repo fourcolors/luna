@@ -178,7 +178,7 @@ Server and container setup are separate, explicit operations:
 
 - [Install guide](./docs/install.md)
 - [Incus container runtime](./docs/container-runtime.md)
-- [jax-box deployment](./docs/jax-box-deploy.md)
+- [luna-server deployment](./docs/server-deploy.md)
 
 The clone includes scripts for Linux hosts:
 
@@ -204,8 +204,10 @@ Luna is designed to run with one local client and two server runtimes:
 
 | Runtime | Purpose | Client command | Primary URL | Fallback URL |
 |---------|---------|----------------|-------------|--------------|
-| Stable | The agent you actually use day to day | `luna chat` | `ws://jax-box:4753/ui` | `ws://jax-box.local:4753/ui` |
-| Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://jax-box:5753/ui` | `ws://jax-box.local:5753/ui` |
+| Stable | The agent you actually use day to day | `luna chat` | `ws://luna-server:4753/ui` | `ws://luna-server.local:4753/ui` |
+| Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://luna-server:5753/ui` | `ws://luna-server.local:5753/ui` |
+
+> **Note:** `luna-server` is the neutral placeholder used throughout this documentation. The `install.sh` installer still defaults to `jax-box` / `jax-box.local` as the shipped hostname — pass `--stable-url` / `--stable-fallback-url` (and the equivalent `--dev-*` flags) to supply your actual server hostname.
 
 Stable tracks the `master` branch. There is no long-lived `dev` branch — Luna is
 trunk-based: all work lands on `master` via PRs. The dev runtime is an optional
@@ -215,11 +217,11 @@ before it reaches stable. See [Branching & releases](#branching--releases).
 The terminal client reads profile settings from `~/.luna/.env`:
 
 ```bash
-LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
-LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box.local:4753/ui
+LUNA_STABLE_WS_URL=ws://luna-server:4753/ui
+LUNA_STABLE_FALLBACK_WS_URL=ws://luna-server.local:4753/ui
 LUNA_STABLE_UI_WS_TOKEN=<stable-token>
-LUNA_DEV_WS_URL=ws://jax-box:5753/ui
-LUNA_DEV_FALLBACK_WS_URL=ws://jax-box.local:5753/ui
+LUNA_DEV_WS_URL=ws://luna-server:5753/ui
+LUNA_DEV_FALLBACK_WS_URL=ws://luna-server.local:5753/ui
 LUNA_DEV_UI_WS_TOKEN=<dev-token>
 ```
 
@@ -231,7 +233,7 @@ Luna uses Incus system containers for host-like Linux runtimes. This gives each
 runtime its own systemd service, filesystem state, Claude Code config, and Bun
 environment without turning the whole machine into an OpenStack deployment.
 
-The recommended jax-box layout is:
+The recommended luna-server layout is:
 
 ```text
 /root/luna/stable/repo      stable repo checkout
@@ -250,11 +252,11 @@ Inside a container, the mounted paths are always:
 The dev container maps host ports to container ports:
 
 ```text
-jax-box:5753 -> luna-dev:4753  WebSocket server
-jax-box:5754 -> luna-dev:4754  control server
+luna-server:5753 -> luna-dev:4753  WebSocket server
+luna-server:5754 -> luna-dev:4754  control server
 ```
 
-Create the dev container from a clone on jax-box. Point `--branch` at whatever
+Create the dev container from a clone on luna-server. Point `--branch` at whatever
 ref you want to stage — a feature branch or a `moon-v*` release tag (it no longer
 tracks a `dev` branch):
 
@@ -266,7 +268,7 @@ scripts/luna-container-create \
   --branch <feature-branch-or-tag> \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 5753 \
   --host-control-port 5754 \
   --token '<dev-ui-ws-token>'
@@ -355,7 +357,7 @@ rollback path and prove live completion - do not run raw `git pull` +
 exact-SHA readiness, and the acceptance gate:
 
 ```bash
-ssh root@jax-box
+ssh root@luna-server
 cd /root/luna/stable/repo
 git fetch origin master
 EXPECTED_SHA="$(git rev-parse origin/master)"
@@ -366,7 +368,7 @@ scripts/luna-guardian adopt stable
 ```
 
 If active sessions defer the update, leave the promotion pending and retry when
-idle. See [jax-box deploy](docs/jax-box-deploy.md) for the full runbook.
+idle. See [luna-server deploy](docs/server-deploy.md) for the full runbook.
 
 ### Adding accounts
 

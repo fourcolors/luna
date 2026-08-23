@@ -76,7 +76,7 @@ The setup UI + embedded terminal are gated by the static `UI_WS_TOKEN` (transpor
 
 - **Pure, node-runnable:** `decideMode(readiness) → 'setup'|'normal'` (the gate, given a readiness result) and the readiness evaluator with injected `auth status`/secret-resolve results. Transition triggers as pure logic: login-success → "restart" signal; lapse-detected-from-normal → "restart" signal (assert setup-mode never self-restarts).
 - **Impure** terminal bridge tested with a **faked pty/`claude`** (assert: bytes stream both ways, token-gated, seeds the account + emits the restart signal on `loggedIn:true`).
-- **MANDATORY real-box acceptance** (the mocks cover everything except the risky bits): on jax-box, exercise the full cycle against `luna-dev` — boot with no/invalid account → setup-mode UI → drive `setup-token` through the embedded terminal (real OAuth round-trip) → seed → restart → normal-mode chat works; then force a lapse (invalidate the cred) → confirm it restarts into setup-mode (not a silent 401, not a loop).
+- **MANDATORY real-box acceptance** (the mocks cover everything except the risky bits): on luna-server, exercise the full cycle against `luna-dev` — boot with no/invalid account → setup-mode UI → drive `setup-token` through the embedded terminal (real OAuth round-trip) → seed → restart → normal-mode chat works; then force a lapse (invalidate the cred) → confirm it restarts into setup-mode (not a silent 401, not a loop).
 - **Gates:** `tsc --noEmit -p` for the touched packages; the **ManagedRuntime boot-smoke** must cover both setup-mode and normal-mode boots (the gate replaces the boot guard, and chat-server has no tsc gate — boot regressions ship green otherwise).
 
 ## 8. Key risks

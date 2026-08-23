@@ -6,7 +6,7 @@ Sterling rebuilt Moon with the #544 ATS / Local Network keys present in
 `/Applications/Luna Moon.app/Contents/Info.plist`, but:
 
 - Local Network prompt **never** appeared
-- WebKit.Networking still opened **no TCP** to `jax-box:4753`
+- WebKit.Networking still opened **no TCP** to `luna-server:4753`
 - `codesign -dv` showed: `adhoc,linker-signed`, `Info.plist=not bound`,
   `Sealed Resources=none`, `entitlements=none`
 - Identifier was `luna_moon_ui-<hash>` — the Cargo package name — **not**
@@ -25,7 +25,7 @@ linker identity.
    existing `.app`’s `Contents/MacOS/` — same unbound hole, even if you edited
    Info.plist by hand.
 
-Host `curl` to `jax-box:4753` still works; only the webview path dies.
+Host `curl` to `luna-server:4753` still works; only the webview path dies.
 
 ## Correct rebuild (binds Info.plist)
 
@@ -67,7 +67,7 @@ grants survive). Ad-hoc `-` works for ATS/plist binding but rotates CDHash.
 
 ```bash
 codesign -dv --verbose=4 "/Applications/Luna Moon.app" 2>&1 | egrep 'Identifier=|Info.plist=|Signature=|linker-signed|Sealed Resources|TeamIdentifier'
-plutil -p "/Applications/Luna Moon.app/Contents/Info.plist" | egrep 'CFBundleIdentifier|NSLocalNetwork|NSAllowsLocalNetworking|jax-box|ts.net'
+plutil -p "/Applications/Luna Moon.app/Contents/Info.plist" | egrep 'CFBundleIdentifier|NSLocalNetwork|NSAllowsLocalNetworking|luna-server|ts.net'
 ls "/Applications/Luna Moon.app/Contents/_CodeSignature"
 ```
 
@@ -82,7 +82,7 @@ Expect:
 | Entitlements | from `entitlements.plist` | `none` |
 
 Then launch the app, Allow Local Network, confirm Connected on
-`ws://jax-box:4753/ui` — do not retarget localhost.
+`ws://luna-server:4753/ui` — do not retarget localhost.
 
 ## Round 3 — boot must reach `new WebSocket` (in-app)
 
@@ -94,7 +94,7 @@ WebKit.Networking if boot awaits `migrate_legacy_connection` /
 In-app fix (not another plist string):
 
 - `frontend-react/src/tauriBoot.ts` — `invokeWithTimeout` (2s) + `pickBootWsUrl`
-  keeps `luna_ws_url` (e.g. `ws://jax-box:4753/ui`) when invoke times out
+  keeps `luna_ws_url` (e.g. `ws://luna-server:4753/ui`) when invoke times out
 - hub `loadSettings` + chat `loadConnectionAndConnect` / PoolEngine use it
 - CSP `connect-src` explicitly includes `ipc:` / `http://ipc.localhost` so boot
   invokes are not CSP-starved

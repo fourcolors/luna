@@ -1153,11 +1153,11 @@ git commit -m "feat(tui): wire rawFrame, lastUserMessage, artifacts, and debounc
 
 ---
 
-## Task 11: End-to-end smoke against jax-box (via tmux)
+## Task 11: End-to-end smoke against luna-server (via tmux)
 
 **Files:** None modified.
 
-**Context:** Final manual verification. The implementer drives `luna chat --dev` from a tmux session pointed at jax-box, validates each tab renders and updates, and confirms hotkeys work. The Phase-1 debug logging pattern (`LUNA_TUI_DEBUG=/tmp/luna-tui.log`) remains available; turn it on if anything looks wrong.
+**Context:** Final manual verification. The implementer drives `luna chat --dev` from a tmux session pointed at luna-server, validates each tab renders and updates, and confirms hotkeys work. The Phase-1 debug logging pattern (`LUNA_TUI_DEBUG=/tmp/luna-tui.log`) remains available; turn it on if anything looks wrong.
 
 - [ ] **Step 1: Launch in tmux**
 
@@ -1238,6 +1238,6 @@ If the smoke test surfaced any bug, fix it in a follow-up commit and re-run from
 - Ctrl-1/2/3 jumps directly to the named tab.
 - Sending a message updates the Memories tab (loading → ready or error within ~500ms).
 - Raw frames stream into the Events tab live.
-- `artifacts-extracted` frames (if any are emitted by jax-box) populate the Artifacts tab.
+- `artifacts-extracted` frames (if any are emitted by luna-server) populate the Artifacts tab.
 - `/quit` exits cleanly and restores the terminal.
 - `bun run typecheck` is clean.

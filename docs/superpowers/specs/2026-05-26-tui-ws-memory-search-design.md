@@ -12,7 +12,7 @@ Replace the TUI's local memory router (currently `InMemoryBackend` — no vector
 
 Phase 2 wired the Memories tab to a Solid `createEffect` that calls `runMemorySearch(router, query, topK)`. The router is constructed in `mount.ts` from `InMemoryBackend`, which does not implement `MemoryVectorBackend.search` — so `router.search` immediately fails with "no vector backends registered" and the panel shows `error: An error has occurred`.
 
-The real backend is the chat-service's `SqliteVectorBackend` (`packages/memory/src/backends/sqlite-vector.ts`) running on whichever host the server is on (jax-box in dev). It owns `~/.luna/memory.db` and has Vectorlite HNSW + FTS5 hybrid search wired and ready. The TUI can't reach this directly — they're on different machines.
+The real backend is the chat-service's `SqliteVectorBackend` (`packages/memory/src/backends/sqlite-vector.ts`) running on whichever host the server is on (luna-server in dev). It owns `~/.luna/memory.db` and has Vectorlite HNSW + FTS5 hybrid search wired and ready. The TUI can't reach this directly — they're on different machines.
 
 The operator's framing: the panel is informational, not load-bearing. Stability and minimalism beat features. The protocol must mirror existing infrastructure (the `list-threads` request/response pattern) rather than introduce new conventions.
 
@@ -286,7 +286,7 @@ The `client` is the already-resolved `LunaWsClient` from `connectWithRecovery`, 
 Same shape as Phase 2's Task 11. Launch `luna chat --dev`, send a message, observe Memories tab transitions through `loading → ready` (or `error` if the dev server has no embedder). Verify hit list renders when memories exist.
 
 To prove the cross-machine round-trip:
-1. SSH to jax-box, run `LUNA_EMBEDDER=ollama` (or stub) and pre-seed a memory via the agent's tool path.
+1. SSH to luna-server, run `LUNA_EMBEDDER=ollama` (or stub) and pre-seed a memory via the agent's tool path.
 2. From Mac TUI, query for that text. Verify hit appears.
 
 ## Open Questions

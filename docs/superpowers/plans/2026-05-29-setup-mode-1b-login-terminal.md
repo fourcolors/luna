@@ -209,7 +209,7 @@ After #1b is built + merged to `dev` + deployed to `luna-dev` (`git pull` + `bun
 
 **1. Put the server into setup-mode.** SSH in and move the credential aside so the gate enters setup-mode:
 ```
-ssh root@jax-box
+ssh root@luna-server
 incus exec luna-dev -- mv /root/.luna/claude/.credentials.json /root/.luna/claude/.credentials.json.bak
 incus exec luna-dev -- systemctl restart luna-dev-chat-server.service
 # journalctl should show "🔧 setup-mode" and the server stays up.
@@ -218,7 +218,7 @@ incus exec luna-dev -- systemctl restart luna-dev-chat-server.service
 **2. Open the web UI against luna-dev.** On your Mac, run the ui-web dev app pointed at luna-dev's WS, with the matching token:
 ```
 # from your luna clone:
-LUNA_DEV_WS_URL=ws://jax-box:5753/ui bun run --filter '@luna/ui-web' dev
+LUNA_DEV_WS_URL=ws://luna-server:5753/ui bun run --filter '@luna/ui-web' dev
 # open the printed localhost URL in your browser; it connects to luna-dev.
 ```
 (Token auto-fills from `.env.development`/your client `.env`; it must equal luna-dev's `UI_WS_TOKEN`.)

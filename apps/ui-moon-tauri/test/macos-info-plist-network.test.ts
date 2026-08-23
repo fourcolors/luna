@@ -127,6 +127,9 @@ describe("macOS signing — Info.plist must be codesign-bound", () => {
     expect(rebuildDoc).toContain("luna_moon_ui-")
     expect(rebuildDoc).toContain("com.luna.moon")
     expect(rebuildDoc).toContain("bun run install:macos")
-    expect(rebuildDoc).toContain("ws://jax-box:4753/ui")
+    // Scrubbed of the maintainer's personal hostname (this repo is public).
+    // The assertion guards that the verify table still names a concrete ws://
+    // dial target — not which host that target happens to be.
+    expect(rebuildDoc).toContain("ws://luna-server:4753/ui")
   })
 })

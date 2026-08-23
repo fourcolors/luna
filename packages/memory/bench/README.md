@@ -81,7 +81,7 @@ live DB), with the batch size correctly configured:
 - Determinism holds on real long memories: 0/15 fallbacks, 0/15 kept-set churn,
   bit-exact.
 - Latency is hardware-bound and ~LINEAR in candidate count. On an Apple
-  Metal GPU it was ~1.2s for 20 candidates; on the production box (jax-box,
+  Metal GPU it was ~1.2s for 20 candidates; on the production box (luna-server,
   AMD Radeon Pro Vega 20 via Vulkan) it is ~0.6s PER CANDIDATE (CPU-only was
   15-26s and contends with the chat-server, so GPU is required). This is why
   `memory_search` reranks only `LUNA_RERANK_MAX_CANDIDATES` (default 8 -> ~5s)
