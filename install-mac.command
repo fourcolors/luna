@@ -270,9 +270,9 @@ case "$SELECTION" in
     # Run the core installer script against current directory
     chmod +x install.sh
     # Finding #4: a desktop install runs the server locally, so point the CLI at
-    # the local server instead of install.sh's remote jax-box default. Override
-    # BOTH the primary and fallback URL — leaving the fallback default would
-    # re-leak ws://jax-box.local:4753/ui as the CLI's second connection target.
+    # the local server instead of the host install.sh would otherwise resolve.
+    # Override BOTH the primary and fallback URL — leaving the fallback to be
+    # derived would aim the CLI's second connection target at a remote host.
     # Use 127.0.0.1 (not localhost): the server binds IPv4 127.0.0.1, and
     # `localhost` can resolve to IPv6 ::1 first on macOS and miss it. The two
     # identical URLs dedup to a single entry in the CLI's url list.

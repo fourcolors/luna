@@ -137,7 +137,7 @@ fi
 
 if [[ "$fail" -ne 0 ]]; then
   echo "" >&2
-  echo "Install aborted verification. Do not launch this build expecting jax-box WS to work." >&2
+  echo "Install aborted verification. Do not launch this build expecting the configured WS host to work." >&2
   exit 1
 fi
 
