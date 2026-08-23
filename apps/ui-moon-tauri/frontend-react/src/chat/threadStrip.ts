@@ -67,6 +67,35 @@ export interface ThreadStripCtx {
   readonly onRowKeyActivate: (threadId: string, inNewWindow: boolean) => void
   /** The row's ⤢ button. */
   readonly onPopOut: (threadId: string) => void
+  /** Agent sidebar S5, search mode only: rows wear their section as a tag
+   *  when grouping is suspended by an active search. */
+  readonly tagAgents?: boolean
+  /**
+   * Agent sidebar S5: section rendering. ABSENT = the exact pre-S5 flat
+   * path, byte-for-byte. When present, headers render as SIBLINGS of the
+   * rows — rows stay DIRECT children of `listEl`, indented by class, never
+   * nested in wrappers: redock's `querySelectorAll('.thread-row')` +
+   * `insertBefore` contract (threadDrawer._placeInsertGap) requires the
+   * flat child list, and a wrapper would silently put the drop gap in the
+   * wrong parent.
+   */
+  readonly grouped?: {
+    readonly sections: ReadonlyArray<{
+      readonly agentName: string | null
+      readonly label: string
+      readonly description: string
+      readonly known: boolean
+      readonly rows: ReadonlyArray<ThreadRow>
+      readonly collapsed: boolean
+      /** Any non-active row in the section has work in flight — surfaces
+       *  the busy pulse on the header while collapsed. */
+      readonly busy: boolean
+    }>
+    readonly onToggle: (agentName: string | null) => void
+    /** The header's "+" — mints a thread pre-filed to this agent. Known
+     *  roster agents only (never general/orphans). */
+    readonly onNewThread: (agentName: string) => void
+  }
 }
 
 /** Static row skeleton - icons only, no interpolation. Text is set via
@@ -112,6 +141,16 @@ export function buildThreadRow(ctx: ThreadStripCtx, t: ThreadRow): HTMLElement {
     }
   })
 
+  // Search-mode agent tag (S5): grouping is suspended, so the row wears its
+  // section. textContent only — agent names are server data.
+  if (ctx.tagAgents && t.agentName) {
+    const tag = document.createElement("span")
+    tag.className = "thread-row-agent-tag"
+    tag.textContent = t.agentName
+    const info = row.querySelector(".thread-row-info")
+    if (info) info.appendChild(tag)
+  }
+
   ctx.wireRow(row, t)
 
   const pop = row.querySelector(".thread-row-pop")
@@ -134,34 +173,129 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
   const listEl = ctx.listEl
   if (!listEl) return
 
-  // Drop existing rows and gaps; the empty-state node is left in place.
-  listEl.querySelectorAll(".thread-row, .thread-row-insert-gap").forEach((n) => {
-    n.remove()
-  })
+  // Drop existing rows, gaps, and section headers; the empty-state node is
+  // left in place.
+  listEl
+    .querySelectorAll(".thread-row, .thread-row-insert-gap, .thread-section-header")
+    .forEach((n) => {
+      n.remove()
+    })
 
+  const hasContent = ctx.grouped ? ctx.grouped.sections.length > 0 : ctx.rows.length > 0
   if (ctx.emptyEl) {
-    ctx.emptyEl.style.display = ctx.rows.length ? "none" : ""
+    ctx.emptyEl.style.display = hasContent ? "none" : ""
     ctx.emptyEl.textContent = (ctx.search || "").trim() ? "No matching threads." : "No threads yet."
   }
 
   const preview = ctx.preview
   const frag = document.createDocumentFragment()
-  for (let i = 0; i < ctx.rows.length; i++) {
-    if (i === ctx.insertAt) frag.appendChild(ctx.makeInsertGap(preview))
-    const t = ctx.rows[i]
-    if (!t) continue
-    const row = buildThreadRow(ctx, t)
-    if (preview && preview.threadId && t.id === preview.threadId) {
-      row.classList.add("redock-source")
+
+  if (ctx.grouped) {
+    // Grouped path (S5). Reorder is retired, so the redock insert-gap is a
+    // purely visual "this drops here" affordance pinned to the top — the
+    // drop lands by recency wherever the thread's section sorts it.
+    if (preview && preview.over) frag.appendChild(ctx.makeInsertGap(preview))
+    for (const section of ctx.grouped.sections) {
+      frag.appendChild(buildSectionHeader(ctx.grouped, section))
+      if (section.collapsed) continue
+      for (const t of section.rows) {
+        const row = buildThreadRow(ctx, t)
+        row.classList.add("grouped")
+        if (preview && preview.threadId && t.id === preview.threadId) {
+          row.classList.add("redock-source")
+        }
+        frag.appendChild(row)
+      }
     }
-    frag.appendChild(row)
+  } else {
+    for (let i = 0; i < ctx.rows.length; i++) {
+      if (i === ctx.insertAt) frag.appendChild(ctx.makeInsertGap(preview))
+      const t = ctx.rows[i]
+      if (!t) continue
+      const row = buildThreadRow(ctx, t)
+      if (preview && preview.threadId && t.id === preview.threadId) {
+        row.classList.add("redock-source")
+      }
+      frag.appendChild(row)
+    }
+    // A drop past the last row appends the gap at the end.
+    if (ctx.insertAt === ctx.rows.length) frag.appendChild(ctx.makeInsertGap(preview))
   }
-  // A drop past the last row appends the gap at the end.
-  if (ctx.insertAt === ctx.rows.length) frag.appendChild(ctx.makeInsertGap(preview))
 
   listEl.appendChild(frag)
 
   if (ctx.drawerEl) {
     ctx.drawerEl.classList.toggle("redock-target", !!(preview && preview.over))
   }
+}
+
+/** Static header skeleton — icons only, no interpolation (same discipline
+ *  as ROW_SKELETON: all text lands via textContent). */
+const SECTION_SKELETON =
+  '<span class="thread-section-caret" aria-hidden="true">▾</span>' +
+  '<span class="thread-section-dot" aria-hidden="true"></span>' +
+  '<span class="thread-section-name"></span>' +
+  '<span class="thread-section-count" aria-hidden="true"></span>'
+
+/** Build one section header, a SIBLING of the rows it labels (see the
+ *  grouped ctx doc for why nesting is forbidden). */
+function buildSectionHeader(
+  grouped: NonNullable<ThreadStripCtx["grouped"]>,
+  section: NonNullable<ThreadStripCtx["grouped"]>["sections"][number],
+): HTMLElement {
+  const el = document.createElement("div")
+  el.className = "thread-section-header"
+  el.setAttribute("role", "button")
+  el.tabIndex = 0
+  el.setAttribute("aria-expanded", section.collapsed ? "false" : "true")
+  if (section.agentName !== null) el.dataset["agentName"] = section.agentName
+  el.innerHTML = SECTION_SKELETON
+
+  const name = el.querySelector(".thread-section-name")
+  if (name) name.textContent = section.label
+  if (section.description) el.title = section.description
+  const count = el.querySelector(".thread-section-count")
+  if (count) count.textContent = String(section.rows.length)
+  const caret = el.querySelector(".thread-section-caret") as HTMLElement | null
+  // Nothing to collapse in an empty section — hide the affordance.
+  if (caret && section.rows.length === 0) caret.style.visibility = "hidden"
+  const dot = el.querySelector(".thread-section-dot")
+  // Collapsed + busy inside: the header carries the pulse the hidden row
+  // cannot show. (Expanded sections let the rows pulse for themselves.)
+  if (dot && section.busy && section.collapsed) dot.classList.add("busy")
+  if (!section.known) el.classList.add("orphan")
+
+  const toggle = () => {
+    if (section.rows.length === 0) return
+    grouped.onToggle(section.agentName)
+  }
+  el.addEventListener("click", toggle)
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      toggle()
+    }
+  })
+
+  // The per-section "+" — known roster agents only: the general section's
+  // new-thread is the drawer's existing "+ New", and an orphan can no
+  // longer be created under (its definition is gone).
+  if (section.known && section.agentName !== null) {
+    const agentName = section.agentName
+    const add = document.createElement("button")
+    add.type = "button"
+    add.className = "thread-section-new"
+    add.title = `New ${section.label} thread`
+    add.setAttribute("aria-label", `New ${section.label} thread`)
+    add.textContent = "+"
+    // Same guard as the row's ⤢: never let the button start the header's
+    // click/toggle or a drag.
+    add.addEventListener("pointerdown", (e) => e.stopPropagation())
+    add.addEventListener("click", (e) => {
+      e.stopPropagation()
+      grouped.onNewThread(agentName)
+    })
+    el.appendChild(add)
+  }
+  return el
 }

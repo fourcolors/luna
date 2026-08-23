@@ -549,6 +549,9 @@ export function bootChat() {
       isConnected: () => getChatHost()?.isConnected() ?? false,
       clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
       startSubscribeTimeout: () => getChatHost()?.startSubscribeTimeout(),
+      // Agent sidebar S5: the section header's "+" routes through the same
+      // shared new-thread builder as every other create (wire.ts).
+      sendNewThread: (agent?: string) => getChatHost()?.sendNewThread(agent),
     },
     // The WHOLE objects, not a narrowed {reset}/{flush}. The drawer's own
     // text only calls those two, but it hands ChatState/ChatLoop straight
