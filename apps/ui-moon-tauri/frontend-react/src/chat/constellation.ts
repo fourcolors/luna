@@ -41,10 +41,80 @@ const KIND_BY_TOOL: Record<string, StarKind> = {
   Task: "agent", Agent: "agent",
 }
 
-/** An unknown or MCP tool is a read until it proves otherwise: neutral is the
- *  honest default, and mis-tinting a tool is worse than not tinting it. */
+/**
+ * Verb tokens, checked in this order. Order is precedence: a tool that both
+ * delegates and writes is an agent call first, and one that both writes and
+ * runs is a write, because the write is the part with consequences.
+ *
+ * These are VERBS only, never namespaces. `shell` looked like a run verb and is
+ * deliberately absent: `local_shell_list_roots` is a read that happens to live
+ * on the shell server, and tinting it amber would say a command ran when none
+ * did.
+ */
+const VERB_KINDS: ReadonlyArray<readonly [StarKind, ReadonlySet<string>]> = [
+  ["agent", new Set(["agent", "task", "subagent", "delegate", "orchestrate", "workflow"])],
+  ["write", new Set([
+    "write", "edit", "create", "update", "delete", "remove", "set", "put",
+    "patch", "add", "insert", "send", "post", "upsert", "save", "rename",
+    "move", "apply", "commit", "publish", "upload",
+  ])],
+  ["run", new Set([
+    "run", "exec", "execute", "command", "cmd", "bash", "kill", "spawn",
+    "restart", "start", "stop", "deploy", "install", "build", "script",
+  ])],
+  ["web", new Set([
+    "web", "fetch", "http", "https", "url", "browse", "browser", "navigate",
+    "crawl", "scrape", "download", "page",
+  ])],
+]
+
+/**
+ * Split a tool name into lowercase word tokens.
+ *
+ * MUST be tokens, not substrings. `list_threads` contains the substring "read"
+ * and a substring match would classify it as a read for the wrong reason;
+ * worse, the same trick misfires silently and only on real tool names, which is
+ * exactly the class of bug that shipped in 0.0.73.
+ */
+export function toolTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")   // camelCase -> two tokens
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase())
+}
+
+/**
+ * Strip the `mcp__<server>__` prefix, returning the tool half.
+ *
+ * The separator is a DOUBLE underscore, and server names contain single ones
+ * (`local_shell`), so this splits on `__` rather than guessing at `_`.
+ */
+export function stripMcpPrefix(name: string): string {
+  const parts = name.split("__")
+  return parts[0] === "mcp" && parts.length >= 3 ? parts.slice(2).join("__") : name
+}
+
+/**
+ * Classify a tool call for tinting.
+ *
+ * WHY THIS IS NOT JUST A LOOKUP: 0.0.73 shipped a bare `KIND_BY_TOOL[name] ??
+ * "read"`, which meant every tool Luna actually calls - all of them MCP, all
+ * named `mcp__<server>__<tool>` - missed the table and came out neutral. The
+ * whole constellation rendered in one colour in the real app while the tests,
+ * which used built-in names like `Bash`, showed the full palette. Verb tokens
+ * are what make this work against tool names nobody has written down yet.
+ */
 export function kindForTool(name: string): StarKind {
-  return KIND_BY_TOOL[name] ?? "read"
+  const exact = KIND_BY_TOOL[name]
+  if (exact) return exact
+  const tokens = toolTokens(stripMcpPrefix(name))
+  for (const [kind, verbs] of VERB_KINDS) {
+    for (const t of tokens) if (verbs.has(t)) return kind
+  }
+  // Genuinely unrecognised: neutral is still the honest answer, but now it
+  // means "no verb we know", not "not a built-in".
+  return "read"
 }
 
 /** Vertical jitter, deterministic so a star never moves between renders. */

@@ -672,7 +672,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(card).not.toBeNull()
       // A single tool call renders as ONE activity-timeline window with the
       // card nested as a step inside it (expanded while streaming).
-      expect(chat.children.length).toBe(1)
+      expect(chat.children.length).toBe(2)
       const timeline = chat.children[0] as HTMLElement
       expect(timeline.classList.contains('timeline')).toBe(true)
       expect(timeline.contains(card)).toBe(true)
@@ -803,7 +803,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
         name: 'Read', input: { path: '/etc/hosts' },
       })
-      expect(chat.children.length).toBe(1)
+      expect(chat.children.length).toBe(2)
       const timeline = chat.children[0] as HTMLElement
       expect(timeline.classList.contains('timeline')).toBe(true)
       // The tool card lives as a step inside the timeline; the <details><summary>
@@ -817,7 +817,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       // The timeline (with its card) is intact AND a fresh answer bubble appears
       // AFTER it for the post-tool text (the work never gets overwritten).
-      expect(chat.children.length).toBe(2)
+      expect(chat.children.length).toBe(3)
       expect((chat.children[0] as HTMLElement).classList.contains('timeline')).toBe(true)
       expect((chat.children[0] as HTMLElement).querySelector('.tool-call-card details > summary')).not.toBeNull()
       const fresh = chat.children[1] as HTMLElement
@@ -844,7 +844,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Found 3 lines.' })
 
       // [timeline(pre-tool text + card), answer bubble] — 2 children.
-      expect(chat.children.length).toBe(2)
+      expect(chat.children.length).toBe(3)
       const answer = chat.children[1] as HTMLElement
       expect(answer.dataset.streamRaw).toBe('Found 3 lines.')
 
@@ -864,7 +864,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       handleFrame({ type: 'turn-complete', threadId: 't' })
 
       // Auto-collapses to the summary pill; the answer bubble stays below.
-      expect(chat.children.length).toBe(2)
+      expect(chat.children.length).toBe(3)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
@@ -892,7 +892,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
         name: 'Bash', input: { command: 'ls' },
       })
-      expect(chat.children.length).toBe(1)
+      expect(chat.children.length).toBe(2)
       const timeline = chat.children[0] as HTMLElement
       expect(timeline.classList.contains('timeline')).toBe(true)
       expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
@@ -915,14 +915,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Settled: collapses to the pill (real "Worked for N steps", no spinner),
       // and the done message.text is written NOWHERE (no finalize-into-card,
       // no ghost answer bubble).
-      expect(chat.children.length).toBe(1)
+      expect(chat.children.length).toBe(2)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
       // The count is gone: the constellation carries it. One star per top-level
       // tool call, resting (still) because the turn settled.
       expect(tl.querySelector('.timeline-summary-label')).toBeNull()
-      expect(tl.querySelectorAll('.constellation.rest .star').length).toBe(1)
+      expect(chat.querySelectorAll('.constellation.rest .star').length).toBe(1)
       expect(tl.querySelector('.typing-dots')).toBeNull() // no perpetual spinner
       expect(chat.textContent).not.toContain('Files: a, b, c.')
       // Reducer kept just the tool segment (no spurious text segment).
@@ -1135,7 +1135,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
 
       // Tool-using turn → ONE expanded timeline (the work) + the answer bubble.
-      expect(chat.children.length).toBe(2)
+      expect(chat.children.length).toBe(3)
       const timeline = chat.children[0] as HTMLElement
       expect(timeline.classList.contains('timeline')).toBe(true)
       expect(chat.children[1].className).toBe('msg assistant')
@@ -1340,7 +1340,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
 
       // [timeline(pre-tool text step + card), answer bubble] — 2 children.
-      expect(chat.children.length).toBe(2)
+      expect(chat.children.length).toBe(3)
       const timeline = chat.children[0] as HTMLElement
       expect(timeline.classList.contains('timeline')).toBe(true)
       const post = chat.children[1] as HTMLElement
@@ -1382,7 +1382,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Google Search', input: { q: 'x' } })
       M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'done' })
 
-      expect(chat.children.length).toBe(1)
+      expect(chat.children.length).toBe(2)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(false) // expanded while streaming
@@ -1399,7 +1399,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Checking. Found 2 lines.' } })
       M().handleFrame({ type: 'turn-complete', threadId: 't1' })
 
-      expect(chat.children.length).toBe(2)
+      expect(chat.children.length).toBe(3)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
@@ -1431,7 +1431,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // counted as one. Work here is [text 'one ', tool Read] = one actual
       // tool call, so one star. Deliberate: narration is not work.
       expect(tl.querySelector('.timeline-summary-label')).toBeNull()
-      expect(tl.querySelectorAll('.constellation.rest .star').length).toBe(1)
+      expect(chat.querySelectorAll('.constellation.rest .star').length).toBe(1)
     })
 
     it('timeline: clicking the summary toggles collapse', () => {
@@ -1513,12 +1513,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Rows are [textA, toolA, textB, toolB]; tool calls are [Read, Bash].
       // The old pill said "4 steps"; the constellation shows the two tools.
       expect(tl.querySelector('.timeline-summary-label')).toBeNull()
-      expect(tl.querySelectorAll('.constellation.rest .star').length).toBe(2)
+      expect(chat.querySelectorAll('.constellation.rest .star').length).toBe(2)
       // ...and it tints them by what they did, which the count never could.
-      expect(tl.querySelector('.star-read')).not.toBeNull()
-      expect(tl.querySelector('.star-run')).not.toBeNull()
-      // The final answer is the bubble below the pill.
-      const answer = chat.children[chat.children.length - 1] as HTMLElement
+      expect(chat.querySelector('.star-read')).not.toBeNull()
+      expect(chat.querySelector('.star-run')).not.toBeNull()
+      // The final answer is the bubble below the pill. Found by class, not by
+      // position: the constellation row trails it as the last child now.
+      const bubbles = chat.querySelectorAll('.msg.assistant')
+      const answer = bubbles[bubbles.length - 1] as HTMLElement
       expect(answer.className).toBe('msg assistant')
       expect(answer.textContent).toContain('All done.')
     })
@@ -1538,9 +1540,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
       // The dots are gone; the live constellation is the in-flight signal, and
       // it must NOT carry .rest while the turn is still running.
-      expect(tl.querySelector('.constellation')).not.toBeNull()
-      expect(tl.querySelector('.constellation.rest')).toBeNull()
-      expect(tl.querySelector('.star-new')).not.toBeNull()
+      expect(chat.querySelector('.constellation')).not.toBeNull()
+      expect(chat.querySelector('.constellation.rest')).toBeNull()
+      expect(chat.querySelector('.star-new')).not.toBeNull()
 
       // Step 2 begins under a new turnId — still ONE timeline, still expanded.
       M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'More. ' })
@@ -1609,7 +1611,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
       expect(chat.querySelector('.timeline .timeline-summary-label')).toBeNull()
-      expect(chat.querySelector('.timeline .constellation.rest')).not.toBeNull()
+      expect(chat.querySelector('.constellation-row .constellation.rest')).not.toBeNull()
     })
   })
 
