@@ -113,21 +113,7 @@ const agentMeta = (input: unknown): { name: string; description: string } => {
   }
 }
 
-export interface SubagentTreeBridgeOptions {
-  /**
-   * Agent participation (PR2): fired once per OBSERVED subagent spawn with
-   * the thread and the spawned subagent_type. The bridge is the one place
-   * every delegation already passes through (this exact tool-call decode
-   * powers the live Agents panel), so involvement recording taps it
-   * instead of growing a second parser. Fire-and-forget: the callback must
-   * never throw into the frame path — the bridge guards it anyway.
-   */
-  readonly onDelegation?: (threadId: string, agentName: string) => void
-}
-
-export const createSubagentTreeBridge = (
-  options?: SubagentTreeBridgeOptions,
-): SubagentTreeBridge => {
+export const createSubagentTreeBridge = (): SubagentTreeBridge => {
   const clients = new Map<string, SendSubagentFrame>()
   const threads = new Map<string, ThreadState>()
 
@@ -206,23 +192,12 @@ export const createSubagentTreeBridge = (
         if (!t.seenCalls.has(frame.toolCallId)) {
           t.seenCalls.add(frame.toolCallId)
           if (frame.name && AGENT_TOOL_NAMES.has(frame.name)) {
-            // A subagent spawn → a new node in the tree.
+            // A subagent spawn → a new node in the tree. (Involvement
+            // recording deliberately does NOT live here: this bridge only
+            // observes while a WS subscriber is attached — the durable
+            // record is made in chat-service's SDK consumer, which runs
+            // for every turn regardless of clients. Codex PR2 finding 1.)
             const meta = agentMeta(frame.input)
-            // Agent participation (PR2): record involvement for NAMED
-            // subagent types only — an untyped general-purpose delegation
-            // is not "an agent the operator can look up", and agentMeta's
-            // "Agent" fallback must never masquerade as one.
-            if (options?.onDelegation) {
-              const rawType = (frame.input as { subagent_type?: unknown } | null | undefined)
-                ?.subagent_type
-              if (typeof rawType === "string" && rawType.trim()) {
-                try {
-                  options.onDelegation(threadId, rawType.trim())
-                } catch {
-                  /* observation must never break the frame path */
-                }
-              }
-            }
             t.nodes.set(frame.toolCallId, {
               id: frame.toolCallId,
               parentId: frame.parentToolUseId ?? null,

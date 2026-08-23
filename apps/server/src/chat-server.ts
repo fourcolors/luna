@@ -1935,19 +1935,11 @@ const widgetSummonBridge = createWidgetSummonBridge()
 // Live Agents view (S4): folds each thread's subagent tool frames into a tree
 // and broadcasts it to every client. Process-wide (shared across connections)
 // so one thread's tree is consistent no matter which window observes it.
-//
-// Agent participation (PR2): every observed NAMED delegation also records
-// involvement in the ThreadRegistry (the sidebar's click-an-agent → "threads
-// this agent was involved in" filter). The bridge exists before the runtime,
-// so the recorder is LATE-BOUND: null until the registry layer is up, and a
-// delegation observed before that (impossible in practice — no threads run
-// pre-boot) is simply not recorded. Fire-and-forget by design.
-let recordAgentInvolvement: ((threadId: string, agentName: string) => void) | null = null
-const subagentTreeBridge = createSubagentTreeBridge({
-  onDelegation: (threadId, agentName) => {
-    recordAgentInvolvement?.(threadId, agentName)
-  },
-})
+// (Agent participation recording lives in chat-service's SDK consumer —
+// NOT here. The bridge only observes while a WS subscriber is attached, so
+// recording from it lost delegations whenever no window was watching.
+// Codex PR2 review finding 1.)
+const subagentTreeBridge = createSubagentTreeBridge()
 
 // Job-summoned operator input (widget-system.md Phase 5): a running job's
 // `request_input` tool broadcasts a question to every connected client and
@@ -2649,16 +2641,6 @@ export const buildBaseLayer = (
             `[luna/thread-registry] boot import failed (best-effort): ${String(importResult.failure)}`,
           )
         }
-      }
-
-      // Agent participation (PR2): arm the subagent-tree bridge's late-bound
-      // recorder now that the registry exists. runPromise on a never-failing
-      // Effect; .catch is belt-and-braces so a defect can never surface as
-      // an unhandled rejection from the frame path.
-      recordAgentInvolvement = (threadId, agentName) => {
-        void Effect.runPromise(reg.recordInvolvement(threadId, agentName)).catch(
-          () => {},
-        )
       }
 
       return reg

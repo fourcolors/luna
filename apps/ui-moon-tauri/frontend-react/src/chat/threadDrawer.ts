@@ -413,6 +413,11 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         this._renderPendingDuringDrag = true;
         return;
       }
+      // PR2 (codex review finding 6): a filter for an agent that no longer
+      // exists must clear BEFORE the visible-rows computation — clearing it
+      // after painting (or only when every chip vanished) left one render
+      // showing an empty, unfilterable-looking list.
+      this._validateAgentFilter();
       const rows = this._visibleThreads();
       const preview = State.redockPreview;
       // Row building lives in src/chat/threadStrip.ts (stack23 S17c). The
@@ -459,14 +464,12 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
      * costs nothing extra and is more discoverable). All text lands via
      * textContent — agent names are server data.
      */
-    renderAgentChips() {
-      const host = DOM.agentChips;
-      if (!host) return;
+    /** The lookup-able agent names: roster first (its order), then involved
+     *  names the roster no longer carries — the data decides, the roster
+     *  decorates (same rule as the dormant sections). */
+    _agentNames() {
       const roster = Array.isArray(State.agents) ? State.agents : [];
       const rows = Array.isArray(State.threads) ? State.threads : [];
-      // Union: roster first (its order), then involved names the roster no
-      // longer carries — the data decides, the roster decorates (same rule
-      // as the dormant sections).
       const names = [];
       const seen = new Set();
       for (const a of roster) {
@@ -481,15 +484,30 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
           }
         }
       }
+      return names;
+    },
+
+    /** Clear a filter whose SPECIFIC agent is gone (not just when all chips
+     *  vanished) or when the capability dropped — codex finding 6. Runs at
+     *  the top of render(), before rows are computed. */
+    _validateAgentFilter() {
+      if (!State.agentFilter) return;
+      if (
+        State.serverSupportsAgents !== true ||
+        !this._agentNames().includes(State.agentFilter)
+      ) {
+        State.agentFilter = null;
+      }
+    },
+
+    renderAgentChips() {
+      const host = DOM.agentChips;
+      if (!host) return;
+      const names = this._agentNames();
       const show = State.serverSupportsAgents === true && names.length > 0;
       host.hidden = !show;
       host.textContent = '';
-      if (!show) {
-        // A filter for an agent that vanished with its last thread must not
-        // strand an unfilterable empty list.
-        if (State.agentFilter) { State.agentFilter = null; }
-        return;
-      }
+      if (!show) return; // filter already cleared by _validateAgentFilter
       for (const name of names) {
         const chip = document.createElement('button');
         chip.type = 'button';

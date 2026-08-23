@@ -279,11 +279,15 @@ export interface ThreadRegistryApi {
   recordInvolvement: (threadId: string, agentName: string) => Effect.Effect<boolean, never>
 
   /**
-   * Every involvement row, newest-involved first. The table is small by
-   * construction (threads × mentioned-agents), so callers map it in
-   * memory rather than paging.
+   * Involvement rows, newest-involved first. Pass `threadIds` to scope the
+   * read to a listed page (codex PR2 review finding 5: involvement accrues
+   * forever by design, so an unscoped scan grows with lifetime history —
+   * the sidebar must fetch only the threads it is about to show). Omitted
+   * = all rows (tests, tooling).
    */
-  listInvolvement: () => Effect.Effect<ReadonlyArray<ThreadAgentRow>, never>
+  listInvolvement: (
+    threadIds?: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<ThreadAgentRow>, never>
 }
 
 /** One (thread, agent) involvement row — see SCHEMA_V4. */
@@ -569,13 +573,14 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
           return true
         })
 
-      const listInvolvement: ThreadRegistryApi["listInvolvement"] = () =>
+      const listInvolvement: ThreadRegistryApi["listInvolvement"] = (threadIds) =>
         Ref.get(involvement).pipe(
-          Effect.map((m) =>
-            Array.from(m.values()).sort(
-              (a, b) => b.lastInvolvedAt - a.lastInvolvedAt,
-            ),
-          ),
+          Effect.map((m) => {
+            const ids = threadIds ? new Set(threadIds) : null
+            return Array.from(m.values())
+              .filter((r) => ids === null || ids.has(r.threadId))
+              .sort((a, b) => b.lastInvolvedAt - a.lastInvolvedAt)
+          }),
         )
 
       return {
@@ -639,6 +644,11 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
         db.run("PRAGMA journal_mode = WAL")
         db.run("PRAGMA synchronous = NORMAL")
         db.run("PRAGMA foreign_keys = ON")
+        // Bounded wait instead of instant SQLITE_BUSY when another luna.db
+        // connection (CLI, telemetry) briefly holds the write lock (codex
+        // PR2 review finding 3) — without it, fire-and-forget writes like
+        // recordInvolvement silently became permanent false negatives.
+        db.run("PRAGMA busy_timeout = 5000")
 
         const nowMs = yield* clock.nowMs()
         ensureSchemaVersions(db)
@@ -911,16 +921,33 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
             }).pipe(Effect.catchDefect(() => Effect.succeed(false)))
           })
 
-        const listInvolvement: ThreadRegistryApi["listInvolvement"] = () =>
-          Effect.sync(() =>
-            (listInvolvementStmt.all() as RawInvolvement[]).map((r) => ({
+        const listInvolvement: ThreadRegistryApi["listInvolvement"] = (threadIds) =>
+          Effect.sync(() => {
+            // Scoped page read (finding 5): a fresh statement per call —
+            // the id count varies, and bun:sqlite has no array binding.
+            // The sidebar's page is ≤500 ids, well under SQLite's 32k
+            // parameter ceiling.
+            const rows =
+              threadIds === undefined
+                ? (listInvolvementStmt.all() as RawInvolvement[])
+                : threadIds.length === 0
+                  ? []
+                  : (db
+                      .query(
+                        `SELECT thread_id, agent_name, first_involved_at, last_involved_at, spawns
+                           FROM thread_agents
+                          WHERE thread_id IN (${threadIds.map(() => "?").join(",")})
+                          ORDER BY last_involved_at DESC`,
+                      )
+                      .all(...threadIds) as RawInvolvement[])
+            return rows.map((r) => ({
               threadId: r.thread_id,
               agentName: r.agent_name,
               firstInvolvedAt: r.first_involved_at,
               lastInvolvedAt: r.last_involved_at,
               spawns: r.spawns,
-            })),
-          ).pipe(
+            }))
+          }).pipe(
             Effect.catchDefect(() =>
               Effect.succeed([] as ReadonlyArray<ThreadAgentRow>),
             ),

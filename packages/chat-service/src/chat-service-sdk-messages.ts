@@ -135,10 +135,44 @@ export interface SdkMessageHandlingDeps {
     tags?: Readonly<Record<string, string>>,
     n?: number,
   ) => Effect.Effect<void, never>
+  /**
+   * Agent participation (PR2, codex review finding 1): fired once per
+   * observed NAMED subagent spawn (an Agent/Task tool_use whose input
+   * carries a non-blank `subagent_type`). Lives HERE — in the SDK
+   * consumer that runs for every turn regardless of connected clients —
+   * because the first cut recorded from the ui-ws subagent-tree bridge,
+   * which only observes while a WebSocket subscriber is attached: close
+   * Moon mid-turn and the involvement was silently, permanently lost.
+   * Must be total (never) — a recording failure cannot fail the stream.
+   */
+  readonly onNamedDelegation?: (
+    threadId: string,
+    agentName: string,
+  ) => Effect.Effect<void, never>
 }
 
+/** The SDK's subagent spawn tool, current and legacy wire names — mirrors
+ *  ui-ws's subagent-tree bridge AGENT_TOOL_NAMES. */
+const AGENT_SPAWN_TOOLS = new Set(["Agent", "Task"])
+
 export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
-  const { clock, obs, store, inc } = deps
+  const { clock, obs, store, inc, onNamedDelegation } = deps
+
+  /** Finding-1 tap: record a NAMED spawn. The two call sites below cover
+   *  disjoint blocks (top-level spawns surface only in the final-turn
+   *  emission; nested spawns only in the parented sub-block path), so a
+   *  given tool_use is recorded at most once without extra dedupe. */
+  const recordSpawn = (
+    threadId: string,
+    toolName: string,
+    input: unknown,
+  ): Effect.Effect<void, never> => {
+    if (!onNamedDelegation || !AGENT_SPAWN_TOOLS.has(toolName)) return Effect.void
+    const rawType = (input as { subagent_type?: unknown } | null | undefined)
+      ?.subagent_type
+    if (typeof rawType !== "string" || !rawType.trim()) return Effect.void
+    return onNamedDelegation(threadId, rawType.trim())
+  }
 
   /** Lookup helper: scan store messages for this session, return the
    *  envelope with matching id. The store keeps messages in insertion
@@ -269,6 +303,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
                 durationMs: 0,
                 status: "success",
               })
+              yield* recordSpawn(args.threadId, b.name, b.input)
               if (typeof b.id === "string") {
                 yield* PubSub.publish(args.pubsub, {
                   type: "tool-call",
@@ -327,6 +362,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
               durationMs: 0,
               status: "success",
             })
+            yield* recordSpawn(args.threadId, b.name, b.input)
             // The frame links a call to its result by id; the SDK always
             // carries `id` on real tool_use blocks. (Some test fixtures
             // omit it — guard so the obs emit above still fires for them.)

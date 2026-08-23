@@ -2781,6 +2781,90 @@ describe("ChatService — listThreads excludes archived threads", () => {
     { timeout: 15_000 },
   )
 
+  // ── Agent participation (PR2): recording from the SDK consumer ─────────────
+  // Codex review finding 1: recording must live in the path that runs for
+  // every turn REGARDLESS of connected clients. This drives a real turn
+  // through ChatService with a fake SDK whose assistant message spawns
+  // subagents, with NO subscriber attached — and the involvement must land.
+  it(
+    "a NAMED Agent spawn in a turn records involvement with no client subscribed; untyped spawns never do",
+    async () => {
+      const makeSpawningAssistant = (sessionId: string): SDKMessage =>
+        ({
+          type: "assistant",
+          session_id: sessionId,
+          uuid: "turn-spawn",
+          parent_tool_use_id: null,
+          message: {
+            id: "turn-spawn",
+            role: "assistant",
+            model: "claude-test",
+            content: [
+              { type: "tool_use", id: "sp1", name: "Agent", input: { subagent_type: "advisor", prompt: "review" } },
+              // Untyped general-purpose spawn — a tree node, NOT a lookup target.
+              { type: "tool_use", id: "sp2", name: "Task", input: { description: "generic" } },
+              // Non-spawn tool — never involvement.
+              { type: "tool_use", id: "sp3", name: "Bash", input: { command: "ls" } },
+              { type: "text", text: "delegated" },
+            ],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 5 },
+          },
+        }) as unknown as SDKMessage
+
+      const fakeLayer = SDKClient.fake((p) => {
+        const sessionId = (p as { sessionId?: string }).sessionId ?? "thr-?"
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const _u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            yield makeSpawningAssistant(sessionId)
+            yield makeResultMessage(sessionId, "result-spawn")
+          }
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          applyFlagSettings: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      })
+
+      const spawningLayer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(fakeLayer, baseLayerWithRegistry),
+        ),
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const reg = yield* ThreadRegistryService
+            const t = yield* chat.createThread({ model: "claude-test", title: "spawner" })
+            yield* Effect.sleep("5 millis")
+            // send() with NO subscribe — the exact case the bridge-based
+            // recorder lost.
+            yield* chat.send(t.id, "delegate please")
+            yield* Effect.sleep("50 millis")
+            const rows = yield* reg.listInvolvement()
+            const mine = rows.filter((r) => r.threadId === t.id)
+            expect(mine.map((r) => r.agentName)).toEqual(["advisor"])
+            // Scoped read matches too; an unrelated id scopes to empty.
+            expect(yield* reg.listInvolvement([t.id])).toHaveLength(1)
+            expect(yield* reg.listInvolvement(["thr_nope"])).toHaveLength(0)
+          }),
+        ).pipe(Effect.provide(spawningLayer)),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
   // ── Agent participation (PR2): involvement projection ──────────────────────
   it(
     "involvement reaches listThreads: created-under records it, delegations add to it, archived branch carries it",

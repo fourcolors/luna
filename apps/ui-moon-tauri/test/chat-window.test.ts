@@ -5607,6 +5607,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(ev.defaultPrevented).toBe(true)
       expect(m.State.agentFilter).toBe('auditor')
       expect(rowIds()).toEqual([]) // auditor was involved in nothing yet
+
+      // Codex finding 6: a filter whose SPECIFIC agent vanishes clears
+      // BEFORE the paint — never a stranded empty list.
+      m.State.agentFilter = 'ghost-agent'
+      m.ThreadDrawerEngine.render()
+      expect(m.State.agentFilter).toBeNull()
+      expect(rowIds()).toEqual(['inv', 'filed', 'other'])
     })
 
     it('Scenario: adoptAtIndex is retired — redock keeps recency order and clears legacy threadOrder', () => {
