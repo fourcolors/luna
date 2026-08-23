@@ -287,6 +287,7 @@ import {
   resolveMainMemoryPath,
 } from "./agent-memory-loader.js"
 import { buildAgentMentionAddendum } from "./agent-mention-addendum.js"
+import { installAgentSeeds } from "./agent-seed-installer.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
 import {
   attachSandboxLocalShell,
@@ -893,6 +894,25 @@ export const ThreadToolsProviderLayer = (
       // so the operator has a visible signal. See dna-loader.ts:createDnaLoader.
       const loadDnaCached = createDnaLoader(__scriptDir)
       loadDnaCached() // boot guard: throws if neither ~/.luna/DNA.md nor repo DNA.md exists
+
+      // Agent sidebar S6: converge ~/.luna/agents/ with the bundled seed set
+      // (versioned, stamp-based, crash-safe — see agent-seed-installer.ts;
+      // operator-modified files are never touched). Best-effort: a seeding
+      // failure must never stop the server; loadAgents() simply sees fewer
+      // files. seeds/agents/ sits beside DNA.md at the repo root.
+      try {
+        const seedReport = installAgentSeeds(join(__scriptDir, "..", "..", "..", "seeds", "agents"))
+        const summary = [
+          seedReport.installed.length ? `installed=[${seedReport.installed.join(",")}]` : "",
+          seedReport.upgraded.length ? `upgraded=[${seedReport.upgraded.join(",")}]` : "",
+          seedReport.adopted.length ? `adopted=[${seedReport.adopted.join(",")}]` : "",
+          seedReport.kept.length ? `kept=[${seedReport.kept.join(",")}]` : "",
+          seedReport.errors.length ? `errors=[${seedReport.errors.join("; ")}]` : "",
+        ].filter(Boolean).join(" ")
+        if (summary) console.log(`[agent-seeds] ${summary}`)
+      } catch (err) {
+        console.warn("[agent-seeds] install failed (non-fatal):", err)
+      }
       // SYSTEM.md describes Luna's runtime mechanics (workspaces, paths,
       // memory, observability). Absence is non-fatal — boot continues
       // with identity-only context. See system-loader.ts for resolution.

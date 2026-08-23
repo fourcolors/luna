@@ -7,10 +7,19 @@ and cross-machine setups.
 
 ## Installing
 
+The chat-server installs these automatically at boot (agent sidebar S6): a
+versioned, stamp-based converge via `apps/server/src/agent-seed-installer.ts`.
+The stamp file `~/.luna/agents/.seed-manifest.json` records what the installer wrote.
+A file you have edited is NEVER overwritten, even when the bundled seed changes; a file that is byte-identical to the bundle is adopted into the manifest so later upgrades flow.
+Files the seeds do not own are never listed or touched.
+
+Manual install still works and converges with the same rules:
+
 ```bash
 mkdir -p ~/.luna/agents
 cp seeds/agents/*.md ~/.luna/agents/
-# Restart not required — agents are hot-loaded on every query.
+# Restart not required — agents are hot-loaded on every query; the next
+# boot adopts these byte-identical copies into the manifest.
 ```
 
 ## Invoking from chat
