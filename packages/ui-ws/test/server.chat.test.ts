@@ -26,6 +26,7 @@ import {
   ObservabilityService,
   SessionStore,
   TelemetryService,
+  ThreadRegistryService,
   UIService,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
@@ -150,7 +151,13 @@ const baseLayer = (() => {
   )
   const storeL = SessionStore.Default
   const memoryL = Layer.succeed(MemoryRouterTag, noopMemoryRouter)
-  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL, memoryL)
+  // Agent sidebar S2/fix-5: filing persists in ThreadRegistry, and the
+  // thread-created frame only claims a filing that actually LANDED
+  // (regPersisted). Without a registry in the rig, createThread(agentName)
+  // correctly reports no filing — so the roster-validation test needs the
+  // Memory registry here to exercise the real end-to-end path.
+  const registryL = ThreadRegistryService.Memory.pipe(Layer.provide(clockL))
+  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL, memoryL, registryL)
 })()
 
 const fullLayer = (fakeLayer: Layer.Layer<SDKClient>) =>
@@ -689,6 +696,78 @@ describe("UIWebSocketServer (chat routing)", () => {
     )
 
     expect(capturedOptions?.systemPrompt).toBe("Z-IDENTITY-Z")
+  })
+
+  it("new-thread agent field: roster-validated (known files, unknown/no-roster drops)", async () => {
+    // Agent sidebar S2: the `agent` field is client input and is validated
+    // against the bound agentRoster before filing. Three cases through one
+    // rig shape: known name → summary carries agentName; unknown name →
+    // dropped; roster absent → dropped (fail-closed).
+    const buildRig = async (withRoster: boolean) => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        }),
+      )
+      const baseChatLayer = fullLayer(fakeLayer)
+      const serverLayer = Layer.effect(
+        ServerHandle,
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          return yield* startUIWebSocketServer({
+            port: 0,
+            token: TOKEN,
+            pingIntervalMs: 0,
+            chatService: chat,
+            ...(withRoster
+              ? {
+                  agentRoster: {
+                    list: () =>
+                      Effect.succeed([{ name: "advisor", description: "d" }]),
+                  },
+                }
+              : {}),
+          })
+        }),
+      ).pipe(Layer.provide(baseChatLayer))
+      const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseChatLayer))
+      const handle = await runtime.runPromise(ServerHandle)
+      return {
+        url: `ws://127.0.0.1:${handle.port}/ui`,
+        shutdown: async () => { await runtime.dispose() },
+      }
+    }
+
+    const createdAgent = async (
+      rigUrl: string,
+      agent: string,
+    ): Promise<string | undefined> => {
+      const frames = await driveSequence(
+        rigUrl,
+        [
+          {
+            waitFor: (f) => f.type === "hello",
+            thenSend: () => [{ type: "new-thread", model: "claude-test", agent }],
+          },
+          { waitFor: (f) => f.type === "thread-created", thenSend: () => [] },
+        ],
+        3,
+      )
+      const created = frames.find((f) => f.type === "thread-created")
+      return created?.type === "thread-created"
+        ? created.thread.agentName
+        : undefined
+    }
+
+    rig = await buildRig(true)
+    expect(await createdAgent(rig.url, "advisor")).toBe("advisor")
+    expect(await createdAgent(rig.url, "not-in-roster")).toBeUndefined()
+    await rig.shutdown()
+
+    rig = await buildRig(false)
+    expect(await createdAgent(rig.url, "advisor")).toBeUndefined()
   })
 
   it("new-thread with effort field: effortSelection capability is true", async () => {

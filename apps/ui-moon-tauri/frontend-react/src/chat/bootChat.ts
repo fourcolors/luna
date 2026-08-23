@@ -95,6 +95,7 @@ import { mountChatChrome } from "./chat-chrome-mount"
 import { mountComposerConfig } from "./ComposerConfig"
 import { mountMessageList, WELCOME_ITEM } from "./MessageList"
 import { mountSlashMenu } from "./SlashMenu"
+import { createMentionMenu } from "./mentionMenu"
 import { mountSmartBar } from "./SmartBarEngine"
 
 /** Patches chat.html's forward-declared `var <name>` (== `window.<name>` for
@@ -110,6 +111,7 @@ function assignBridge(
     | "Attachments"
     | "ComposerConfig"
     | "SlashMenu"
+    | "MentionMenu"
     | "SmartBarEngine"
     | "ResultToasts"
     | "UpdateBanner"
@@ -176,7 +178,9 @@ export function bootChat() {
     clearTurnTimeout: () => wire.WebSocketEngine.clearTurnTimeout(),
     startTurnTimeout: () => wire.WebSocketEngine.startTurnTimeout(),
     startSubscribeTimeout: () => wire.WebSocketEngine.startSubscribeTimeout(),
-    sendNewThread: () => wire.WebSocketEngine.sendNewThread(),
+    // Optional agent = the sidebar section's "+" (agent sidebar S4/S5);
+    // undefined = the general new-thread everything already sends.
+    sendNewThread: (agent?: string) => wire.WebSocketEngine.sendNewThread(agent),
   }
   setChatHost(Object.freeze(host))
 
@@ -438,6 +442,19 @@ export function bootChat() {
 
   if (slashMenuMount) assignBridge("SlashMenu", slashMenuMount.SlashMenu)
 
+  // ── MentionMenu (the "@agent" popover, agent sidebar S4) ────────────────
+  // Imperative sibling of SlashMenu sharing its popover chrome and wiring
+  // contract — see mentionMenu.ts's module doc for why it is not a
+  // SlashMenu edit and not React. Reads the LIVE State (agents roster +
+  // capability gate, both written by frames.ts handlers through its own
+  // applyAgents/applyCapability).
+  const mentionMenu = createMentionMenu({
+    Logger,
+    DOM: DOM as never,
+    State: getChatHost()?.state() as never,
+  })
+  assignBridge("MentionMenu", mentionMenu)
+
   // ── SmartBarEngine (context-pill Smart Bar) ─────────────────────────────
   //
   // See SmartBarEngine.tsx's module doc for the mount itself and chat.html's
@@ -532,6 +549,9 @@ export function bootChat() {
       isConnected: () => getChatHost()?.isConnected() ?? false,
       clearTurnTimeout: () => getChatHost()?.clearTurnTimeout(),
       startSubscribeTimeout: () => getChatHost()?.startSubscribeTimeout(),
+      // Agent sidebar S5: the section header's "+" routes through the same
+      // shared new-thread builder as every other create (wire.ts).
+      sendNewThread: (agent?: string) => getChatHost()?.sendNewThread(agent),
     },
     // The WHOLE objects, not a narrowed {reset}/{flush}. The drawer's own
     // text only calls those two, but it hands ChatState/ChatLoop straight
@@ -694,6 +714,7 @@ export function bootChat() {
         ComposerConfig: composerConfigMount?.ComposerConfig,
         FeedbackEngine: feedbackEngine,
         LocalShell: localShell,
+        MentionMenu: mentionMenu,
         SecretPromptEngine: secretPromptEngine,
         SlashMenu: slashMenuMount?.SlashMenu,
         SuggestedActionsEngine: suggestedActionsEngine,
@@ -865,6 +886,7 @@ export function bootChat() {
       ComposerConfig: composerConfigMount?.ComposerConfig,
       FeedbackEngine: feedbackEngine,
       LocalShell: localShell,
+      MentionMenu: mentionMenu,
       MoonClient,
       MoonFace: moonFace,
       Notifier: notifier,

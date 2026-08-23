@@ -33,6 +33,9 @@ export interface ThreadRow {
   readonly updatedAt?: number | string | null
   readonly createdAt?: number | string | null
   readonly system?: boolean
+  /** Agent sidebar S5: the section this thread was created under (additive
+   *  on SessionSummary; absent/null = the general section). */
+  readonly agentName?: string | null
 }
 
 /** The slice of chat.html's `State` the selectors read. Passed in rather than
@@ -119,4 +122,143 @@ export function insertIndexForRatio(n: number, yRatio: unknown): number {
   if (n <= 0) return 0
   const r = Math.max(0, Math.min(1, Number(yRatio) || 0))
   return Math.min(n, Math.max(0, Math.round(r * n)))
+}
+
+/**
+ * THE one place a list-threads frame is built (codex review finding 6 —
+ * the drawer's own requestList and wire.ts's four recovery paths each
+ * built their own copy, so the S5 limit bump missed the most common
+ * path). When the server advertises the agents capability the request
+ * asks for 500 rows: the 50 default is per-list, and once threads spread
+ * across sections it makes every count lie. Pure — state slice in,
+ * frame out.
+ */
+export function buildListThreadsFrame(state: {
+  readonly serverSupportsAgents?: boolean
+}): { readonly type: "list-threads"; readonly limit?: number } {
+  return state.serverSupportsAgents === true
+    ? { type: "list-threads", limit: 500 }
+    : { type: "list-threads" }
+}
+
+// ── Agent sections (agent sidebar S5) ───────────────────────────────────────
+
+/** One mentionable agent as the agent-list frame delivers it. */
+export interface RosterAgent {
+  readonly name: string
+  readonly description: string
+}
+
+/** One rendered sidebar section. `agentName === null` is the general
+ *  section (threads created without an agent). */
+export interface AgentSection {
+  readonly agentName: string | null
+  /** Display label — the agent name, or "General". */
+  readonly label: string
+  /** Roster description ("" for the general section and for orphans). */
+  readonly description: string
+  /** False when threads carry an agentName the roster no longer offers —
+   *  the section still renders (the data decides; the roster only
+   *  decorates), just without description or identity affordances. */
+  readonly known: boolean
+  /** Recency-sorted rows (threadOrder is retired — recency only). */
+  readonly rows: ReadonlyArray<ThreadRow>
+}
+
+/**
+ * Whether the drawer should render sections at all.
+ *
+ * Grouped only when the server advertises the agents capability AND there
+ * is something to group BY (a non-empty roster, or at least one thread
+ * already filed) AND no search is active — search always flattens to one
+ * recency list (grouping is for browsing; search is for finding). With
+ * nothing to group by, one lonely "General" header reads worse than
+ * today's flat list, so the drawer stays flat.
+ */
+export function shouldGroupThreads(
+  state: ThreadListState & {
+    readonly serverSupportsAgents?: boolean
+    readonly agents?: ReadonlyArray<RosterAgent> | null
+  },
+): boolean {
+  if (state.serverSupportsAgents !== true) return false
+  if ((state.threadSearch || "").trim()) return false
+  const roster = state.agents || []
+  if (roster.length > 0) return true
+  return (state.threads || []).some((t) => t && t.agentName)
+}
+
+/**
+ * Partition visibleThreads() output into sections: one per roster agent
+ * (rendered even when empty — the per-section "+" needs a home), one per
+ * ORPHAN agentName the roster no longer carries, and "General" for rows
+ * with none.
+ *
+ * Ordering is recency all the way down (Mr. Cobb's ruling — reorder is
+ * retired): rows within a section by timestamp desc (re-sorted here, so a
+ * legacy session threadOrder can never leak in through the caller), and
+ * sections by their most recent row desc, with empty sections last in
+ * roster order. The general section participates by recency like any
+ * other but is never rendered empty.
+ *
+ * Pure: no DOM, no State import — same contract as visibleThreads.
+ */
+export function groupByAgent(
+  rows: ReadonlyArray<ThreadRow>,
+  roster: ReadonlyArray<RosterAgent> | null | undefined,
+): AgentSection[] {
+  const agents = roster || []
+  const byName = new Map<string | null, ThreadRow[]>()
+  for (const t of rows) {
+    const key = t.agentName ? t.agentName : null
+    const bucket = byName.get(key)
+    if (bucket) bucket.push(t)
+    else byName.set(key, [t])
+  }
+
+  const sections: AgentSection[] = []
+  const seen = new Set<string>()
+  for (const a of agents) {
+    seen.add(a.name)
+    const own = (byName.get(a.name) || [])
+      .slice()
+      .sort((x, y) => threadTimestamp(y) - threadTimestamp(x))
+    sections.push({
+      agentName: a.name,
+      label: a.name,
+      description: a.description,
+      known: true,
+      rows: own,
+    })
+  }
+  // Orphans: filed under an agent the roster no longer offers.
+  for (const [key, own] of byName) {
+    if (key === null || seen.has(key)) continue
+    sections.push({
+      agentName: key,
+      label: key,
+      description: "",
+      known: false,
+      rows: own.slice().sort((x, y) => threadTimestamp(y) - threadTimestamp(x)),
+    })
+  }
+  const general = byName.get(null)
+  if (general && general.length > 0) {
+    sections.push({
+      agentName: null,
+      label: "General",
+      description: "",
+      known: true,
+      rows: general.slice().sort((x, y) => threadTimestamp(y) - threadTimestamp(x)),
+    })
+  }
+
+  // Most-recent section first; empty sections sink to the bottom keeping
+  // their relative (roster) order. Stable sort → equal keys keep order.
+  const recency = (s: AgentSection): number =>
+    s.rows.length > 0 ? threadTimestamp(s.rows[0]) : -1
+  return sections
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => recency(b.s) - recency(a.s) || a.i - b.i)
+    .map(({ s }) => s)
 }

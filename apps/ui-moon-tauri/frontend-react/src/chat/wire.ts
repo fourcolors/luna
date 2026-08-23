@@ -33,6 +33,7 @@ import {
   pickBootWsUrl,
   BOOT_INVOKE_MS,
 } from "../tauriBoot"
+import { buildListThreadsFrame } from "./threadList"
 
 /** Max stall-recovery rounds before surfacing "Reattach stalled". 3 covers one
  *  tombstone advance + one validation miss + one final retry. */
@@ -70,6 +71,35 @@ export function createWire(ctx: WireCtx) {
     ComposerConfig, MoonBar, MoonFace, ThreadCreateState, ThreadDrawerEngine,
     MOON_EXPECTED_PROTOCOL_VERSION, SPAWN_FRESH, PINNED_THREAD, winLabel,
   } = ctx
+
+  /**
+   * The ONE place a new-thread frame is built (agent sidebar S4 dedup —
+   * WebSocketEngine.sendNewThread and PoolEngine.sendNewThread used to
+   * carry byte-identical copies of this logic, and the "ONE place" claim
+   * on the former was already stale; anything added to one and not the
+   * other half-works depending on the pool flag). Carries the operator's
+   * persisted model pick, optional sticky account pin, the persisted
+   * effort pick when valid for the model, and — S4 — an optional agent
+   * section for the sidebar's per-section "+" (sent only when the server
+   * advertises the agents capability; it validates against its roster
+   * regardless, so a stale client value degrades to the general section).
+   */
+  const buildNewThreadFrame = (agent) => {
+    const model = localStorage.getItem('luna_model') || '';
+    const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
+    const accountId = localStorage.getItem('luna_account') || '';
+    if (accountId) frame.accountId = accountId;
+    // Include effort only when: (a) server supports effortSelection cap,
+    // (b) an effort is set, and (c) the effort is valid for the chosen model.
+    if (State.serverSupportsEffort) {
+      const effort = localStorage.getItem('luna_effort') || '';
+      if (effort && ComposerConfig.isEffortValidForCurrentModel(effort)) {
+        frame.effort = effort;
+      }
+    }
+    if (agent && State.serverSupportsAgents) frame.agent = agent;
+    return frame;
+  }
 
   const WebSocketEngine = {
     // registerCloseHook seam (design doc, Monolith Decomposition): code
@@ -400,21 +430,9 @@ export function createWire(ctx: WireCtx) {
      * same-kind failover). A set id pins the thread (sticky — disables
      * failover for that thread by design).
      */
-    sendNewThread() {
+    sendNewThread(agent) {
       if (!ThreadCreateState.begin()) return;
-      const model = localStorage.getItem('luna_model') || '';
-      const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
-      const accountId = localStorage.getItem('luna_account') || '';
-      if (accountId) frame.accountId = accountId;
-      // Include effort only when: (a) server supports effortSelection cap,
-      // (b) an effort is set, and (c) the effort is valid for the chosen model.
-      if (State.serverSupportsEffort) {
-        const effort = localStorage.getItem('luna_effort') || '';
-        if (effort && ComposerConfig.isEffortValidForCurrentModel(effort)) {
-          frame.effort = effort;
-        }
-      }
-      this.send(frame);
+      this.send(buildNewThreadFrame(agent));
     },
 
     clearTurnTimeout() {
@@ -518,7 +536,7 @@ export function createWire(ctx: WireCtx) {
       State.threadListAutoSelectPending = true;
       Logger.warn(`Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
       this.updateStatus('connecting', 'Recovering…');
-      this.send({ type: 'list-threads' });
+      this.send(buildListThreadsFrame(State));
       this.startSubscribeTimeout();          // bound the recovery subscribe with the same watchdog
     },
 
@@ -657,7 +675,7 @@ export function createWire(ctx: WireCtx) {
         // No known thread → list threads (subscribes to most-recent or mints fresh).
         Logger.info("No known thread; listing threads instead");
         State.threadListAutoSelectPending = true;
-        this.send({ type: 'list-threads' });
+        this.send(buildListThreadsFrame(State));
       }
       this.startSubscribeTimeout();
     },
@@ -1377,7 +1395,7 @@ export function createWire(ctx: WireCtx) {
       State.threadListAutoSelectPending = true;
       Logger.warn(`[PoolEngine] Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
       this.updateStatus('connecting', 'Recovering…');
-      this.send({ type: 'list-threads' });
+      this.send(buildListThreadsFrame(State));
       this.startSubscribeTimeout();
     },
 
@@ -1464,25 +1482,17 @@ export function createWire(ctx: WireCtx) {
       } else {
         Logger.info('[PoolEngine] No known thread; listing threads instead');
         State.threadListAutoSelectPending = true;
-        this.send({ type: 'list-threads' });
+        this.send(buildListThreadsFrame(State));
       }
       this.startSubscribeTimeout();
     },
 
     // ── Helpers mirroring WebSocketEngine seams ────────────────────────
-    sendNewThread() {
+    // Same shared builder as WebSocketEngine.sendNewThread (S4 dedup) —
+    // the two copies used to drift-risk every added field.
+    sendNewThread(agent) {
       if (!ThreadCreateState.begin()) return;
-      const model = localStorage.getItem('luna_model') || '';
-      const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
-      const accountId = localStorage.getItem('luna_account') || '';
-      if (accountId) frame.accountId = accountId;
-      if (State.serverSupportsEffort) {
-        const effort = localStorage.getItem('luna_effort') || '';
-        if (effort && ComposerConfig.isEffortValidForCurrentModel(effort)) {
-          frame.effort = effort;
-        }
-      }
-      this.send(frame);
+      this.send(buildNewThreadFrame(agent));
     },
 
     checkProtocolVersion(frame) { WebSocketEngine.checkProtocolVersion(frame); },
@@ -1640,7 +1650,7 @@ export function createWire(ctx: WireCtx) {
     WebSocketEngine.clearSubscribeTimeout = function() { return PoolEngine.clearSubscribeTimeout(); };
     WebSocketEngine.startSubscribeTimeout = function() { return PoolEngine.startSubscribeTimeout(); };
     WebSocketEngine.isConnected       = function() { return PoolEngine.isConnected(); };
-    WebSocketEngine.sendNewThread     = function() { return PoolEngine.sendNewThread(); };
+    WebSocketEngine.sendNewThread     = function(agent) { return PoolEngine.sendNewThread(agent); };
     WebSocketEngine.syncThread        = function() { return PoolEngine.syncThread(); };
     WebSocketEngine.onReattachStalled = function() { return PoolEngine.onReattachStalled(); };
     WebSocketEngine.onReattached      = function() { return PoolEngine.onReattached(); };

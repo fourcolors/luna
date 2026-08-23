@@ -5550,18 +5550,27 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(document.querySelector('.thread-drawer')?.classList.contains('redock-target')).toBe(false)
     })
 
-    it('Scenario: adoptAtIndex pins session-local order after redock (#380)', () => {
+    // REWRITTEN for agent sidebar S5 (Mr. Cobb's ruling 2026-08-22: "we
+    // don't need reorder threads anymore, just recent"). adoptAtIndex used
+    // to pin a session-local order after redock (#380); it is now a
+    // deliberate no-op that CLEARS any legacy order, so a redocked thread
+    // sorts by recency like every other row. The callee survives so
+    // threadDrag.ts's drop path is untouched.
+    it('Scenario: adoptAtIndex is retired — redock keeps recency order and clears legacy threadOrder', () => {
       const m = M()
       m.State.threads = [
-        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastActiveAt: 30 },
-        { id: 'b', title: 'Beta', lastMessagePreview: '', lastActiveAt: 20 },
-        { id: 'c', title: 'Gamma', lastMessagePreview: '', lastActiveAt: 10 },
+        { id: 'a', title: 'Alpha', lastMessagePreview: '', lastMessageAt: 30 },
+        { id: 'b', title: 'Beta', lastMessagePreview: '', lastMessageAt: 20 },
+        { id: 'c', title: 'Gamma', lastMessagePreview: '', lastMessageAt: 10 },
       ]
+      // A stale session-local order from a pre-S5 session must not survive.
+      m.State.threadOrder = ['b', 'c', 'a']
       m.ThreadDrawerEngine.adoptAtIndex('c', 0)
+      expect(m.State.threadOrder).toBeNull()
       expect(m.ThreadDrawerEngine._visibleThreads().map((t: { id: string }) => t.id)).toEqual([
-        'c',
         'a',
         'b',
+        'c',
       ])
     })
 

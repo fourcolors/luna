@@ -81,7 +81,7 @@ export interface LunaChatHostApi {
   readonly clearTurnTimeout: () => void
   readonly startSubscribeTimeout: () => void
   readonly startTurnTimeout: () => void
-  readonly sendNewThread: () => void
+  readonly sendNewThread: (agent?: string) => void
 
 }
 

@@ -79,6 +79,8 @@ export interface ThreadDrawerCtx {
     isConnected: () => boolean
     clearTurnTimeout: () => void
     startSubscribeTimeout: () => void
+    /** Agent sidebar S5: the section header's "+" (optional agent). */
+    sendNewThread: (agent?: string) => void
   }
   readonly ChatState: Record<string, unknown>
   readonly ChatLoop: Record<string, unknown>
@@ -317,7 +319,10 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
 
     requestList() {
       if (State.threadDrawerOpen && WebSocketEngine.isConnected()) {
-        WebSocketEngine.send({ type: 'list-threads' });
+        // Shared builder (codex finding 6): this is the drawer's COMMON
+        // refresh path and must carry the same grouped-mode limit as
+        // wire.ts's recovery paths.
+        WebSocketEngine.send(ThreadListLogic.buildListThreadsFrame(State));
       }
     },
 
@@ -427,7 +432,76 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
           else this.onRowClick(id);
         },
         onPopOut: (id) => this.openInNewWindow(id),
+        // Agent sidebar S5: search mode flattens; rows wear their section.
+        tagAgents: !!(State.threadSearch || '').trim() && State.serverSupportsAgents === true,
+        // Sections when there is something to group by (see
+        // shouldGroupThreads); undefined = the exact pre-S5 flat path.
+        grouped: ThreadListLogic.shouldGroupThreads(State)
+          ? this._buildGrouped(rows)
+          : undefined,
       });
+    },
+
+    // --- agent sections (S5) ------------------------------------------------
+
+    /** Section list for the grouped render: headers derive from threads ∪
+     *  roster; collapse is per-agent in localStorage, but the section
+     *  holding the ACTIVE thread renders forced-open (non-persistent) so a
+     *  thread switch can never land the selection inside a hidden row. */
+    _buildGrouped(rows) {
+      const collapsed = this._collapsedAgents();
+      const sections = ThreadListLogic
+        .groupByAgent(rows, State.agents)
+        .map((s) => ({
+          ...s,
+          collapsed:
+            collapsed.has(s.agentName === null ? '' : s.agentName) &&
+            !s.rows.some((t) => t && t.id === State.activeThreadId),
+          busy: s.rows.some((t) => t && ThreadCache.isBusy(t.id) && t.id !== State.activeThreadId),
+        }));
+      return {
+        sections,
+        onToggle: (name) => this.toggleSection(name),
+        onNewThread: (name) => this.newThreadForAgent(name),
+      };
+    },
+
+    COLLAPSED_AGENTS_KEY: 'luna.sidebarCollapsedAgents',
+
+    /** Collapsed section keys ('' = the general section). */
+    _collapsedAgents() {
+      try {
+        const raw = localStorage.getItem(this.COLLAPSED_AGENTS_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []);
+      } catch (_) {
+        return new Set();
+      }
+    },
+
+    _persistCollapsed(set) {
+      try {
+        localStorage.setItem(this.COLLAPSED_AGENTS_KEY, JSON.stringify(Array.from(set)));
+      } catch (_) { /* private mode */ }
+    },
+
+    toggleSection(agentName) {
+      const key = agentName === null ? '' : agentName;
+      const set = this._collapsedAgents();
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      this._persistCollapsed(set);
+      this.render();
+    },
+
+    /** The section header's "+": expand the section (the thread-created row
+     *  must be visible) and mint a thread pre-filed to this agent through
+     *  the same shared new-thread builder every other create uses. */
+    newThreadForAgent(agentName) {
+      const set = this._collapsedAgents();
+      if (set.delete(agentName)) this._persistCollapsed(set);
+      WebSocketEngine.sendNewThread(agentName);
+      this.render();
     },
 
     _insertIndexForRatio(n, yRatio) { return ThreadListLogic.insertIndexForRatio(n, yRatio); },
@@ -698,21 +772,18 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     },
 
     /**
-     * Reorder the session-local thread order so the redocked thread lands at
-     * insertIndex. Server list-threads still refreshes content; this only pins
-     * relative order for the open session.
+     * RETIRED (agent sidebar S5, Mr. Cobb's ruling 2026-08-22: "we don't
+     * need reorder threads anymore, just recent"). A redock drop's position
+     * used to pin a session-local order via State.threadOrder; now the drop
+     * re-docks the thread and it sorts by recency like every other row —
+     * the insert-gap preview remains a purely visual affordance. Kept as a
+     * callee (threadDrag.ts calls it on drop) so the drag machinery is
+     * untouched; it now just clears any legacy order so visibleThreads'
+     * rank branch can never resurrect stale positions mid-session.
      */
     adoptAtIndex(threadId, insertIndex) {
-      if (!threadId) return;
-      const ids = this._visibleThreads().map((t) => t.id).filter(Boolean);
-      const from = ids.indexOf(threadId);
-      if (from >= 0) ids.splice(from, 1);
-      let to = typeof insertIndex === 'number' && Number.isFinite(insertIndex)
-        ? insertIndex
-        : 0;
-      to = Math.max(0, Math.min(ids.length, to));
-      ids.splice(to, 0, threadId);
-      State.threadOrder = ids;
+      void threadId; void insertIndex;
+      State.threadOrder = null;
     },
 
     // _renderRow moved to src/chat/threadStrip.ts (stack23 S17c) - see

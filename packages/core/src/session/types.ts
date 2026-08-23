@@ -109,6 +109,13 @@ export interface SessionSummary {
    * absent when the session has no explicit effort.
    */
   readonly effort?: string
+  /**
+   * Agent sidebar S2: the agent section this thread was created under.
+   * Additive — absent when the thread lives in the general section.
+   * Sourced from ThreadRegistry.agent_name (write-once at INSERT); the
+   * SessionStore itself never persists this.
+   */
+  readonly agentName?: string
   readonly status: SessionStatus
   /**
    * Wall-clock ts of the most recently appended message, or null if none yet.

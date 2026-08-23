@@ -2726,6 +2726,61 @@ describe("ChatService — listThreads excludes archived threads", () => {
     { timeout: 15_000 },
   )
 
+  // ── Agent sidebar S2: filing at creation, projection on both branches ──────
+  it(
+    "createThread(agentName) files the thread: thread-created summary + active list + archived list all carry it",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+          const store = yield* SessionStore
+
+          const filed = yield* chat.createThread({
+            model: "claude-test",
+            title: "advisor-thread",
+            agentName: "advisor",
+          })
+          // The creating client files the row from the returned summary
+          // (no list-threads round-trip).
+          expect(filed.agentName).toBe("advisor")
+
+          const general = yield* chat.createThread({
+            model: "claude-test",
+            title: "general-thread",
+          })
+          expect(general.agentName).toBeUndefined()
+
+          // Both need a first user message to survive the active filter.
+          for (const [t, msg] of [
+            [filed, "m-ag-1"],
+            [general, "m-ag-2"],
+          ] as const) {
+            yield* store.appendMessage({
+              sessionId: t.id,
+              messageId: msg,
+              ts: 1,
+              parentId: null,
+              kind: "user",
+              payload: { message: { content: "hello" } },
+            })
+          }
+
+          // Active projection: agentName layered from the registry.
+          const active = yield* chat.listThreads(50)
+          expect(active.find((s) => s.id === filed.id)?.agentName).toBe("advisor")
+          expect(active.find((s) => s.id === general.id)?.agentName).toBeUndefined()
+
+          // Archived projection (registry-only branch) keeps the section.
+          yield* reg.archive(filed.id)
+          const archived = yield* chat.listThreads(50, "archived")
+          expect(archived.find((s) => s.id === filed.id)?.agentName).toBe("advisor")
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
   it(
     "an explicit creation title is seeded into the registry so the archived list shows it",
     async () => {

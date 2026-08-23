@@ -286,6 +286,8 @@ import {
   loadMainMemory,
   resolveMainMemoryPath,
 } from "./agent-memory-loader.js"
+import { buildAgentMentionAddendum } from "./agent-mention-addendum.js"
+import { installAgentSeeds } from "./agent-seed-installer.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
 import {
   attachSandboxLocalShell,
@@ -322,6 +324,7 @@ import {
   ChatThreadPosterTag,
   CrossEncoderRerankerLayer,
   BulletinWriterDefault,
+  loadAgents,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -359,6 +362,7 @@ import {
   createSecretRequestBridge,
   createSubagentTreeBridge,
   createWidgetSummonBridge,
+  projectAgentRoster,
   startUIWebSocketServer,
   type MemorySearchErrorKind,
 } from "@luna/ui-ws"
@@ -890,6 +894,25 @@ export const ThreadToolsProviderLayer = (
       // so the operator has a visible signal. See dna-loader.ts:createDnaLoader.
       const loadDnaCached = createDnaLoader(__scriptDir)
       loadDnaCached() // boot guard: throws if neither ~/.luna/DNA.md nor repo DNA.md exists
+
+      // Agent sidebar S6: converge ~/.luna/agents/ with the bundled seed set
+      // (versioned, stamp-based, crash-safe — see agent-seed-installer.ts;
+      // operator-modified files are never touched). Best-effort: a seeding
+      // failure must never stop the server; loadAgents() simply sees fewer
+      // files. seeds/agents/ sits beside DNA.md at the repo root.
+      try {
+        const seedReport = installAgentSeeds(join(__scriptDir, "..", "..", "..", "seeds", "agents"))
+        const summary = [
+          seedReport.installed.length ? `installed=[${seedReport.installed.join(",")}]` : "",
+          seedReport.upgraded.length ? `upgraded=[${seedReport.upgraded.join(",")}]` : "",
+          seedReport.adopted.length ? `adopted=[${seedReport.adopted.join(",")}]` : "",
+          seedReport.kept.length ? `kept=[${seedReport.kept.join(",")}]` : "",
+          seedReport.errors.length ? `errors=[${seedReport.errors.join("; ")}]` : "",
+        ].filter(Boolean).join(" ")
+        if (summary) console.log(`[agent-seeds] ${summary}`)
+      } catch (err) {
+        console.warn("[agent-seeds] install failed (non-fatal):", err)
+      }
       // SYSTEM.md describes Luna's runtime mechanics (workspaces, paths,
       // memory, observability). Absence is non-fatal — boot continues
       // with identity-only context. See system-loader.ts for resolution.
@@ -1044,6 +1067,11 @@ export const ThreadToolsProviderLayer = (
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             bulletinHolder?.current ?? "", // hot-tier recent-activity bulletin ("" until first refresh or when LUNA_BULLETIN is off - filtered below)
             skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
+            // Agent sidebar S3: the @ mention contract + roster ("" when no
+            // agents installed — filtered below). Read fresh per thread so
+            // it tracks the same hot-loaded ~/.luna/agents/ source the
+            // adapter passes to Options.agents on every query.
+            buildAgentMentionAddendum(projectAgentRoster(loadAgents())),
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -3083,6 +3111,7 @@ export const buildSetupServerLayer = (
         ...(BUILD_VERSION !== undefined ? { serverVersion: BUILD_VERSION } : {}),
         chatService: null,
         accountBroker: null,
+        agentRoster: null, // setup-mode: no runtime, nothing to mention
         survey: null,
         skillRegistry: null,
         connectorService: null,
@@ -4249,11 +4278,16 @@ const buildServerLayer = (
               }
             }
 
-            // Resume-fork: inherit parent SDK session when known.
+            // Resume-fork: inherit parent SDK session when known, and the
+            // parent's agent section (agent sidebar S2 — a fork child is a
+            // continuation of the same conversation, so it files where its
+            // parent lives; write-once at the child's own INSERT).
             let resumeFromSessionId: string | undefined
+            let parentAgentName: string | undefined
             if (Option.isSome(threadRegistryOption)) {
               const row = yield* threadRegistryOption.value.get(input.threadId)
               if (row?.sdkSessionId) resumeFromSessionId = row.sdkSessionId
+              if (row?.agentName) parentAgentName = row.agentName
             }
 
             const child = yield* chat.createThread({
@@ -4262,6 +4296,9 @@ const buildServerLayer = (
               tags: [FORK_CHILD_TAG],
               ...(resumeFromSessionId !== undefined
                 ? { resumeFromSessionId }
+                : {}),
+              ...(parentAgentName !== undefined
+                ? { agentName: parentAgentName }
                 : {}),
             })
 
@@ -4635,6 +4672,19 @@ const buildServerLayer = (
         availableModels: buildAvailableModels(),
         chatService: chat,
         accountBroker: broker,
+        // Agent sidebar S1: mentionable-agent roster. Reads the same
+        // ~/.luna/agents/ source the adapter passes to Options.agents on
+        // every query (adapter.ts loadAgents call), so the menu can never
+        // offer an agent this server's runtime would not accept. Read
+        // fresh per connection — agents are hot-loaded, no restart needed.
+        // projectAgentRoster strips to {name, description}: full defs
+        // carry prompts/tool lists and must never reach the wire.
+        agentRoster: {
+          list: () =>
+            Effect.sync(() =>
+              projectAgentRoster(loadAgents(), (m) => console.warn(m)),
+            ),
+        },
         survey: surveyHandle, // Phase 3 D3: resolved handle
         feedbackSink, // point-at-the-UI feedback → agent_notes (kind='ui_feedback')
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped

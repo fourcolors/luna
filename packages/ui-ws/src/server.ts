@@ -285,6 +285,25 @@ export interface UIWebSocketServerConfig {
     }>>
   } | null
   /**
+   * Optional agent-roster handle (agent sidebar S1). When provided, the
+   * server advertises `capabilities.agents: true` and sends an `agent-list`
+   * frame after `hello` (fire-and-forget, like account-list).
+   *
+   * The handle's list() MUST already be wire-safe (metadata only — name +
+   * description, never prompts/tools/mcpServers): the chat-server adapter
+   * projects via projectAgentRoster BEFORE this package ever sees the
+   * definitions, so a logging or serialization bug here cannot leak prompt
+   * content. Structural type keeps the dependency surface narrow — mirrors
+   * accountBroker exactly. Pass `null` explicitly in setup-mode (same as
+   * absent).
+   */
+  readonly agentRoster?: {
+    readonly list: () => import("effect").Effect.Effect<ReadonlyArray<{
+      readonly name: string
+      readonly description: string
+    }>>
+  } | null
+  /**
    * Optional skill-catalog handle (PRD Part B). When provided, the server:
    *   - advertises `capabilities.skills: true`
    *   - sends a `skill-catalog` frame after `hello` (fire-and-forget, like
@@ -866,6 +885,7 @@ export const startUIWebSocketServer = (
     const jobInputBridge = config.jobInputBridge ?? null
     const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
+    const agentRoster = config.agentRoster ?? null
     const capabilityRegistry = config.capabilityRegistry ?? null
     const threadArchiveNotifier = config.threadArchiveNotifier ?? null
     const connectorService = config.connectorService ?? null
@@ -1279,6 +1299,9 @@ export const startUIWebSocketServer = (
             // PRD Part A: connector catalog + the client-brokered OAuth
             // handshake available. Same additive gating as skills.
             connectors: connectorService !== null,
+            // Agent sidebar S1: mentionable-agent roster bound — an
+            // `agent-list` frame follows hello. Same additive gating.
+            agents: agentRoster !== null,
             // PRD Part C/W1: pinned-artifact persistence + pin/unpin routing.
             // Clients gate the panel's "Pinned" section on this flag.
             artifacts: artifactStore !== null,
@@ -1330,6 +1353,34 @@ export const startUIWebSocketServer = (
             Effect.flatMap(broker.list("anthropic"), (accounts) =>
               Effect.sync(() => {
                 send(ws, { type: "account-list", accounts })
+              }),
+            ),
+          )
+        }
+
+        // Agent sidebar S1: send agent-list immediately after hello so the
+        // mention menu and the grouped sidebar can populate on connect.
+        // Same fire-and-forget pattern as account-list; a roster failure
+        // must not block connection setup. The handle is wire-safe by
+        // contract (metadata only — see UIWebSocketServerConfig.agentRoster).
+        if (agentRoster !== null) {
+          const roster = agentRoster
+          Effect.runFork(
+            Effect.flatMap(roster.list(), (agents) =>
+              Effect.sync(() => {
+                // LAST-LINE WIRE-SAFETY (codex review finding 1): the handle
+                // is structurally typed, so a caller passing full agent
+                // definitions would still typecheck and send() would
+                // serialize prompts/tool lists to every client. Rebuild
+                // field-by-field HERE, immediately before serialization, so
+                // no upstream refactor can widen the frame.
+                send(ws, {
+                  type: "agent-list",
+                  agents: agents.map((a) => ({
+                    name: a.name,
+                    description: a.description,
+                  })),
+                })
               }),
             ),
           )
@@ -2229,6 +2280,20 @@ export const startUIWebSocketServer = (
                     // frame so the client can recover. The cause is also logged
                     // by the terminal defect logger at the runFork below.
                     yield* Effect.gen(function* () {
+                      // Agent sidebar S2: validate the requested section
+                      // against the live roster before filing. Fail-closed:
+                      // no roster bound, or a name the roster doesn't carry,
+                      // degrades to the general section rather than trusting
+                      // client input or failing the create.
+                      let agentName: string | undefined
+                      if (frame.agent !== undefined && agentRoster !== null) {
+                        const roster = yield* agentRoster
+                          .list()
+                          .pipe(Effect.catchCause(() => Effect.succeed([])))
+                        if (roster.some((a) => a.name === frame.agent)) {
+                          agentName = frame.agent
+                        }
+                      }
                       const summary = yield* chat.createThread({
                         model: frame.model,
                         // effort is forwarded verbatim — chat-service clamps it
@@ -2243,6 +2308,7 @@ export const startUIWebSocketServer = (
                         ...(frame.accountId !== undefined
                           ? { boundAccountId: frame.accountId }
                           : {}),
+                        ...(agentName !== undefined ? { agentName } : {}),
                       })
                       send(ws, { type: "thread-created", thread: summary })
                       // Cache the model so the smart bar can show it.

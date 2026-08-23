@@ -122,6 +122,13 @@ export function createState() {
       // Threads with an in-flight agentic turn (any threadId, not just active).
       // Sidebar shows a busy pulse so background work is visible while you chat elsewhere.
       busyThreads: Object.create(null),
+      // Agent sidebar S4: mention menu + (S5) grouped sidebar gating.
+      // Defaults false; `hello` corrects to true when the server binds an
+      // agent roster. Old server → "@" stays ordinary text, flat sidebar.
+      serverSupportsAgents: false,
+      // MentionAgent[] ({name, description} only — the ui-ws projection
+      // guarantees no prompts/tools ever reach this array) from agent-list.
+      agents: [],
       // Model + effort switcher (§1 wire contract). effortSelection cap gates
       // whether the server accepts set-thread-config + computes efforts per model.
       // Defaults false; `hello` corrects to true when the server supports it.

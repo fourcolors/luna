@@ -265,6 +265,23 @@ describe("defaultSafetyInterceptors (composed policy)", () => {
       updatedInput: { query: "x" },
     })
   })
+
+  it("default-ALLOWs subagent delegation (Task/Agent) — the @ mention contract's floor (agent-sidebar S3)", async () => {
+    // Mention-driven delegation (agent sidebar) rides on the SDK's Agent
+    // tool. Nothing denies it today, but nothing pinned that either — a
+    // future rail landing on Task/Agent would silently turn every @ mention
+    // into a no-op. The wire name is "Agent" on current SDKs and "Task" on
+    // older ones (see ui-ws subagent-tree-bridge AGENT_TOOL_NAMES) — pin
+    // BOTH.
+    for (const tool of ["Agent", "Task"]) {
+      expect(
+        await run(policy(tool, { subagent_type: "advisor", prompt: "review" })),
+      ).toEqual({
+        behavior: "allow",
+        updatedInput: { subagent_type: "advisor", prompt: "review" },
+      })
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

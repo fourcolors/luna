@@ -264,4 +264,44 @@ describe("ThreadRegistryService (Memory layer)", () => {
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
+
+  // ── Agent sidebar S2: agent_name is write-once at INSERT ──────────────────
+
+  it("upsert stamps agentName on insert and defaults it to null", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const filed = yield* reg.upsert({ id: "thr_ag_1", agentName: "advisor" })
+      expect(filed.agentName).toBe("advisor")
+      const general = yield* reg.upsert({ id: "thr_ag_2" })
+      expect(general.agentName).toBeNull()
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("upsert on an existing row IGNORES agentName (write-once — resume can never re-file)", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_ag_3", agentName: "advisor" })
+      // A resume-shaped upsert that tries to smuggle a different section.
+      const after = yield* reg.upsert({ id: "thr_ag_3", agentName: "auditor", model: "claude-x" })
+      expect(after.agentName).toBe("advisor") // unchanged
+      expect(after.model).toBe("claude-x") // other fields still merge
+      // And an upsert with NO agentName never clears an existing one.
+      const untouched = yield* reg.upsert({ id: "thr_ag_3", effort: "high" })
+      expect(untouched.agentName).toBe("advisor")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("archive preserves agentName (archived threads keep their section)", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_ag_4", agentName: "dev-agent" })
+      yield* reg.archive("thr_ag_4")
+      const archived = yield* reg.listByStatus("archived")
+      const row = archived.find((r) => r.id === "thr_ag_4")
+      expect(row?.agentName).toBe("dev-agent")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
 })

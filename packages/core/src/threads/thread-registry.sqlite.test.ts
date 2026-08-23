@@ -243,4 +243,41 @@ describe("ThreadRegistryService (SQLite layer)", () => {
     })
     await Effect.runPromise(program.pipe(Effect.provide(layer)))
   })
+
+  // ── Agent sidebar S2: migration v3 + write-once agent_name ────────────────
+
+  test("v3 migration: agent_name persists across a simulated restart (same db file)", async () => {
+    const dbPath = `/tmp/luna-test-registry-v3-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+    const first = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_v3_a", agentName: "advisor" })
+      yield* reg.upsert({ id: "thr_v3_b" })
+    })
+    await Effect.runPromise(first.pipe(Effect.provide(makeTestLayer(dbPath))))
+    // Second build over the SAME file: migrations 1-3 re-apply through the
+    // ledger (must be no-ops) and the column round-trips.
+    const second = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const filed = yield* reg.get("thr_v3_a")
+      expect(filed?.agentName).toBe("advisor")
+      const general = yield* reg.get("thr_v3_b")
+      expect(general?.agentName).toBeNull()
+    })
+    await Effect.runPromise(second.pipe(Effect.provide(makeTestLayer(dbPath))))
+  })
+
+  test("agent_name is write-once: an update-shaped upsert cannot re-file or clear it", async () => {
+    const layer = makeTestLayer(":memory:")
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.upsert({ id: "thr_v3_once", agentName: "dev-agent" })
+      yield* reg.upsert({ id: "thr_v3_once", agentName: "auditor", model: "claude-x" })
+      const row = yield* reg.get("thr_v3_once")
+      expect(row?.agentName).toBe("dev-agent") // smuggled re-file ignored
+      expect(row?.model).toBe("claude-x") // normal merge still works
+      yield* reg.upsert({ id: "thr_v3_once", effort: "high" })
+      expect((yield* reg.get("thr_v3_once"))?.agentName).toBe("dev-agent")
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(layer)))
+  })
 })

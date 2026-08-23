@@ -17,6 +17,8 @@ export function createDom() {
       chatPanel: document.getElementById('chat-panel'),
       chatForm: document.getElementById('chat-form'),
       messageInput: document.getElementById('message-input'),
+      // Agent sidebar S4: the "@agent" popover (mentionMenu.ts paints it).
+      mentionMenu: document.getElementById('mention-menu'),
       chatMessages: document.getElementById('chat-messages'),
       fileInput: document.getElementById('file-input'),
       attachPlusBtn: document.getElementById('attach-plus-btn'),

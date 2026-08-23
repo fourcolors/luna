@@ -61,6 +61,24 @@ const SCHEMA_V2 = `
     ON threads(status, last_active_at DESC);
 `
 
+/**
+ * Agent sidebar S2 migration — additive ALTER TABLE only, same ledger.
+ *
+ * agent_name is WRITE-ONCE AT INSERT by API construction (Mr. Cobb's
+ * explicit ruling, 2026-08-22): a thread is under an agent only if it was
+ * CREATED there (the sidebar section's "+", or a fork child inheriting its
+ * parent's agent). Mentions never file or move threads, so no setter and
+ * no update path exist — upsert() applies agentName on INSERT only and
+ * ignores it on UPDATE. NULL = the general (unassigned) section; all
+ * pre-existing rows are NULL after migration, which is correct by
+ * definition.
+ */
+const SCHEMA_V3 = `
+  ALTER TABLE threads ADD COLUMN agent_name TEXT;
+  CREATE INDEX IF NOT EXISTS idx_threads_agent
+    ON threads(agent_name, last_active_at DESC);
+`
+
 // ── bun:sqlite minimal shape ─────────────────────────────────────────────────
 
 interface BunDb {
@@ -111,6 +129,12 @@ export interface ThreadRow {
    * Cleared (set to null) when unarchived.
    */
   readonly archivedAt: number | null
+  /**
+   * Agent sidebar S2: the agent section this thread was CREATED under, or
+   * null for the general section. Write-once at INSERT — see SCHEMA_V3's
+   * doc for why no update path exists.
+   */
+  readonly agentName: string | null
 }
 
 /** Input for upsert() — all optional except id. */
@@ -135,6 +159,13 @@ export interface ThreadUpsertInput {
   readonly title?: string | null
   readonly model?: string | null
   readonly effort?: string | null
+  /**
+   * Agent sidebar S2: applied on INSERT ONLY — an upsert() that lands on an
+   * existing row ignores this key entirely (write-once by construction, see
+   * SCHEMA_V3's doc). chat-service reuses createThread to RESUME threads,
+   * so honoring it on update would let a resume rewrite the filing.
+   */
+  readonly agentName?: string
   /**
    * Override the timestamp used for created_at / last_active_at on INSERT
    * (ignored on UPDATE — last_active_at is always bumped to now on updates).
@@ -338,6 +369,9 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
             lastActiveAt: ts,
             status: "active",
             archivedAt: null,
+            // Write-once: only an INSERT ever reads input.agentName (the
+            // update branch above deliberately omits it).
+            agentName: input.agentName ?? null,
           }
           yield* Ref.update(store, (m) => {
             const n = new Map(m)
@@ -515,6 +549,8 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
         applyMigration(db, "threads", 1, SCHEMA_V1, nowMs)
         // Phase 3: additive ALTER TABLE — runs once via migration ledger.
         applyMigration(db, "threads", 2, SCHEMA_V2, nowMs)
+        // Agent sidebar S2: additive agent_name column — same ledger.
+        applyMigration(db, "threads", 3, SCHEMA_V3, nowMs)
 
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -522,12 +558,12 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
 
         const SELECT_COLS =
           "id, sdk_session_id, cwd, title, model, effort, created_at, last_active_at, " +
-          "COALESCE(status, 'active') AS status, archived_at"
+          "COALESCE(status, 'active') AS status, archived_at, agent_name"
 
         const insertStmt = db.query(
           `INSERT INTO threads
-             (id, sdk_session_id, cwd, title, model, effort, created_at, last_active_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, sdk_session_id, cwd, title, model, effort, created_at, last_active_at, agent_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         const updateStmt = db.query(
           `UPDATE threads
@@ -597,6 +633,7 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
           last_active_at: number
           status: string | null
           archived_at: number | null
+          agent_name: string | null
         }
 
         const rowToThread = (row: RawRow): ThreadRow => ({
@@ -610,6 +647,7 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
           lastActiveAt: row.last_active_at,
           status: (row.status === "archived" ? "archived" : "active") as ThreadStatus,
           archivedAt: row.archived_at ?? null,
+          agentName: row.agent_name ?? null,
         })
 
         const upsert: ThreadRegistryApi["upsert"] = (input) =>
@@ -642,6 +680,9 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
                 input.effort ?? null,
                 insertTs,
                 insertTs,
+                // Write-once: agent_name is bound at INSERT only — updateStmt
+                // above carries no agent_name column at all.
+                input.agentName ?? null,
               )
             }
             const row = getStmt.get(input.id) as RawRow | undefined
@@ -657,6 +698,7 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
                 lastActiveAt: insertTs,
                 status: "active" as ThreadStatus,
                 archivedAt: null,
+                agentName: input.agentName ?? null,
               } satisfies ThreadRow
             }
             return rowToThread(row)

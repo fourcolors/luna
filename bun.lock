@@ -81,7 +81,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.70",
+      "version": "0.0.72",
       "dependencies": {
         "@astryxdesign/core": "0.1.8",
         "@luna/tools": "workspace:*",
@@ -196,6 +196,10 @@
       "dependencies": {
         "@luna/memory": "workspace:*",
         "effect": "4.0.0-rc.111",
+      },
+      "devDependencies": {
+        "typescript": "7.0.2",
+        "vitest": "^2.1.5",
       },
     },
     "packages/job-input-tools": {
