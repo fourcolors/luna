@@ -106,10 +106,22 @@ export function createMachineAccessPrompt(deps: MachineAccessPromptDeps) {
 
     /** Persist the answer and apply it NOW, exactly like the settings toggle. */
     _answer(choice: "on" | "off"): void {
+      // The question may have been answered elsewhere while this banner stayed
+      // mounted - Settings > Connection, or the composer's own scope menu
+      // (#scope-full-access -> LocalShell.toggleFullAccess), both writing the
+      // same key. A stale banner must never overwrite a fresher answer, so it
+      // drops itself instead of applying. (Found by the #598 review.)
+      if (!machineAccessUnanswered(localStorage)) {
+        this._remove()
+        return
+      }
       try {
         localStorage.setItem(MACHINE_ACCESS_KEY, choice)
-      } catch (_) {
-        /* sandboxed - the in-memory apply below still holds for this session */
+      } catch (err) {
+        // The in-memory apply below still holds for this session, but the
+        // choice is LOST at next launch (the key stays absent, the banner
+        // returns, and access re-defaults to ON) - say so, once, loudly.
+        Logger.warn("machine-access choice could not be persisted - it will be asked again:", err)
       }
       try {
         State.localShell.fullAccess = choice === "on"

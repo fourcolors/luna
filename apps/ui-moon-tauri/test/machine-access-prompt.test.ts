@@ -102,6 +102,41 @@ describe("answering", () => {
   })
 })
 
+describe("a stale banner never overwrites a fresher answer", () => {
+  it("drops itself instead of applying when the key was written elsewhere", () => {
+    const { prompt, State, LocalShell } = rig()
+    prompt.maybeShow()
+    // The user answers in Settings (or the composer scope menu) while the
+    // banner is still mounted...
+    localStorage.setItem(MACHINE_ACCESS_KEY, "off")
+    State.localShell.fullAccess = false
+    // ...then clicks the stale banner. The click must NOT win.
+    ;(banner()!.querySelector('[data-ma="on"]') as HTMLButtonElement).click()
+    expect(localStorage.getItem(MACHINE_ACCESS_KEY)).toBe("off")
+    expect(State.localShell.fullAccess).toBe(false)
+    expect(LocalShell.sendCapability).not.toHaveBeenCalled()
+    expect(banner()!.classList.contains("leaving")).toBe(true)
+  })
+})
+
+describe("the cross-window ping", () => {
+  it("an answer invokes hub_event machine-access-changed so other windows re-read", () => {
+    // The Rust side allowlists this name and fans it out to every open window
+    // (windows.rs HUB_EVENT_NAMES + hub_event_targets) - this pins the JS half
+    // of that contract, which the first review found completely untested.
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    ;(window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } }
+    try {
+      const { prompt } = rig()
+      prompt.maybeShow()
+      ;(banner()!.querySelector('[data-ma="on"]') as HTMLButtonElement).click()
+      expect(invoke).toHaveBeenCalledWith("hub_event", { name: "machine-access-changed" })
+    } finally {
+      delete (window as unknown as { __TAURI__?: unknown }).__TAURI__
+    }
+  })
+})
+
 describe("dismiss means not-now", () => {
   it("writes nothing, so the question returns", () => {
     const { prompt } = rig()
