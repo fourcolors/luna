@@ -1935,6 +1935,10 @@ const widgetSummonBridge = createWidgetSummonBridge()
 // Live Agents view (S4): folds each thread's subagent tool frames into a tree
 // and broadcasts it to every client. Process-wide (shared across connections)
 // so one thread's tree is consistent no matter which window observes it.
+// (Agent participation recording lives in chat-service's SDK consumer —
+// NOT here. The bridge only observes while a WS subscriber is attached, so
+// recording from it lost delegations whenever no window was watching.
+// Codex PR2 review finding 1.)
 const subagentTreeBridge = createSubagentTreeBridge()
 
 // Job-summoned operator input (widget-system.md Phase 5): a running job's

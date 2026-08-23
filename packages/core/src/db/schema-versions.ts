@@ -70,14 +70,24 @@ export const applyMigration = (
   sql: string,
   nowMs: number,
 ): void => {
-  const has = db
-    .query(
-      "SELECT 1 AS x FROM schema_versions WHERE component = ? AND version = ? LIMIT 1",
-    )
-    .get(component, version) as { x: number } | undefined | null
+  const hasStmt = db.query(
+    "SELECT 1 AS x FROM schema_versions WHERE component = ? AND version = ? LIMIT 1",
+  )
+  const has = hasStmt.get(component, version) as { x: number } | undefined | null
   if (has != null) return
   db.run("BEGIN IMMEDIATE")
   try {
+    // Re-check INSIDE the write lock (codex PR2 review finding 2): the doc
+    // above always promised a "second check", but until now it didn't
+    // exist — two first-boot processes could both pass the unlocked check,
+    // and the loser would run the DDL again and die on the ledger's
+    // primary key. With the lock held, the loser now sees the winner's row
+    // and no-ops.
+    const raced = hasStmt.get(component, version) as { x: number } | undefined | null
+    if (raced != null) {
+      db.run("COMMIT")
+      return
+    }
     db.run(sql)
     db.query(
       "INSERT INTO schema_versions (component, version, applied_at) VALUES (?, ?, ?)",

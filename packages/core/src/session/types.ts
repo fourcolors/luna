@@ -116,6 +116,13 @@ export interface SessionSummary {
    * SessionStore itself never persists this.
    */
   readonly agentName?: string
+  /**
+   * Agent participation (PR2): every agent that has been involved in this
+   * thread — delegated to at least once, or the thread was created under
+   * it. Ordered most-recently-involved first. Additive — absent when no
+   * agent was ever involved. Powers the sidebar's click-an-agent filter.
+   */
+  readonly involvedAgents?: ReadonlyArray<string>
   readonly status: SessionStatus
   /**
    * Wall-clock ts of the most recently appended message, or null if none yet.

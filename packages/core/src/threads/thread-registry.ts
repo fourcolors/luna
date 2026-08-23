@@ -79,6 +79,32 @@ const SCHEMA_V3 = `
     ON threads(agent_name, last_active_at DESC);
 `
 
+/**
+ * Agent participation migration (agent sidebar PR2 — Mr. Cobb's
+ * "agents are people you look up, not folders you file into" pivot,
+ * 2026-08-23).
+ *
+ * One row per (thread, agent) that has EVER been delegated to in that
+ * thread — recorded when the server observes an Agent tool spawn (the
+ * same signal the live Agents panel already decodes), plus the
+ * created-under agent at INSERT. Involvement only accrues; it is never
+ * deleted (mirrors the no-purge cardinal invariant — an agent WAS
+ * involved, history does not un-happen). Powers the sidebar's
+ * click-an-agent → "threads this agent was involved in" filter.
+ */
+const SCHEMA_V4 = `
+  CREATE TABLE IF NOT EXISTS thread_agents (
+    thread_id        TEXT NOT NULL,
+    agent_name       TEXT NOT NULL,
+    first_involved_at INTEGER NOT NULL,
+    last_involved_at  INTEGER NOT NULL,
+    spawns           INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (thread_id, agent_name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_thread_agents_agent
+    ON thread_agents(agent_name, last_involved_at DESC);
+`
+
 // ── bun:sqlite minimal shape ─────────────────────────────────────────────────
 
 interface BunDb {
@@ -239,6 +265,38 @@ export interface ThreadRegistryApi {
    * cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000  (14-day idle)
    */
   listStale: (cutoffMs: number) => Effect.Effect<ReadonlyArray<ThreadRow>, never>
+
+  // ── Agent participation (PR2) ──────────────────────────────────────────────
+
+  /**
+   * Record that `agentName` was involved in `threadId` (a delegation was
+   * observed, or the thread was created under the agent). Accrue-only
+   * upsert: first call inserts, later calls bump last_involved_at and the
+   * spawn count. NEVER touches threads.last_active_at — recording is a
+   * side observation, not activity, so it must not reset the auto-archive
+   * idle clock. Fire-and-forget safe (typed never).
+   */
+  recordInvolvement: (threadId: string, agentName: string) => Effect.Effect<boolean, never>
+
+  /**
+   * Involvement rows, newest-involved first. Pass `threadIds` to scope the
+   * read to a listed page (codex PR2 review finding 5: involvement accrues
+   * forever by design, so an unscoped scan grows with lifetime history —
+   * the sidebar must fetch only the threads it is about to show). Omitted
+   * = all rows (tests, tooling).
+   */
+  listInvolvement: (
+    threadIds?: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<ThreadAgentRow>, never>
+}
+
+/** One (thread, agent) involvement row — see SCHEMA_V4. */
+export interface ThreadAgentRow {
+  readonly threadId: string
+  readonly agentName: string
+  readonly firstInvolvedAt: number
+  readonly lastInvolvedAt: number
+  readonly spawns: number
 }
 
 /**
@@ -484,6 +542,47 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
           ),
         )
 
+      // ── Agent participation (PR2) — keyed "threadId agentName" ──────
+      const involvement = yield* Ref.make<Map<string, ThreadAgentRow>>(new Map())
+
+      const recordInvolvement: ThreadRegistryApi["recordInvolvement"] = (
+        threadId,
+        agentName,
+      ) =>
+        Effect.gen(function* () {
+          if (!threadId || !agentName) return false
+          const ts = yield* nowMs()
+          yield* Ref.update(involvement, (m) => {
+            const key = `${threadId} ${agentName}`
+            const existing = m.get(key)
+            const n = new Map(m)
+            n.set(
+              key,
+              existing
+                ? { ...existing, lastInvolvedAt: ts, spawns: existing.spawns + 1 }
+                : {
+                    threadId,
+                    agentName,
+                    firstInvolvedAt: ts,
+                    lastInvolvedAt: ts,
+                    spawns: 1,
+                  },
+            )
+            return n
+          })
+          return true
+        })
+
+      const listInvolvement: ThreadRegistryApi["listInvolvement"] = (threadIds) =>
+        Ref.get(involvement).pipe(
+          Effect.map((m) => {
+            const ids = threadIds ? new Set(threadIds) : null
+            return Array.from(m.values())
+              .filter((r) => ids === null || ids.has(r.threadId))
+              .sort((a, b) => b.lastInvolvedAt - a.lastInvolvedAt)
+          }),
+        )
+
       return {
         upsert,
         get,
@@ -496,6 +595,8 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
         unarchive,
         listByStatus,
         listStale,
+        recordInvolvement,
+        listInvolvement,
       } satisfies ThreadRegistryApi
     }),
   )
@@ -543,6 +644,11 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
         db.run("PRAGMA journal_mode = WAL")
         db.run("PRAGMA synchronous = NORMAL")
         db.run("PRAGMA foreign_keys = ON")
+        // Bounded wait instead of instant SQLITE_BUSY when another luna.db
+        // connection (CLI, telemetry) briefly holds the write lock (codex
+        // PR2 review finding 3) — without it, fire-and-forget writes like
+        // recordInvolvement silently became permanent false negatives.
+        db.run("PRAGMA busy_timeout = 5000")
 
         const nowMs = yield* clock.nowMs()
         ensureSchemaVersions(db)
@@ -551,6 +657,8 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
         applyMigration(db, "threads", 2, SCHEMA_V2, nowMs)
         // Agent sidebar S2: additive agent_name column — same ledger.
         applyMigration(db, "threads", 3, SCHEMA_V3, nowMs)
+        // Agent participation (PR2): thread_agents table — same ledger.
+        applyMigration(db, "threads", 4, SCHEMA_V4, nowMs)
 
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -774,6 +882,77 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
             (listStaleStmt.all(cutoffMs) as RawRow[]).map(rowToThread),
           )
 
+        // ── Agent participation (PR2) ──────────────────────────────────
+        // ON CONFLICT upsert: one atomic statement, no read-modify-write —
+        // two concurrent delegations to the same agent can never lose a
+        // bump. Deliberately does NOT touch threads.last_active_at.
+        const recordInvolvementStmt = db.query(
+          `INSERT INTO thread_agents
+             (thread_id, agent_name, first_involved_at, last_involved_at, spawns)
+           VALUES (?, ?, ?, ?, 1)
+           ON CONFLICT(thread_id, agent_name) DO UPDATE SET
+             last_involved_at = excluded.last_involved_at,
+             spawns = spawns + 1`,
+        )
+        const listInvolvementStmt = db.query(
+          `SELECT thread_id, agent_name, first_involved_at, last_involved_at, spawns
+             FROM thread_agents
+            ORDER BY last_involved_at DESC`,
+        )
+
+        type RawInvolvement = {
+          thread_id: string
+          agent_name: string
+          first_involved_at: number
+          last_involved_at: number
+          spawns: number
+        }
+
+        const recordInvolvement: ThreadRegistryApi["recordInvolvement"] = (
+          threadId,
+          agentName,
+        ) =>
+          Effect.gen(function* () {
+            if (!threadId || !agentName) return false
+            const ts = yield* clock.nowMs()
+            return yield* Effect.sync(() => {
+              recordInvolvementStmt.run(threadId, agentName, ts, ts)
+              return true
+            }).pipe(Effect.catchDefect(() => Effect.succeed(false)))
+          })
+
+        const listInvolvement: ThreadRegistryApi["listInvolvement"] = (threadIds) =>
+          Effect.sync(() => {
+            // Scoped page read (finding 5): a fresh statement per call —
+            // the id count varies, and bun:sqlite has no array binding.
+            // The sidebar's page is ≤500 ids, well under SQLite's 32k
+            // parameter ceiling.
+            const rows =
+              threadIds === undefined
+                ? (listInvolvementStmt.all() as RawInvolvement[])
+                : threadIds.length === 0
+                  ? []
+                  : (db
+                      .query(
+                        `SELECT thread_id, agent_name, first_involved_at, last_involved_at, spawns
+                           FROM thread_agents
+                          WHERE thread_id IN (${threadIds.map(() => "?").join(",")})
+                          ORDER BY last_involved_at DESC`,
+                      )
+                      .all(...threadIds) as RawInvolvement[])
+            return rows.map((r) => ({
+              threadId: r.thread_id,
+              agentName: r.agent_name,
+              firstInvolvedAt: r.first_involved_at,
+              lastInvolvedAt: r.last_involved_at,
+              spawns: r.spawns,
+            }))
+          }).pipe(
+            Effect.catchDefect(() =>
+              Effect.succeed([] as ReadonlyArray<ThreadAgentRow>),
+            ),
+          )
+
         return {
           upsert,
           get,
@@ -786,6 +965,8 @@ export class ThreadRegistryService extends Context.Service<ThreadRegistryService
           unarchive,
           listByStatus,
           listStale,
+          recordInvolvement,
+          listInvolvement,
         } satisfies ThreadRegistryApi
       }),
     )

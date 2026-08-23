@@ -304,4 +304,25 @@ describe("ThreadRegistryService (Memory layer)", () => {
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
+
+  // ── Agent participation (PR2): accrue-only involvement ────────────────────
+
+  it("recordInvolvement inserts once per (thread, agent) and bumps on repeats", async () => {
+    const program = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      expect(yield* reg.recordInvolvement("thr_p1", "advisor")).toBe(true)
+      expect(yield* reg.recordInvolvement("thr_p1", "advisor")).toBe(true)
+      expect(yield* reg.recordInvolvement("thr_p1", "auditor")).toBe(true)
+      expect(yield* reg.recordInvolvement("thr_p2", "advisor")).toBe(true)
+      const rows = yield* reg.listInvolvement()
+      const p1advisor = rows.find((r) => r.threadId === "thr_p1" && r.agentName === "advisor")
+      expect(p1advisor?.spawns).toBe(2)
+      expect(rows).toHaveLength(3)
+      // Guard inputs: blank names never mint rows.
+      expect(yield* reg.recordInvolvement("", "advisor")).toBe(false)
+      expect(yield* reg.recordInvolvement("thr_p1", "")).toBe(false)
+      expect(yield* reg.listInvolvement()).toHaveLength(3)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
 })

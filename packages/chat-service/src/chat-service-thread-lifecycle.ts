@@ -189,7 +189,33 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
     inc,
   } = deps
 
-  const { handleSdkMessage } = makeSdkMessageHandling({ clock, obs, store, inc })
+  const { handleSdkMessage } = makeSdkMessageHandling({
+    clock,
+    obs,
+    store,
+    inc,
+    // Agent participation (PR2, codex finding 1): record NAMED delegations
+    // from the authoritative SDK consumer — runs for every turn whether or
+    // not any client is connected. Best-effort by contract (never).
+    ...(Option.isSome(threadRegistry)
+      ? {
+          onNamedDelegation: (threadId: string, agentName: string) =>
+            threadRegistry.value
+              .recordInvolvement(threadId, agentName)
+              .pipe(
+                Effect.tap((ok) =>
+                  ok
+                    ? Effect.void
+                    : Effect.logWarning(
+                        `[chat] involvement record failed for ${threadId} @${agentName} — the agent lookup will miss this thread until a later delegation lands`,
+                      ),
+                ),
+                Effect.asVoid,
+                Effect.catchCause(() => Effect.void),
+              ),
+        }
+      : {}),
+  })
 
   /** Generate a thread/session id. Format `thr_<base36 ts>_<rand>`. */
   const genThreadId = (): Effect.Effect<string> =>
@@ -680,6 +706,17 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 : {}),
             })
             .pipe(
+              // PR2: being created under an agent IS involvement — the
+              // click-an-agent lookup must include threads minted from the
+              // agent's own "+", not only delegation-observed ones.
+              // Best-effort tap: a participation miss must not fail create.
+              Effect.tap(() =>
+                opts.agentName !== undefined
+                  ? reg
+                      .recordInvolvement(id, opts.agentName)
+                      .pipe(Effect.catchCause(() => Effect.succeed(false)))
+                  : Effect.void,
+              ),
               Effect.as(true),
               Effect.catchCause(() => Effect.succeed(false)),
             ),

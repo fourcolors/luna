@@ -192,7 +192,11 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
         if (!t.seenCalls.has(frame.toolCallId)) {
           t.seenCalls.add(frame.toolCallId)
           if (frame.name && AGENT_TOOL_NAMES.has(frame.name)) {
-            // A subagent spawn → a new node in the tree.
+            // A subagent spawn → a new node in the tree. (Involvement
+            // recording deliberately does NOT live here: this bridge only
+            // observes while a WS subscriber is attached — the durable
+            // record is made in chat-service's SDK consumer, which runs
+            // for every turn regardless of clients. Codex PR2 finding 1.)
             const meta = agentMeta(frame.input)
             t.nodes.set(frame.toolCallId, {
               id: frame.toolCallId,

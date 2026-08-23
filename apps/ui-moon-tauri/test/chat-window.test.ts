@@ -5556,6 +5556,66 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // deliberate no-op that CLEARS any legacy order, so a redocked thread
     // sorts by recency like every other row. The callee survives so
     // threadDrag.ts's drop path is untouched.
+    // ── Agent participation (PR2): the click-an-agent chips ────────────────
+    it('Scenario: agent chips render from the roster, click filters to involvement, right-click and re-click clear', () => {
+      const m = M()
+      // Server advertises agents + pushes the roster through the REAL handlers.
+      m.handleFrame({ type: 'hello', protocolVersion: 2, capabilities: { chat: true, agents: true } })
+      m.handleFrame({ type: 'agent-list', agents: [
+        { name: 'advisor', description: 'critiques' },
+        { name: 'auditor', description: 'audits' },
+      ]})
+      m.handleFrame({ type: 'thread-list', threads: [
+        { id: 'inv', title: 'Delegated', lastMessagePreview: '', lastMessageAt: 3000, involvedAgents: ['advisor'] },
+        { id: 'filed', title: 'Filed', lastMessagePreview: '', lastMessageAt: 2000, agentName: 'advisor' },
+        { id: 'other', title: 'Other', lastMessagePreview: '', lastMessageAt: 1000 },
+      ]})
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.render()
+
+      const chipsHost = document.getElementById('agent-chips')!
+      expect(chipsHost.hidden).toBe(false)
+      const chips = Array.from(chipsHost.querySelectorAll('.agent-chip')) as HTMLElement[]
+      expect(chips.map((c) => c.textContent)).toEqual(['@advisor', '@auditor'])
+
+      const rowIds = () =>
+        Array.from(document.querySelectorAll('#thread-drawer-list .thread-row'))
+          .map((r) => (r as HTMLElement).dataset.threadId)
+
+      // PR2 default: FLAT list (sections opt-in only), all threads visible.
+      expect(document.querySelectorAll('.thread-section-header').length).toBe(0)
+      expect(rowIds()).toEqual(['inv', 'filed', 'other'])
+
+      // Click @advisor → involvement OR created-under, recency order.
+      chips[0]!.click()
+      expect(m.State.agentFilter).toBe('advisor')
+      expect(rowIds()).toEqual(['inv', 'filed'])
+      const activeChip = document.querySelector('.agent-chip.active') as HTMLElement
+      expect(activeChip.textContent).toBe('@advisor')
+      expect(activeChip.getAttribute('aria-pressed')).toBe('true')
+
+      // Re-click clears the filter.
+      activeChip.click()
+      expect(m.State.agentFilter).toBeNull()
+      expect(rowIds()).toEqual(['inv', 'filed', 'other'])
+
+      // Right-click (the originally requested gesture) also toggles, and
+      // must not open a context menu.
+      const fresh = Array.from(document.querySelectorAll('.agent-chip')) as HTMLElement[]
+      const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      fresh[1]!.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(true)
+      expect(m.State.agentFilter).toBe('auditor')
+      expect(rowIds()).toEqual([]) // auditor was involved in nothing yet
+
+      // Codex finding 6: a filter whose SPECIFIC agent vanishes clears
+      // BEFORE the paint — never a stranded empty list.
+      m.State.agentFilter = 'ghost-agent'
+      m.ThreadDrawerEngine.render()
+      expect(m.State.agentFilter).toBeNull()
+      expect(rowIds()).toEqual(['inv', 'filed', 'other'])
+    })
+
     it('Scenario: adoptAtIndex is retired — redock keeps recency order and clears legacy threadOrder', () => {
       const m = M()
       m.State.threads = [

@@ -141,6 +141,41 @@ export function createFrames(ctx: FramesCtx) {
     }
   });
 
+  // Agent participation (PR2, codex review finding 4): the server records
+  // involvement durably, but an already-open drawer would not learn about a
+  // fresh delegation until its next list-threads. The subagent-tree
+  // broadcast (which already fires on every delegation, for the Agents
+  // panel) carries exactly the names needed — merge them into the local
+  // row's involvedAgents so the click-an-agent lookup includes the thread
+  // IMMEDIATELY. Roster-gated: only names the roster knows can be merged,
+  // so the tree's "Agent" display fallback for untyped spawns never becomes
+  // a lookup target. Local-only optimism that mirrors what the server
+  // recorded; the next thread-list is still the authority.
+  MoonFrames.register('subagent-tree', (frame) => {
+    try {
+      if (!frame || !frame.threadId || !Array.isArray(frame.agents)) return;
+      if (State.serverSupportsAgents !== true) return;
+      const roster = Array.isArray(State.agents) ? State.agents : [];
+      if (roster.length === 0) return;
+      const known = new Set(roster.map((a) => a && a.name).filter(Boolean));
+      const names = frame.agents
+        .map((n) => n && n.name)
+        .filter((n) => typeof n === 'string' && known.has(n));
+      if (names.length === 0) return;
+      const rows = Array.isArray(State.threads) ? State.threads : [];
+      const row = rows.find((t) => t && t.id === frame.threadId);
+      if (!row) return;
+      const involved = Array.isArray(row.involvedAgents) ? row.involvedAgents.slice() : [];
+      let changed = false;
+      for (const n of names) {
+        if (!involved.includes(n)) { involved.push(n); changed = true; }
+      }
+      if (!changed) return;
+      row.involvedAgents = involved;
+      if (ThreadDrawerEngine) ThreadDrawerEngine.render();
+    } catch (_) { /* merge is best-effort; the next thread-list corrects */ }
+  });
+
 
 
 

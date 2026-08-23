@@ -266,6 +266,27 @@ describe("ThreadRegistryService (SQLite layer)", () => {
     await Effect.runPromise(second.pipe(Effect.provide(makeTestLayer(dbPath))))
   })
 
+  test("v4 involvement: atomic ON CONFLICT bump, survives a simulated restart", async () => {
+    const dbPath = `/tmp/luna-test-registry-v4-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+    const first = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      yield* reg.recordInvolvement("thr_v4", "advisor")
+      yield* reg.recordInvolvement("thr_v4", "advisor")
+      yield* reg.recordInvolvement("thr_v4", "auditor")
+    })
+    await Effect.runPromise(first.pipe(Effect.provide(makeTestLayer(dbPath))))
+    // Fresh build over the same file: ledger re-applies v1-v4 as no-ops and
+    // the rows round-trip with their counts.
+    const second = Effect.gen(function* () {
+      const reg = yield* ThreadRegistryService
+      const rows = yield* reg.listInvolvement()
+      expect(rows).toHaveLength(2)
+      expect(rows.find((r) => r.agentName === "advisor")?.spawns).toBe(2)
+      expect(rows.find((r) => r.agentName === "auditor")?.spawns).toBe(1)
+    })
+    await Effect.runPromise(second.pipe(Effect.provide(makeTestLayer(dbPath))))
+  })
+
   test("agent_name is write-once: an update-shaped upsert cannot re-file or clear it", async () => {
     const layer = makeTestLayer(":memory:")
     const program = Effect.gen(function* () {
