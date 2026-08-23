@@ -23,9 +23,13 @@
  * Files in the target dir that no seed names are never listed, read, or
  * removed — the directory is the operator's; we own only our own seeds.
  *
- * Crash-safety: every write is tmp-in-same-dir + rename (atomic on one
- * volume); the manifest is written LAST, so a crash at any point leaves a
- * state the next boot converges from (the adopt rule above).
+ * Crash-safety: every write is tmp-in-same-dir (fsync'd) + rename/link +
+ * directory fsync — atomic AND durable, so a power loss cannot leave the
+ * manifest describing a write that rolled back (which would make the next
+ * boot misread our own rollback as an operator edit). Fresh installs use
+ * link(2), which fails EEXIST instead of clobbering a file the operator
+ * races into place. The manifest is written LAST, so a crash at any point
+ * leaves a state the next boot converges from (the adopt rule above).
  *
  * Sync I/O by design: runs once at boot on a handful of small files —
  * matches loadAgents()'s own discipline. Never throws: any error degrades
@@ -33,12 +37,17 @@
  */
 import { createHash, randomUUID } from "node:crypto"
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
+  linkSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
-  writeFileSync,
+  unlinkSync,
+  writeSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -76,11 +85,69 @@ const readManifest = (dir: string): SeedManifest => {
   return { version: 1, files: {} }
 }
 
-/** tmp-in-same-dir + rename — atomic on one volume. */
-const atomicWrite = (dir: string, name: string, content: string): void => {
+/** Write a tmp file with the content DURABLY on disk (fsync before close).
+ *  Returns the tmp path; the caller renames or links it into place. */
+const writeTmpDurable = (dir: string, name: string, content: string): string => {
   const tmp = join(dir, `.${name}.${randomUUID()}.tmp`)
-  writeFileSync(tmp, content, "utf8")
+  const fd = openSync(tmp, "w")
+  try {
+    writeSync(fd, content)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  return tmp
+}
+
+/** fsync the directory so a completed rename/link survives a power loss —
+ *  without this the manifest can outlive the file write it describes
+ *  (codex review finding 2: manifest=v2 + target=v1 makes the next boot
+ *  classify our own rollback as an operator edit, forever). Best-effort:
+ *  not every platform allows directory fsync. */
+const fsyncDir = (dir: string): void => {
+  try {
+    const fd = openSync(dir, "r")
+    try {
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    /* platform without dir fsync — degraded, not fatal */
+  }
+}
+
+/** tmp-in-same-dir + rename + dir fsync — atomic AND durable. REPLACES the
+ *  target; use atomicCreate for the never-clobber install path. */
+const atomicWrite = (dir: string, name: string, content: string): void => {
+  const tmp = writeTmpDurable(dir, name, content)
   renameSync(tmp, join(dir, name))
+  fsyncDir(dir)
+}
+
+/**
+ * Atomic NO-CLOBBER create via link(2), which fails with EEXIST instead of
+ * replacing (codex review finding 3: existsSync-then-rename raced an
+ * operator creating the same file in the gap and silently replaced it).
+ * Returns false when the target appeared concurrently — the caller treats
+ * that as the operator's file.
+ */
+const atomicCreate = (dir: string, name: string, content: string): boolean => {
+  const tmp = writeTmpDurable(dir, name, content)
+  try {
+    linkSync(tmp, join(dir, name))
+    fsyncDir(dir)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false
+    throw err
+  } finally {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 export const installAgentSeeds = (
@@ -123,11 +190,15 @@ export const installAgentSeeds = (
       const targetPath = join(targetDir, name)
 
       if (!existsSync(targetPath)) {
-        atomicWrite(targetDir, name, seedContent)
-        manifest.files[name] = seedHash
-        manifestDirty = true
-        report.installed.push(name)
-        continue
+        // No-clobber create: if the operator races a file into place between
+        // the exists check and now, link(2) fails EEXIST and we fall through
+        // to the provenance rules below instead of replacing it.
+        if (atomicCreate(targetDir, name, seedContent)) {
+          manifest.files[name] = seedHash
+          manifestDirty = true
+          report.installed.push(name)
+          continue
+        }
       }
 
       const onDisk = readFileSync(targetPath, "utf8")
@@ -146,7 +217,16 @@ export const installAgentSeeds = (
 
       if (manifest.files[name] === onDiskHash) {
         // Ours, unmodified since we wrote it — the bundled seed changed:
-        // upgrade.
+        // upgrade. Re-verify immediately before the replace to narrow the
+        // read→write race against a concurrent operator save (finding 3);
+        // a boot-time single writer cannot close the window completely
+        // without a lock protocol, which would be over-engineering here —
+        // the residual window is the microseconds between this read and
+        // the rename.
+        if (sha256(readFileSync(targetPath, "utf8")) !== onDiskHash) {
+          report.kept.push(name)
+          continue
+        }
         atomicWrite(targetDir, name, seedContent)
         manifest.files[name] = seedHash
         manifestDirty = true

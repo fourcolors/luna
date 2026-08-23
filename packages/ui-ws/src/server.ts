@@ -1368,7 +1368,19 @@ export const startUIWebSocketServer = (
           Effect.runFork(
             Effect.flatMap(roster.list(), (agents) =>
               Effect.sync(() => {
-                send(ws, { type: "agent-list", agents })
+                // LAST-LINE WIRE-SAFETY (codex review finding 1): the handle
+                // is structurally typed, so a caller passing full agent
+                // definitions would still typecheck and send() would
+                // serialize prompts/tool lists to every client. Rebuild
+                // field-by-field HERE, immediately before serialization, so
+                // no upstream refactor can widen the frame.
+                send(ws, {
+                  type: "agent-list",
+                  agents: agents.map((a) => ({
+                    name: a.name,
+                    description: a.description,
+                  })),
+                })
               }),
             ),
           )

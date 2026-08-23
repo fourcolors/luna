@@ -648,8 +648,13 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
       // We therefore OMIT the key entirely: on a genuine insert the column
       // defaults to NULL and onSdkSessionId fills it in; on a Case A resume
       // the existing value is preserved untouched.
-      yield* Option.match(threadRegistry, {
-        onNone: () => Effect.void,
+      // True only when the registry actually stored the row (codex review
+      // finding 5): the thread-created frame must never claim a filing that
+      // a swallowed registry failure silently dropped — the next
+      // list-threads would "move" the thread to General and the operator
+      // would read it as data loss.
+      const regPersisted = yield* Option.match(threadRegistry, {
+        onNone: () => Effect.succeed(false),
         onSome: (reg) =>
           reg
             .upsert({
@@ -674,7 +679,10 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 ? { agentName: opts.agentName }
                 : {}),
             })
-            .pipe(Effect.catchCause(() => Effect.void)),
+            .pipe(
+              Effect.as(true),
+              Effect.catchCause(() => Effect.succeed(false)),
+            ),
       })
 
       // Legacy fallback: when no ThreadRegistry, write the JSON map.
@@ -1003,8 +1011,11 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
       // this return) must carry the section so the creating client files
       // the new row without a list-threads round-trip. Fresh creates only —
       // an existingRow (threadIdOverride resume) keeps whatever filing the
-      // list projection will resolve from the registry.
-      return existingRow === null && opts.agentName !== undefined
+      // list projection will resolve from the registry — and only when the
+      // registry write actually LANDED (regPersisted): a summary claiming a
+      // filing that failed to persist would visibly "move" to General on
+      // the next refresh.
+      return existingRow === null && opts.agentName !== undefined && regPersisted
         ? { ...summary, agentName: opts.agentName }
         : summary
     })

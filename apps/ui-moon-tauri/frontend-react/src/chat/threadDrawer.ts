@@ -319,7 +319,10 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
 
     requestList() {
       if (State.threadDrawerOpen && WebSocketEngine.isConnected()) {
-        WebSocketEngine.send({ type: 'list-threads' });
+        // Shared builder (codex finding 6): this is the drawer's COMMON
+        // refresh path and must carry the same grouped-mode limit as
+        // wire.ts's recovery paths.
+        WebSocketEngine.send(ThreadListLogic.buildListThreadsFrame(State));
       }
     },
 

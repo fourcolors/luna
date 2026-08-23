@@ -128,4 +128,13 @@ describe("installAgentSeeds", () => {
     expect(r.errors.length).toBe(1)
     expect(r.installed).toEqual([])
   })
+
+  it("leaves no .tmp litter behind on any path (durable-write hygiene)", () => {
+    seed("advisor.md", "ADVISOR-V1")
+    installAgentSeeds(seedsDir, targetDir)
+    seed("advisor.md", "ADVISOR-V2")
+    installAgentSeeds(seedsDir, targetDir) // upgrade path
+    const { readdirSync } = require("node:fs") as typeof import("node:fs")
+    expect(readdirSync(targetDir).filter((f: string) => f.endsWith(".tmp"))).toEqual([])
+  })
 })

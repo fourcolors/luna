@@ -52,8 +52,18 @@ const startRig = async (withRoster: boolean): Promise<Rig> => {
           ? {
               agentRoster: {
                 list: () =>
+                  // Deliberately smuggle full-definition fields past the
+                  // structural type (codex finding 1): the server's send-site
+                  // projection must strip them — the exact-key pin below is
+                  // what fails if it ever stops.
                   Effect.succeed([
-                    { name: "advisor", description: "Critiques plans." },
+                    {
+                      name: "advisor",
+                      description: "Critiques plans.",
+                      prompt: "SMUGGLED-PROMPT — must never reach the wire",
+                      tools: ["Bash"],
+                      mcpServers: ["internal"],
+                    } as unknown as { name: string; description: string },
                     { name: "dev-agent", description: "Ships PRs." },
                   ]),
               },
@@ -141,10 +151,12 @@ describe("agent-list over a live ui-ws server", () => {
     const list = await client.waitFor((f) => f.type === "agent-list")
     if (list.type === "agent-list") {
       expect(list.agents.map((a) => a.name)).toEqual(["advisor", "dev-agent"])
-      // Wire-safety pin: exact key set on every row.
+      // Wire-safety pin: exact key set on every row — the rig smuggles
+      // prompt/tools/mcpServers and the send-site projection must strip them.
       for (const row of list.agents) {
         expect(Object.keys(row).sort()).toEqual(["description", "name"])
       }
+      expect(JSON.stringify(list)).not.toContain("SMUGGLED-PROMPT")
     }
     client.close()
   })

@@ -124,6 +124,23 @@ export function insertIndexForRatio(n: number, yRatio: unknown): number {
   return Math.min(n, Math.max(0, Math.round(r * n)))
 }
 
+/**
+ * THE one place a list-threads frame is built (codex review finding 6 —
+ * the drawer's own requestList and wire.ts's four recovery paths each
+ * built their own copy, so the S5 limit bump missed the most common
+ * path). When the server advertises the agents capability the request
+ * asks for 500 rows: the 50 default is per-list, and once threads spread
+ * across sections it makes every count lie. Pure — state slice in,
+ * frame out.
+ */
+export function buildListThreadsFrame(state: {
+  readonly serverSupportsAgents?: boolean
+}): { readonly type: "list-threads"; readonly limit?: number } {
+  return state.serverSupportsAgents === true
+    ? { type: "list-threads", limit: 500 }
+    : { type: "list-threads" }
+}
+
 // ── Agent sections (agent sidebar S5) ───────────────────────────────────────
 
 /** One mentionable agent as the agent-list frame delivers it. */

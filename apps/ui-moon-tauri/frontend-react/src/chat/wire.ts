@@ -33,6 +33,7 @@ import {
   pickBootWsUrl,
   BOOT_INVOKE_MS,
 } from "../tauriBoot"
+import { buildListThreadsFrame } from "./threadList"
 
 /** Max stall-recovery rounds before surfacing "Reattach stalled". 3 covers one
  *  tombstone advance + one validation miss + one final retry. */
@@ -535,7 +536,7 @@ export function createWire(ctx: WireCtx) {
       State.threadListAutoSelectPending = true;
       Logger.warn(`Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
       this.updateStatus('connecting', 'Recovering…');
-      this.send(State.serverSupportsAgents === true ? { type: 'list-threads', limit: 500 } : { type: 'list-threads' });
+      this.send(buildListThreadsFrame(State));
       this.startSubscribeTimeout();          // bound the recovery subscribe with the same watchdog
     },
 
@@ -674,7 +675,7 @@ export function createWire(ctx: WireCtx) {
         // No known thread → list threads (subscribes to most-recent or mints fresh).
         Logger.info("No known thread; listing threads instead");
         State.threadListAutoSelectPending = true;
-        this.send(State.serverSupportsAgents === true ? { type: 'list-threads', limit: 500 } : { type: 'list-threads' });
+        this.send(buildListThreadsFrame(State));
       }
       this.startSubscribeTimeout();
     },
@@ -1394,7 +1395,7 @@ export function createWire(ctx: WireCtx) {
       State.threadListAutoSelectPending = true;
       Logger.warn(`[PoolEngine] Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
       this.updateStatus('connecting', 'Recovering…');
-      this.send(State.serverSupportsAgents === true ? { type: 'list-threads', limit: 500 } : { type: 'list-threads' });
+      this.send(buildListThreadsFrame(State));
       this.startSubscribeTimeout();
     },
 
@@ -1481,7 +1482,7 @@ export function createWire(ctx: WireCtx) {
       } else {
         Logger.info('[PoolEngine] No known thread; listing threads instead');
         State.threadListAutoSelectPending = true;
-        this.send(State.serverSupportsAgents === true ? { type: 'list-threads', limit: 500 } : { type: 'list-threads' });
+        this.send(buildListThreadsFrame(State));
       }
       this.startSubscribeTimeout();
     },

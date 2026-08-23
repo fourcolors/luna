@@ -131,6 +131,14 @@ export function createFrames(ctx: FramesCtx) {
   // State.agents.
   MoonFrames.register('agent-list', (frame) => {
     if (MentionMenu) MentionMenu.applyAgents(frame && frame.agents);
+    // The roster rides its own fire-and-forget fiber and can land AFTER
+    // thread-list painted the drawer (codex review finding 4) — without a
+    // repaint, filed threads sit as orphan-styled sections (no descriptions,
+    // no "+") until an unrelated render. The drag guard inside render()
+    // safely defers this during an active pull-out.
+    if (ThreadDrawerEngine) {
+      try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
+    }
   });
 
 
