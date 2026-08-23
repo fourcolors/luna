@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * moon-gyro.test.ts - the depth-sorted gyroscope orbit.
  *
