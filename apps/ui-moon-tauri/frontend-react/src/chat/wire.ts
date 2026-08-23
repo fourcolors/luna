@@ -435,12 +435,17 @@ export function createWire(ctx: WireCtx) {
         // have a pending-assistant turn in ChatState. Once the placeholder
         // has been claimed by a real turn (assistant-delta arrived) we leave
         // any in-flight rendering alone.
+        // Clear busy FIRST, unconditionally. The self-suppression below is
+        // about whether to touch the transcript; it is never a reason to leave
+        // the face thinking. Below the early return this line was unreachable
+        // exactly when it was most needed - any path that drops the pending
+        // placeholder turned the safety net into a no-op.
+        MoonFace.setBusy(false);
         if (!ChatState._findPending() && !State.activeTurnId) return;
         State.activeTurnId = null;
         ChatState.dropPendingAssistant();
         ChatState.appendBanner('⚠️ No response from the server — try again.');
         ChatLoop.flush();
-        MoonFace.setBusy(false);   // abandoned turn → face stops thinking
       }, 90000);
     },
 
@@ -1317,12 +1322,15 @@ export function createWire(ctx: WireCtx) {
       this.clearTurnTimeout();
       State.turnTimeout = setTimeout(() => {
         State.turnTimeout = null;
+        // Same fix as WebSocketEngine's watchdog: clear busy unconditionally,
+        // above the self-suppression, or the face keeps thinking exactly when
+        // the safety net was supposed to catch it.
+        MoonFace.setBusy(false);
         if (!ChatState._findPending() && !State.activeTurnId) return;
         State.activeTurnId = null;
         ChatState.dropPendingAssistant();
         ChatState.appendBanner('⚠️ No response from the server — try again.');
         ChatLoop.flush();
-        MoonFace.setBusy(false);
       }, 90000);
     },
 

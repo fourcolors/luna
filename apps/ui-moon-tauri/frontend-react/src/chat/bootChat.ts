@@ -69,6 +69,7 @@ import { createResultToasts } from "./resultToasts"
 import { createUpdateBanner } from "./updateBanner"
 import { Logger } from "./logger"
 import { createMoonFace } from "./moonFace"
+import { createMoonLife } from "./moonLife"
 import { createMoonBar } from "./moonBar"
 import { createSurveyEngine, buildSurveyVerdicts } from "./surveyEngine"
 import { createLocalShell } from "./localShell"
@@ -264,7 +265,16 @@ export function bootChat() {
   // classic top level, where a module-published global is still undefined - so
   // the boot call relocates to the construction site rather than getting a shim.
   // It only reads the DOM, and this module is deferred, so later is still valid.
-  const moonFace = createMoonFace({ lunaFace: document.getElementById("luna-face") })
+  const moonFace = createMoonFace({
+    lunaFace: document.getElementById("luna-face"),
+    lunaFaceStatus: document.getElementById("luna-face-status"),
+  })
+  // Gaze is the only rAF loop on the face; everything else is a CSS keyframe.
+  const moonLife = createMoonLife({
+    lunaFace: document.getElementById("luna-face"),
+    lunaEyes: document.querySelector("#luna-face .luna-eyes"),
+  })
+  moonLife.start()
   const moonBar = createMoonBar({
     lunaQuip: document.getElementById("luna-quip"),
     lunaSuggestion: document.getElementById("luna-suggestion"),
@@ -536,6 +546,10 @@ export function bootChat() {
     ThreadCreateLogic,
     ThreadDrag,
     formatRelTime,
+    // Late-bound: suggestedActionsEngine is constructed further down, so this
+    // closure resolves it at call time. Thread switches are user-driven and
+    // always happen long after boot, so the binding is always live by then.
+    onThreadSwitch: () => { suggestedActionsEngine.refresh() },
     LunaThreadDrag: (window as unknown as { LunaThreadDrag?: unknown }).LunaThreadDrag,
   })
   assignBridge("ThreadDrawerEngine", threadDrawer.ThreadDrawerEngine)

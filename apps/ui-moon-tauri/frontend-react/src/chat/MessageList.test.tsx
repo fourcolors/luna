@@ -347,12 +347,19 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
     expect(mount?.ChatState.turns).toHaveLength(0)
   })
 
-  it("is also true while a trailing activity timeline is unsettled (its summary still shows .typing-dots) - matches the vanilla disconnect handler's .typing-dots querySelector, which matched this shape too", () => {
+  it("is also true while a trailing activity timeline is unsettled (its summary now shows a live constellation rather than .typing-dots)", () => {
     act(() => {
       mount?.ChatState.applyToolCall("t1", "c1", "Bash", { cmd: "ls" })
       mount?.ChatLoop.flush()
     })
-    expect(container?.querySelector(".timeline .typing-dots")).toBeTruthy()
+    // The dots in the timeline summary were replaced by the constellation. The
+    // PREDICATE is unchanged - hasVisibleStreamingPlaceholder is computed from
+    // the turns, never from a DOM query - so this asserts the new marker while
+    // pinning the same logical behaviour the vanilla handler relied on.
+    expect(container?.querySelector(".timeline .typing-dots")).toBeNull()
+    expect(container?.querySelector(".timeline .constellation")).toBeTruthy()
+    expect(container?.querySelector(".timeline .constellation.rest")).toBeNull()
+    expect(container?.querySelector(".timeline .star-new")).toBeTruthy()
     expect(mount?.ChatState.hasVisibleStreamingPlaceholder()).toBe(true)
 
     act(() => {
@@ -360,7 +367,9 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
       mount?.ChatState.markRunSettled()
       mount?.ChatLoop.flush()
     })
-    expect(container?.querySelector(".timeline .typing-dots")).toBeNull()
+    // Settled: still present as the record, but resting and no longer pulsing.
+    expect(container?.querySelector(".timeline .constellation.rest")).toBeTruthy()
+    expect(container?.querySelector(".timeline .star-new")).toBeNull()
     expect(mount?.ChatState.hasVisibleStreamingPlaceholder()).toBe(false)
   })
 })

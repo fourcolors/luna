@@ -29,7 +29,7 @@
  * the other 1493 tests green while making the first painted frame a lie.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { createMoonFace } from "../frontend-react/src/chat/moonFace"
+import { createMoonFace, LONG_TURN_MS, TRANSIENT_MS } from "../frontend-react/src/chat/moonFace"
 import { createMoonBar } from "../frontend-react/src/chat/moonBar"
 
 const QUIP_ROTATE_MS = 14000
@@ -40,6 +40,20 @@ function mountFace() {
   return {
     face: createMoonFace({ lunaFace: document.getElementById("luna-face") }),
     el: document.getElementById("luna-face")!,
+  }
+}
+
+/** The face plus its live region, for the announcement tests. */
+function mountFaceWithStatus() {
+  document.body.innerHTML =
+    '<div id="luna-face"></div><span id="luna-face-status"></span>'
+  return {
+    face: createMoonFace({
+      lunaFace: document.getElementById("luna-face"),
+      lunaFaceStatus: document.getElementById("luna-face-status"),
+    }),
+    el: document.getElementById("luna-face")!,
+    live: document.getElementById("luna-face-status")!,
   }
 }
 
@@ -69,7 +83,7 @@ describe("MoonFace", () => {
   })
 
   describe("the priority ladder", () => {
-    // connection > thinking > voice > suggesting > idle. Each case below sets
+    // connection > voice > thinking > suggesting > idle. Each case below sets
     // EVERY lower-priority signal too, so a mutant that reorders the ladder
     // produces the lower signal's answer rather than passing by accident.
     const cases: Array<[string, (f: ReturnType<typeof createMoonFace>) => void, string]> = [
@@ -94,14 +108,46 @@ describe("MoonFace", () => {
         "offline",
       ],
       [
-        "busy outranks voice and suggesting",
+        // REVERSED on purpose. `_busy` clears only on turn-complete but TTS
+        // starts on the first delta, so with busy first the speaking mouth was
+        // unreachable for the whole reply. Audio that is actually playing is
+        // the more truthful thing to show.
+        "speaking outranks busy",
         (f) => {
           f.setConnection("connected")
+          f.setSuggesting(true)
+          f.setBusy(true)
+          f.setVoice("speaking")
+        },
+        "speaking",
+      ],
+      [
+        "listening outranks busy",
+        (f) => {
+          f.setConnection("connected")
+          f.setSuggesting(true)
+          f.setBusy(true)
           f.setVoice("listening")
+        },
+        "listening",
+      ],
+      [
+        "busy still outranks suggesting",
+        (f) => {
+          f.setConnection("connected")
           f.setSuggesting(true)
           f.setBusy(true)
         },
         "busy",
+      ],
+      [
+        "connection still outranks everything, voice included",
+        (f) => {
+          f.setConnection("disconnected")
+          f.setBusy(true)
+          f.setVoice("speaking")
+        },
+        "offline",
       ],
       [
         "listening outranks suggesting",
@@ -139,6 +185,187 @@ describe("MoonFace", () => {
         expect(el.dataset["state"]).toBe(expected)
       })
     }
+  })
+
+  describe("the live region", () => {
+    // The face is aria-hidden, so without this every state it expresses is
+    // announced nowhere. These assert the text, not the pixels.
+    it("names the resolved state in words", () => {
+      const { face, live } = mountFaceWithStatus()
+      face.init()
+      expect(live.textContent).toBe("Luna is connecting")
+      face.setConnection("connected")
+      expect(live.textContent).toBe("Luna is ready")
+      face.setBusy(true)
+      expect(live.textContent).toBe("Luna is working")
+      face.setBusy(false)
+      face.setSuggesting(true)
+      expect(live.textContent).toBe("Luna has a suggestion")
+    })
+
+    it("announces a voice fault that the face itself cannot draw", () => {
+      // setVoice coerces anything but listening/speaking to '', so a mic parked
+      // in error resolves to the idle face. Reading as "ready" would be the one
+      // outcome a broken mic must not have.
+      const { face, el, live } = mountFaceWithStatus()
+      face.init()
+      face.setConnection("connected")
+      face.setVoice("error")
+      expect(el.dataset["state"]).toBe("")
+      expect(live.textContent).toContain("microphone")
+    })
+
+    it("keeps the raw voice state on the element even when it cannot paint it", () => {
+      const { face, el } = mountFaceWithStatus()
+      face.init()
+      face.setConnection("connected")
+      face.setVoice("transcribing")
+      expect(el.dataset["state"]).toBe("")
+      expect(el.dataset["voice"]).toBe("transcribing")
+    })
+
+    it("does not rewrite identical text, which would re-announce it", () => {
+      // Assigning textContent replaces the child text node, so node identity
+      // is a direct check on whether a write happened. A polite live region
+      // re-announces on every write, so an idempotent apply must not touch it.
+      const { face, live } = mountFaceWithStatus()
+      face.init()
+      face.setConnection("connected")
+      face.setBusy(true)
+      const node = live.firstChild
+      expect(node).toBeTruthy()
+      face.setBusy(true)                     // same resolved state
+      expect(live.firstChild).toBe(node)     // untouched
+      face.setBusy(false)                    // now it really changed
+      expect(live.firstChild).not.toBe(node)
+      expect(live.textContent).toBe("Luna is ready")
+    })
+
+    it("works without a live region at all", () => {
+      const { face, el } = mountFace()
+      face.init()
+      face.setConnection("connected")
+      face.setBusy(true)
+      expect(el.dataset["state"]).toBe("busy")
+    })
+  })
+
+  describe("the orbit channel", () => {
+    // Rings sit AROUND the moon rather than eating into it, so the body stays
+    // whole whatever the connection is doing. Resolved independently of the
+    // face: this is the channel split, and it is why busy no longer has to win.
+    const orbit = (drive: (f: ReturnType<typeof createMoonFace>) => void) => {
+      const { face, el } = mountFace()
+      face.init()
+      drive(face)
+      return el.dataset["orbit"]
+    }
+
+    it("wears no ring when idle, so a ring always means something", () => {
+      expect(orbit((f) => f.setConnection("connected"))).toBe("none")
+    })
+    it("spins one ring for a turn", () => {
+      expect(orbit((f) => { f.setConnection("connected"); f.setBusy(true) })).toBe("thinking")
+    })
+    it("sweeps while connecting and breaks when offline", () => {
+      expect(orbit((f) => f.setConnection("connecting"))).toBe("connecting")
+      expect(orbit((f) => f.setConnection("disconnected"))).toBe("offline")
+    })
+    it("breathes while listening", () => {
+      expect(orbit((f) => { f.setConnection("connected"); f.setVoice("listening") })).toBe("listening")
+    })
+    it("is independent of the face: speaking mid-turn keeps the turn's rings", () => {
+      // The whole point of splitting them. The face shows the mouth chattering
+      // because audio is playing; the rings still report that a turn is running.
+      const { face, el } = mountFace()
+      face.init()
+      face.setConnection("connected")
+      face.setBusy(true)
+      face.setVoice("speaking")
+      expect(el.dataset["state"]).toBe("speaking")
+      expect(el.dataset["orbit"]).toBe("thinking")
+    })
+
+    it("escalates to three rings once a turn runs long", () => {
+      vi.useFakeTimers()
+      try {
+        const { face, el } = mountFace()
+        face.init()
+        face.setConnection("connected")
+        face.setBusy(true)
+        expect(el.dataset["orbit"]).toBe("thinking")
+        vi.advanceTimersByTime(LONG_TURN_MS + 10)
+        expect(el.dataset["orbit"]).toBe("long")
+        // ...and drops back the moment the turn ends.
+        face.setBusy(false)
+        expect(el.dataset["orbit"]).toBe("none")
+      } finally { vi.useRealTimers() }
+    })
+
+    it("does not leave a long-turn timer running after the turn ends", () => {
+      vi.useFakeTimers()
+      try {
+        const { face, el } = mountFace()
+        face.init()
+        face.setConnection("connected")
+        face.setBusy(true)
+        face.setBusy(false)
+        vi.advanceTimersByTime(LONG_TURN_MS + 10)
+        expect(el.dataset["orbit"]).toBe("none")   // not 'long'
+      } finally { vi.useRealTimers() }
+    })
+  })
+
+  describe("transients", () => {
+    // Events, not states. The persistent flags had no way to say "something
+    // just happened", which is why secret prompts and surveys reached the face
+    // nowhere at all.
+    it("holds for its duration, then hands control back to the resolver", () => {
+      vi.useFakeTimers()
+      try {
+        const { face, el } = mountFace()
+        face.init()
+        face.setConnection("connected")
+        face.setBusy(true)
+        face.pulse("alert")
+        expect(el.dataset["transient"]).toBe("alert")
+        expect(el.dataset["state"]).toBe("busy")   // the face underneath is untouched
+        vi.advanceTimersByTime(TRANSIENT_MS.alert + 10)
+        expect(el.dataset["transient"]).toBeUndefined()
+        expect(el.dataset["state"]).toBe("busy")
+      } finally { vi.useRealTimers() }
+    })
+
+    it("a second pulse restarts the clock rather than stacking", () => {
+      vi.useFakeTimers()
+      try {
+        const { face, el } = mountFace()
+        face.init()
+        face.pulse("alert")
+        vi.advanceTimersByTime(TRANSIENT_MS.alert - 100)
+        face.pulse("eclipse")
+        vi.advanceTimersByTime(200)
+        expect(el.dataset["transient"]).toBe("eclipse")   // the first timer did not fire
+        vi.advanceTimersByTime(TRANSIENT_MS.eclipse)
+        expect(el.dataset["transient"]).toBeUndefined()
+      } finally { vi.useRealTimers() }
+    })
+
+    it("dispose clears pending timers", () => {
+      vi.useFakeTimers()
+      try {
+        const { face, el } = mountFace()
+        face.init()
+        face.setConnection("connected")
+        face.setBusy(true)
+        face.pulse("alert")
+        face.dispose()
+        vi.advanceTimersByTime(LONG_TURN_MS + TRANSIENT_MS.alert + 100)
+        // Still whatever it was: no timer fired to change it.
+        expect(el.dataset["transient"]).toBe("alert")
+        expect(el.dataset["orbit"]).toBe("thinking")
+      } finally { vi.useRealTimers() }
+    })
   })
 
   it("a version-warning still chats, so the face reads as connected", () => {
