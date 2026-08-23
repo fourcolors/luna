@@ -55,8 +55,15 @@ const isEnvReserved = (varName: string): boolean => {
  * chooses this; the secret VALUE is collected separately and never appears
  * here.
  *   - `op-token`   — a 1Password service-account token for an account label.
- *   - `env-secret` — a value written to `~/.luna/.env` as `NAME=value`, which an
- *                    account's `env:NAME` ref then resolves.
+ *   - `env-secret` — a value stored under the env-var NAME, which an account's
+ *                    `env:NAME` ref then resolves. The BACKING STORE is tier-
+ *                    dependent (see `resolveWriteTier`): plaintext `~/.luna/.env`
+ *                    as `NAME=value`, an OS keychain entry (`luna.vault.<NAME>`
+ *                    on Darwin), or Luna's encrypted vault
+ *                    (`~/.luna/vault/secrets.enc`). `process.env` is mirrored on
+ *                    write either way, so in-process resolution is immediate —
+ *                    but an EXTERNAL process that parses `~/.luna/.env` itself
+ *                    will not observe a keychain/vault-tier write.
  * (`file-secret` is intentionally absent: FileSecretProvider is not wired into
  * the prod chain, so a `file:` ref would not resolve — see DESIGN/spec.)
  */
