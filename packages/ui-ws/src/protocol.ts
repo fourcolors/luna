@@ -1612,6 +1612,15 @@ export interface NewThreadFrame {
   readonly systemPrompt?: string
   /** Additive effort level for this thread. Older servers ignore it. */
   readonly effort?: EffortOption
+  /**
+   * Agent sidebar S2: file the new thread under this agent section (the
+   * sidebar section's "+"). Validated server-side against the bound
+   * agentRoster — unknown/invalid names are DROPPED (thread lands in the
+   * general section) because client input is never trusted and a roster
+   * race must degrade, not fail the create. Additive — older servers
+   * ignore it.
+   */
+  readonly agent?: string
 }
 
 /**

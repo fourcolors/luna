@@ -1239,6 +1239,10 @@ const makeChatService = Effect.gen(function* () {
                 status: "closed" as const,
                 lastMessageAt: r.lastActiveAt,
                 lastMessagePreview: null,
+                // Agent sidebar S2: archived threads keep their section —
+                // the registry row is the only source for these (some
+                // archived threads have no SessionStore row at all).
+                ...(r.agentName != null ? { agentName: r.agentName } : {}),
               })),
             ),
           )
@@ -1341,11 +1345,23 @@ const makeChatService = Effect.gen(function* () {
             listActive([...archivedIds]),
             reg.listByStatus("active").pipe(
               Effect.catchCause(() =>
-                Effect.succeed([] as readonly { readonly id: string; readonly title: string | null }[]),
+                Effect.succeed(
+                  [] as readonly {
+                    readonly id: string
+                    readonly title: string | null
+                    readonly agentName?: string | null
+                  }[],
+                ),
               ),
             ),
           ])
           const regTitles = new Map(activeRows.map((r) => [r.id, r.title]))
+          // Agent sidebar S2: section membership, layered onto the store
+          // summaries the same way titles are — the registry is the only
+          // holder of agent_name (write-once at INSERT).
+          const regAgents = new Map(
+            activeRows.map((r) => [r.id, r.agentName ?? null]),
+          )
           // Persist derived titles so legacy threads are derived exactly once.
           // setTitleIfNull is clock-neutral: listing the sidebar is a read, so it
           // must never bump last_active_at (that would reset the 14-day
@@ -1355,7 +1371,11 @@ const makeChatService = Effect.gen(function* () {
             reg
               .setTitleIfNull(id, title)
               .pipe(Effect.asVoid, Effect.catchCause(() => Effect.void))
-          return yield* resolveTitles(sessions, regTitles, persist)
+          const titled = yield* resolveTitles(sessions, regTitles, persist)
+          return titled.map((s) => {
+            const agentName = regAgents.get(s.id)
+            return agentName != null ? { ...s, agentName } : s
+          })
         })
       }
 

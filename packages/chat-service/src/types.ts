@@ -230,6 +230,14 @@ export interface CreateThreadOptions {
   readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
+  /**
+   * Agent sidebar S2: file this thread under an agent section at creation.
+   * Write-once — persisted to ThreadRegistry.agent_name at INSERT and never
+   * mutated afterwards (mentions are per-turn CCs, they never re-file).
+   * Callers (ui-ws new-thread, fork inheritance) validate against the
+   * roster BEFORE passing; chat-service stores what it is given.
+   */
+  readonly agentName?: string
   readonly parentSessionId?: string
   readonly systemPrompt?: string
   /** Working directory for the agent's filesystem tools. Defaults to

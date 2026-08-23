@@ -4252,11 +4252,16 @@ const buildServerLayer = (
               }
             }
 
-            // Resume-fork: inherit parent SDK session when known.
+            // Resume-fork: inherit parent SDK session when known, and the
+            // parent's agent section (agent sidebar S2 — a fork child is a
+            // continuation of the same conversation, so it files where its
+            // parent lives; write-once at the child's own INSERT).
             let resumeFromSessionId: string | undefined
+            let parentAgentName: string | undefined
             if (Option.isSome(threadRegistryOption)) {
               const row = yield* threadRegistryOption.value.get(input.threadId)
               if (row?.sdkSessionId) resumeFromSessionId = row.sdkSessionId
+              if (row?.agentName) parentAgentName = row.agentName
             }
 
             const child = yield* chat.createThread({
@@ -4265,6 +4270,9 @@ const buildServerLayer = (
               tags: [FORK_CHILD_TAG],
               ...(resumeFromSessionId !== undefined
                 ? { resumeFromSessionId }
+                : {}),
+              ...(parentAgentName !== undefined
+                ? { agentName: parentAgentName }
                 : {}),
             })
 

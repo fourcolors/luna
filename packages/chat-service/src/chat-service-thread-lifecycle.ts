@@ -667,6 +667,12 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
               ...(persistEffort !== undefined
                 ? { effort: persistEffort }
                 : {}),
+              // Agent sidebar S2: filing at creation. The registry applies
+              // this on INSERT only, so a Case-A resume through this same
+              // path can never re-file an existing thread.
+              ...(opts.agentName !== undefined
+                ? { agentName: opts.agentName }
+                : {}),
             })
             .pipe(Effect.catchCause(() => Effect.void)),
       })
@@ -992,7 +998,15 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         ),
       )
 
-      return summary
+      // Agent sidebar S2: the SessionStore summary knows nothing of the
+      // registry's agent_name, but the `thread-created` frame (built from
+      // this return) must carry the section so the creating client files
+      // the new row without a list-threads round-trip. Fresh creates only —
+      // an existingRow (threadIdOverride resume) keeps whatever filing the
+      // list projection will resolve from the registry.
+      return existingRow === null && opts.agentName !== undefined
+        ? { ...summary, agentName: opts.agentName }
+        : summary
     })
 
   /**

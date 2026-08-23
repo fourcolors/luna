@@ -2268,6 +2268,20 @@ export const startUIWebSocketServer = (
                     // frame so the client can recover. The cause is also logged
                     // by the terminal defect logger at the runFork below.
                     yield* Effect.gen(function* () {
+                      // Agent sidebar S2: validate the requested section
+                      // against the live roster before filing. Fail-closed:
+                      // no roster bound, or a name the roster doesn't carry,
+                      // degrades to the general section rather than trusting
+                      // client input or failing the create.
+                      let agentName: string | undefined
+                      if (frame.agent !== undefined && agentRoster !== null) {
+                        const roster = yield* agentRoster
+                          .list()
+                          .pipe(Effect.catchCause(() => Effect.succeed([])))
+                        if (roster.some((a) => a.name === frame.agent)) {
+                          agentName = frame.agent
+                        }
+                      }
                       const summary = yield* chat.createThread({
                         model: frame.model,
                         // effort is forwarded verbatim — chat-service clamps it
@@ -2282,6 +2296,7 @@ export const startUIWebSocketServer = (
                         ...(frame.accountId !== undefined
                           ? { boundAccountId: frame.accountId }
                           : {}),
+                        ...(agentName !== undefined ? { agentName } : {}),
                       })
                       send(ws, { type: "thread-created", thread: summary })
                       // Cache the model so the smart bar can show it.
