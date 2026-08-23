@@ -133,15 +133,27 @@ export function createState() {
       // local-shell: the machine-access scope this client advertises. roots are
       // explicitly attached folders (auto-approve set, may be empty); fullAccess
       // lets Luna run anywhere. enabled = fullAccess || roots.length > 0.
-      localShell: {
-        enabled: false,
-        roots: [],
-        fullAccess: false,
-        platform: 'unknown',
-        clientId: 'moon_' + ((window.crypto && crypto.randomUUID)
-          ? crypto.randomUUID().replace(/-/g, '')
-          : Math.random().toString(36).slice(2))
-      }
+      //
+      // DEFAULT ON: absent or "on" in localStorage => true; "off" => false.
+      // The user's explicit OFF choice is persisted so it survives restarts.
+      // Guard the read in try/catch for jsdom/test safety.
+      localShell: (() => {
+        let fullAccess = true;
+        try {
+          const stored = localStorage.getItem('luna_machine_access');
+          if (stored === 'off') fullAccess = false;
+          // absent or 'on' => true (the default)
+        } catch (_) { /* jsdom or sandboxed environment — fall back to true */ }
+        return {
+          enabled: fullAccess, // roots is always [] here, so enabled === fullAccess
+          roots: [] as string[],
+          fullAccess,
+          platform: 'unknown',
+          clientId: 'moon_' + ((window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID().replace(/-/g, '')
+            : Math.random().toString(36).slice(2))
+        };
+      })()
   }
 }
 

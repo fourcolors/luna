@@ -33,7 +33,7 @@
  * the covering tests assert on native <select> semantics (.value,
  * 'change' events).
  */
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Button, HStack, Text, TextInput, VStack } from "../../astryx-kit"
 import { useLocalStore, useMoonSelector } from "../../state/store"
 import {
@@ -115,6 +115,25 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
     initialConnectionPanelState(),
   )
   const state = useMoonSelector(store, (snapshot) => snapshot)
+
+  // Machine-access toggle. Reads the persisted value at mount; writes it back
+  // on change and notifies the chat window via hub_event so it re-sends its
+  // capability frame with the updated fullAccess value.
+  const [machineAccess, setMachineAccess] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("luna_machine_access") !== "off"
+    } catch (_) {
+      return true
+    }
+  })
+
+  function handleMachineAccessChange(checked: boolean): void {
+    setMachineAccess(checked)
+    try {
+      localStorage.setItem("luna_machine_access", checked ? "on" : "off")
+    } catch (_) { /* sandboxed */ }
+    ctx.invoke("hub_event", { name: "machine-access-changed" }).catch(() => {})
+  }
 
   // F4 (opus review): a plain ref, NOT reducer state - state reads inside a
   // handler are render-captured (a stale closure once an await yields), so
@@ -562,6 +581,22 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
             onChange={(e) =>
               store.dispatch({ type: "activate-on-save-changed", value: e.target.checked })
             }
+          />
+        </HStack>
+
+        <HStack justify="between" align="center" gap={3}>
+          <VStack gap={0}>
+            <Text type="label">Machine access</Text>
+            <Text type="supporting">
+              Luna can read and run anything on this Mac. Turning this off is remembered across restarts.
+            </Text>
+          </VStack>
+          <input
+            id="machine-access"
+            data-testid="machine-access"
+            type="checkbox"
+            checked={machineAccess}
+            onChange={(e) => handleMachineAccessChange(e.target.checked)}
           />
         </HStack>
 

@@ -5,10 +5,13 @@
  * the full-access toggle, the per-root list, and the `local-shell-capability`
  * frame that tells the server what this client will honour.
  *
- * IT IS A SECURITY SURFACE, WHICH IS WHY THIS IS A VERBATIM MOVE. The frame
- * it sends is the authority for what the agent is allowed to touch; a
- * "cleanup" that changed when or what it announces would change the blast
- * radius of every shell tool call. The move is character-identical.
+ * IT IS A SECURITY SURFACE. The frame it sends is the authority for what the
+ * agent is allowed to touch; changes here change the blast radius of every
+ * shell tool call. This file was originally a verbatim move from the vanilla
+ * module (stack23 S19h) but has been deliberately changed: machine access
+ * is now ON BY DEFAULT with persistence of the user's OFF choice, and
+ * approvalMode is corrected from the false 'prompt' claim to 'auto' (Moon
+ * never prompts per command — handleRequest executes directly).
  *
  * MOVING IT DELETES A GROUP C MEMBER, which is the point of S19 rather than a
  * side effect. `LunaChatHost.closeLocalShellMenu` existed only so SlashMenu -
@@ -82,7 +85,9 @@ export function createLocalShell(ctx: LocalShellCtx) {
         type: 'local-shell-capability',
         threadId: State.activeThreadId,
         enabled: ls.enabled,
-        approvalMode: 'prompt',
+        // Moon executes commands directly via local_shell_exec without a
+      // per-command prompt UI. 'prompt' was a false claim; 'auto' is honest.
+      approvalMode: 'auto',
         clientId: ls.clientId,
         platform: ls.platform,
         cwd: ls.roots[0] || '/',
@@ -132,6 +137,11 @@ export function createLocalShell(ctx: LocalShellCtx) {
     toggleFullAccess() {
       const ls = State.localShell;
       ls.fullAccess = !ls.fullAccess;
+      // Persist the user's choice so it survives restarts.
+      // Absent or 'on' => enabled at next boot; 'off' => disabled.
+      try {
+        localStorage.setItem('luna_machine_access', ls.fullAccess ? 'on' : 'off');
+      } catch (_) { /* sandboxed environment */ }
       this.recomputeEnabled();
       this.updateUI();
       this.sendCapability();
