@@ -390,7 +390,7 @@ case "$SELECTION" in
     info "Starting Remote Server Client Setup..."
     
     # Prompt for remote host credentials
-    read -p "Enter remote WebSocket URL [e.g. ws://jax-box:4753/ui]: " -r WS_URL
+    read -p "Enter remote WebSocket URL [e.g. ws://your-server:4753/ui]: " -r WS_URL
     read -p "Enter remote UI WebSocket Token: " -r WS_TOKEN
     
     if [[ -z "$WS_URL" || -z "$WS_TOKEN" ]]; then
