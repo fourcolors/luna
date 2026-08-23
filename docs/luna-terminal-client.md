@@ -18,15 +18,17 @@ LUNA_UI_WS_TOKEN=<token>
 `LUNA_WS_URL` defaults to `ws://127.0.0.1:4753/ui` when omitted.
 `LUNA_UI_WS_TOKEN` is required unless you pass `--token`.
 
-Profiles let one `luna` binary switch between stable and development runtimes:
+Profiles let one `luna` binary switch between stable and development runtimes
+(`luna-server` is the neutral placeholder; the shipped `install.sh` default
+is `jax-box` / `jax-box.local` — supply your own hostname via `--stable-url` etc.):
 
 ```bash
-LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
-LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box.local:4753/ui
+LUNA_STABLE_WS_URL=ws://luna-server:4753/ui
+LUNA_STABLE_FALLBACK_WS_URL=ws://luna-server.local:4753/ui
 LUNA_STABLE_UI_WS_TOKEN=<stable-token>
 
-LUNA_DEV_WS_URL=ws://jax-box:5753/ui
-LUNA_DEV_FALLBACK_WS_URL=ws://jax-box.local:5753/ui
+LUNA_DEV_WS_URL=ws://luna-server:5753/ui
+LUNA_DEV_FALLBACK_WS_URL=ws://luna-server.local:5753/ui
 LUNA_DEV_UI_WS_TOKEN=<dev-token>
 ```
 
@@ -77,8 +79,8 @@ Profile-specific recovery variables use the same prefix:
 ```bash
 LUNA_DEV_START_MODE=ssh
 LUNA_DEV_START_COMMAND="systemctl --user stop luna-dev-chat-server.service; sleep 6; systemctl --user start luna-dev-chat-server.service"
-LUNA_DEV_START_SSH=root@jax-box
-LUNA_DEV_FALLBACK_START_SSH=root@jax-box.local
+LUNA_DEV_START_SSH=root@luna-server
+LUNA_DEV_FALLBACK_START_SSH=root@luna-server.local
 LUNA_DEV_START_TIMEOUT_MS=30000
 ```
 

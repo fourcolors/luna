@@ -887,13 +887,13 @@ git commit -m "refactor(tui): drop local InMemoryBackend; pass session to runMem
 
 ---
 
-## Task 8: End-to-end smoke test against jax-box
+## Task 8: End-to-end smoke test against luna-server
 
 **Files:** None modified.
 
 **Context:** Final manual verification. Drive `luna chat --dev` under tmux and watch the Memories tab populate (or surface a real error message from the server) instead of the bulkhead "An error has occurred". The Phase 1 + 2 debug logging (`LUNA_TUI_DEBUG=/tmp/luna-ws-memory.log`) remains useful.
 
-The expectation: if jax-box's dev server has the stub embedder (the default), the memory store will accept saves but the queries will return either zero hits or low-quality matches (the stub is deterministic but semantically empty). What matters here is that:
+The expectation: if luna-server's dev server has the stub embedder (the default), the memory store will accept saves but the queries will return either zero hits or low-quality matches (the stub is deterministic but semantically empty). What matters here is that:
 1. The WS round-trip completes — Memories tab transitions out of `loading` and into `ready` (with whatever hits the server has) or `error` (with a real server-side message, not the local stub error).
 2. Subsequent searches work without hanging.
 3. The chat itself is unaffected.

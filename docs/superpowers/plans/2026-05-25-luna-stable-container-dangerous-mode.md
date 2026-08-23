@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move the stable Luna runtime from the jax-box host user service into an Incus container, then add an explicit container-scoped auto-approval mode for Luna local shell sessions.
+**Goal:** Move the stable Luna runtime from the luna-server host user service into an Incus container, then add an explicit container-scoped auto-approval mode for Luna local shell sessions.
 
 **Architecture:** Stable and dev both run as Incus system containers, with stable tracking `master` and dev tracking `dev`. The first dangerous-mode release keeps authority inside the stable container only; it does not mount the host Incus socket and does not give the stable container host-root control. If we later want Luna to manage host Incus instances directly, add a separate host-admin bridge with an explicit risk review.
 
@@ -12,7 +12,7 @@
 
 ## Current State
 
-- `luna-dev` already runs in Incus on jax-box and proxies host `5753/5754` to container `4753/4754`.
+- `luna-dev` already runs in Incus on luna-server and proxies host `5753/5754` to container `4753/4754`.
 - Stable Luna currently runs as the host root user service `luna-chat-server.service` from `/root/luna/stable/repo`.
 - Existing stable state is `/root/.luna`; existing dev state is `/root/.luna-dev`.
 - `scripts/luna-container-create` already supports `--profile stable`, defaults stable to branch `master`, and mounts stable at `/root/luna` inside the container.
@@ -32,7 +32,7 @@ First implementation intentionally avoids:
 - Copying a host-root SSH key into `luna-stable`.
 - Running a headless local-shell daemon before the interactive dangerous session is proven.
 
-That preserves the useful safety property: if Luna goes sideways, the default blast radius is the stable container and the mounted stable Luna files, not the whole jax-box host.
+That preserves the useful safety property: if Luna goes sideways, the default blast radius is the stable container and the mounted stable Luna files, not the whole luna-server host.
 
 ## File Structure
 
@@ -118,14 +118,14 @@ scripts/luna-container-create \
   --branch master \
   --repo-path /root/luna/stable/repo \
   --state-path /root/.luna \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 6753 \
   --host-control-port 6754 \
   --skip-clone
 
 # 2. Verify candidate without touching the host stable service.
 curl -fsS http://127.0.0.1:6753/healthz
-luna chat --url ws://jax-box.local:6753/ui
+luna chat --url ws://luna-server.local:6753/ui
 
 # 3. Cut over the stable ports during a short maintenance window.
 systemctl --user stop luna-chat-server.service
@@ -138,7 +138,7 @@ incus restart luna-stable
 
 # 4. Verify stable after cutover.
 curl -fsS http://127.0.0.1:4753/healthz
-curl -fsS http://jax-box.local:4753/healthz
+curl -fsS http://luna-server.local:4753/healthz
 ```
 
 Add the rollback block:
@@ -164,7 +164,7 @@ scripts/luna-container-create \
   --branch master \
   --repo-path /root/luna/stable/repo \
   --state-path /root/.luna \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 6753 \
   --host-control-port 6754 \
   --skip-clone
@@ -708,7 +708,7 @@ git add packages/ui-ws/src/protocol.ts packages/ui-ws/test/local-shell-bridge.te
 git commit -m "feat: advertise local shell approval mode"
 ```
 
-## Task 6: Cut Over Stable On jax-box
+## Task 6: Cut Over Stable On luna-server
 
 **Files:**
 - Runtime operation only. No repo files should change during this task unless verification finds a documentation bug.
@@ -718,7 +718,7 @@ git commit -m "feat: advertise local shell approval mode"
 Run from the Mac:
 
 ```bash
-ssh root@jax-box.local 'bash -lc "
+ssh root@luna-server.local 'bash -lc "
 set -euo pipefail
 incus list
 systemctl --user show luna-chat-server.service -p ActiveState -p ExecStart -p WorkingDirectory --no-pager
@@ -734,12 +734,12 @@ Expected:
 - Ports `4753/4754` are owned by the host stable process.
 - Ports `6753/6754` are free.
 
-- [ ] **Step 2: Pull the latest dev/master code onto jax-box**
+- [ ] **Step 2: Pull the latest dev/master code onto luna-server**
 
 After the implementation branch is merged to `master`, run:
 
 ```bash
-ssh root@jax-box.local 'bash -lc "
+ssh root@luna-server.local 'bash -lc "
 set -euo pipefail
 git -C /root/luna/stable/repo fetch origin master
 git -C /root/luna/stable/repo checkout master
@@ -755,7 +755,7 @@ Expected: fast-forward pull or already up to date; Bun install succeeds.
 Run:
 
 ```bash
-ssh root@jax-box.local 'bash -lc "
+ssh root@luna-server.local 'bash -lc "
 set -euo pipefail
 cd /root/luna/stable/repo
 scripts/luna-container-create \
@@ -765,7 +765,7 @@ scripts/luna-container-create \
   --branch master \
   --repo-path /root/luna/stable/repo \
   --state-path /root/.luna \
-  --host jax-box \
+  --host luna-server \
   --host-ws-port 6753 \
   --host-control-port 6754 \
   --skip-clone \
@@ -780,9 +780,9 @@ Expected: container starts, cloud-init finishes, and `luna-chat-server.service` 
 Run:
 
 ```bash
-ssh root@jax-box.local 'curl -fsS http://127.0.0.1:6753/healthz'
-ssh root@jax-box.local 'incus exec luna-stable -- test -f /root/.luna/allow-dangerous-local-shell'
-ssh root@jax-box.local 'incus exec luna-stable -- grep -E "^(LUNA_RUNTIME_SCOPE|LUNA_STABLE_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL)=" /root/.luna/.env'
+ssh root@luna-server.local 'curl -fsS http://127.0.0.1:6753/healthz'
+ssh root@luna-server.local 'incus exec luna-stable -- test -f /root/.luna/allow-dangerous-local-shell'
+ssh root@luna-server.local 'incus exec luna-stable -- grep -E "^(LUNA_RUNTIME_SCOPE|LUNA_STABLE_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL)=" /root/.luna/.env'
 ```
 
 Expected:
@@ -796,7 +796,7 @@ Expected:
 Run an interactive command from the Mac:
 
 ```bash
-ssh -t root@jax-box.local 'incus exec luna-stable -- bash -lc "cd /root/luna && /root/.bun/bin/bun run --filter @luna/agent-cli luna -- chat --url ws://127.0.0.1:4753/ui --local-shell --dangerously-auto-approve-local-shell"'
+ssh -t root@luna-server.local 'incus exec luna-stable -- bash -lc "cd /root/luna && /root/.bun/bin/bun run --filter @luna/agent-cli luna -- chat --url ws://127.0.0.1:4753/ui --local-shell --dangerously-auto-approve-local-shell"'
 ```
 
 In the chat, ask:
@@ -815,7 +815,7 @@ Expected:
 Run:
 
 ```bash
-ssh root@jax-box.local 'bash -lc "
+ssh root@luna-server.local 'bash -lc "
 set -euo pipefail
 systemctl --user stop luna-chat-server.service
 systemctl --user disable luna-chat-server.service
@@ -835,10 +835,10 @@ Expected: service is active inside the container and host stable service stays d
 Run:
 
 ```bash
-curl -fsS http://jax-box:4753/healthz
-curl -fsS http://jax-box.local:4753/healthz
-luna chat --url ws://jax-box:4753/ui
-luna chat --url ws://jax-box.local:4753/ui
+curl -fsS http://luna-server:4753/healthz
+curl -fsS http://luna-server.local:4753/healthz
+luna chat --url ws://luna-server:4753/ui
+luna chat --url ws://luna-server.local:4753/ui
 ```
 
 Expected: both health checks pass and both chat URLs connect.
@@ -850,8 +850,8 @@ Edit `/Users/fourcolors/.luna/.env` so stable recovery restarts the container se
 ```bash
 LUNA_STABLE_START_MODE=ssh
 LUNA_STABLE_START_COMMAND=incus exec luna-stable -- systemctl restart luna-chat-server.service
-LUNA_STABLE_START_SSH=root@jax-box
-LUNA_STABLE_FALLBACK_START_SSH=root@jax-box.local
+LUNA_STABLE_START_SSH=root@luna-server
+LUNA_STABLE_FALLBACK_START_SSH=root@luna-server.local
 ```
 
 Expected: `luna chat` can recover stable by restarting the service inside `luna-stable`.
@@ -861,7 +861,7 @@ Expected: `luna chat` can recover stable by restarting the service inside `luna-
 If cutover fails, run:
 
 ```bash
-ssh root@jax-box.local 'bash -lc "
+ssh root@luna-server.local 'bash -lc "
 set -euo pipefail
 incus config device remove luna-stable ws4753 || true
 incus config device remove luna-stable control4754 || true

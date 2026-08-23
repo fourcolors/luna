@@ -12,7 +12,7 @@
 
 ## 1. Problem
 
-Setting Luna up is dev-centric and fiddly: the model credential requires a manual, out-of-band `claude` login (and silently lapses — the production incident), `op://` 1Password is half-assumed, and the jax-box defaults bake in Tailscale. For normal people the happy path should be: install → one friendly command to log in to Claude → done, with no Tailscale and no 1Password required, and a reliable way back in if a network path (e.g. Tailscale) goes down.
+Setting Luna up is dev-centric and fiddly: the model credential requires a manual, out-of-band `claude` login (and silently lapses — the production incident), `op://` 1Password is half-assumed, and the luna-server defaults bake in Tailscale. For normal people the happy path should be: install → one friendly command to log in to Claude → done, with no Tailscale and no 1Password required, and a reliable way back in if a network path (e.g. Tailscale) goes down.
 
 ## 2. Goals
 
@@ -56,7 +56,7 @@ The server's boot guard fails on zero accounts (`buildMain`). The login path the
 ## 5. Optional 1Password & Tailscale (defaults/optionality)
 
 - **1Password:** the default path (`luna login` → `claude-code:login`) needs no `op`. The installer installs `op` and writes `OP_SERVICE_ACCOUNT_TOKEN` **only** when the operator selects `op://` auth. `op://` resolution stays as designed (Core B on Linux).
-- **Tailscale:** the client URL set no longer defaults to the jax-box Tailscale name. New defaults: **local** instance → primary `ws://localhost:<port>/ui`; **remote/named** → primary `ws://<host>:<port>/ui`. Tailscale is just another URL you may list (primary or fallback), not a prerequisite. `install.sh`'s `--stable-url`/`--stable-fallback-url`/`--dev-url`/`--dev-fallback-url` flags already make this configurable; this changes only the **defaults** (`install.sh:13-16`) and the docs.
+- **Tailscale:** the client URL set no longer defaults to the luna-server Tailscale name. New defaults: **local** instance → primary `ws://localhost:<port>/ui`; **remote/named** → primary `ws://<host>:<port>/ui`. Tailscale is just another URL you may list (primary or fallback), not a prerequisite. `install.sh`'s `--stable-url`/`--stable-fallback-url`/`--dev-url`/`--dev-fallback-url` flags already make this configurable; this changes only the **defaults** (`install.sh:13-16`) and the docs.
 
 ## 6. Resilient access (reuse) + the `auth status` doctor upgrade
 
@@ -76,7 +76,7 @@ So #3's work is configuration: ship the client with a **primary + ≥1 non-Tails
 
 - **Pure, node-runnable:** `resolveLoginTarget(env/flags) → {runtime, mode: 'exec'|'transient', execArgv, claudeConfigDir, dbPath}` (decides incus-exec vs OCI-transient-container vs bare-local, and whether it's first-time-seed vs re-auth), tested with injected env/flags. The default-URL builder (primary + non-Tailscale fallback) as a pure function.
 - **Impure** `runLogin(deps?)` with an injected-deps seam (modeled on `keychain-helper`'s `{_execFile,_platform}` and `onepassword-backend.test`'s `vi.mock`): fake `exec`/`podman`/`incus`/`tmux`/`claude`/`addAccount`/`systemctl` so the flow (open session → verify creds → `auth status` → seed-if-absent → restart-if-first-time → skip on re-auth) is unit-testable without a real container.
-- **REAL-BOX acceptance (mandatory — the mocks cover everything *except* the risky bit):** on jax-box, run the actual `luna login` against `luna-dev` end-to-end through the `setup-token` OAuth round-trip, confirm `claude auth status` → `loggedIn:true`, and confirm a **re-auth is picked up without restart** (§4.3). Green unit tests must not be mistaken for a working OAuth flow.
+- **REAL-BOX acceptance (mandatory — the mocks cover everything *except* the risky bit):** on luna-server, run the actual `luna login` against `luna-dev` end-to-end through the `setup-token` OAuth round-trip, confirm `claude auth status` → `loggedIn:true`, and confirm a **re-auth is picked up without restart** (§4.3). Green unit tests must not be mistaken for a working OAuth flow.
 - **Subprocess/structural:** mirror `apps/agent-cli/test/cli.test.ts` + a `citty-routing` test asserting `login` is registered.
 - **`install.sh` defaults:** extend the deploy-script tests to assert the new non-Tailscale default URLs and that `op`/`OP_SERVICE_ACCOUNT_TOKEN` are written only when `op://` is selected.
 - **Gates:** `bash -n`/`shellcheck` for script changes; `tsc --noEmit -p apps/agent-cli/tsconfig.json` (vitest doesn't typecheck).

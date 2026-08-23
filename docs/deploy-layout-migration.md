@@ -25,7 +25,7 @@ to run at a chosen moment.**
 
 ---
 
-## 1. Verified facts (measured on jax-box, 2026-07-30)
+## 1. Verified facts (measured on luna-server, 2026-07-30)
 
 * **Incus devices (verified via `incus config device show luna-stable`):**
   * `luna-repo`: `source=/root/luna/stable/repo`, `path=/root/luna`,

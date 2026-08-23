@@ -91,7 +91,7 @@ downloads the right software and figures it out" lives.
 
 ## The one fact that most changes Phase 3 difficulty: tenancy
 
-- **Single-tenant** (Luna runs on the operator's own jax-box, agent executes code
+- **Single-tenant** (Luna runs on the operator's own luna-server, agent executes code
   on *his* box against files *he* uploaded): roughly "the user ran a command
   on his own machine" — a tractable sandbox-hardening problem (incus container
   already provides a boundary; harden egress, limits, cleanup).
@@ -103,7 +103,7 @@ Current read from the code: multi-account but OAuth-token-centric, **single
 user in practice**.
 
 **CONFIRMED (2026-06-03): Luna is single-tenant** — runs on the operator's own
-jax-box, agent executes against his own files. Phase 3 is therefore the
+luna-server, agent executes against his own files. Phase 3 is therefore the
 tractable "harden a container the user already controls" problem, not the
 multi-tenant-RCE problem. Phase 1 greenlit to start now.
 

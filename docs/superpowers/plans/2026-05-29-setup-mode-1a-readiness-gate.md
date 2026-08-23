@@ -428,7 +428,7 @@ Expected: `[smoke] setup-mode gate OK`; readiness tests PASS. (chat-server has n
 
 - [ ] **Step 6: Real-box acceptance (manual, document result)**
 
-On jax-box `luna-dev`: (a) with the current (valid) creds, restart → confirm normal-mode boot (MCP registered, ui-ws on 4753, `chat:true`). (b) Temporarily point `LUNA_DB_PATH` at an empty DB (or remove the account) + restart → confirm the server **stays up** logging `🔧 setup-mode` and the hello advertises `setup:true, chat:false` (probe via the ws-probe from earlier, checking the hello frame), **not** a crash/exit. Restore.
+On luna-server `luna-dev`: (a) with the current (valid) creds, restart → confirm normal-mode boot (MCP registered, ui-ws on 4753, `chat:true`). (b) Temporarily point `LUNA_DB_PATH` at an empty DB (or remove the account) + restart → confirm the server **stays up** logging `🔧 setup-mode` and the hello advertises `setup:true, chat:false` (probe via the ws-probe from earlier, checking the hello frame), **not** a crash/exit. Restore.
 
 - [ ] **Step 7: Commit**
 

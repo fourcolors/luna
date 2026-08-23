@@ -1085,7 +1085,7 @@ git checkout dev && git merge --ff-only <feature-branch> && git push origin dev 
 - [ ] **Step 2: Deploy luna-dev (server has protocol change)**
 
 ```bash
-ssh root@jax-box 'incus exec luna-dev -- bash -lc "cd /root/luna && git fetch origin && git pull --ff-only origin dev && /root/.bun/bin/bun install && systemctl restart luna-dev-chat-server.service"'
+ssh root@luna-server 'incus exec luna-dev -- bash -lc "cd /root/luna && git fetch origin && git pull --ff-only origin dev && /root/.bun/bin/bun install && systemctl restart luna-dev-chat-server.service"'
 ```
 Then confirm boot: `journalctl -u luna-dev-chat-server.service -n 20` shows `[luna/boot] MCP servers registered: …` and `✅ ui-ws chat server`.
 

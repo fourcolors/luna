@@ -4,7 +4,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `scripts/luna-server-install` render the chat-server systemd unit in *direct-exec* form so the bun chat-server is the unit's MainPID and receives SIGTERM directly — fixing the graceful-shutdown / HNSW-sidecar-flush bug that the `--filter` wrapper form causes, and making the installer the durable source of truth (so a re-install stops reverting the manual `sed` edit currently live on jax-box).
+**Goal:** Make `scripts/luna-server-install` render the chat-server systemd unit in *direct-exec* form so the bun chat-server is the unit's MainPID and receives SIGTERM directly — fixing the graceful-shutdown / HNSW-sidecar-flush bug that the `--filter` wrapper form causes, and making the installer the durable source of truth (so a re-install stops reverting the manual `sed` edit currently live on luna-server).
 
 **Architecture:** One-line `WorkingDirectory` change + one-line `ExecStart` change in the `render_service` heredoc, driven test-first by updating the three assertions in `test/deploy-scripts.test.ts` that pin the old (buggy) unit strings. Scope is strictly `render_service`; the package.json `server:chat` script and its doc-pinning test stay untouched.
 
@@ -17,7 +17,7 @@
 ## Why this is correct (context for the implementer)
 
 - Under systemd, `ExecStart=bun run --filter @luna/ui-web server:chat` makes the `bun --filter` wrapper the unit's **MainPID**. systemd delivers SIGTERM to that wrapper, not to the grandchild bun process that runs `scripts/chat-server.ts` and owns the SIGTERM handler (which flushes the HNSW sidecar + re-secures `.env`). So on `systemctl stop/restart` the handler never runs.
-- `apps/ui-web/package.json`'s `server:chat` script is literally `bun run scripts/chat-server.ts`. Running that **directly** as `ExecStart`, with `WorkingDirectory` set to `apps/ui-web`, makes the chat-server bun process the MainPID → it gets SIGTERM → graceful shutdown works. Verified empirically on jax-box: `--filter` → sidecar never written across 4 restarts; direct-exec → sidecar written at `0600`.
+- `apps/ui-web/package.json`'s `server:chat` script is literally `bun run scripts/chat-server.ts`. Running that **directly** as `ExecStart`, with `WorkingDirectory` set to `apps/ui-web`, makes the chat-server bun process the MainPID → it gets SIGTERM → graceful shutdown works. Verified empirically on luna-server: `--filter` → sidecar never written across 4 restarts; direct-exec → sidecar written at `0600`.
 - **Behavior-preserving precondition:** the two `process.cwd()` consumers are `apps/ui-web/scripts/sandbox-local-shell.ts` (preserved by setting `WorkingDirectory=…/apps/ui-web`) and `packages/chat-service/src/chat-service.ts:294` (`opts.cwd ?? process.env["LUNA_REPO_ROOT"] ?? process.cwd()`), which is safe because the rendered `.env` sets `LUNA_REPO_ROOT`. The existing test at `test/deploy-scripts.test.ts` already asserts `LUNA_REPO_ROOT=` is in the rendered output — that assertion is the acceptance check for the precondition; do not remove it.
 
 ## Scope boundary
@@ -183,7 +183,7 @@ EnvironmentFile keeps chat-service's SDK-query cwd off process.cwd().
 
 Updates the two ExecStart assertions + tightens the WorkingDirectory assertion
 in test/deploy-scripts.test.ts. Makes the installer the durable source of truth
-for the unit (replaces the manual sed edit on jax-box)."
+for the unit (replaces the manual sed edit on luna-server)."
 ```
 
 ---

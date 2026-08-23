@@ -2529,7 +2529,7 @@ exit 0
     const read = (path: string) => readFileSync(join(repoRoot, path), "utf8")
     const docs = [
       read("README.md"),
-      read("docs/jax-box-deploy.md"),
+      read("docs/server-deploy.md"),
     ].join("\n")
 
     expect(docs).not.toContain("tailscale ip")
