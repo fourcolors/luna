@@ -51,6 +51,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history: the updater-changelog step below diffs this tag
+          # against the previous moon-v* tag, which a depth-1 clone cannot see.
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -127,6 +131,30 @@ jobs:
         run: |
           node -e 'const fs=require("fs");const f="tauri.conf.json";const c=JSON.parse(fs.readFileSync(f,"utf8"));c.bundle.macOS={signingIdentity:"-",minimumSystemVersion:c.bundle.macOS.minimumSystemVersion};fs.writeFileSync(f,JSON.stringify(c,null,2)+"\n");console.log("CI macOS signing -> ad-hoc (-), minSystemVersion kept:",c.bundle.macOS.minimumSystemVersion)'
 
+      # The in-app updater's "what's new" is latest.json's `notes`, which
+      # tauri-action fills from releaseBody AT BUILD TIME. Every release before
+      # this step shipped `"notes": ""`, so auto-updaters saw nothing - even
+      # when the notes carried behavior warnings (the 0.0.73 machine-access
+      # flip being the case that exposed it). The richer hand-written notes
+      # still replace the release-page body afterwards (the cut-release flow
+      # edits it), but that never reaches latest.json - only this does.
+      - name: Generate updater changelog
+        id: notes
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          # On a dispatch run the tag was created above; on a tag push it came
+          # with the checkout. Either way resolve the PREVIOUS moon tag.
+          PREV=$(git tag --list 'moon-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
+          if [ -n "$PREV" ]; then RANGE="$PREV..$TAG"; else RANGE="$TAG"; fi
+          {
+            echo "body<<LUNA_NOTES_EOF"
+            echo "Changes since ${PREV:-the beginning}:"
+            git log "$RANGE" --no-merges --pretty='- %s' | head -40
+            echo "LUNA_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "changelog range: $RANGE"
+
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -139,6 +167,8 @@ jobs:
           # github.ref_name is the branch (master), not the moon-v* tag.
           tagName: ${{ steps.tag.outputs.name }}
           releaseName: "Luna Moon ${{ steps.tag.outputs.name }}"
+          # Lands in BOTH the initial release body and latest.json's `notes`.
+          releaseBody: ${{ steps.notes.outputs.body }}
           # MUST be false/false — a draft or prerelease makes the
           # releases/latest/download/latest.json endpoint 404, so the updater
           # would silently never find an update.
