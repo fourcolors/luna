@@ -73,6 +73,7 @@ import { createMoonLife } from "./moonLife"
 import { createMoonBar } from "./moonBar"
 import { createSurveyEngine, buildSurveyVerdicts } from "./surveyEngine"
 import { createLocalShell } from "./localShell"
+import { createMachineAccessPrompt } from "./machineAccessPrompt"
 import { createNotifier } from "./notifier"
 import { MoonClient } from "./moonClient"
 import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./messageMeta"
@@ -249,6 +250,15 @@ export function bootChat() {
   // global. It is only read when the capability frame goes out after hello.
   localShell.refreshPlatform()
   assignBridge("LocalShell", localShell)
+  // One-time machine-access consent (the in-app half of the 0.0.73 default
+  // flip): shown until the user answers, wired to the SAME apply path as the
+  // settings toggle. After localShell so a choice can re-announce the
+  // capability immediately.
+  createMachineAccessPrompt({
+    Logger,
+    State: getChatHost()?.state() ?? State,
+    LocalShell: localShell,
+  }).maybeShow()
   const notifier = createNotifier({ Logger })
   assignBridge("Notifier", notifier)
   assignBridge("MoonClient", MoonClient)
