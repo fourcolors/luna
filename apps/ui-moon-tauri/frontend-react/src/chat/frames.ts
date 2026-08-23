@@ -106,9 +106,13 @@ export function createFrames(ctx: FramesCtx) {
     const hasSuggestedActions = !!(frame && frame.capabilities && frame.capabilities.suggestedActions);
     SuggestedActionsEngine.applyCapability(hasSuggestedActions);
     // Agent sidebar S4: mention menu gate. Same raw-fallback pattern —
-    // parseHelloCapabilities predates the `agents` flag.
-    const hasAgents = !!(frame && frame.capabilities && frame.capabilities.agents);
-    MentionMenu.applyCapability(hasAgents);
+    // parseHelloCapabilities predates the `agents` flag. Guarded like
+    // wiring.ts's own `if (SlashMenu)` checks: this is the CONNECT path,
+    // and a missing engine must degrade to no-mentions, never throw.
+    if (MentionMenu) {
+      const hasAgents = !!(frame && frame.capabilities && frame.capabilities.agents);
+      MentionMenu.applyCapability(hasAgents);
+    }
     // (skills/connectors/vault capability gating + the widget-directory
     // announce are HUB concerns — the launchers and panels live there.)
   });
@@ -126,7 +130,7 @@ export function createFrames(ctx: FramesCtx) {
   // Populates the composer's @ mention menu; S5 sections read the same
   // State.agents.
   MoonFrames.register('agent-list', (frame) => {
-    MentionMenu.applyAgents(frame && frame.agents);
+    if (MentionMenu) MentionMenu.applyAgents(frame && frame.agents);
   });
 
 
