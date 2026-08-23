@@ -1,6 +1,7 @@
 {
   "name": "luna",
   "version": "0.0.1",
+  "license": "MIT",
   "description": "Modular agent framework built on Effect with full Claude Agent SDK parity",
   "private": true,
   "type": "module",
