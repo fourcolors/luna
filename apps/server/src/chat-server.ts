@@ -286,6 +286,7 @@ import {
   loadMainMemory,
   resolveMainMemoryPath,
 } from "./agent-memory-loader.js"
+import { buildAgentMentionAddendum } from "./agent-mention-addendum.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
 import {
   attachSandboxLocalShell,
@@ -1046,6 +1047,11 @@ export const ThreadToolsProviderLayer = (
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             bulletinHolder?.current ?? "", // hot-tier recent-activity bulletin ("" until first refresh or when LUNA_BULLETIN is off - filtered below)
             skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
+            // Agent sidebar S3: the @ mention contract + roster ("" when no
+            // agents installed — filtered below). Read fresh per thread so
+            // it tracks the same hot-loaded ~/.luna/agents/ source the
+            // adapter passes to Options.agents on every query.
+            buildAgentMentionAddendum(projectAgentRoster(loadAgents())),
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
