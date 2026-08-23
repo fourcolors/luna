@@ -21,6 +21,7 @@ import {
   Effect,
   Fiber,
   Layer,
+  Logger,
   Option,
   Scope,
   Stream,
@@ -2693,6 +2694,81 @@ describe("ChatService — listThreads excludes archived threads", () => {
           expect(activeIds).toContain(t1.id)
           expect(activeIds).not.toContain(t2.id)
         }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  // ── cause visibility ──────────────────────────────────────────────────────
+  // archiveThread returns `false` BOTH when the registry isn't wired and when
+  // the registry write fails, so the return value alone can never tell an
+  // operator which happened, and the failure left no trace anywhere. The
+  // warnCause tap makes the failure case visible in the log WITHOUT changing
+  // the returned value. Uses Effect.die: a defect, which the file's typed
+  // `Effect.catch` swallows would have missed entirely.
+  it(
+    "logs the cause when a registry archive write fails (and still returns false)",
+    async () => {
+      const failingArchiveLayer: Layer.Layer<ThreadRegistryService> = Layer.effect(
+        ThreadRegistryService,
+        Effect.gen(function* () {
+          const inner = yield* ThreadRegistryService
+          const api: typeof inner = {
+            ...inner,
+            archive: () => Effect.die(new Error("registry disk is gone")),
+          }
+          return api
+        }),
+      ).pipe(Layer.provide(ThreadRegistryService.Memory.pipe(Layer.provide(testClock))))
+
+      const captured: Array<{ level: string; message: string }> = []
+      const captureLayer = Logger.layer([
+        Logger.make(({ message, logLevel }) => {
+          captured.push({ level: String(logLevel), message: String(message) })
+        }),
+      ])
+
+      const layer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(
+            noopFakeLayer,
+            Layer.mergeAll(
+              SessionStore.Default,
+              testClock,
+              obsLayer,
+              telemetryLayer,
+              Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+              failingArchiveLayer,
+            ),
+          ),
+        ),
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const t = yield* chat.createThread({
+              model: "claude-test",
+              title: "doomed",
+            })
+            const ok = yield* chat.archiveThread(t.id)
+            // Behaviour is UNCHANGED by this PR: still false, still no failure.
+            expect(ok).toBe(false)
+          }),
+        ).pipe(Effect.provide(layer), Effect.provide(captureLayer)),
+      )
+
+      const warns = captured.filter((c) => c.level === "Warn")
+      // The site label says WHICH write was lost...
+      expect(warns.some((w) => w.message.includes("ThreadRegistry.archive"))).toBe(
+        true,
+      )
+      // ...and the rendered cause says why.
+      expect(warns.some((w) => w.message.includes("registry disk is gone"))).toBe(
+        true,
       )
     },
     { timeout: 15_000 },

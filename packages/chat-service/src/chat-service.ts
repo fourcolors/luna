@@ -50,6 +50,7 @@
  * subscribe, listThreads, …) directly.
  */
 import {
+  Cause,
   Context,
   Duration,
   Effect,
@@ -105,6 +106,41 @@ import { makeThreadLifecycle } from "./chat-service-thread-lifecycle.js"
 
 /** Re-exported for callers that want the same shape. */
 export type ClientHint = ClientMarkerInput
+
+/* -------------------------------------------------------------------------- */
+/* Cause visibility                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Log the cause of a best-effort operation without changing what happens next.
+ *
+ * This file is full of deliberate fallbacks: a registry write that must not
+ * break live chat, a corrupt row that degrades to "untitled", an archived-set
+ * read that falls back to a wider query. Those fallbacks are correct. What was
+ * wrong is that each one discarded the whole `Cause` on the way past, so a
+ * genuine defect, a dead DB and a routine shutdown interrupt were all
+ * indistinguishable, and none of them left a trace anywhere.
+ *
+ * `warnCause` is a TAP, not a catch: it is piped in BEFORE the existing
+ * catch/fallback and returns the effect unchanged, so control flow, return
+ * shape and every error channel stay exactly as they were.
+ *
+ * `Cause.hasInterruptsOnly` keeps normal teardown quiet. A chat service
+ * interrupts fibers constantly (a WS disconnect interrupts the request fiber,
+ * closing a thread scope interrupts its forks), and none of that is an
+ * incident. A cause that mixes an interrupt with a real failure is NOT
+ * interrupts-only, so it still logs.
+ *
+ * Mirrors the existing idiom in chat-service-thread-lifecycle.ts.
+ */
+const warnCause =
+  (site: string) =>
+  <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.tapCause(self, (cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.logWarning(`[chat] ${site}: ${Cause.pretty(cause)}`),
+    )
 
 /* -------------------------------------------------------------------------- */
 /* Internal per-thread state                                                  */
@@ -419,6 +455,7 @@ const makeChatService = Effect.gen(function* () {
                 })
               }),
             ),
+            warnCause("suggested-action stream subscription died"),
             Effect.catchCause(() => Effect.void),
             Effect.forkIn(serviceScope),
             Effect.asVoid,
@@ -564,23 +601,35 @@ const makeChatService = Effect.gen(function* () {
           // Keep observation metadata in a parallel FIFO. SDK turns are
           // sequential per thread, so each exactly-once result consumes the
           // corresponding user seed. Queue shutdowns remain best-effort.
-          yield* Queue.offer(entry.pendingTurns, {
+          // Queue.offer CANNOT fail in Effect 4 (it returns Effect<boolean>):
+          // a non-Open queue yields `false` rather than failing, so the
+          // catchCause that used to sit here was vestigial v3-era code. The
+          // real silent drop is the IGNORED boolean. send() captured `entry`
+          // above, then awaited a DB write plus up to ~2.5s of memory recall,
+          // so a closeThread/reap landing in that window makes both offers
+          // no-ops: the user's turn is persisted but never reaches the SDK,
+          // and the symptom is "Luna just never replied".
+          const acceptedPending = yield* Queue.offer(entry.pendingTurns, {
             userMessageId: messageId,
             userText: text,
-          }).pipe(Effect.catchCause(() => Effect.void))
-          yield* Queue.offer(entry.inbox, {
+          })
+          const acceptedInbox = yield* Queue.offer(entry.inbox, {
             payload: userPayload,
             memoryContext: recalled,
-          }).pipe(
-            Effect.catchCause(() => Effect.void),
-          )
+          })
+          if (!acceptedPending || !acceptedInbox) {
+            yield* Effect.logWarning(
+              `[chat] send(${threadId}): thread queue closed mid-send, turn ` +
+                `dropped (pendingTurns=${acceptedPending}, inbox=${acceptedInbox})`,
+            )
+          }
 
           // Phase 3: bump last_active_at on every turn (best-effort, off hot path).
           // A DB failure here must never break live chat.
           if (Option.isSome(threadRegistry)) {
             yield* threadRegistry.value
               .touch(threadId)
-              .pipe(Effect.catchCause(() => Effect.void))
+              .pipe(warnCause("ThreadRegistry.touch"), Effect.catchCause(() => Effect.void))
 
             // Phase 3 title heuristic: on the first turn, if the thread has no
             // title yet, derive one from the user message text — first line,
@@ -593,7 +642,10 @@ const makeChatService = Effect.gen(function* () {
                   yield* threadRegistry.value.upsert({ id: threadId, title: derived })
                 }
               }
-            }).pipe(Effect.catchCause(() => Effect.void))
+            }).pipe(
+              warnCause("derive + persist first-turn title"),
+              Effect.catchCause(() => Effect.void),
+            )
           }
 
           return projected !== null
@@ -888,7 +940,10 @@ const makeChatService = Effect.gen(function* () {
                 delete mergedSdk["effort"]
                 yield* store
                   .setOptions(threadId, { sdkOptions: mergedSdk })
-                  .pipe(Effect.catch(() => Effect.void))
+                  .pipe(
+                    warnCause("set-thread-config: persist ultracode sdkOptions"),
+                    Effect.catch(() => Effect.void),
+                  )
                 yield* Option.match(threadRegistry, {
                   onNone: () => {
                     const lunaHome = process.env["LUNA_HOME"]
@@ -900,7 +955,10 @@ const makeChatService = Effect.gen(function* () {
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { effort: ULTRACODE })
-                      .pipe(Effect.catchCause(() => Effect.void)),
+                      .pipe(
+                        warnCause("set-thread-config: persist ultracode effort to registry"),
+                        Effect.catchCause(() => Effect.void),
+                      ),
                 })
               } else {
                 rejected.push({ field: "effort", reason: "live ultracode switch failed" })
@@ -964,6 +1022,7 @@ const makeChatService = Effect.gen(function* () {
                 const existingOpts = yield* store.getOptions(threadId)
                 const mergedSdk = { ...(existingOpts?.sdkOptions ?? {}), effort: effective }
                 yield* store.setOptions(threadId, { sdkOptions: mergedSdk }).pipe(
+                  warnCause("set-thread-config: persist effort sdkOptions"),
                   Effect.catch(() => Effect.void),
                 )
                 yield* Option.match(threadRegistry, {
@@ -977,7 +1036,10 @@ const makeChatService = Effect.gen(function* () {
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { effort: effective })
-                      .pipe(Effect.catchCause(() => Effect.void)),
+                      .pipe(
+                        warnCause("set-thread-config: persist effort to registry"),
+                        Effect.catchCause(() => Effect.void),
+                      ),
                 })
               } else {
                 // The SDK call threw — the ack must NOT report success, and
@@ -1017,7 +1079,10 @@ const makeChatService = Effect.gen(function* () {
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { model })
-                      .pipe(Effect.catchCause(() => Effect.void)),
+                      .pipe(
+                        warnCause("set-thread-config: persist model to registry (lane switch)"),
+                        Effect.catchCause(() => Effect.void),
+                      ),
                 })
               } else if (handle !== null) {
                 // Same lane + live handle → hot-swap via setModel. Success-
@@ -1033,6 +1098,7 @@ const makeChatService = Effect.gen(function* () {
                   const existingOpts2 = yield* store.getOptions(threadId)
                   const mergedSdk2 = { ...(existingOpts2?.sdkOptions ?? {}), model }
                   yield* store.setOptions(threadId, { model, sdkOptions: mergedSdk2 }).pipe(
+                    warnCause("set-thread-config: persist model sdkOptions"),
                     Effect.catch(() => Effect.void),
                   )
                   yield* Option.match(threadRegistry, {
@@ -1046,7 +1112,10 @@ const makeChatService = Effect.gen(function* () {
                     onSome: (reg) =>
                       reg
                         .setConfig(threadId, { model })
-                        .pipe(Effect.catchCause(() => Effect.void)),
+                        .pipe(
+                          warnCause("set-thread-config: persist model to registry (hot-swap)"),
+                          Effect.catchCause(() => Effect.void),
+                        ),
                   })
                 } else {
                   rejected.push({ field: "model", reason: "live model switch failed" })
@@ -1068,7 +1137,10 @@ const makeChatService = Effect.gen(function* () {
                   onSome: (reg) =>
                     reg
                       .setConfig(threadId, { model })
-                      .pipe(Effect.catchCause(() => Effect.void)),
+                      .pipe(
+                        warnCause("set-thread-config: persist model to registry"),
+                        Effect.catchCause(() => Effect.void),
+                      ),
                 })
               }
             }
@@ -1334,6 +1406,7 @@ const makeChatService = Effect.gen(function* () {
               // row would then abort the whole forEach and brick the sidebar
               // list. catchCause degrades that row to "untitled" instead.
               return store.readFirstUserMessage(s.id).pipe(
+                warnCause("readFirstUserMessage while deriving a sidebar title"),
                 Effect.catchCause(() => Effect.succeed(null)),
                 Effect.flatMap((first): Effect.Effect<SessionSummary, never> => {
                   const text = first ? extractText(first.payload) : null
@@ -1368,11 +1441,13 @@ const makeChatService = Effect.gen(function* () {
           // (transient over-inclusion) rather than fail the whole sidebar.
           const archivedRows = yield* reg.listByStatus("archived").pipe(
             Effect.map((rows) => rows.map((r) => ({ id: r.id }))),
+            warnCause("listByStatus(archived), falling back to a full registry list"),
             Effect.catchCause(() =>
               reg.list().pipe(
                 Effect.map((all) =>
                   all.filter((r) => r.status === "archived").map((r) => ({ id: r.id })),
                 ),
+                warnCause("registry list fallback failed too, archived set is EMPTY and archived threads may leak into the sidebar"),
                 Effect.catchCause(() =>
                   Effect.succeed([] as ReadonlyArray<{ readonly id: string }>),
                 ),
@@ -1383,6 +1458,7 @@ const makeChatService = Effect.gen(function* () {
           const [sessions, activeRows] = yield* Effect.all([
             listActive([...archivedIds]),
             reg.listByStatus("active").pipe(
+              warnCause("listByStatus(active), sidebar titles degrade"),
               Effect.catchCause(() =>
                 Effect.succeed(
                   [] as readonly {
@@ -1412,7 +1488,11 @@ const makeChatService = Effect.gen(function* () {
           const persist = (id: string, title: string) =>
             reg
               .setTitleIfNull(id, title)
-              .pipe(Effect.asVoid, Effect.catchCause(() => Effect.void))
+              .pipe(
+                Effect.asVoid,
+                warnCause("setTitleIfNull"),
+                Effect.catchCause(() => Effect.void),
+              )
           const titled = yield* resolveTitles(sessions, regTitles, persist)
           return titled.map((s) => {
             const agentName = regAgents.get(s.id)
@@ -1511,7 +1591,10 @@ const makeChatService = Effect.gen(function* () {
         Option.match(threadRegistry, {
           onNone: () => Effect.succeed(false),
           onSome: (reg) =>
-            reg.archive(threadId).pipe(Effect.catchCause(() => Effect.succeed(false))),
+            reg.archive(threadId).pipe(
+              warnCause("ThreadRegistry.archive"),
+              Effect.catchCause(() => Effect.succeed(false)),
+            ),
         })
 
       /**
@@ -1522,7 +1605,10 @@ const makeChatService = Effect.gen(function* () {
         Option.match(threadRegistry, {
           onNone: () => Effect.succeed(false),
           onSome: (reg) =>
-            reg.unarchive(threadId).pipe(Effect.catchCause(() => Effect.succeed(false))),
+            reg.unarchive(threadId).pipe(
+              warnCause("ThreadRegistry.unarchive"),
+              Effect.catchCause(() => Effect.succeed(false)),
+            ),
         })
 
       // ── Idle-thread reaper ────────────────────────────────────────────────
