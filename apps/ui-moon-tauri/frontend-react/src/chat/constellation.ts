@@ -99,11 +99,46 @@ export function linkPath(n: number): string {
   return d
 }
 
-/** What a screen reader hears instead of the removed step count. */
-export function constellationLabel(stars: readonly Star[], total: number): string {
+/**
+ * Every top-level tool call, UNCAPPED, so the announcement can be honest about
+ * work the strip had to truncate.
+ *
+ * `starsFor` stops at STAR_MAX to keep the strip bounded, which means a failure
+ * in call seven is invisible AND, if the label counted only drawn stars, would
+ * go unannounced too. The screen-reader text is the one place that costs
+ * nothing to be complete, so it counts everything.
+ */
+export function toolStats(
+  merged: readonly MergedStep[],
+  lastToolIndex: number,
+): { total: number; failed: number } {
+  let total = 0
+  let failed = 0
+  for (let i = 0; i <= lastToolIndex && i < merged.length; i++) {
+    const seg = merged[i]?.seg
+    if (!seg || seg.kind !== "tool" || seg.parentToolUseId) continue
+    total++
+    if (seg.result !== null && !seg.result.ok) failed++
+  }
+  return { total, failed }
+}
+
+/**
+ * What a screen reader hears instead of the removed step count.
+ *
+ * `total` and `failed` come from `toolStats`, NOT from `stars.length` and not
+ * from `lastToolIndex + 1`. The first undercounts past the cap; the second is a
+ * row index into `merged`, so it counts intermediate narration as a step - the
+ * exact meaning this feature deliberately moved away from.
+ */
+export function constellationLabel(
+  stars: readonly Star[],
+  total: number,
+  failed: number,
+): string {
   if (total === 0) return "No tool steps"
-  const failed = stars.filter((s) => s.kind === "bad").length
   const head = `${total} step${total === 1 ? "" : "s"}`
   const tail = failed ? `, ${failed} failed` : ""
-  return `${head}${tail}: ${stars.map((s) => s.label).join(", ")}`
+  const shown = stars.length < total ? ` (first ${stars.length} shown)` : ""
+  return `${head}${tail}${shown}: ${stars.map((s) => s.label).join(", ")}`
 }

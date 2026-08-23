@@ -57,8 +57,16 @@ function installInstance(target: any, prop: 'localStorage' | 'sessionStorage') {
     try { target[prop] = instance } catch { /* read-only on Bun; ignore */ }
   }
 }
-installInstance(window, 'localStorage')
-installInstance(window, 'sessionStorage')
+// `setupFiles` run under whatever environment the CURRENT test file declared,
+// so a file carrying `// @vitest-environment node` (e.g.
+// test/thread-drag-session.test.ts, which loads vendor JS into a hand-built
+// `vm` sandbox and needs no DOM) reaches here with no `window` at all. Guard
+// it, exactly as the matchMedia block below already does; the `globalThis`
+// installs beneath still run in both environments.
+if (typeof window !== 'undefined') {
+  installInstance(window, 'localStorage')
+  installInstance(window, 'sessionStorage')
+}
 installInstance(globalThis as any, 'localStorage')
 installInstance(globalThis as any, 'sessionStorage')
 

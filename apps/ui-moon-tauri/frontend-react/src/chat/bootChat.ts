@@ -585,6 +585,9 @@ export function bootChat() {
     SlashMenu: slashMenuMount?.SlashMenu as never,
     Attachments: attachmentsMount?.Attachments as never,
     ThreadCache: threadDrawer.ThreadCache,
+    // Same late-bound hook the drawer gets: newConversation is a thread switch
+    // too, and the suggestion chip is per-thread.
+    onThreadSwitch: () => { suggestedActionsEngine.refresh() },
   })
   assignBridge("ChatEngine", chatEngine.ChatEngine)
   assignBridge("VoiceEngine", chatEngine.VoiceEngine)

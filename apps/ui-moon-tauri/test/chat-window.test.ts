@@ -224,6 +224,101 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // so this exercises the REAL fallback: submit behavior + the 90s turn
     // watchdog (WebSocketEngine.startTurnTimeout) that clears a stuck spinner
     // and surfaces a visible "no response" error instead of hanging forever.
+    // REGRESSION GUARD. Shipped in #585 and caught in review, not by a test.
+    // Fix C re-armed the 90s watchdog on `assistant-done`; fix D made the
+    // watchdog clear busy unconditionally, above its own self-suppression.
+    // Together, on a turn whose NEXT tool step ran past 90s, the watchdog woke,
+    // cleared busy, then early-returned without saying anything - and nothing
+    // re-asserts busy, because the app's only setBusy(true) is at send. The face
+    // went idle mid-turn, silently, until the user sent again.
+    it('Scenario: a tool step running past 90s does NOT make the face go idle mid-turn', () => {
+      const mi = (window as any).__MoonInternals
+      const face = document.getElementById('luna-face') as HTMLElement
+      mi.State.activeThreadId = 'th-long'
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
+      mi.MoonFace.setConnection('connected')   // connection outranks busy
+
+      const messageInput = document.getElementById('message-input') as HTMLInputElement
+      messageInput.value = 'do something slow'
+      document.getElementById('chat-form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      expect(face.dataset['state']).toBe('busy')
+
+      // An intermediate step completes: this drops the pending placeholder and
+      // nulls activeTurnId, which is what disarmed the old suppression check.
+      mi.handleFrame({ type: 'assistant-delta', threadId: 'th-long', turnId: 'A', text: 'one ' })
+      mi.handleFrame({ type: 'assistant-done', threadId: 'th-long', turnId: 'A', message: { text: 'one' } })
+
+      // A slow tool. Each frame is progress and pushes the deadline out, so a
+      // turn that keeps producing work never trips the watchdog however long it
+      // runs in total - which is the case the regression broke.
+      mi.handleFrame({ type: 'tool-call', threadId: 'th-long', turnId: 'A', toolCallId: 's1', name: 'Bash', input: {} })
+      vi.advanceTimersByTime(80_000)
+      expect(face.dataset['state']).toBe('busy')
+      mi.handleFrame({ type: 'tool-result', toolCallId: 's1', status: 'ok', output: 'a' })
+      vi.advanceTimersByTime(80_000)
+      expect(face.dataset['state']).toBe('busy')
+      mi.handleFrame({ type: 'tool-call', threadId: 'th-long', turnId: 'A', toolCallId: 's2', name: 'Bash', input: {} })
+      vi.advanceTimersByTime(80_000)
+      expect(face.dataset['state']).toBe('busy')
+      mi.handleFrame({ type: 'tool-result', toolCallId: 's2', status: 'ok', output: 'b' })
+      vi.advanceTimersByTime(80_000)
+      expect(face.dataset['state']).toBe('busy')      // 320s in, still working
+
+      // Only turn-complete ends it.
+      mi.handleFrame({ type: 'turn-complete', threadId: 'th-long' })
+      expect(face.dataset['state']).toBe('')
+    })
+
+    it('Scenario: a single tool emitting nothing for 90s is treated as a hang, loudly', () => {
+      // The deliberate limit of the above. 90s of TOTAL silence is
+      // indistinguishable from a dead turn, so the watchdog still fires - but
+      // it now says so instead of just going idle, which is the half of the
+      // regression that made it invisible.
+      const mi = (window as any).__MoonInternals
+      const face = document.getElementById('luna-face') as HTMLElement
+      const chatMessages = document.getElementById('chat-messages')!
+      mi.State.activeThreadId = 'th-mute'
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
+      mi.MoonFace.setConnection('connected')
+
+      const input = document.getElementById('message-input') as HTMLInputElement
+      input.value = 'run the slow thing'
+      document.getElementById('chat-form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      mi.handleFrame({ type: 'assistant-delta', threadId: 'th-mute', turnId: 'C', text: 'ok ' })
+      mi.handleFrame({ type: 'assistant-done', threadId: 'th-mute', turnId: 'C', message: { text: 'ok' } })
+      mi.handleFrame({ type: 'tool-call', threadId: 'th-mute', turnId: 'C', toolCallId: 'mute', name: 'Bash', input: {} })
+
+      vi.advanceTimersByTime(90_000)
+      expect(face.dataset['state']).toBe('')
+      expect(chatMessages.textContent).toContain('No response from the server')
+    })
+
+    it('Scenario: when the watchdog DOES fire it always explains itself', () => {
+      // The other half of the same bug: clearing busy without a banner left an
+      // idle face and no reason. Firing now means real silence, so it says so.
+      const mi = (window as any).__MoonInternals
+      const face = document.getElementById('luna-face') as HTMLElement
+      const chatMessages = document.getElementById('chat-messages')!
+      mi.State.activeThreadId = 'th-silent'
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
+      mi.MoonFace.setConnection('connected')   // connection outranks busy
+
+      const messageInput = document.getElementById('message-input') as HTMLInputElement
+      messageInput.value = 'hello?'
+      document.getElementById('chat-form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+      // Consume the placeholder, so the OLD code would have suppressed the banner.
+      mi.handleFrame({ type: 'assistant-delta', threadId: 'th-silent', turnId: 'B', text: 'hm ' })
+      mi.handleFrame({ type: 'assistant-done', threadId: 'th-silent', turnId: 'B', message: { text: 'hm' } })
+
+      vi.advanceTimersByTime(90_000)   // total silence from here
+      expect(face.dataset['state']).toBe('')
+      expect(chatMessages.textContent).toContain('No response from the server')
+    })
+
     it('Scenario: User submits a text message -> message appended, input cleared, typing indicator shown; then the turn watchdog surfaces a no-response error', () => {
       const chatPanel = document.getElementById('chat-panel')
       const chatForm = document.getElementById('chat-form')
