@@ -2590,6 +2590,12 @@
            createRoot(host).render() would wipe any static children here anyway
            - see that module's doc). -->
       <div id="slash-menu" class="slash-menu" role="listbox" aria-label="Slash commands" aria-hidden="true"></div>
+      <!-- "@agent" mention popover (agent sidebar S4) — same .slash-menu
+           chrome (anchor, radius, shadow) and the same upward-left slot; the
+           two menus are mutually exclusive by trigger (whole-input "/" vs a
+           caret @-token), so they can never fight over it. Painted
+           imperatively by src/chat/mentionMenu.ts (textContent only). -->
+      <div id="mention-menu" class="slash-menu" role="listbox" aria-label="Agents" aria-hidden="true"></div>
       <input type="file" id="file-input" multiple hidden>
 
       <!-- Tier 1 — input shell: + (left) · textarea · send (right). -->
@@ -2601,7 +2607,7 @@
             <line x1="5" y1="12" x2="19" y2="12"></line>
           </svg>
         </button>
-        <textarea class="chat-input" id="message-input" placeholder="Message Luna…" rows="1" autocomplete="off" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
+        <textarea class="chat-input" id="message-input" placeholder="Message Luna…" rows="1" autocomplete="off" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="slash-menu mention-menu" aria-expanded="false"></textarea>
         <button type="submit" class="send-btn" aria-label="Send message" title="Send (Enter)">
           <!-- ↵ return/enter glyph: vertical down-then-left + a left arrowhead. -->
           <svg viewBox="0 0 24 24" aria-hidden="true">

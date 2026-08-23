@@ -99,9 +99,9 @@ export function installWiring(ctx: WiringCtx) {
   const {
     ArtifactsEngine, Attachments, ChatEngine, ChatLoop, ChatState,
     ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
-    LocalShell, SecretPromptEngine, SlashMenu, SuggestedActionsEngine,
-    SurveyEngine, ThreadCache, ThreadDrawerEngine, VoiceEngine,
-    moonDragDebugNote,
+    LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
+    SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
+    VoiceEngine, moonDragDebugNote,
   } = ctx.engines
 
   // ── Boot params FIRST (0.0.71 / #563 ignition isolation) ───────────────
@@ -124,9 +124,9 @@ export function installWiring(ctx: WiringCtx) {
     installWiringChromeAndWindow(ctx, {
       ArtifactsEngine, Attachments, ChatEngine, ChatLoop, ChatState,
       ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
-      LocalShell, SecretPromptEngine, SlashMenu, SuggestedActionsEngine,
-      SurveyEngine, ThreadCache, ThreadDrawerEngine, VoiceEngine,
-      moonDragDebugNote,
+      LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
+      SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
+      VoiceEngine, moonDragDebugNote,
       SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE, MAX_REATTACH_ROUNDS,
     });
   } catch (err) {
@@ -148,9 +148,9 @@ function installWiringChromeAndWindow(ctx, engines) {
   const {
     ArtifactsEngine, Attachments, ChatEngine, ChatLoop, ChatState,
     ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
-    LocalShell, SecretPromptEngine, SlashMenu, SuggestedActionsEngine,
-    SurveyEngine, ThreadCache, ThreadDrawerEngine, VoiceEngine,
-    moonDragDebugNote,
+    LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
+    SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
+    VoiceEngine, moonDragDebugNote,
     PINNED_THREAD, REDOCK_TO,
   } = engines
 
@@ -598,21 +598,37 @@ function installWiringChromeAndWindow(ctx, engines) {
       if (e.key === 'Escape')    { e.preventDefault(); e.stopPropagation(); SlashMenu.close(); return; }
       // other keys fall through; the 'input' event re-filters the menu.
     }
+    // "@agent" mention menu (agent sidebar S4): same key contract, checked
+    // AFTER the slash menu (mutually exclusive by trigger; slash wins the
+    // pathological "/x@y" overlap). Same Tab-only-consumes-on-complete rule.
+    if (MentionMenu && MentionMenu.isOpen() && !e.isComposing) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); MentionMenu.move(1); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); MentionMenu.move(-1); return; }
+      if (e.key === 'Tab')       { if (MentionMenu.complete()) e.preventDefault(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault(); e.stopPropagation(); MentionMenu.accept(); return;
+      }
+      if (e.key === 'Escape')    { e.preventDefault(); e.stopPropagation(); MentionMenu.close(); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       ChatEngine.handleSubmit(e);
     }
   });
   // Auto-grow on every content change: typing, deleting, IME composition.
-  // Also re-filter the slash menu (no-op unless the line starts with '/').
+  // Also re-filter both menus (each self-gates on its own trigger).
   if (DOM.messageInput) DOM.messageInput.addEventListener('input', () => {
     ChatEngine.autoGrowMessageInput();
     if (SlashMenu) SlashMenu.onInput();
+    if (MentionMenu) MentionMenu.onInput();
   });
-  // Close the menu when the composer loses focus so its aria-expanded /
+  // Close the menus when the composer loses focus so their aria-expanded /
   // aria-activedescendant never go stale on an unfocused control (Tab-out, click
   // elsewhere). Row mousedown preventDefaults focus, so mouse-accept doesn't trip this.
-  if (DOM.messageInput) DOM.messageInput.addEventListener('blur', () => { if (SlashMenu) SlashMenu.close(); });
+  if (DOM.messageInput) DOM.messageInput.addEventListener('blur', () => {
+    if (SlashMenu) SlashMenu.close();
+    if (MentionMenu) MentionMenu.close();
+  });
   // Markdown links must never navigate the webview in place (that would replace
   // this window's UI). preventDefault() keeps the page intact; window.open is
   // best-effort.
@@ -727,6 +743,7 @@ function installWiringChromeAndWindow(ctx, engines) {
       return;
     }
     if (SlashMenu && SlashMenu.isOpen()) { SlashMenu.close(); return; }
+    if (MentionMenu && MentionMenu.isOpen()) { MentionMenu.close(); return; }
     if (ComposerConfig && typeof ComposerConfig.anyMenuOpen === 'function' && ComposerConfig.anyMenuOpen()) {
       ComposerConfig.closeAllMenus();
       return;
