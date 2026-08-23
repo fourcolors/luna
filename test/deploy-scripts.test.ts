@@ -1724,17 +1724,33 @@ exit 0
     )
   })
 
-  it("local installer dry-run uses the real GitHub repository and installs the chat CLI wrapper", () => {
+  // Env vars that leak from the host server environment into test runs; install.sh
+  // reads these to pre-fill URL/host slots, so tests that verify derivation behavior
+  // must null them out to get a clean slate.
+  const cleanInstallEnv = {
+    LUNA_HOST: undefined,
+    LUNA_STABLE_WS_URL: undefined,
+    LUNA_STABLE_FALLBACK_WS_URL: undefined,
+    LUNA_DEV_WS_URL: undefined,
+    LUNA_DEV_FALLBACK_WS_URL: undefined,
+    LUNA_SSH_HOST: undefined,
+    LUNA_FALLBACK_SSH_HOST: undefined,
+  } as const
+
+  it("local installer dry-run derives WS URLs from --host and installs the chat CLI wrapper", () => {
     const temp = makeTempDir()
 
     const result = runScript("install.sh", [
       "--dry-run",
+      "--host",
+      "my-server",
       "--luna-dir",
       join(temp, "repo"),
       "--bin-dir",
       join(temp, "bin"),
     ], {
       env: {
+        ...cleanInstallEnv,
         LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
@@ -1745,10 +1761,95 @@ exit 0
     expect(result.stdout).toContain("run --cwd")
     expect(result.stdout).toContain("@luna/agent-cli")
     expect(result.stdout).toContain("luna chat")
-    expect(result.stdout).toContain("LUNA_STABLE_WS_URL=ws://jax-box:4753/ui")
-    expect(result.stdout).toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box.local:4753/ui")
-    expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://jax-box:5753/ui")
-    expect(result.stdout).toContain("LUNA_DEV_FALLBACK_WS_URL=ws://jax-box.local:5753/ui")
+    // URLs derived from --host
+    expect(result.stdout).toContain("LUNA_STABLE_WS_URL=ws://my-server:4753/ui")
+    expect(result.stdout).toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://my-server.local:4753/ui")
+    expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://my-server:5753/ui")
+    expect(result.stdout).toContain("LUNA_DEV_FALLBACK_WS_URL=ws://my-server.local:5753/ui")
+  })
+
+  it("installer fails non-interactively with no host and no URL overrides", () => {
+    const temp = makeTempDir()
+
+    // spawnSync runs with stdin inherited from the test process (not a TTY),
+    // which triggers the non-interactive failure path.
+    const result = runScript("install.sh", [
+      "--dry-run",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+    ], {
+      env: {
+        ...cleanInstallEnv,
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
+      },
+    })
+
+    // Should fail because stdin is not a TTY in spawnSync and no host was given
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("--host")
+    expect(result.stderr).toContain("LUNA_HOST")
+  })
+
+  it("installer derives SSH host from --host when --enable-ssh-recovery is set", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("install.sh", [
+      "--dry-run",
+      "--host",
+      "my-server",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+      "--enable-ssh-recovery",
+    ], {
+      env: {
+        ...cleanInstallEnv,
+        LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
+      },
+    })
+
+    expect(result.status).toBe(0)
+    // SSH targets derived from --host
+    expect(result.stdout).toContain("LUNA_STABLE_START_SSH=root@my-server")
+    expect(result.stdout).toContain("LUNA_STABLE_FALLBACK_START_SSH=root@my-server.local")
+    expect(result.stdout).toContain("LUNA_DEV_START_SSH=root@my-server")
+    expect(result.stdout).toContain("LUNA_DEV_FALLBACK_START_SSH=root@my-server.local")
+  })
+
+  it("installer emits ATS warning for a public DNS name but not for a no-dot hostname", () => {
+    const temp = makeTempDir()
+
+    const publicResult = runScript("install.sh", [
+      "--dry-run",
+      "--host",
+      "luna.example.com",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+    ], {
+      env: { ...cleanInstallEnv, LUNA_TEST_BUN_PATH: makeBunStub(temp).bun },
+    })
+    expect(publicResult.status).toBe(0)
+    expect(publicResult.stderr).toContain("luna.example.com")
+    expect(publicResult.stderr).toContain("wss://")
+
+    const localResult = runScript("install.sh", [
+      "--dry-run",
+      "--host",
+      "my-server",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+    ], {
+      env: { ...cleanInstallEnv, LUNA_TEST_BUN_PATH: makeBunStub(temp).bun },
+    })
+    expect(localResult.status).toBe(0)
+    expect(localResult.stderr).not.toContain("wss://")
   })
 
   it("local installer can write generic SSH recovery fallbacks", () => {
@@ -1767,8 +1868,12 @@ exit 0
       "primary.example.test",
       "--fallback-ssh-host",
       "lan.example.test",
+      // Provide at least one URL so the host-required check is bypassed
+      "--stable-url",
+      "ws://primary.example.test:4753/ui",
     ], {
       env: {
+        ...cleanInstallEnv,
         LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
@@ -1794,6 +1899,8 @@ exit 0
 
     const result = runScript("install.sh", [
       "--dry-run",
+      "--host",
+      "my-server",
       "--luna-dir",
       join(temp, "repo"),
       "--bin-dir",
@@ -1801,6 +1908,7 @@ exit 0
       "--enable-ssh-recovery",
     ], {
       env: {
+        ...cleanInstallEnv,
         LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
@@ -1834,6 +1942,7 @@ exit 0
       "ws://127.0.0.1:4753/ui",
     ], {
       env: {
+        ...cleanInstallEnv,
         LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
       },
     })
@@ -1841,18 +1950,18 @@ exit 0
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("LUNA_STABLE_WS_URL=ws://127.0.0.1:4753/ui")
     expect(result.stdout).toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://127.0.0.1:4753/ui")
-    // The stable URL lines must not carry jax-box (the dev lines still may —
-    // there is no local dev server to point at, see install-mac.command option 1).
-    expect(result.stdout).not.toContain("LUNA_STABLE_WS_URL=ws://jax-box")
-    expect(result.stdout).not.toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box")
+    // Stable URL lines must carry the explicitly passed localhost address.
+    // No host was passed so dev URL slots stay empty (upsert_env no-ops on empty);
+    // a desktop install (option 1 in install-mac.command) runs this way.
+    expect(result.stdout).not.toContain("LUNA_STABLE_WS_URL=ws://127.0.0.2")
+    expect(result.stdout).not.toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://127.0.0.2")
   })
 
-  it("desktop install points the CLI at the local server, not jax-box", () => {
+  it("desktop install points the CLI at the local server", () => {
     const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
     // A "Complete Desktop Install" runs the chat server locally, so the CLI must
-    // be pointed at 127.0.0.1 — not install.sh's remote jax-box default (finding
-    // #4). Override BOTH the primary and fallback URL or the fallback re-leaks
-    // jax-box.local as the CLI's second connection target.
+    // be pointed at 127.0.0.1 — not a remote server (finding #4). Override BOTH
+    // the primary and fallback URL so neither slot falls back to a remote host.
     expect(script).toContain("--stable-url ws://127.0.0.1:4753/ui")
     expect(script).toContain("--stable-fallback-url ws://127.0.0.1:4753/ui")
   })

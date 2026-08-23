@@ -7,7 +7,7 @@
 # Mach-O stays linker-signed (Identifier like luna_moon_ui-<hash>, entitlements
 # none, Info.plist=not bound, Sealed Resources=none). macOS then IGNORES ATS +
 # NSLocalNetworkUsageDescription in Info.plist — Local Network prompt never
-# appears and WKWebView never dials ws://jax-box:4753/ui even though curl works.
+# appears and WKWebView never dials the configured ws:// URL even though curl works.
 #
 # Copying `target/release/luna-moon-ui` into an existing .app's Contents/MacOS
 # produces the same unbound hole. Always install the .app that `tauri build`
@@ -137,7 +137,7 @@ fi
 
 if [[ "$fail" -ne 0 ]]; then
   echo "" >&2
-  echo "Install aborted verification. Do not launch this build expecting jax-box WS to work." >&2
+  echo "Install aborted verification. Do not launch this build expecting the configured WS host to work." >&2
   exit 1
 fi
 
@@ -148,4 +148,4 @@ echo "  1. Quit any running Luna Moon / WebKit.Networking for the old identity."
 echo "  2. Open '$DEST_APP' (right-click → Open once if Gatekeeper complains)."
 echo "  3. When Local Network prompts, Allow — or enable Luna Moon under"
 echo "     System Settings → Privacy & Security → Local Network."
-echo "  4. Confirm Connected on ws://jax-box:4753/ui (do not retarget localhost)."
+echo "  4. Confirm Connected on your configured ws:// URL."

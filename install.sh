@@ -10,16 +10,20 @@ LUNA_REPO="${LUNA_REPO:-https://github.com/fourcolors/luna.git}"
 LUNA_DIR="${LUNA_DIR:-$HOME/Projects/luna}"
 LUNA_DATA="${LUNA_DATA:-$HOME/.luna}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-STABLE_WS_URL="${LUNA_STABLE_WS_URL:-ws://jax-box:4753/ui}"
-STABLE_FALLBACK_WS_URL="${LUNA_STABLE_FALLBACK_WS_URL:-ws://jax-box.local:4753/ui}"
-DEV_WS_URL="${LUNA_DEV_WS_URL:-ws://jax-box:5753/ui}"
-DEV_FALLBACK_WS_URL="${LUNA_DEV_FALLBACK_WS_URL:-ws://jax-box.local:5753/ui}"
+# LUNA_HOST: the remote server hostname, resolved at install time.
+# Precedence: --host flag > LUNA_HOST env > interactive prompt (TTY only).
+# Per-URL env overrides (LUNA_STABLE_WS_URL etc.) win over the derived value.
+LUNA_HOST="${LUNA_HOST:-}"
+STABLE_WS_URL="${LUNA_STABLE_WS_URL:-}"
+STABLE_FALLBACK_WS_URL="${LUNA_STABLE_FALLBACK_WS_URL:-}"
+DEV_WS_URL="${LUNA_DEV_WS_URL:-}"
+DEV_FALLBACK_WS_URL="${LUNA_DEV_FALLBACK_WS_URL:-}"
 STABLE_TOKEN="${LUNA_STABLE_UI_WS_TOKEN:-}"
 DEV_TOKEN="${LUNA_DEV_UI_WS_TOKEN:-}"
 ENABLE_SSH_RECOVERY="${LUNA_ENABLE_SSH_RECOVERY:-false}"
 SSH_USER="${LUNA_SSH_USER:-root}"
-SSH_HOST="${LUNA_SSH_HOST:-jax-box}"
-FALLBACK_SSH_HOST="${LUNA_FALLBACK_SSH_HOST:-jax-box.local}"
+SSH_HOST="${LUNA_SSH_HOST:-}"
+FALLBACK_SSH_HOST="${LUNA_FALLBACK_SSH_HOST:-}"
 STABLE_START_MODE="${LUNA_STABLE_START_MODE:-}"
 STABLE_START_COMMAND="${LUNA_STABLE_START_COMMAND:-}"
 STABLE_START_SSH="${LUNA_STABLE_START_SSH:-}"
@@ -36,24 +40,29 @@ usage() {
 Usage: install.sh [options]
 
 Options:
+  --host <name>             Remote server hostname (e.g. my-server or my-server.local).
+                             Required unless per-URL overrides are supplied or the
+                             per-URL env vars are set. WS URLs and SSH targets are
+                             derived from this name using the .local fallback convention.
+                             Overrides the LUNA_HOST env var.
   --dry-run                 Print the install plan without changing files.
   --repo <url>              Git repository URL. Default: https://github.com/fourcolors/luna.git
   --luna-dir <path>         Local clone path. Default: ~/Projects/luna
   --data-dir <path>         Luna config/state path. Default: ~/.luna
   --bin-dir <path>          Directory for the luna wrapper. Default: ~/.local/bin
-  --stable-url <ws-url>     Stable Luna WebSocket URL. Default: ws://jax-box:4753/ui
+  --stable-url <ws-url>     Stable Luna WebSocket URL (overrides --host derivation).
   --stable-fallback-url <ws-url>
-                             Stable fallback URL. Default: ws://jax-box.local:4753/ui
+                             Stable fallback URL (overrides --host derivation).
   --stable-token <token>    Stable UI WebSocket token to write to ~/.luna/.env.
-  --dev-url <ws-url>        Dev Luna WebSocket URL. Default: ws://jax-box:5753/ui
+  --dev-url <ws-url>        Dev Luna WebSocket URL (overrides --host derivation).
   --dev-fallback-url <ws-url>
-                             Dev fallback URL. Default: ws://jax-box.local:5753/ui
+                             Dev fallback URL (overrides --host derivation).
   --dev-token <token>       Dev UI WebSocket token to write to ~/.luna/.env.
   --enable-ssh-recovery     Write SSH recovery settings for stable and dev.
   --ssh-user <user>         SSH user for generated recovery targets. Default: root.
-  --ssh-host <host>         Primary SSH recovery host. Default: jax-box.
+  --ssh-host <host>         Primary SSH recovery host (overrides --host derivation).
   --fallback-ssh-host <host>
-                             Fallback SSH recovery host. Default: jax-box.local.
+                             Fallback SSH recovery host (overrides --host derivation).
   --stable-start-ssh <target>
                              Stable primary recovery SSH target.
   --stable-fallback-start-ssh <target>
@@ -66,6 +75,13 @@ Options:
 
 The installer never reads or writes Claude OAuth tokens. Server tokens are only
 written when explicitly provided.
+
+Non-interactive usage (CI / piped curl | bash):
+  Supply the host via flag or env var — the installer will not prompt and will
+  exit non-zero if no host can be resolved and no per-URL overrides are set.
+  Example:
+    LUNA_HOST=my-server bash install.sh --dry-run
+    bash install.sh --host my-server
 EOF
 }
 
@@ -102,6 +118,7 @@ run() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --host) LUNA_HOST="${2:?missing --host value}"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --repo) LUNA_REPO="${2:?missing --repo value}"; shift 2 ;;
     --luna-dir) LUNA_DIR="${2:?missing --luna-dir value}"; shift 2 ;;
@@ -126,6 +143,72 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown option: $1" ;;
   esac
 done
+
+# ── Host resolution ─────────────────────────────────────────────────────────
+# Resolve LUNA_HOST when no URL has been provided at all. If the operator
+# passed at least one explicit URL (e.g. desktop installs pass stable only),
+# they are doing a partial configuration intentionally; we leave the rest empty
+# (upsert_env no-ops on empty values) and do not require a host.
+_all_urls_empty() {
+  [[ -z "$STABLE_WS_URL" && -z "$STABLE_FALLBACK_WS_URL" && \
+     -z "$DEV_WS_URL"    && -z "$DEV_FALLBACK_WS_URL" ]]
+}
+
+if _all_urls_empty && [[ -z "$LUNA_HOST" ]]; then
+  if [[ -t 0 ]]; then
+    # Interactive: prompt the operator.
+    printf 'Luna server hostname (e.g. my-server or my-server.local): '
+    read -r LUNA_HOST
+    if [[ -z "$LUNA_HOST" ]]; then
+      die "No host entered. Re-run with --host <name> or set LUNA_HOST."
+    fi
+  else
+    # Non-interactive (CI, curl | bash): fail with a clear actionable message.
+    die "No Luna server host supplied.
+Supply it via --host <name> or the LUNA_HOST env var.
+Example: LUNA_HOST=my-server bash install.sh
+         bash install.sh --host my-server
+To skip the prompt and supply all URLs explicitly, pass --stable-url / --dev-url."
+  fi
+fi
+
+# Derive URLs and SSH targets from LUNA_HOST (only fills slots left empty by
+# explicit overrides — per-URL env vars already won above).
+if [[ -n "$LUNA_HOST" ]]; then
+  STABLE_WS_URL="${STABLE_WS_URL:-ws://${LUNA_HOST}:4753/ui}"
+  STABLE_FALLBACK_WS_URL="${STABLE_FALLBACK_WS_URL:-ws://${LUNA_HOST}.local:4753/ui}"
+  DEV_WS_URL="${DEV_WS_URL:-ws://${LUNA_HOST}:5753/ui}"
+  DEV_FALLBACK_WS_URL="${DEV_FALLBACK_WS_URL:-ws://${LUNA_HOST}.local:5753/ui}"
+  SSH_HOST="${SSH_HOST:-${LUNA_HOST}}"
+  FALLBACK_SSH_HOST="${FALLBACK_SSH_HOST:-${LUNA_HOST}.local}"
+fi
+
+# ── ATS host-class warning ───────────────────────────────────────────────────
+# Plain ws:// works fine for: IP literals, no-dot hostnames, *.local, *.ts.net
+# (macOS ATS exempts LAN/Tailscale). Any other public DNS name is blocked by
+# ATS and needs wss://. Warn (non-blocking); hard preflight is PR 2 (app side).
+_ats_warn_if_needed() {
+  local host="$1"
+  # Strip leading ws:// or wss:// and trailing port/path to isolate the host.
+  local bare
+  bare="${host#ws://}"
+  bare="${bare#wss://}"
+  bare="${bare%%:*}"
+  bare="${bare%%/*}"
+  [[ -z "$bare" ]] && return 0
+  # Safe classes: IP literal, no dots, *.local, *.ts.net
+  if [[ "$bare" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+     [[ "$bare" != *.* ]] ||
+     [[ "$bare" == *.local ]] ||
+     [[ "$bare" == *.ts.net ]]; then
+    return 0
+  fi
+  warn "Host '${bare}' looks like a public DNS name. Plain ws:// is blocked by macOS App Transport Security. Use wss:// or a Tailscale / .local name instead."
+}
+
+if [[ -n "$STABLE_WS_URL" ]]; then
+  _ats_warn_if_needed "$STABLE_WS_URL"
+fi
 
 if [[ "$ENABLE_SSH_RECOVERY" == true ]]; then
   # The recovery start-commands restart as a CLEAN stop -> settle -> start, NOT a
