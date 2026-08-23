@@ -24,7 +24,12 @@ pnpm-lock.yaml
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 .claude/ping-pong/
-.claude/skills/
+.claude/skills/*
+# ...but luna-verify is repo knowledge, not an installed tool: it encodes how to
+# actually run and check this app, so it ships with the repo like the workflows
+# and commands do. (A bare `.claude/skills/` exclusion cannot be negated - git
+# will not descend into an excluded directory - hence the `/*`.)
+!.claude/skills/luna-verify/
 .claude/worktrees/
 # Match nested .claude dirs anywhere in the tree (e.g. apps/*/frontend/.claude/).
 **/.claude/agent-memory/
