@@ -26,6 +26,7 @@ import {
   ObservabilityService,
   SessionStore,
   TelemetryService,
+  ThreadRegistryService,
   UIService,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
@@ -150,7 +151,13 @@ const baseLayer = (() => {
   )
   const storeL = SessionStore.Default
   const memoryL = Layer.succeed(MemoryRouterTag, noopMemoryRouter)
-  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL, memoryL)
+  // Agent sidebar S2/fix-5: filing persists in ThreadRegistry, and the
+  // thread-created frame only claims a filing that actually LANDED
+  // (regPersisted). Without a registry in the rig, createThread(agentName)
+  // correctly reports no filing — so the roster-validation test needs the
+  // Memory registry here to exercise the real end-to-end path.
+  const registryL = ThreadRegistryService.Memory.pipe(Layer.provide(clockL))
+  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL, memoryL, registryL)
 })()
 
 const fullLayer = (fakeLayer: Layer.Layer<SDKClient>) =>
