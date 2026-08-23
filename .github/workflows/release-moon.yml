@@ -69,12 +69,17 @@ jobs:
         id: tag
         env:
           VERSION: ${{ inputs.version }}
+          # ref_name is attacker-shaped on the tag-push path (tag names accept
+          # `;`, backticks, `$()` per git check-ref-format) - env-pinned, never
+          # interpolated into the script body.
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$EVENT" = "workflow_dispatch" ]; then
             echo "name=moon-v${VERSION}" >> "$GITHUB_OUTPUT"
           else
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "name=${REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
       # workflow_dispatch only: turn a bare version into a tagged, pushed commit.
@@ -140,9 +145,13 @@ jobs:
       # edits it), but that never reaches latest.json - only this does.
       - name: Generate updater changelog
         id: notes
+        env:
+          # Pinned to env, never interpolated into the script body: tag names
+          # accept enough shell metacharacters to be an injection sink (the
+          # same discipline release-server.yml documents).
+          TAG: ${{ steps.tag.outputs.name }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.name }}"
           # On a dispatch run the tag was created above; on a tag push it came
           # with the checkout. Either way resolve the PREVIOUS moon tag.
           PREV=$(git tag --list 'moon-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
@@ -150,7 +159,14 @@ jobs:
           {
             echo "body<<LUNA_NOTES_EOF"
             echo "Changes since ${PREV:-the beginning}:"
-            git log "$RANGE" --no-merges --pretty='- %s' | head -40
+            # -n 40, NOT `| head -40`: under `set -euo pipefail` head's early
+          # exit SIGPIPEs git once the log outruns the pipe buffer (~16KB on
+          # macOS, reproduced from ~200 commits and flaky well below that) and
+          # would fail the WHOLE release - after the tag is already pushed,
+          # which is exactly the tag-without-artifacts breakage this step
+          # exists to prevent. --no-merges filters before -n, so the output is
+          # byte-identical to the piped form.
+          git log "$RANGE" --no-merges -n 40 --pretty='- %s'
             echo "LUNA_NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
           echo "changelog range: $RANGE"
@@ -186,6 +202,8 @@ jobs:
       - name: Re-anchor 'Latest' flag to this Moon release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euxo pipefail
-          gh release edit "${{ steps.tag.outputs.name }}" --latest --repo "${{ github.repository }}"
+          gh release edit "$TAG" --latest --repo "$REPO"
