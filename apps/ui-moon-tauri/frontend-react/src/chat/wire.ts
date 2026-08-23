@@ -101,7 +101,59 @@ export function createWire(ctx: WireCtx) {
     return frame;
   }
 
-  const WebSocketEngine = {
+  
+// ── Liveness watchdog (shared by both engines) ─────────────────────────────
+// Fires after LIVENESS_TIMEOUT_MS with NOTHING inbound at all. The server
+// heartbeats every 5s (apps/server/src/chat-server.ts passes
+// pingIntervalMs: 5000 into the pinger in packages/ui-ws/src/server.ts), so
+// reaching here is ~18 consecutive missed heartbeats: the CONNECTION is dead,
+// not the turn slow.
+//
+// This used to be a PROGRESS watchdog, re-armed only by assistant-delta /
+// assistant-done / tool-call / tool-result. That conflated two different
+// questions — "is the peer alive?" and "is my request advancing?" — so a turn
+// which legitimately went quiet (a subagent thinking) was indistinguishable
+// from a dead server. Moon then tore down the placeholder and told the
+// operator to "try again" on a turn that was still running server-side; with
+// no idempotency key on user-message, taking that advice duplicated real work.
+//
+// Liveness is now fed by EVERY inbound frame, heartbeat included, which is
+// what Socket.IO / Phoenix Channels / SignalR / gRPC keepalive all do. Browser
+// JS cannot observe RFC 6455 ping/pong frames, which is exactly why the server
+// sends an app-level {type:"ping"} alongside the protocol ping.
+//
+// Do NOT mirror the server's turn/task budgets (adapter.ts
+// DEFAULT_TURN_INACTIVITY_TIMEOUT_MS / DEFAULT_TASK_INACTIVITY_TIMEOUT_MS):
+// both are env-overridable, so any client-side copy drifts by design. This
+// watchdog answers a different question than they do.
+const LIVENESS_TIMEOUT_MS = 90000;
+
+function clearLivenessWatchdog() {
+  if (State.turnTimeout) {
+    clearTimeout(State.turnTimeout);
+    State.turnTimeout = null;
+  }
+}
+
+function armLivenessWatchdog(onDead: () => void) {
+  clearLivenessWatchdog();
+  State.turnTimeout = setTimeout(() => {
+    State.turnTimeout = null;
+    onDead();
+  }, LIVENESS_TIMEOUT_MS);
+}
+
+/**
+ * Re-arm on inbound traffic, but ONLY if already armed. Arming is deliberate
+ * (it happens at send); a bare startTurnTimeout() on every frame would arm the
+ * watchdog while IDLE, and a later idle disconnect would then fire a teardown
+ * for a turn that never existed.
+ */
+function noteInboundActivity(engine: { startTurnTimeout: () => void }) {
+  if (State.turnTimeout) engine.startTurnTimeout();
+}
+
+const WebSocketEngine = {
     // registerCloseHook seam (design doc, Monolith Decomposition): code
     // that must run when the socket drops — secret wipes today — registers
     // here instead of living inline in the close handler.
@@ -166,6 +218,9 @@ export function createWire(ctx: WireCtx) {
 
       State.ws.addEventListener('message', (event) => {
         if (myGen !== State.connGen) return;
+        // ANY inbound frame proves the link is alive — heartbeats included.
+        // Re-arm-only: never arms the watchdog outside a turn.
+        noteInboundActivity(this);
         try {
           const frame = JSON.parse(event.data);
           this.handleFrame(frame);
@@ -196,7 +251,7 @@ export function createWire(ctx: WireCtx) {
           // turn doesn't get silently resurrected by the next render.
           if (ChatState.hasVisibleStreamingPlaceholder()) {
             ChatState.dropPendingAssistant();
-            ChatEngine.appendMessage('assistant', '⚠️ Connection lost — try again.');
+            ChatEngine.appendMessage('assistant', '⚠️ Connection lost — reconnecting…');
           }
         }
         if (!State.isManuallyClosing) {
@@ -435,37 +490,28 @@ export function createWire(ctx: WireCtx) {
       this.send(buildNewThreadFrame(agent));
     },
 
-    clearTurnTimeout() {
-      if (State.turnTimeout) {
-        clearTimeout(State.turnTimeout);
-        State.turnTimeout = null;
-      }
-    },
+    clearTurnTimeout() { clearLivenessWatchdog(); },
 
     startTurnTimeout() {
-      this.clearTurnTimeout();
-      State.turnTimeout = setTimeout(() => {
-        State.turnTimeout = null;
-        // Self-suppress unless the pending-assistant placeholder is still
-        // active. activeTurnId is set on the FIRST assistant-delta — a server
-        // that hangs without ever streaming a token (the exact case this
-        // watchdog exists to catch) still has activeTurnId === null but DOES
-        // have a pending-assistant turn in ChatState. Once the placeholder
-        // has been claimed by a real turn (assistant-delta arrived) we leave
-        // any in-flight rendering alone.
-        // REACHING HERE MEANS 90s OF TOTAL SILENCE. Every sign of progress -
-        // delta, tool-call, tool-result, done - re-arms this timer, so there is
-        // no longer a case where the turn is alive but the placeholder is gone.
-        // That means the old self-suppression is not just unnecessary, it was
-        // harmful: it let the watchdog clear busy and then say nothing, leaving
-        // an idle face mid-turn with no explanation and no way back (the only
-        // setBusy(true) in the app is at send). Clear and explain together.
-        MoonFace.setBusy(false);
-        State.activeTurnId = null;
-        if (ChatState._findPending()) ChatState.dropPendingAssistant();
-        ChatState.appendBanner('⚠️ No response from the server — try again.');
-        ChatLoop.flush();
-      }, 90000);
+      armLivenessWatchdog(() => {
+        // 90s of total inbound silence => the socket is dead (very likely
+        // half-open: a slept laptop, or a drop with no TCP FIN). Do NOT paint
+        // a banner and do NOT drop the placeholder here — close the socket and
+        // let the close handler, which already owns cleanup + reconnect, run
+        // the recovery. syncThread() on reopen resubscribes and repaints from
+        // the thread snapshot, after which a still-running turn resumes
+        // streaming on its own. This is what Socket.IO / Phoenix / SignalR do
+        // when a heartbeat window lapses: recover the transport, don't ask the
+        // human to retry work that may still be in flight.
+        Logger.warn(
+          `Liveness watchdog: ${LIVENESS_TIMEOUT_MS}ms with no inbound frame (heartbeat included) — closing socket to force reconnect`,
+        );
+        try {
+          State.ws?.close();
+        } catch {
+          // already gone — the close path still runs
+        }
+      });
     },
 
     // Engine-aware connectivity predicate. Callers outside the engines MUST
@@ -1054,6 +1100,8 @@ export function createWire(ctx: WireCtx) {
       this._unsubFrames = this._adapter.subscribeFrames((rawFrame) => {
         // (1) Gen gate: ignore frames from superseded acquires
         if (!this._gen || !this._gen.gate(myGen)) return;
+        // ANY inbound frame proves the link is alive — heartbeats included.
+        noteInboundActivity(this);
         if (this._dispatch) this._dispatch(rawFrame);
       });
 
@@ -1165,7 +1213,7 @@ export function createWire(ctx: WireCtx) {
         // turn doesn't get silently resurrected by the next render.
         if (ChatState.hasVisibleStreamingPlaceholder()) {
           ChatState.dropPendingAssistant();
-          ChatEngine.appendMessage('assistant', '⚠️ Connection lost — try again.');
+          ChatEngine.appendMessage('assistant', '⚠️ Connection lost — reconnecting…');
         }
       }
     },
@@ -1330,25 +1378,24 @@ export function createWire(ctx: WireCtx) {
 
     // ── Turn watchdog (behavior 5) ─────────────────────────────────────
     // Identical to WebSocketEngine's implementation — 90s inactivity guard.
-    clearTurnTimeout() {
-      if (State.turnTimeout) {
-        clearTimeout(State.turnTimeout);
-        State.turnTimeout = null;
-      }
-    },
+    clearTurnTimeout() { clearLivenessWatchdog(); },
 
     startTurnTimeout() {
-      this.clearTurnTimeout();
-      State.turnTimeout = setTimeout(() => {
-        State.turnTimeout = null;
-        // Same contract as WebSocketEngine's watchdog: progress re-arms this
-        // timer, so firing means real silence - clear busy AND say so.
+      armLivenessWatchdog(() => {
+        // Same contract as WebSocketEngine's: total inbound silence means the
+        // link is dead, so recover the transport instead of blaming the turn.
+        // Mirrors the adapter 'down' branch above.
+        Logger.warn(
+          `Liveness watchdog: ${LIVENESS_TIMEOUT_MS}ms with no inbound frame (heartbeat included) — recycling adapter`,
+        );
+        this._teardownAdapter();
+        this._isConnected = false;
+        this.clearSubscribeTimeout();
         MoonFace.setBusy(false);
-        State.activeTurnId = null;
-        if (ChatState._findPending()) ChatState.dropPendingAssistant();
-        ChatState.appendBanner('⚠️ No response from the server — try again.');
-        ChatLoop.flush();
-      }, 90000);
+        this._fireDisconnect('liveness-timeout');
+        this.updateStatus('connecting', 'Reconnecting…');
+        this._scheduleRetry();
+      });
     },
 
     // ── Subscribe watchdog (behavior 3) ───────────────────────────────

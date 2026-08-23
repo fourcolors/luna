@@ -1845,8 +1845,13 @@ export const startUIWebSocketServer = (
                   } catch {
                     // socket already closing — let the close path tear down
                   }
-                  // App-level ping too: the moon client uses {type:"ping"} for
-                  // its lastPingAt indicator (separate from protocol liveness).
+                  // App-level ping too. Browser/WKWebView JS cannot observe
+                  // RFC 6455 ping/pong frames, so this JSON heartbeat is the
+                  // ONLY liveness signal a client-side watchdog can see. The
+                  // web client renders it as lastPingAt; the moon chat window
+                  // feeds it to its liveness watchdog (wire.ts
+                  // noteInboundActivity) so a quiet-but-alive turn is never
+                  // mistaken for a dead server.
                   send(ws, { type: "ping", ts: new Date().toISOString() })
                 }),
               )
