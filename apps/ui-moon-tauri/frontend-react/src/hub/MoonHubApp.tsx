@@ -17,6 +17,7 @@ import { useLocalStore, useMoonSelector } from "../state/store"
 import { reduceHub, initialHubState, type HubAction, type HubState } from "./hubReducer"
 import { HubController, Logger } from "./hubEngines"
 import { MoonOrb } from "./MoonOrb"
+import { NOTIFICATION_READ_KEY } from "../notifications/log"
 import { SetupWizardPanel } from "./SetupWizardPanel"
 
 function getTauri(): any {
@@ -150,8 +151,19 @@ export function MoonHubApp(): React.JSX.Element {
       if (e.key === "luna_always_on_top") {
         void controller.applyAlwaysOnTop(e.newValue === "true")
       }
+      // The notifications panel is the read-watermark's only writer, and a
+      // window never receives its own storage event - so this fires exactly
+      // when the user has actually looked at the list in that other window,
+      // which is when the orb's unread pip should clear.
+      if (e.key === NOTIFICATION_READ_KEY) controller.syncNotificationPip()
     }
     window.addEventListener("storage", onStorage)
+
+    // Unread notifications survive a restart (the log is localStorage), so
+    // seed the pip from disk immediately rather than waiting for the first
+    // hello - a cold start with nothing new to say should still show what
+    // arrived before the app was last closed.
+    controller.syncNotificationPip()
 
     // ── Voice boot (independent of settings load). ──────────────────────
     Promise.resolve(controller.initVoice()).catch((e) => Logger.warn("Voice init failed (non-fatal):", e))

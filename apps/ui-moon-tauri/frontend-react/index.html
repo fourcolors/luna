@@ -149,6 +149,35 @@
       animation: pip-breathe 2.4s ease-in-out infinite;
     }
 
+    /* Notification pip - the third and quietest of the ambient pips: a small
+       count badge that appears when background results are waiting unread in
+       the notification log, and opens the Notifications panel when tapped.
+       Sits below the update pip so all three can show at once. Unlike its
+       siblings it renders a NUMBER, so it is a rounded rect that grows with
+       the label rather than a fixed circle, and it does NOT breathe - a
+       persistent unread count that pulses forever reads as an alarm. */
+    .notification-pip {
+      position: absolute;
+      top: 46px;
+      right: 12px;
+      min-width: 16px;
+      height: 15px;
+      padding: 0 4px;
+      box-sizing: border-box;
+      border-radius: 8px;
+      background: radial-gradient(circle at 35% 35%, #ffe2ae, #f8c982 60%, #d99a3e);
+      box-shadow: 0 0 7px 1px rgba(248, 201, 130, 0.4);
+      color: #2a1e08;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 15px;
+      text-align: center;
+      z-index: 32;
+      cursor: pointer;
+      pointer-events: auto;
+      user-select: none;
+    }
+
     .moon-container {
       position: absolute;
       left: 15px;
