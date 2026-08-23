@@ -49,8 +49,6 @@ export interface MoonFaceApi {
    *  The persistent flags have no way to express "something just happened",
    *  which is why secret prompts, surveys and errors reached the face nowhere. */
   pulse: (state: TransientState, ms?: number) => void
-  /** Test seam. Real callers never pass this. */
-  _now?: () => number
   dispose: () => void
 }
 
@@ -88,7 +86,6 @@ interface MoonFaceInternal extends MoonFaceApi {
   _el: HTMLElement | null
   _live: HTMLElement | null
   _said: string
-  _busySince: number
   _long: boolean
   _longTimer: ReturnType<typeof setTimeout> | null
   _transient: TransientState | null
@@ -122,7 +119,6 @@ export function createMoonFace(DOM: MoonFaceDom): MoonFaceApi {
     _el: null,
     _live: null,
     _said: '',
-    _busySince: 0,
     _long: false,
     _longTimer: null,
     _transient: null,
@@ -149,7 +145,6 @@ export function createMoonFace(DOM: MoonFaceDom): MoonFaceApi {
       this._busy = next
       if (this._longTimer) { clearTimeout(this._longTimer); this._longTimer = null }
       if (next) {
-        this._busySince = (this._now ?? Date.now)()
         this._long = false
         // A long turn escalates the rings rather than adding a second
         // vocabulary for "this is taking a while".

@@ -249,6 +249,41 @@ describe('Tauri ACL coverage (live-smoke fence: resolve_route_token had none)', 
     expect(uncovered).toEqual([])
   })
 
+  it('every hub_event name the frontend emits is in the Rust HUB_EVENT_NAMES allowlist', () => {
+    // The same bug class as resolve_route_token, one level down: the COMMAND
+    // was granted, but hub_event carries a name payload with its own Rust
+    // allowlist (windows.rs HUB_EVENT_NAMES), and "machine-access-changed"
+    // was invoked by the settings panel for the life of the feature while the
+    // allowlist silently rejected it - every caller .catch(() => {})'d, and
+    // every other test stubs invoke, so nothing could see it (found by the
+    // #598 review). This case reads BOTH real sources off disk, unstubbed.
+    const windowsRs = fs.readFileSync(path.join(SRC_TAURI, 'src/windows.rs'), 'utf8')
+    const allowMatch = windowsRs.match(/const HUB_EVENT_NAMES:[^=]*=\s*&\[([^\]]*)\]/)
+    expect(allowMatch, 'HUB_EVENT_NAMES not found in windows.rs - the fence needs updating').toBeTruthy()
+    const allowed = new Set([...allowMatch![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!))
+    // VACUOUS-PROOF: the parse actually found the known names.
+    expect(allowed.has('fresh-thread')).toBe(true)
+
+    const emitted = new Map<string, string>() // name -> first site
+    const HUB_RE = /hub_event["']\s*,\s*\{\s*name:\s*(["'])([a-z-]+)\1/g
+    for (const file of TARGET_FILES) {
+      const content = fs.readFileSync(file, 'utf8')
+      for (const m of content.matchAll(HUB_RE)) {
+        if (!emitted.has(m[2]!)) emitted.set(m[2]!, path.relative(ROOT, file))
+      }
+    }
+    // VACUOUS-PROOF: the scan found real emit sites (the settings panel's two
+    // at minimum). A refactor that breaks the regex must fail here, loudly.
+    expect(emitted.size, 'hub_event emit scan found nothing - the regex is stale').toBeGreaterThanOrEqual(2)
+
+    const rejected = [...emitted].filter(([name]) => !allowed.has(name))
+    expect(
+      rejected,
+      `frontend emits hub_event names the Rust allowlist rejects (windows.rs HUB_EVENT_NAMES): ` +
+        rejected.map(([n, f]) => `"${n}" (${f})`).join(', '),
+    ).toEqual([])
+  })
+
   it('non-literal invoke() calls stay under a small pinned ceiling (a refactor to dynamic dispatch must not silently blind this fence)', () => {
     // 18 as of this writing, verified individually - two honest categories,
     // NEITHER a blind spot today:

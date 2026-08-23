@@ -16,6 +16,7 @@ import {
   GYRO_CY,
   GYRO_FRONT_DIM,
   GYRO_LONG_MULT,
+  GYRO_ORBIT_STATES,
   GYRO_RINGS,
   gyroArc,
   gyroEntry,
@@ -215,6 +216,21 @@ describe("chat.html wiring - the part the synthetic rig cannot see", () => {
     expect(back).toBeGreaterThan(-1)
     expect(bob).toBeGreaterThan(back)
     expect(front).toBeGreaterThan(bob)
+  })
+
+  it("chat.html's selector chains agree with GYRO_ORBIT_STATES", () => {
+    // The {thinking, long} set is declared once in moonGyro and consumed by
+    // moonLife's gate AND two CSS selector chains. Build the chains FROM the
+    // constant and require them verbatim, so adding a third gyro state (or
+    // renaming one) cannot leave CSS and driver disagreeing - the failure
+    // mode is a state with both ring systems visible, or neither.
+    const park = `.luna-face${GYRO_ORBIT_STATES.map((s) => `:not([data-orbit="${s}"])`).join("")} .luna-gyro-arc`
+    expect(html, "arc park belt drifted from GYRO_ORBIT_STATES").toContain(park)
+    for (const state of GYRO_ORBIT_STATES) {
+      expect(html, `ellipse stand-down missing for "${state}"`).toContain(
+        `.luna-face[data-gyro="on"][data-orbit="${state}"] .luna-ring`,
+      )
+    }
   })
 
   it("has exactly one path per seed in each half, colours in seed order", () => {

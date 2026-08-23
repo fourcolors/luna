@@ -115,6 +115,28 @@ describe("the idle flourish", () => {
     life._frame(FLOURISH_AFTER_MS + FLOURISH_EVERY_MS + 1)
     expect(face.classList.contains("is-shooting")).toBe(true)
     roll.mockRestore()
+    // stop() must CANCEL the pending SHOOT_MS callback, not just remove the
+    // class: an untracked timeout outlives teardown holding the captured face.
+    life.stop()
+    expect(face.classList.contains("is-shooting")).toBe(false)
+    vi.advanceTimersByTime(10_000)
+    expect(face.classList.contains("is-shooting")).toBe(false)
+  })
+
+  it("reduced motion never starts - both branches now injectable", () => {
+    const face = document.createElement("div")
+    const eyes = document.createElement("div")
+    const life = createMoonLife({
+      lunaFace: face,
+      lunaEyes: eyes as unknown as HTMLElement,
+      reducedMotion: { matches: true },
+    })
+    life.start()
+    // No listeners, no interval, no drift: the whole point of the setting is
+    // that nothing moves on its own. _frame still works (it is a seam), but
+    // start() must be a no-op.
+    expect(() => vi.advanceTimersByTime(5_000)).not.toThrow()
+    expect(eyes.getAttribute("transform")).toBeNull()
     life.stop()
   })
 

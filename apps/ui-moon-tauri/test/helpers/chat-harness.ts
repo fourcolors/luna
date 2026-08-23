@@ -238,10 +238,20 @@ export function evalChatInlineScriptWithBridge(_htmlContent?: string, _mount?: u
   // used to do around its single mount. jsdom tests assert synchronously right
   // after an action, so React's default async commit would leave them reading
   // an empty transcript.
+  // Each re-boot into this one jsdom process first releases what the previous
+  // boot acquired (moonLife's interval + window listeners + pending timeouts,
+  // moonFace's timers) - before disposeChat existed those simply STACKED, one
+  // 33ms interval and one pointermove listener per booted test, all pointing
+  // at already-detached faces.
+  const prev = (globalThis as Record<string, unknown>).__lunaLastBoot as
+    | { disposeChat?: () => void }
+    | undefined
+  try { prev?.disposeChat?.() } catch (_) { /* a torn-down DOM is fine */ }
   let boot!: ReturnType<typeof bootChat>
   flushSync(() => {
     boot = bootChat()
   })
+  ;(globalThis as Record<string, unknown>).__lunaLastBoot = boot
 
   const w = window as unknown as Record<string, unknown> & {
     __MoonInternals?: Record<string, unknown>

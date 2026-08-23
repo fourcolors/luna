@@ -15,26 +15,22 @@
 //   - "What's new" opens the Updates panel (open_widget settings.updates)
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createUpdateBanner } from '../frontend-react/src/chat/updateBanner'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import { evalChatInlineScriptWithBridge, loadVendorInto, mountChatDomFromHtml, readChatHtml } from './helpers/chat-harness'
 
-// jsdom never fetches external <script src> tags; load the vendor files the page
-// script references at definition time, in declaration order (same mechanism as
-// chat-window.test.ts).
-function loadVendorInto(target: any, file: string) {
-  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
-  new Function('globalThis', src)(target)
-}
+// The vendor loader and the chat.html mount come from the SHARED harness.
+// This file used to redeclare loadVendorInto locally and hand-roll its own
+// body extraction - a TS name conflict that only survived because vitest
+// transpiles without typechecking, and it meant this one suite loaded the
+// page through a code path no other suite exercised, so a harness fix would
+// reach every suite but this one.
 
 describe('Luna Chat Window — Update Banner (Slice C surface #2)', () => {
   let htmlContent: string
 
   beforeEach(() => {
-    // 1. Load chat.html body structure.
-    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend-react/chat.html'), 'utf8')
-    const bodyMatch = htmlContent.match(/<body[^>]*>([\s\S]*?)<\/body>/)
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
+    // 1. Load chat.html body structure (shared harness path).
+    htmlContent = readChatHtml()
+    mountChatDomFromHtml(htmlContent)
 
     // 2. Mock the Tauri window surface (no core by default — boot degrades like
     //    the chat harness; tests that need invoke inject __TAURI__.core).
