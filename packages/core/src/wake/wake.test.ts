@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Logger } from "effect"
 import { runWake } from "./wake.js"
 import { FakeWakeReasoner } from "./reasoner.js"
 import { WakeLogStore } from "./wake-log-store.js"
@@ -294,6 +294,109 @@ describe("runWake", () => {
       expect(inputs.openNextActions[0]?.action).toBe("do the thing")
       expect(inputs.recentWakes).toHaveLength(1)
       expect(inputs.recentWakes[0]?.outcome).toBe("no-op")
+    } finally {
+      cleanup()
+    }
+  })
+  // ── cause visibility ──────────────────────────────────────────────────────
+  // wake's own durability writes used to be wrapped in a bare `Effect.ignore`.
+  // When one of them failed there was no trace anywhere: not in wake_log (the
+  // write that failed), not in agent_notes, not in the journal. A transient
+  // reasoner outage was therefore indistinguishable from a credential outage.
+  it("logs a Warning when the wake_log append itself fails, instead of vanishing", async () => {
+    const { path, cleanup } = makeTempWorkspace({
+      withGoals: true,
+      withActions: true,
+    })
+    try {
+      const digest: WakeDigest = {
+        workspaceSlug: "luna",
+        observations: ["one action is open"],
+        pickedActionId: 1,
+        pickedReason: "highest priority",
+        proposedActions: [],
+      }
+      const FailingStore = Layer.succeed(WakeLogStore, {
+        append: () =>
+          Effect.fail(
+            new WakeError({
+              op: "wake-log/append",
+              message: "workspace.db is locked",
+            }),
+          ),
+        recent: () => Effect.succeed([]),
+        appendNextActions: () => Effect.succeed(0),
+      })
+      const captured: Array<{ level: string; message: string }> = []
+      const captureLayer = Logger.layer([
+        Logger.make(({ message, logLevel }) => {
+          captured.push({ level: String(logLevel), message: String(message) })
+        }),
+      ])
+
+      // Must still resolve: the cycle stays non-poisoning.
+      await Effect.runPromise(
+        runWake(1_000, {
+          workspaceSlug: "luna",
+          workspacePath: path,
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(FakeWakeReasoner.of(digest), FailingStore, AgentNotesL),
+          ),
+          Effect.provide(captureLayer),
+        ),
+      )
+
+      const warns = captured.filter((c) => c.level === "Warn")
+      expect(warns.length).toBeGreaterThanOrEqual(1)
+      // The site label says WHICH write was lost...
+      expect(
+        warns.some((w) => w.message.includes("wake_log append (success)")),
+      ).toBe(true)
+      // ...and the rendered cause says why.
+      expect(warns.some((w) => w.message.includes("workspace.db is locked"))).toBe(
+        true,
+      )
+    } finally {
+      cleanup()
+    }
+  })
+
+  it("stays silent on a clean cycle (no warning noise)", async () => {
+    const { path, cleanup } = makeTempWorkspace({
+      withGoals: true,
+      withActions: true,
+    })
+    try {
+      const digest: WakeDigest = {
+        workspaceSlug: "luna",
+        observations: [],
+        pickedActionId: 1,
+        pickedReason: "r",
+        proposedActions: [],
+      }
+      const captured: Array<{ level: string; message: string }> = []
+      const captureLayer = Logger.layer([
+        Logger.make(({ message, logLevel }) => {
+          captured.push({ level: String(logLevel), message: String(message) })
+        }),
+      ])
+      await Effect.runPromise(
+        runWake(1_000, {
+          workspaceSlug: "luna",
+          workspacePath: path,
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              FakeWakeReasoner.of(digest),
+              WakeLogStore.Memory,
+              AgentNotesL,
+            ),
+          ),
+          Effect.provide(captureLayer),
+        ),
+      )
+      expect(captured.filter((c) => c.level === "Warn")).toEqual([])
     } finally {
       cleanup()
     }
