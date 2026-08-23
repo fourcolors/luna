@@ -258,14 +258,19 @@
       transform-box: fill-box;
       transform-origin: center;
       opacity: 0;                       /* every state opts in */
-      /* circumference is ~250 at these radii; the dash makes each ring an ARC,
-         and a rotating arc has an obvious direction. */
-      stroke-dasharray: 168 999;
       stroke-width: 3.4;
     }
-    .luna-ring-1 { transform: rotate(-18deg); }
-    .luna-ring-2 { transform: rotate(38deg); }
-    .luna-ring-3 { transform: rotate(82deg); }
+    /* THE DASH IS PER-RING, AND THAT IS THE WHOLE POINT.
+       These three ellipses have different circumferences (Ramanujan, rx/ry
+       below): ring 1 ~253, ring 2 ~240, ring 3 ~202. 0.0.73 gave all three the
+       same `stroke-dasharray: 168`, which drew 66% / 70% / 83% of each ring.
+       At those coverages an "arc" is not an arc - it is a closed halo with a
+       bite out of it, and ring 3 in particular read as simply broken.
+       ~30% each is what actually reads as a sweeping arc with a direction.
+       If you change rx/ry, recompute the dash; the two are a pair. */
+    .luna-ring-1 { transform: rotate(-18deg); stroke-dasharray: 76 999; }
+    .luna-ring-2 { transform: rotate(38deg);  stroke-dasharray: 72 999; }
+    .luna-ring-3 { transform: rotate(82deg);  stroke-dasharray: 61 999; }
     @keyframes luna-orbit-cw  { to { transform: rotate(342deg); } }
     @keyframes luna-orbit-ccw { to { transform: rotate(-322deg); } }
     @keyframes luna-orbit-cw3 { to { transform: rotate(442deg); } }

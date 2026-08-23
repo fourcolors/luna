@@ -357,9 +357,9 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
     // the turns, never from a DOM query - so this asserts the new marker while
     // pinning the same logical behaviour the vanilla handler relied on.
     expect(container?.querySelector(".timeline .typing-dots")).toBeNull()
-    expect(container?.querySelector(".timeline .constellation")).toBeTruthy()
-    expect(container?.querySelector(".timeline .constellation.rest")).toBeNull()
-    expect(container?.querySelector(".timeline .star-new")).toBeTruthy()
+    expect(container?.querySelector(".constellation-row .constellation")).toBeTruthy()
+    expect(container?.querySelector(".constellation-row .constellation.rest")).toBeNull()
+    expect(container?.querySelector(".constellation-row .star-new")).toBeTruthy()
     expect(mount?.ChatState.hasVisibleStreamingPlaceholder()).toBe(true)
 
     act(() => {
@@ -368,8 +368,8 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
       mount?.ChatLoop.flush()
     })
     // Settled: still present as the record, but resting and no longer pulsing.
-    expect(container?.querySelector(".timeline .constellation.rest")).toBeTruthy()
-    expect(container?.querySelector(".timeline .star-new")).toBeNull()
+    expect(container?.querySelector(".constellation-row .constellation.rest")).toBeTruthy()
+    expect(container?.querySelector(".constellation-row .star-new")).toBeNull()
     expect(mount?.ChatState.hasVisibleStreamingPlaceholder()).toBe(false)
   })
 })

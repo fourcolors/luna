@@ -407,6 +407,34 @@ function Constellation({
   )
 }
 
+/**
+ * The star map as its own row, last in the turn.
+ *
+ * Left-aligned to the assistant column and given the `.msg-meta` slot's own
+ * rhythm, so it reads as belonging to the answer above it rather than as a
+ * separate block.
+ */
+function ConstellationItem({
+  msgKey, turn, merged, lastToolIndex, settled,
+}: {
+  msgKey: string; turn: Turn; merged: readonly MergedStep[]
+  lastToolIndex: number; settled: boolean
+}) {
+  const stars = starsFor(merged, lastToolIndex)
+  // A turn that called no tools gets no mark at all, and that absence is the
+  // signal - so render nothing rather than an empty row that takes up space.
+  if (stars.length === 0) return null
+  return (
+    // Deliberately NOT `.msg`: this is not a message, and `.msg` is queried all
+    // over the app (scroll anchoring, orphan prune, and a dozen tests count
+    // `.msg` nodes). Borrowing the class to get left alignment would quietly
+    // add a phantom message to every one of those. It carries its own layout.
+    <div className="constellation-row" {...itemRootAttrs(msgKey, turn)}>
+      <Constellation merged={merged} lastToolIndex={lastToolIndex} settled={settled} />
+    </div>
+  )
+}
+
 interface TimelineItemProps {
   msgKey: string
   turn: Turn
@@ -428,9 +456,11 @@ function TimelineItem({ msgKey, turn, merged, lastToolIndex, settled, onOpenAgen
         <span className="timeline-chevron">▸</span>
         {/* The count is gone: the constellation carries it, plus the kinds and
             the failure, which the number never did. The label stays only while
-            the turn is running, where "how long" is the live question. */}
+            the turn is running, where "how long" is the live question.
+            The constellation itself is NOT here - it is its own trailing item
+            (see planRun) so it lands below the answer rather than beside this
+            header, which is where 0.0.73 wrongly put it. */}
         {!settled && <span className="timeline-summary-label">Working on it…</span>}
-        <Constellation merged={merged} lastToolIndex={lastToolIndex} settled={settled} />
       </div>
       {!collapsed && (
         <div className="timeline-body">
@@ -492,6 +522,17 @@ function renderItem(item: PlannedItem, onOpenAgentsPanel: () => void) {
           lastToolIndex={item.lastToolIndex}
           settled={item.settled}
           onOpenAgentsPanel={onOpenAgentsPanel}
+        />
+      )
+    case "constellation":
+      return (
+        <ConstellationItem
+          key={item.key}
+          msgKey={item.key}
+          turn={item.turn}
+          merged={item.merged}
+          lastToolIndex={item.lastToolIndex}
+          settled={item.settled}
         />
       )
     default:

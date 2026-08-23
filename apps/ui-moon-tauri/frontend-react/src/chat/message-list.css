@@ -339,6 +339,25 @@
 .constellation.rest { opacity: 0.85; transition: opacity 0.18s ease; }
 .timeline:hover .constellation.rest { opacity: 1; }
 
+/* The star map's own row, last in the turn and under the answer.
+   Borrows `.msg-meta`'s rhythm (margin-top:3px; padding:0 2px) so it reads as
+   part of the message above rather than as a new block, and carries none of
+   `.msg`'s bubble chrome - no background, no padding box. The row must not
+   stretch: the strip is self-sized so the record never rearranges itself. */
+.constellation-row {
+  align-self: flex-start;   /* the assistant column, same as .msg.assistant */
+  display: flex;
+  padding: 0 2px;
+  /* `.chat-messages` puts a 12px gap between every item. The mark belongs to
+     the answer above it, not to the thread, so claw that back to `.msg-meta`'s
+     own 3px rhythm and let it sit tight under the bubble. */
+  margin-top: -9px;
+  /* Never grow: the strip is self-sized so a settled record cannot appear to
+     rearrange itself when the panel is resized. */
+  flex: 0 0 auto;
+}
+.constellation-row:hover .constellation.rest { opacity: 1; }
+
 .star-link { fill: none; stroke: var(--ink-soft); stroke-width: 1; opacity: 0.24; }
 .star-read  { fill: var(--ink-soft); }
 .star-write { fill: var(--accent); }

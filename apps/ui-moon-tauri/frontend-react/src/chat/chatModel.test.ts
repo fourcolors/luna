@@ -456,7 +456,7 @@ describe("planChatItems - grouping into activity timelines", () => {
     s = chatModelReducer(s, { type: "finish-turn", turnId: "t1", ts: 1 })
     s = chatModelReducer(s, { type: "mark-run-settled" })
     const plan = planChatItems(s.turns, { grouped: true })
-    expect(plan.map((p) => p.kind)).toEqual(["timeline", "text"])
+    expect(plan.map((p) => p.kind)).toEqual(["timeline", "text", "constellation"])
     const tl = plan[0]
     expect(tl?.kind).toBe("timeline")
     if (tl?.kind === "timeline") {

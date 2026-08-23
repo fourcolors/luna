@@ -501,6 +501,28 @@ export type PlannedItem =
       readonly lastToolIndex: number
       readonly settled: boolean
     }
+  /**
+   * The star map, emitted as the LAST item of a run so it always sits at the
+   * bottom of the turn - under the answer bubble when there is one, under the
+   * activity timeline while the turn is still working.
+   *
+   * WHY ITS OWN ITEM rather than a child of the text bubble: the settled design
+   * puts the mark below the bubble, but a run has no text item at all until the
+   * first token arrives, and the mark has to be visible for the whole turn -
+   * that is its job. Hanging it off the bubble means it is missing during
+   * exactly the phase it exists for. 0.0.73 solved that by putting it in the
+   * timeline's summary row, which parked it to the RIGHT of "Working on it..."
+   * instead of below anything. A trailing item is the one placement that is
+   * always last, always visible, and never inflates the bubble's own box.
+   */
+  | {
+      readonly key: string
+      readonly kind: "constellation"
+      readonly turn: Turn
+      readonly merged: readonly MergedStep[]
+      readonly lastToolIndex: number
+      readonly settled: boolean
+    }
 
 export function planChatItems(turns: readonly Turn[], opts: { readonly grouped: boolean }): PlannedItem[] {
   const out: PlannedItem[] = []
@@ -596,6 +618,17 @@ function planRun(run: readonly Turn[], out: PlannedItem[], grouped: boolean): vo
       out.push({ key: anchor.key + "|t" + k, kind: "text", turn: m.turn, seg: m.seg })
     }
   }
+  // LAST, unconditionally: this is what puts the mark below the answer instead
+  // of beside the activity header. It trails the text items above, so once the
+  // answer streams in the constellation is under it.
+  out.push({
+    key: anchor.key + "|cn",
+    kind: "constellation",
+    turn: anchor,
+    merged,
+    lastToolIndex,
+    settled,
+  })
 }
 
 /** The collapsed/expanded value a timeline actually renders: an explicit
@@ -614,7 +647,13 @@ export function isTimelineEffectivelyCollapsed(turn: Turn, settled: boolean): bo
 export function hasVisibleTypingIndicator(turns: readonly Turn[], grouped: boolean): boolean {
   if (isTailStreamingEmpty(turns)) return true
   const items = planChatItems(turns, { grouped })
-  const last = items[items.length - 1]
+  // The constellation always trails its run and never carries a spinner, so it
+  // is not "the last item" for this question. Skip past it rather than reading
+  // items[length-1] blind: that read silently answered `false` for every
+  // tool-bearing run the moment the star map became its own trailing item.
+  let i = items.length - 1
+  while (i >= 0 && items[i]?.kind === "constellation") i--
+  const last = items[i]
   return !!last && last.kind === "timeline" && !last.settled
 }
 
