@@ -944,11 +944,22 @@ export function bootChat() {
     notifier,
     resultToasts,
     moonFace,
+    moonLife,
     moonBar,
     feedbackEngine,
     artifactsEngine,
     surveyEngine,
     secretPromptEngine,
     suggestedActionsEngine,
+    /** Release everything boot acquired that outlives a discarded window:
+     *  moonLife's interval + listeners + pending shooting-star timeout, and
+     *  moonFace's timers. Production runs one boot per window process, so
+     *  this exists FOR THE HARNESS - jsdom re-boots into one process, and
+     *  before this the intervals and listeners simply stacked (each pointing
+     *  at an already-detached face). */
+    disposeChat() {
+      moonLife.stop()
+      moonFace.dispose()
+    },
   }
 }

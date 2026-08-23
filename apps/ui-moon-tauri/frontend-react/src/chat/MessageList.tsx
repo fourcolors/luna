@@ -32,7 +32,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react"
 import {
   starsFor, starPos, linkPath, constellationWidth, constellationLabel, toolStats,
-  STAR_PATH, STRIP_HEIGHT,
+  STAR_PATH, STRIP_HEIGHT, type Star,
 } from "./constellation"
 import { createRoot } from "react-dom/client"
 import { flushSync } from "react-dom"
@@ -362,10 +362,8 @@ function TextItem({ msgKey, turn, seg }: { msgKey: string; turn: Turn; seg: Text
  * `.star-new`. So there is no driver, no rAF and nothing to clean up.
  */
 function Constellation({
-  merged, lastToolIndex, settled,
-}: { merged: readonly MergedStep[]; lastToolIndex: number; settled: boolean }) {
-  const stars = starsFor(merged, lastToolIndex)
-  if (stars.length === 0) return null
+  stars, merged, lastToolIndex, settled,
+}: { stars: readonly Star[]; merged: readonly MergedStep[]; lastToolIndex: number; settled: boolean }) {
   // Counted over ALL top-level tool calls, not the drawn ones and not the merged
   // row index: the strip caps at six, and a failure past the cap still has to be
   // announced.
@@ -420,9 +418,12 @@ function ConstellationItem({
   msgKey: string; turn: Turn; merged: readonly MergedStep[]
   lastToolIndex: number; settled: boolean
 }) {
+  // ONE owner for both the derivation and the emptiness rule: a turn that
+  // called no tools gets no mark at all, and that absence is the signal.
+  // (Previously starsFor ran here AND inside Constellation with a duplicate
+  // guard - if the emptiness rule ever gained a nuance and only one copy
+  // learned it, this row would render as an empty box.)
   const stars = starsFor(merged, lastToolIndex)
-  // A turn that called no tools gets no mark at all, and that absence is the
-  // signal - so render nothing rather than an empty row that takes up space.
   if (stars.length === 0) return null
   return (
     // Deliberately NOT `.msg`: this is not a message, and `.msg` is queried all
@@ -430,7 +431,7 @@ function ConstellationItem({
     // `.msg` nodes). Borrowing the class to get left alignment would quietly
     // add a phantom message to every one of those. It carries its own layout.
     <div className="constellation-row" {...itemRootAttrs(msgKey, turn)}>
-      <Constellation merged={merged} lastToolIndex={lastToolIndex} settled={settled} />
+      <Constellation stars={stars} merged={merged} lastToolIndex={lastToolIndex} settled={settled} />
     </div>
   )
 }

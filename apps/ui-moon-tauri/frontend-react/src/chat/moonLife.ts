@@ -16,7 +16,7 @@
  * rather than claiming it stops.
  */
 
-import { GYRO_BACK_DIM, GYRO_FRONT_DIM, GYRO_LONG_MULT, GYRO_RINGS, gyroArc, gyroEntry } from "./moonGyro"
+import { GYRO_BACK_DIM, GYRO_FRONT_DIM, GYRO_LONG_MULT, GYRO_ORBIT_STATES, GYRO_RINGS, gyroArc, gyroEntry } from "./moonGyro"
 
 export interface MoonLifeDom {
   readonly lunaFace: HTMLElement | null
@@ -28,6 +28,11 @@ export interface MoonLifeDom {
   readonly gyroBack?: readonly SVGPathElement[]
   /** Near halves, drawn over the face. Same order. */
   readonly gyroFront?: readonly SVGPathElement[]
+  /** The reduced-motion media query result. Injected like every other window
+   *  concern so BOTH branches are testable - the ambient read below is only
+   *  the production default, and vitest-setup pins the global stub to
+   *  matches:false, which left the reduced branch with zero coverage. */
+  readonly reducedMotion?: { matches: boolean }
 }
 
 export interface MoonLifeApi {
@@ -74,16 +79,16 @@ const SHOOT_MS = 2400
 
 export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
   let timer: ReturnType<typeof setInterval> | null = null
-  let tick = 0
   let idleSince = -1
   let lastRoll = 0
   let shooting = false
+  let shootTimer: ReturnType<typeof setTimeout> | null = null
   let look = { x: 0, y: 0 }
   let applied = ""
   let running = false
-  /** -1 = gyroscope inactive. Otherwise the ms timestamp it became active
-   *  (drives the staggered ring entry). */
-  let gyroSince = -1
+  /** Whether the gyroscope is currently driving. The entry ramp is driven by
+   *  gyroT below, never by wall-time - see the dt notes. */
+  let gyroOn = false
   let gyroLastNow = 0
   /** Seconds since activation, ACCUMULATED from floored dt - never derived
    *  from wall-time, so a backward timestamp cannot rewind the entry ramp
@@ -95,7 +100,8 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
   const gyroAngle = GYRO_RINGS.map(() => 0)
 
   const reduced =
-    typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches
+    DOM.reducedMotion?.matches ??
+    (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches)
 
   function onPointerMove(e: PointerEvent) {
     const face = DOM.lunaFace
@@ -121,10 +127,10 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
     // no-ops the whole gyroscope loudly-in-tests instead of half-working.
     if (back?.length !== GYRO_RINGS.length || front?.length !== GYRO_RINGS.length) return
     const orbit = face.dataset["orbit"] ?? ""
-    const active = orbit === "thinking" || orbit === "long"
+    const active = (GYRO_ORBIT_STATES as readonly string[]).includes(orbit)
     if (!active) {
-      if (gyroSince >= 0) {
-        gyroSince = -1
+      if (gyroOn) {
+        gyroOn = false
         // Inline STYLE, not the opacity attribute: the stylesheet's
         // `.luna-gyro-arc { opacity: 0 }` base outranks any presentation
         // attribute, so attribute writes would never show at all.
@@ -137,8 +143,8 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
       }
       return
     }
-    if (gyroSince < 0) {
-      gyroSince = nowMs
+    if (!gyroOn) {
+      gyroOn = true
       gyroLastNow = nowMs
       gyroT = 0
     }
@@ -161,7 +167,6 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
   }
 
   function frame(nowMs: number) {
-    tick++
     const eyes = DOM.lunaEyes
     const face = DOM.lunaFace
     if (!eyes || !face) return
@@ -192,7 +197,10 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
     if (Math.random() >= FLOURISH_CHANCE) return
     shooting = true
     face.classList.add("is-shooting")
-    setTimeout(() => {
+    // Tracked like every other timer in this arc: stop() must be able to
+    // cancel it, or a 2400ms callback outlives teardown holding `face`.
+    shootTimer = setTimeout(() => {
+      shootTimer = null
       face.classList.remove("is-shooting")
       shooting = false
     }, SHOOT_MS)
@@ -234,6 +242,7 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
     stop() {
       running = false
       pause()
+      if (shootTimer) { clearTimeout(shootTimer); shootTimer = null }
       window.removeEventListener("pointermove", onPointerMove)
       document.removeEventListener("visibilitychange", onVisibility)
       const eyes = DOM.lunaEyes
@@ -243,7 +252,7 @@ export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {
       idleSince = -1
       shooting = false
       // Park the gyroscope and hand the orbit channel back to the CSS rings.
-      gyroSince = -1
+      gyroOn = false
       if (DOM.lunaFace) delete DOM.lunaFace.dataset["gyro"]
       for (const p of DOM.gyroBack ?? []) p.style.opacity = "0"
       for (const p of DOM.gyroFront ?? []) p.style.opacity = "0"

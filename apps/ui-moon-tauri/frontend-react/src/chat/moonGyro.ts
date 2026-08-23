@@ -56,6 +56,13 @@ export const GYRO_RINGS: readonly GyroSeed[] = [
   { a: 59, k: 0.1, tilt: 2.45, speed: 1.0, phase: 5.2, sweep: 0.66 },
 ]
 
+/** The orbit states the JS gyroscope OWNS. Everything keyed on this set -
+ *  moonLife's drive gate, and chat.html's two selector chains (the arc park
+ *  belt and the CSS-ellipse stand-down, pinned to this constant by
+ *  moon-gyro.test.ts) - must agree, or a state ends up with both ring systems
+ *  or neither. */
+export const GYRO_ORBIT_STATES = ["thinking", "long"] as const
+
 /** A long turn spins the same rings harder rather than changing costume. */
 export const GYRO_LONG_MULT = 1.6
 

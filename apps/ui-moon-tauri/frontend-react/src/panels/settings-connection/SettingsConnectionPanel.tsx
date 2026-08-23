@@ -127,12 +127,45 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
     }
   })
 
+  // The panel PUBLISHES machine-access-changed; it must also HEAR it, or its
+  // own checkbox goes stale the moment any other surface (the chat banner,
+  // the composer scope menu, another settings window) flips the key - a
+  // security control rendering ON while access is OFF. Same win.listen
+  // narrowing pattern as VoicePanel (see panel-ctx.ts's `win` doc).
+  useEffect(() => {
+    const win = ctx.win as {
+      listen?: (event: string, handler: (ev: { payload?: { name?: string } }) => void) => Promise<() => void>
+    } | null
+    if (!win || typeof win.listen !== "function") return
+    let unlisten: (() => void) | undefined
+    let cancelled = false
+    win.listen("hub-event", (ev) => {
+      if (ev.payload?.name !== "machine-access-changed") return
+      try {
+        setMachineAccess(localStorage.getItem("luna_machine_access") !== "off")
+      } catch (_) { /* sandboxed */ }
+    }).then((un) => {
+      if (cancelled) un()
+      else unlisten = un
+    }).catch(() => { /* off-Tauri */ })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [ctx])
+
   function handleMachineAccessChange(checked: boolean): void {
     setMachineAccess(checked)
     try {
       localStorage.setItem("luna_machine_access", checked ? "on" : "off")
     } catch (_) { /* sandboxed */ }
-    ctx.invoke("hub_event", { name: "machine-access-changed" }).catch(() => {})
+    // Warn on a REAL rejection (hasTauri distinguishes it from the expected
+    // off-Tauri one): the previous bare .catch(() => {}) is exactly what let
+    // the Rust allowlist silently reject this name for the life of the
+    // feature - no window ever heard the event, and nothing said so.
+    ctx.invoke("hub_event", { name: "machine-access-changed" }).catch((e) => {
+      if (ctx.hasTauri) console.warn("hub_event machine-access-changed failed:", e)
+    })
   }
 
   // F4 (opus review): a plain ref, NOT reducer state - state reads inside a
@@ -250,7 +283,9 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           wsUrl: c && typeof c.wsUrl === "string" ? c.wsUrl : "",
           wsToken: c && typeof c.wsToken === "string" ? c.wsToken : "",
         })
-        ctx.invoke("hub_event", { name: "profile-changed" }).catch(() => {})
+        ctx.invoke("hub_event", { name: "profile-changed" }).catch((e) => {
+          if (ctx.hasTauri) console.warn("hub_event profile-changed failed:", e)
+        })
       }).catch((e) => {
         const reason = e instanceof Error ? e.message : String(e)
         store.dispatch({ type: "profile-switch-failed", message: `Couldn't switch to "${next}": ${reason}` })
