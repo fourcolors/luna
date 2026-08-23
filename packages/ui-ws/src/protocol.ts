@@ -130,6 +130,14 @@ export interface HelloFrame {
      */
     readonly connectors?: boolean
     /**
+     * Agent sidebar S1: the server has an agent roster bound — it sends an
+     * `agent-list` frame after `hello` (metadata only: name + description,
+     * never prompts/tools). OPTIONAL/additive (no protocol bump): older
+     * servers omit it, and clients hide the mention menu and the grouped
+     * sidebar when the flag is absent/false.
+     */
+    readonly agents?: boolean
+    /**
      * PRD Part C (Widgets/W1): the server has an ArtifactStore bound — it
      * sends an `artifact-list` after `hello`, routes `artifact-pin`/`-unpin`,
      * and broadcasts `artifact-update`. OPTIONAL/additive: older servers omit
@@ -370,6 +378,21 @@ export interface AccountListFrame {
     readonly label: string
     readonly kind: string
     readonly health: string
+  }>
+}
+
+/**
+ * Agent sidebar S1: the mentionable-agent roster, sent once after `hello`
+ * when the server advertises `capabilities.agents`. METADATA ONLY by
+ * construction (see ui-ws/src/agent-roster.ts): full agent definitions
+ * carry system prompts, tool allowlists, and MCP references, and none of
+ * that may reach the wire. Additive — older clients ignore it.
+ */
+export interface AgentListFrame {
+  readonly type: "agent-list"
+  readonly agents: ReadonlyArray<{
+    readonly name: string
+    readonly description: string
   }>
 }
 
@@ -1471,6 +1494,7 @@ export type ServerFrame =
   | TurnCompleteFrame
   | ResultDeliveredFrame
   | AccountListFrame
+  | AgentListFrame
   | SkillCatalogFrame
   | SkillStatusFrame
   | CapabilityCatalogFrame

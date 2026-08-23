@@ -322,6 +322,7 @@ import {
   ChatThreadPosterTag,
   CrossEncoderRerankerLayer,
   BulletinWriterDefault,
+  loadAgents,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -359,6 +360,7 @@ import {
   createSecretRequestBridge,
   createSubagentTreeBridge,
   createWidgetSummonBridge,
+  projectAgentRoster,
   startUIWebSocketServer,
   type MemorySearchErrorKind,
 } from "@luna/ui-ws"
@@ -3083,6 +3085,7 @@ export const buildSetupServerLayer = (
         ...(BUILD_VERSION !== undefined ? { serverVersion: BUILD_VERSION } : {}),
         chatService: null,
         accountBroker: null,
+        agentRoster: null, // setup-mode: no runtime, nothing to mention
         survey: null,
         skillRegistry: null,
         connectorService: null,
@@ -4635,6 +4638,19 @@ const buildServerLayer = (
         availableModels: buildAvailableModels(),
         chatService: chat,
         accountBroker: broker,
+        // Agent sidebar S1: mentionable-agent roster. Reads the same
+        // ~/.luna/agents/ source the adapter passes to Options.agents on
+        // every query (adapter.ts loadAgents call), so the menu can never
+        // offer an agent this server's runtime would not accept. Read
+        // fresh per connection — agents are hot-loaded, no restart needed.
+        // projectAgentRoster strips to {name, description}: full defs
+        // carry prompts/tool lists and must never reach the wire.
+        agentRoster: {
+          list: () =>
+            Effect.sync(() =>
+              projectAgentRoster(loadAgents(), (m) => console.warn(m)),
+            ),
+        },
         survey: surveyHandle, // Phase 3 D3: resolved handle
         feedbackSink, // point-at-the-UI feedback → agent_notes (kind='ui_feedback')
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
