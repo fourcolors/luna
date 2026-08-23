@@ -207,3 +207,39 @@ describe("connectionReducer machine-target + activate", () => {
     expect(state.wsUrl).toBe("ws://keep-me:9/ui")
   })
 })
+
+/**
+ * Regression guard for the boot-path hole an audit found in this PR's first
+ * revision. hubEngines' legacy-token migration called
+ * `persistConnection(pickBootWsUrl(loadedUrl), legacyToken)`, and
+ * pickBootWsUrl's last resort is ws://127.0.0.1:4753/ui. So when
+ * load_connection returned nothing (or timed out - that throw is caught and
+ * leaves loadedUrl null) and no luna_ws_url cache existed, Moon persisted
+ * LOOPBACK into moon-connection.json with no user action at all.
+ *
+ * Removing the compiled-in host made that state common rather than rare,
+ * which is exactly why the guard belongs with this change. These assert the
+ * predicate the guard is built from; the guard itself lives at
+ * hub/hubEngines.ts and refuses the write unless both hold.
+ */
+describe("legacy-token migration must never persist the boot fallback", () => {
+  const migrationAllowed = (url: string) =>
+    isDialableWsUrl(url) && !isLoopbackWsUrl(url)
+
+  it("refuses pickBootWsUrl's loopback last resort", () => {
+    expect(migrationAllowed("ws://127.0.0.1:4753/ui")).toBe(false)
+    expect(migrationAllowed("ws://localhost:4753/ui")).toBe(false)
+    expect(migrationAllowed("ws://[::1]:4753/ui")).toBe(false)
+  })
+
+  it("refuses an empty or malformed URL rather than writing a guess", () => {
+    expect(migrationAllowed("")).toBe(false)
+    expect(migrationAllowed("   ")).toBe(false)
+    expect(migrationAllowed("http://configured-host:4753/ui")).toBe(false)
+  })
+
+  it("still migrates onto a real configured server", () => {
+    expect(migrationAllowed("ws://configured-host:4753/ui")).toBe(true)
+    expect(migrationAllowed("wss://configured-host.example.com/ui")).toBe(true)
+  })
+})
