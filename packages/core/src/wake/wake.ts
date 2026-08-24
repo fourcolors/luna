@@ -6,7 +6,7 @@
 // runWake intentionally never fails — any error short-circuits to a
 // wake_log row with outcome='error', so a bad tick is non-poisoning (the
 // WakeWorker records the failure and the next scheduled tick proceeds).
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import { readFileSync, existsSync } from "node:fs"
 import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { WakeReasoner } from "./reasoner.js"
@@ -200,6 +200,31 @@ const outcomeFromDigest = (digest: WakeDigest): WakeOutcome =>
  * surfacing through the cross-session `getRecentAcrossSessions` path that
  * `obs_notes_recent` uses by default.
  */
+/**
+ * Best-effort side-write for wake's own durability writes (wake_log rows, the
+ * agent_notes mirror, next_actions filing). These MUST NOT fail the cycle, but
+ * a bare `Effect.ignore` here means a failure to record a failure leaves no
+ * trace anywhere at all: that is exactly how a transient reasoner outage once
+ * ran hourly for 90 minutes and produced zero log lines, indistinguishable
+ * from a credential outage.
+ *
+ * `Cause.hasInterruptsOnly` keeps normal teardown quiet (a tick cancelled by
+ * shutdown is not an incident). Everything else, typed failure and defect
+ * alike, is logged at Warning with the full cause.
+ */
+const bestEffort = <A, E, R>(
+  self: Effect.Effect<A, E, R>,
+  site: string,
+): Effect.Effect<void, never, R> =>
+  self.pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.logWarning(`wake: ${site} failed: ${Cause.pretty(cause)}`),
+    ),
+    Effect.asVoid,
+  )
+
 const WAKE_SESSION_ID = "wake-cron"
 
 export const runWake = (
@@ -224,7 +249,7 @@ export const runWake = (
       readonly outcome: string
       readonly artifacts: string
     }) =>
-      Effect.ignore(
+      bestEffort(
         notes.record({
           sessionId: WAKE_SESSION_ID,
           kind: "wake_digest",
@@ -237,6 +262,7 @@ export const runWake = (
             artifacts: input.artifacts,
           },
         }),
+        "agent_notes mirror",
       )
 
     // Step 1: read state. Failure logged + returned early.
@@ -247,7 +273,7 @@ export const runWake = (
         stage: "read-inputs",
         error: inputsResult.failure.message,
       })
-      yield* Effect.ignore(
+      yield* bestEffort(
         store.append({
           wokeAt: now,
           goalSlug: null,
@@ -255,6 +281,7 @@ export const runWake = (
           outcome: "error",
           artifacts: errArtifacts,
         }),
+        "wake_log append (read-inputs error)",
       )
       yield* mirrorToNotes({
         summary: errSummary,
@@ -281,7 +308,7 @@ export const runWake = (
         stage: "read-inputs",
         skipped: read.reason,
       })
-      yield* Effect.ignore(
+      yield* bestEffort(
         store.append({
           wokeAt: now,
           goalSlug: null,
@@ -289,6 +316,7 @@ export const runWake = (
           outcome: "skipped",
           artifacts: skipArtifacts,
         }),
+        "wake_log append (skip)",
       )
       yield* mirrorToNotes({
         summary: skipSummary,
@@ -307,7 +335,7 @@ export const runWake = (
         stage: "reason",
         error: reasonResult.failure.message,
       })
-      yield* Effect.ignore(
+      yield* bestEffort(
         store.append({
           wokeAt: now,
           goalSlug: null,
@@ -315,6 +343,7 @@ export const runWake = (
           outcome: "error",
           artifacts: errArtifacts,
         }),
+        "wake_log append (reason error)",
       )
       yield* mirrorToNotes({
         summary: errSummary,
@@ -329,7 +358,7 @@ export const runWake = (
     const successSummary = summarizeDigest(digest)
     const successOutcome = outcomeFromDigest(digest)
     const successArtifacts = JSON.stringify(digest)
-    yield* Effect.ignore(
+    yield* bestEffort(
       store.append({
         wokeAt: now,
         goalSlug: null,
@@ -337,6 +366,7 @@ export const runWake = (
         outcome: successOutcome,
         artifacts: successArtifacts,
       }),
+      "wake_log append (success)",
     )
     yield* mirrorToNotes({
       summary: successSummary,
@@ -356,7 +386,10 @@ export const runWake = (
         inputs.openGoals.map((g) => g.slug),
       )
       if (planned.length > 0) {
-        yield* Effect.ignore(store.appendNextActions(planned, now))
+        yield* bestEffort(
+          store.appendNextActions(planned, now),
+          "next_actions filing",
+        )
       }
     }
   })
