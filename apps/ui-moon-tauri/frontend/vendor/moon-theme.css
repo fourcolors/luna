@@ -143,6 +143,47 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
     var(--paper-2);
 }
 
+/* ── Native OS frame (macOS) ─────────────────────────────────────
+   On macOS every panel/screen window is built with decorations(true) +
+   TitleBarStyle::Overlay (src-tauri/src/windows.rs), so AppKit owns the frame:
+   it draws the rounded corners, the resize edges and the drop shadow. The CSS
+   card is then only the FILL — it must reach the window edge.
+
+   The --card-inset gutter exists so the CSS halo can cast past the card without
+   being sheared square by the window bounds. That is right for a BORDERLESS
+   window (Linux/Windows, decorations(false)), where the CSS card is the entire
+   chrome. On a natively-framed window it is wrong twice over: the window is
+   transparent, so the gutter shows the DESKTOP through a band around the card
+   (the reported "invisible border"), and it also swallows clicks near the edge.
+
+   So on a native frame: collapse the gutter, drop the CSS halo (AppKit's own
+   window shadow replaces it — see .shadow() in windows.rs), and hand the corner
+   radius to the OS value. --card-inset-top stays in lockstep so the header does
+   not float. moon-appearance.js stamps data-native-frame pre-paint.
+
+   Radius note: 10px is the macOS window corner. It is deliberately <= whatever
+   AppKit masks to, so the fill always reaches the mask — a LARGER radius would
+   leave transparent wedges in the four corners. Every other geometry consumer
+   (.title-bar, the grain layer) already tracks --dk-radius, so they follow.
+   This rule lives in moon-theme.css, which loads AFTER moon-skins.css, so it
+   wins the tie against the per-skin --dk-radius. */
+html[data-native-frame='true'] {
+  --card-inset: 0px;
+  --card-inset-top: 0px;
+  --dk-radius: 10px;
+}
+
+/* No CSS halo on a native frame: with a zero inset there is no transparent
+   margin left to cast into, so the halo would be clipped to a hard square edge
+   at the window bounds — the exact doubled-edge artifact docs/no-window-outline.md
+   exists to prevent. AppKit's window shadow is the depth cue instead. The dark
+   override is listed explicitly because html[data-theme='dark'] .widget-shell
+   above has equal specificity. */
+html[data-native-frame='true'] .widget-shell,
+html[data-native-frame='true'][data-theme='dark'] .widget-shell {
+  box-shadow: none;
+}
+
 /* Title bar top corners match the card so the wash gradient never pokes square
    corners past the watercolor surface. */
 .title-bar {

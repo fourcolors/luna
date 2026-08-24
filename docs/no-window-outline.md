@@ -44,6 +44,38 @@ real culprit was a **skin/chrome edge ring**, not a focus ring.
 re-introduced the window outline — remove the offending declaration; do not
 weaken the test.
 
+## Related: the card gutter (`--card-inset`) and who owns the frame
+
+The sibling failure mode is an *invisible* border rather than a drawn one. The
+card insets itself by `--card-inset` so the halo has somewhere to cast. On a
+**borderless** window (Linux/Windows, `decorations(false)`) that is correct — the
+CSS card is the entire chrome. On **macOS** the window is natively decorated
+(`decorations(true)` + `TitleBarStyle::Overlay`) *and* transparent, so that
+gutter is see-through window: it renders as a band of desktop around every panel
+and screen, and it eats clicks near the edge.
+
+So the geometry is keyed off `html[data-native-frame]` (stamped pre-paint by
+`vendor/moon-appearance.js`):
+
+| | borderless | native frame (macOS) |
+|---|---|---|
+| `--card-inset` | `22px` | `0` |
+| card corner | skin `--dk-radius` | `10px` (the macOS window corner) |
+| depth cue | CSS `--dk-win-shadow` halo | AppKit's own window shadow |
+
+Two rules follow from this and must not be broken:
+
+- **Never re-add a CSS halo on a native frame.** With a zero inset there is no
+  transparent margin to cast into, so it can only shear square at the window
+  bounds — which is this document's artifact again, by another route.
+- **The card corner must be `<=` the OS window corner.** A larger radius leaves
+  transparent wedges in the four corners.
+
+`TRAFFIC_LIGHT_INSET_X/Y` in `src-tauri/src/windows.rs` are window coordinates
+that must line up with the CSS header, so they track `--card-inset` and move with
+it. `apps/ui-moon-tauri/test/moon-native-frame.test.ts` asserts that arithmetic
+rather than the literals.
+
 ## If you genuinely need a visible card edge
 
 Use a **blurred, low-spread** shadow tuned into `--dk-win-shadow` per skin — never

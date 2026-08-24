@@ -69,6 +69,19 @@
     return VALID[name].indexOf(v) !== -1 ? v : DEFAULTS[name];
   }
 
+  // macOS is the only platform that gets native window decorations — keep this
+  // in lockstep with `.decorations(cfg!(target_os = "macos"))` in
+  // src-tauri/src/windows.rs. Guarded: navigator is absent in exotic embeds.
+  function isNativeFrame() {
+    try {
+      var n = g.navigator;
+      if (!n) return false;
+      var ua = String(n.userAgent || '');
+      var plat = String(n.platform || '');
+      return /Mac/i.test(plat) || /Macintosh|Mac OS X/i.test(ua);
+    } catch (_) { return false; }
+  }
+
   function apply() {
     var el = g.document && g.document.documentElement;
     if (!el) return;
@@ -78,6 +91,19 @@
     var skin = read('skin');
     el.setAttribute('data-skin', skin);
     el.setAttribute('data-grain', read('grain') === 'true' ? 'on' : 'off');
+    // Who draws the window frame. On macOS every panel/screen window is built
+    // with decorations(true) + TitleBarStyle::Overlay (src-tauri/src/windows.rs),
+    // so AppKit owns the frame: rounded corners, resize edges and the drop
+    // shadow. Everywhere else the window is borderless (decorations(false)) and
+    // the CSS card IS the whole chrome. moon-theme.css keys the card geometry
+    // off this: a native frame collapses --card-inset to 0 so the card fills
+    // the window, instead of leaving a transparent gutter that shows the
+    // desktop through (the "invisible border").
+    //
+    // UA sniff on purpose: this must be stamped PRE-PAINT, and window.__TAURI__
+    // is not guaranteed to exist yet when this head script runs. Reading the UA
+    // is synchronous and cannot flash.
+    el.setAttribute('data-native-frame', isNativeFrame() ? 'true' : 'false');
     el.setAttribute('data-font', read('font'));
     el.setAttribute('data-fontsize', read('fontSize'));
   }
