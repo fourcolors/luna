@@ -344,4 +344,51 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
       expect(runs).toBe(3)
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Scenario: liveness watchdog wiring. These drive REAL inbound frames
+  // through the socket 'message' listener - the only place
+  // noteInboundActivity runs on this engine - rather than calling
+  // handleFrame() or startTurnTimeout() by hand, so they pin the
+  // frame→liveness wiring itself: deleting the noteInboundActivity call at
+  // the listener, or its re-arm-only guard, fails these.
+  // ───────────────────────────────────────────────────────────────────────
+  describe('Scenario: the liveness watchdog is fed by real inbound frames', () => {
+    it('an inbound {type:"ping"} re-arms an ARMED watchdog: a quiet turn outlives 90s', () => {
+      const m = internals()
+      const sock = FakeWebSocket.latest()!
+      sock.simulateOpen()
+      m.WebSocketEngine.startTurnTimeout() // armed at send
+      expect(m.State.turnTimeout).not.toBeNull()
+
+      // 60s of silence (below the 90s budget), one REAL heartbeat frame,
+      // then 60s more: 120s total. Without the re-arm the watchdog fires at
+      // 90s and consumes itself, so a non-null timer here proves the ping
+      // actually reached noteInboundActivity through the message listener.
+      vi.advanceTimersByTime(60_000)
+      sock.injectServerMessage({ type: 'ping', ts: '2026-08-24T00:00:00Z' })
+      vi.advanceTimersByTime(60_000)
+      expect(m.State.turnTimeout).not.toBeNull()
+    })
+
+    it('control: 90s with NO inbound frame fires and consumes the watchdog', () => {
+      const m = internals()
+      FakeWebSocket.latest()!.simulateOpen()
+      m.WebSocketEngine.startTurnTimeout()
+      vi.advanceTimersByTime(90_000)
+      expect(m.State.turnTimeout).toBeNull()
+    })
+
+    it('inbound frames while IDLE never arm the watchdog (re-arm-only, real path)', () => {
+      const m = internals()
+      const sock = FakeWebSocket.latest()!
+      sock.simulateOpen()
+      m.WebSocketEngine.clearTurnTimeout()
+      expect(m.State.turnTimeout).toBeNull()
+
+      sock.injectServerMessage({ type: 'ping', ts: '2026-08-24T00:00:00Z' })
+      sock.injectServerMessage({ type: 'thread-list', threads: [] })
+      expect(m.State.turnTimeout).toBeNull()
+    })
+  })
 })

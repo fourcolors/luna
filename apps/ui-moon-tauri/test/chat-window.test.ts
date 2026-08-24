@@ -270,11 +270,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(face.dataset['state']).toBe('')
     })
 
-    it('Scenario: a single tool emitting nothing for 90s is treated as a hang, loudly', () => {
-      // The deliberate limit of the above. 90s of TOTAL silence is
-      // indistinguishable from a dead turn, so the watchdog still fires - but
-      // it now says so instead of just going idle, which is the half of the
-      // regression that made it invisible.
+    it('Scenario: 90s of TOTAL inbound silence recovers the transport, it does not blame the turn', () => {
+      // The deliberate limit of the above. This watchdog is a LIVENESS check,
+      // not a progress check: the server heartbeats every 5s, so 90s of
+      // nothing is ~18 missed heartbeats and the LINK is dead. Recover it
+      // (close -> reconnect -> resubscribe -> snapshot repaint) instead of
+      // telling the operator to retry a turn that may still be running.
       const mi = (window as any).__MoonInternals
       const face = document.getElementById('luna-face') as HTMLElement
       const chatMessages = document.getElementById('chat-messages')!
@@ -291,8 +292,49 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       mi.handleFrame({ type: 'tool-call', threadId: 'th-mute', turnId: 'C', toolCallId: 'mute', name: 'Bash', input: {} })
 
       vi.advanceTimersByTime(90_000)
-      expect(face.dataset['state']).toBe('')
-      expect(chatMessages.textContent).toContain('No response from the server')
+      // Reconnecting, not idle-and-silent; and no blame-the-turn banner.
+      expect(face.dataset['state']).toBe('connecting')
+      expect(chatMessages.textContent).not.toContain('No response from the server')
+    })
+
+    it('Scenario: a heartbeat keeps a quiet turn alive (the subagent case)', () => {
+      // The bug this design replaced. A turn that goes quiet while a subagent
+      // thinks emits no delta/tool-call, so a PROGRESS-fed watchdog killed it
+      // at 90s while the server happily worked for up to 30 minutes
+      // (adapter.ts DEFAULT_TASK_INACTIVITY_TIMEOUT_MS). Heartbeats re-arm the
+      // liveness watchdog, so a quiet-but-connected turn survives.
+      const mi = (window as any).__MoonInternals
+      const face = document.getElementById('luna-face') as HTMLElement
+      mi.State.activeThreadId = 'th-quiet'
+      mi.State.activeTurnId = 't-quiet'
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
+      mi.MoonFace.setConnection('connected')
+      mi.MoonFace.setBusy(true)
+      mi.WebSocketEngine.startTurnTimeout()
+
+      // 10 minutes of nothing but heartbeats, well past both 90s and the
+      // server's 5-minute plain-turn budget.
+      for (let i = 0; i < 120; i++) {
+        vi.advanceTimersByTime(5_000)
+        mi.WebSocketEngine.startTurnTimeout()   // what an inbound ping triggers
+      }
+      expect(face.dataset['state']).toBe('busy')
+    })
+
+    it('Scenario: inbound frames while IDLE never arm the watchdog', () => {
+      // Re-arm-only. startTurnTimeout() arms unconditionally, so feeding it
+      // every inbound frame would arm outside a turn, and a later idle
+      // disconnect would fire a teardown for a turn that never existed.
+      const mi = (window as any).__MoonInternals
+      setWs(mi, { readyState: WebSocket.OPEN, send: vi.fn() })
+      mi.MoonFace.setConnection('connected')
+      mi.WebSocketEngine.clearTurnTimeout()
+      expect(mi.State.turnTimeout).toBeNull()
+
+      // Heartbeat + a thread-list arriving with no turn in flight.
+      mi.handleFrame({ type: 'ping', ts: new Date().toISOString() })
+      mi.handleFrame({ type: 'thread-list', threads: [] })
+      expect(mi.State.turnTimeout).toBeNull()
     })
 
     it('Scenario: when the watchdog DOES fire it always explains itself', () => {
@@ -315,8 +357,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       mi.handleFrame({ type: 'assistant-done', threadId: 'th-silent', turnId: 'B', message: { text: 'hm' } })
 
       vi.advanceTimersByTime(90_000)   // total silence from here
-      expect(face.dataset['state']).toBe('')
-      expect(chatMessages.textContent).toContain('No response from the server')
+      expect(face.dataset['state']).toBe('connecting')
+      expect(chatMessages.textContent).not.toContain('No response from the server')
     })
 
     it('Scenario: User submits a text message -> message appended, input cleared, typing indicator shown; then the turn watchdog surfaces a no-response error', () => {
@@ -353,20 +395,22 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const typingIndicator = chatMessages!.querySelector('.typing-dots')
       expect(typingIndicator).not.toBeNull()
 
-      // 2. No server reply arrives (no WS in jsdom). Fast-forward past the 90s
-      //    turn watchdog so it fires.
+      // 2. No server reply and no heartbeat arrives. Fast-forward past the
+      //    90s liveness watchdog so it fires.
       vi.advanceTimersByTime(90000)
 
-      // Verification D: the watchdog clears the stuck typing indicator (no
-      //    endless spinner — the resume/robustness fix).
-      const postTypingIndicator = chatMessages!.querySelector('.typing-dots')
-      expect(postTypingIndicator).toBeNull()
+      // Verification D: the watchdog RECOVERS THE TRANSPORT rather than
+      //    tidying up after a turn it assumed was dead. Under the pool engine
+      //    that means teardown + Reconnecting…; under the socket engine it
+      //    closes the socket and the close handler does the same work. Either
+      //    way the visible outcome is "reconnecting", not a silent idle face.
+      const face = document.getElementById('luna-face') as HTMLElement
+      expect(face.dataset['state']).toBe('connecting')
 
-      // Verification E: and surfaces a visible "no response" error as the last
-      //    assistant message (real timeout behavior, not a mock reply).
-      const lastMsg = chatMessages!.lastElementChild
-      expect(lastMsg!.classList.contains('assistant')).toBe(true)
-      expect(lastMsg!.textContent).toContain('No response from the server')
+      // Verification E: it no longer blames the turn. Telling the operator to
+      //    "try again" on a turn that is still running server-side invited a
+      //    duplicate dispatch — user-message carries no idempotency key.
+      expect(chatMessages!.textContent).not.toContain('No response from the server')
     })
 
     it('Scenario: submitting with no thread while OFFLINE stashes the message and marks pendingFreshThread (reconnect mints a thread + flushes it)', () => {
@@ -4635,14 +4679,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chip().getAttribute('aria-label')).toContain('Book the flight')
     })
 
-    it('the no-response watchdog settles a stuck "thinking" face', () => {
+    it('the liveness watchdog settles a stuck "thinking" face into reconnecting', () => {
       M().WebSocketEngine.updateStatus('connected', 'Connected')
-      M().State.activeTurnId = 't-w'            // lets the watchdog act (no self-suppress)
+      M().State.activeTurnId = 't-w'
       M().MoonFace.setBusy(true)
       expect(face().dataset.state).toBe('busy')
       M().WebSocketEngine.startTurnTimeout()
       vi.advanceTimersByTime(90000)
-      expect(face().dataset.state).toBe('')     // abandoned turn → face stops thinking
+      // Dead link → recover it. The face reports reconnecting rather than
+      // going quietly idle with no explanation.
+      expect(face().dataset.state).toBe('connecting')
     })
 
     it('disconnect() clears a stuck "thinking" so it cannot resurface on reconnect', () => {

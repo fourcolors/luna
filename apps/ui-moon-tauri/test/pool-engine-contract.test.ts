@@ -368,4 +368,51 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
       expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBeforeFlap)
     })
   })
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Liveness watchdog wiring, pool path. Frames arrive through the REAL
+  // adapter subscribeFrames callback (wire.ts's noteInboundActivity call
+  // site for this engine), not via handleFrame() - so deleting that call,
+  // or the re-arm-only guard, fails these.
+  // ─────────────────────────────────────────────────────────────────────
+  describe('liveness watchdog is fed by real adapter frames', () => {
+    it('an inbound {type:"ping"} re-arms an ARMED watchdog: a quiet turn outlives 90s', async () => {
+      const sock = await bringUp()
+      pool().startTurnTimeout() // armed at send
+      expect(internals().State.turnTimeout).not.toBeNull()
+
+      // 60s silence + one real heartbeat + 60s more = 120s total. Without
+      // the re-arm the watchdog fires at 90s and consumes itself.
+      vi.advanceTimersByTime(60_000)
+      sock.simulateMessage({ type: 'ping', ts: '2026-08-24T00:00:00Z' })
+      await settle(1, 0) // adapter publishes through microtasks
+      vi.advanceTimersByTime(60_000)
+      expect(internals().State.turnTimeout).not.toBeNull()
+    })
+
+    it('90s of true silence fires: adapter recycled, reconnecting, indicator latched down', async () => {
+      await bringUp()
+      expect(pool().isConnected()).toBe(true)
+      pool().startTurnTimeout()
+      vi.advanceTimersByTime(90_000)
+      expect(internals().State.turnTimeout).toBeNull() // consumed: fired
+      expect(pool().isConnected()).toBe(false)         // transport recycled, not the turn blamed
+      // Full mirror of the adapter 'down' branch: the route indicator must
+      // LATCH to disconnected during recovery, not stay green "Connected".
+      // _lastPaintedConnected is mutated ONLY inside _paintRouteIndicator,
+      // so it is exactly "what the chip is showing" (see its field doc).
+      expect(pool()._lastPaintedConnected).toBe(false)
+    })
+
+    it('inbound frames while IDLE never arm the watchdog (re-arm-only, real path)', async () => {
+      const sock = await bringUp()
+      internals().WebSocketEngine.clearTurnTimeout()
+      expect(internals().State.turnTimeout).toBeNull()
+
+      sock.simulateMessage({ type: 'ping', ts: '2026-08-24T00:00:00Z' })
+      sock.simulateMessage({ type: 'thread-list', threads: [] })
+      await settle(1, 0)
+      expect(internals().State.turnTimeout).toBeNull()
+    })
+  })
 })
