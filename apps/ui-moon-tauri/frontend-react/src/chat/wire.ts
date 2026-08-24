@@ -1394,6 +1394,12 @@ const WebSocketEngine = {
         MoonFace.setBusy(false);
         this._fireDisconnect('liveness-timeout');
         this.updateStatus('connecting', 'Reconnecting…');
+        // Full mirror of the 'recovering'/'down' branches: the route
+        // indicator LATCHES to disconnected until a genuine reconnect
+        // succeeds, and observers get a fresh snapshot. Without these the
+        // route chip stayed green "Connected" through the whole recovery.
+        this._paintRouteIndicator(this._routeLabel, false);
+        this._updateObservability();
         this._scheduleRetry();
       });
     },
