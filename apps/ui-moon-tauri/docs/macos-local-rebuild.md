@@ -67,7 +67,7 @@ grants survive). Ad-hoc `-` works for ATS/plist binding but rotates CDHash.
 
 ```bash
 codesign -dv --verbose=4 "/Applications/Luna Moon.app" 2>&1 | egrep 'Identifier=|Info.plist=|Signature=|linker-signed|Sealed Resources|TeamIdentifier'
-plutil -p "/Applications/Luna Moon.app/Contents/Info.plist" | egrep 'CFBundleIdentifier|NSLocalNetwork|NSAllowsLocalNetworking|luna-server|ts.net'
+plutil -p "/Applications/Luna Moon.app/Contents/Info.plist" | egrep 'CFBundleIdentifier|NSLocalNetwork|NSAllowsLocalNetworking|ts.net'
 ls "/Applications/Luna Moon.app/Contents/_CodeSignature"
 ```
 
@@ -81,8 +81,19 @@ Expect:
 | Sealed Resources | present (`_CodeSignature/`) | `none` |
 | Entitlements | from `entitlements.plist` | `none` |
 
-Then launch the app, Allow Local Network, confirm Connected on
-`ws://luna-server:4753/ui` — do not retarget localhost.
+Then launch the app, Allow Local Network, and confirm Connected on **your
+configured server's `ws://` URL** — the host you gave the installer, e.g.
+`ws://<your-host>:4753/ui`.
+
+**Do not retarget localhost to make this pass.** Loopback is exempt from
+Local Network TCC and from the ATS/bound-plist machinery, so a loopback
+"Connected" proves nothing about the bundle — it is the precise failure this
+page exists to catch. That is also why the This Mac target ships gated off
+(`THIS_MAC_TARGET_ENABLED = false`).
+
+There is no default host to fall back on: #588 removed it and the installer
+prompts instead, so an unconfigured Moon has nothing to dial and must be
+pointed at a server first.
 
 ## Round 3 — boot must reach `new WebSocket` (in-app)
 

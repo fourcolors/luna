@@ -35,6 +35,10 @@ import {
   isUsableBearerToken,
   pickBootWsUrl,
 } from "../tauriBoot"
+import {
+  isDialableWsUrl,
+  isLoopbackWsUrl,
+} from "../panels/settings-connection/connectionReducer"
 
 // =========================================================================
 // WIRE PROTOCOL VERSION - SECOND SOURCE OF TRUTH (KEEP IN SYNC!)
@@ -517,15 +521,32 @@ export class HubController {
         if (loadedToken === null) {
           loadedToken = legacyToken
           const migrateUrl = pickBootWsUrl(loadedUrl)
-          // Don't block dial on a hung save_connection either.
-          void this.persistConnection(migrateUrl, legacyToken).then((migrated) => {
-            if (migrated) {
-              localStorage.removeItem("luna_ws_token")
-              Logger.info("Migrated legacy localStorage WS token into ~/.luna/moon-connection.json")
-            } else {
-              Logger.warn("Legacy WS token migration write failed; leaving localStorage copy for retry next launch")
-            }
-          })
+          // NEVER migrate onto pickBootWsUrl's loopback last resort. If
+          // load_connection returned nothing (or timed out -- caught above,
+          // leaving loadedUrl null) and no cached URL exists, this would
+          // persist ws://127.0.0.1 into moon-connection.json with NO user
+          // action, installing the boot fallback as the operator's configured
+          // server. A loopback "Connected" is also exempt from Local Network
+          // TCC and the bound-plist/ATS machinery, so it masks a genuinely
+          // broken bundle (docs/macos-local-rebuild.md).
+          // The legacy token stays in localStorage and migrates on a later
+          // launch once a real server URL is known -- the same retry path a
+          // failed write already relies on.
+          if (!isDialableWsUrl(migrateUrl) || isLoopbackWsUrl(migrateUrl)) {
+            Logger.warn(
+              "Legacy WS token migration deferred: no configured server URL yet (refusing to persist a loopback fallback)",
+            )
+          } else {
+            // Don't block dial on a hung save_connection either.
+            void this.persistConnection(migrateUrl, legacyToken).then((migrated) => {
+              if (migrated) {
+                localStorage.removeItem("luna_ws_token")
+                Logger.info("Migrated legacy localStorage WS token into ~/.luna/moon-connection.json")
+              } else {
+                Logger.warn("Legacy WS token migration write failed; leaving localStorage copy for retry next launch")
+              }
+            })
+          }
           if (loadedUrl === null) loadedUrl = migrateUrl
         } else {
           localStorage.removeItem("luna_ws_token")

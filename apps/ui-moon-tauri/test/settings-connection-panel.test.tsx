@@ -273,6 +273,8 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     renderPanel(ctx)
     await flush()
 
+    // #588 removed the compiled-in host, so Save needs a real URL now.
+    changeInputValue(urlInput(), 'ws://configured-host:4753/ui')
     changeInputValue(tokenInput(), 'keepme')
 
     act(() => {
@@ -284,9 +286,9 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     expect(tokenInput().value).toBe('keepme')
   })
 
-  it('machine-target-select offers jax-box + Custom only; jax-box Save never sends loopback', async () => {
+  it('machine-target-select offers server + Custom only; server Save never sends loopback', async () => {
     const { ctx, invoke } = makeCtx((cmd) => {
-      if (cmd === 'load_connection') return { wsUrl: 'ws://stale-host:4753/ui', wsToken: 't' }
+      if (cmd === 'load_connection') return { wsUrl: 'ws://configured-host:4753/ui', wsToken: 't' }
       return null
     })
     renderPanel(ctx)
@@ -295,21 +297,22 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     const machine = document.querySelector('[data-testid="machine-target-select"]') as HTMLSelectElement
     expect(machine).toBeTruthy()
     const values = Array.from(machine.options).map((o) => o.value)
-    expect(values).toEqual(['jax-box', 'custom'])
+    expect(values).toEqual(['server', 'custom'])
     expect(values).not.toContain('this-mac')
 
     act(() => {
-      machine.value = 'jax-box'
+      machine.value = 'server'
       machine.dispatchEvent(new Event('change', { bubbles: true }))
     })
     await flush()
-    expect(urlInput().value).toBe('ws://jax-box:4753/ui')
+    // The host comes from the loaded connection, not a compiled-in default.
+    expect(urlInput().value).toBe('ws://configured-host:4753/ui')
     expect(urlInput().value).not.toContain('127.0.0.1')
 
     act(() => { saveBtn().click() })
     await flush()
     expect(invoke).toHaveBeenCalledWith('save_connection', {
-      url: 'ws://jax-box:4753/ui',
+      url: 'ws://configured-host:4753/ui',
       token: 't',
       profile: 'stable',
       activate: false,
@@ -358,6 +361,8 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     renderPanel(ctx)
     await flush()
 
+    // Needs a dialable URL to get past the preflight and reach save_connection.
+    changeInputValue(urlInput(), 'ws://configured-host:4753/ui')
     act(() => {
       saveBtn().click()
     })
@@ -680,6 +685,7 @@ describe('SettingsConnectionPanel - Step 1a: F1 defaultKey validation', () => {
     // the real fence is what Save sends, which reads state.channel directly.
     expect(channelSelect().value).toBe('prod')
 
+    changeInputValue(urlInput(), 'ws://configured-host:4753/ui')
     act(() => { saveBtn().click() })
     await flush()
     expect(invoke).toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: 'prod' }))
@@ -700,6 +706,7 @@ describe('SettingsConnectionPanel - Step 1a: F1 defaultKey validation', () => {
 
     expect(channelSelect().value).toBe('prod')
 
+    changeInputValue(urlInput(), 'ws://configured-host:4753/ui')
     act(() => { saveBtn().click() })
     await flush()
     expect(invoke).toHaveBeenCalledWith('save_connection', expect.objectContaining({ profile: 'prod' }))

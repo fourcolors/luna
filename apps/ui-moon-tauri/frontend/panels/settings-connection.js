@@ -269,7 +269,17 @@
       effortRow.appendChild(effortSelect);
       el.appendChild(effortRow);
 
-      // ── Machine target (jax-box / Custom) — This Mac CUT until jax-box Connected ─
+      // No compiled-in host (#588): the configured server is learned from the
+      // loaded connection. Dead-code note: this vanilla panel is no longer
+      // built (tauri.conf.json frontendDist = ../frontend-react/dist); it is
+      // kept only as the reference mirror of the React port.
+      var configuredHost = '';
+      function serverUrlForPort(port) {
+        if (!configuredHost) return '';
+        return 'ws://' + configuredHost + ':' + port + '/ui';
+      }
+
+      // ── Machine target (server / Custom) — This Mac CUT until a real server Connected ─
 
       // Gate: do not offer This Mac → 127.0.0.1 as the path to Connected.
       var THIS_MAC_TARGET_ENABLED = false;
@@ -279,29 +289,29 @@
       function urlForMachineTarget(target, channel) {
         var port = portForChannel(channel);
         if (target === 'this-mac') {
-          if (!THIS_MAC_TARGET_ENABLED) return 'ws://jax-box:' + port + '/ui';
+          if (!THIS_MAC_TARGET_ENABLED) return serverUrlForPort(port);
           return 'ws://127.0.0.1:' + port + '/ui';
         }
-        return 'ws://jax-box:' + port + '/ui';
+        return serverUrlForPort(port);
       }
       function detectMachineTarget(url) {
         var trimmed = (url || '').trim();
-        if (/^wss?:\/\/jax-box(?:\.local)?:\d+\/ui\/?$/i.test(trimmed)) return 'jax-box';
+        if (configuredHost && trimmed.toLowerCase().indexOf('//' + configuredHost.toLowerCase()) !== -1) return 'server';
         if (/^wss?:\/\/127\.0\.0\.1:\d+\/ui\/?$/i.test(trimmed)) {
           return THIS_MAC_TARGET_ENABLED ? 'this-mac' : 'custom';
         }
         return 'custom';
       }
-      var DEFAULT_WS_URL = urlForMachineTarget('jax-box', 'stable');
+      var DEFAULT_WS_URL = '';
 
       var machineRow = splitRow();
       var machineInfo = document.createElement('div');
       machineInfo.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;';
       machineInfo.appendChild(makeLabel('Machine'));
-      machineInfo.appendChild(makeDesc('Which box Moon and luna chat dial — jax-box (remote default) or a custom URL. This Mac (127.0.0.1) is disabled until jax-box Connected is proven.'));
+      machineInfo.appendChild(makeDesc('Which box Moon and luna chat dial — the server you configured, or a custom URL. This Mac (127.0.0.1) is disabled until a real server Connected is proven.'));
       var machineSelect = makeSelect('machine-target-select');
       var machineOpts = [
-        { value: 'jax-box', label: 'jax-box (default)' },
+        { value: 'server', label: 'Server (configured)' },
         { value: 'custom', label: 'Custom URL' },
       ];
       if (THIS_MAC_TARGET_ENABLED) {
@@ -313,7 +323,7 @@
         opt.textContent = o.label;
         machineSelect.appendChild(opt);
       });
-      machineSelect.value = 'jax-box';
+      machineSelect.value = 'server';
       machineRow.appendChild(machineInfo);
       machineRow.appendChild(machineSelect);
       el.appendChild(machineRow);
@@ -718,8 +728,8 @@
       machineSelect.addEventListener('change', function () {
         var target = machineSelect.value;
         if (target === 'this-mac' && !THIS_MAC_TARGET_ENABLED) {
-          target = 'jax-box';
-          machineSelect.value = 'jax-box';
+          target = 'server';
+          machineSelect.value = 'server';
         }
         if (target === 'custom') return;
         wsUrlInput.value = urlForMachineTarget(target, channelSelect.value);

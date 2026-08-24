@@ -40,6 +40,8 @@ import {
   capitalize,
   initialConnectionPanelState,
   MACHINE_TARGET_OPTIONS,
+  isDialableWsUrl,
+  needsServerSetup,
   reduceConnectionPanel,
   urlForMachineTarget,
   type ChannelOption,
@@ -55,8 +57,10 @@ import type { PanelCtx } from "../panel-ctx"
 export const PANEL_TITLE = "Connection"
 
 /** Fallback when Custom is selected and the URL field is empty. Prefer
- *  jax-box (installer default) over loopback — This Mac is an explicit target. */
-const DEFAULT_WS_URL = urlForMachineTarget("jax-box", "stable")
+ *  the configured server over loopback — This Mac is an explicit target. */
+/** No hardcoded remote default (#588): with nothing configured this is empty
+ *  and Save is refused rather than persisting a guess. */
+const DEFAULT_WS_URL = ""
 
 /**
  * moon-session.js (frontend/vendor/moon-session.js) attaches this classic
@@ -436,7 +440,19 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
       state.wsUrl.trim() ||
       (state.machineTarget === "custom"
         ? DEFAULT_WS_URL
-        : urlForMachineTarget(state.machineTarget, state.channel))
+        : urlForMachineTarget(state.machineTarget, state.channel, state.serverUrl))
+    // Hard ws/wss preflight. Refuse rather than write a non-dialable value:
+    // an unconfigured Moon must stay unconfigured, never quietly persist the
+    // loopback boot fallback as if the operator had chosen it.
+    if (!isDialableWsUrl(url)) {
+      store.dispatch({
+        type: "save-error",
+        message: needsServerSetup(state.serverUrl, state.wsUrl)
+          ? "Enter your Luna server URL (ws:// or wss://) before saving."
+          : `Not a dialable WebSocket URL: ${url || "(empty)"}`,
+      })
+      return
+    }
     const token = state.wsToken.trim()
     store.dispatch({ type: "save-start" })
     try {
@@ -554,8 +570,8 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           <VStack gap={0}>
             <Text type="label">Machine</Text>
             <Text type="supporting">
-              Which box Moon and luna chat dial — jax-box (remote default) or a custom URL.
-              This Mac (127.0.0.1) is disabled until jax-box Connected is proven.
+              Which box Moon and luna chat dial — the server you configured, or a custom URL.
+              This Mac (127.0.0.1) is disabled until a real server Connected is proven.
             </Text>
           </VStack>
           <select
@@ -582,10 +598,13 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
           size="sm"
           value={state.wsUrl}
           onChange={(value) => store.dispatch({ type: "url-changed", value })}
-          placeholder={urlForMachineTarget(
-            state.machineTarget === "custom" ? "jax-box" : state.machineTarget,
-            state.channel,
-          )}
+          placeholder={
+            urlForMachineTarget(
+              state.machineTarget === "custom" ? "server" : state.machineTarget,
+              state.channel,
+              state.serverUrl,
+            ) || "ws://your-luna-host:4753/ui"
+          }
           data-testid="ws-url-input"
         />
 

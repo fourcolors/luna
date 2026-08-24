@@ -1765,7 +1765,7 @@ const WebSocketEngine = {
     // (read-only after C2 — writes removed from index.html), then default.
     // Route-keyed resolution (MoonSession.resolveBootRoute) is the hub's
     // concern; the chat window reads the URL the hub persisted via
-    // moon-connection.json / load_connection. pickBootWsUrl keeps jax-box
+    // moon-connection.json / load_connection. pickBootWsUrl keeps the configured host
     // (or any cached luna_ws_url) when load_connection times out.
     State.wsUrl = pickBootWsUrl(loadedUrl);
     // Pass tokenRef through verbatim (including "legacy" / scheme refs) so
