@@ -34,8 +34,11 @@ describe('native macOS titlebar ownership', () => {
     expect(placements).toHaveLength(2)
     // One source of truth for the inset — builders and the AppKit re-apply
     // share these consts so the two placements cannot drift apart.
-    expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 36.0')
-    expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 14.0')
+    // Values track --card-inset in vendor/moon-theme.css, which a natively
+    // framed (macOS) window collapses to 0 — see test/moon-native-frame.test.ts,
+    // which asserts the arithmetic rather than these literals.
+    expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 14.0')
+    expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 8.0')
     expect(windowsRs).toContain('fn configure_native_window_chrome(')
     expect(windowsRs).toContain('button.setHidden(false)')
   })

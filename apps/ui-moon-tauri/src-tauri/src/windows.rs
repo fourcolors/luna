@@ -243,14 +243,24 @@ pub(crate) fn spawn_panel(
 /// in `configure_native_window_chrome` — a single source of truth so the two
 /// placements cannot drift apart.
 ///
-/// x=36 = --card-inset (22) + title-bar padding (14) so the close light sits
-/// inside the opaque header, not in the transparent halo / rounded cutout.
-/// y=14 pairs with CSS .title-bar min-height 36 and --card-inset-top 6 so the
-/// cluster is vertically centered with air under the top edge (was crushed at y=12 / 28px bar).
+/// These are WINDOW coordinates, but the thing they must line up with is the
+/// CSS header inside the card — so they track the card's offset from the window
+/// origin, which is `--card-inset` in vendor/moon-theme.css.
+///
+/// A natively-framed window (this whole module is macOS-only) collapses that
+/// inset to 0 so the card fills the frame, so the offset is now just the CSS
+/// header's own padding:
+///   x=14 = --card-inset (0) + title-bar padding (14)
+///   y=8  = --card-inset-top (0) + 8px of air under the top edge
+/// which is the SAME position relative to the header as the old 36/14 pair had
+/// against a 22/6 inset — the cluster does not move on screen, the card grew
+/// out to meet it. If --card-inset ever becomes non-zero again for a native
+/// frame, these two must move with it or the lights drift into the header
+/// content (they have only 68px of reserved space).
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_INSET_X: f64 = 36.0;
+const TRAFFIC_LIGHT_INSET_X: f64 = 14.0;
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_INSET_Y: f64 = 14.0;
+const TRAFFIC_LIGHT_INSET_Y: f64 = 8.0;
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
 #[allow(clippy::too_many_arguments)]
@@ -277,11 +287,19 @@ fn spawn_panel_at(
     // borderless, exactly as before this feature.
     .decorations(cfg!(target_os = "macos"))
     .transparent(true)
-    // No native OS shadow: the CSS card-shell halo (.widget-shell box-shadow)
-    // is the single, rounded-correct, focus-independent depth cue. The OS
-    // shadow follows the SQUARE window bounds and intensifies on focus, which
-    // stacked a second, misaligned, focus-reactive edge on the rounded card.
-    .shadow(false)
+    // Whoever owns the frame owns the shadow.
+    //
+    // On macOS the window is natively decorated, so AppKit draws a real window
+    // shadow that follows the actual rounded frame. The CSS halo is switched
+    // off there (html[data-native-frame='true'] in moon-theme.css) because a
+    // zero-inset card has no transparent margin to cast into — it would just be
+    // sheared square at the window bounds.
+    //
+    // Elsewhere the window is borderless and the CSS card-shell halo is the
+    // only depth cue, so the OS shadow stays off: it would follow the SQUARE
+    // window bounds and intensify on focus, stacking a second, misaligned,
+    // focus-reactive edge on the rounded card.
+    .shadow(cfg!(target_os = "macos"))
     // Panels/screens do NOT float above other apps by default. The page itself
     // (vendor/moon-window-float.js, loaded by chat.html/panel.html) re-enables
     // always-on-top at boot when the user has explicitly turned on the
@@ -493,7 +511,8 @@ pub(crate) async fn open_artifact_widget(
             .transparent(true)
             // No native OS shadow — the CSS card-shell halo is the single depth cue
             // (see spawn_panel_at above for the full rationale).
-            .shadow(false)
+            // See spawn_panel_at: the frame owner owns the shadow.
+            .shadow(cfg!(target_os = "macos"))
             // Artifact widgets do NOT float by default — same rule as panels above.
             // vendor/moon-window-float.js (loaded by widget.html) re-enables it at boot
             // when luna_always_on_top === "true".
