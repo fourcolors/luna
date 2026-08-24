@@ -413,10 +413,13 @@ export function reduceConnectionPanel(
       if (state.machineTarget === "custom") {
         return { ...state, channel, channelError: null }
       }
+      // The wsUrl fallback exists for "typed a real URL, not saved yet" -- it
+      // must never launder the loopback boot fallback through a NAMED target
+      // (no gated path may emit loopback; see the This Mac hold above).
       const recomputed = urlForMachineTarget(
         state.machineTarget,
         channel,
-        state.serverUrl || state.wsUrl,
+        state.serverUrl || (isLoopbackWsUrl(state.wsUrl) ? "" : state.wsUrl),
       )
       return {
         ...state,
@@ -427,23 +430,33 @@ export function reduceConnectionPanel(
     }
     case "profile-switch-succeeded": {
       const wsUrl = action.wsUrl
+      // A successful switch delivers a persisted connection, so learn the
+      // server from it under the same never-loopback rule as
+      // connection-loaded; otherwise the Machine dropdown silently flips to
+      // Custom after every channel switch (detectMachineTarget can only
+      // return "server" when given a serverUrl).
+      const serverUrl =
+        isDialableWsUrl(wsUrl) && !isLoopbackWsUrl(wsUrl) ? wsUrl : state.serverUrl
       return {
         ...state,
         channelError: null,
         wsUrl,
+        serverUrl,
         wsToken: action.wsToken,
-        machineTarget: detectMachineTarget(wsUrl),
+        machineTarget: detectMachineTarget(wsUrl, serverUrl),
       }
     }
     case "profile-switch-failed":
       return { ...state, channelError: action.message, channel: action.revertTo ?? state.channel }
     case "pairing-prompted":
+      // The prompted URL is a suggestion, not a persisted choice -- classify
+      // it against the known server but do NOT learn serverUrl from it.
       return {
         ...state,
         channelError: action.message,
         wsUrl: action.wsUrl,
         wsToken: "",
-        machineTarget: detectMachineTarget(action.wsUrl),
+        machineTarget: detectMachineTarget(action.wsUrl, state.serverUrl),
       }
     case "switch-started":
       return { ...state, switching: true }

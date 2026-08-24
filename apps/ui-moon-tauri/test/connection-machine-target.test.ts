@@ -206,6 +206,80 @@ describe("connectionReducer machine-target + activate", () => {
     expect(state.machineTarget).toBe("custom")
     expect(state.wsUrl).toBe("ws://keep-me:9/ui")
   })
+
+  it("profile-switch-succeeded keeps the named server target (no silent flip to Custom)", () => {
+    // Regression: detectMachineTarget gained a serverUrl parameter but this
+    // call site was left single-argument, so after ANY profile switch the
+    // Machine dropdown flipped from "Server (configured)" to "Custom URL".
+    let state = configured()
+    expect(state.machineTarget).toBe("server")
+    state = reduceConnectionPanel(state, {
+      type: "profile-switch-succeeded",
+      wsUrl: "ws://example-host:5753/ui",
+      wsToken: "tok2",
+    })
+    expect(state.machineTarget).toBe("server")
+    expect(state.serverUrl).toBe("ws://example-host:5753/ui")
+    expect(state.wsToken).toBe("tok2")
+  })
+
+  it("profile-switch-succeeded learns a NEW real host but never loopback", () => {
+    // The switched-to profile's persisted URL IS a configured server (same
+    // learning rule as connection-loaded)...
+    let state = reduceConnectionPanel(configured(), {
+      type: "profile-switch-succeeded",
+      wsUrl: "ws://other-host:4753/ui",
+      wsToken: "tok",
+    })
+    expect(state.serverUrl).toBe("ws://other-host:4753/ui")
+    expect(state.machineTarget).toBe("server")
+    // ...but loopback keeps the previously learned server and classifies as
+    // Custom while This Mac is cut.
+    state = reduceConnectionPanel(state, {
+      type: "profile-switch-succeeded",
+      wsUrl: "ws://127.0.0.1:4753/ui",
+      wsToken: "tok",
+    })
+    expect(state.serverUrl).toBe("ws://other-host:4753/ui")
+    expect(state.machineTarget).toBe("custom")
+  })
+
+  it("pairing-prompted classifies against the known server without learning from it", () => {
+    let state = reduceConnectionPanel(configured(), {
+      type: "pairing-prompted",
+      message: "not paired",
+      wsUrl: "ws://example-host:5753/ui",
+    })
+    expect(state.machineTarget).toBe("server")
+    expect(state.serverUrl).toBe(SERVER) // suggestion did not overwrite the learned server
+    state = reduceConnectionPanel(state, {
+      type: "pairing-prompted",
+      message: "not paired",
+      wsUrl: "ws://unrelated-host:4753/ui",
+    })
+    expect(state.machineTarget).toBe("custom")
+    expect(state.serverUrl).toBe(SERVER)
+  })
+
+  it("channel-selected never launders a loopback wsUrl through a named target", () => {
+    // Chain: loopback in the field (boot fallback), operator picks the named
+    // server target with nothing configured, then switches channel. The
+    // recompute must NOT emit loopback under the "server" label - it leaves
+    // the field alone so setup can prompt.
+    let state = reduceConnectionPanel(base(), {
+      type: "url-changed",
+      value: "ws://127.0.0.1:4753/ui",
+    })
+    state = reduceConnectionPanel(state, {
+      type: "machine-target-selected",
+      target: "server",
+    })
+    expect(state.wsUrl).toBe("ws://127.0.0.1:4753/ui") // field untouched (nothing configured)
+    state = reduceConnectionPanel(state, { type: "channel-selected", channel: "dev" })
+    expect(state.wsUrl).toBe("ws://127.0.0.1:4753/ui") // NOT rewritten to ws://127.0.0.1:5753/ui
+    expect(state.serverUrl).toBe("")
+    expect(needsServerSetup(state.serverUrl, state.wsUrl)).toBe(true)
+  })
 })
 
 /**
