@@ -1560,6 +1560,96 @@ describe("end-to-end: TelegramAdapter + ChannelService", () => {
     // Final edit carries the complete turn text
     expect(editCalls[editCalls.length - 1]?.params["text"]).toBe("Hello from Telegram!")
   }, 15_000)
+
+  it("restart: after stopAdapters() → startAdapters(), an allowed inbound still gets a typing action", async () => {
+    // GIVEN the REAL TelegramAdapter registered with the REAL ChannelService,
+    // WHEN the service stops all adapters and starts them again in the same
+    //      process, and an allowed inbound update arrives only AFTER that
+    //      restart,
+    // THEN start() was actually re-forked (the service's started-id guard
+    //      cleared on stop) AND a sendChatAction is attempted (the adapter's
+    //      typingSwept latch reset in start()).
+    //
+    // The assertions are ORDERED on purpose. Assertion 1 (`starts === 2`) is a
+    // PRECONDITION, not the bug: it proves the restart actually re-forked
+    // start(), so that assertion 2 is measuring the adapter and not a restart
+    // that never happened. ChannelService.startAdapters currently has no
+    // start-idempotency guard, so it re-forks unconditionally and assertion 1
+    // holds on its own. If a guard is ever added, it MUST clear its set in
+    // stopAdapters() or this assertion is what will catch it.
+    //
+    // Assertion 2 is the actual bug: stop() latches typingSwept to close the
+    // sweep/startTyping race and nothing clears it, so the adapter is silently
+    // typing-dark for the rest of the process after any stop() → start().
+    const { service: chatService } = makeStubChatService()
+
+    const update = makeTextUpdate({ updateId: 7100, chatId: 2100, fromId: 3100, text: "after restart" })
+
+    // Gate: getUpdates serves empty until the test opens it AFTER the
+    // restart, so the one scripted update cannot be consumed (and cannot
+    // start typing) before stop() runs — that would pass without any fix.
+    let gateOpen = false
+    const { transport: scripted, calls } = makeFakeTransport([], {
+      getUpdates: [{ ok: true, result: [update] }],
+    })
+    const transport: TelegramHttpTransport = (method, params) =>
+      method === "getUpdates" && !gateOpen
+        ? Effect.sleep("1 millis").pipe(Effect.as({ ok: true, result: [] }))
+        : scripted(method, params)
+
+    const adapter = makeTelegramAdapter({ id: "tg-restart", httpTransport: transport })
+    // Count start() forks the way channels.test.ts's wrapCounting does: a
+    // boolean cannot tell "restarted" from "the first start is still there".
+    let starts = 0
+    const counting = {
+      ...adapter,
+      start: () => {
+        starts += 1
+        return adapter.start()
+      },
+    }
+
+    const serviceLayer = ChannelServiceLayer.pipe(
+      Layer.provide(ChannelSessionStore.Memory),
+      Layer.provide(InboundDedupStore.Memory),
+      Layer.provide(Layer.succeed(ChatService, chatService as unknown as InstanceType<typeof ChatService>)),
+      Layer.provide(Clock.Default),
+    )
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(counting)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("40 millis")
+
+          yield* svc.stopAdapters()
+          yield* svc.startAdapters()
+          // Give the re-forked start() fiber a turn: the fork count updates
+          // synchronously in startAdapters, but the typingSwept reset runs
+          // inside the fiber.
+          yield* Effect.sleep("40 millis")
+
+          // ORDERED ASSERTION 1 — service layer (task #8 landmine 1).
+          expect(starts).toBe(2)
+
+          // Sanity: no inbound has been served yet, so no typing either —
+          // the post-gate typing count below cannot be a pre-stop leftover.
+          expect(calls.filter((c) => c.method === "sendChatAction")).toHaveLength(0)
+
+          // ORDERED ASSERTION 2 — adapter layer (the typing-dark bug).
+          gateOpen = true
+          yield* Effect.sleep("120 millis")
+        }),
+        serviceLayer,
+      ) as Effect.Effect<void, never>,
+    )
+
+    const typing = calls.filter((c) => c.method === "sendChatAction")
+    expect(typing.length).toBeGreaterThanOrEqual(1)
+    expect(typing[0]?.params).toMatchObject({ chat_id: "2100", action: "typing" })
+  }, 15_000)
 })
 
 /* -------------------------------------------------------------------------- */

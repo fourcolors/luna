@@ -1507,6 +1507,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       // the fork keeps the loop alive; the outer fiber (the test) interrupts it
       // via Fiber.interrupt(fiber) after assertions are collected.
       return Effect.gen(function* () {
+        // A restart after stop() must be able to type again (mirrors the
+        // discord adapter's reset in its start()): stop() latches typingSwept
+        // to close the sweep/startTyping race, and nothing else clears it.
+        // Without this reset the adapter is silently typing-dark for the rest
+        // of the process after any stop() → start() cycle (task #8).
+        typingSwept = false
+
         // Resolve the token once for both transports (method calls + raw file
         // downloads). Prefer the pre-resolved Redacted token from config; fall
         // back to env. May be null when a test injects transports directly.
