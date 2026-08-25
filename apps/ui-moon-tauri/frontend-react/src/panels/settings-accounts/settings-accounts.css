@@ -1,0 +1,96 @@
+.settings-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px 14px 20px;
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.settings-accounts-lead {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.75;
+}
+
+.settings-accounts-list,
+.settings-accounts-add {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-accounts-empty {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.settings-accounts-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-accounts-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.settings-accounts-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-accounts-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-accounts-id {
+  font-size: 11px;
+  opacity: 0.65;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.settings-accounts-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.settings-accounts-add-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-accounts-status {
+  margin: 0;
+  font-size: 12px;
+}
+
+.settings-accounts-status-ok {
+  color: #2f7d4a;
+}
+
+.settings-accounts-status-error {
+  color: #b42318;
+}
+
+.settings-accounts-status-info {
+  opacity: 0.75;
+}

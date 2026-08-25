@@ -93,6 +93,16 @@
       "description": "Secrets vault: stored credentials, add API keys and 1Password service-account tokens, 1Password sync"
     },
     {
+      "kind": "settings.accounts",
+      "title": "Accounts",
+      "page": "panel.html?type=settings.accounts",
+      "trust": "system",
+      "singleton": true,
+      "width": 440,
+      "height": 540,
+      "description": "Provider accounts: list, add, and remove AccountBroker rows (label + secret-ref); live health"
+    },
+    {
       "kind": "settings.skills",
       "title": "Skills",
       "page": "panel.html?type=settings.skills",

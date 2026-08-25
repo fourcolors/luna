@@ -492,6 +492,9 @@ export const reduce = (state: UIState, action: Action): UIState => {
         // On reconnect, user's prior selection is preserved as-is.
       }
     }
+    case "account-status":
+      // Mutation ack — consumed by Settings Accounts pending-request tracker.
+      return state
     case "skill-catalog":
       // Server-authored catalog replaces wholesale (sent after hello and
       // re-sent after each successful toggle) — same idiom as account-list.

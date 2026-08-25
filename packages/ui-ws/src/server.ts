@@ -275,6 +275,9 @@ export interface UIWebSocketServerConfig {
    * frame, populated with all "anthropic"-kind accounts. If absent, no
    * `account-list` is sent (graceful degradation).
    * Pass `null` explicitly in setup-mode (same as absent).
+   *
+   * Mutations are NOT on this handle — AccountBroker is load-once-at-boot.
+   * See `accountManageService` (SQL write + scheduleRestart).
    */
   readonly accountBroker?: {
     readonly list: (kindFilter?: string) => import("effect").Effect.Effect<ReadonlyArray<{
@@ -283,6 +286,34 @@ export interface UIWebSocketServerConfig {
       readonly kind: string
       readonly health: string
     }>>
+  } | null
+  /**
+   * Optional account-manage service (Moon Settings Accounts). When provided:
+   *   - advertises `capabilities.accountManage: true`
+   *   - routes inbound `account-add` / `account-rm` → SQLite write →
+   *     `account-status` ack → refreshed `account-list` → `scheduleRestart`
+   *       (AccountBroker is load-once-at-boot; restart rebuilds the Layer)
+   *
+   * Structural type — mirrors modelRoutingService. Pass `null`/absent to
+   * disable (frames ignored; clients hide the Accounts settings tab).
+   */
+  readonly accountManageService?: {
+    readonly list: () => ReadonlyArray<{
+      readonly id: string
+      readonly label: string
+      readonly kind: string
+      readonly health: string
+    }>
+    readonly add: (input: {
+      readonly id: string
+      readonly label: string
+      readonly kind: string
+      readonly secretRef: string
+    }) => { readonly ok: boolean; readonly message: string }
+    readonly remove: (input: {
+      readonly id: string
+    }) => { readonly ok: boolean; readonly message: string }
+    readonly scheduleRestart?: () => void
   } | null
   /**
    * Optional agent-roster handle (agent sidebar S1). When provided, the
@@ -886,6 +917,8 @@ export const startUIWebSocketServer = (
     const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
     const agentRoster = config.agentRoster ?? null
+    const accountBroker = config.accountBroker ?? null
+    const accountManageService = config.accountManageService ?? null
     const capabilityRegistry = config.capabilityRegistry ?? null
     const threadArchiveNotifier = config.threadArchiveNotifier ?? null
     const connectorService = config.connectorService ?? null
@@ -1331,6 +1364,9 @@ export const startUIWebSocketServer = (
             // Model-routing settings (PR 1): operator-configured provider/model
             // preferences. Clients gate the Models settings tab on this flag.
             modelRouting: modelRoutingService !== null,
+            // Account manage (Moon Settings Accounts): SQL write + restart.
+            // Clients gate the Accounts settings tab on this flag.
+            accountManage: accountManageService !== null,
             // Capability layer: backend-advertised commands available — the
             // server sends a capability-catalog after hello and routes
             // capability-execute. Clients fall back to built-in commands when
@@ -1347,8 +1383,8 @@ export const startUIWebSocketServer = (
         // populate the account-switcher dropdown on connect. Fire-and-
         // forget via runFork — connection setup must not block on OP
         // resolution.
-        if (config.accountBroker) {
-          const broker = config.accountBroker
+        if (accountBroker) {
+          const broker = accountBroker
           Effect.runFork(
             Effect.flatMap(broker.list("anthropic"), (accounts) =>
               Effect.sync(() => {
@@ -2008,7 +2044,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || threadForks !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null || feedbackSink !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || threadForks !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null || accountManageService !== null || feedbackSink !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -3157,6 +3193,96 @@ export const startUIWebSocketServer = (
                       ok: result.ok,
                       message: result.message,
                     })
+                    return
+                  }
+                  case "account-add": {
+                    // Moon Settings Accounts: SQL INSERT (pointer-only secretRef)
+                    // then scheduleRestart — AccountBroker is load-once-at-boot.
+                    // Never log or echo secretRef.
+                    if (accountManageService === null) return
+                    const svc = accountManageService
+                    const reqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      reqId.length === 0 ||
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0 ||
+                      typeof frame.label !== "string" ||
+                      frame.label.trim().length === 0 ||
+                      typeof frame.kind !== "string" ||
+                      frame.kind.trim().length === 0 ||
+                      typeof frame.secretRef !== "string" ||
+                      frame.secretRef.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "account-status",
+                        requestId: reqId,
+                        ok: false,
+                        message: "malformed account-add frame",
+                      })
+                      return
+                    }
+                    const addResult = svc.add({
+                      id: frame.id,
+                      label: frame.label,
+                      kind: frame.kind,
+                      secretRef: frame.secretRef,
+                    })
+                    send(ws, {
+                      type: "account-status",
+                      requestId: reqId,
+                      ok: addResult.ok,
+                      message: addResult.message,
+                    })
+                    if (addResult.ok) {
+                      yield* Effect.gen(function* () {
+                        const accounts = svc.list()
+                        const sockets = yield* Ref.get(activeSockets)
+                        for (const sock of sockets) {
+                          send(sock, { type: "account-list", accounts })
+                        }
+                      }).pipe(Effect.catchCause(() => Effect.void))
+                      svc.scheduleRestart?.()
+                    }
+                    return
+                  }
+                  case "account-rm": {
+                    if (accountManageService === null) return
+                    const svc = accountManageService
+                    const reqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      reqId.length === 0 ||
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "account-status",
+                        requestId: reqId,
+                        ok: false,
+                        message: "malformed account-rm frame",
+                      })
+                      return
+                    }
+                    const rmResult = svc.remove({ id: frame.id })
+                    send(ws, {
+                      type: "account-status",
+                      requestId: reqId,
+                      ok: rmResult.ok,
+                      message: rmResult.message,
+                    })
+                    if (rmResult.ok) {
+                      yield* Effect.gen(function* () {
+                        const accounts = svc.list()
+                        const sockets = yield* Ref.get(activeSockets)
+                        for (const sock of sockets) {
+                          send(sock, { type: "account-list", accounts })
+                        }
+                      }).pipe(Effect.catchCause(() => Effect.void))
+                      svc.scheduleRestart?.()
+                    }
                     return
                   }
                   case "vault-put": {

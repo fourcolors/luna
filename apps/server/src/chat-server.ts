@@ -88,9 +88,11 @@
  * additional ACL setup (e.g. `-T <bun-binary>` at add-time, or
  * "Always Allow" on first prompt). Out of scope for the dev rig.
  *
- * Hot-reload is NOT supported. AccountBroker hydrates the `accounts`
- * table once at Layer construction. To pick up new rows inserted via
- * `luna-account add`, RESTART this server.
+ * AccountBroker hydrates the `accounts` table once at Layer construction.
+ * Moon Settings Accounts writes rows via `account-add`/`account-rm` (SQLite)
+ * then `scheduleRestart` so the next boot rebuilds the broker — same pattern
+ * as model-routing-save. CLI `luna account add|rm` still writes SQL directly
+ * and also needs a restart to become visible to the live broker.
  *
  * The web UI will be able to:
  *   - send `{type:"new-thread", model:"claude-sonnet-5"}` to spawn a
@@ -192,6 +194,9 @@ import { Context, Effect, Layer, ManagedRuntime, Option, Redacted, Stream } from
 import {
   AccountBroker,
   AccountBrokerLayer,
+  addAccountToDb,
+  listAccountsFromDb,
+  removeAccountFromDb,
   AgentNotesService,
   ArtifactStore,
   CLEAN_SHUTDOWN_MARKER_NAME,
@@ -3136,6 +3141,7 @@ export const buildSetupServerLayer = (
         // an authenticated session to be useful anyway, and setup-mode has
         // no chat. Clients degrade gracefully when the capability is absent.
         modelRoutingService: null,
+        accountManageService: null,
         setupPty: resolvedSetupPty,
         // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
         // is configured but the account still needs its token. The handler
@@ -4644,6 +4650,56 @@ const buildServerLayer = (
         )
       }
 
+      // ── Account manage (Moon Settings Accounts) ─────────────────────────
+      // Write `accounts` SQLite rows (CLI-equivalent validation), ack, push
+      // account-list from SQL, then scheduleRestart. AccountBroker stays
+      // load-once-at-boot — no hot-reload.
+      let accountsDbClose: (() => void) | null = null
+      const accountManageService = (() => {
+        try {
+          const paths = resolveRuntimePaths()
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { Database } = require("bun:sqlite") as {
+            Database: BunSqliteDb
+          }
+          const accountsDb = new Database(paths.lunaDbPath)
+          accountsDbClose = () => accountsDb.close()
+          const db = {
+            query: (sql: string) => accountsDb.query(sql),
+          }
+          return {
+            list: () => listAccountsFromDb(db),
+            add: (input: {
+              readonly id: string
+              readonly label: string
+              readonly kind: string
+              readonly secretRef: string
+            }) => addAccountToDb(db, input),
+            remove: (input: { readonly id: string }) =>
+              removeAccountFromDb(db, input.id),
+            scheduleRestart: scheduleServerRestart,
+          }
+        } catch (err) {
+          writeSync(
+            1,
+            `[luna/account-manage] failed to open accounts db (account-manage disabled): ${String(err)}\n`,
+          )
+          return null
+        }
+      })()
+      if (accountsDbClose !== null) {
+        const closeAccountsDb = accountsDbClose
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              closeAccountsDb()
+            } catch {
+              // best-effort
+            }
+          }),
+        )
+      }
+
       // tRPC control server — port 4754, alongside the WebSocket server.
       // Exposes control.restart / control.status / control.version. Bound to
       // loopback + gated by the same bearer token as the WS server (TOKEN).
@@ -4735,6 +4791,8 @@ const buildServerLayer = (
         mcpAppHost,
         // PR 1: model-routing settings (config surface only; cap enforcement PR 2).
         modelRoutingService,
+        // Moon Settings Accounts: SQL write + scheduleRestart (no broker hot-reload).
+        accountManageService,
       })
     }),
   ).pipe(

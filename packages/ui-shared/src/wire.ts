@@ -170,6 +170,9 @@ export interface HelloFrame {
      *  hello and routes `model-routing-save`. OPTIONAL/additive — absent on
      *  older servers. Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
     readonly modelRouting?: boolean
+    /** Account manage: server routes account-add/rm (SQL + restart).
+     *  OPTIONAL/additive — clients hide Accounts settings when absent. */
+    readonly accountManage?: boolean
     /** PRD Part C (Apps): server resolves `ui://` app resources + routes
      *  mcp-resource-read/mcp-tool-call. Lets a client render kind="mcp-app"
      *  artifacts live (vs source). OPTIONAL/additive — mirrors protocol.ts. */
@@ -297,6 +300,40 @@ export interface AccountListFrame {
     readonly kind: string
     readonly health: string
   }>
+}
+
+/**
+ * Server→client: outcome of an `account-add` or `account-rm`. NEVER echoes
+ * secret-ref values. Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface AccountStatusFrame {
+  readonly type: "account-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: register a provider account. `secretRef` is a POINTER only.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface AccountAddFrame {
+  readonly type: "account-add"
+  readonly requestId: string
+  readonly id: string
+  readonly label: string
+  readonly kind: string
+  readonly secretRef: string
+}
+
+/**
+ * Client→server: remove one account by id.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface AccountRmFrame {
+  readonly type: "account-rm"
+  readonly requestId: string
+  readonly id: string
 }
 
 /**
@@ -1013,6 +1050,7 @@ export type ServerFrame =
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
   | AccountListFrame
+  | AccountStatusFrame
   | SkillCatalogFrame
   | SkillStatusFrame
   | ConnectorCatalogFrame
@@ -1186,6 +1224,8 @@ export type ClientFrame =
   | VaultDeleteFrame
   | VaultSyncConfigFrame
   | VaultImportFrame
+  | AccountAddFrame
+  | AccountRmFrame
   | ModelRoutingSaveFrame
   | SetThreadConfigFrame
   | ArchiveThreadFrame

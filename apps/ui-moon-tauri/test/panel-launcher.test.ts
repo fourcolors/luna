@@ -22,6 +22,7 @@ const EXPECTED_KINDS = [
   'settings.connection',
   'settings.voice',
   'settings.models',
+  'settings.accounts',
   'settings.vault',
   'settings.skills',
   'settings.connectors',
@@ -113,7 +114,7 @@ describe('settings-launcher panel (kind "settings")', () => {
   it('buttons are real type="button" menu items (no implicit form submits)', () => {
     bootLauncher()
     const buttons = [...document.querySelectorAll('#launcher-list button')] as HTMLButtonElement[]
-    expect(buttons).toHaveLength(10)
+    expect(buttons).toHaveLength(11)
     expect(buttons.every((b) => b.type === 'button')).toBe(true)
     expect(buttons.every((b) => b.getAttribute('role') === 'menuitem')).toBe(true)
     expect(document.getElementById('launcher-list')!.getAttribute('role')).toBe('menu')

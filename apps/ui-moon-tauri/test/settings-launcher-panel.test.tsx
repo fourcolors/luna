@@ -7,7 +7,7 @@
 // the still-vanilla frontend/panel.html + frontend/panels/settings.js - that
 // suite is untouched and stays green) onto the React implementation:
 //   - boots with the Settings title
-//   - renders the ten settings-launcher rows, in order
+//   - renders the settings-launcher rows, in order
 //   - every row opens its panel via open_widget with the right kind
 //   - Skills and Connectors are ALWAYS visible (no capability gate - v1)
 //   - a click degrades to a no-op off-Tauri (invoke rejects) without throwing
@@ -115,7 +115,7 @@ describe('SettingsLauncherPanel (React port of panels/settings.js)', () => {
     const { ctx } = makeCtx()
     const el = renderPanel(ctx)
     const buttons = [...el.querySelectorAll('#launcher-list button')] as HTMLButtonElement[]
-    expect(buttons).toHaveLength(10)
+    expect(buttons).toHaveLength(11)
     expect(buttons.every((b) => b.type === 'button')).toBe(true)
   })
 
