@@ -4943,8 +4943,11 @@ const buildMain = (
     // the SecretProvider chain. Two places therefore feed it, and only two:
     // ~/.luna/.env (loaded into process.env at module scope near the top of
     // this file) and the launchd unit's EnvironmentVariables block, which wins
-    // on conflict. A shell-exported var reaches neither, so a typo'd name
-    // yields an empty allowlist and a refusal - loud rather than silent.
+    // on conflict. A typo'd NAME yields an empty allowlist and a refusal, so
+    // the mistake is loud rather than silent. Note this is about where the
+    // value is normally CONFIGURED, not a restriction process.env enforces: a
+    // var exported in the shell that launched the server is read like any
+    // other, so a stale export can quietly satisfy the allowlist.
     const dcSecret = yield* Effect.promise(() => resolveEnvSecret("DISCORD_BOT_TOKEN"))
     const dcToken = dcSecret === undefined ? undefined : Redacted.value(dcSecret).trim()
     const dcAllowedUsers = (process.env["LUNA_DISCORD_ALLOWED_USER_IDS"] ?? "")
