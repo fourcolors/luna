@@ -168,7 +168,7 @@ describe("FIX 3: validateExecutionContext", () => {
   })
 
   it("host present for ssh bareFolder (non-incus) target throws", () => {
-    const ssh: RuntimeKind = { transport: "ssh", sshHost: "jax-box", target: "bareFolder", hostRepoDir: "/repo" }
+    const ssh: RuntimeKind = { transport: "ssh", sshHost: "luna-host", target: "bareFolder", hostRepoDir: "/repo" }
     const svc = new FakeShellExecutor({ locality: "remote" })
     const host = new FakeShellExecutor({ locality: "remote" })
     expect(() => validateExecutionContext({ service: svc, host }, ssh)).toThrow(/host.*incus/i)

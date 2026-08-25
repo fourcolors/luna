@@ -20,7 +20,7 @@ LUNA_UI_WS_TOKEN=<token>
 
 Profiles let one `luna` binary switch between stable and development runtimes
 (`luna-server` is the neutral placeholder; the shipped `install.sh` default
-is `jax-box` / `jax-box.local` — supply your own hostname via `--stable-url` etc.):
+is `luna-host` / `luna-host.local` — supply your own hostname via `--stable-url` etc.):
 
 ```bash
 LUNA_STABLE_WS_URL=ws://luna-server:4753/ui

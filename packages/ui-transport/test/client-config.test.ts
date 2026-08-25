@@ -38,7 +38,7 @@ default           = "jax-stable"
 
 [route.jax-stable]
   label     = "Stable (prod)"
-  endpoints = ["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"]
+  endpoints = ["ws://luna-host:4753/ui", "ws://luna-host.local:4753/ui"]
   tokenRef  = "env:LUNA_STABLE_UI_WS_TOKEN"
 
 [route.hermes-local]
@@ -62,7 +62,7 @@ describe("parseClientConfig", () => {
       const route = cfg.routes.get("jax-stable")
       expect(route).toBeDefined()
       expect(route!.routeKey).toBe("jax-stable")
-      expect(route!.endpoints).toEqual(["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"])
+      expect(route!.endpoints).toEqual(["ws://luna-host:4753/ui", "ws://luna-host.local:4753/ui"])
       expect(route!.tokenRef).toBe("env:LUNA_STABLE_UI_WS_TOKEN")
       expect(route!.label).toBe("Stable (prod)")
     })

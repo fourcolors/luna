@@ -23,7 +23,7 @@
       "text": "Always do development work inside a dedicated git worktree, never directly on a branch outside one."
     },
     {
-      "id": "epi-jax-box-migration",
+      "id": "epi-luna-host-migration",
       "kind": "episodic",
       "text": "On 2026-07-07 the team audited Sol versus Luna and found Sol had been dead since May 18th due to a clean-exit loophole."
     },
@@ -90,13 +90,13 @@
       "id": "q-temporal-sol-audit",
       "slice": "temporal",
       "text": "What happened on July 7th 2026 regarding the Sol versus Luna comparison?",
-      "relevantIds": ["epi-jax-box-migration"]
+      "relevantIds": ["epi-luna-host-migration"]
     },
     {
       "id": "q-temporal-sol-dead",
       "slice": "temporal",
       "text": "Since when has the Sol agent been dead, and why?",
-      "relevantIds": ["epi-jax-box-migration"]
+      "relevantIds": ["epi-luna-host-migration"]
     },
     {
       "id": "q-negative-unrelated",

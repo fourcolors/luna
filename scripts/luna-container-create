@@ -20,7 +20,7 @@ REPO_URL="${LUNA_REPO:-https://github.com/fourcolors/luna.git}"
 BRANCH="${LUNA_BRANCH:-}"
 REPO_PATH=""
 STATE_PATH=""
-HOST="${LUNA_HOST:-jax-box}"
+HOST="${LUNA_HOST:-luna-host}"
 # Host-side proxy exposure — THE real network-exposure knob. When unset, it is
 # auto-resolved after arg parsing (luna_resolve_bind_addr): the host's Tailscale
 # IP if a tailnet is present (so a fresh container serves tailnet peers out of the
@@ -68,7 +68,7 @@ Options:
   --branch <branch>            Git branch to checkout. Default: master for stable, profile name otherwise.
   --repo-path <path>           Host repo path mounted at /root/luna.
   --state-path <path>          Host state path mounted at /root/.luna.
-  --host <hostname>            Hostname clients use. Default: jax-box.
+  --host <hostname>            Hostname clients use. Default: luna-host.
   --listen-addr <addr>         Host listen address for proxies. Default: auto —
                                the host's Tailscale IP if a tailnet is present
                                (serves remote clients), else 127.0.0.1 loopback.

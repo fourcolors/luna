@@ -123,42 +123,42 @@ describe("pair-writers: writeMoonConnection", () => {
 
   it("pairing dev PRESERVES an existing stable profile and does NOT change the active channel", () => {
     // Pair stable first (becomes active), then pair dev without --activate.
-    writeMoonConnection(home, "ws://jax-box:4753/ui", "stabletok", { profile: "stable" })
-    writeMoonConnection(home, "ws://jax-box:5753/ui", "devtok", { profile: "dev" })
+    writeMoonConnection(home, "ws://luna-host:4753/ui", "stabletok", { profile: "stable" })
+    writeMoonConnection(home, "ws://luna-host:5753/ui", "devtok", { profile: "dev" })
     const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
     // The running stable moon is NOT hijacked.
     expect(parsed.activeProfile).toBe("stable")
     // Both channels' creds coexist (the clobber bug is fixed).
-    expect(parsed.profiles.stable).toEqual({ wsUrl: "ws://jax-box:4753/ui", wsToken: "stabletok" })
-    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://jax-box:5753/ui", wsToken: "devtok" })
+    expect(parsed.profiles.stable).toEqual({ wsUrl: "ws://luna-host:4753/ui", wsToken: "stabletok" })
+    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://luna-host:5753/ui", wsToken: "devtok" })
   })
 
   it("--activate (options.activate) switches the active channel to the just-paired profile", () => {
-    writeMoonConnection(home, "ws://jax-box:4753/ui", "stabletok", { profile: "stable" })
-    writeMoonConnection(home, "ws://jax-box:5753/ui", "devtok", { profile: "dev", activate: true })
+    writeMoonConnection(home, "ws://luna-host:4753/ui", "stabletok", { profile: "stable" })
+    writeMoonConnection(home, "ws://luna-host:5753/ui", "devtok", { profile: "dev", activate: true })
     const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
     expect(parsed.activeProfile).toBe("dev")
-    expect(parsed.profiles.stable).toEqual({ wsUrl: "ws://jax-box:4753/ui", wsToken: "stabletok" })
+    expect(parsed.profiles.stable).toEqual({ wsUrl: "ws://luna-host:4753/ui", wsToken: "stabletok" })
   })
 
   it("MIGRATES a legacy flat file into profiles.stable, preserving its creds", () => {
     // Simulate the running user's REAL legacy file shape (flat camelCase).
     const path = moonConnectionPath(home)
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, '{"wsToken":"legacytok","wsUrl":"ws://jax-box:4753/ui"}')
+    writeFileSync(path, '{"wsToken":"legacytok","wsUrl":"ws://luna-host:4753/ui"}')
     // Now pair the dev channel — must migrate the legacy file first, then add dev.
-    writeMoonConnection(home, "ws://jax-box:5753/ui", "devtok", { profile: "dev" })
+    writeMoonConnection(home, "ws://luna-host:5753/ui", "devtok", { profile: "dev" })
     const parsed = JSON.parse(readFileSync(path, "utf8"))
     // Legacy creds preserved under stable; stable stays active (file pre-existed).
     expect(parsed.activeProfile).toBe("stable")
-    expect(parsed.profiles.stable).toEqual({ wsToken: "legacytok", wsUrl: "ws://jax-box:4753/ui" })
-    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://jax-box:5753/ui", wsToken: "devtok" })
+    expect(parsed.profiles.stable).toEqual({ wsToken: "legacytok", wsUrl: "ws://luna-host:4753/ui" })
+    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://luna-host:5753/ui", wsToken: "devtok" })
   })
 
   it("overwrites a profile's slot cleanly on a re-pair (rotation), keeping other profiles", () => {
-    writeMoonConnection(home, "ws://jax-box:4753/ui", "stabletok", { profile: "stable" })
-    writeMoonConnection(home, "ws://jax-box:5753/ui", "devA", { profile: "dev" })
-    writeMoonConnection(home, "ws://jax-box:5753/ui", "devB", { profile: "dev" })
+    writeMoonConnection(home, "ws://luna-host:4753/ui", "stabletok", { profile: "stable" })
+    writeMoonConnection(home, "ws://luna-host:5753/ui", "devA", { profile: "dev" })
+    writeMoonConnection(home, "ws://luna-host:5753/ui", "devB", { profile: "dev" })
     const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
     expect(parsed.profiles.dev.wsToken).toBe("devB")
     expect(parsed.profiles.stable.wsToken).toBe("stabletok")
@@ -168,7 +168,7 @@ describe("pair-writers: writeMoonConnection", () => {
 describe("pair: isValidPairUrl", () => {
   it("accepts ws:// and wss:// URLs ending in /ui", () => {
     expect(isValidPairUrl("ws://127.0.0.1:4753/ui")).toBe(true)
-    expect(isValidPairUrl("wss://jax-box:4753/ui")).toBe(true)
+    expect(isValidPairUrl("wss://luna-host:4753/ui")).toBe(true)
     expect(isValidPairUrl("wss://host/ui/")).toBe(true) // trailing slash tolerated
   })
   it("rejects non-ws schemes, missing /ui path, and garbage", () => {
@@ -324,28 +324,28 @@ describe("pair: runPair (verify injected, no live server)", () => {
   it("luna pair --profile dev does NOT clobber a previously paired stable channel", async () => {
     // Pair stable first (activates stable), then pair dev WITHOUT --activate.
     await runPair(
-      { url: "ws://jax-box:4753/ui", token: "stabletoken1", profile: "stable" },
+      { url: "ws://luna-host:4753/ui", token: "stabletoken1", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     await runPair(
-      { url: "ws://jax-box:5753/ui", token: "devtoken1", profile: "dev" },
+      { url: "ws://luna-host:5753/ui", token: "devtoken1", profile: "dev" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
     // Active channel unchanged (the running stable moon is not hijacked).
     expect(moon.activeProfile).toBe("stable")
     // Both channels coexist — the clobber bug is fixed.
-    expect(moon.profiles.stable).toEqual({ wsUrl: "ws://jax-box:4753/ui", wsToken: "stabletoken1" })
-    expect(moon.profiles.dev).toEqual({ wsUrl: "ws://jax-box:5753/ui", wsToken: "devtoken1" })
+    expect(moon.profiles.stable).toEqual({ wsUrl: "ws://luna-host:4753/ui", wsToken: "stabletoken1" })
+    expect(moon.profiles.dev).toEqual({ wsUrl: "ws://luna-host:5753/ui", wsToken: "devtoken1" })
   })
 
   it("--activate switches the moon's active channel to the just-paired profile", async () => {
     await runPair(
-      { url: "ws://jax-box:4753/ui", token: "stabletoken1", profile: "stable" },
+      { url: "ws://luna-host:4753/ui", token: "stabletoken1", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     const res = await runPair(
-      { url: "ws://jax-box:5753/ui", token: "devtoken1", profile: "dev", activate: true },
+      { url: "ws://luna-host:5753/ui", token: "devtoken1", profile: "dev", activate: true },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     expect(res.exitCode).toBe(0)
@@ -354,7 +354,7 @@ describe("pair: runPair (verify injected, no live server)", () => {
     expect(moon.profiles.stable.wsToken).toBe("stabletoken1")
   })
 
-  it("PRIMARY: jax-box pair writes all three stores and never emits 127.0.0.1", async () => {
+  it("PRIMARY: luna-host pair writes all three stores and never emits 127.0.0.1", async () => {
     const toml = [
       'kind = "bootstrap"',
       "fileFormatVersion = 3",
@@ -370,21 +370,21 @@ describe("pair: runPair (verify injected, no live server)", () => {
     writeFileSync(clientTomlPath(home), toml, { mode: 0o600 })
 
     await runPair(
-      { url: "ws://jax-box:4753/ui", token: "jax-tok-123456", profile: "stable" },
+      { url: "ws://luna-host:4753/ui", token: "jax-tok-123456", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
 
     const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
-    expect(moon.profiles.stable.wsUrl).toBe("ws://jax-box:4753/ui")
+    expect(moon.profiles.stable.wsUrl).toBe("ws://luna-host:4753/ui")
     expect(moon.profiles.stable.wsToken).toBe("jax-tok-123456")
 
     const env = readFileSync(lunaEnvPath(home), "utf8")
-    expect(env).toContain("LUNA_STABLE_WS_URL=ws://jax-box:4753/ui")
+    expect(env).toContain("LUNA_STABLE_WS_URL=ws://luna-host:4753/ui")
     expect(env).not.toContain("127.0.0.1")
     expect(env).toContain("LUNA_STABLE_UI_WS_TOKEN=jax-tok-123456")
 
     const after = readFileSync(clientTomlPath(home), "utf8")
-    expect(after).toContain('endpoints = ["ws://jax-box:4753/ui"]')
+    expect(after).toContain('endpoints = ["ws://luna-host:4753/ui"]')
     expect(after).not.toContain("127.0.0.1")
   })
 
@@ -409,17 +409,17 @@ describe("pair: runPair (verify injected, no live server)", () => {
     writeFileSync(clientTomlPath(home), toml, { mode: 0o600 })
 
     await runPair(
-      { url: "ws://jax-box:4753/ui", token: "stable-tok", profile: "stable" },
+      { url: "ws://luna-host:4753/ui", token: "stable-tok", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     let after = readFileSync(clientTomlPath(home), "utf8")
-    expect(after).toContain('endpoints = ["ws://jax-box:4753/ui"]')
+    expect(after).toContain('endpoints = ["ws://luna-host:4753/ui"]')
     expect(after).toMatch(/^default = "stable"$/m)
     expect(after).not.toContain("127.0.0.1")
 
     await runPair(
       {
-        url: "ws://jax-box:5753/ui",
+        url: "ws://luna-host:5753/ui",
         token: "dev-tok",
         profile: "dev",
         activate: true,
@@ -428,19 +428,19 @@ describe("pair: runPair (verify injected, no live server)", () => {
     )
     after = readFileSync(clientTomlPath(home), "utf8")
     expect(after).toMatch(/^default = "dev"$/m)
-    expect(after).toContain('endpoints = ["ws://jax-box:5753/ui"]')
+    expect(after).toContain('endpoints = ["ws://luna-host:5753/ui"]')
     expect(after).not.toContain("127.0.0.1")
     const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
     expect(moon.activeProfile).toBe("dev")
-    expect(moon.profiles.dev.wsUrl).toBe("ws://jax-box:5753/ui")
+    expect(moon.profiles.dev.wsUrl).toBe("ws://luna-host:5753/ui")
     const env = readFileSync(lunaEnvPath(home), "utf8")
-    expect(env).toContain("LUNA_DEV_WS_URL=ws://jax-box:5753/ui")
+    expect(env).toContain("LUNA_DEV_WS_URL=ws://luna-host:5753/ui")
     expect(env).not.toContain("127.0.0.1")
   })
 
   it("pair is a no-op for client.toml when the file is absent (pre-C3)", async () => {
     await runPair(
-      { url: "ws://jax-box:4753/ui", token: "tok123456", profile: "stable" },
+      { url: "ws://luna-host:4753/ui", token: "tok123456", profile: "stable" },
       { homeDir: home, cwd: home, env: {}, verify: stubVerify },
     )
     expect(() => statSync(clientTomlPath(home))).toThrow()
@@ -466,17 +466,17 @@ describe("pair-writers: upsertClientTomlEndpoint", () => {
         'default = "stable"',
         "",
         "[route.stable]",
-        'endpoints = ["ws://stale-host:4753/ui", "ws://jax-box.local:4753/ui"]',
+        'endpoints = ["ws://stale-host:4753/ui", "ws://luna-host.local:4753/ui"]',
         'label = "stable"',
         'tokenRef = "legacy"',
         "",
       ].join("\n"),
       { mode: 0o600 },
     )
-    upsertClientTomlEndpoint(home, "stable", "ws://jax-box:4753/ui")
+    upsertClientTomlEndpoint(home, "stable", "ws://luna-host:4753/ui")
     const body = readFileSync(clientTomlPath(home), "utf8")
     expect(body).toContain(
-      'endpoints = ["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"]',
+      'endpoints = ["ws://luna-host:4753/ui", "ws://luna-host.local:4753/ui"]',
     )
     expect(body).not.toContain("127.0.0.1")
     upsertClientTomlEndpoint(home, "canary", "ws://canary:4753/ui", { setDefault: true })

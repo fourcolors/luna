@@ -497,7 +497,7 @@ export const processFingerprint = (pid: number): string => {
  * A bin directory containing symlinks to EXACTLY the named host binaries
  * (resolved via `command -v` at runtime). Setting PATH to only this dir proves
  * a script depends on nothing else — the "host binary missing" case becomes
- * constructible even on a host where the binary exists (e.g. incus on jax-box).
+ * constructible even on a host where the binary exists (e.g. incus on luna-host).
  */
 export const makeRestrictedBin = (dir: string, tools: ReadonlyArray<string>) => {
   const bin = join(dir, "restricted-bin")
