@@ -50,7 +50,16 @@
  */
 import { Buffer } from "node:buffer"
 import { Duration, Effect, Fiber, Redacted, Result } from "effect"
-import { Client, Events, GatewayIntentBits, Partials, Routes } from "discord.js"
+// `Routes` only builds route STRINGS, so it comes from discord-api-types
+// directly - importing it from discord.js would drag the whole gateway stack
+// (ws, undici, @discordjs/rest) into every consumer of @luna/channels,
+// including a Telegram-only deployment that will never speak Discord.
+// The discord.js VALUES (Client/Events/GatewayIntentBits/Partials) are loaded
+// lazily inside makeRealDiscordTransport, which is the only code that needs
+// them and only runs once Discord is actually configured. Mirrors telegram.ts,
+// which carries no platform SDK at all and takes an injected transport.
+import { Routes } from "discord-api-types/v10"
+import type { Client as DiscordClient } from "discord.js"
 import {
   ALLOWED_ATTACHMENT_MEDIA_TYPES,
   MAX_ATTACHMENTS_PER_TURN,
@@ -562,10 +571,13 @@ export interface DiscordTransport {
  * `Redacted.value()` is unwrapped at exactly one site (the `login` call), so
  * the token never reaches a log line, a trace, or an error message.
  */
-export const makeRealDiscordTransport = (
+export const makeRealDiscordTransport = async (
   token: Redacted.Redacted<string>,
-): DiscordTransport => {
-  const client = new Client({
+): Promise<DiscordTransport> => {
+  // Lazy so importing @luna/channels does not pull in discord.js. See the
+  // import block at the top of this file.
+  const { Client, Events, GatewayIntentBits, Partials } = await import("discord.js")
+  const client: DiscordClient = new Client({
     // Matches the intents the Sol gateway has run in production. Note there is
     // deliberately NO GuildMembers: it is privileged, needs portal enablement,
     // and nothing here reads the member list.
@@ -1740,7 +1752,10 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
               ),
             )
           }
-          transport = makeRealDiscordTransport(config.token)
+          // Captured so the narrowing above survives into the thunk: a closure
+          // over `config.token` re-widens to `Redacted<string> | undefined`.
+          const botToken = config.token
+          transport = yield* Effect.promise(() => makeRealDiscordTransport(botToken))
         }
         const t = transport
 

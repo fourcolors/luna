@@ -136,6 +136,7 @@
         "@luna/capabilities": "workspace:*",
         "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
+        "discord-api-types": "^0.38.53",
         "discord.js": "^14.16.3",
         "effect": "4.0.0-rc.111",
       },

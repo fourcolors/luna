@@ -368,3 +368,53 @@ describe("A5 ratchet: console arguments are message-only, never a raw error", ()
     expect((src.match(/\[luna\/channels\] discord:/g) ?? []).length).toBeGreaterThan(10)
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* discord.js stays OFF the import graph of @luna/channels                     */
+/* -------------------------------------------------------------------------- */
+
+describe("discord.js is loaded lazily, never at module scope", () => {
+  // packages/channels/src/index.ts re-exports ./adapters/discord.js, so ANY
+  // top-level value import of discord.js there is loaded by every consumer of
+  // @luna/channels - including a Telegram-only deployment that will never
+  // speak Discord. telegram.ts sets the house precedent: it carries no
+  // platform SDK at all and takes an injected transport.
+  //
+  // Lexical, not runtime, for the same reason as the A5 ratchet: the property
+  // being protected is "what the module graph pulls in at import time", which
+  // is decided by the import statements, and a runtime probe would need a
+  // loader hook to observe reliably.
+
+  it("has no top-level VALUE import of discord.js (type-only is fine)", () => {
+    const src = stripComments(discordSrc)
+    // Walk back from each `from "discord.js"` to ITS OWN `import` keyword. A
+    // single lazy [\s\S]*? regex looks right and is not: it happily spans from
+    // the file's first import all the way here, swallowing every import
+    // between and reporting one bogus match.
+    const valueImports: string[] = []
+    for (const m of src.matchAll(/\bfrom\s+"discord\.js"/g)) {
+      const end = m.index ?? 0
+      const start = src.lastIndexOf("import", end)
+      if (start < 0) continue
+      const stmt = src.slice(start, end).trim()
+      // `import(` is the dynamic form and is exactly what we want.
+      if (/^import\s*\(/.test(stmt)) continue
+      if (!/^import\s+type\b/.test(stmt)) valueImports.push(stmt.slice(0, 100))
+    }
+    expect(
+      valueImports,
+      "discord.js must be imported lazily inside makeRealDiscordTransport, " +
+        "or every @luna/channels consumer pays for the gateway stack",
+    ).toEqual([])
+  })
+
+  it("loads the discord.js values through a dynamic import instead", () => {
+    const src = stripComments(discordSrc)
+    expect(src, "the lazy load must still exist").toMatch(/await import\(\s*"discord\.js"\s*\)/)
+  })
+
+  it("takes Routes from discord-api-types, which is route strings only", () => {
+    const src = stripComments(discordSrc)
+    expect(src).toMatch(/import\s*\{\s*Routes\s*\}\s*from\s*"discord-api-types\/v10"/)
+  })
+})

@@ -15,7 +15,8 @@
     "@luna/chat-service": "workspace:*",
     "@luna/capabilities": "workspace:*",
     "effect": "4.0.0-rc.111",
-    "discord.js": "^14.16.3"
+    "discord.js": "^14.16.3",
+    "discord-api-types": "^0.38.53"
   },
   "devDependencies": {
     "typescript": "7.0.2",
