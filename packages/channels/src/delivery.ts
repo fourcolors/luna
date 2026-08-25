@@ -41,7 +41,7 @@
  * This module does NOT create threads or modify ChatService - it is a
  * PURE DOWNSTREAM CONSUMER of chat.subscribe(), exactly as ui-ws is.
  */
-import { Effect, Fiber, Ref, Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Ref, Scope, Stream } from "effect"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelAdapter, DeliveryTarget } from "./types.js"
 
@@ -216,34 +216,217 @@ const buildWorkingBlock = (steps: ReadonlyArray<ToolStep>): string => {
 }
 
 /**
+ * An open fenced block: the normalized 3-char marker plus the block's info
+ * string (the language tag and any extra attributes, e.g.
+ * `typescript title=example.ts`). The info string is what makes a reopened
+ * continuation keep its syntax highlighting.
+ */
+interface OpenFence {
+  readonly marker: "```" | "~~~"
+  readonly info: string
+}
+
+/** Length of the normalized fence marker we emit ("```" / "~~~"). */
+const FENCE_MARKER_LEN = 3
+
+/**
+ * Parse one line as a CommonMark code fence, or null if it is not one.
+ *
+ * A fence line is a run of 3+ backticks or tildes at (optionally indented)
+ * line start; everything after the run is the info string.
+ */
+const parseFenceLine = (line: string): OpenFence | null => {
+  const m = line.match(/^\s*(`{3,}|~{3,})(.*)$/)
+  if (m === null) return null
+  return {
+    marker: (m[1] ?? "").startsWith("`") ? "```" : "~~~",
+    info: (m[2] ?? "").trim(),
+  }
+}
+
+/** The text of the line that reopens `f` in a continuation chunk. */
+const reopenLine = (f: OpenFence): string => f.marker + f.info
+
+/**
+ * Walk `text` line by line and return the fence still open at the end, or
+ * null if the text is balanced.
+ *
+ * Two CommonMark rules are enforced here:
+ *   1. MARKER ISOLATION — a ``` block is only closed by a ``` line (a ~~~
+ *      line inside it is content), and vice versa.
+ *   2. A CLOSING FENCE CARRIES NO INFO STRING — so a ```json line appearing
+ *      inside an already-open ``` block is CONTENT, not a closer. This is
+ *      what keeps "markdown about markdown" (which the agent writes
+ *      constantly when explaining code) from being mis-parsed.
+ */
+const scanFences = (text: string): OpenFence | null => {
+  let state: OpenFence | null = null
+  for (const line of text.split("\n")) {
+    const fence = parseFenceLine(line)
+    if (fence === null) continue
+    if (state === null) {
+      state = fence
+    } else if (fence.marker === state.marker && fence.info.length === 0) {
+      state = null
+    }
+  }
+  return state
+}
+
+/**
  * Repair markdown code fences across chunk boundaries: when splitToChunks
  * cuts inside a fenced block, the open fence is closed at the chunk's end
  * and reopened at the start of the next chunk, so every delivered message
  * parses as complete markdown on its own.
  *
- * Fence tracking is MARKER-AWARE, mirroring the converter's semantics: a
- * block opened with ``` is only closed by a ``` line (a ~~~ line inside it
- * is content, and vice versa), and the close/reopen markers inserted at a
- * boundary always match the open block's own marker.
+ * The reopen carries the block's FULL info string (```typescript
+ * title=example.ts, not a bare ```), so the second half of a split code
+ * block keeps its syntax highlighting. The INSERTED CLOSER is always a bare
+ * marker, because per CommonMark a closing fence must not carry an info
+ * string.
+ *
+ * See `scanFences` for the tracking rules.
  */
 export const repairSplitFences = (chunks: ReadonlyArray<string>): string[] => {
   const out: string[] = []
-  let open: "```" | "~~~" | null = null
+  let open: OpenFence | null = null
   for (const chunk of chunks) {
-    let c: string = open !== null ? open + "\n" + chunk : chunk
-    let state: "```" | "~~~" | null = null
-    for (const line of c.split("\n")) {
-      const m = line.match(/^\s*(`{3,}|~{3,})/)
-      if (m === null) continue
-      const marker = (m[1] ?? "").startsWith("`") ? ("```" as const) : ("~~~" as const)
-      if (state === null) state = marker
-      else if (state === marker) state = null
-    }
-    open = state
-    if (open !== null) c = c + "\n" + open
+    let c: string = open !== null ? reopenLine(open) + "\n" + chunk : chunk
+    open = scanFences(c)
+    if (open !== null) c = c + "\n" + open.marker
     out.push(c)
   }
   return out
+}
+
+/**
+ * Characters `repairSplitFences` may add to any ONE chunk of `text`, so the
+ * caller can reserve exactly that much of the platform's message budget
+ * before splitting.
+ *
+ * DERIVED, NOT A MAGIC NUMBER. Repair can add at most two things to a single
+ * chunk: a reopen line (`reopenLine(f)` + "\n") at the front and a bare
+ * closer ("\n" + marker) at the back. So the worst case is
+ *
+ *     longest possible reopen + 1 + 1 + FENCE_MARKER_LEN
+ *
+ * The bound on "longest possible reopen" is taken over every 3+ backtick /
+ * tilde run ANYWHERE in the text, not just at line starts, because
+ * splitToChunks is fence-blind and may cut mid-line: a chunk that begins
+ * exactly at such a run turns it into a fence line whose info string is the
+ * rest of that line. Scanning every run therefore covers every reopen the
+ * repair could ever emit for this text, whatever the cut positions are.
+ *
+ * Consequences worth noting:
+ *   - Text with no fence run at all reserves 0 — repair provably inserts
+ *     nothing, so no budget need be spent.
+ *   - For a bare ``` block this evaluates to 8 (3+1+1+3), which is exactly the
+ *     constant this replaced. The old 8 was not wrong, it was the special case
+ *     of an empty info string; a 40-char language tag needs 48 and would have
+ *     overflowed the platform limit.
+ */
+const fenceRepairReserve = (text: string): number => {
+  let longestReopen = 0
+  for (const m of text.matchAll(/(?:`{3,}|~{3,})([^\n]*)/g)) {
+    const candidate = FENCE_MARKER_LEN + (m[1] ?? "").trim().length
+    if (candidate > longestReopen) longestReopen = candidate
+  }
+  if (longestReopen === 0) return 0
+  return longestReopen + 1 + 1 + FENCE_MARKER_LEN
+}
+
+/**
+ * The per-chunk length limit to hand `splitToChunks` so that, after
+ * `repairSplitFences`, no chunk exceeds `maxLen`. That promise is proved below
+ * for `maxLen >= 7`, and it is NOT made below that: see the NOTE in step 4,
+ * where the band is recorded as degenerate rather than quietly worded around.
+ *
+ * The reserve is derived from the text (see `fenceRepairReserve`) rather than
+ * fixed, so short answers keep essentially their whole budget and only a long
+ * info string pays for itself. The reserve is honoured in full while it leaves
+ * a usable body; past that it is CLAMPED at `bodyFloor`, so the limit never
+ * collapses toward 1 and one answer never shatters into hundreds of tiny,
+ * rate-limited messages. That collapse is reachable from ORDINARY prose,
+ * because `fenceRepairReserve` is a worst case over cut positions (see its
+ * comment: `splitToChunks` is fence-blind and cuts mid-line, so a mid-sentence
+ * ``` mention really can become a chunk-leading fence) and is therefore
+ * bounded only by a line length.
+ *
+ * The clamp is a POLICY choice, not an impossibility claim. A reserve of
+ * 0.6 * maxLen could be honoured exactly, by splitting at 0.4 * maxLen; that
+ * is simply not worth a 2.5x message count for a bound that, at that size, is
+ * almost always an unrealised worst case over cut positions.
+ *
+ * THE FLOOR IS DERIVED, AND THE CLAMPED BAND IS PROVED — not sampled. When the
+ * clamp binds, the reserve is by definition NOT paid in full, so the floor
+ * itself has to carry the guarantee. It does:
+ *
+ *   1. `splitToChunks` emits chunks of at most `limit`, so every fence-line
+ *      candidate inside a chunk is at most `limit` characters and the info
+ *      string carried onto a reopen line is at most `limit - FENCE_MARKER_LEN`.
+ *   2. `repairSplitFences` prepends `reopenLine(f) + "\n"`, which is at most
+ *      `FENCE_MARKER_LEN + (limit - FENCE_MARKER_LEN) + 1 = limit + 1`, and
+ *      appends a bare closer `"\n" + marker`, i.e. `1 + FENCE_MARKER_LEN`.
+ *   3. A reopened chunk is therefore at most
+ *          limit + 1 + limit + 1 + FENCE_MARKER_LEN  =  2 * limit + 5.
+ *   4. Substituting the floor below, `limit = floor((maxLen - 5) / 2)`:
+ *          2 * floor((maxLen - 5) / 2) + 5  <=  (maxLen - 5) + 5  =  maxLen
+ *      for every integer `maxLen`. That is an identity, not a measurement, and
+ *      the floor is the LARGEST integer satisfying it, so nothing is
+ *      over-reserved: `2*b + 5 <= maxLen` iff `b <= (maxLen - 5) / 2`.
+ *
+ *      NOTE, RECORDED RATHER THAN WORDED AROUND: the identity governs the
+ *      FLOOR TERM ONLY, not the value this function returns. `Math.max(1, ...)`
+ *      dominates the floor for `maxLen <= 6`, where `floor((maxLen - 5) / 2)`
+ *      is already `<= 0`. Whenever a fence is present at all the returned limit
+ *      is then exactly 1, because any match forces `reserve >= 8` (a bare
+ *      marker with an empty info string) and so `maxLen - reserve < 0` too; the
+ *      bound of step 3 reads `7 > maxLen`. Steps 1 to 4 therefore prove nothing
+ *      at those sizes, which is exactly why the headline above is qualified.
+ *      (With no fence the limit is just `maxLen`, but then `repairSplitFences`
+ *      prepends no reopen line and a chunk cannot exceed `maxLen` anyway.)
+ *      Confirmed exhaustively over `maxLen` 1..8192: the bound is violated at
+ *      1..6, first satisfied at 7, and holds from there.
+ *
+ *      Nothing is guaranteed in that band and nothing needs to be: a bare
+ *      marker plus its closer is already
+ *      `FENCE_MARKER_LEN + 1 + FENCE_MARKER_LEN` = 7 characters, so fence
+ *      repair is degenerate below it. The `1` is a crash guard, not a bound
+ *      (`splitToChunks` throws on `maxLength <= 0`), and no current caller can
+ *      reach the band: the sole producer is `adapter.maxMessageLength`, and the
+ *      only two shipping adapters are 2000 (discord.ts) and 4096 (telegram.ts).
+ *      Left as prose deliberately. A runtime guard would be dead by
+ *      construction and would put a branch in a function whose whole virtue is
+ *      that it is four lines of provable arithmetic; a documented precondition
+ *      would push a constraint into the public `ChannelAdapter` contract to
+ *      serve a size at which the feature is meaningless anyway.
+ *
+ * The floor this replaced, `floor(maxLen / 2)`, makes step 4 read `maxLen + 5`.
+ * Overflow was then REACHABLE whenever the clamp bound AND a fence-line
+ * candidate filled the window. Clamp-binding alone is NECESSARY, NOT
+ * SUFFICIENT, and the counterexample is already in the suite: the Slice 2b
+ * shatter fixture at maxLen 2000 binds the clamp (measured reserve 1987, so
+ * `maxLen - reserve` is 13 and the old floor of 1000 wins) yet its worst chunk
+ * under that old floor is 998, well inside the limit. Where both conditions did
+ * hold, the overflow was measured at exactly 5 characters over at maxLen 500,
+ * 1000, 2000 and 4096 alike. Two claims in the comment this replaced were false
+ * and are recorded here so they are not reintroduced. (a) A fence line longer
+ * than the limit is hard-cut, and that does NOT make what ends up open shorter
+ * than the bound assumes — it PINS the carried info string at exactly
+ * `limit - FENCE_MARKER_LEN`, i.e. at the worst case. (b) Closing the gap does
+ * not need a fence-aware splitter; it needs this one expression. A lower floor
+ * is also not "stricter and therefore worse": it makes the clamp bind LATER
+ * and reserves MORE, which is the safe direction, so the only question is what
+ * it costs in message count — hence taking the largest floor that still proves.
+ *
+ * Cost: 997 rather than 1000 usable body characters at Discord's 2000, and the
+ * floor only binds at all once the derived reserve already exceeds half the
+ * budget. Inert on every ordinary path.
+ */
+const fenceRepairChunkLimit = (text: string, maxLen: number): number => {
+  const reserve = fenceRepairReserve(text)
+  const bodyFloor = Math.floor((maxLen - (1 + 1 + FENCE_MARKER_LEN)) / 2)
+  return Math.max(1, maxLen - reserve, bodyFloor)
 }
 
 const buildStreamEditText = (
@@ -271,33 +454,123 @@ const buildStreamEditText = (
 /** Minimum ms between stream-edit updates to respect platform rate limits. */
 const STREAM_EDIT_THROTTLE_MS = 1500
 
+/* -------------------------------------------------------------------------- */
+/* Stream-edit finalize loop (stop at the first failed chunk)                  */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Deliver a sequence of text chunks to the adapter.
- * Sets isPartial/isFinal/chunkIndex/totalChunks on each deliver call.
- * When `standalone` is true (background job delivery), adapters must not
- * mutate live stream-edit turn state (#375).
+ * Wall-clock budget for one turn's finalize loop: chunk 0 (usually the
+ * placeholder edit) plus every follow-up chunk. Ported as-is from Sol Agent
+ * (DELIVERY_DEADLINE_MS, sol flo-local lib/discord/streaming.ts:36): past
+ * two minutes the user has moved on, so remaining chunks are abandoned and
+ * the truncation marker says what arrived. Wired in deliverFinalChunks;
+ * exported for the spec's pin test.
+ *
+ * The SAME budget applies to standalone (background-job) deliveries, and not
+ * merely for symmetry: subscribeAndDeliver pushes every frame for a thread
+ * through ONE sequential Stream.runForEach, so a stuck standalone delivery
+ * head-of-line-blocks that thread's LIVE frames. The deadline is what bounds
+ * that starvation.
  */
-const deliverChunks = (
+export const deliveryDeadlineMs = 120_000
+
+/**
+ * One-line truncation notice (donor: sol flo-local lib/discord/streaming.ts
+ * finalize loop). Pinned by spec: matches /reply truncated/i and /resend/i,
+ * carries "<delivered> of <total>", single line, at most 100 chars, which is
+ * the headroom the 1900 chunk budget leaves against Discord's 2000 hard
+ * limit.
+ */
+const truncationMarker = (delivered: number, total: number): string =>
+  `⚠️ Reply truncated: ${String(delivered)} of ${String(total)} parts delivered. Ask me to resend the rest.`
+
+/**
+ * Finalize-phase chunk loop, stop-at-first-failure (donor: sol flo-local
+ * lib/discord/streaming.ts finalize loop). The failure mode this replaces:
+ * the old per-chunk swallow kept sending AFTER a failed chunk, so the user
+ * got an answer with its middle silently missing that still LOOKED complete,
+ * the donor's measured multi-chunk-loss incident. Rules:
+ *
+ *  - A chunk whose deliver() fails (defect or typed failure) stops the loop.
+ *    Later chunks are never attempted, and the loop never re-sends a chunk:
+ *    a loop-level retry would duplicate an already-delivered message, so all
+ *    retrying lives INSIDE adapter.deliver (the discord classifier's single
+ *    re-attempt). There is deliberately no loop-level retry schedule.
+ *  - The failure cause is logged. The swallow this replaces was silent.
+ *  - When at least one chunk was delivered, a one-line truncation marker is
+ *    sent as a fresh non-partial message AFTER the failure, so the user
+ *    knows the reply is torn and how to get the rest. When chunk 0 itself
+ *    failed nothing was delivered, so there is no torn reply to explain and
+ *    no marker is sent. The marker gets exactly one attempt; if it fails
+ *    too, the log line above is the record.
+ *  - The whole loop runs under deliveryDeadlineMs of wall clock. Once the
+ *    budget is spent, remaining chunks are abandoned and counted as
+ *    undelivered; same marker rules apply.
+ *
+ * `standalone` (task #12) selects the BACKGROUND-JOB flavour of the same loop:
+ * the delivery-stamped assistant-done path (#375), which used to run a
+ * per-chunk swallow of its own and could therefore leave silent holes. It is
+ * threaded into the per-chunk metadata AND into the truncation marker's, and
+ * the marker's flag is load-bearing: both shipping adapters run
+ * `if (opts.isFinal) sentMessageIds.delete(turnKey)` BEFORE any chunkIndex
+ * check, the marker is isFinal, and service.ts reuses ONE DeliveryTarget per
+ * (threadId, adapter) for every frame — so a non-standalone marker on a
+ * background frame would evict a CONCURRENT live turn's edit-routing entry and
+ * fork the live reply. There is no isPartial parameter: partial delivery goes
+ * through deliverStreamEdit and the inline placeholder send, never here.
+ */
+const deliverFinalChunks = (
   adapter: ChannelAdapter,
   target: DeliveryTarget,
   chunks: string[],
-  isPartial: boolean,
   standalone = false,
-): Effect.Effect<void> => {
-  const total = chunks.length
-  return Effect.forEach(
-    chunks,
-    (chunk, i) =>
-      adapter.deliver(target, chunk, {
-        isPartial,
-        isFinal: !isPartial && i === total - 1,
-        chunkIndex: i,
-        totalChunks: total,
-        ...(standalone ? { standalone: true as const } : {}),
-      }).pipe(Effect.catchCause(() => Effect.void)),
-    { discard: true },
-  )
-}
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const standaloneOpt = standalone ? { standalone: true as const } : {}
+    const total = chunks.length
+    const deadlineAt = Date.now() + deliveryDeadlineMs
+    let delivered = 0
+    let why: string | null = null
+    for (const [idx, chunk] of chunks.entries()) {
+      if (Date.now() >= deadlineAt) {
+        why = `delivery deadline (${String(deliveryDeadlineMs)}ms) exceeded`
+        break
+      }
+      const exit = yield* Effect.exit(
+        adapter.deliver(target, chunk, {
+          isPartial: false,
+          isFinal: idx === total - 1,
+          chunkIndex: idx,
+          totalChunks: total,
+          ...standaloneOpt,
+        }),
+      )
+      if (Exit.isFailure(exit)) {
+        why = `chunk ${String(idx + 1)}/${String(total)} failed: ${Cause.pretty(exit.cause)}`
+        break
+      }
+      delivered++
+    }
+    if (why === null) return
+    console.error(
+      `[channels/delivery] TRUNCATED REPLY: delivered ${String(delivered)}/${String(total)} chunks; ${why}`,
+    )
+    if (delivered === 0) return
+    const markerExit = yield* Effect.exit(
+      adapter.deliver(target, truncationMarker(delivered, total), {
+        isPartial: false,
+        isFinal: true,
+        chunkIndex: total,
+        totalChunks: total + 1,
+        ...standaloneOpt,
+      }),
+    )
+    if (Exit.isFailure(markerExit)) {
+      console.error(
+        `[channels/delivery] truncation marker failed too: ${Cause.pretty(markerExit.cause)}`,
+      )
+    }
+  })
 
 /* -------------------------------------------------------------------------- */
 /* Public: subscribeAndDeliver                                                 */
@@ -437,10 +710,16 @@ export const subscribeAndDeliver = (
                 // out immediately as a standalone final so stream-edit
                 // (Telegram) and final-only adapters receive it without
                 // waiting for turn-complete or mutating a live stream-edit.
+                //
+                // Task #12: this runs the SAME stop-at-first-failure loop as
+                // the live finalize path (standalone=true only changes the
+                // per-chunk and marker metadata). A multi-chunk job result
+                // that fails halfway now stops and says so instead of leaving
+                // a silent hole in the middle of the answer.
                 if (frame.message.delivery !== undefined) {
                   if (text.trim().length > 0) {
                     const chunks = splitToChunks(text, maxLen)
-                    yield* deliverChunks(adapter, target, chunks, false, true)
+                    yield* deliverFinalChunks(adapter, target, chunks, true)
                   }
                   break
                 }
@@ -450,8 +729,11 @@ export const subscribeAndDeliver = (
                     prev.length > 0 ? prev + "\n\n" + text : text,
                   )
                 } else if (capability === "discrete-chunks") {
+                  // Fires once per assistant-done, so stop-at-first is
+                  // per-MESSAGE here. Worst case a marker is followed by more
+                  // content later, which is strictly better than a hole.
                   const chunks = splitToChunks(text, maxLen)
-                  yield* deliverChunks(adapter, target, chunks, false)
+                  yield* deliverFinalChunks(adapter, target, chunks)
                 }
                 // stream-edit: live turns wait for turn-complete (unchanged)
                 break
@@ -534,25 +816,22 @@ export const subscribeAndDeliver = (
                     // chunk 0 edits the placeholder in place; follow-up
                     // chunks arrive as fresh messages (fence-repaired so
                     // split code blocks stay valid markdown per message).
-                    // Multi-chunk splits leave 8 chars of headroom because
-                    // fence repair can add "```\n" + "\n```" to one chunk.
+                    //
+                    // Multi-chunk splits reserve exactly what fence repair
+                    // can add to one chunk for THIS text — the reopen line
+                    // (which carries the block's info string) plus the bare
+                    // closer. It is DERIVED per content, not a constant: a
+                    // bare ``` block needs 8, a ```typescript title=… block
+                    // needs far more, and reserving a constant big enough
+                    // for the latter would shatter short answers into tiny
+                    // messages. Fence-free text reserves 0. See
+                    // fenceRepairChunkLimit for the bound's proof.
                     const chunkLimit =
-                      finalContent.length <= maxLen ? maxLen : Math.max(1, maxLen - 8)
+                      finalContent.length <= maxLen
+                        ? maxLen
+                        : fenceRepairChunkLimit(finalContent, maxLen)
                     const chunks = repairSplitFences(splitToChunks(finalContent, chunkLimit))
-                    const total = chunks.length
-                    yield* Effect.forEach(
-                      chunks,
-                      (chunk, idx) =>
-                        adapter
-                          .deliver(target, chunk, {
-                            isPartial: false,
-                            isFinal: idx === total - 1,
-                            chunkIndex: idx,
-                            totalChunks: total,
-                          })
-                          .pipe(Effect.catchCause(() => Effect.void)),
-                      { discard: true },
-                    )
+                    yield* deliverFinalChunks(adapter, target, chunks)
                   }
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
@@ -564,7 +843,7 @@ export const subscribeAndDeliver = (
                   const buffered = yield* Ref.get(turnBuffer)
                   if (buffered.length > 0) {
                     const chunks = splitToChunks(buffered, maxLen)
-                    yield* deliverChunks(adapter, target, chunks, false)
+                    yield* deliverFinalChunks(adapter, target, chunks)
                   }
                   yield* Ref.set(turnBuffer, "")
                 } else if (capability === "discrete-chunks") {
