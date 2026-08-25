@@ -72,3 +72,15 @@ export {
   toPlainTextFallback,
   escapeTelegramHtml,
 } from "./adapters/telegram-format.js"
+
+export type {
+  DiscordAdapterConfig,
+  DiscordTransport,
+  InboundDiscordMessage,
+} from "./adapters/discord.js"
+export {
+  makeDiscordAdapter,
+  makeRealDiscordTransport,
+  parseDiscord429RetryMs,
+  stripExpandableQuoteMarker,
+} from "./adapters/discord.js"
