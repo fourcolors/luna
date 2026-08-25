@@ -78,9 +78,13 @@ export type {
   DiscordTransport,
   InboundDiscordMessage,
 } from "./adapters/discord.js"
+export type { GuildCommandsRest } from "./adapters/discord.js"
 export {
+  discordCommandManifest,
+  guildCommandsRoute,
   makeDiscordAdapter,
   makeRealDiscordTransport,
   parseDiscord429RetryMs,
+  putGuildCommands,
   stripExpandableQuoteMarker,
 } from "./adapters/discord.js"
