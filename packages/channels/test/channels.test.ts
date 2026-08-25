@@ -2222,3 +2222,52 @@ describe("transport fan-out", () => {
     expect(discordCtx.deliveries[0]?.target.inReplyTo.channelId).toBe("guild-chan-1")
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* An adapter's finalizer must run at SHUTDOWN, not at boot                     */
+/* -------------------------------------------------------------------------- */
+
+describe("adapter teardown lifetime", () => {
+  // adapter.start() requires a Scope so an adapter can register a finalizer -
+  // the discord adapter destroys its gateway client in one. If startAdapters
+  // leaks that requirement to its callers, each caller discharges it with
+  // `.pipe(Effect.scoped)`, and THAT scope closes the instant startAdapters
+  // returns: the adapter's teardown runs at BOOT and nothing is left to run at
+  // shutdown, so the gateway is never closed.
+  //
+  // Telegram never surfaced this because it registers no finalizer. Discord is
+  // the first adapter that does.
+
+  it("start()'s finalizer does not run while the service is alive, and does run when it closes", async () => {
+    const events: string[] = []
+    const { service: stubChat } = makeStubChatService(new Map())
+    const base = makeFakeAdapterClean("teardown-fake", "final-only", 4096).adapter
+    const adapter: ChannelAdapter = {
+      ...base,
+      start: () =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() => Effect.sync(() => events.push("finalizer")))
+          events.push("started")
+        }),
+    }
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("30 millis")
+          // The whole point: the adapter is up and its teardown has NOT fired.
+          expect(events, "teardown must not run at boot").toEqual(["started"])
+        }).pipe(Effect.provide(baseLayer(stubChat))),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Closing the service scope is what finally runs it.
+    expect(events, "teardown runs when the service scope closes").toEqual([
+      "started",
+      "finalizer",
+    ])
+  })
+})

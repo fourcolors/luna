@@ -4851,7 +4851,7 @@ const buildMain = (
           allowedIds: tgAllowedIds,
         }),
       )
-      yield* channels.startAdapters().pipe(Effect.scoped)
+      yield* channels.startAdapters()
       console.log(`📨 telegram channel: started (telegram-main)`)
       if (tgAllowedIds.length > 0) {
         console.log(
@@ -4925,7 +4925,7 @@ const buildMain = (
         // The SECOND startAdapters() call in this function; the telegram block
         // above already made the first. ChannelService.startAdapters is
         // idempotent per adapter id precisely so this cannot re-fork telegram.
-        yield* channels.startAdapters().pipe(Effect.scoped)
+        yield* channels.startAdapters()
         console.log(`discord channel: started (discord-main)`)
         console.log(
           `discord allowlist: ${dcAllowedUsers.length} user(s) ` +
