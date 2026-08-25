@@ -45,7 +45,7 @@ export interface ChannelServiceApi {
    * Must be called inside an Effect Scope (the service's own Scope handles
    * teardown of all adapter fibers on shutdown).
    */
-  readonly startAdapters: () => Effect.Effect<void, never, Scope.Scope>
+  readonly startAdapters: () => Effect.Effect<void>
 
   /**
    * Stop all adapters (best-effort graceful shutdown). Called automatically
@@ -302,6 +302,15 @@ export const ChannelServiceLayer: Layer.Layer<
           // Fork each adapter's start() into the service scope so adapter
           // connections tear down with the service. Errors are swallowed —
           // one adapter failure must not prevent others from running.
+          // adapter.start() requires a Scope because an adapter may register a
+          // finalizer (the discord adapter destroys its gateway client in one).
+          // Provide the SERVICE scope explicitly. Without this the requirement
+          // propagates out of startAdapters, every caller has to discharge it
+          // with `.pipe(Effect.scoped)`, and that ephemeral scope closes the
+          // instant startAdapters returns - running the adapter's teardown AT
+          // BOOT and leaving nothing to run at shutdown. Telegram never noticed
+          // because it registers no finalizer; discord is the first adapter
+          // that does, which is what turned a latent footgun into a real defect.
           yield* Effect.forkIn(
             adapter.start().pipe(
               Effect.catchCause((cause) =>
@@ -311,6 +320,7 @@ export const ChannelServiceLayer: Layer.Layer<
                   )
                 }),
               ),
+              Effect.provideService(Scope.Scope, serviceScope),
             ),
             serviceScope,
           )

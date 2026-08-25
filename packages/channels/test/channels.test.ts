@@ -2636,41 +2636,6 @@ describe("Slice 3b — reserved reply-address keys win over inbound metadata (R3
     const { service: stubChat, threads } = makeStubChatService(new Map())
     const ctx = makeFakeAdapterClean("r3-fake", "final-only", 4096)
 
-/* -------------------------------------------------------------------------- */
-/* startAdapters idempotency                                                   */
-/* -------------------------------------------------------------------------- */
-
-describe("startAdapters idempotency", () => {
-  /**
-   * Wrap a stock fake adapter so start() calls are COUNTED. makeFakeAdapterClean
-   * only records a boolean, which cannot tell "started" from "started twice" —
-   * precisely the distinction under test. Wrapping (rather than hand-rolling a
-   * second ChannelAdapter) keeps deliver/stop/setMessageHandler on the real
-   * implementations, so this test cannot drift from the contract.
-   */
-  const wrapCounting = (base: ChannelAdapter) => {
-    const state = { starts: 0 }
-    const adapter: ChannelAdapter = {
-      ...base,
-      start() {
-        state.starts += 1
-        return base.start()
-      },
-    }
-    return { adapter, state }
-  }
-
-  it("a second startAdapters() does not re-fork an already-started adapter", async () => {
-    // chat-server registers telegram and discord in SEPARATE blocks, and each
-    // block calls startAdapters(). Without the started-id guard in the service,
-    // the second call re-forks every adapter the first call already started.
-    // For a real bot that is two gateway connections on one token: Telegram
-    // 409-flaps between competing long-polls, Discord drops the duplicate
-    // session. Both fail silently from the operator's point of view.
-    const { service: chatService } = makeStubChatService(new Map())
-    const a = wrapCounting(makeFakeAdapterClean("idem-a", "final-only").adapter)
-    const b = wrapCounting(makeFakeAdapterClean("idem-b", "final-only").adapter)
-
     await Effect.runPromise(
       Effect.provide(
         Effect.gen(function* () {
@@ -2696,171 +2661,6 @@ describe("startAdapters idempotency", () => {
               },
             }),
           )
-
-          yield* svc.registerAdapter(a.adapter)
-          yield* svc.startAdapters() // telegram-style first call
-          yield* svc.registerAdapter(b.adapter)
-          yield* svc.startAdapters() // discord-style second call
-          // start() is forked into the service scope; give those fibers a turn
-          // so a double-fork would actually be observable rather than pending.
-          yield* Effect.sleep("50 millis")
-        }),
-        baseLayer(
-          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
-        ),
-      ) as Effect.Effect<void, never>,
-    )
-
-    // Before the guard, `a` started twice (registered before both calls).
-    expect(a.state.starts).toBe(1)
-    expect(b.state.starts).toBe(1)
-  })
-
-  it("an adapter registered after the first start still starts on the next call", async () => {
-    // The guard must skip only adapters ALREADY started. A late registration
-    // (exactly what the discord block is) must still get its start() forked,
-    // otherwise the fix would trade a double-start for a never-start.
-    const { service: chatService } = makeStubChatService(new Map())
-    const late = wrapCounting(makeFakeAdapterClean("idem-late", "final-only").adapter)
-
-    await Effect.runPromise(
-      Effect.provide(
-        Effect.gen(function* () {
-          const svc = yield* ChannelService
-          yield* svc.startAdapters() // nothing registered yet
-          yield* svc.registerAdapter(late.adapter)
-          yield* svc.startAdapters()
-          yield* Effect.sleep("50 millis")
-        }),
-        baseLayer(
-          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
-        ),
-      ) as Effect.Effect<void, never>,
-    )
-
-    expect(late.state.starts).toBe(1)
-  })
-
-  it("an adapter stopped via stopAdapters() is re-forked by the next startAdapters()", async () => {
-    // The guard must mean "currently started", not "ever started".
-    // stopAdapters() stops every registered adapter, so a following
-    // startAdapters() must fork start() again — without clearing
-    // startedAdapterIds in stopAdapters the restart is a silent no-op: the
-    // adapter stays fully dead with no error and no log line. (Task #8's
-    // service-layer landmine; it fires BEFORE the telegram typingSwept flag
-    // can even matter.)
-    //
-    // The double-start pin above ("a second startAdapters() does not re-fork
-    // an already-started adapter") is deliberately UNCHANGED by this: it
-    // never stops between its two calls, so the no-double-fork property and
-    // this restart property pin two DIFFERENT transitions of the same guard.
-    const { service: chatService } = makeStubChatService(new Map())
-    const a = wrapCounting(makeFakeAdapterClean("idem-restart", "final-only").adapter)
-
-    await Effect.runPromise(
-      Effect.provide(
-        Effect.gen(function* () {
-          const svc = yield* ChannelService
-          yield* svc.registerAdapter(a.adapter)
-          yield* svc.startAdapters()
-          yield* Effect.sleep("50 millis")
-
-          yield* svc.stopAdapters()
-          yield* svc.startAdapters()
-          yield* Effect.sleep("50 millis")
-        }),
-        baseLayer(
-          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
-        ),
-      ) as Effect.Effect<void, never>,
-    )
-
-    // "Started, stopped, started" must re-fork; "started twice without
-    // stopping" (the pin above) must not. Exactly 2, not ≥2: a restart that
-    // double-forks would recreate the 409-flapping the guard exists to stop.
-    expect(a.state.starts).toBe(2)
-  })
-})
-
-/* -------------------------------------------------------------------------- */
-/* Transport fan-out — delivery fibers                                         */
-/* -------------------------------------------------------------------------- */
-
-/**
- * REGRESSION RAIL. The behavior under test is ALREADY CORRECT on this branch:
- * the delivery fan-out loop in service.ts skips adapters whose transport does
- * not match the inbound message. This block is therefore GREEN on arrival BY
- * DESIGN — it is a rail that must fail loudly if the guard is ever dropped, not
- * a red-green cycle. Its load-bearingness is proven by mutation: comment out
- * `if (adapter.transport !== msg.transport) continue` in the delivery fan-out
- * loop of packages/channels/src/service.ts and this test fails.
- *
- * OUT OF SCOPE — do NOT modify, in this scenario, any of:
- *   - packages/channels/src/service.ts (the delivery-fan-out filter is already
- *     correct; its command-reply twin is covered by "command replies go only to
- *     adapters of the same transport", above)
- *   - packages/channels/src/delivery.ts
- *   - packages/channels/src/adapters/*
- *   - anything else under packages/channels/src/
- *   - the startAdapters double-start guard or the "startAdapters idempotency"
- *     tests directly above (fixed in 654b2a8a)
- */
-describe("transport fan-out", () => {
-  it("delivery fiber forks only for the owning transport", async () => {
-    // GIVEN a channels service with BOTH a discord adapter and a telegram
-    //       adapter registered,
-    // WHEN  one inbound message whose transport is "discord" is dispatched and
-    //       its thread emits a completed reply turn,
-    // THEN  the telegram adapter's deliver is never called, exactly one
-    //       delivery fiber is forked, and the discord adapter receives the
-    //       reply addressed to the discord transport.
-    //
-    // Real-world stake: boot registers telegram AND discord against one
-    // service. Without the guard, every registered adapter forks a delivery
-    // fiber for every turn, so a Discord turn is also pushed at Telegram using
-    // a foreign channel id — silently failing on every message.
-    const { service: stubChat, threads } = makeStubChatService(new Map())
-
-    // Delivery fibers are counted through their one-per-fiber chat.subscribe()
-    // call: subscribeAndDeliver subscribes exactly once per forked fiber, so
-    // an unfiltered fan-out over N adapters shows up as N subscriptions.
-    let subscribeCalls = 0
-    const chatService = {
-      ...stubChat,
-      subscribe: (threadId: string) => {
-        subscribeCalls++
-        return stubChat.subscribe(threadId)
-      },
-    }
-
-    // Both fakes come from this suite's existing helper; only the id and the
-    // transport differ. Nothing is hand-rolled, so this rail cannot drift away
-    // from the real ChannelAdapter contract — and because the two fakes are
-    // otherwise identical, the discord fake delivering proves the telegram
-    // fake's zero deliveries mean "filtered out", not "helper wired wrong".
-    const discordCtx = makeFakeAdapterClean("fanout-discord", "final-only", 4096)
-    const telegramCtx = makeFakeAdapterClean("fanout-telegram", "final-only", 4096)
-    const discordAdapter: ChannelAdapter = { ...discordCtx.adapter, transport: "discord" }
-    const telegramAdapter: ChannelAdapter = { ...telegramCtx.adapter, transport: "telegram" }
-
-    await Effect.runPromise(
-      Effect.provide(
-        Effect.gen(function* () {
-          const svc = yield* ChannelService
-          yield* svc.registerAdapter(discordAdapter)
-          yield* svc.registerAdapter(telegramAdapter)
-
-          yield* svc.handleMessage(
-            makeMessage({
-              transport: "discord",
-              channelId: "guild-chan-1",
-              senderId: "user-42",
-              platformMessageId: "fanout-pm-1",
-              text: "who delivers this turn?",
-            }),
-          )
-
-          // Let the thread be created and the delivery fiber(s) subscribe.
           yield* Effect.sleep("50 millis")
 
           const threadId = [...threads.keys()][0]
@@ -3324,6 +3124,193 @@ describe("Task #12 — standalone multi-chunk stop-at-first parity", () => {
       expect(markerAttempts(ctx)).toHaveLength(0)
       expect(logs.filter((l) => l.includes("INJECTED-DELIVERY-FAILURE")).length).toBeGreaterThanOrEqual(1)
     })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+
+describe("startAdapters idempotency", () => {
+  /**
+   * Wrap a stock fake adapter so start() calls are COUNTED. makeFakeAdapterClean
+   * only records a boolean, which cannot tell "started" from "started twice" —
+   * precisely the distinction under test. Wrapping (rather than hand-rolling a
+   * second ChannelAdapter) keeps deliver/stop/setMessageHandler on the real
+   * implementations, so this test cannot drift from the contract.
+   */
+  const wrapCounting = (base: ChannelAdapter) => {
+    const state = { starts: 0 }
+    const adapter: ChannelAdapter = {
+      ...base,
+      start() {
+        state.starts += 1
+        return base.start()
+      },
+    }
+    return { adapter, state }
+  }
+
+  it("a second startAdapters() does not re-fork an already-started adapter", async () => {
+    // chat-server registers telegram and discord in SEPARATE blocks, and each
+    // block calls startAdapters(). Without the started-id guard in the service,
+    // the second call re-forks every adapter the first call already started.
+    // For a real bot that is two gateway connections on one token: Telegram
+    // 409-flaps between competing long-polls, Discord drops the duplicate
+    // session. Both fail silently from the operator's point of view.
+    const { service: chatService } = makeStubChatService(new Map())
+    const a = wrapCounting(makeFakeAdapterClean("idem-a", "final-only").adapter)
+    const b = wrapCounting(makeFakeAdapterClean("idem-b", "final-only").adapter)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(a.adapter)
+          yield* svc.startAdapters() // telegram-style first call
+          yield* svc.registerAdapter(b.adapter)
+          yield* svc.startAdapters() // discord-style second call
+          // start() is forked into the service scope; give those fibers a turn
+          // so a double-fork would actually be observable rather than pending.
+          yield* Effect.sleep("50 millis")
+        }),
+        baseLayer(
+          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
+        ),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Before the guard, `a` started twice (registered before both calls).
+    expect(a.state.starts).toBe(1)
+    expect(b.state.starts).toBe(1)
+  })
+
+  it("an adapter registered after the first start still starts on the next call", async () => {
+    // The guard must skip only adapters ALREADY started. A late registration
+    // (exactly what the discord block is) must still get its start() forked,
+    // otherwise the fix would trade a double-start for a never-start.
+    const { service: chatService } = makeStubChatService(new Map())
+    const late = wrapCounting(makeFakeAdapterClean("idem-late", "final-only").adapter)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.startAdapters() // nothing registered yet
+          yield* svc.registerAdapter(late.adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("50 millis")
+        }),
+        baseLayer(
+          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
+        ),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(late.state.starts).toBe(1)
+  })
+
+  it("an adapter stopped via stopAdapters() is re-forked by the next startAdapters()", async () => {
+    // The guard must mean "currently started", not "ever started".
+    // stopAdapters() stops every registered adapter, so a following
+    // startAdapters() must fork start() again — without clearing
+    // startedAdapterIds in stopAdapters the restart is a silent no-op: the
+    // adapter stays fully dead with no error and no log line. (Task #8's
+    // service-layer landmine; it fires BEFORE the telegram typingSwept flag
+    // can even matter.)
+    //
+    // The double-start pin above ("a second startAdapters() does not re-fork
+    // an already-started adapter") is deliberately UNCHANGED by this: it
+    // never stops between its two calls, so the no-double-fork property and
+    // this restart property pin two DIFFERENT transitions of the same guard.
+    const { service: chatService } = makeStubChatService(new Map())
+    const a = wrapCounting(makeFakeAdapterClean("idem-restart", "final-only").adapter)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(a.adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("50 millis")
+
+          yield* svc.stopAdapters()
+          yield* svc.startAdapters()
+          yield* Effect.sleep("50 millis")
+        }),
+        baseLayer(
+          chatService as unknown as ReturnType<typeof makeStubChatService>["service"],
+        ),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // "Started, stopped, started" must re-fork; "started twice without
+    // stopping" (the pin above) must not. Exactly 2, not ≥2: a restart that
+    // double-forks would recreate the 409-flapping the guard exists to stop.
+    expect(a.state.starts).toBe(2)
+  })
+})
+
+describe("transport fan-out", () => {
+  it("delivery fiber forks only for the owning transport", async () => {
+    // GIVEN a channels service with BOTH a discord adapter and a telegram
+    //       adapter registered,
+    // WHEN  one inbound message whose transport is "discord" is dispatched and
+    //       its thread emits a completed reply turn,
+    // THEN  the telegram adapter's deliver is never called, exactly one
+    //       delivery fiber is forked, and the discord adapter receives the
+    //       reply addressed to the discord transport.
+    //
+    // Real-world stake: boot registers telegram AND discord against one
+    // service. Without the guard, every registered adapter forks a delivery
+    // fiber for every turn, so a Discord turn is also pushed at Telegram using
+    // a foreign channel id — silently failing on every message.
+    const { service: stubChat, threads } = makeStubChatService(new Map())
+
+    // Delivery fibers are counted through their one-per-fiber chat.subscribe()
+    // call: subscribeAndDeliver subscribes exactly once per forked fiber, so
+    // an unfiltered fan-out over N adapters shows up as N subscriptions.
+    let subscribeCalls = 0
+    const chatService = {
+      ...stubChat,
+      subscribe: (threadId: string) => {
+        subscribeCalls++
+        return stubChat.subscribe(threadId)
+      },
+    }
+
+    // Both fakes come from this suite's existing helper; only the id and the
+    // transport differ. Nothing is hand-rolled, so this rail cannot drift away
+    // from the real ChannelAdapter contract — and because the two fakes are
+    // otherwise identical, the discord fake delivering proves the telegram
+    // fake's zero deliveries mean "filtered out", not "helper wired wrong".
+    const discordCtx = makeFakeAdapterClean("fanout-discord", "final-only", 4096)
+    const telegramCtx = makeFakeAdapterClean("fanout-telegram", "final-only", 4096)
+    const discordAdapter: ChannelAdapter = { ...discordCtx.adapter, transport: "discord" }
+    const telegramAdapter: ChannelAdapter = { ...telegramCtx.adapter, transport: "telegram" }
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(discordAdapter)
+          yield* svc.registerAdapter(telegramAdapter)
+
+          yield* svc.handleMessage(
+            makeMessage({
+              transport: "discord",
+              channelId: "guild-chan-1",
+              senderId: "user-42",
+              platformMessageId: "fanout-pm-1",
+              text: "who delivers this turn?",
+            }),
+          )
+
+          // Let the thread be created and the delivery fiber(s) subscribe.
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
 
           yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "Owning transport only."))
           yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
@@ -3359,5 +3346,52 @@ describe("Task #12 — standalone multi-chunk stop-at-first parity", () => {
     //    every later turn, so a mis-built address leaks quietly and forever.
     expect(discordCtx.deliveries[0]?.target.address.channelId).toBe("guild-chan-1")
     expect(discordCtx.deliveries[0]?.target.inReplyTo.channelId).toBe("guild-chan-1")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+
+describe("adapter teardown lifetime", () => {
+  // adapter.start() requires a Scope so an adapter can register a finalizer -
+  // the discord adapter destroys its gateway client in one. If startAdapters
+  // leaks that requirement to its callers, each caller discharges it with
+  // `.pipe(Effect.scoped)`, and THAT scope closes the instant startAdapters
+  // returns: the adapter's teardown runs at BOOT and nothing is left to run at
+  // shutdown, so the gateway is never closed.
+  //
+  // Telegram never surfaced this because it registers no finalizer. Discord is
+  // the first adapter that does.
+
+  it("start()'s finalizer does not run while the service is alive, and does run when it closes", async () => {
+    const events: string[] = []
+    const { service: stubChat } = makeStubChatService(new Map())
+    const base = makeFakeAdapterClean("teardown-fake", "final-only", 4096).adapter
+    const adapter: ChannelAdapter = {
+      ...base,
+      start: () =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() => Effect.sync(() => events.push("finalizer")))
+          events.push("started")
+        }),
+    }
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(adapter)
+          yield* svc.startAdapters()
+          yield* Effect.sleep("30 millis")
+          // The whole point: the adapter is up and its teardown has NOT fired.
+          expect(events, "teardown must not run at boot").toEqual(["started"])
+        }).pipe(Effect.provide(baseLayer(stubChat))),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Closing the service scope is what finally runs it.
+    expect(events, "teardown runs when the service scope closes").toEqual([
+      "started",
+      "finalizer",
+    ])
   })
 })
