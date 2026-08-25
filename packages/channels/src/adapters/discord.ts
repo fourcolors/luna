@@ -200,6 +200,19 @@ export const parseDiscord429RetryMs = (err: unknown): number | null => {
   return Math.min(Math.ceil(seconds * 1000), MAX_RETRY_AFTER_MS)
 }
 
+/**
+ * Strip a REST error down to a defect that carries ONLY its message.
+ *
+ * `Effect.die(err)` with a raw @discordjs/rest error is the same leak the
+ * logging rule guards against, one channel over: a defect is rendered by
+ * Effect's default logger via `Cause.pretty`, which stringifies the value and
+ * can surface the enumerable `.url` / `.route` members that carry a live
+ * token, plus the tokened route embedded in `RateLimitError.name`. The
+ * message alone is the only safe field, exactly as for console.
+ */
+const dieMessageOnly = (err: unknown): Effect.Effect<never> =>
+  Effect.die(new Error(err instanceof Error ? err.message : String(err)))
+
 const isBenignEditError = (err: unknown): boolean => {
   const msg =
     err !== null && typeof err === "object" && "message" in err
@@ -1711,7 +1724,7 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
       const klass = classifyFinalSendError(err)
       console.warn(`[luna/channels] discord: send(final) failed (${klass}):`, err instanceof Error ? err.message : String(err))
       if (klass === "permanent") {
-        return yield* Effect.die(err)
+        return yield* dieMessageOnly(err)
       }
       if (klass === "retry") {
         yield* Effect.sleep(Duration.millis(discordDeliveryRetryMs))
@@ -1724,7 +1737,7 @@ export const makeDiscordAdapter = (config: DiscordAdapterConfig): ChannelAdapter
         `[luna/channels] discord: send(final) failed after one ${klass} re-attempt:`,
         second.failure instanceof Error ? second.failure.message : String(second.failure),
       )
-      return yield* Effect.die(second.failure)
+      return yield* dieMessageOnly(second.failure)
     })
 
   /* ---------------------------------------------------------------------- */

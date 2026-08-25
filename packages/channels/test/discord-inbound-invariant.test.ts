@@ -418,3 +418,56 @@ describe("discord.js is loaded lazily, never at module scope", () => {
     expect(src).toMatch(/import\s*\{\s*Routes\s*\}\s*from\s*"discord-api-types\/v10"/)
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* A5, second channel: a DEFECT must not carry a raw error either              */
+/* -------------------------------------------------------------------------- */
+
+describe("A5 ratchet: Effect.die must not raise a raw REST error", () => {
+  // The console ratchet above missed this, and an adversarial review caught it:
+  // discord.ts:1714 logged `err.message` correctly and then, one line later,
+  // did `Effect.die(err)` with the whole object. A defect is rendered by
+  // Effect's default logger via `Cause.pretty`, which stringifies the value -
+  // so the tokened `.url` / `.route` members and the tokened route inside
+  // `RateLimitError.name` reach the journal by a different route than console.
+  //
+  // Same lexical rule, second channel: the only safe thing to die with is a
+  // fresh Error built from `.message`, which is what `dieMessageOnly` does.
+
+  const ERRORISH = ["err", "e", "error", "cause", "second.failure", "first.failure", "outcome.failure"]
+
+  it("never dies with a bare error identifier", () => {
+    const src = stripComments(discordSrc)
+    const offenders: string[] = []
+    for (const m of src.matchAll(/Effect\.die\s*\(/g)) {
+      const open = (m.index ?? 0) + m[0].length - 1
+      let depth = 0
+      let i = open
+      for (; i < src.length; i++) {
+        if (src[i] === "(") depth++
+        else if (src[i] === ")") {
+          depth--
+          if (depth === 0) break
+        }
+      }
+      const arg = src.slice(open + 1, i).trim()
+      // `new Error(...)` is the sanitized form and is what we want.
+      if (/^new\s+Error\s*\(/.test(arg)) continue
+      for (const ident of ERRORISH) {
+        const id = ident.replace(".", "\\.")
+        if (new RegExp(`^${id}$`).test(arg)) offenders.push(`Effect.die(${arg})`)
+      }
+    }
+    expect(
+      offenders,
+      "die with a fresh Error built from .message (see dieMessageOnly) - a raw " +
+        "REST error reaches the journal through Cause.pretty:\n" + offenders.join("\n"),
+    ).toEqual([])
+  })
+
+  it("keeps the sanitizing helper, so the fix cannot be quietly undone", () => {
+    const src = stripComments(discordSrc)
+    expect(src).toMatch(/const dieMessageOnly\s*=/)
+    expect(src).toMatch(/dieMessageOnly\(/)
+  })
+})
