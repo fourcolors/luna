@@ -191,6 +191,16 @@
       "width": 560,
       "height": 420,
       "description": "Quick launcher — fuzzy-search and open any Moon panel or pinned artifact (widget, MCP app or document) by name"
+    },
+    {
+      "kind": "notifications",
+      "title": "Notifications",
+      "page": "panel.html?type=notifications",
+      "trust": "system",
+      "singleton": true,
+      "width": 380,
+      "height": 480,
+      "description": "Notification center — the background results Luna delivered (scheduled jobs, workflows, accepted suggested actions), reviewable after their toast is gone"
     }
   ]
 }

@@ -87,6 +87,8 @@ export interface HubState {
   readonly connStatus: ConnStatus
   readonly needsInputCount: number
   readonly updatePipVisible: boolean
+  /** Unread rows in the notification log (src/notifications/log.ts). */
+  readonly notificationCount: number
   readonly voiceState: VoiceVisualState
   readonly voiceLevel: number
   readonly absorbing: boolean
@@ -133,6 +135,7 @@ export function initialHubState(): HubState {
     connStatus: "disconnected",
     needsInputCount: 0,
     updatePipVisible: false,
+    notificationCount: 0,
     voiceState: "",
     voiceLevel: 0,
     absorbing: false,
@@ -144,6 +147,7 @@ export type HubAction =
   | { readonly type: "conn-status"; readonly status: ConnStatus }
   | { readonly type: "needs-input-count"; readonly count: number }
   | { readonly type: "show-update-pip" }
+  | { readonly type: "notification-count"; readonly count: number }
   | { readonly type: "voice-state"; readonly state: VoiceVisualState; readonly level: number | null }
   | { readonly type: "absorb-pulse" }
   | { readonly type: "absorb-settled" }
@@ -191,6 +195,10 @@ export function reduceHub(state: HubState, action: HubAction): HubState {
       return state.needsInputCount === action.count ? state : { ...state, needsInputCount: action.count }
     case "show-update-pip":
       return state.updatePipVisible ? state : { ...state, updatePipVisible: true }
+    case "notification-count": {
+      const count = Math.max(0, action.count)
+      return state.notificationCount === count ? state : { ...state, notificationCount: count }
+    }
     case "voice-state":
       return {
         ...state,

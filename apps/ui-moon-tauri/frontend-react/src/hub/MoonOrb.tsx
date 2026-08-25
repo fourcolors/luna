@@ -114,12 +114,13 @@ export function MoonOrb({ controller, state }: MoonOrbProps): React.JSX.Element 
     }
   }
 
-  function onPipClick(e: React.PointerEvent | React.MouseEvent, kind: "open"): void {
+  function onPipClick(e: React.PointerEvent | React.MouseEvent, kind: "open" | "notifications"): void {
     // The pip is its own pointer target; keep the whole pointer sequence
     // from reaching #moon (which opens chat on pointerup) so a pip tap
     // can never co-trigger expand_from_moon.
     e.stopPropagation()
     if (kind === "open") controller.openUpdatesPanel()
+    else if (kind === "notifications") controller.openNotificationsPanel()
   }
 
   return (
@@ -149,6 +150,24 @@ export function MoonOrb({ controller, state }: MoonOrbProps): React.JSX.Element 
         onPointerMove={(e) => e.stopPropagation()}
         onPointerUp={(e) => e.stopPropagation()}
       />
+      {/* Unread-notification pip. Unlike its two siblings this one carries a
+          count and an accessible name, because "3 results are waiting" is
+          materially different from "1 is" - and it is the only affordance
+          that makes the notification log discoverable at all. */}
+      <div
+        className="notification-pip"
+        id="notification-pip"
+        role="button"
+        tabIndex={state.notificationCount === 0 ? -1 : 0}
+        aria-label={`${state.notificationCount} unread notification${state.notificationCount === 1 ? "" : "s"}`}
+        hidden={state.notificationCount === 0}
+        onClick={(e) => onPipClick(e, "notifications")}
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+      >
+        {state.notificationCount > 9 ? "9+" : state.notificationCount}
+      </div>
       <div className="moon-aura" aria-hidden="true" />
       <div className="moon-wrapper" id="moon-wrapper" ref={wrapperRef} onAnimationEnd={handleAnimationEnd}>
         <div className="moon-glow" />

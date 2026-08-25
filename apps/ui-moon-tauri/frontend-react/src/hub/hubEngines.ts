@@ -39,6 +39,7 @@ import {
   isDialableWsUrl,
   isLoopbackWsUrl,
 } from "../panels/settings-connection/connectionReducer"
+import { appendNotification, unreadNotificationCount } from "../notifications/log"
 
 // =========================================================================
 // WIRE PROTOCOL VERSION - SECOND SOURCE OF TRUTH (KEEP IN SYNC!)
@@ -404,6 +405,22 @@ export class HubController {
       .catch((err: unknown) => Logger.warn("open updates panel failed:", err))
   }
 
+  /**
+   * Recompute the orb's unread-notification pip from the shared log.
+   * Cheap (one localStorage read + a filter over <=50 rows) and idempotent,
+   * so it is safe to call from every append, every hello, and every
+   * cross-window watermark change.
+   */
+  syncNotificationPip = (): void => {
+    this.dispatch({ type: "notification-count", count: unreadNotificationCount() })
+  }
+
+  openNotificationsPanel(): void {
+    getCore()
+      ?.invoke("open_widget", { kind: "notifications" })
+      .catch((err: unknown) => Logger.warn("open notifications panel failed:", err))
+  }
+
   /** Build the shared LunaWS.createFrameRegistry() with the hub's complete
    * (deliberately minimal) frame set. Called once from the mount effect. */
   createFrameRegistry(): void {
@@ -415,6 +432,21 @@ export class HubController {
       this.sendWidgetDirectory()
       this.applyBuildSha(frame)
       this.applyAvailableModels(frame)
+      // Restore the unread pip after a restart: the log outlives the process.
+      this.syncNotificationPip()
+    })
+    // The hub is the notification log's SOLE writer - see
+    // ../notifications/log.ts for why it has to be this window and not a
+    // chat window (chat windows are closable, and being closed is exactly
+    // the case the notification center exists for). Fully guarded: a
+    // bookkeeping failure must never break the registry's dispatch of the
+    // frames that follow.
+    registry.register("result-delivered", (frame: any) => {
+      try {
+        if (appendNotification(frame)) this.syncNotificationPip()
+      } catch (e) {
+        Logger.warn("notification log append failed:", e)
+      }
     })
     registry.register("job-input-request", (frame: any) => {
       if (!frame || typeof frame.requestId !== "string") return

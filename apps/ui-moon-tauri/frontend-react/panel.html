@@ -612,7 +612,7 @@
   // there's no vanilla-fetch-404/"Unknown panel type" flash before the module
   // mounts - this is what makes it safe to delete a converted type's old
   // frontend/panels/<type>.js source file once nothing else references it.
-  var REACT_PANEL_TYPES = { flow: true, settings: true, 'settings-launcher': true, 'settings.general': true, agents: true, 'settings.skills': true, workflows: true, 'settings.apps': true, 'settings.voice': true, actions: true, 'settings.appearance': true, briefing: true, now: true, 'settings.models': true, 'settings.connection': true, 'settings.updates': true, 'settings.connectors': true, 'settings.vault': true, launcher: true };
+  var REACT_PANEL_TYPES = { flow: true, settings: true, 'settings-launcher': true, 'settings.general': true, agents: true, 'settings.skills': true, workflows: true, 'settings.apps': true, 'settings.voice': true, actions: true, 'settings.appearance': true, briefing: true, now: true, 'settings.models': true, 'settings.connection': true, 'settings.updates': true, 'settings.connectors': true, 'settings.vault': true, launcher: true, notifications: true };
 
   var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
   if (REACT_PANEL_TYPES[type]) {

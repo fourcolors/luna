@@ -33,6 +33,7 @@ import { isSettingsVaultPanelType, mountSettingsVaultPanel } from "./panels/sett
 import { isSettingsConnectorsPanelType, mountSettingsConnectorsPanel } from "./panels/settings-connectors-mount"
 import { isSettingsUpdatesPanelType, mountSettingsUpdatesPanel } from "./panels/settings-updates/settings-updates-mount"
 import { isLauncherPanelType, mountLauncherPanel } from "./panels/launcher/launcher-mount"
+import { isNotificationsPanelType, mountNotificationsPanel } from "./panels/notifications/notifications-mount"
 
 /** Returns true if `type` was a React-owned panel type this dispatched. */
 export function mountReactPanel(type: string, ctx: PanelCtx): boolean {
@@ -106,6 +107,10 @@ export function mountReactPanel(type: string, ctx: PanelCtx): boolean {
   }
   if (isLauncherPanelType(type)) {
     mountLauncherPanel(type, ctx)
+    return true
+  }
+  if (isNotificationsPanelType(type)) {
+    mountNotificationsPanel(type, ctx)
     return true
   }
   return false
