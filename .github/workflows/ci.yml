@@ -73,7 +73,7 @@
 name: CI
 
 # TRIGGERS + CONCURRENCY (see #556). These two blocks are load-bearing on a
-# single self-hosted runner - `runs-on: [self-hosted, jax-box]` below means
+# single self-hosted runner - `runs-on: [self-hosted, Linux, X64]` below means
 # every run here SERIALIZES, so a duplicate run is not a free parallel run,
 # it is queue time taken from the next PR.
 #
@@ -108,7 +108,13 @@ permissions:
 
 jobs:
   ci:
-    runs-on: [self-hosted, jax-box]
+    # Selected by CAPABILITY labels, not by the box's name. There is exactly one
+    # self-hosted runner and it carries self-hosted + Linux + X64 alongside its
+    # name label, so this triple targets it unambiguously while keeping the
+    # host's name out of a public repository. If a SECOND self-hosted Linux x64
+    # runner is ever added, re-add a distinguishing label here - a ROLE label
+    # such as `luna-ci`, never a hostname.
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -211,6 +217,17 @@ jobs:
         continue-on-error: true
         run: bun run typecheck
 
+      # HARD GATE 4b: packages/channels tests were typechecked by NOTHING.
+      # The root tsconfig excludes `**/*.test.ts` and root package.json never
+      # invokes the package's own script, so `packages/channels/tsconfig.json`
+      # — which DOES include its tests — only ever ran by hand. That gap let a
+      # test file drift against the Effect 4 API with a green suite, because
+      # vitest transpiles via esbuild and never typechecks. This is a HARD gate
+      # rather than another known-red: the package is clean today (verified on
+      # master), so there is no baseline to tolerate.
+      - name: Typecheck packages/channels incl. tests (HARD GATE)
+        run: bunx tsc --noEmit -p packages/channels/tsconfig.json
+
       # HARD GATE 5: Moon WS-contract harness (task #45, Moon stability-audit
       # batch). Now a SUBSET of gate 6 below, kept as its own named step so this
       # specific seam stays individually visible in the checks list and fails
@@ -288,3 +305,55 @@ jobs:
       # / 0 fail.
       - name: Test - bun:sqlite suites (HARD GATE)
         run: bun run test:bun
+
+  # ==========================================================================
+  # HARD GATE 8: the Moon Rust binary. This ran NOWHERE before.
+  #
+  # `ci` above invokes no cargo at all, so every line under
+  # apps/ui-moon-tauri/src-tauri/ reached master unverified unless someone
+  # happened to build Moon locally. That is 124 tests' worth of window
+  # management, route/connection persistence and shell plumbing with no
+  # automated guard. It was caught when a repo-wide rename touched three .rs
+  # files, CI went green, and running cargo by hand found a missed identifier.
+  #
+  # It is a SEPARATE job on macOS because it cannot run on the self-hosted
+  # Linux runner: Cargo.toml gates objc2 / objc2-app-kit / objc2-web-kit /
+  # objc2-av-foundation behind cfg(target_os = "macos") and five source files
+  # use them. macos-14 also matches release-moon.yml, i.e. the platform Moon
+  # actually ships from. Actions minutes are free on public repos.
+  #
+  # The frontend build is NOT optional: tauri's generate_context!() macro
+  # resolves frontendDist at COMPILE time and panics with "the path doesn't
+  # exist" if frontend-react/dist is absent, so the vite build has to precede
+  # cargo.
+  # ==========================================================================
+  moon-rust:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/ui-moon-tauri/src-tauri
+
+      # generate_context!() needs this to exist before cargo compiles.
+      - name: Build the Moon frontend (required by generate_context!)
+        working-directory: apps/ui-moon-tauri
+        run: bunx vite build
+
+      - name: Test - Moon Rust binary (HARD GATE)
+        working-directory: apps/ui-moon-tauri/src-tauri
+        run: cargo test --bin luna-moon-ui
