@@ -382,8 +382,28 @@ mod tests {
 
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.write_all(request).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
+
+        // Read to EOF *or* a connection reset. The accept loop writes its
+        // response and drops the socket; on macOS that surfaces to the reader
+        // as ECONNRESET rather than a clean EOF, so `read_to_string().unwrap()`
+        // panicked with "Connection reset by peer" on the macOS CI runner while
+        // passing everywhere a clean FIN was delivered. The bytes already read
+        // ARE the whole response, so a reset here is a normal end of message,
+        // not a failure - and every assertion below is about those bytes.
+        // Reading manually rather than via read_to_string because that function
+        // leaves the buffer contents unspecified when it returns an error.
+        let mut raw: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => panic!("loopback read failed: {e}"),
+            }
+        }
+        let response = String::from_utf8_lossy(&raw).into_owned();
         handle.join().unwrap();
 
         let outcome = result.lock().unwrap().take();
