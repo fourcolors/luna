@@ -104,11 +104,16 @@ const buildChannelUserText = (msg: ChannelMessage): string => {
 const buildDeliveryTarget = (msg: ChannelMessage): DeliveryTarget => ({
   inReplyTo: msg,
   address: {
+    // The metadata spread goes FIRST so the four reserved routing keys below
+    // always win. `metadata` is an untyped, adapter-owned bag; with the spread
+    // last, an adapter that happened to put `channelId` in it would silently
+    // redirect every reply for that turn. Reply routing must come from the
+    // message's own fields, never from the payload riding along with it.
+    ...(msg.metadata ?? {}),
     transport: msg.transport,
     channelId: msg.channelId,
     senderId: msg.senderId,
     threadingKey: msg.threadingKey,
-    ...(msg.metadata ?? {}),
   },
 })
 
