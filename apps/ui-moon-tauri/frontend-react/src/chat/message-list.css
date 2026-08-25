@@ -338,7 +338,7 @@
 /* Resting is STILL. Nothing animates on a settled turn, failures included. */
 .constellation.rest { opacity: 0.85; transition: opacity 0.18s ease; }
 /* The settled star map renders INSIDE .timeline-summary (see TimelineItem),
-   so hovering the collapsed pill is what brightens it back to full opacity. */
+   so hovering the timeline - collapsed or re-expanded - brightens it. */
 .timeline:hover .constellation.rest { opacity: 1; }
 
 /* The star map's own row, last in the turn and under the answer - WHILE THE

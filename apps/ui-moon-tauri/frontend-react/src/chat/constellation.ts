@@ -1,9 +1,11 @@
 /**
- * constellation.ts - the star map under a turn's activity timeline.
+ * constellation.ts - star data for a turn's activity timeline.
  *
  * One star per top-level tool call, tinted by what that call did, replacing the
  * "Worked for N steps" count. The shape carries the count, the kinds AND the
- * failure, which the number never did.
+ * failure, which the number never did. Where the strip renders is owned by
+ * chatModel.ts (the "constellation" PlannedItem) and MessageList.tsx
+ * (TimelineItem / ConstellationItem); this file only derives the stars.
  *
  * NO ANIMATION DRIVER. A settled constellation is completely still, and the one
  * moving part (the newest star, while the turn runs) is a CSS keyframe. So this

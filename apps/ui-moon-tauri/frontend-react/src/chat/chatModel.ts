@@ -514,8 +514,8 @@ export type PlannedItem =
    * Once the run SETTLES, this item is no longer planned at all: the timeline
    * item's own summary row (TimelineItem in MessageList.tsx) renders the same
    * star map inline instead, using the merged/lastToolIndex it already
-   * carries. That is the collapsed pill Mr. Cobb's turn record lives in once
-   * the run is done, rather than a permanent row under the answer.
+   * carries. That is the summary pill the turn record lives in once the run
+   * is done, rather than a permanent row under the answer.
    */
   | {
       readonly key: string
@@ -623,8 +623,8 @@ function planRun(run: readonly Turn[], out: PlannedItem[], grouped: boolean): vo
   // LAST, and only while the run is still active: this is what puts the mark
   // below the answer instead of beside the activity header, for the phase
   // that has no text item yet. Once settled, TimelineItem renders the same
-  // star map itself inside the (now collapsed) summary row, so no trailing
-  // item is planned - see the doc comment on the "constellation" union member.
+  // star map itself inside the summary row, so no trailing item is planned -
+  // see the doc comment on the "constellation" union member.
   if (!settled) {
     out.push({
       key: anchor.key + "|cn",
@@ -653,10 +653,11 @@ export function isTimelineEffectivelyCollapsed(turn: Turn, settled: boolean): bo
 export function hasVisibleTypingIndicator(turns: readonly Turn[], grouped: boolean): boolean {
   if (isTailStreamingEmpty(turns)) return true
   const items = planChatItems(turns, { grouped })
-  // The constellation always trails its run and never carries a spinner, so it
-  // is not "the last item" for this question. Skip past it rather than reading
-  // items[length-1] blind: that read silently answered `false` for every
-  // tool-bearing run the moment the star map became its own trailing item.
+  // While a run is still active the constellation trails it and never carries
+  // a spinner, so it is not "the last item" for this question. Skip past it
+  // rather than reading items[length-1] blind: that read silently answered
+  // `false` for every in-flight tool-bearing run the moment the star map
+  // became its own trailing item. Settled runs no longer plan this item.
   let i = items.length - 1
   while (i >= 0 && items[i]?.kind === "constellation") i--
   const last = items[i]

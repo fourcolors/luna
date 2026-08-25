@@ -406,10 +406,12 @@ function Constellation({
 }
 
 /**
- * The star map as its own row, last in the turn.
+ * The star map as its own trailing row, used only while the run is still
+ * active. Once settled, TimelineItem renders the same strip inside
+ * `.timeline-summary` and this item is not planned (see planRun).
  *
  * Left-aligned to the assistant column and given the `.msg-meta` slot's own
- * rhythm, so it reads as belonging to the answer above it rather than as a
+ * rhythm, so it reads as belonging to the turn above it rather than as a
  * separate block.
  */
 function ConstellationItem({
