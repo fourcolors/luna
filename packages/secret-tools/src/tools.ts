@@ -27,8 +27,13 @@ const requestSecretShape = {
     .describe(
       "Where the secret is stored. 'op-token': a 1Password service-account " +
         "token for a registered account label (provide `label`). 'env-secret': " +
-        "a value saved to the server's .env as an environment variable (provide " +
-        "`var_name`); point an account's secret_ref at `env:<var_name>` to use it.",
+        "a value stored under the environment-variable NAME `var_name`, which " +
+        "an account's secret_ref `env:<var_name>` then resolves. The BACKING " +
+        "STORE is chosen by the server's storage tier, NOT always .env: an OS " +
+        "keychain (macOS) or Luna's encrypted vault at ~/.luna/vault/secrets.enc " +
+        "(typical on Linux) takes precedence over plaintext ~/.luna/.env. Do not " +
+        "assume the value is greppable in .env — external scripts that read .env " +
+        "directly will NOT see it.",
     ),
   label: z
     .string()
