@@ -22,6 +22,7 @@ import {
 } from "../frontend-react/src/panels/notifications/notifications-mount"
 import {
   NOTIFICATION_LOG_KEY,
+  readNotificationLog,
   NOTIFICATION_READ_KEY,
   appendNotification,
   readNotificationWatermark,
@@ -217,7 +218,7 @@ describe("NotificationsPanel", () => {
     expect(el.querySelectorAll(".nt-row")).toHaveLength(0)
   })
 
-  it("Clear empties the list and the stored log", () => {
+  it("Clear empties the list without writing the hub's log key", () => {
     seed({ ts: 1000 })
     seed({ ts: 2000, preview: "b" })
     const el = render(fakeCtx())
@@ -227,7 +228,31 @@ describe("NotificationsPanel", () => {
     act(() => clear.click())
 
     expect(el.querySelectorAll(".nt-row")).toHaveLength(0)
-    expect(localStorage.getItem(NOTIFICATION_LOG_KEY)).toBe("[]")
+    // The panel is NOT the log key's writer - clearing raises its own
+    // watermark instead, so the hub's concurrent append cannot resurrect rows.
+    const stored = JSON.parse(localStorage.getItem(NOTIFICATION_LOG_KEY) ?? "[]")
+    expect(stored).toHaveLength(2)
+    expect(readNotificationLog()).toEqual([])
+  })
+
+  it("keeps its rows when storage refuses the clear", () => {
+    seed({ ts: 1000 })
+    const el = render(fakeCtx())
+    expect(el.querySelectorAll(".nt-row")).toHaveLength(1)
+
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = () => {
+      throw new Error("quota")
+    }
+    try {
+      const clear = el.querySelector(".nt-clear-btn") as HTMLButtonElement
+      act(() => clear.click())
+    } finally {
+      Storage.prototype.setItem = setItem
+    }
+    // Rendering an empty list over a log that is still full is the one lie
+    // this panel must not tell.
+    expect(el.querySelectorAll(".nt-row")).toHaveLength(1)
   })
 
   it("renders server-supplied text as text, never as markup", () => {

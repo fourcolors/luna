@@ -14,6 +14,7 @@ import * as path from "node:path"
 import {
   NOTIFICATION_LOG_CAP,
   NOTIFICATION_LOG_KEY,
+  NOTIFICATION_CLEAR_KEY,
   NOTIFICATION_PREVIEW_CAP,
   NOTIFICATION_READ_KEY,
   appendEntry,
@@ -23,6 +24,7 @@ import {
   markNotificationsRead,
   normalizeDelivery,
   parseEntries,
+  readNotificationClearedAt,
   readNotificationLog,
   readNotificationWatermark,
   unreadNotificationCount,
@@ -230,14 +232,78 @@ describe("storage failure is never fatal", () => {
 })
 
 describe("clearNotificationLog", () => {
-  it("empties the list and leaves nothing reading as unread", () => {
-    appendNotification(delivery({ ts: 1000 }))
-    appendNotification(delivery({ ts: 2000, preview: "b" }))
-    clearNotificationLog(9999)
+  // Clear raises a watermark on its OWN key. It must never write the log key:
+  // the hub's append is a read-modify-write pair, so a Clear landing between
+  // the hub's read and its write would be undone and every row would come back.
+  it("empties the list WITHOUT writing the hub's log key", () => {
+    // Explicit `now` on both appends: appendNotification defaults it to the
+    // wall clock, which would sit far above a 9999 clear watermark.
+    appendNotification(delivery({ ts: 1000 }), 1000)
+    appendNotification(delivery({ ts: 2000, preview: "b" }), 2000)
+    expect(clearNotificationLog(9999)).toBe(true)
+
     expect(readNotificationLog()).toEqual([])
     expect(unreadNotificationCount()).toBe(0)
-    expect(localStorage.getItem(NOTIFICATION_LOG_KEY)).toBe("[]")
-    expect(localStorage.getItem(NOTIFICATION_READ_KEY)).toBe("9999")
+    // The proof: the hub's key is untouched and still holds both rows.
+    const stored = JSON.parse(localStorage.getItem(NOTIFICATION_LOG_KEY) ?? "[]")
+    expect(stored).toHaveLength(2)
+    expect(localStorage.getItem(NOTIFICATION_CLEAR_KEY)).toBe("9999")
+    // And the read watermark is not collateral damage.
+    expect(localStorage.getItem(NOTIFICATION_READ_KEY)).toBeNull()
+  })
+
+  it("never moves the clear watermark backwards", () => {
+    expect(clearNotificationLog(9999)).toBe(true)
+    expect(clearNotificationLog(10)).toBe(true)
+    expect(readNotificationClearedAt()).toBe(9999)
+  })
+
+  // The reason the filter keys on `rx` (local receipt) and not `ts` (server
+  // stamp): under clock skew a delivery that ARRIVES after a Clear can carry a
+  // stamp from before it. Filtering on `ts` would drop it forever.
+  it("keeps a post-clear delivery whose SERVER stamp predates the clear", () => {
+    clearNotificationLog(5000)
+    appendNotification(delivery({ ts: 1000, preview: "skewed" }), 6000)
+    const live = readNotificationLog()
+    expect(live).toHaveLength(1)
+    expect(live[0]?.preview).toBe("skewed")
+  })
+
+  it("is order-independent: append-then-clear-then-append behaves the same", () => {
+    appendNotification(delivery({ ts: 1000, preview: "old" }), 1000)
+    clearNotificationLog(5000)
+    appendNotification(delivery({ ts: 1000, preview: "new" }), 6000)
+    const live = readNotificationLog()
+    expect(live).toHaveLength(1)
+    expect(live[0]?.preview).toBe("new")
+  })
+
+  // readNotificationLog is the choke point every reader shares, INCLUDING the
+  // hub's append - so the next append physically compacts the retired rows.
+  it("compacts retired rows out of storage on the hub's next append", () => {
+    for (let i = 1; i <= NOTIFICATION_LOG_CAP; i++) {
+      appendNotification(delivery({ ts: i, preview: `p${i}` }), i)
+    }
+    expect(readNotificationLog()).toHaveLength(NOTIFICATION_LOG_CAP)
+    clearNotificationLog(NOTIFICATION_LOG_CAP + 1)
+    appendNotification(delivery({ ts: 9000, preview: "fresh" }), 9000)
+    const stored = JSON.parse(localStorage.getItem(NOTIFICATION_LOG_KEY) ?? "[]")
+    expect(stored).toHaveLength(1)
+    expect(readNotificationLog()).toHaveLength(1)
+  })
+
+  it("returns false and retires nothing when storage refuses the write", () => {
+    appendNotification(delivery({ ts: 1000 }), 1000)
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = () => {
+      throw new Error("quota")
+    }
+    try {
+      expect(clearNotificationLog(9999)).toBe(false)
+    } finally {
+      Storage.prototype.setItem = setItem
+    }
+    expect(readNotificationLog()).toHaveLength(1)
   })
 })
 

@@ -17,7 +17,7 @@ import { useLocalStore, useMoonSelector } from "../state/store"
 import { reduceHub, initialHubState, type HubAction, type HubState } from "./hubReducer"
 import { HubController, Logger } from "./hubEngines"
 import { MoonOrb } from "./MoonOrb"
-import { NOTIFICATION_READ_KEY } from "../notifications/log"
+import { NOTIFICATION_CLEAR_KEY, NOTIFICATION_READ_KEY } from "../notifications/log"
 import { SetupWizardPanel } from "./SetupWizardPanel"
 
 function getTauri(): any {
@@ -155,7 +155,11 @@ export function MoonHubApp(): React.JSX.Element {
       // window never receives its own storage event - so this fires exactly
       // when the user has actually looked at the list in that other window,
       // which is when the orb's unread pip should clear.
-      if (e.key === NOTIFICATION_READ_KEY) controller.syncNotificationPip()
+      // CLEAR as well as READ: "Clear" no longer writes the read watermark, so
+      // without this the orb pip would keep a count over an emptied list.
+      if (e.key === NOTIFICATION_READ_KEY || e.key === NOTIFICATION_CLEAR_KEY) {
+        controller.syncNotificationPip()
+      }
     }
     window.addEventListener("storage", onStorage)
 

@@ -37,13 +37,27 @@
  * FORWARD COMPATIBILITY. Entries carry `v` so the planned server-side
  * delivery history (a `notification-list` frame derived from the delivery
  * markers chat-service.ts already persists) can hydrate this same store
- * additively, without a migration or a second rendering path.
+ * additively, without a migration or a second rendering path. That hydration
+ * MUST stamp `rx` with the local clock as it writes each row, or hydrated rows
+ * inherit the server-skew defect `rx` exists to prevent (see its doc below).
  */
 
 /** localStorage key holding the JSON entry array. Hub-window writes only. */
 export const NOTIFICATION_LOG_KEY = "luna_notification_log"
 /** localStorage key holding the read watermark (epoch ms). Panel writes only. */
 export const NOTIFICATION_READ_KEY = "luna_notification_read_ts"
+/**
+ * localStorage key holding the CLEAR watermark (epoch ms). Panel writes only.
+ *
+ * This key is why "Clear" does not violate the writer split above. The panel
+ * cannot empty the log by writing the log key: the hub's append is a
+ * read-modify-write PAIR, so a Clear landing between the hub's read and its
+ * write would be silently undone and every cleared row would come back.
+ * Instead the panel raises this watermark and `readNotificationLog` filters
+ * everything at or below it, so clearing is a single write to a key only the
+ * panel owns.
+ */
+export const NOTIFICATION_CLEAR_KEY = "luna_notification_clear_ts"
 /** Newest-first retention cap. Bounds both render cost and storage quota. */
 export const NOTIFICATION_LOG_CAP = 50
 /** Bound on a single stored preview, so one huge job result can't eat quota. */
@@ -66,6 +80,17 @@ export interface NotificationEntry {
   readonly preview: string
   /** Wall-clock ms the server stamped on the delivery. */
   readonly ts: number
+  /**
+   * CLIENT receipt ms - when THIS machine first stored the entry. The clear
+   * watermark is compared against this, never against `ts`: `ts` is the
+   * SERVER's clock, so under skew a delivery that arrives after a Clear can
+   * carry a stamp from before it, and filtering on `ts` would drop it forever.
+   *
+   * Optional because rows written before this field existed (and rows a future
+   * server-history hydration may add) will not carry it; readers fall back to
+   * `ts`.
+   */
+  readonly rx?: number
 }
 
 /** Trim to `max` chars on a char boundary, appending an ellipsis if cut. */
@@ -113,6 +138,9 @@ export function normalizeDelivery(frame: unknown, now: number = Date.now()): Not
     label,
     preview,
     ts,
+    // `now` is the LOCAL clock; `ts` above prefers the server's. See the `rx`
+    // doc on NotificationEntry for why the clear watermark needs the local one.
+    rx: now,
   }
 }
 
@@ -128,6 +156,20 @@ export function appendEntry(
 ): NotificationEntry[] {
   const rest = entries.filter((e) => e.id !== entry.id)
   return [entry, ...rest].sort((a, b) => b.ts - a.ts).slice(0, Math.max(0, cap))
+}
+
+/**
+ * Entries that survive a clear at `clearedAt`. PURE.
+ *
+ * Strict `>` so a Clear taken in the same millisecond as an entry wins the tie:
+ * the user pressed the button after seeing the row, so the row goes.
+ */
+export function dropCleared(
+  entries: readonly NotificationEntry[],
+  clearedAt: number,
+): NotificationEntry[] {
+  if (clearedAt <= 0) return [...entries]
+  return entries.filter((e) => (e.rx ?? e.ts) > clearedAt)
 }
 
 /** Entries strictly newer than the watermark. PURE. */
@@ -163,6 +205,8 @@ export function parseEntries(raw: string | null | undefined): NotificationEntry[
       label: str(r.label),
       preview: typeof r.preview === "string" ? r.preview : "",
       ts: r.ts,
+      // Pre-`rx` rows (and any future hydrated rows) fall back to `ts`.
+      rx: typeof r.rx === "number" && Number.isFinite(r.rx) ? r.rx : r.ts,
     })
   }
   return out.sort((a, b) => b.ts - a.ts)
@@ -170,12 +214,34 @@ export function parseEntries(raw: string | null | undefined): NotificationEntry[
 
 // ── storage-touching wrappers (all fail open) ───────────────────────────────
 
-/** Read the log. Returns [] on any storage/parse failure. */
+/**
+ * Read the LIVE log: stored rows minus anything a Clear retired.
+ *
+ * The filter lives HERE rather than in `parseEntries` because parseEntries is
+ * documented pure, and because this is the single storage-touching choke point
+ * every reader goes through - including the hub's own `appendNotification`, so
+ * its next write physically compacts the retired rows away and the cap applies
+ * to live entries only. Returns [] on any storage/parse failure.
+ */
 export function readNotificationLog(): NotificationEntry[] {
   try {
-    return parseEntries(localStorage.getItem(NOTIFICATION_LOG_KEY))
+    return dropCleared(
+      parseEntries(localStorage.getItem(NOTIFICATION_LOG_KEY)),
+      readNotificationClearedAt(),
+    )
   } catch {
     return []
+  }
+}
+
+/** Read the clear watermark (epoch ms). 0 when unset or unreadable. */
+export function readNotificationClearedAt(): number {
+  try {
+    const raw = localStorage.getItem(NOTIFICATION_CLEAR_KEY)
+    const n = raw ? Number(raw) : 0
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
   }
 }
 
@@ -229,14 +295,26 @@ export function unreadNotificationCount(): number {
 }
 
 /**
- * Drop every entry. Also parks the watermark at "now" so the freshly emptied
- * list can't read as unread if a write lands between the two calls.
+ * Retire every entry currently in the log, by raising the clear watermark.
+ *
+ * Writes ONE key, and one the panel exclusively owns - see NOTIFICATION_CLEAR_KEY.
+ * It deliberately does NOT touch the log key (that is the hub's, and racing its
+ * read-modify-write would resurrect the cleared rows) and does NOT touch the
+ * read watermark (that compares against the SERVER `ts`, so parking it at `now`
+ * would silently mark-as-read a later delivery whose stamp predates the clear;
+ * it is redundant anyway now that retired rows never reach a reader).
+ *
+ * Never moves backwards, so a stale panel cannot un-clear. Returns false if
+ * storage refused the write, so the caller can avoid rendering an empty list
+ * that isn't actually empty.
  */
-export function clearNotificationLog(now: number = Date.now()): void {
+export function clearNotificationLog(now: number = Date.now()): boolean {
   try {
-    localStorage.setItem(NOTIFICATION_LOG_KEY, "[]")
-    localStorage.setItem(NOTIFICATION_READ_KEY, String(now))
+    const next = Math.max(now, readNotificationClearedAt())
+    if (next <= 0) return false
+    localStorage.setItem(NOTIFICATION_CLEAR_KEY, String(next))
+    return true
   } catch {
-    /* fail open */
+    return false
   }
 }

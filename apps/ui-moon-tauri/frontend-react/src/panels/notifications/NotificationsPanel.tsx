@@ -117,7 +117,10 @@ export function NotificationsPanel({ ctx }: NotificationsPanelProps) {
   }, [refresh])
 
   const onClear = useCallback(() => {
-    clearNotificationLog()
+    // Bail before touching local state if storage refused the write: rendering
+    // an empty list over a log that is still full is the one lie this panel
+    // must not tell.
+    if (!clearNotificationLog()) return
     seenWatermarkRef.current = Date.now()
     setEntries([])
   }, [])
