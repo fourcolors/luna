@@ -40,7 +40,7 @@ describe("skill-chip", () => {
         skillId: null,
         title: "Deploy runbook skill",
         detail: "Codify the deploy checklist",
-        prompt: "Write SKILL.md covering jax-box deploys",
+        prompt: "Write SKILL.md covering luna-host deploys",
       },
       rationale: "Operator repeated the same deploy steps thrice",
     }
@@ -57,7 +57,7 @@ describe("skill-chip", () => {
     // the second read. Two direct .toContain checks pin the same contract
     // without tripping that mutation.
     const prompt = (input!.payload as { prompt: string }).prompt
-    expect(prompt).toContain("Write SKILL.md covering jax-box deploys")
+    expect(prompt).toContain("Write SKILL.md covering luna-host deploys")
     expect(prompt).toContain("Create a new Luna skill")
   })
 

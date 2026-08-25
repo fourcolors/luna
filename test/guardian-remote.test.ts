@@ -54,7 +54,7 @@ describe("luna-guardian-remote-check", () => {
     const { bin } = setup(Math.floor(Date.now() / 1000) - 600)
     const result = spawnSync(
       "bash",
-      [probe, "jax-box", "stable", "--max-age", "180"],
+      [probe, "luna-host", "stable", "--max-age", "180"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status).toBe(1)
@@ -65,7 +65,7 @@ describe("luna-guardian-remote-check", () => {
     const { bin } = setup(Math.floor(Date.now() / 1000) - 600, "activating")
     const result = spawnSync(
       "bash",
-      [probe, "jax-box", "stable", "--max-age", "180"],
+      [probe, "luna-host", "stable", "--max-age", "180"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status, result.stdout + result.stderr).toBe(0)
@@ -76,7 +76,7 @@ describe("luna-guardian-remote-check", () => {
     const { bin } = setup(undefined, "activating")
     const result = spawnSync(
       "bash",
-      [probe, "jax-box", "stable"],
+      [probe, "luna-host", "stable"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status, result.stdout + result.stderr).toBe(0)
@@ -87,7 +87,7 @@ describe("luna-guardian-remote-check", () => {
     const { bin } = setup(undefined, "inactive", { active: "active", lastTrigger: "0" })
     const result = spawnSync(
       "bash",
-      [probe, "jax-box", "stable"],
+      [probe, "luna-host", "stable"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status, result.stdout + result.stderr).toBe(0)
@@ -98,7 +98,7 @@ describe("luna-guardian-remote-check", () => {
     const { bin } = setup(undefined, "inactive", { active: "active", lastTrigger: "123456789" })
     const result = spawnSync(
       "bash",
-      [probe, "jax-box", "stable"],
+      [probe, "luna-host", "stable"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status).toBe(1)
@@ -109,7 +109,7 @@ describe("luna-guardian-remote-check", () => {
     const { bin } = setup(Math.floor(Date.now() / 1000), "failed")
     const result = spawnSync(
       "bash",
-      [probe, "jax-box", "stable"],
+      [probe, "luna-host", "stable"],
       { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` } },
     )
     expect(result.status).toBe(1)

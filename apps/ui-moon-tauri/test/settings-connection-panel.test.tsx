@@ -324,7 +324,7 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
   it('activate-on-save checkbox passes activate:true to save_connection', async () => {
     const { ctx, invoke } = makeCtx((cmd) => {
       if (cmd === 'load_connection') {
-        return { wsUrl: 'ws://jax-box:4753/ui', wsToken: 'tok' }
+        return { wsUrl: 'ws://luna-host:4753/ui', wsToken: 'tok' }
       }
       return null
     })
@@ -345,7 +345,7 @@ describe('SettingsConnectionPanel (React port of panels/settings-connection.js)'
     expect(invoke).toHaveBeenCalledWith(
       'save_connection',
       expect.objectContaining({
-        url: 'ws://jax-box:4753/ui',
+        url: 'ws://luna-host:4753/ui',
         token: 'tok',
         profile: 'stable',
         activate: true,

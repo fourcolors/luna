@@ -47,7 +47,7 @@ Tokens are written with `0600` permissions and are never printed by dry-runs.
 
 By default, the client installer writes Tailscale-style primary URLs and
 LAN-style fallback URLs (substitute your actual server hostname — the shipped
-`install.sh` default is `jax-box` / `jax-box.local`; `luna-server` is the
+`install.sh` default is `luna-host` / `luna-host.local`; `luna-server` is the
 neutral placeholder used in these docs):
 
 ```bash

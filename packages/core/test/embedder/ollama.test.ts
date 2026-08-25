@@ -159,7 +159,7 @@ describe("OllamaEmbedder", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Boot-probe hardening: bounded retry + non-fatal degrade.
 //
-// Root cause (jax-box, 2026-07-07): during a deploy, Ollama can return a
+// Root cause (luna-host, 2026-07-07): during a deploy, Ollama can return a
 // 200 with an empty/truncated body for ~60s while otherwise healthy. That
 // is longer than any in-boot retry budget can absorb, so the only robust
 // fix is to stop letting an exhausted probe be fatal to boot when the

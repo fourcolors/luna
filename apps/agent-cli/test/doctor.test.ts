@@ -20,13 +20,13 @@ describe("luna doctor — isTransportSafeHost (pure)", () => {
   })
 
   it("treats *.ts.net MagicDNS names as safe", () => {
-    expect(isTransportSafeHost("jax-box.tail1234.ts.net")).toBe(true)
+    expect(isTransportSafeHost("luna-host.tail1234.ts.net")).toBe(true)
     expect(isTransportSafeHost("LUNA.TS.NET")).toBe(true)
   })
 
   it("treats the full 100.64.0.0/10 CGNAT range as safe (incl. boundaries)", () => {
     expect(isTransportSafeHost("100.64.0.0")).toBe(true) // low boundary
-    expect(isTransportSafeHost("100.64.0.7")).toBe(true) // the deploy-script default
+    expect(isTransportSafeHost("100.64.0.1")).toBe(true) // a tailnet address; LUNA_TAILSCALE_IP has no hardcoded default
     expect(isTransportSafeHost("100.127.255.255")).toBe(true) // high boundary
     expect(isTransportSafeHost("100.100.100.100")).toBe(true) // mid-range
   })
@@ -39,7 +39,7 @@ describe("luna doctor — isTransportSafeHost (pure)", () => {
   })
 
   it("rejects ordinary public / LAN hosts", () => {
-    expect(isTransportSafeHost("jax-box")).toBe(false)
+    expect(isTransportSafeHost("luna-host")).toBe(false)
     expect(isTransportSafeHost("example.com")).toBe(false)
     expect(isTransportSafeHost("203.0.113.5")).toBe(false)
     expect(isTransportSafeHost("192.168.1.10")).toBe(false)

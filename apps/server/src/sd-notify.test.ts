@@ -128,7 +128,7 @@ describe("resolveProbeHost", () => {
   })
 
   it("keeps a concrete bind host (production binds the tailnet IP ONLY — probing loopback there would kill a healthy server)", () => {
-    expect(resolveProbeHost("100.64.0.7")).toBe("100.64.0.7")
+    expect(resolveProbeHost("100.64.0.1")).toBe("100.64.0.1")
     expect(resolveProbeHost("127.0.0.1")).toBe("127.0.0.1")
   })
 })
@@ -207,7 +207,7 @@ describe("startSdWatchdog", () => {
     }) as unknown as typeof fetch
     const handle = startSdWatchdog({
       port: 4753,
-      host: "100.64.0.7",
+      host: "100.64.0.1",
       lunaHome,
       env: { NOTIFY_SOCKET: "/run/systemd/notify" },
       sender,
@@ -215,7 +215,7 @@ describe("startSdWatchdog", () => {
       log: () => {},
     })
     await vi.advanceTimersByTimeAsync(30_000)
-    expect(urls).toContain("http://100.64.0.7:4753/healthz")
+    expect(urls).toContain("http://100.64.0.1:4753/healthz")
     expect(urls.some((u) => u.includes("127.0.0.1"))).toBe(false)
     handle.stop()
   })

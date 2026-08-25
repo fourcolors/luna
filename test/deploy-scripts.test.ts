@@ -220,7 +220,7 @@ exit 1
       "--state-path",
       join(temp, "state"),
       "--host",
-      "jax-box",
+      "luna-host",
       "--host-ws-port",
       "5753",
       "--host-control-port",
@@ -242,7 +242,7 @@ exit 1
     expect(result.stdout).not.toContain("listen=tcp:0.0.0.0:5753")
     expect(result.stdout).toContain("connect=tcp:127.0.0.1:4753")
     expect(result.stdout).toContain("path=/root/luna")
-    expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://jax-box:5753/ui")
+    expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://luna-host:5753/ui")
     // The in-container chat server also binds loopback (the Incus proxy is the
     // sole ingress and targets 127.0.0.1) — never 0.0.0.0.
     expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
@@ -273,7 +273,7 @@ exit 1
         "--state-path",
         join(temp, "state"),
         "--host",
-        "jax-box",
+        "luna-host",
         "--host-ws-port",
         "5753",
         "--host-control-port",
@@ -283,12 +283,12 @@ exit 1
       ],
       // A tailnet IS present (CGNAT 100.64.0.0/10): the host proxy binds it so
       // tailnet peers reach the server out of the box — the primary deployment.
-      { env: { LUNA_TAILSCALE_IP: "100.64.0.7" } },
+      { env: { LUNA_TAILSCALE_IP: "100.64.0.1" } },
     )
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("listen=tcp:100.64.0.7:5753")
-    expect(result.stdout).toContain("listen=tcp:100.64.0.7:5754")
+    expect(result.stdout).toContain("listen=tcp:100.64.0.1:5753")
+    expect(result.stdout).toContain("listen=tcp:100.64.0.1:5754")
     expect(result.stdout).not.toContain("listen=tcp:127.0.0.1:5753")
     // The in-container bind stays loopback (the proxy targets 127.0.0.1).
     expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
@@ -312,7 +312,7 @@ exit 1
       "--state-path",
       join(temp, "state"),
       "--host",
-      "jax-box",
+      "luna-host",
       "--host-ws-port",
       "5753",
       "--host-control-port",
@@ -611,7 +611,7 @@ exit 1
 
     // PATH contains EXACTLY the tools the script needs up to the incus
     // preflight — and no incus. The old PATH=/usr/bin:/bin found the real
-    // /usr/bin/incus on jax-box, so the preflight PASSED and the script ran a
+    // /usr/bin/incus on luna-host, so the preflight PASSED and the script ran a
     // REAL network clone of fourcolors/luna before failing later.
     const restricted = makeRestrictedBin(temp, ["bash", "dirname", "sed", "tr"])
     const result = runScript("scripts/luna-container-create", [
@@ -804,7 +804,7 @@ esac
     mkdirSync(join(temp, "etc-luna"))
     writeFileSync(registry, `kind          = "registry"
 schemaVersion = 1
-host          = "jax-box"
+host          = "luna-host"
 
 [[server]]
 name        = "dev"
@@ -870,7 +870,7 @@ deploy.autoUpdate    = true
     mkdirSync(join(temp, "etc-luna"))
     writeFileSync(registry, `kind          = "registry"
 schemaVersion = 1
-host          = "jax-box"
+host          = "luna-host"
 
 [[server]]
 name        = "dev"
@@ -1310,13 +1310,13 @@ deploy.autoUpdate    = true
           LUNA_TEST_BUN_PATH: makeBunStub(temp).bun,
           // A tailnet IS present: a fresh bare-host install serves tailnet peers
           // out of the box without any flag — the primary remote deployment.
-          LUNA_TAILSCALE_IP: "100.64.0.7",
+          LUNA_TAILSCALE_IP: "100.64.0.1",
         },
       },
     )
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("LUNA_UI_WS_HOST=100.64.0.7")
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=100.64.0.1")
     expect(result.stdout).not.toContain("LUNA_UI_WS_HOST=127.0.0.1")
     // Binding the tailnet is safe + intended: no fallback warn, no public warn.
     expect(result.stderr).not.toContain("no Tailscale interface detected")
@@ -1927,7 +1927,7 @@ exit 0
     expect(result.stdout).not.toContain("LUNA_DEV_START_COMMAND=incus exec luna-dev -- systemctl restart")
   })
 
-  it("installer honors a localhost stable override without leaking jax-box", () => {
+  it("installer honors a localhost stable override without leaking luna-host", () => {
     const temp = makeTempDir()
 
     const result = runScript("install.sh", [
@@ -2634,7 +2634,7 @@ exit 0
     }
   })
 
-  it("jax-box docs use non-Tailscale-bound health probes", () => {
+  it("luna-host docs use non-Tailscale-bound health probes", () => {
     const read = (path: string) => readFileSync(join(repoRoot, path), "utf8")
     const docs = [
       read("README.md"),

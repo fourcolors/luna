@@ -39,7 +39,7 @@ const BUN_RUNTIME_TESTS = [
 //   1. Tooling ABSENT - the script exits 2 and every `result.status === 0`
 //      assertion fails. Not a Luna regression, just a host with no container
 //      runtime.
-//   2. Tooling PRESENT - worse. The self-hosted CI runner (jax-box) is itself
+//   2. Tooling PRESENT - worse. The self-hosted CI runner (luna-host) is itself
 //      a real Luna deployment host, so guardian/update-server read genuine
 //      on-disk profile state and fail with things like "already adopted
 //      stable". The suite is reading the machine, not a fixture.

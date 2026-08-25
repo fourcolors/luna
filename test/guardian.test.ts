@@ -612,7 +612,7 @@ describe("luna-guardian", () => {
 
   // The three adopt-defer tests below run against a stubbed systemd (empty
   // unit dir + empty stub state), so guardian_control_plane_adopted answers
-  // NO on every host — on jax-box the REAL systemctl answers "adopted" for
+  // NO on every host — on luna-host the REAL systemctl answers "adopted" for
   // stable and adopt short-circuited before ever reaching the check under
   // test. The stub state is identical on a host with stable adopted and on a
   // bare CI runner: that is the hermeticity contract.

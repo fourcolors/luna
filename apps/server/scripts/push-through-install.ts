@@ -7,7 +7,7 @@
  * an ATTACHED terminal client (it needs a bound chat thread). The scheduler
  * fires jobs with no client attached, so the old job could not run any shell —
  * it spent cycles escalating "gh not logged in" because it was guessing, not
- * checking. See memory: self-improvement-loop / jax-box-deployment.
+ * checking. See memory: self-improvement-loop / luna-host-deployment.
  *
  * The replacement is a `kind=workflow` job — a LINEAR, worktree-isolated,
  * dedup-gated pipeline. The irreversible actions (push, PR) live in

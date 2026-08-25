@@ -9,7 +9,7 @@ default           = "jax-stable"
 # ── Luna chat-server (WebSocket) ─────────────────────────────────────────────
 [route.jax-stable]
   label     = "Stable (prod)"
-  endpoints = ["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"]
+  endpoints = ["ws://luna-host:4753/ui", "ws://luna-host.local:4753/ui"]
   tokenRef  = "env:LUNA_STABLE_UI_WS_TOKEN"
   # expect  = "spki:sha256:9f2c…"   # populate after first connect (TOFU)
 

@@ -64,7 +64,7 @@ describe("checkCapability", () => {
   })
 
   it("does not throw for hermes (shell) with ssh bareFolder runtime", () => {
-    const ssh: RuntimeKind = { transport: "ssh", sshHost: "jax-box", target: "bareFolder", hostRepoDir: "/repo" }
+    const ssh: RuntimeKind = { transport: "ssh", sshHost: "luna-host", target: "bareFolder", hostRepoDir: "/repo" }
     const d = loadDriver("hermes")
     expect(() => checkCapability(d, ssh)).not.toThrow()
   })

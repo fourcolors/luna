@@ -1,18 +1,18 @@
 /**
  * Pins the macOS Info.plist keys AND the signing config that make those keys
- * actually take effect for WKWebView dialing cleartext ws://jax-box:4753/ui.
+ * actually take effect for WKWebView dialing cleartext ws://luna-host:4753/ui.
  *
  * Proven off-Mac (this sandbox): the shipped 0.0.66 Info.plist had only
  * NSMicrophoneUsageDescription — no Local Network purpose string and no
  * ATS carve-out. On-Mac evidence (2026-08-17): Terminal TCP + WS upgrade
- * to jax-box:4753 succeeded, but the running app's WebKit.Networking
- * process opened no TCP to jax-box while the UI stayed on Disconnected /
+ * to luna-host:4753 succeeded, but the running app's WebKit.Networking
+ * process opened no TCP to luna-host while the UI stayed on Disconnected /
  * "waking up…". CSP already allows `ws:`/`wss:` (asserted below).
  *
  * Proven on-Mac after #544 keys landed in the bundle (2026-08-18): rebuild
  * still showed codesign Identifier=luna_moon_ui-<hash>, Info.plist=not bound,
  * linker-signed, entitlements=none — Local Network prompt never appeared and
- * still no TCP to jax-box. Root cause: signingIdentity was null, so tauri
+ * still no TCP to luna-host. Root cause: signingIdentity was null, so tauri
  * skipped bundle codesign (or someone copied the cargo Mach-O into Contents/
  * MacOS). macOS ignores ATS + NSLocalNetworkUsageDescription when the plist
  * is not signature-bound. See docs/macos-local-rebuild.md.
@@ -87,7 +87,7 @@ describe("macOS Info.plist — Local Network + cleartext WS carve-out", () => {
   it("ships no personal hostname in any user-visible plist string", () => {
     // NSLocalNetworkUsageDescription is rendered verbatim in the macOS Local
     // Network prompt — the most visible place a leaked hostname can land.
-    expect(plist).not.toMatch(/jax-box/i)
+    expect(plist).not.toMatch(/luna-host/i)
     expect(plist).not.toMatch(/luna-server/i)
   })
 
@@ -101,7 +101,7 @@ describe("macOS Info.plist — Local Network + cleartext WS carve-out", () => {
     expect(csp).toMatch(/connect-src[^;]*\bws:/)
     expect(csp).toMatch(/connect-src[^;]*\bwss:/)
     // Without ipc:, a hung/blocked Tauri invoke never reaches new WebSocket
-    // (Round-3: Disconnected + waking up + zero SYN while luna_ws_url=jax-box).
+    // (Round-3: Disconnected + waking up + zero SYN while luna_ws_url=luna-host).
     expect(csp).toMatch(/connect-src[^;]*\bipc:/)
     expect(csp).toMatch(/connect-src[^;]*http:\/\/ipc\.localhost/)
   })
@@ -143,7 +143,7 @@ describe("macOS signing — Info.plist must be codesign-bound", () => {
     // the invariant the whole page exists to protect.
     expect(rebuildDoc).toMatch(/ws:\/\/<your-host>:4753\/ui/)
     expect(rebuildDoc).toContain("Do not retarget localhost")
-    expect(rebuildDoc).not.toMatch(/jax-box/i)
+    expect(rebuildDoc).not.toMatch(/luna-host/i)
   })
 })
 

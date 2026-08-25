@@ -2,10 +2,10 @@
  * Pins the boot-dial helpers that unblock SYN when Tauri invoke hangs.
  *
  * Round-3 Mac: Disconnected + "waking up…" + zero WebKit TCP while
- * luna_ws_url stayed ws://jax-box:4753/ui. That paint is the HTML/MoonBar
+ * luna_ws_url stayed ws://luna-host:4753/ui. That paint is the HTML/MoonBar
  * DEFAULT before connect()'s updateStatus — i.e. boot never left the
  * await migrate/load_connection window. These unit tests lock the timeout
- * + URL/token pickers that let dial proceed with the cached jax-box URL.
+ * + URL/token pickers that let dial proceed with the cached luna-host URL.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import {
@@ -23,9 +23,9 @@ describe("tauriBoot — invokeWithTimeout", () => {
   })
 
   it("resolves when invoke settles before the ceiling", async () => {
-    const invoke = vi.fn(async () => ({ wsUrl: "ws://jax-box:4753/ui" }))
+    const invoke = vi.fn(async () => ({ wsUrl: "ws://luna-host:4753/ui" }))
     await expect(invokeWithTimeout(invoke, "load_connection", undefined, 500)).resolves.toEqual({
-      wsUrl: "ws://jax-box:4753/ui",
+      wsUrl: "ws://luna-host:4753/ui",
     })
     expect(invoke).toHaveBeenCalledWith("load_connection", undefined)
   })
@@ -60,20 +60,20 @@ describe("tauriBoot — isUsableBearerToken", () => {
 })
 
 describe("tauriBoot — pickBootWsUrl", () => {
-  it("keeps jax-box from localStorage when load_connection timed out", () => {
-    const url = pickBootWsUrl(null, (k) => (k === "luna_ws_url" ? "ws://jax-box:4753/ui" : null))
-    expect(url).toBe("ws://jax-box:4753/ui")
+  it("keeps luna-host from localStorage when load_connection timed out", () => {
+    const url = pickBootWsUrl(null, (k) => (k === "luna_ws_url" ? "ws://luna-host:4753/ui" : null))
+    expect(url).toBe("ws://luna-host:4753/ui")
   })
 
   it("prefers a loaded URL over the cache", () => {
-    const url = pickBootWsUrl("ws://other:4753/ui", () => "ws://jax-box:4753/ui")
+    const url = pickBootWsUrl("ws://other:4753/ui", () => "ws://luna-host:4753/ui")
     expect(url).toBe("ws://other:4753/ui")
   })
 
   it("does not invent localhost when a cache exists", () => {
-    const url = pickBootWsUrl(undefined, (k) => (k === "luna_ws_url" ? "ws://jax-box:4753/ui" : null))
+    const url = pickBootWsUrl(undefined, (k) => (k === "luna_ws_url" ? "ws://luna-host:4753/ui" : null))
     expect(url).not.toMatch(/127\.0\.0\.1|localhost/)
-    expect(url).toBe("ws://jax-box:4753/ui")
+    expect(url).toBe("ws://luna-host:4753/ui")
   })
 })
 

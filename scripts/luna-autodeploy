@@ -6,7 +6,7 @@
 # reset + conditional bun install + restart + readiness probe + AUTO-ROLLBACK).
 #
 # This is the pull-based deploy TRIGGER that was the missing glue: GitHub can't
-# reach jax-box (Tailscale) and CI can't reach jax-box, so the box polls GitHub.
+# reach luna-host (Tailscale) and CI can't reach luna-host, so the box polls GitHub.
 # It is a thin, SAFE wrapper around the already-tested luna-update-server:
 #
 #   * NO-OP (quiet exit 0) when the channel is already at origin/<branch>, so a
@@ -45,7 +45,7 @@
 # Profile config is DATA-DRIVEN from /etc/luna/servers.toml (or LUNA_SERVERS_CONFIG).
 # Set LUNA_REGISTRY_DISABLE=1 to fall back to the hardcoded case (one-flag rollback).
 #
-# Built-in profiles (hardcoded fallback — kill-switch/rollback ONLY, jax-box topology):
+# Built-in profiles (hardcoded fallback — kill-switch/rollback ONLY, luna-host topology):
 #   dev    : host repo /root/luna/dev/repo,    branch dev,    incus container luna-dev,    WS :4753 (in container)
 #   stable : host repo /root/luna/stable/repo, branch master, incus container luna-stable, WS :4753 (incusd proxy)
 #

@@ -17,7 +17,7 @@
 
 kind          = "registry"
 schemaVersion = 1
-host          = "jax-box"
+host          = "luna-host"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # stable — production daily driver.

@@ -132,7 +132,7 @@ describe("luna chat config", () => {
         LUNA_DEV_UI_WS_TOKEN: "dev-env-token",
         LUNA_DEV_START_MODE: "ssh",
         LUNA_DEV_START_COMMAND: "systemctl --user restart luna-dev-chat-server.service",
-        LUNA_DEV_START_SSH: "root@jax-box",
+        LUNA_DEV_START_SSH: "root@luna-host",
       },
       dotenv: {
         LUNA_DEV_WS_URL: "ws://dev-file/ui",
@@ -146,28 +146,28 @@ describe("luna chat config", () => {
     expect(cfg.token).toBe("dev-env-token")
     expect(cfg.startMode).toBe("ssh")
     expect(cfg.startCommand).toBe("systemctl --user restart luna-dev-chat-server.service")
-    expect(cfg.startSsh).toBe("root@jax-box")
+    expect(cfg.startSsh).toBe("root@luna-host")
   })
 
   it("loads profile fallback URLs and fallback SSH targets", () => {
     const cfg = loadChatConfig({
       args: parseChatArgs(["chat", "--dev"]),
       env: {
-        LUNA_DEV_WS_URL: "ws://jax-box/ui",
-        LUNA_DEV_FALLBACK_WS_URL: "ws://jax-box.local/ui",
+        LUNA_DEV_WS_URL: "ws://luna-host/ui",
+        LUNA_DEV_FALLBACK_WS_URL: "ws://luna-host.local/ui",
         LUNA_DEV_UI_WS_TOKEN: "dev-env-token",
         LUNA_DEV_START_MODE: "ssh",
         LUNA_DEV_START_COMMAND: "incus exec luna-dev -- systemctl restart luna-dev-chat-server.service",
-        LUNA_DEV_START_SSH: "root@jax-box",
-        LUNA_DEV_FALLBACK_START_SSH: "root@jax-box.local",
+        LUNA_DEV_START_SSH: "root@luna-host",
+        LUNA_DEV_FALLBACK_START_SSH: "root@luna-host.local",
       },
       dotenv: {},
       homeDir: "/tmp/home",
       cwd: "/work",
     })
 
-    expect(cfg.urls).toEqual(["ws://jax-box/ui", "ws://jax-box.local/ui"])
-    expect(cfg.startSshTargets).toEqual(["root@jax-box", "root@jax-box.local"])
+    expect(cfg.urls).toEqual(["ws://luna-host/ui", "ws://luna-host.local/ui"])
+    expect(cfg.startSshTargets).toEqual(["root@luna-host", "root@luna-host.local"])
     expect(redactedConfigSummary(cfg)).toContain("urls=2")
   })
 

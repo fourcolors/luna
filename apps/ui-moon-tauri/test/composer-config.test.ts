@@ -1298,11 +1298,11 @@ describe('ComposerConfig (chat.html)', () => {
       expect(sent[0]).toMatchObject({ type: 'new-thread', accountId: 'acc-a' })
     })
 
-    it('jax-box Connected path is unchanged (no 127.0.0.1 rewrite)', () => {
-      internals().State.wsUrl = 'ws://jax-box:4753/ui'
+    it('luna-host Connected path is unchanged (no 127.0.0.1 rewrite)', () => {
+      internals().State.wsUrl = 'ws://luna-host:4753/ui'
       internals().handleFrame({ type: 'account-list', accounts: twoAnthropic })
       internals().ComposerConfig._selectAccount('acc-b')
-      expect(internals().State.wsUrl).toBe('ws://jax-box:4753/ui')
+      expect(internals().State.wsUrl).toBe('ws://luna-host:4753/ui')
       expect(String(internals().State.wsUrl)).not.toContain('127.0.0.1')
       expect(String(internals().State.wsUrl)).not.toContain('localhost')
     })

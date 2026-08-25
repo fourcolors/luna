@@ -1033,7 +1033,7 @@ fileFormatVersion = 3
 default = "stable"
 
 [route.stable]
-endpoints = ["ws://stale-host:4753/ui", "ws://jax-box.local:4753/ui"]
+endpoints = ["ws://stale-host:4753/ui", "ws://luna-host.local:4753/ui"]
 label = "stable"
 tokenRef = "legacy"
 
@@ -1047,7 +1047,7 @@ tokenRef = "legacy"
         upsert_route_endpoint_in(
             &luna_dir,
             "stable",
-            "ws://jax-box:4753/ui",
+            "ws://luna-host:4753/ui",
             false,
         )
         .expect("upsert");
@@ -1060,18 +1060,18 @@ tokenRef = "legacy"
         assert_eq!(
             cfg.route.get("stable").unwrap().endpoints,
             vec![
-                "ws://jax-box:4753/ui".to_string(),
-                "ws://jax-box.local:4753/ui".to_string()
+                "ws://luna-host:4753/ui".to_string(),
+                "ws://luna-host.local:4753/ui".to_string()
             ],
-            "endpoints[0] rewritten to jax-box; failover preserved"
+            "endpoints[0] rewritten to luna-host; failover preserved"
         );
         let body = std::fs::read_to_string(luna_dir.join("client.toml")).unwrap();
         assert!(
             !body.contains("127.0.0.1"),
-            "jax-box upsert must not emit loopback: {body}"
+            "luna-host upsert must not emit loopback: {body}"
         );
 
-        upsert_route_endpoint_in(&luna_dir, "dev", "ws://jax-box:5753/ui", true)
+        upsert_route_endpoint_in(&luna_dir, "dev", "ws://luna-host:5753/ui", true)
             .expect("upsert activate");
         let cfg2 = parse_client_config(
             &std::fs::read_to_string(luna_dir.join("client.toml")).expect("read"),
@@ -1080,7 +1080,7 @@ tokenRef = "legacy"
         assert_eq!(cfg2.default, "dev", "set_default flips default");
         assert_eq!(
             cfg2.route.get("dev").unwrap().endpoints,
-            vec!["ws://jax-box:5753/ui".to_string()]
+            vec!["ws://luna-host:5753/ui".to_string()]
         );
     }
 
@@ -1089,7 +1089,7 @@ tokenRef = "legacy"
         let dir = tempfile::tempdir().expect("tempdir");
         let luna_dir = dir.path().join(".luna");
         std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
-        upsert_route_endpoint_in(&luna_dir, "stable", "ws://jax-box:4753/ui", true)
+        upsert_route_endpoint_in(&luna_dir, "stable", "ws://luna-host:4753/ui", true)
             .expect("absent is Ok");
         assert!(
             !luna_dir.join("client.toml").exists(),
@@ -1107,7 +1107,7 @@ fileFormatVersion = 3
 default = "stable"
 
 [route.stable]
-endpoints = ["ws://jax-box:4753/ui"]
+endpoints = ["ws://luna-host:4753/ui"]
 label = "stable"
 tokenRef = "legacy"
 "#;
