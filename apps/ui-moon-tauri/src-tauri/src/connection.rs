@@ -1592,7 +1592,7 @@ tokenRef = "legacy"
     /// stores Moon + luna chat read, and never emits 127.0.0.1. This is the
     /// Connected path — not loopback retarget.
     #[test]
-    fn save_connection_in_jax_box_writes_all_three_stores_never_loopback() {
+    fn save_connection_in_named_host_writes_all_three_stores_never_loopback() {
         with_tmp_luna_dir(|luna_dir| {
             // Start from a WRONG host so the write must actually move the dial.
             let toml = r#"kind = "bootstrap"
