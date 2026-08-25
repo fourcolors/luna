@@ -206,9 +206,17 @@ export const parseDiscord429RetryMs = (err: unknown): number | null => {
  * `Effect.die(err)` with a raw @discordjs/rest error is the same leak the
  * logging rule guards against, one channel over: a defect is rendered by
  * Effect's default logger via `Cause.pretty`, which stringifies the value and
- * can surface the enumerable `.url` / `.route` members that carry a live
- * token, plus the tokened route embedded in `RateLimitError.name`. The
- * message alone is the only safe field, exactly as for console.
+ * surfaces its ENUMERABLE own properties.
+ *
+ * Measured against the pinned @discordjs/rest 2.6.3, because the usual
+ * folklore here is wrong in a way that matters:
+ *   RateLimitError.name -> "RateLimitError[/interactions/:id/:token/callback]"
+ *   String(err)         -> the same, i.e. the BUCKETED route with placeholders
+ *   err.url             -> ".../interactions/<real-id>/<real-token>/callback"
+ *   Object.keys(err)    -> [..., "url", "route", ...]
+ * So `.name` and `String(err)` are placeholder-only and harmless; the live
+ * token lives in `.url`, and `.url` is ENUMERABLE. That is precisely why any
+ * OBJECT-shaped rendering leaks while the message alone does not.
  */
 const dieMessageOnly = (err: unknown): Effect.Effect<never> =>
   Effect.die(new Error(err instanceof Error ? err.message : String(err)))

@@ -338,6 +338,40 @@ describe("A5 ratchet: console arguments are message-only, never a raw error", ()
     ).toEqual([])
   })
 
+  // The object-shaped renderings that actually leak, because `.url` is an
+  // ENUMERABLE own property (measured against @discordjs/rest 2.6.3). This is
+  // the gap an adversarial pass found in the first version of this ratchet:
+  // it only knew two shapes, so JSON.stringify(err), util.inspect(err), a
+  // shorthand { err }, and a direct .url read all sailed through.
+  it("no console call renders an error as an OBJECT", () => {
+    const src = stripComments(discordSrc)
+    const offenders: string[] = []
+    for (const args of consoleCalls(src)) {
+      for (const ident of ERRORISH) {
+        const id = ident.replace(".", "\\.")
+        for (const [pat, label] of [
+          [`JSON\\.stringify\\(\\s*${id}`, "JSON.stringify"],
+          [`inspect\\(\\s*${id}`, "util.inspect"],
+          [`\\{\\s*${id}\\s*\\}`, "object shorthand"],
+          [`${id}\\.(url|route)\\b`, "direct .url/.route"],
+        ] as const) {
+          if (new RegExp(pat).test(args)) {
+            offenders.push(`${label} of ${ident} in: console(${args.trim().slice(0, 70)})`)
+          }
+        }
+      }
+    }
+    expect(offenders, offenders.join("\n")).toEqual([])
+  })
+
+  it("uses no console channel the primitive scan does not cover", () => {
+    // The scan reads log/warn/error. If a call appears on another channel it
+    // silently escapes every rule above, so pin the channel set itself.
+    const src = stripComments(discordSrc)
+    const others = [...src.matchAll(/console\.(info|debug|trace|dir|table)\s*\(/g)].map((m) => m[0])
+    expect(others, "extend consoleCalls() before using these").toEqual([])
+  })
+
   it("no console call stringifies a whole error via String(err) or template interpolation", () => {
     const src = stripComments(discordSrc)
     const offenders: string[] = []
