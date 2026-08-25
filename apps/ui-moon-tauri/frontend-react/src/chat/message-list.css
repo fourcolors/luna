@@ -337,13 +337,17 @@
 .constellation { display: block; overflow: visible; flex: 0 0 auto; }
 /* Resting is STILL. Nothing animates on a settled turn, failures included. */
 .constellation.rest { opacity: 0.85; transition: opacity 0.18s ease; }
+/* The settled star map renders INSIDE .timeline-summary (see TimelineItem),
+   so hovering the collapsed pill is what brightens it back to full opacity. */
 .timeline:hover .constellation.rest { opacity: 1; }
 
-/* The star map's own row, last in the turn and under the answer.
-   Borrows `.msg-meta`'s rhythm (margin-top:3px; padding:0 2px) so it reads as
-   part of the message above rather than as a new block, and carries none of
-   `.msg`'s bubble chrome - no background, no padding box. The row must not
-   stretch: the strip is self-sized so the record never rearranges itself. */
+/* The star map's own row, last in the turn and under the answer - WHILE THE
+   RUN IS STILL ACTIVE only. Once settled it moves into .timeline-summary (see
+   TimelineItem) instead of lingering here. Borrows `.msg-meta`'s rhythm
+   (margin-top:3px; padding:0 2px) so it reads as part of the message above
+   rather than as a new block, and carries none of `.msg`'s bubble chrome - no
+   background, no padding box. The row must not stretch: the strip is
+   self-sized so it never rearranges itself mid-run. */
 .constellation-row {
   align-self: flex-start;   /* the assistant column, same as .msg.assistant */
   display: flex;
@@ -352,11 +356,10 @@
      the answer above it, not to the thread, so claw that back to `.msg-meta`'s
      own 3px rhythm and let it sit tight under the bubble. */
   margin-top: -9px;
-  /* Never grow: the strip is self-sized so a settled record cannot appear to
-     rearrange itself when the panel is resized. */
+  /* Never grow: the strip is self-sized so it cannot appear to rearrange
+     itself when the panel is resized. */
   flex: 0 0 auto;
 }
-.constellation-row:hover .constellation.rest { opacity: 1; }
 
 .star-link { fill: none; stroke: var(--ink-soft); stroke-width: 1; opacity: 0.24; }
 .star-read  { fill: var(--ink-soft); }

@@ -907,8 +907,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // The agentic turn fully ends (SDK `result`) → settles the run.
       handleFrame({ type: 'turn-complete', threadId: 't' })
 
-      // Auto-collapses to the summary pill; the answer bubble stays below.
-      expect(chat.children.length).toBe(3)
+      // Auto-collapses to the summary pill (which now carries the star map
+      // itself); the answer bubble stays below, with no separate trailing row.
+      expect(chat.children.length).toBe(2)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
@@ -956,10 +957,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // The SDK `result` lands → the run settles even though it ends on a tool.
       handleFrame({ type: 'turn-complete', threadId: 't' })
 
-      // Settled: collapses to the pill (real "Worked for N steps", no spinner),
-      // and the done message.text is written NOWHERE (no finalize-into-card,
-      // no ghost answer bubble).
-      expect(chat.children.length).toBe(2)
+      // Settled: collapses to the pill (real "Worked for N steps", no spinner,
+      // now carrying the star map itself), and the done message.text is
+      // written NOWHERE (no finalize-into-card, no ghost answer bubble, no
+      // separate trailing constellation row).
+      expect(chat.children.length).toBe(1)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
@@ -1443,11 +1445,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Checking. Found 2 lines.' } })
       M().handleFrame({ type: 'turn-complete', threadId: 't1' })
 
-      expect(chat.children.length).toBe(3)
+      // The star map now lives inside the pill itself - no separate trailing row.
+      expect(chat.children.length).toBe(2)
       const tl = chat.children[0] as HTMLElement
       expect(tl.classList.contains('timeline')).toBe(true)
       expect(tl.classList.contains('collapsed')).toBe(true)
       expect(tl.querySelector('.timeline-body')).toBeNull() // collapsed = body hidden
+      expect(tl.querySelector('.timeline-summary .constellation')).not.toBeNull()
       const answer = chat.children[1] as HTMLElement
       expect(answer.className).toBe('msg assistant')
       expect(answer.textContent).toContain('Found 2 lines.')
@@ -1562,7 +1566,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.querySelector('.star-read')).not.toBeNull()
       expect(chat.querySelector('.star-run')).not.toBeNull()
       // The final answer is the bubble below the pill. Found by class, not by
-      // position: the constellation row trails it as the last child now.
+      // position: the constellation itself now lives INSIDE the collapsed
+      // pill's summary bar, not as a trailing row under this bubble.
       const bubbles = chat.querySelectorAll('.msg.assistant')
       const answer = bubbles[bubbles.length - 1] as HTMLElement
       expect(answer.className).toBe('msg assistant')
@@ -1655,7 +1660,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
       expect(chat.querySelector('.timeline .timeline-summary-label')).toBeNull()
-      expect(chat.querySelector('.constellation-row .constellation.rest')).not.toBeNull()
+      // Settled: the record lives in the collapsed summary bar, not a trailing row.
+      expect(chat.querySelector('.constellation-row')).toBeNull()
+      expect(chat.querySelector('.timeline-summary .constellation.rest')).not.toBeNull()
     })
   })
 

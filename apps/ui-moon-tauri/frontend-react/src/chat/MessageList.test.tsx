@@ -367,10 +367,35 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
       mount?.ChatState.markRunSettled()
       mount?.ChatLoop.flush()
     })
-    // Settled: still present as the record, but resting and no longer pulsing.
-    expect(container?.querySelector(".constellation-row .constellation.rest")).toBeTruthy()
-    expect(container?.querySelector(".constellation-row .star-new")).toBeNull()
+    // Settled: the record moves INTO the collapsed timeline-summary bar - the
+    // trailing .constellation-row is gone entirely, not just resting.
+    expect(container?.querySelector(".constellation-row")).toBeNull()
+    expect(container?.querySelector(".timeline-summary .constellation.rest")).toBeTruthy()
+    expect(container?.querySelector(".timeline-summary .star-new")).toBeNull()
     expect(mount?.ChatState.hasVisibleStreamingPlaceholder()).toBe(false)
+  })
+
+  it("a settled turn's star map stays in the summary bar even when the user manually re-expands the timeline", () => {
+    act(() => {
+      mount?.ChatState.applyToolCall("t1", "c1", "Bash", { cmd: "ls" })
+      mount?.ChatState.finishTurn("t1", "", 1)
+      mount?.ChatState.markRunSettled()
+      mount?.ChatLoop.flush()
+    })
+    const timeline = container?.querySelector(".timeline") as HTMLElement
+    expect(timeline.classList.contains("collapsed")).toBe(true)
+    expect(container?.querySelector(".timeline-summary .constellation")).toBeTruthy()
+
+    const turnKey = timeline.dataset.turnKey as string
+    act(() => {
+      mount?.ChatState.toggleTimelineCollapsed(turnKey, true)
+      mount?.ChatLoop.flush()
+    })
+    const timelineAfter = container?.querySelector(".timeline") as HTMLElement
+    expect(timelineAfter.classList.contains("collapsed")).toBe(false)
+    expect(timelineAfter.querySelector(".timeline-body")).toBeTruthy()
+    // Still there - the summary is a persistent header, not gated on collapse.
+    expect(container?.querySelector(".timeline-summary .constellation")).toBeTruthy()
   })
 })
 
