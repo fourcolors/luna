@@ -358,6 +358,7 @@ import {
   ChannelServiceLayer,
   ChannelSessionStore,
   InboundDedupStore,
+  makeDiscordAdapter,
   makeTelegramAdapter,
 } from "@luna/channels"
 import {
@@ -4908,7 +4909,7 @@ const buildMain = (
           allowedIds: tgAllowedIds,
         }),
       )
-      yield* channels.startAdapters().pipe(Effect.scoped)
+      yield* channels.startAdapters()
       console.log(`📨 telegram channel: started (telegram-main)`)
       if (tgAllowedIds.length > 0) {
         console.log(
@@ -4922,6 +4923,76 @@ const buildMain = (
       }
     } else {
       console.log(`📨 telegram channel: idle — set TELEGRAM_BOT_TOKEN to enable`)
+    }
+
+    // -- Discord ---------------------------------------------------------------
+    // Unlike telegram above, Discord is FAIL-CLOSED. This bot fronts an agent
+    // with an unrestricted local shell, so there is no configuration in which
+    // it accepts messages from an unknown sender:
+    //
+    //   env var set   -> exactly those user ids
+    //   env var unset -> the allowlist is empty and registration is REFUSED
+    //
+    // There is deliberately NO compiled-in default. A default allowlist ships
+    // whichever id the author happened to write onto every installation, which
+    // is both a privacy leak and an authorization bug: an operator who has not
+    // said who may talk to their shell has not consented to anyone talking to
+    // it. Empty means refuse, not "fall back to someone".
+    //
+    // LUNA_DISCORD_ALLOWED_USER_IDS is read from raw process.env, NOT through
+    // the SecretProvider chain. Two places therefore feed it, and only two:
+    // ~/.luna/.env (loaded into process.env at module scope near the top of
+    // this file) and the launchd unit's EnvironmentVariables block, which wins
+    // on conflict. A typo'd NAME yields an empty allowlist and a refusal, so
+    // the mistake is loud rather than silent. Note this is about where the
+    // value is normally CONFIGURED, not a restriction process.env enforces: a
+    // var exported in the shell that launched the server is read like any
+    // other, so a stale export can quietly satisfy the allowlist.
+    const dcSecret = yield* Effect.promise(() => resolveEnvSecret("DISCORD_BOT_TOKEN"))
+    const dcToken = dcSecret === undefined ? undefined : Redacted.value(dcSecret).trim()
+    const dcAllowedUsers = (process.env["LUNA_DISCORD_ALLOWED_USER_IDS"] ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+    const dcAllowedChannels = (process.env["LUNA_DISCORD_ALLOWED_CHANNEL_IDS"] ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+    // Home guild for slash-command registration. Missing/empty => the adapter
+    // logs a skip line and registers nothing; guild scoping is noise reduction,
+    // never auth - the allowlist above remains the only boundary.
+    const dcGuildId = (process.env["LUNA_DISCORD_GUILD_ID"] ?? "").trim()
+    if (dcToken !== undefined && dcToken.length > 0) {
+      if (dcAllowedUsers.length === 0) {
+        console.error(
+          `DISCORD channel: REFUSED to start - DISCORD_BOT_TOKEN is set but ` +
+            `LUNA_DISCORD_ALLOWED_USER_IDS is empty. An open Discord bot in ` +
+            `front of a local shell is not permitted. Set the allowlist in ` +
+            `~/.luna/.env (or the launchd unit) and restart.`,
+        )
+      } else {
+        yield* channels.registerAdapter(
+          makeDiscordAdapter({
+            id: "discord-main",
+            token: Redacted.make(dcToken),
+            allowedUsers: dcAllowedUsers,
+            ...(dcAllowedChannels.length > 0 ? { allowedChannels: dcAllowedChannels } : {}),
+            ...(dcGuildId.length > 0 ? { guildId: dcGuildId } : {}),
+          }),
+        )
+        // The SECOND startAdapters() call in this function; the telegram block
+        // above already made the first. ChannelService.startAdapters is
+        // idempotent per adapter id precisely so this cannot re-fork telegram.
+        yield* channels.startAdapters()
+        console.log(`discord channel: started (discord-main)`)
+        console.log(
+          `discord allowlist: ${dcAllowedUsers.length} user(s) ` +
+            `(LUNA_DISCORD_ALLOWED_USER_IDS), ` +
+            `${dcAllowedChannels.length === 0 ? "any" : String(dcAllowedChannels.length)} channel(s)`,
+        )
+      }
+    } else {
+      console.log(`discord channel: idle - set DISCORD_BOT_TOKEN to enable`)
     }
 
     // Park forever so the server scope stays open.
