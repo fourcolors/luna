@@ -377,6 +377,13 @@ function Constellation({
       viewBox={`0 0 ${w} ${STRIP_HEIGHT}`}
       role="img"
       aria-label={constellationLabel(stars, total, failed)}
+      // Once settled this renders inside .timeline-summary, whose delegated
+      // click handler (wiring.ts) toggles the timeline open/closed on any
+      // click in the row. A star carries its own hover title (which tool,
+      // pass/fail) - swallowing the click here keeps "inspect a star" from
+      // also collapsing/expanding the row, same guard as ToolCard's "view ↗"
+      // button above uses against its own ancestor disclosure.
+      onClick={(e) => e.stopPropagation()}
     >
       {stars.length > 1 && <path className="star-link" d={linkPath(stars.length)} />}
       {stars.map((s, i) => {
