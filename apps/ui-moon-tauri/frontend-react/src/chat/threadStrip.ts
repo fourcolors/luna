@@ -278,10 +278,20 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
   // mid-turn (codex review of #613). Remember where focus was and put it
   // back afterwards.
   const prevActive = document.activeElement as HTMLElement | null
-  const focusedRow =
-    prevActive && listEl.contains(prevActive) ? prevActive.closest(".thread-row") : null
+  const inList = !!(prevActive && listEl.contains(prevActive))
+  const focusedRow = inList ? prevActive!.closest(".thread-row") : null
   const focusedThreadId = focusedRow ? (focusedRow as HTMLElement).dataset["threadId"] : null
   const focusedPop = !!(prevActive && prevActive.classList.contains("thread-row-pop"))
+  // Section headers are focusable too (role=button, tabIndex 0) and are
+  // rebuilt by the same wholesale repaint, so they need the same treatment
+  // as rows (codex review of #613, round 2). `null` for the General header,
+  // which carries no agent name — distinguished from "no header focused" by
+  // the boolean.
+  const focusedHeader = inList ? prevActive!.closest(".thread-section-header") : null
+  const focusedHeaderAgent = focusedHeader
+    ? ((focusedHeader as HTMLElement).dataset["agentName"] ?? null)
+    : null
+  const focusedHeaderNew = !!(prevActive && prevActive.classList.contains("thread-section-new"))
 
   const seen = paintedAgentIds.get(listEl) || new Set<string>()
   const painted = new Set<string>()
@@ -342,7 +352,16 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
   listEl.appendChild(frag)
   paintedAgentIds.set(listEl, painted)
 
-  if (focusedThreadId) {
+  if (focusedHeader) {
+    for (const el of listEl.querySelectorAll(".thread-section-header")) {
+      if (((el as HTMLElement).dataset["agentName"] ?? null) !== focusedHeaderAgent) continue
+      const target = focusedHeaderNew
+        ? ((el.querySelector(".thread-section-new") as HTMLElement | null) ?? (el as HTMLElement))
+        : (el as HTMLElement)
+      target.focus()
+      break
+    }
+  } else if (focusedThreadId) {
     // Scanned, not `querySelector` with an interpolated id: a thread id is
     // server data and CSS.escape is not available in every environment this
     // renders in (jsdom has none). Comparing dataset values needs no

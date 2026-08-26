@@ -113,6 +113,17 @@ export function createFrames(ctx: FramesCtx) {
       const hasAgents = !!(frame && frame.capabilities && frame.capabilities.agents);
       MentionMenu.applyCapability(hasAgents);
     }
+    // Live subagents are LIVE state, so a new connection must not inherit
+    // the old one's (codex review of #613, round 2). Only the thread that
+    // gets a snapshot is re-queried, and an older server may not answer at
+    // all — so a background thread mid-delegation at disconnect would show
+    // phantom running agents forever, with no terminal frame ever coming to
+    // retract them. Drop everything on hello and let the snapshot request
+    // repopulate what is genuinely still running.
+    State.subagentsByThread = Object.create(null);
+    if (ThreadDrawerEngine) {
+      try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
+    }
     // (skills/connectors/vault capability gating + the widget-directory
     // announce are HUB concerns — the launchers and panels live there.)
   });
@@ -172,7 +183,12 @@ export function createFrames(ctx: FramesCtx) {
       } else {
         delete State.subagentsByThread[frame.threadId];
       }
-      if (ThreadDrawerEngine) {
+      // Repaint ONLY when the drawer is actually on screen. These frames
+      // arrive on every tool call of every subagent, and broadcasts reach
+      // this client for threads it is not even looking at — rebuilding a
+      // collapsed list of up to 500 rows for each one is pure churn (codex
+      // review of #613, round 2). Opening the drawer renders on its own.
+      if (ThreadDrawerEngine && State.threadDrawerOpen) {
         try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
       }
 

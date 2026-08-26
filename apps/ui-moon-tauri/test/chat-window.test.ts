@@ -5286,6 +5286,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a subagent-tree frame nests the running agents under that thread only', () => {
       const m = M()
       m.State.activeThreadId = 'keep'
+      m.State.threadDrawerOpen = true // the repaint is gated on a VISIBLE drawer
       seed()
       m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
       const nested = [...document.querySelectorAll('#thread-drawer-list .thread-agent-row')]
@@ -5300,6 +5301,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: the end-of-turn all-done tree clears the nested rows', () => {
       const m = M()
       m.State.activeThreadId = 'keep'
+      m.State.threadDrawerOpen = true
       seed()
       m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
       expect(document.querySelectorAll('.thread-agent-row').length).toBe(1)
@@ -5340,6 +5342,38 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'done', tool: null, toolCount: 0 }],
       })
       expect(m.State.subagentsByThread['b']).toBeUndefined()
+    })
+
+    it('Scenario: a reconnect drops stale trees so no phantom agents survive it', () => {
+      // codex review of #613, round 2: a background thread mid-delegation at
+      // disconnect gets no terminal frame from the old server, so without
+      // this its agents would read as "running" forever.
+      const m = M()
+      m.State.threadDrawerOpen = true
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'running', tool: null, toolCount: 0 }],
+      })
+      expect(m.State.subagentsByThread['b']).toBeTruthy()
+      m.handleFrame({ type: 'hello', protocolVersion: 1, kinds: [] })
+      expect(m.State.subagentsByThread['b']).toBeUndefined()
+    })
+
+    it('Scenario: a collapsed drawer is NOT rebuilt on every subagent frame', () => {
+      // These arrive per tool call, per subagent, for threads this window is
+      // not even looking at. Rebuilding a hidden 500-row list each time is
+      // pure churn (codex review of #613, round 2).
+      const m = M()
+      m.State.threadDrawerOpen = false
+      const renderSpy = vi.spyOn(m.ThreadDrawerEngine, 'render')
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'running', tool: null, toolCount: 0 }],
+      })
+      expect(renderSpy).not.toHaveBeenCalled()
+      // State is still updated, so opening the drawer paints the live team.
+      expect(m.State.subagentsByThread['b']).toBeTruthy()
+      renderSpy.mockRestore()
     })
 
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {

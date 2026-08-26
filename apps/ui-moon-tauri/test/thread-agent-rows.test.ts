@@ -281,6 +281,35 @@ describe("renderThreadStrip — nested agent rows", () => {
     ).toBe("t2")
   })
 
+  it("restores focus on a SECTION HEADER too, not just a row", () => {
+    // Sections are opt-in, but when they are on the header and its "+" are
+    // focusable and are rebuilt by the same repaint (codex review of #613,
+    // round 2).
+    const section = (agentName: string | null, rows: ThreadRow[]) => ({
+      agentName, label: agentName ?? "General", description: "", known: true,
+      rows, collapsed: false, busy: false,
+    })
+    const ctx = makeCtx([{ id: "t1" }], {
+      grouped: {
+        sections: [section("advisor", [{ id: "t1" }]), section(null, [])],
+        onToggle: () => {},
+        onNewThread: () => {},
+      },
+      agentRowsFor: () => liveAgentsForThread({ t: [node({ id: "x" })] }, "t"),
+    } as Partial<ThreadStripCtx>)
+    renderThreadStrip(ctx)
+    const header = document.querySelector(
+      '.thread-section-header[data-agent-name="advisor"]',
+    ) as HTMLElement
+    header.focus()
+    expect(document.activeElement).toBe(header)
+    renderThreadStrip(ctx) // an agent frame lands mid-keyboard-navigation
+    expect(
+      (document.activeElement as HTMLElement).dataset["agentName"],
+      "header focus must survive the rebuild",
+    ).toBe("advisor")
+  })
+
   it("never lets a throwing agent source take the thread list down", () => {
     renderThreadStrip(
       makeCtx([{ id: "t1" }], {
