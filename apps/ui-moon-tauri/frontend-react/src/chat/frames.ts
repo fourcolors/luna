@@ -113,6 +113,17 @@ export function createFrames(ctx: FramesCtx) {
       const hasAgents = !!(frame && frame.capabilities && frame.capabilities.agents);
       MentionMenu.applyCapability(hasAgents);
     }
+    // Live subagents are LIVE state, so a new connection must not inherit
+    // the old one's (codex review of #613, round 2). Only the thread that
+    // gets a snapshot is re-queried, and an older server may not answer at
+    // all — so a background thread mid-delegation at disconnect would show
+    // phantom running agents forever, with no terminal frame ever coming to
+    // retract them. Drop everything on hello and let the snapshot request
+    // repopulate what is genuinely still running.
+    State.subagentsByThread = Object.create(null);
+    if (ThreadDrawerEngine) {
+      try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
+    }
     // (skills/connectors/vault capability gating + the widget-directory
     // announce are HUB concerns — the launchers and panels live there.)
   });
@@ -154,6 +165,33 @@ export function createFrames(ctx: FramesCtx) {
   MoonFrames.register('subagent-tree', (frame) => {
     try {
       if (!frame || !frame.threadId || !Array.isArray(frame.agents)) return;
+
+      // The live team, nested under the thread's own sidebar row (Mr. Cobb,
+      // 2026-08-26 — a delegation used to pop a separate Agents window).
+      // Stored BEFORE the involvedAgents merge below, which returns early on
+      // several conditions that have nothing to do with this: the nesting
+      // must work on a server with no agent roster at all, and for spawns
+      // whose subagent_type the roster does not know.
+      if (!State.subagentsByThread) State.subagentsByThread = Object.create(null);
+      // A tree with nothing running renders nothing (liveAgentsForThread's
+      // gate), so KEEPING it would only grow this map by one dead tree per
+      // thread this window ever observes — every connection receives every
+      // thread's broadcast (codex review of #613). Deleting on the terminal
+      // frame bounds the map by "threads with work in flight right now".
+      if (frame.agents.some((n) => n && n.status === 'running')) {
+        State.subagentsByThread[frame.threadId] = frame.agents;
+      } else {
+        delete State.subagentsByThread[frame.threadId];
+      }
+      // Repaint ONLY when the drawer is actually on screen. These frames
+      // arrive on every tool call of every subagent, and broadcasts reach
+      // this client for threads it is not even looking at — rebuilding a
+      // collapsed list of up to 500 rows for each one is pure churn (codex
+      // review of #613, round 2). Opening the drawer renders on its own.
+      if (ThreadDrawerEngine && State.threadDrawerOpen) {
+        try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
+      }
+
       if (State.serverSupportsAgents !== true) return;
       const roster = Array.isArray(State.agents) ? State.agents : [];
       if (roster.length === 0) return;
@@ -440,6 +478,20 @@ export function createFrames(ctx: FramesCtx) {
     // background turn finished while we were elsewhere).
     if (frame && frame.threadId) {
       ThreadCache.put(frame.threadId, frame.messages || [], frame.throughSeq);
+      // Live subagents in the sidebar: ask for THIS thread's current tree.
+      // The broadcast only fires on CHANGE, so a window that attaches
+      // mid-turn would otherwise show nothing under the row until the next
+      // spawn. This rides the snapshot rather than `hello` (codex review of
+      // #613): at hello time activeThreadId is still null on a cold boot —
+      // it is assigned later by syncThread — so a hello-time request asked
+      // for nothing in exactly the reload case it was meant to cover. A
+      // snapshot means "we are attached to this thread", which is true on a
+      // cold boot, a reconnect AND a thread switch, so one call site covers
+      // all three. Read-only: answered to this connection alone, and it
+      // never subscribes, so the one-window-per-thread rule is intact.
+      try {
+        WebSocketEngine.send({ type: 'subagent-tree-request', threadId: frame.threadId });
+      } catch (_) { /* transport not ready; the next delegation paints anyway */ }
     }
     // This connection may still have forwarders for previously viewed
     // threads. A late snapshot must never replace the transcript for the

@@ -163,6 +163,105 @@ export function buildListThreadsFrame(state: {
     : { type: "list-threads" }
 }
 
+// ── Live subagents under a thread row ───────────────────────────────────────
+
+/** One node of a thread's live subagent tree, as the `subagent-tree`
+ *  broadcast delivers it (packages/ui-ws/src/subagent-tree-bridge.ts). */
+export interface SubagentNode {
+  readonly id: string
+  readonly parentId: string | null
+  readonly name: string
+  readonly description: string
+  readonly status: "running" | "done" | "error"
+  readonly tool: string | null
+  readonly toolCount: number
+}
+
+/** One subagent as the sidebar paints it: the node plus how far to indent. */
+export interface LiveAgentRow {
+  readonly node: SubagentNode
+  /** 0 = spawned by the turn itself; 1+ = spawned by another subagent. */
+  readonly depth: number
+}
+
+/** Indent stops at this depth so a deep chain can never march off the edge
+ *  of a 240px sidebar. */
+export const MAX_AGENT_DEPTH = 2
+
+/** Hard cap on rows nested under ONE thread. A turn that fans out to 16
+ *  subagents must not push every other thread off screen. */
+export const MAX_AGENT_ROWS = 8
+
+/**
+ * The subagent rows to nest under one thread, or [] for none.
+ *
+ * THE LIFECYCLE RULE, and why it is a pure derivation rather than a timer:
+ * the bridge broadcasts on every change and clears its per-thread tree on
+ * `turn-complete` — but only AFTER broadcasting the all-done snapshot, so the
+ * last frame a client ever sees for a turn has every node `done` and nothing
+ * arrives afterwards to retract it. Gating on "at least one node is still
+ * running" therefore makes the rows self-clearing at the exact moment the turn
+ * ends, with no timer, no extra frame, and no way for dead agents to pile up
+ * under a thread across turns. Finished siblings stay visible WHILE the team
+ * is still working, which is the whole point of a live view.
+ *
+ * Order is the wire's spawn order (a child is always spawned after its
+ * parent, so parents precede their children without a re-sort). Pure — no
+ * DOM, no State import, same contract as visibleThreads.
+ */
+export function liveAgentsForThread(
+  byThread: Readonly<Record<string, readonly SubagentNode[]>> | null | undefined,
+  threadId: string,
+): LiveAgentRow[] {
+  if (!byThread || !threadId) return []
+  const nodes = byThread[threadId]
+  if (!Array.isArray(nodes) || nodes.length === 0) return []
+  if (!nodes.some((n) => n && n.status === "running")) return []
+
+  const byId = new Map<string, SubagentNode>()
+  for (const n of nodes) if (n && n.id) byId.set(n.id, n)
+
+  const depthOf = (n: SubagentNode): number => {
+    let depth = 0
+    let parent = n.parentId
+    // Bounded walk: stopping at the indent cap is enough to know we are past
+    // it, and it makes a cyclic parentId (malformed server data) structurally
+    // unable to hang the render.
+    while (parent && depth <= MAX_AGENT_DEPTH) {
+      const up = byId.get(parent)
+      if (!up) break
+      depth += 1
+      parent = up.parentId
+    }
+    return Math.min(depth, MAX_AGENT_DEPTH)
+  }
+
+  const valid = nodes.filter((n) => n && n.id)
+
+  // THE CAP PRIORITISES RUNNING NODES, and that is not a nicety (codex
+  // review of #613). Truncating in spawn order alone meant a turn whose
+  // first eight subagents had finished while a ninth still worked rendered
+  // eight `done` rows and NOT the one doing the work — the section stayed
+  // open (something is running) while showing nothing running, which is
+  // worse than showing nothing at all. Running wins the slots; finished
+  // siblings fill whatever is left.
+  let keep = valid
+  if (valid.length > MAX_AGENT_ROWS) {
+    const running = valid.filter((n) => n.status === "running")
+    const finished = valid.filter((n) => n.status !== "running")
+    const chosen = new Set(running.slice(0, MAX_AGENT_ROWS).map((n) => n.id))
+    for (const n of finished) {
+      if (chosen.size >= MAX_AGENT_ROWS) break
+      chosen.add(n.id)
+    }
+    // Re-filter the ORIGINAL array so spawn order (and therefore
+    // parent-before-child) survives the selection.
+    keep = valid.filter((n) => chosen.has(n.id))
+  }
+
+  return keep.map((n) => ({ node: n, depth: depthOf(n) }))
+}
+
 // ── Agent sections (agent sidebar S5) ───────────────────────────────────────
 
 /** One mentionable agent as the agent-list frame delivers it. */

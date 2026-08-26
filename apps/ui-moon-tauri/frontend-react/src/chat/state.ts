@@ -122,6 +122,12 @@ export function createState() {
       // Threads with an in-flight agentic turn (any threadId, not just active).
       // Sidebar shows a busy pulse so background work is visible while you chat elsewhere.
       busyThreads: Object.create(null),
+      // Live subagent trees, threadId → SubagentNode[], written by the
+      // `subagent-tree` broadcast handler in frames.ts. The sidebar nests
+      // the running ones under their thread row (see threadList
+      // .liveAgentsForThread), which is why the delegation no longer pops a
+      // separate Agents window.
+      subagentsByThread: Object.create(null),
       // Agent sidebar S4: mention menu + (S5) grouped sidebar gating.
       // Defaults false; `hello` corrects to true when the server binds an
       // agent roster. Old server → "@" stays ordinary text, flat sidebar.

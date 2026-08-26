@@ -5273,6 +5273,109 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rowB.classList.contains('active')).toBe(true)
     })
 
+    // Live subagents nest under their thread's row instead of the server
+    // popping a separate Agents window (Mr. Cobb, 2026-08-26). The unit pins
+    // live in test/thread-agent-rows.test.ts; these two drive the REAL frame
+    // handler, so the whole path — subagent-tree frame → State →
+    // ThreadDrawerEngine.render → DOM — is covered, not just its two ends.
+    const subagent = (over: any = {}) => ({
+      id: 'n1', parentId: null, name: 'researcher', description: 'look it up',
+      status: 'running', tool: 'Grep', toolCount: 2, ...over,
+    })
+
+    it('Scenario: a subagent-tree frame nests the running agents under that thread only', () => {
+      const m = M()
+      m.State.activeThreadId = 'keep'
+      m.State.threadDrawerOpen = true // the repaint is gated on a VISIBLE drawer
+      seed()
+      m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
+      const nested = [...document.querySelectorAll('#thread-drawer-list .thread-agent-row')]
+      expect(nested.length).toBe(1)
+      expect(nested[0].querySelector('.thread-agent-name')!.textContent).toBe('researcher')
+      // Directly after ITS OWN thread's row, not floating elsewhere in the list.
+      expect(nested[0].previousElementSibling!.getAttribute('data-thread-id')).toBe('b')
+      // And the .thread-row list redock indexes positionally is untouched.
+      expect(document.querySelectorAll('#thread-drawer-list .thread-row').length).toBe(3)
+    })
+
+    it('Scenario: the end-of-turn all-done tree clears the nested rows', () => {
+      const m = M()
+      m.State.activeThreadId = 'keep'
+      m.State.threadDrawerOpen = true
+      seed()
+      m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
+      expect(document.querySelectorAll('.thread-agent-row').length).toBe(1)
+      // The bridge's LAST broadcast of a turn: every node done. Nothing
+      // follows it, so this frame is the only chance to clear the rows.
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b', agents: [subagent({ status: 'done' })],
+      })
+      expect(document.querySelectorAll('.thread-agent-row').length).toBe(0)
+    })
+
+    it('Scenario: a thread-snapshot asks for THAT thread\'s live subagent tree', () => {
+      // codex review of #613: this request used to ride `hello`, where
+      // activeThreadId is still null on a cold boot (syncThread assigns it
+      // later) — so it asked for nothing in exactly the mid-turn reload case
+      // it existed to cover. A snapshot means "attached to this thread",
+      // which is true on cold boot, reconnect AND thread switch.
+      const m = M()
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      m.handleFrame({ type: 'thread-snapshot', threadId: 'b', messages: [], throughSeq: 0 })
+      expect(sendSpy.mock.calls.map((c: any[]) => c[0])).toContainEqual({
+        type: 'subagent-tree-request', threadId: 'b',
+      })
+    })
+
+    it('Scenario: a finished tree is EVICTED from state, not retained forever', () => {
+      // Every connection receives every thread's broadcast, so keeping the
+      // terminal tree would grow this map by one dead entry per thread the
+      // window ever observes (codex review of #613).
+      const m = M()
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'running', tool: null, toolCount: 0 }],
+      })
+      expect(m.State.subagentsByThread['b']).toBeTruthy()
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'done', tool: null, toolCount: 0 }],
+      })
+      expect(m.State.subagentsByThread['b']).toBeUndefined()
+    })
+
+    it('Scenario: a reconnect drops stale trees so no phantom agents survive it', () => {
+      // codex review of #613, round 2: a background thread mid-delegation at
+      // disconnect gets no terminal frame from the old server, so without
+      // this its agents would read as "running" forever.
+      const m = M()
+      m.State.threadDrawerOpen = true
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'running', tool: null, toolCount: 0 }],
+      })
+      expect(m.State.subagentsByThread['b']).toBeTruthy()
+      m.handleFrame({ type: 'hello', protocolVersion: 1, kinds: [] })
+      expect(m.State.subagentsByThread['b']).toBeUndefined()
+    })
+
+    it('Scenario: a collapsed drawer is NOT rebuilt on every subagent frame', () => {
+      // These arrive per tool call, per subagent, for threads this window is
+      // not even looking at. Rebuilding a hidden 500-row list each time is
+      // pure churn (codex review of #613, round 2).
+      const m = M()
+      m.State.threadDrawerOpen = false
+      const renderSpy = vi.spyOn(m.ThreadDrawerEngine, 'render')
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'running', tool: null, toolCount: 0 }],
+      })
+      expect(renderSpy).not.toHaveBeenCalled()
+      // State is still updated, so opening the drawer paints the live team.
+      expect(m.State.subagentsByThread['b']).toBeTruthy()
+      renderSpy.mockRestore()
+    })
+
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
       setWs(m, { readyState: 1, send: () => {} })
