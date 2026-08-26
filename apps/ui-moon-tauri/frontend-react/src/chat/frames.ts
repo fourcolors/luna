@@ -113,18 +113,6 @@ export function createFrames(ctx: FramesCtx) {
       const hasAgents = !!(frame && frame.capabilities && frame.capabilities.agents);
       MentionMenu.applyCapability(hasAgents);
     }
-    // Live subagents in the sidebar: ask for the active thread's current
-    // tree. The broadcast only fires on CHANGE, so a window that connects
-    // mid-turn (a reload while a team is working) would otherwise show
-    // nothing under the row until the next spawn. Read-only — the request
-    // is answered to this connection alone and never subscribes the thread,
-    // which is what keeps the one-window-per-thread rule intact.
-    try {
-      const activeThread = State.activeThreadId || State.pinnedThread || null;
-      if (activeThread) {
-        WebSocketEngine.send({ type: 'subagent-tree-request', threadId: activeThread });
-      }
-    } catch (_) { /* pre-thread hello; the next delegation paints anyway */ }
     // (skills/connectors/vault capability gating + the widget-directory
     // announce are HUB concerns — the launchers and panels live there.)
   });
@@ -174,7 +162,16 @@ export function createFrames(ctx: FramesCtx) {
       // must work on a server with no agent roster at all, and for spawns
       // whose subagent_type the roster does not know.
       if (!State.subagentsByThread) State.subagentsByThread = Object.create(null);
-      State.subagentsByThread[frame.threadId] = frame.agents;
+      // A tree with nothing running renders nothing (liveAgentsForThread's
+      // gate), so KEEPING it would only grow this map by one dead tree per
+      // thread this window ever observes — every connection receives every
+      // thread's broadcast (codex review of #613). Deleting on the terminal
+      // frame bounds the map by "threads with work in flight right now".
+      if (frame.agents.some((n) => n && n.status === 'running')) {
+        State.subagentsByThread[frame.threadId] = frame.agents;
+      } else {
+        delete State.subagentsByThread[frame.threadId];
+      }
       if (ThreadDrawerEngine) {
         try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
       }
@@ -465,6 +462,20 @@ export function createFrames(ctx: FramesCtx) {
     // background turn finished while we were elsewhere).
     if (frame && frame.threadId) {
       ThreadCache.put(frame.threadId, frame.messages || [], frame.throughSeq);
+      // Live subagents in the sidebar: ask for THIS thread's current tree.
+      // The broadcast only fires on CHANGE, so a window that attaches
+      // mid-turn would otherwise show nothing under the row until the next
+      // spawn. This rides the snapshot rather than `hello` (codex review of
+      // #613): at hello time activeThreadId is still null on a cold boot —
+      // it is assigned later by syncThread — so a hello-time request asked
+      // for nothing in exactly the reload case it was meant to cover. A
+      // snapshot means "we are attached to this thread", which is true on a
+      // cold boot, a reconnect AND a thread switch, so one call site covers
+      // all three. Read-only: answered to this connection alone, and it
+      // never subscribes, so the one-window-per-thread rule is intact.
+      try {
+        WebSocketEngine.send({ type: 'subagent-tree-request', threadId: frame.threadId });
+      } catch (_) { /* transport not ready; the next delegation paints anyway */ }
     }
     // This connection may still have forwarders for previously viewed
     // threads. A late snapshot must never replace the transcript for the

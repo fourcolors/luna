@@ -461,6 +461,11 @@
          what shows - the pre-gyro reduced-motion behavior, restored LIVE even
          when Reduce Motion flips mid-session. */
       .luna-gyro-arc { display: none !important; }
+      /* The nested live-subagent rows: no entrance slide, no pulsing dot.
+         Status stays legible through colour and the dimmed `done` row, so
+         nothing is lost by holding still (codex review of #613). */
+      .thread-agent-row,
+      .thread-agent-row.status-running .thread-agent-dot { animation: none !important; }
     }
 
     /* Watercolor: handwritten style title. */
@@ -1445,6 +1450,8 @@
       cursor: default; user-select: none;
       animation: thread-agent-in 0.16s ease both;
     }
+    /* Already on screen before this repaint — do not replay the entrance. */
+    .thread-agent-row.seen { animation: none; }
     .thread-agent-row.depth-1 { margin-left: 28px; }
     .thread-agent-row.depth-2 { margin-left: 40px; }
     @keyframes thread-agent-in {

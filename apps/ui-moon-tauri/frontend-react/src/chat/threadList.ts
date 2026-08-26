@@ -236,13 +236,30 @@ export function liveAgentsForThread(
     return Math.min(depth, MAX_AGENT_DEPTH)
   }
 
-  const rows: LiveAgentRow[] = []
-  for (const n of nodes) {
-    if (!n || !n.id) continue
-    if (rows.length >= MAX_AGENT_ROWS) break
-    rows.push({ node: n, depth: depthOf(n) })
+  const valid = nodes.filter((n) => n && n.id)
+
+  // THE CAP PRIORITISES RUNNING NODES, and that is not a nicety (codex
+  // review of #613). Truncating in spawn order alone meant a turn whose
+  // first eight subagents had finished while a ninth still worked rendered
+  // eight `done` rows and NOT the one doing the work — the section stayed
+  // open (something is running) while showing nothing running, which is
+  // worse than showing nothing at all. Running wins the slots; finished
+  // siblings fill whatever is left.
+  let keep = valid
+  if (valid.length > MAX_AGENT_ROWS) {
+    const running = valid.filter((n) => n.status === "running")
+    const finished = valid.filter((n) => n.status !== "running")
+    const chosen = new Set(running.slice(0, MAX_AGENT_ROWS).map((n) => n.id))
+    for (const n of finished) {
+      if (chosen.size >= MAX_AGENT_ROWS) break
+      chosen.add(n.id)
+    }
+    // Re-filter the ORIGINAL array so spawn order (and therefore
+    // parent-before-child) survives the selection.
+    keep = valid.filter((n) => chosen.has(n.id))
   }
-  return rows
+
+  return keep.map((n) => ({ node: n, depth: depthOf(n) }))
 }
 
 // ── Agent sections (agent sidebar S5) ───────────────────────────────────────

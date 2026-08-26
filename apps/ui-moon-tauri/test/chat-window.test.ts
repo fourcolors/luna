@@ -5311,6 +5311,37 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(document.querySelectorAll('.thread-agent-row').length).toBe(0)
     })
 
+    it('Scenario: a thread-snapshot asks for THAT thread\'s live subagent tree', () => {
+      // codex review of #613: this request used to ride `hello`, where
+      // activeThreadId is still null on a cold boot (syncThread assigns it
+      // later) — so it asked for nothing in exactly the mid-turn reload case
+      // it existed to cover. A snapshot means "attached to this thread",
+      // which is true on cold boot, reconnect AND thread switch.
+      const m = M()
+      const sendSpy = spyOnSend(m).mockImplementation(() => {})
+      m.handleFrame({ type: 'thread-snapshot', threadId: 'b', messages: [], throughSeq: 0 })
+      expect(sendSpy.mock.calls.map((c: any[]) => c[0])).toContainEqual({
+        type: 'subagent-tree-request', threadId: 'b',
+      })
+    })
+
+    it('Scenario: a finished tree is EVICTED from state, not retained forever', () => {
+      // Every connection receives every thread's broadcast, so keeping the
+      // terminal tree would grow this map by one dead entry per thread the
+      // window ever observes (codex review of #613).
+      const m = M()
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'running', tool: null, toolCount: 0 }],
+      })
+      expect(m.State.subagentsByThread['b']).toBeTruthy()
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b',
+        agents: [{ id: 'n1', parentId: null, name: 'r', description: '', status: 'done', tool: null, toolCount: 0 }],
+      })
+      expect(m.State.subagentsByThread['b']).toBeUndefined()
+    })
+
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
       setWs(m, { readyState: 1, send: () => {} })

@@ -190,15 +190,25 @@ const AGENT_ROW_SKELETON =
   '<span class="thread-agent-tool"></span>' +
   "</span>"
 
+/** Agent ids already on screen in a given list, so a repaint does not replay
+ *  every entrance animation. A subagent frame arrives on EVERY tool call
+ *  inside EVERY subagent, and each one repaints the whole strip — without
+ *  this the sidebar flickers continuously for the length of a delegated turn
+ *  (codex review of #613). WeakMap-keyed on the list element so a discarded
+ *  drawer cannot leak its ids. */
+const paintedAgentIds = new WeakMap<HTMLElement, Set<string>>()
+
 /** One live subagent, rendered as a sibling row under its thread.
  *
  *  NOT focusable and NOT wired for drag: a subagent is a live readout, not a
  *  thread you can open, pop out, or pull into a window. Leaving it out of the
  *  tab order also keeps arrow/tab navigation over the thread list unchanged. */
-export function buildAgentRow(entry: LiveAgentRow): HTMLElement {
+export function buildAgentRow(entry: LiveAgentRow, isNew = true): HTMLElement {
   const node = entry.node
   const el = document.createElement("div")
   el.className = `thread-agent-row depth-${entry.depth} status-${node.status}`
+  // Only a row the operator has not seen before is worth animating in.
+  if (!isNew) el.classList.add("seen")
   el.setAttribute("role", "listitem")
   el.dataset["agentId"] = node.id
   el.dataset["status"] = node.status
@@ -231,7 +241,13 @@ export function buildAgentRow(entry: LiveAgentRow): HTMLElement {
 
 /** Append a thread's live subagents directly after its row. No-op when the
  *  caller supplied no `agentRowsFor` or the thread has none in flight. */
-function appendAgentRows(ctx: ThreadStripCtx, threadId: string, frag: DocumentFragment): void {
+function appendAgentRows(
+  ctx: ThreadStripCtx,
+  threadId: string,
+  frag: DocumentFragment,
+  seen: ReadonlySet<string>,
+  painted: Set<string>,
+): void {
   if (!ctx.agentRowsFor) return
   let entries: readonly LiveAgentRow[]
   try {
@@ -242,7 +258,9 @@ function appendAgentRows(ctx: ThreadStripCtx, threadId: string, frag: DocumentFr
     return
   }
   for (const entry of entries) {
-    if (entry && entry.node) frag.appendChild(buildAgentRow(entry))
+    if (!entry || !entry.node) continue
+    painted.add(entry.node.id)
+    frag.appendChild(buildAgentRow(entry, !seen.has(entry.node.id)))
   }
 }
 
@@ -252,6 +270,21 @@ function appendAgentRows(ctx: ThreadStripCtx, threadId: string, frag: DocumentFr
 export function renderThreadStrip(ctx: ThreadStripCtx): void {
   const listEl = ctx.listEl
   if (!listEl) return
+
+  // A repaint destroys and rebuilds every row, which silently drops keyboard
+  // focus if it was on one. That was survivable when the strip only
+  // repainted on a thread-list frame; a delegated turn now repaints it on
+  // every tool call, so a keyboard user would be thrown out of the list
+  // mid-turn (codex review of #613). Remember where focus was and put it
+  // back afterwards.
+  const prevActive = document.activeElement as HTMLElement | null
+  const focusedRow =
+    prevActive && listEl.contains(prevActive) ? prevActive.closest(".thread-row") : null
+  const focusedThreadId = focusedRow ? (focusedRow as HTMLElement).dataset["threadId"] : null
+  const focusedPop = !!(prevActive && prevActive.classList.contains("thread-row-pop"))
+
+  const seen = paintedAgentIds.get(listEl) || new Set<string>()
+  const painted = new Set<string>()
 
   // Drop existing rows, gaps, and section headers; the empty-state node is
   // left in place.
@@ -287,7 +320,7 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
           row.classList.add("redock-source")
         }
         frag.appendChild(row)
-        appendAgentRows(ctx, t.id, frag)
+        appendAgentRows(ctx, t.id, frag, seen, painted)
       }
     }
   } else {
@@ -300,13 +333,34 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
         row.classList.add("redock-source")
       }
       frag.appendChild(row)
-      appendAgentRows(ctx, t.id, frag)
+      appendAgentRows(ctx, t.id, frag, seen, painted)
     }
     // A drop past the last row appends the gap at the end.
     if (ctx.insertAt === ctx.rows.length) frag.appendChild(ctx.makeInsertGap(preview))
   }
 
   listEl.appendChild(frag)
+  paintedAgentIds.set(listEl, painted)
+
+  if (focusedThreadId) {
+    // Scanned, not `querySelector` with an interpolated id: a thread id is
+    // server data and CSS.escape is not available in every environment this
+    // renders in (jsdom has none). Comparing dataset values needs no
+    // escaping and cannot be turned into a selector injection.
+    let again: HTMLElement | null = null
+    for (const el of listEl.querySelectorAll(".thread-row")) {
+      if ((el as HTMLElement).dataset["threadId"] === focusedThreadId) {
+        again = el as HTMLElement
+        break
+      }
+    }
+    if (again) {
+      const target = focusedPop
+        ? (again.querySelector(".thread-row-pop") as HTMLElement | null) || again
+        : again
+      target.focus()
+    }
+  }
 
   if (ctx.drawerEl) {
     ctx.drawerEl.classList.toggle("redock-target", !!(preview && preview.over))

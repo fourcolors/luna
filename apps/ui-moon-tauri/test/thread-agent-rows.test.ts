@@ -135,6 +135,37 @@ describe("liveAgentsForThread", () => {
     const many = Array.from({ length: MAX_AGENT_ROWS + 6 }, (_, i) => node({ id: `a${i}` }))
     expect(liveAgentsForThread({ t1: many }, "t1")).toHaveLength(MAX_AGENT_ROWS)
   })
+
+  it("spends the capped slots on the RUNNING agents, not the finished ones", () => {
+    // codex review of #613. Truncating in spawn order alone rendered the
+    // first N (all finished) and hid the one still working — a section that
+    // stays open BECAUSE something is running while showing nothing running
+    // is worse than showing nothing at all.
+    const finished = Array.from({ length: MAX_AGENT_ROWS }, (_, i) =>
+      node({ id: `done${i}`, status: "done" as const }),
+    )
+    const rows = liveAgentsForThread({ t1: [...finished, node({ id: "live" })] }, "t1")
+    expect(rows).toHaveLength(MAX_AGENT_ROWS)
+    expect(rows.some((r) => r.node.id === "live")).toBe(true)
+  })
+
+  it("keeps spawn order (parents before children) after the cap selects", () => {
+    const rows = liveAgentsForThread(
+      {
+        t1: [
+          ...Array.from({ length: MAX_AGENT_ROWS }, (_, i) =>
+            node({ id: `d${i}`, status: "done" as const }),
+          ),
+          node({ id: "parent" }),
+          node({ id: "child", parentId: "parent" }),
+        ],
+      },
+      "t1",
+    )
+    const ids = rows.map((r) => r.node.id)
+    expect(ids.indexOf("parent")).toBeLessThan(ids.indexOf("child"))
+    expect(rows.find((r) => r.node.id === "child")!.depth).toBe(1)
+  })
 })
 
 describe("renderThreadStrip — nested agent rows", () => {
@@ -218,6 +249,36 @@ describe("renderThreadStrip — nested agent rows", () => {
     // not opted in.
     renderThreadStrip(makeCtx([{ id: "t1" }, { id: "t2" }]))
     expect(agentEls()).toHaveLength(0)
+  })
+
+  it("animates a row in ONCE, not on every repaint", () => {
+    // A subagent frame arrives on every tool call inside every subagent, and
+    // each repaints the whole strip. Replaying the entrance animation each
+    // time made the sidebar flicker for the length of a delegated turn
+    // (codex review of #613).
+    const ctx = makeCtx([{ id: "t1" }], {
+      agentRowsFor: () => liveAgentsForThread({ t: [node({ id: "x" })] }, "t"),
+    })
+    renderThreadStrip(ctx)
+    expect(agentEls()[0]!.classList.contains("seen")).toBe(false)
+    renderThreadStrip(ctx)
+    expect(agentEls()[0]!.classList.contains("seen"), "already on screen").toBe(true)
+  })
+
+  it("does not steal keyboard focus out of the drawer when it repaints", () => {
+    const ctx = makeCtx([{ id: "t1" }, { id: "t2" }], {
+      agentRowsFor: (id) =>
+        id === "t1" ? liveAgentsForThread({ t: [node({ id: "x" })] }, "t") : [],
+    })
+    renderThreadStrip(ctx)
+    const row = document.querySelector('.thread-row[data-thread-id="t2"]') as HTMLElement
+    row.focus()
+    expect(document.activeElement).toBe(row)
+    renderThreadStrip(ctx) // an agent frame lands mid-keyboard-navigation
+    expect(
+      (document.activeElement as HTMLElement).dataset["threadId"],
+      "focus must survive the rebuild",
+    ).toBe("t2")
   })
 
   it("never lets a throwing agent source take the thread list down", () => {
