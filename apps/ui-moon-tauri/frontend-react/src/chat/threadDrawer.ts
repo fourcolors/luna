@@ -446,6 +446,12 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         onPopOut: (id) => this.openInNewWindow(id),
         // Agent sidebar S5: search mode flattens; rows wear their section.
         tagAgents: !!(State.threadSearch || '').trim() && State.serverSupportsAgents === true,
+        // Live subagents nest under their own thread's row rather than
+        // popping a separate Agents window (Mr. Cobb, 2026-08-26). Passed as
+        // a callback, not precomputed: a thread with nothing in flight costs
+        // one lookup, so the common paint is unchanged.
+        agentRowsFor: (threadId) =>
+          ThreadListLogic.liveAgentsForThread(State.subagentsByThread, threadId),
         // Sections when there is something to group by (see
         // shouldGroupThreads); undefined = the exact pre-S5 flat path.
         // PR2: opt-in via luna.sidebarSections — default is the flat list.

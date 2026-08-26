@@ -27,7 +27,7 @@
  * `textContent` and never interpolated into markup. The static skeleton below
  * is the ONLY innerHTML, and it is a constant with no interpolation at all.
  */
-import type { ThreadRow } from "./threadList"
+import type { LiveAgentRow, ThreadRow } from "./threadList"
 
 /** The redock drop preview, when a floater is being dragged over the strip. */
 export interface RedockPreview {
@@ -70,6 +70,20 @@ export interface ThreadStripCtx {
   /** Agent sidebar S5, search mode only: rows wear their section as a tag
    *  when grouping is suspended by an active search. */
   readonly tagAgents?: boolean
+  /**
+   * The live subagents to nest under a given thread's row, newest turn only
+   * (see threadList.liveAgentsForThread). ABSENT = no nesting at all, the
+   * exact pre-existing paint.
+   *
+   * Nested rows are `.thread-agent-row` SIBLINGS of `.thread-row`, indented
+   * by class — never wrappers, and never carrying the `.thread-row` class
+   * themselves. Both halves matter: redock's `_placeInsertGap` walks
+   * `querySelectorAll('.thread-row')` and `insertIndexForRatio` does index
+   * math over exactly that list, so a wrapper would misparent the drop gap
+   * and a shared class would shift every drop index by the number of live
+   * agents on screen.
+   */
+  readonly agentRowsFor?: (threadId: string) => readonly LiveAgentRow[]
   /**
    * Agent sidebar S5: section rendering. ABSENT = the exact pre-S5 flat
    * path, byte-for-byte. When present, headers render as SIBLINGS of the
@@ -166,6 +180,72 @@ export function buildThreadRow(ctx: ThreadStripCtx, t: ThreadRow): HTMLElement {
   return row
 }
 
+/** Static skeleton for a nested subagent row. Same discipline as
+ *  ROW_SKELETON: constant markup, every scrap of text via textContent. */
+const AGENT_ROW_SKELETON =
+  '<span class="thread-agent-branch" aria-hidden="true">↳</span>' +
+  '<span class="thread-agent-dot" aria-hidden="true"></span>' +
+  '<span class="thread-agent-info">' +
+  '<span class="thread-agent-name"></span>' +
+  '<span class="thread-agent-tool"></span>' +
+  "</span>"
+
+/** One live subagent, rendered as a sibling row under its thread.
+ *
+ *  NOT focusable and NOT wired for drag: a subagent is a live readout, not a
+ *  thread you can open, pop out, or pull into a window. Leaving it out of the
+ *  tab order also keeps arrow/tab navigation over the thread list unchanged. */
+export function buildAgentRow(entry: LiveAgentRow): HTMLElement {
+  const node = entry.node
+  const el = document.createElement("div")
+  el.className = `thread-agent-row depth-${entry.depth} status-${node.status}`
+  el.setAttribute("role", "listitem")
+  el.dataset["agentId"] = node.id
+  el.dataset["status"] = node.status
+  el.innerHTML = AGENT_ROW_SKELETON
+
+  const name = el.querySelector(".thread-agent-name")
+  // A spawn with no subagent_type reports as "Agent" from the bridge; the
+  // description is what makes it legible, so it is the subtitle, not a
+  // tooltip only.
+  if (name) name.textContent = (node.name && String(node.name).trim()) || "Agent"
+
+  const tool = el.querySelector(".thread-agent-tool")
+  if (tool) {
+    const running = node.status === "running"
+    // While running, the CURRENT tool is the useful thing to show; once it
+    // stops, the tool it happened to end on is noise, so the outcome wins.
+    const label = running
+      ? node.tool || (node.description && String(node.description).trim()) || "working…"
+      : node.status === "error"
+        ? "failed"
+        : "done"
+    tool.textContent =
+      running && node.toolCount > 1 ? `${label} · ${node.toolCount} tools` : label
+  }
+
+  if (node.description) el.title = String(node.description)
+  el.setAttribute("aria-label", `${node.name || "Agent"} — ${node.status}`)
+  return el
+}
+
+/** Append a thread's live subagents directly after its row. No-op when the
+ *  caller supplied no `agentRowsFor` or the thread has none in flight. */
+function appendAgentRows(ctx: ThreadStripCtx, threadId: string, frag: DocumentFragment): void {
+  if (!ctx.agentRowsFor) return
+  let entries: readonly LiveAgentRow[]
+  try {
+    entries = ctx.agentRowsFor(threadId) || []
+  } catch {
+    // A live readout must never be able to take the thread list down with
+    // it — the drawer is the primary navigation surface.
+    return
+  }
+  for (const entry of entries) {
+    if (entry && entry.node) frag.appendChild(buildAgentRow(entry))
+  }
+}
+
 /** Repaint the strip wholesale. Ported 1:1 from `ThreadDrawerEngine.render`'s
  *  body, minus the mid-drag guard, which stays with the caller because it also
  *  sets the deferred-repaint flag. */
@@ -176,7 +256,9 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
   // Drop existing rows, gaps, and section headers; the empty-state node is
   // left in place.
   listEl
-    .querySelectorAll(".thread-row, .thread-row-insert-gap, .thread-section-header")
+    .querySelectorAll(
+      ".thread-row, .thread-agent-row, .thread-row-insert-gap, .thread-section-header",
+    )
     .forEach((n) => {
       n.remove()
     })
@@ -205,6 +287,7 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
           row.classList.add("redock-source")
         }
         frag.appendChild(row)
+        appendAgentRows(ctx, t.id, frag)
       }
     }
   } else {
@@ -217,6 +300,7 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
         row.classList.add("redock-source")
       }
       frag.appendChild(row)
+      appendAgentRows(ctx, t.id, frag)
     }
     // A drop past the last row appends the gap at the end.
     if (ctx.insertAt === ctx.rows.length) frag.appendChild(ctx.makeInsertGap(preview))

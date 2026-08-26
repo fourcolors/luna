@@ -5273,6 +5273,44 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rowB.classList.contains('active')).toBe(true)
     })
 
+    // Live subagents nest under their thread's row instead of the server
+    // popping a separate Agents window (Mr. Cobb, 2026-08-26). The unit pins
+    // live in test/thread-agent-rows.test.ts; these two drive the REAL frame
+    // handler, so the whole path — subagent-tree frame → State →
+    // ThreadDrawerEngine.render → DOM — is covered, not just its two ends.
+    const subagent = (over: any = {}) => ({
+      id: 'n1', parentId: null, name: 'researcher', description: 'look it up',
+      status: 'running', tool: 'Grep', toolCount: 2, ...over,
+    })
+
+    it('Scenario: a subagent-tree frame nests the running agents under that thread only', () => {
+      const m = M()
+      m.State.activeThreadId = 'keep'
+      seed()
+      m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
+      const nested = [...document.querySelectorAll('#thread-drawer-list .thread-agent-row')]
+      expect(nested.length).toBe(1)
+      expect(nested[0].querySelector('.thread-agent-name')!.textContent).toBe('researcher')
+      // Directly after ITS OWN thread's row, not floating elsewhere in the list.
+      expect(nested[0].previousElementSibling!.getAttribute('data-thread-id')).toBe('b')
+      // And the .thread-row list redock indexes positionally is untouched.
+      expect(document.querySelectorAll('#thread-drawer-list .thread-row').length).toBe(3)
+    })
+
+    it('Scenario: the end-of-turn all-done tree clears the nested rows', () => {
+      const m = M()
+      m.State.activeThreadId = 'keep'
+      seed()
+      m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
+      expect(document.querySelectorAll('.thread-agent-row').length).toBe(1)
+      // The bridge's LAST broadcast of a turn: every node done. Nothing
+      // follows it, so this frame is the only chance to clear the rows.
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b', agents: [subagent({ status: 'done' })],
+      })
+      expect(document.querySelectorAll('.thread-agent-row').length).toBe(0)
+    })
+
     it('Scenario: clicking a row subscribes to that thread and KEEPS the sidebar open (split-pane)', () => {
       const m = M()
       setWs(m, { readyState: 1, send: () => {} })

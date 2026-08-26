@@ -113,6 +113,18 @@ export function createFrames(ctx: FramesCtx) {
       const hasAgents = !!(frame && frame.capabilities && frame.capabilities.agents);
       MentionMenu.applyCapability(hasAgents);
     }
+    // Live subagents in the sidebar: ask for the active thread's current
+    // tree. The broadcast only fires on CHANGE, so a window that connects
+    // mid-turn (a reload while a team is working) would otherwise show
+    // nothing under the row until the next spawn. Read-only — the request
+    // is answered to this connection alone and never subscribes the thread,
+    // which is what keeps the one-window-per-thread rule intact.
+    try {
+      const activeThread = State.activeThreadId || State.pinnedThread || null;
+      if (activeThread) {
+        WebSocketEngine.send({ type: 'subagent-tree-request', threadId: activeThread });
+      }
+    } catch (_) { /* pre-thread hello; the next delegation paints anyway */ }
     // (skills/connectors/vault capability gating + the widget-directory
     // announce are HUB concerns — the launchers and panels live there.)
   });
@@ -154,6 +166,19 @@ export function createFrames(ctx: FramesCtx) {
   MoonFrames.register('subagent-tree', (frame) => {
     try {
       if (!frame || !frame.threadId || !Array.isArray(frame.agents)) return;
+
+      // The live team, nested under the thread's own sidebar row (Mr. Cobb,
+      // 2026-08-26 — a delegation used to pop a separate Agents window).
+      // Stored BEFORE the involvedAgents merge below, which returns early on
+      // several conditions that have nothing to do with this: the nesting
+      // must work on a server with no agent roster at all, and for spawns
+      // whose subagent_type the roster does not know.
+      if (!State.subagentsByThread) State.subagentsByThread = Object.create(null);
+      State.subagentsByThread[frame.threadId] = frame.agents;
+      if (ThreadDrawerEngine) {
+        try { ThreadDrawerEngine.render(); } catch (_) { /* drawer not booted */ }
+      }
+
       if (State.serverSupportsAgents !== true) return;
       const roster = Array.isArray(State.agents) ? State.agents : [];
       if (roster.length === 0) return;

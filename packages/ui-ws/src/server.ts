@@ -1963,23 +1963,26 @@ export const startUIWebSocketServer = (
                     sendSmartBarFor(f.threadId)
                   }
                   // Live Agents view (S4): fold this frame into the subagent
-                  // tree (broadcasts to every client on change) and, on the
-                  // FIRST delegation in this thread, summon the Agents panel.
+                  // tree, which broadcasts to every client on change.
                   // Server-side + ws-state-independent: the broadcast targets
-                  // OTHER connections (the panel), so it must run even if this
-                  // socket is mid-flush. observe() is idempotent per toolCallId.
+                  // OTHER connections too, so it must run even if this socket
+                  // is mid-flush. observe() is idempotent per toolCallId.
+                  //
+                  // THE AUTO-SUMMON IS DELIBERATELY GONE (Mr. Cobb,
+                  // 2026-08-26). The first delegation in a thread used to
+                  // `widgetSummoner.open("agents", ...)`, throwing a separate
+                  // window on screen for something the operator had not asked
+                  // to see. The live team now nests under that thread's own
+                  // sidebar row from this same broadcast (threadStrip
+                  // .buildAgentRow), so nothing needs summoning. `observe`
+                  // still returns `autoOpen` and the panel is still
+                  // registered — "view ↗" on an Agent tool card opens it on
+                  // purpose — but no server path opens a window unbidden.
                   if (subagentTree !== null) {
-                    const { autoOpen } = subagentTree.observe(
+                    subagentTree.observe(
                       f.threadId,
                       f as unknown as import("./subagent-tree-bridge.js").ObservableThreadFrame,
                     )
-                    if (autoOpen && widgetSummoner !== null) {
-                      // Latch announced ONLY on a successful summon — a failed
-                      // open (hub not yet announced its directory) leaves the
-                      // thread un-announced so the next delegation retries.
-                      const opened = widgetSummoner.open("agents", { thread: f.threadId })
-                      if (opened.ok) subagentTree.markAnnounced(f.threadId)
-                    }
                   }
                   // Smart bar: push when a snapshot arrives — context just
                   // (re)established for this thread.

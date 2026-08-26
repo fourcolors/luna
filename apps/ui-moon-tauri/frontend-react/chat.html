@@ -1434,6 +1434,60 @@
       background: color-mix(in oklab, var(--accent) 20%, transparent);
       border-radius: 20px; padding: 0 6px;
     }
+    /* Live subagents, nested under their thread's row. Siblings of
+       .thread-row, never wrappers and never .thread-row themselves — redock
+       indexes that class positionally (see threadStrip's agentRowsFor doc). */
+    .thread-agent-row {
+      display: flex; align-items: center; gap: 6px;
+      margin: 1px 0 1px 16px; padding: 2px 8px 2px 4px;
+      border-left: 1px solid color-mix(in oklab, var(--ink) 12%, transparent);
+      border-radius: 0 6px 6px 0;
+      cursor: default; user-select: none;
+      animation: thread-agent-in 0.16s ease both;
+    }
+    .thread-agent-row.depth-1 { margin-left: 28px; }
+    .thread-agent-row.depth-2 { margin-left: 40px; }
+    @keyframes thread-agent-in {
+      from { opacity: 0; transform: translateY(-2px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .thread-agent-branch {
+      flex-shrink: 0; font-size: 0.68rem; line-height: 1;
+      color: var(--ink-soft); opacity: 0.5;
+    }
+    .thread-agent-dot {
+      flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%;
+      background: color-mix(in oklab, var(--ink) 32%, transparent);
+    }
+    /* Running is the only state that moves — a finished sibling should read
+       as settled, not compete with the one still working. */
+    .thread-agent-row.status-running .thread-agent-dot {
+      background: var(--accent);
+      animation: thread-agent-pulse 1.25s ease-in-out infinite;
+    }
+    .thread-agent-row.status-error .thread-agent-dot {
+      background: var(--danger, #e06c75);
+    }
+    .thread-agent-row.status-done { opacity: 0.55; }
+    @keyframes thread-agent-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.35; transform: scale(0.78); }
+    }
+    .thread-agent-info {
+      display: flex; align-items: baseline; gap: 5px;
+      min-width: 0; flex: 1;
+    }
+    .thread-agent-name {
+      flex-shrink: 0; max-width: 55%;
+      font-size: 0.68rem; font-weight: 600;
+      color: var(--ink);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .thread-agent-tool {
+      min-width: 0;
+      font-size: 0.62rem; color: var(--ink-soft);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     /* Drag ghost: mini chat card that trails the pointer so pull-out feels continuous. */
     .thread-drag-ghost {
       position: fixed; top: 0; left: 0; z-index: 9999;
