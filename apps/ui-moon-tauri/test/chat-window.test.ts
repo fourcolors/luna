@@ -1499,6 +1499,21 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
     })
 
+    it('timeline: clicking a star does not toggle collapse', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'go ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'go' } })
+      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
+
+      const timeline = chat.querySelector('.timeline') as HTMLElement
+      expect(timeline.classList.contains('collapsed')).toBe(true)
+      const star = chat.querySelector('.timeline-summary .star') as SVGPathElement
+      expect(star).not.toBeNull()
+      star.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+    })
+
     it('timeline: a user-set collapse survives a later streaming re-render (state lives on the turn)', () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'start ' })
       M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })

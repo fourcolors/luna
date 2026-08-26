@@ -419,26 +419,6 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
     expect(container?.querySelector(".timeline-summary .constellation")).toBeNull()
     expect(container?.querySelector(".constellation-row")).toBeNull()
   })
-
-  it("clicking a star does not toggle the timeline's collapsed state (the row's whole-bar toggle must not swallow inspecting a star)", () => {
-    act(() => {
-      mount?.ChatState.applyToolCall("t1", "c1", "Bash", { cmd: "ls" })
-      mount?.ChatState.finishTurn("t1", "", 1)
-      mount?.ChatState.markRunSettled()
-      mount?.ChatLoop.flush()
-    })
-    const timeline = container?.querySelector(".timeline") as HTMLElement
-    expect(timeline.classList.contains("collapsed")).toBe(true)
-    const star = container?.querySelector(".timeline-summary .star") as SVGPathElement
-    expect(star).toBeTruthy()
-
-    act(() => {
-      star.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))
-    })
-    // React's onClick stops the event before it bubbles to wiring.ts's
-    // delegated .timeline-summary listener, so the row stays collapsed.
-    expect((container?.querySelector(".timeline") as HTMLElement).classList.contains("collapsed")).toBe(true)
-  })
 })
 
 describe("ChatLoop.schedule() rAF coalescing", () => {
