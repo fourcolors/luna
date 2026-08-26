@@ -377,6 +377,13 @@ function Constellation({
       viewBox={`0 0 ${w} ${STRIP_HEIGHT}`}
       role="img"
       aria-label={constellationLabel(stars, total, failed)}
+      // Once settled this renders inside .timeline-summary, whose delegated
+      // click handler (wiring.ts) toggles the timeline open/closed on any
+      // click in the row. A star carries its own hover title (which tool,
+      // pass/fail). That listener and React's root listener share
+      // #chat-messages, so only stopImmediatePropagation keeps "inspect a
+      // star" from also collapsing/expanding the row.
+      onClick={(e) => e.nativeEvent.stopImmediatePropagation()}
     >
       {stars.length > 1 && <path className="star-link" d={linkPath(stars.length)} />}
       {stars.map((s, i) => {
@@ -406,10 +413,12 @@ function Constellation({
 }
 
 /**
- * The star map as its own row, last in the turn.
+ * The star map as its own trailing row, used only while the run is still
+ * active. Once settled, TimelineItem renders the same strip inside
+ * `.timeline-summary` and this item is not planned (see planRun).
  *
  * Left-aligned to the assistant column and given the `.msg-meta` slot's own
- * rhythm, so it reads as belonging to the answer above it rather than as a
+ * rhythm, so it reads as belonging to the turn above it rather than as a
  * separate block.
  */
 function ConstellationItem({
@@ -447,6 +456,13 @@ interface TimelineItemProps {
 
 function TimelineItem({ msgKey, turn, merged, lastToolIndex, settled, onOpenAgentsPanel }: TimelineItemProps) {
   const collapsed = isTimelineEffectivelyCollapsed(turn, settled)
+  // Gated on `settled`, not `collapsed`: this header is the timeline's
+  // persistent summary regardless of the user's own expand/collapse pin, so
+  // the star map must not disappear just because they clicked the chevron to
+  // inspect the steps. `starsFor` can still legitimately return zero stars
+  // (subagent-nested calls are folded into their parent), same guard as
+  // ConstellationItem below.
+  const stars = settled ? starsFor(merged, lastToolIndex) : null
   return (
     <div
       className={collapsed ? "timeline collapsed" : "timeline"}
@@ -457,11 +473,16 @@ function TimelineItem({ msgKey, turn, merged, lastToolIndex, settled, onOpenAgen
         <span className="timeline-chevron">▸</span>
         {/* The count is gone: the constellation carries it, plus the kinds and
             the failure, which the number never did. The label stays only while
-            the turn is running, where "how long" is the live question.
-            The constellation itself is NOT here - it is its own trailing item
-            (see planRun) so it lands below the answer rather than beside this
-            header, which is where 0.0.73 wrongly put it. */}
+            the turn is running, where "how long" is the live question. */}
         {!settled && <span className="timeline-summary-label">Working on it…</span>}
+        {/* Once settled, the star map moves IN HERE - this is the collapsed
+            record Mr. Cobb pointed at, not a row that lingers under the
+            answer forever. It trails as its own item (see planRun) only
+            while the run is still active, for the phase that has no text
+            bubble yet to hang a summary off of. */}
+        {settled && stars && stars.length > 0 && (
+          <Constellation stars={stars} merged={merged} lastToolIndex={lastToolIndex} settled={settled} />
+        )}
       </div>
       {!collapsed && (
         <div className="timeline-body">

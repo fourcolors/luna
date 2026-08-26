@@ -447,7 +447,7 @@ describe("planChatItems - grouping into activity timelines", () => {
     expect(plan[0]).toMatchObject({ kind: "text" })
   })
 
-  it("a run with a tool call collapses into one timeline + a trailing answer bubble", () => {
+  it("a SETTLED run with a tool call collapses into one timeline + a trailing answer bubble, with no separate constellation item", () => {
     let s = createInitialChatModelState()
     s = chatModelReducer(s, { type: "apply-delta", turnId: "t1", text: "let me check" })
     s = chatModelReducer(s, { type: "apply-tool-call", turnId: "t1", toolCallId: "c1", name: "Bash", input: {} })
@@ -456,12 +456,28 @@ describe("planChatItems - grouping into activity timelines", () => {
     s = chatModelReducer(s, { type: "finish-turn", turnId: "t1", ts: 1 })
     s = chatModelReducer(s, { type: "mark-run-settled" })
     const plan = planChatItems(s.turns, { grouped: true })
-    expect(plan.map((p) => p.kind)).toEqual(["timeline", "text", "constellation"])
+    // Once settled, the star map is no longer a trailing item - TimelineItem
+    // renders it inline in the (now collapsed) summary bar instead.
+    expect(plan.map((p) => p.kind)).toEqual(["timeline", "text"])
     const tl = plan[0]
     expect(tl?.kind).toBe("timeline")
     if (tl?.kind === "timeline") {
       expect(tl.settled).toBe(true)
       expect(tl.lastToolIndex).toBe(1)
+    }
+  })
+
+  it("an UNSETTLED (still running) run with a tool call still gets a trailing constellation item", () => {
+    let s = createInitialChatModelState()
+    s = chatModelReducer(s, { type: "apply-tool-call", turnId: "t1", toolCallId: "c1", name: "Bash", input: {} })
+    const plan = planChatItems(s.turns, { grouped: true })
+    // No text yet, so the mark must trail the timeline directly - this is the
+    // phase the trailing item exists for (see the doc comment on planRun).
+    expect(plan.map((p) => p.kind)).toEqual(["timeline", "constellation"])
+    const cn = plan[1]
+    expect(cn?.kind).toBe("constellation")
+    if (cn?.kind === "constellation") {
+      expect(cn.settled).toBe(false)
     }
   })
 

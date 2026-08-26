@@ -502,18 +502,20 @@ export type PlannedItem =
       readonly settled: boolean
     }
   /**
-   * The star map, emitted as the LAST item of a run so it always sits at the
-   * bottom of the turn - under the answer bubble when there is one, under the
-   * activity timeline while the turn is still working.
+   * The star map, emitted as the LAST item of a run WHILE IT IS STILL RUNNING
+   * (`!settled`) so it always sits at the bottom of the turn - a run has no
+   * text item at all until the first token arrives, and the mark has to be
+   * visible for the whole turn, so hanging it off the bubble would miss
+   * exactly the phase it exists for. 0.0.73 tried putting it in the timeline's
+   * summary row instead, which parked it to the RIGHT of "Working on it..."
+   * - wrong then, because the row was still expanded and the mark read as
+   * decoration on an in-progress label, not a record.
    *
-   * WHY ITS OWN ITEM rather than a child of the text bubble: the settled design
-   * puts the mark below the bubble, but a run has no text item at all until the
-   * first token arrives, and the mark has to be visible for the whole turn -
-   * that is its job. Hanging it off the bubble means it is missing during
-   * exactly the phase it exists for. 0.0.73 solved that by putting it in the
-   * timeline's summary row, which parked it to the RIGHT of "Working on it..."
-   * instead of below anything. A trailing item is the one placement that is
-   * always last, always visible, and never inflates the bubble's own box.
+   * Once the run SETTLES, this item is no longer planned at all: the timeline
+   * item's own summary row (TimelineItem in MessageList.tsx) renders the same
+   * star map inline instead, using the merged/lastToolIndex it already
+   * carries. That is the summary pill the turn record lives in once the run
+   * is done, rather than a permanent row under the answer.
    */
   | {
       readonly key: string
@@ -618,17 +620,21 @@ function planRun(run: readonly Turn[], out: PlannedItem[], grouped: boolean): vo
       out.push({ key: anchor.key + "|t" + k, kind: "text", turn: m.turn, seg: m.seg })
     }
   }
-  // LAST, unconditionally: this is what puts the mark below the answer instead
-  // of beside the activity header. It trails the text items above, so once the
-  // answer streams in the constellation is under it.
-  out.push({
-    key: anchor.key + "|cn",
-    kind: "constellation",
-    turn: anchor,
-    merged,
-    lastToolIndex,
-    settled,
-  })
+  // LAST, and only while the run is still active: this is what puts the mark
+  // below the answer instead of beside the activity header, for the phase
+  // that has no text item yet. Once settled, TimelineItem renders the same
+  // star map itself inside the summary row, so no trailing item is planned -
+  // see the doc comment on the "constellation" union member.
+  if (!settled) {
+    out.push({
+      key: anchor.key + "|cn",
+      kind: "constellation",
+      turn: anchor,
+      merged,
+      lastToolIndex,
+      settled,
+    })
+  }
 }
 
 /** The collapsed/expanded value a timeline actually renders: an explicit
@@ -647,10 +653,11 @@ export function isTimelineEffectivelyCollapsed(turn: Turn, settled: boolean): bo
 export function hasVisibleTypingIndicator(turns: readonly Turn[], grouped: boolean): boolean {
   if (isTailStreamingEmpty(turns)) return true
   const items = planChatItems(turns, { grouped })
-  // The constellation always trails its run and never carries a spinner, so it
-  // is not "the last item" for this question. Skip past it rather than reading
-  // items[length-1] blind: that read silently answered `false` for every
-  // tool-bearing run the moment the star map became its own trailing item.
+  // While a run is still active the constellation trails it and never carries
+  // a spinner, so it is not "the last item" for this question. Skip past it
+  // rather than reading items[length-1] blind: that read silently answered
+  // `false` for every in-flight tool-bearing run the moment the star map
+  // became its own trailing item. Settled runs no longer plan this item.
   let i = items.length - 1
   while (i >= 0 && items[i]?.kind === "constellation") i--
   const last = items[i]

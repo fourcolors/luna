@@ -367,10 +367,57 @@ describe("hasVisibleStreamingPlaceholder / dropPendingAssistant bridge parity", 
       mount?.ChatState.markRunSettled()
       mount?.ChatLoop.flush()
     })
-    // Settled: still present as the record, but resting and no longer pulsing.
-    expect(container?.querySelector(".constellation-row .constellation.rest")).toBeTruthy()
-    expect(container?.querySelector(".constellation-row .star-new")).toBeNull()
+    // Settled: the record moves INTO the collapsed timeline-summary bar - the
+    // trailing .constellation-row is gone entirely, not just resting.
+    expect(container?.querySelector(".constellation-row")).toBeNull()
+    expect(container?.querySelector(".timeline-summary .constellation.rest")).toBeTruthy()
+    expect(container?.querySelector(".timeline-summary .star-new")).toBeNull()
     expect(mount?.ChatState.hasVisibleStreamingPlaceholder()).toBe(false)
+  })
+
+  it("a settled turn's star map stays in the summary bar even when the user manually re-expands the timeline", () => {
+    act(() => {
+      mount?.ChatState.applyToolCall("t1", "c1", "Bash", { cmd: "ls" })
+      mount?.ChatState.finishTurn("t1", "", 1)
+      mount?.ChatState.markRunSettled()
+      mount?.ChatLoop.flush()
+    })
+    const timeline = container?.querySelector(".timeline") as HTMLElement
+    expect(timeline.classList.contains("collapsed")).toBe(true)
+    expect(container?.querySelector(".timeline-summary .constellation")).toBeTruthy()
+
+    const turnKey = timeline.dataset.turnKey as string
+    act(() => {
+      mount?.ChatState.toggleTimelineCollapsed(turnKey, true)
+      mount?.ChatLoop.flush()
+    })
+    const timelineAfter = container?.querySelector(".timeline") as HTMLElement
+    expect(timelineAfter.classList.contains("collapsed")).toBe(false)
+    expect(timelineAfter.querySelector(".timeline-body")).toBeTruthy()
+    // Still there - the summary is a persistent header, not gated on collapse.
+    expect(container?.querySelector(".timeline-summary .constellation")).toBeTruthy()
+    // Exactly one star map exists anywhere - no stale trailing row left behind
+    // by the re-expand, and no duplicate render.
+    expect(container?.querySelectorAll(".constellation").length).toBe(1)
+    expect(container?.querySelector(".constellation-row")).toBeNull()
+  })
+
+  it("a settled turn whose only tool calls are subagent-nested renders no star map at all (starsFor legitimately returns zero)", () => {
+    act(() => {
+      // parentToolUseId set - starsFor folds this into its parent Agent star
+      // and never counts it as a top-level call, so the top-level count is
+      // zero even though a tool call happened and a timeline is planned.
+      mount?.ChatState.applyToolCall("t1", "c1", "Bash", { cmd: "ls" }, "parent-1")
+      mount?.ChatState.finishTurn("t1", "", 1)
+      mount?.ChatState.markRunSettled()
+      mount?.ChatLoop.flush()
+    })
+    const timeline = container?.querySelector(".timeline") as HTMLElement
+    expect(timeline).toBeTruthy()
+    expect(timeline.classList.contains("collapsed")).toBe(true)
+    // Same net result as before this PR's placement change: nothing renders.
+    expect(container?.querySelector(".timeline-summary .constellation")).toBeNull()
+    expect(container?.querySelector(".constellation-row")).toBeNull()
   })
 })
 
