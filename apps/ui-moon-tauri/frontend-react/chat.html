@@ -2027,9 +2027,27 @@
     /* Upward popover for model / effort pickers. Watercolor: paper bg, ink-faint
        border, soft shadow per design touch E.5. */
     .cfg-menu {
+      /* Containing block is #chat-panel (see the markup note where these three
+         menus are declared). That is DELIBERATE and load-bearing: #chat-panel
+         is also the element whose `overflow: hidden` clips this popover, so
+         making it the containing block is what lets `max-height` below be
+         expressed as a share of exactly the space that exists. */
       position: absolute;
       right: 16px;
       bottom: 58px;
+      /* THE MENU MUST NEVER OUTGROW ITS CLIPPER. Nothing bounded this height
+         before, so a list taller than the panel had its TOP silently cut off:
+         no scrollbar, no affordance, no hint rows were missing. Measured at a
+         192px panel, a 7-model list (235px tall, pinned 58px up) lost its top
+         101px - the "Model for new conversations" header and ~3 models. It
+         degraded as the list grew (14 models = 438px), so the server adding a
+         model could amputate the menu on machines where it used to fit.
+         100% is the panel; 66px is this rule's own bottom offset (58) plus
+         8px breathing room. overflow-y:auto is the actual fix - it turns
+         "clipped" into "scrollable"; max-height only decides when. */
+      max-height: calc(100% - 66px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
       min-width: 200px;
       background: var(--paper);
       border: 1.3px solid var(--ink-faint);
@@ -2796,6 +2814,20 @@
          panel window now: open_widget kind 'workflows'. Opened via the
          /workflows slash command, the settings launcher, or agent summon. -->
 
+    <!-- The three composer config popovers live HERE, as direct children of
+         #chat-panel, rather than inside #chat-form with the buttons they
+         belong to. #chat-panel is the element that clips them (overflow:
+         hidden), so anchoring them to it is what makes `.cfg-menu`'s
+         `max-height: calc(100% - 66px)` mean "as tall as there is room for".
+         Anchored to #chat-form instead (where they used to sit) the menu had
+         no bound and its top was silently cut off. Visually identical: the
+         form's bottom edge and the panel's bottom edge coincide, so the
+         `bottom: 58px` offset resolves to the same place. React mounts these
+         by getElementById, so their DOM position is free to differ from the
+         buttons'. -->
+      <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
+      <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
+      <div id="account-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
       <div class="attachments-strip" id="attachments-strip" hidden></div>
@@ -2827,9 +2859,6 @@
       <!-- Empty: React-owned (ComposerConfig.tsx renders the hint line +
            item list; createRoot(host).render() would wipe any static
            children here anyway - see that module's doc). -->
-      <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
-      <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
-      <div id="account-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true"></div>
       <!-- Slash-command popover — anchored to .chat-input-area (position:relative),
            opens upward-LEFT above the composer. Kept in the pre-rows block so its
            equal z-index ties on DOM source order in WKWebView.
