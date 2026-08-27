@@ -102,6 +102,7 @@ import {
 } from "./effort.js"
 import { applyClientMarker, stripClientMarker, type ClientMarkerInput } from "./client-marker.js"
 import { ThreadToolsProviderTag } from "./chat-service-tools.js"
+import { attachHistoryToolResults } from "./chat-service-sdk-messages.js"
 import { makeThreadLifecycle } from "./chat-service-thread-lifecycle.js"
 
 /** Re-exported for callers that want the same shape. */
@@ -1200,7 +1201,10 @@ const makeChatService = Effect.gen(function* () {
             type: "snapshot",
             threadId,
             throughSeq,
-            messages: projected,
+            // Re-attach each tool call's outcome. Without this a replayed
+            // transcript draws every past tool as still-pending, because the
+            // SDK stores a result as a user envelope projectOne drops.
+            messages: attachHistoryToolResults(stored, projected),
           }
 
           // Replay-on-open: surface this thread's non-terminal suggested
@@ -1703,6 +1707,7 @@ export { projectChatMessages, projectOne } from "@luna/core"
  *  symbols used to be defined directly in this file. */
 export { ThreadToolsProviderTag } from "./chat-service-tools.js"
 export {
+  attachHistoryToolResults,
   normalizeToolResultContent,
   truncateOutput,
   formatStreamFailureReason,

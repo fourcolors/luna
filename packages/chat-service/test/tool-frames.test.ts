@@ -7,14 +7,18 @@ import { join } from "node:path"
 import {
   SessionStore,
   Clock as CoreClock,
+  MESSAGE_ENVELOPE_VERSION,
   ObservabilityService,
   TelemetryService,
+  type ChatMessage,
+  type StoredMessage,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { MemoryRouterTag, type MemoryRouter } from "@luna/memory"
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import { ChatService, type ChatFrame } from "../src/index.js"
 import {
+  attachHistoryToolResults,
   formatStreamFailureReason,
   normalizeToolResultContent,
   truncateOutput,
@@ -600,4 +604,80 @@ describe("ChatService adapter-stream failure surfacing", () => {
     },
     { timeout: 10_000 },
   )
+})
+
+describe("attachHistoryToolResults", () => {
+  // A live turn draws its tool steps from two frames (tool-call, then
+  // tool-result). Only the first survived into history, so a replayed
+  // transcript showed every past tool as still-pending. This folds the
+  // outcome back on so history and live render identically.
+  const env = (id: string, seq: number, kind: "user" | "assistant", payload: unknown): StoredMessage => ({
+    id,
+    sessionId: "s",
+    seq,
+    ts: seq * 1000,
+    parentId: null,
+    kind,
+    schemaVersion: MESSAGE_ENVELOPE_VERSION,
+    payload,
+  })
+  const resultEnv = (id: string, seq: number, toolUseId: string, content: unknown, isError = false) =>
+    env(id, seq, "user", {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: toolUseId, is_error: isError, content }],
+      },
+    })
+  const msg = (id: string, toolUses: ReadonlyArray<{ id: string; name: string; input: unknown }>): ChatMessage => ({
+    id,
+    seq: 1,
+    ts: 1000,
+    role: "assistant",
+    text: "working",
+    toolUses,
+    attachments: [],
+  })
+
+  it("attaches each result to the tool_use it answers", () => {
+    const out = attachHistoryToolResults(
+      [resultEnv("u1", 2, "c1", "3 lines"), resultEnv("u2", 4, "c2", "boom", true)],
+      [msg("a1", [{ id: "c1", name: "Read", input: {} }, { id: "c2", name: "Bash", input: {} }])],
+    )
+    expect(out[0]?.toolUses[0]?.result).toEqual({ ok: true, output: "3 lines", truncated: false })
+    expect(out[0]?.toolUses[1]?.result).toEqual({ ok: false, output: "boom", truncated: false })
+  })
+
+  it("truncates exactly where the live path does - a snapshot is sent on EVERY subscribe", () => {
+    const huge = "x".repeat(5000)
+    const out = attachHistoryToolResults(
+      [resultEnv("u1", 2, "c1", huge)],
+      [msg("a1", [{ id: "c1", name: "Read", input: {} }])],
+    )
+    const result = out[0]?.toolUses[0]?.result
+    const live = truncateOutput(normalizeToolResultContent(huge))
+    expect(result?.truncated).toBe(true)
+    expect(result?.output).toBe(live.output)
+  })
+
+  it("drops a result with no matching tool_use (the snapshot window can cut a run)", () => {
+    const out = attachHistoryToolResults(
+      [resultEnv("u1", 2, "orphan", "nobody asked")],
+      [msg("a1", [{ id: "c1", name: "Read", input: {} }])],
+    )
+    expect(out[0]?.toolUses[0]?.result).toBeUndefined()
+  })
+
+  it("returns the input untouched when there are no results at all", () => {
+    const messages = [msg("a1", [{ id: "c1", name: "Read", input: {} }])]
+    expect(attachHistoryToolResults([env("u1", 2, "user", { type: "user", message: { role: "user", content: "hi" } })], messages)).toBe(messages)
+  })
+
+  it("keeps the first answer for a reused tool_use id", () => {
+    const out = attachHistoryToolResults(
+      [resultEnv("u1", 2, "c1", "first"), resultEnv("u2", 4, "c1", "second")],
+      [msg("a1", [{ id: "c1", name: "Read", input: {} }])],
+    )
+    expect(out[0]?.toolUses[0]?.result?.output).toBe("first")
+  })
 })
