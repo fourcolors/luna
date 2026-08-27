@@ -105,9 +105,15 @@ if printf '%s\n' "$CODESIGN_OUT" | grep -qi "Info.plist=not bound"; then
   echo "FAIL: Info.plist=not bound — ATS / Local Network purpose strings will be ignored" >&2
   fail=1
 fi
-if ! printf '%s\n' "$CODESIGN_OUT" | grep -qi "Info.plist=bound"; then
-  # Some codesign versions print "bound" only at verbose=4; treat missing as fail.
-  echo "FAIL: expected Info.plist=bound in codesign -dv --verbose=4 output" >&2
+# A BOUND Info.plist is reported one of two ways depending on the codesign
+# version: older ones print the literal "Info.plist=bound", macOS 26's prints
+# "Info.plist entries=<N>". Demanding only the literal made every install on
+# macOS 26 abort verification on a correctly-signed app — and it contradicted
+# the check directly above, which already treats "Info.plist=not bound" as THE
+# failure signal. Accept either spelling of success.
+if ! printf '%s\n' "$CODESIGN_OUT" | grep -qiE "Info\.plist=bound|Info\.plist entries=[0-9]+"; then
+  echo "FAIL: no bound Info.plist in codesign -dv --verbose=4 output" >&2
+  echo "      (expected 'Info.plist=bound' or 'Info.plist entries=<N>')" >&2
   fail=1
 fi
 if printf '%s\n' "$CODESIGN_OUT" | grep -qi "linker-signed"; then
