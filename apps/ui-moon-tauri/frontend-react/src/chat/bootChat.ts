@@ -80,7 +80,7 @@ import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./messa
 import { createThreadDrawer, moonDragDebugNote } from "./threadDrawer"
 import { createChatEngine, CSS_escape, splitSpeakableSentences, toSpeakable } from "./chatEngine"
 import { createWire } from "./wire"
-import { createState } from "./state"
+import { createState, setActiveThread } from "./state"
 import { createDom } from "./domMap"
 import { createFrames } from "./frames"
 import { installWiring } from "./wiring"
@@ -590,6 +590,9 @@ export function bootChat() {
     // always happen long after boot, so the binding is always live by then.
     onThreadSwitch: () => { suggestedActionsEngine.refresh() },
     LunaThreadDrag: (window as unknown as { LunaThreadDrag?: unknown }).LunaThreadDrag,
+    // Single-writer wrapper: binds setActiveThread to the live State object so
+    // threadDrawer.ts never touches State.activeThreadId directly.
+    setActiveThread: (id: string, reason: string) => setActiveThread(State, id, reason),
   })
   assignBridge("ThreadDrawerEngine", threadDrawer.ThreadDrawerEngine)
   assignBridge("ThreadCache", threadDrawer.ThreadCache)

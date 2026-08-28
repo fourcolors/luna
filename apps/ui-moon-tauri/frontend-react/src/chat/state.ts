@@ -10,6 +10,15 @@
  * `State` takes THIS object by reference and mutates it in place - that is the
  * contract, and a shared module-level instance would leak one test window's
  * state into the next through a common jsdom global.
+ *
+ * SINGLE-WRITER DISCIPLINE (single-writer-state-mutation-discipline skill):
+ * `activeThreadId` must only be written by `setActiveThread()` at user-driven
+ * thread-selection call sites (row click, drag-drop, pinned-thread seed).
+ * Server-driven writes (stall recovery, null-on-reconnect, thread-created ack)
+ * may remain direct because they are confirmed transitions, not speculative
+ * selections. Every user-driven write MUST go through `setActiveThread` so
+ * the validation/ordering invariants are applied in one place and cannot be
+ * skipped by a new call site.
  */
 // @ts-nocheck
 
@@ -61,7 +70,7 @@ export function createState() {
       // writing State.activeThreadId — that stays null until we know it's valid.
       // Cleared once the thread-list arrives and resolves the validation.
       pendingReattachId: null,
-      // The thread id that most recently STALLED (got no snapshot after subscribe).
+      // The thread id that most recently STALLED (got no snapshot after subscribe).\
       // Kept for single-tombstone detection by legacy callers; stalledIdSet is the
       // authoritative multi-tombstone accumulator used by the thread-list handler.
       stalledThreadId: null,
@@ -130,7 +139,7 @@ export function createState() {
       subagentsByThread: Object.create(null),
       // Agent sidebar S4: mention menu + (S5) grouped sidebar gating.
       // Defaults false; `hello` corrects to true when the server binds an
-      // agent roster. Old server → "@" stays ordinary text, flat sidebar.
+      // agent roster. Old server → "@ " stays ordinary text, flat sidebar.
       serverSupportsAgents: false,
       // MentionAgent[] ({name, description} only — the ui-ws projection
       // guarantees no prompts/tools ever reach this array) from agent-list.
@@ -178,3 +187,43 @@ export function createState() {
 }
 
 export type ChatWindowState = ReturnType<typeof createState>
+
+/**
+ * setActiveThread — the SINGLE WRITER for user-driven thread selection.
+ *
+ * Every call site that switches threads in response to a user action (row
+ * click, drag-drop, pinned-thread initial seed) MUST call this instead of
+ * assigning State.activeThreadId directly. Centralising the write here means:
+ *
+ *   1. The ordering invariants (clear pendingFreshThread, clear
+ *      threadListAutoSelectPending) are ALWAYS applied — no call site can
+ *      forget them.
+ *   2. Same-thread clicks short-circuit before reaching any downstream
+ *      subscribe/paint path, so no spurious re-renders fire.
+ *   3. A single breakpoint / log line here catches every user-driven
+ *      thread transition.
+ *
+ * Server-driven writes (null-on-stall, null-on-reconnect, thread-created ack,
+ * thread-archived, syncThread fast-path) remain direct: they are confirmed
+ * server transitions, not speculative user selections, and routing them here
+ * would conflate two distinct lifecycles.
+ *
+ * @param State   The per-window state object (passed by reference).
+ * @param id      The thread id to switch to. Must be a non-empty string.
+ * @param reason  Short label for log/debug attribution (e.g. "row-click").
+ * @returns       true if the switch was applied, false if it was a no-op
+ *                (same thread already active or invalid id).
+ */
+export function setActiveThread(
+  State: ChatWindowState,
+  id: string,
+  reason: string
+): boolean {
+  if (!id) return false;
+  if (id === State.activeThreadId) return false;   // already here — no re-render race
+  // Newer explicit selection beats any deferred intents that might race it.
+  State.pendingFreshThread = false;
+  State.threadListAutoSelectPending = false;
+  State.activeThreadId = id;
+  return true;
+}

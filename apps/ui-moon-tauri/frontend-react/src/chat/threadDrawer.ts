@@ -96,6 +96,13 @@ export interface ThreadDrawerCtx {
    *  callback rather than the engine. */
   readonly onThreadSwitch?: (threadId: string) => void
   readonly LunaThreadDrag: unknown
+  /**
+   * Single-writer gate for user-driven thread selection (see state.ts
+   * setActiveThread). Passed as a callback so threadDrawer.ts does not need
+   * to import state.ts directly. Returns true when the switch was applied,
+   * false when it was a no-op (same thread already active or invalid id).
+   */
+  readonly setActiveThread: (id: string, reason: string) => boolean
 }
 
 /**
@@ -106,7 +113,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
   const {
     Logger, DOM, State, WebSocketEngine, ChatState, ChatLoop, MoonFace,
     ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic,
-    ThreadDrag, formatRelTime, LunaThreadDrag, onThreadSwitch,
+    ThreadDrag, formatRelTime, LunaThreadDrag, onThreadSwitch, setActiveThread,
   } = ctx
 
   const ThreadCache = {
@@ -1081,13 +1088,12 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     // --- open thread in THIS window (row click) ----------------------------
     onRowClick(id) {
       if (!id) return;
-      // Split-pane: clicking a thread switches it in place and LEAVES the
-      // sidebar open (Things-3 behavior), just moving the active highlight.
-      if (id === State.activeThreadId) return;    // already here
-      State.pendingFreshThread = false;           // newer intent beats a deferred "+ New"
-      State.threadListAutoSelectPending = false;  // newer explicit selection beats list recovery
+      // Single-writer gate: setActiveThread() performs the same-thread check
+      // and clears the deferred-intent flags (pendingFreshThread,
+      // threadListAutoSelectPending) atomically — no call site can bypass
+      // those invariants. Returns false when already on this thread.
+      if (!setActiveThread(id, 'row-click')) return;
       ThreadCreateState.moveToBackground();       // a late create ack must not steal selection
-      State.activeThreadId = id;
       State.activeTurnId = null;
       State.pendingUserMessage = null;
       try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
@@ -1097,10 +1103,13 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       // switch (and used to stay empty on A→B→A due to subscribe no-op).
       const painted = ThreadCache.paint(id);
       if (!painted) {
-        // Force an immediate blank render (not just a state reset) so the
-        // old thread's transcript doesn't linger on screen until whatever
-        // async path (the snapshot re-subscribe below) next flushes.
-        try { ChatState.reset(); ChatLoop.flush(); } catch (_) {}
+        // Cache miss: render an explicit loading skeleton so the user sees a
+        // stable, intentional state rather than a flash of stale/blank content
+        // while the server re-snapshot is in flight. ChatState.beginPendingAssistant
+        // plants a pending-assistant placeholder that the timeline renders as a
+        // spinner; ChatLoop.flush() commits it synchronously. When the snapshot
+        // arrives it replaces this skeleton with the real history.
+        try { ChatState.reset(); ChatState.beginPendingAssistant(); ChatLoop.flush(); } catch (_) {}
       }
       // Face follows the viewed thread only; background busy shows on the
       // sidebar row, not the moon face.
