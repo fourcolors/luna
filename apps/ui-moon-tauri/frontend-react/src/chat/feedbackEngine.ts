@@ -444,7 +444,11 @@ export function createFeedbackEngine(deps: FeedbackEngineDeps) {
   //  - 'crop-failed': cropAndEncodeFeedbackScreenshot returned null
   async _captureScreenshot(target) {
     try {
-      if (!(window.__TAURI__ && window.__TAURI__.core)) {
+      // Guard against `window` being undefined (Node/jsdom-less test
+      // environments) before touching any window.* property — otherwise
+      // a ReferenceError is caught by the outermost catch and surfaces as
+      // 'unexpected: window is not defined' instead of 'no-tauri'.
+      if (!(typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core)) {
         return { error: 'no-tauri' };
       }
       if (!target || !target.rect) {

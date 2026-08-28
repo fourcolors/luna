@@ -2625,6 +2625,17 @@ export const startUIWebSocketServer = (
                     // instead (best-effort, never-blocking capture).
                     const rawScreenshot = (frame as { screenshot?: unknown })
                       .screenshot
+                    const screenshotIsOversize =
+                      typeof rawScreenshot === "string" &&
+                      rawScreenshot.length > SCREENSHOT_MAX_BASE64_CHARS
+                    if (screenshotIsOversize) {
+                      // Fail-loud: a dropped screenshot must not be silent.
+                      // The note still submits (non-blocking) but the drop
+                      // is observable in server logs.
+                      console.warn(
+                        `[luna/feedback] screenshot dropped: ${(rawScreenshot as string).length} chars exceeds ${SCREENSHOT_MAX_BASE64_CHARS} limit (requestId=${reqId})`,
+                      )
+                    }
                     const screenshotVal =
                       typeof rawScreenshot === "string" &&
                       rawScreenshot.length > 0 &&

@@ -3232,7 +3232,12 @@ export const writeFeedbackScreenshot = (
       bytes: buf.length,
       captureMethod: "native-window",
     }
-  } catch {
+  } catch (e) {
+    // Fail-loud: log decode/mkdir/write failures so they are visible in
+    // server output rather than silently returning null.
+    console.warn(
+      `[luna/feedback] writeFeedbackScreenshot failed (id=${id}): ${e instanceof Error ? e.message : String(e)}`,
+    )
     return null
   }
 }
@@ -4480,6 +4485,10 @@ const buildServerLayer = (
           const screenshotMeta = writeFeedbackScreenshot(
             input.screenshot,
             id,
+            // TODO(retention): ~/.luna/feedback-screenshots/ grows without bound.
+            // At ~512KB/note and no pruning or size cap, this needs a retention
+            // sweep (e.g. delete files older than 30 days, cap at 500MB total).
+            // Tracked as a follow-up in PR #619 audit finding #3.
             join(LUNA_HOME, "feedback-screenshots"),
           )
           return agentNotes
