@@ -123,4 +123,39 @@ describe('threads toggle affordance (chat.html)', () => {
     const css = readChatHtml()
     expect(css).toMatch(/#title-bar\s+#toggle-threads\s*\{\s*margin-left:\s*-14px/)
   })
+
+  // ── visibility follows drawer state (toggle migrates into drawer header) ──
+  it('is hidden in the title bar when the drawer is open', () => {
+    // When the drawer is open the same icon lives in #thread-drawer-close
+    // inside the drawer header. The title-bar copy must be hidden so the user
+    // sees ONE toggle, always adjacent to the drawer edge.
+    eng()._applyWidth(240)
+    expect(btn().hidden).toBe(true)
+  })
+
+  it('is visible in the title bar when the drawer is closed', () => {
+    // With the drawer shut the in-drawer icon is off-screen, so the
+    // title-bar copy must be visible so the user can re-open it.
+    eng()._applyWidth(0)
+    expect(btn().hidden).toBe(false)
+  })
+
+  it('transitions from visible to hidden as the drawer opens, then back', () => {
+    expect(btn().hidden).toBe(false)   // initial: closed
+    eng()._applyWidth(240)
+    expect(btn().hidden).toBe(true)    // open: hidden in title bar
+    eng()._applyWidth(0)
+    expect(btn().hidden).toBe(false)   // closed again: visible
+  })
+
+  // ── drawer close button carries the panel icon, not a ✕ character ─────────
+  it('drawer close button uses the panel SVG icon, not a text ✕', () => {
+    // The ✕ was replaced with the same panel-left SVG as #toggle-threads so
+    // the control reads as the same toggle, just repositioned.
+    const html = readChatHtml()
+    const drawerClose = html.match(/<button[^>]+id="thread-drawer-close"[^>]*>([\s\S]*?)<\/button>/)?.[1] ?? ''
+    expect(drawerClose).not.toContain('✕')
+    expect(drawerClose).toContain('<svg')
+    expect(drawerClose).toContain('M9 3v18')  // the panel-left vertical divider path
+  })
 })

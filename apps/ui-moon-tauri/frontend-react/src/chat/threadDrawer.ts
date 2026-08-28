@@ -185,6 +185,12 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         DOM.toggleThreads.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
         DOM.toggleThreads.setAttribute('aria-label', label);
         DOM.toggleThreads.setAttribute('title', label);
+        // When the drawer is open the same toggle icon lives in the drawer
+        // header (#thread-drawer-close). Hide the title-bar copy so there is
+        // ONE visible control, adjacent to the drawer edge. When the drawer
+        // collapses the header is off-screen, so restore the title-bar copy
+        // so the user can re-open it.
+        DOM.toggleThreads.hidden = drawerOpen;
       }
       if (DOM.threadDivider) {
         DOM.threadDivider.setAttribute('aria-valuenow', String(w));
