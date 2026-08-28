@@ -80,7 +80,7 @@ import { buildMessageCopyButton, buildMessageMeta, formatRelTime } from "./messa
 import { createThreadDrawer, moonDragDebugNote } from "./threadDrawer"
 import { createChatEngine, CSS_escape, splitSpeakableSentences, toSpeakable } from "./chatEngine"
 import { createWire } from "./wire"
-import { createState, setActiveThread } from "./state"
+import { createState, setActiveThread, clearActiveThread } from "./state"
 import { createDom } from "./domMap"
 import { createFrames } from "./frames"
 import { installWiring } from "./wiring"
@@ -630,6 +630,10 @@ export function bootChat() {
     // Same late-bound hook the drawer gets: newConversation is a thread switch
     // too, and the suggestion chip is per-thread.
     onThreadSwitch: () => { suggestedActionsEngine.refresh() },
+    // Single-writer callback: binds clearActiveThread to the live State object
+    // so chatEngine.ts does not import state.ts directly (mirrors the
+    // threadDrawer's setActiveThread binding above).
+    clearActiveThread: (reason: string) => clearActiveThread(State, reason),
   })
   assignBridge("ChatEngine", chatEngine.ChatEngine)
   assignBridge("VoiceEngine", chatEngine.VoiceEngine)

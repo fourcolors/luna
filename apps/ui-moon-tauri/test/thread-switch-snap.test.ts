@@ -13,21 +13,57 @@
  * thread selection. It applies the ordering invariants (same-thread short-
  * circuit, pendingFreshThread clear, threadListAutoSelectPending clear)
  * synchronously before the mutation. threadDrawer.ts onRowClick goes through
- * it; no other user-driven call site may bypass it.
+ * it; chatEngine.ts newConversation goes through clearActiveThread() — both
+ * injected via their respective *Ctx callbacks so neither file imports state.ts
+ * directly.
  *
- * These tests assert the single-writer invariant and the cache-miss
- * loading-state behaviour that prevents blank flashes.
+ * These tests assert the single-writer invariant, the clearActiveThread
+ * symmetry, the cache-miss loading-state behaviour, and the allowlist fence.
+ *
+ * Three concerns in one file:
+ *
+ * 1. BEHAVIORAL. setActiveThread and clearActiveThread mutate State correctly
+ *    and are the ONLY routes for user-intent transitions (row-click and
+ *    new-conversation). The production change routes threadDrawer.ts:onRowClick
+ *    through setActiveThread and chatEngine.ts:newConversation through
+ *    clearActiveThread (injected via ctx, not a direct import).
+ *
+ * 2. ALLOWLIST (mechanical fence). State.activeThreadId is a public mutable
+ *    field on a @ts-nocheck object — any `State.activeThreadId = x` compiles
+ *    silently. This test scans the production source files and asserts that the
+ *    set of direct assignment sites exactly equals the explicitly-justified
+ *    allowlist below. If a new site appears without updating the list, the test
+ *    fails with the diff.
+ *
+ *    Repo precedent: test/astryx-layer-order.test.ts,
+ *    test/boot-ignition-isolation.test.ts, test/tauri-acl-coverage.test.ts.
+ *
+ * 3. REGRESSION PROOF. Reverting either production change restores a bare
+ *    direct assignment at the removed site, which the allowlist test catches.
+ *    Proved inline in the allowlist section.
+ *
+ * CACHE-HIT RENDER COUNT (item 4 from the audit).
+ *    threadDrawer.ts:onRowClick already called ThreadCache.paint(id) on master.
+ *    This PR does NOT change that call path — it only routes the
+ *    `State.activeThreadId` assignment through setActiveThread so the state
+ *    transition happens before the cache paint, not after. The cache-hit render
+ *    count is therefore unchanged by this PR: a cache hit was already one
+ *    synchronous paint, and it still is. We say so plainly rather than claiming
+ *    "snappier" for a path this PR did not alter.
  */
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import {
   evalChatInlineScriptWithBridge,
   loadVendorInto,
   mountChatDomFromHtml,
   readChatHtml,
 } from './helpers/chat-harness'
-import { createState, setActiveThread } from '../frontend-react/src/chat/state'
+import { createState, setActiveThread, clearActiveThread } from '../frontend-react/src/chat/state'
 
-// ── Unit tests: setActiveThread (pure state logic) ───────────────────────────
+// ── 1a. Unit tests: setActiveThread (pure state logic) ───────────────────────
 
 describe('setActiveThread — single-writer invariant (unit)', () => {
   it('returns false and makes no state change when id is null/empty', () => {
@@ -84,7 +120,37 @@ describe('setActiveThread — single-writer invariant (unit)', () => {
   })
 })
 
-// ── Integration tests: onRowClick goes through the single writer ──────────────
+// ── 1b. Unit tests: clearActiveThread (symmetric pair) ───────────────────────
+
+describe('clearActiveThread', () => {
+  it('nulls activeThreadId and activeTurnId', () => {
+    const s = createState()
+    s.activeThreadId = 'old'
+    s.activeTurnId = 'turn-1'
+    clearActiveThread(s as any, 'new-conversation')
+    expect(s.activeThreadId).toBeNull()
+    expect(s.activeTurnId).toBeNull()
+  })
+
+  it('is idempotent on already-null state', () => {
+    const s = createState()
+    expect(s.activeThreadId).toBeNull()
+    expect(() => clearActiveThread(s as any, 'test')).not.toThrow()
+    expect(s.activeThreadId).toBeNull()
+  })
+
+  it('does not mutate any other State field', () => {
+    const s = createState()
+    s.activeThreadId = 'old'
+    s.activeTurnId = 'turn-1'
+    const before = JSON.stringify({ ...s, activeThreadId: null, activeTurnId: null, localShell: null, stalledIdSet: null, floatedThreadIds: null, threadCache: null, busyThreads: null, subagentsByThread: null })
+    clearActiveThread(s as any, 'test')
+    const after = JSON.stringify({ ...s, activeThreadId: null, activeTurnId: null, localShell: null, stalledIdSet: null, floatedThreadIds: null, threadCache: null, busyThreads: null, subagentsByThread: null })
+    expect(after).toBe(before)
+  })
+})
+
+// ── 2. Integration tests: onRowClick goes through the single writer ───────────
 
 describe('ThreadDrawerEngine.onRowClick — single-writer integration (chat.html)', () => {
   const M = () => (window as any).__MoonInternals
@@ -136,9 +202,6 @@ describe('ThreadDrawerEngine.onRowClick — single-writer integration (chat.html
    * Stub a connected WS so WebSocketEngine.isConnected() returns true and
    * onRowClick's subscribe path fires. Without this every send path silently
    * takes the offline branch and no subscribe frame is ever sent.
-   *
-   * mirrors setWs() from chat-window.test.ts: both engines (legacy and pool)
-   * decide connectivity differently, so both must be told the socket is open.
    */
   function connectFakeWs(sent: unknown[]): void {
     const m = M()
@@ -203,8 +266,6 @@ describe('ThreadDrawerEngine.onRowClick — single-writer integration (chat.html
     State().activeThreadId = 'th-a'
     State().threadCache = {}  // empty cache
 
-    const chatMessages = document.getElementById('chat-messages')
-    // There should be a loading indicator rendered after the click.
     // We assert that a subscribe was sent (server resubscribe is in flight)
     // AND that ChatState.reset was called (old content cleared). The pending-
     // assistant placeholder that creates the skeleton is internal to ChatState;
@@ -220,5 +281,236 @@ describe('ThreadDrawerEngine.onRowClick — single-writer integration (chat.html
     expect(State().activeThreadId).toBe('th-uncached')
     // reset must have fired to clear stale content
     expect(resetCalled).toBe(true)
+  })
+})
+
+// ── 3. Allowlist fence ────────────────────────────────────────────────────────
+//
+// DIRECT_SITES is the COMPLETE, EXPLICIT allowlist of legitimate
+// `State.activeThreadId = <expr>` assignments in chat/*.ts source files.
+//
+// Each entry justifies a site that bypasses the gateway. Any new direct
+// assignment that is NOT in this list causes the test to fail, naming the
+// exact file and line number.
+//
+// REGRESSION PROOF:
+//   Removing the clearActiveThread callback from chatEngine.ts:newConversation
+//   and restoring the bare `State.activeThreadId = null` assignment at that
+//   site without adding it to DIRECT_SITES causes foundTotal > allowedTotal;
+//   the fence fails naming chatEngine.ts:~234 as the unlisted site.
+//
+//   Removing setActiveThread from threadDrawer.ts:onRowClick and restoring the
+//   bare `State.activeThreadId = id` assignment similarly fails the fence.
+//
+//   Both regressions are therefore mechanically caught before any PR lands.
+//
+// NOTE: state.ts itself contains `State.activeThreadId = x` inside the
+// setActiveThread/clearActiveThread function bodies. state.ts is excluded from
+// the scan: the gateway implementations must write to the field (that is their
+// purpose), and their bodies are not call sites that need justification.
+//
+// NOTE: chatEngine.ts:246 is the fallback branch inside newConversation() that
+// fires ONLY when the clearActiveThread callback is absent (tests that
+// construct ChatEngine without wiring bootChat). Production always wires the
+// callback via bootChat.ts. The gateway-presence test below verifies this.
+
+interface AllowlistEntry {
+  file: string   // relative to chat/
+  approx: number // informational only, not asserted
+  reason: string
+}
+
+const DIRECT_SITES: AllowlistEntry[] = [
+  {
+    file: 'chatEngine.ts',
+    approx: 246,
+    reason: 'fallback-only: fires when clearActiveThread callback is absent (bare-construction / non-bootChat test path); production path uses the injected callback',
+  },
+  {
+    file: 'frames.ts',
+    approx: 310,
+    reason: 'server-confirmed: thread-list auto-subscribe picks the first non-stalled thread',
+  },
+  {
+    file: 'frames.ts',
+    approx: 330,
+    reason: 'server-confirmed: thread-archived clears the active id so the list can re-select',
+  },
+  {
+    file: 'frames.ts',
+    approx: 425,
+    reason: 'server-confirmed: thread-created ack sets the newly minted thread as active',
+  },
+  {
+    file: 'wire.ts',
+    approx: 581,
+    reason: 'lifecycle: WebSocketEngine reattach stalled — null so thread-list drives next subscribe',
+  },
+  {
+    file: 'wire.ts',
+    approx: 619,
+    reason: 'lifecycle: WebSocketEngine direct-line mode — pinned thread set once at connect',
+  },
+  {
+    file: 'wire.ts',
+    approx: 713,
+    reason: 'lifecycle: WebSocketEngine cold-start — blind subscribe to file-sourced stored id',
+  },
+  {
+    file: 'wire.ts',
+    approx: 1447,
+    reason: 'lifecycle: PoolEngine reattach stalled — mirrors WebSocketEngine.onReattachStalled',
+  },
+  {
+    file: 'wire.ts',
+    approx: 1468,
+    reason: 'lifecycle: PoolEngine direct-line mode — mirrors WebSocketEngine.syncThread',
+  },
+  {
+    file: 'wire.ts',
+    approx: 1530,
+    reason: 'lifecycle: PoolEngine cold-start — mirrors WebSocketEngine.syncThread',
+  },
+  {
+    file: 'wiring.ts',
+    approx: 791,
+    reason: 'lifecycle: drag-seed boot path paints detached thread before WS connects',
+  },
+  {
+    file: 'wiring.ts',
+    approx: 1029,
+    reason: 'lifecycle: profile-switch resets to no thread so list-threads re-selects',
+  },
+]
+
+describe('activeThreadId direct-assignment allowlist', () => {
+  const CHAT_DIR = path.resolve(__dirname, '../frontend-react/src/chat')
+
+  // Scan these files only. state.ts is excluded — it contains the gateway
+  // implementations whose bodies necessarily write to activeThreadId.
+  const CHAT_FILES = [
+    'chatEngine.ts',
+    'frames.ts',
+    'threadDrawer.ts',
+    'wire.ts',
+    'wiring.ts',
+  ]
+
+  // Match `State.activeThreadId = ` where the next char is NOT `=`.
+  function findDirectAssignments(src: string): Array<{ line: number; snippet: string }> {
+    const hits: Array<{ line: number; snippet: string }> = []
+    const lines = src.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      if (/State\.activeThreadId\s*=[^=]/.test(lines[i])) {
+        hits.push({ line: i + 1, snippet: lines[i].trim() })
+      }
+    }
+    return hits
+  }
+
+  it('VACUOUS-PROOF: scan finds at least one assignment (glob not broken)', () => {
+    let total = 0
+    for (const file of CHAT_FILES) {
+      const src = fs.readFileSync(path.join(CHAT_DIR, file), 'utf8')
+      total += findDirectAssignments(src).length
+    }
+    expect(total, 'scan found zero direct assignments — regex or file path is broken').toBeGreaterThanOrEqual(1)
+    expect(CHAT_FILES.length).toBeGreaterThan(0)
+  })
+
+  it('direct assignment count per file matches the allowlist exactly', () => {
+    const allFound: Array<{ file: string; line: number; snippet: string }> = []
+
+    for (const file of CHAT_FILES) {
+      const src = fs.readFileSync(path.join(CHAT_DIR, file), 'utf8')
+      const hits = findDirectAssignments(src)
+      for (const h of hits) allFound.push({ file, ...h })
+    }
+
+    const allowedTotal = DIRECT_SITES.length
+    const foundTotal = allFound.length
+
+    if (foundTotal !== allowedTotal) {
+      const foundSummary = allFound
+        .map((f) => `  ${f.file}:${f.line}  ${f.snippet}`)
+        .join('\n')
+      const allowedSummary = DIRECT_SITES
+        .map((s) => `  ${s.file}:~${s.approx}  // ${s.reason}`)
+        .join('\n')
+      throw new Error(
+        `activeThreadId direct-assignment mismatch.\n` +
+        `Found ${foundTotal} sites, allowlist has ${allowedTotal}.\n\n` +
+        `Found on disk:\n${foundSummary}\n\n` +
+        `Allowlist (DIRECT_SITES in test/thread-switch-snap.test.ts):\n${allowedSummary}\n\n` +
+        `Action: if you added a new direct assignment, add it to DIRECT_SITES with a reason.\n` +
+        `If you removed one, delete the corresponding DIRECT_SITES entry.\n` +
+        `User-intent transitions (row-click, new-conversation) must use setActiveThread /\n` +
+        `clearActiveThread from state.ts instead (injected via *Ctx, not a direct import).`,
+      )
+    }
+
+    // Per-file count check.
+    for (const file of CHAT_FILES) {
+      const allowedCount = DIRECT_SITES.filter((s) => s.file === file).length
+      const foundCount = allFound.filter((f) => f.file === file).length
+      if (foundCount !== allowedCount) {
+        const foundLines = allFound
+          .filter((f) => f.file === file)
+          .map((f) => `  line ${f.line}: ${f.snippet}`)
+          .join('\n')
+        const allowedLines = DIRECT_SITES
+          .filter((s) => s.file === file)
+          .map((s) => `  ~${s.approx}: ${s.reason}`)
+          .join('\n')
+        throw new Error(
+          `${file}: found ${foundCount} direct assignments, allowlist has ${allowedCount}.\n` +
+          `Found:\n${foundLines || '  (none)'}\n` +
+          `Allowed:\n${allowedLines || '  (none)'}`,
+        )
+      }
+    }
+  })
+
+  it('user-intent paths use the gateway, not a bare assignment', () => {
+    // Belt-and-braces: the two paths that MUST go through the gateway are
+    // specifically verified here. A refactor that reverts one without updating
+    // DIRECT_SITES fails the count test above, AND fails here with a clear name.
+    const chatEngine = fs.readFileSync(path.join(CHAT_DIR, 'chatEngine.ts'), 'utf8')
+    const drawer = fs.readFileSync(path.join(CHAT_DIR, 'threadDrawer.ts'), 'utf8')
+
+    // threadDrawer: setActiveThread injected via ThreadDrawerCtx callback
+    expect(drawer, "threadDrawer.ts: onRowClick must call setActiveThread via injected callback").toContain(
+      "setActiveThread(id, 'row-click')",
+    )
+
+    // chatEngine: clearActiveThread injected via ChatEngineCtx callback
+    expect(chatEngine, "chatEngine.ts: newConversation must call clearActiveThread via injected callback").toContain(
+      "clearActiveThread('new-conversation')",
+    )
+
+    // chatEngine: the fallback branch must be inside an else / conditional —
+    // verify it is NOT a bare unconditional assignment at the top of newConversation
+    const ncIdx = chatEngine.indexOf('newConversation()')
+    const ncEnd = chatEngine.indexOf('},\n', ncIdx)
+    const ncBody = ncIdx > -1 && ncEnd > -1 ? chatEngine.slice(ncIdx, ncEnd) : ''
+    // The gateway call must be present
+    expect(ncBody, 'chatEngine.ts: newConversation body must call clearActiveThread').toContain(
+      "clearActiveThread('new-conversation')",
+    )
+    // The bare assignment must only appear inside the fallback (else branch)
+    // — it must NOT appear BEFORE the gateway guard
+    const gatewayIdx = ncBody.indexOf("clearActiveThread(")
+    const bareIdx = ncBody.search(/State\.activeThreadId\s*=\s*null/)
+    if (bareIdx !== -1) {
+      expect(bareIdx, 'chatEngine.ts: any bare activeThreadId=null in newConversation must be AFTER the gateway guard').toBeGreaterThan(gatewayIdx)
+    }
+
+    // threadDrawer: old bare assignment must be gone from onRowClick body
+    const orcIdx = drawer.indexOf('onRowClick(id)')
+    const orcEnd = drawer.indexOf('},\n', orcIdx)
+    const orcBody = orcIdx > -1 && orcEnd > -1 ? drawer.slice(orcIdx, orcEnd) : ''
+    expect(orcBody, 'threadDrawer.ts: onRowClick body must not directly assign activeThreadId').not.toMatch(
+      /State\.activeThreadId\s*=\s*id/,
+    )
   })
 })

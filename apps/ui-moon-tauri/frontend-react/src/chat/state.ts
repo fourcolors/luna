@@ -227,3 +227,30 @@ export function setActiveThread(
   State.activeThreadId = id;
   return true;
 }
+
+/**
+ * clearActiveThread — user-intent transition AWAY from all threads (new
+ * conversation, connection reset that must not pre-select).
+ *
+ * Symmetric with setActiveThread. Call this at the moment the user fires
+ * "new conversation" so that optimistic UI (blank composer, no thread
+ * highlight) paints before the server round-trip completes. The caller is
+ * responsible for clearing ChatState / sending new-thread; this function
+ * owns only the state slot.
+ *
+ * WHY NOT overload setActiveThread with null: a null argument is ambiguous
+ * — callers that mean "go somewhere" and callers that mean "abandon the
+ * thread entirely" look identical at the call site. Naming the intent
+ * explicitly makes code-search grep for clearActiveThread unambiguous, and
+ * the allowlist fence test can distinguish the two patterns.
+ *
+ * @param State   The per-window state object (passed by reference).
+ * @param reason  Short label for log/debug attribution (e.g. "new-conversation").
+ */
+export function clearActiveThread(
+  State: ChatWindowState,
+  reason: string
+): void {
+  State.activeThreadId = null;
+  State.activeTurnId = null;
+}
