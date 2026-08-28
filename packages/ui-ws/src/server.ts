@@ -616,6 +616,9 @@ export interface UIWebSocketServerConfig {
       readonly clientTs?: number
       /** Best-effort base64 PNG (no `data:` prefix) — see FeedbackSubmitFrame.screenshot. */
       readonly screenshot?: string
+      /** Client-side capture failure reason when no screenshot could be taken.
+       *  Mutually exclusive with `screenshot` — only present when capture failed. */
+      readonly screenshotCaptureError?: string
     }) => import("effect").Effect.Effect<{ readonly ok: boolean; readonly message?: string }>
   } | null
   /**
@@ -2628,6 +2631,18 @@ export const startUIWebSocketServer = (
                       rawScreenshot.length <= SCREENSHOT_MAX_BASE64_CHARS
                         ? rawScreenshot
                         : undefined
+                    // Client reports why capture failed when no screenshot
+                    // was attached — pass it through so the server payload
+                    // records the reason rather than silently omitting both
+                    // the screenshot and any explanation.
+                    const SCREENSHOT_ERROR_MAX = 256
+                    const rawScreenshotErr = (frame as { screenshotCaptureError?: unknown })
+                      .screenshotCaptureError
+                    const screenshotCaptureError =
+                      typeof rawScreenshotErr === "string" &&
+                      rawScreenshotErr.length > 0
+                        ? rawScreenshotErr.slice(0, SCREENSHOT_ERROR_MAX)
+                        : undefined
                     yield* sink
                       .submit({
                         note: noteVal,
@@ -2648,6 +2663,9 @@ export const startUIWebSocketServer = (
                           : {}),
                         ...(screenshotVal !== undefined
                           ? { screenshot: screenshotVal }
+                          : {}),
+                        ...(screenshotCaptureError !== undefined && screenshotVal === undefined
+                          ? { screenshotCaptureError }
                           : {}),
                       })
                       .pipe(

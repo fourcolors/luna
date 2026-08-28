@@ -4467,6 +4467,11 @@ const buildServerLayer = (
            *  agent_notes is append-only — there is no UPDATE, so the full
            *  payload including screenshot metadata must be complete up front. */
           readonly screenshot?: string
+          /** Client-reported capture error when _captureScreenshot failed and
+           *  no screenshot could be attached. Stored in payload so the triage
+           *  queue shows what went wrong rather than silently omitting the
+           *  screenshot field. Max 256 chars; truncated on the server. */
+          readonly screenshotCaptureError?: string
         }): Effect.Effect<{ readonly ok: boolean; readonly message?: string }> => {
           const id = crypto.randomUUID()
           // Screenshot is ALWAYS best-effort — writeFeedbackScreenshot never
@@ -4496,6 +4501,11 @@ const buildServerLayer = (
                 // projection in ui-feedback-status-store.ts, which must
                 // treat this key as optional and never throw on its absence).
                 ...(screenshotMeta !== null ? { screenshot: screenshotMeta } : {}),
+                // Purely additive: only present when capture failed so the
+                // triage queue can show why no screenshot is attached.
+                ...(screenshotMeta === null && typeof input.screenshotCaptureError === 'string' && input.screenshotCaptureError.length > 0
+                  ? { screenshotCaptureError: input.screenshotCaptureError.slice(0, 256) }
+                  : {}),
               },
             })
             .pipe(
