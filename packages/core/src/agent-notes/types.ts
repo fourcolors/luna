@@ -74,6 +74,27 @@ export class NoteError extends Data.TaggedError("NoteError")<{
 }> {}
 
 /**
+ * The result of {@link AgentNotesApi.recordIfChanged}.
+ *
+ * When the note's fingerprint matches the previous note of the same `kind`
+ * and the heartbeat interval has not elapsed, the write is suppressed and
+ * `suppressed: true` is returned. Otherwise the note is written and
+ * `suppressed: false` is returned with the new {@link AgentNote}.
+ */
+export type GatedNoteResult =
+  | { readonly suppressed: false; readonly note: AgentNote }
+  | { readonly suppressed: true; readonly lastTs: number; readonly lastId: string }
+
+/**
+ * Default heartbeat interval for {@link AgentNotesApi.recordIfChanged}: 6 hours.
+ *
+ * When the fingerprint is unchanged but this interval has elapsed since the
+ * last write, a new note is recorded anyway so that silence is never
+ * indistinguishable from a dead job.
+ */
+export const DEFAULT_HEARTBEAT_MS = 6 * 60 * 60 * 1000 // 6 hours
+
+/**
  * Read/write contract for the agent-notes ledger.
  *
  * Read paths (`getRecent`, `getRecentAcrossSessions`, `getChain`, `getByKind`,
@@ -98,6 +119,50 @@ export interface AgentNotesApi {
      *  caller is unaffected). */
     readonly id?: string
   }) => Effect.Effect<AgentNote, NoteError>
+
+  /**
+   * Write a note only when its content has changed since the last note of the
+   * same `kind`, or when the heartbeat interval has elapsed.
+   *
+   * Use this method for periodic jobs that emit a note on every run. Without
+   * it, a job that re-emits byte-identical text produces unbounded ledger
+   * noise and makes a standing unresolved condition indistinguishable from a
+   * new event.
+   *
+   * Fingerprinting:
+   *   - If `opts.fingerprint` is provided, it is used as-is (the caller
+   *     supplies the "material state" as a stable key).
+   *   - Otherwise a content hash is computed from `input.summary` plus a
+   *     canonical (deterministically key-sorted) JSON encoding of
+   *     `input.payload`, with the reserved `_gate` key excluded.
+   *
+   * Heartbeat:
+   *   - Even when the fingerprint is unchanged, a note is written once the
+   *     heartbeat interval has elapsed. This prevents silence from becoming
+   *     indistinguishable from a dead job.
+   *   - Default: {@link DEFAULT_HEARTBEAT_MS} (6 hours).
+   *   - Set `heartbeatMs: 0` to disable suppression entirely (always record).
+   *   - Negative values are rejected with a {@link NoteError}.
+   *
+   * The fingerprint is stored inside the written note's payload under the
+   * reserved key `_gate: { fp }` so future calls can compare against it
+   * without a schema migration.
+   *
+   * @returns A {@link GatedNoteResult}: `{ suppressed: false, note }` when a
+   *   note was written, or `{ suppressed: true, lastTs, lastId }` when the
+   *   write was suppressed.
+   */
+  readonly recordIfChanged: (
+    input: {
+      readonly sessionId: string
+      readonly kind: NoteKind
+      readonly summary: string
+      readonly parentId?: string
+      readonly payload?: unknown
+      readonly id?: string
+    },
+    opts?: { readonly fingerprint?: string; readonly heartbeatMs?: number },
+  ) => Effect.Effect<GatedNoteResult, NoteError>
 
   readonly getRecent: (
     sessionId: string,
