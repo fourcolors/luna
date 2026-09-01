@@ -19,6 +19,6 @@
     "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.239"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.257"
   }
 }
