@@ -86,11 +86,42 @@ export interface Turn {
   readonly _settled?: boolean
 }
 
+/** A `tool_use` block off a history message, plus the outcome the server
+ *  folded back onto it (absent on an older server, or when the run's
+ *  `tool_result` fell outside the snapshot window). Every field is optional
+ *  because this is wire data, not our own construction. */
+export interface HistoryToolUse {
+  readonly id?: string
+  readonly name?: string
+  readonly input?: unknown
+  readonly result?: { readonly ok?: boolean; readonly output?: string; readonly truncated?: boolean } | null
+}
+
+/** A file attachment off a history message. No filename survives the round
+ *  trip - the SDK content block carries only a media type and base64 - so the
+ *  chip label is derived from the media type. */
+export interface HistoryAttachment {
+  readonly mediaType?: string
+  readonly data?: string
+}
+
+/**
+ * One message from a `thread-snapshot` (or the per-thread cache, which stores
+ * those same objects verbatim).
+ *
+ * `toolUses` / `attachments` are the whole point of this interface being
+ * wider than role+text: the server has always sent them, and `load-history`
+ * used to drop them on the floor, which is why a restored transcript rendered
+ * as bare text bubbles while a live one grew a tool timeline, a star map and
+ * attachment chips. They are optional so an older server still loads.
+ */
 export interface HistoryMessage {
   readonly role?: string
   readonly text?: string
   readonly ts?: number
   readonly delivery?: Delivery | null
+  readonly toolUses?: readonly HistoryToolUse[]
+  readonly attachments?: readonly HistoryAttachment[]
 }
 
 export interface DeliveredMessage {
@@ -148,6 +179,71 @@ export type ChatModelAction =
 // ============================================================================
 // Internal helpers (pure)
 // ============================================================================
+
+/** One tool result off the wire, defensively narrowed. Returns null (which
+ *  renders as a pending "…" step) rather than inventing an `ok:true` when the
+ *  server sent nothing - claiming a tool succeeded is worse than admitting we
+ *  do not know. */
+function historyToolResult(raw: HistoryToolUse["result"]): ToolResult | null {
+  if (!raw || typeof raw !== "object") return null
+  return {
+    // Only an explicit `false` means failure; an older server that omits the
+    // flag entirely does not get its whole history painted red.
+    ok: raw.ok !== false,
+    output: typeof raw.output === "string" ? raw.output : "",
+    truncated: raw.truncated === true,
+  }
+}
+
+/** Rebuild the tool segments a live turn would have accumulated from its
+ *  `tool-call` / `tool-result` frames. Blocks without both an id and a name
+ *  are dropped - they cannot be keyed or labelled. `parentToolUseId` is never
+ *  set here: subagent-internal calls are not projected into history at all,
+ *  so every restored tool is top-level. */
+function historyToolSegments(raw: readonly HistoryToolUse[] | undefined): ToolSegment[] {
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const out: ToolSegment[] = []
+  for (const t of raw) {
+    if (!t || typeof t !== "object") continue
+    const id = typeof t.id === "string" ? t.id : ""
+    const name = typeof t.name === "string" ? t.name : ""
+    if (!id || !name) continue
+    out.push({ kind: "tool", id, name, input: t.input, result: historyToolResult(t.result) })
+  }
+  return out
+}
+
+/** Label for an attachment chip. The composer's filename does not survive
+ *  the send (an SDK content block carries only `media_type` + base64), so the
+ *  media type is all we have; the chip's icon reads the extension off this. */
+function historyAttachmentName(mediaType: string): string {
+  if (mediaType === "application/pdf") return "document.pdf"
+  const ext = mediaType.split("/")[1] || "bin"
+  return "image." + (ext === "jpeg" ? "jpg" : ext)
+}
+
+/** Rebuild the preview chips the composer attached at send time, so a
+ *  restored user turn still shows the image it was sent with. Returns null
+ *  (not []) for none, matching what a text-only turn carries. */
+function historyPreviews(raw: readonly HistoryAttachment[] | undefined): Preview[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  const out: Preview[] = []
+  for (const a of raw) {
+    if (!a || typeof a !== "object") continue
+    const mediaType = typeof a.mediaType === "string" ? a.mediaType : ""
+    const data = typeof a.data === "string" ? a.data : ""
+    if (!mediaType || !data) continue
+    const isImage = mediaType.startsWith("image/")
+    out.push({
+      // "pdf" mirrors what the composer's own preview() emits, so the chip
+      // renders through the identical branch in PreviewTray.
+      kind: isImage ? "image" : mediaType === "application/pdf" ? "pdf" : "file",
+      name: historyAttachmentName(mediaType),
+      src: isImage ? `data:${mediaType};base64,${data}` : null,
+    })
+  }
+  return out.length > 0 ? out : null
+}
 
 function findTurnIndexById(turns: readonly Turn[], turnId: string | undefined): number {
   if (!turnId) return -1
@@ -217,15 +313,43 @@ export function chatModelReducer(state: ChatModelState, action: ChatModelAction)
       const turns: Turn[] = []
       let i = 0
       for (const msg of action.messages) {
-        if (!msg || !msg.text || !String(msg.text).trim()) continue
+        if (!msg) continue
+        const role: TurnRole = msg.role === "user" ? "user" : "assistant"
+        const text = msg.text ? String(msg.text) : ""
+        const hasText = !!text.trim()
+        // Tool blocks belong to assistant turns; attachments to user turns.
+        // Reading each only where it can occur keeps a malformed frame from
+        // growing a tool timeline on a user bubble.
+        const toolSegments = role === "assistant" ? historyToolSegments(msg.toolUses) : []
+        const previews = role === "user" ? historyPreviews(msg.attachments) : null
+        // The old guard was `!text.trim() -> skip`, which silently DELETED
+        // two real kinds of turn from every restored transcript: an assistant
+        // step that only called tools, and a user message that was only an
+        // image. Skip a turn only when it would render nothing at all.
+        if (!hasText && toolSegments.length === 0 && !previews) continue
+        // Text first, then tools: an SDK content array orders its text block
+        // before the tool_use blocks it introduces, and the concatenated
+        // `text` field has lost any finer interleaving. Getting this order
+        // right is what puts a run's closing answer BELOW the timeline (see
+        // planRun's lastToolIndex) instead of buried inside it.
+        const segments: Segment[] = []
+        if (hasText) segments.push({ kind: "text", raw: text, done: true })
+        for (const seg of toolSegments) segments.push(seg)
         const turn: Turn = {
           key: "h-" + i++,
-          role: msg.role === "user" ? "user" : "assistant",
+          role,
           status: "done",
-          segments: [{ kind: "text", raw: String(msg.text), done: true }],
-          previews: null,
+          segments,
+          previews,
           delivery: msg.delivery && typeof msg.delivery === "object" ? msg.delivery : null,
           ...(Number.isFinite(msg.ts) ? { ts: msg.ts as number } : {}),
+          // History is by definition finished work. planRun reads `_settled`
+          // off the LAST turn of a grouped run, so this is what makes a
+          // restored timeline render collapsed with its star map instead of
+          // a permanent "Working on it…". It cannot mislabel an in-flight
+          // run either: if a live turn follows these (a snapshot landing
+          // mid-turn), that live turn is the run's last and it is unsettled.
+          ...(role === "assistant" ? { _settled: true } : {}),
         }
         turns.push(turn)
       }

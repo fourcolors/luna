@@ -16,8 +16,11 @@ import { Cause, Context, Effect, Option, PubSub, Queue, Ref, Scope, Stream } fro
 import {
   Clock as CoreClock,
   SessionStore,
+  type ChatMessage,
+  type ChatToolUse,
   type ObservabilityApi,
   type StoredMessage,
+  extractToolResults,
   projectOne,
 } from "@luna/core"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -93,6 +96,58 @@ export const truncateOutput = (
   }
   if (truncated) out = out + "\n… (truncated)"
   return { output: out, truncated }
+}
+
+/**
+ * Fold each tool call's OUTCOME back onto the `tool_use` block it answers,
+ * for a history snapshot.
+ *
+ * WHY THIS EXISTS. A live turn renders its tool steps from two frames: the
+ * `tool-call` (name + input) and the later `tool-result` (ok + output). Only
+ * the first of those survived into history, because the SDK reports a result
+ * as a user-kind envelope carrying nothing but `tool_result` blocks, which
+ * `projectOne` correctly drops as a non-turn. A client replaying history
+ * therefore drew every past tool as still-pending. This walks the same stored
+ * array the snapshot was projected from and re-attaches the outcomes.
+ *
+ * TRUNCATION IS NOT OPTIONAL and deliberately reuses the live path's
+ * `normalizeToolResultContent` + `truncateOutput`: a single shell/read tool
+ * can return megabytes, and a snapshot is sent on EVERY subscribe. Sharing
+ * the helpers also means history and live clip at exactly the same point, so
+ * the two renders cannot disagree about where "… (truncated)" starts.
+ *
+ * Unmatched results are dropped, not an error: `snapshotMessageLimit` can cut
+ * a window between a `tool_use` and its result, and a subagent's internal
+ * results have no top-level `tool_use` to attach to.
+ */
+export const attachHistoryToolResults = (
+  stored: ReadonlyArray<StoredMessage>,
+  messages: ReadonlyArray<ChatMessage>,
+): ReadonlyArray<ChatMessage> => {
+  const byId = new Map<string, { ok: boolean; output: string; truncated: boolean }>()
+  for (const s of stored) {
+    if (s.kind !== "user") continue
+    for (const r of extractToolResults(s.payload)) {
+      // First writer wins: a tool_use id is answered exactly once, and a
+      // retry that reused the id would be a newer envelope we do not want
+      // silently overwriting the one the assistant turn actually saw.
+      if (byId.has(r.toolUseId)) continue
+      const { output, truncated } = truncateOutput(normalizeToolResultContent(r.content))
+      byId.set(r.toolUseId, { ok: !r.isError, output, truncated })
+    }
+  }
+  if (byId.size === 0) return messages
+  return messages.map((m) => {
+    if (m.toolUses.length === 0) return m
+    let changed = false
+    const toolUses: ChatToolUse[] = m.toolUses.map((t) => {
+      const result = byId.get(t.id)
+      if (!result) return t
+      changed = true
+      return { ...t, result }
+    })
+    return changed ? { ...m, toolUses } : m
+  })
 }
 
 /** Max chars of failure detail surfaced in the user-facing assistant-error

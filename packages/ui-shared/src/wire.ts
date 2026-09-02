@@ -41,10 +41,22 @@ export { UI_WS_PROTOCOL_VERSION } from "@luna/tools/protocol-descriptor"
 
 /* Chat-shaped types mirrored from chat-service/types.ts + core projection. */
 
+/** Outcome of a tool call as replayed from history. Mirrors the live
+ *  `tool-result` frame so a restored transcript renders identically to a
+ *  streamed one. Absent when the result envelope fell outside the snapshot
+ *  window, or the tool never returned. */
+export interface ChatToolUseResult {
+  readonly ok: boolean
+  readonly output: string
+  readonly truncated: boolean
+}
+
 export interface ChatToolUse {
   readonly id: string
   readonly name: string
   readonly input: unknown
+  /** History only - a live frame carries the result separately. */
+  readonly result?: ChatToolUseResult
 }
 
 /**
