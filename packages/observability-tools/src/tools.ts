@@ -73,6 +73,33 @@ const noteShape = {
       "Session ID to associate this note with. Defaults to the current session " +
         "if omitted — use an explicit id when recording notes about a past session.",
     ),
+  dedupe_key: z
+    .string()
+    .optional()
+    .describe(
+      "Explicit fingerprint for change detection. " +
+        "Pass a stable string that represents the material state you want to track. " +
+        "When the fingerprint matches the previous note of the same kind, the write is suppressed. " +
+        "Use this when the payload contains noisy fields (such as a timestamp) that should not " +
+        "affect whether a new note is written. " +
+        "Omit to use automatic content hashing of summary and payload instead. " +
+        "If either dedupe_key or dedupe_window_ms is present, the tool routes through " +
+        "change-gated recording.",
+    ),
+  dedupe_window_ms: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "Heartbeat interval in milliseconds for change-gated recording. " +
+        "Even when the fingerprint is unchanged, a note is written after this interval elapses. " +
+        "This prevents silence from becoming indistinguishable from a dead or stuck job. " +
+        "Set to 0 to disable suppression entirely (always record). " +
+        "Defaults to 6 hours when dedupe_key or dedupe_window_ms is present but this field is omitted. " +
+        "If either dedupe_key or dedupe_window_ms is present, the tool routes through " +
+        "change-gated recording.",
+    ),
 }
 
 const notesRecentShape = {
@@ -222,12 +249,60 @@ export const makeObsTools = (
       "These notes survive context resets and form the foundation for daily self-review. " +
       "Examples: kind='goal_declared' when Operator states intent; kind='progress' at " +
       "key milestones; kind='decision' when choosing between approaches; " +
-      "kind='reflection' at session end to summarize what was accomplished.",
+      "kind='reflection' at session end to summarize what was accomplished. " +
+      "Use dedupe_key and dedupe_window_ms to prevent periodic jobs from writing " +
+      "duplicate notes when the state has not changed.",
     inputSchema: noteShape,
     ...OBS_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const sessionId = args.session_id ?? currentSessionId() ?? "unknown"
+        const useGate =
+          args.dedupe_key !== undefined || args.dedupe_window_ms !== undefined
+
+        if (useGate) {
+          const gateResult = yield* notes
+            .recordIfChanged(
+              {
+                sessionId,
+                kind: args.kind,
+                summary: args.summary,
+                payload: args.payload,
+              },
+              {
+                ...(args.dedupe_key !== undefined
+                  ? { fingerprint: args.dedupe_key }
+                  : {}),
+                ...(args.dedupe_window_ms !== undefined
+                  ? { heartbeatMs: args.dedupe_window_ms }
+                  : {}),
+              },
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ToolError({ tool: "obs_note", op: "record", cause }),
+              ),
+            )
+
+          if (gateResult.suppressed) {
+            return {
+              suppressed: true as const,
+              lastTs: gateResult.lastTs,
+              lastId: gateResult.lastId,
+              reason: "note unchanged within dedupe window",
+            }
+          }
+
+          return {
+            suppressed: false as const,
+            id: gateResult.note.id,
+            kind: gateResult.note.kind,
+            summary: gateResult.note.summary,
+            ts: gateResult.note.ts,
+          } as const
+        }
+
         const note = yield* notes
           .record({
             sessionId,
