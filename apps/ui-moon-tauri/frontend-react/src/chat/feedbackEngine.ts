@@ -404,30 +404,89 @@ export function createFeedbackEngine(deps: FeedbackEngineDeps) {
     // runtime, no rect, Screen-Recording permission denied, capture/crop
     // error) must never block or delay submitting the note beyond a
     // normal await — _captureScreenshot never throws.
+    //
+    // The return value is a discriminated union: { base64, ... } on
+    // success or { error: string } on failure (never null/undefined).
+    // This forces the caller to branch on failure rather than silently
+    // omitting the field — "fail-loud-not-silent": the failure is
+    // recorded in the frame payload so the server note includes it and
+    // the operator sees what went wrong in the triage queue.
     const shot = await this._captureScreenshot(t);
-    if (shot && shot.base64) {
+    if (shot && 'base64' in shot && shot.base64) {
       frame.screenshot = shot.base64;
+    } else if (shot && 'error' in shot) {
+      // Record the failure in the payload so the server-side note is
+      // honest about what happened rather than silently omitting the
+      // screenshot field. The text feedback still submits unblocked.
+      frame.screenshotCaptureError = shot.error;
+      // Surface the failure to the user: the note is still on its way
+      // so this is informational, not a blocking error state. We use
+      // setStatus because the panel stays open until the ack arrives.
+      this.setStatus('Note sent (screenshot capture failed — permission may be needed in System Settings > Privacy > Screen Recording).', 'info');
     }
     WebSocketEngine.send(frame);
   },
 
-  // Best-effort native window screenshot of the picked element. Returns
-  // null (never throws) on any failure so submit() always falls back to
-  // sending the note without a screenshot.
+  // Best-effort native window screenshot of the picked element.
+  //
+  // Returns { base64, width, height, bytes } on success, or
+  // { error: string } on any failure (never null, never throws). The
+  // discriminated-union shape means submit() MUST branch on failure
+  // rather than silently omitting the screenshot — satisfying the
+  // "fail-loud-not-silent" contract at the call-site level.
+  //
+  // Failure reasons surfaced in `error`:
+  //  - 'no-tauri': not running inside the Tauri runtime
+  //  - 'no-rect': target element has no bounding rect
+  //  - 'invoke-failed: <msg>': capture_window_screenshot command failed
+  //  - 'empty-result': command returned empty/bad base64
+  //  - 'image-load-failed': PNG couldn't be decoded into an Image element
+  //  - 'crop-failed': cropAndEncodeFeedbackScreenshot returned null
   async _captureScreenshot(target) {
     try {
-      if (!(window.__TAURI__ && window.__TAURI__.core) || !target || !target.rect) return null;
-      const res = await window.__TAURI__.core.invoke('capture_window_screenshot');
-      if (!res || typeof res.base64 !== 'string' || !res.base64) return null;
+      // Guard against `window` being undefined (Node/jsdom-less test
+      // environments) before touching any window.* property — otherwise
+      // a ReferenceError is caught by the outermost catch and surfaces as
+      // 'unexpected: window is not defined' instead of 'no-tauri'.
+      if (!(typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core)) {
+        return { error: 'no-tauri' };
+      }
+      if (!target || !target.rect) {
+        return { error: 'no-rect' };
+      }
+      let res;
+      try {
+        res = await window.__TAURI__.core.invoke('capture_window_screenshot');
+      } catch (invokeErr) {
+        const msg = (invokeErr && typeof invokeErr === 'object' && 'message' in invokeErr)
+          ? String(invokeErr.message).slice(0, 200)
+          : String(invokeErr).slice(0, 200);
+        return { error: 'invoke-failed: ' + msg };
+      }
+      if (!res || typeof res.base64 !== 'string' || !res.base64) {
+        return { error: 'empty-result' };
+      }
       const img = await new Promise((resolve, reject) => {
         const el = new Image();
         el.onload = () => resolve(el);
         el.onerror = reject;
         el.src = 'data:image/png;base64,' + res.base64;
-      });
-      return cropAndEncodeFeedbackScreenshot(img, target.rect, window.devicePixelRatio || 1);
-    } catch (_) {
-      return null; // best-effort — never block the note
+      }).catch(() => null);
+      if (!img) {
+        return { error: 'image-load-failed' };
+      }
+      const cropped = cropAndEncodeFeedbackScreenshot(img, target.rect, window.devicePixelRatio || 1);
+      if (!cropped) {
+        return { error: 'crop-failed' };
+      }
+      return cropped;
+    } catch (e) {
+      // Outermost safety net — nothing above should reach here, but
+      // _captureScreenshot must never throw under any condition.
+      const msg = (e && typeof e === 'object' && 'message' in e)
+        ? String(e.message).slice(0, 200)
+        : String(e).slice(0, 200);
+      return { error: 'unexpected: ' + msg };
     }
   },
 

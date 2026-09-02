@@ -616,6 +616,9 @@ export interface UIWebSocketServerConfig {
       readonly clientTs?: number
       /** Best-effort base64 PNG (no `data:` prefix) — see FeedbackSubmitFrame.screenshot. */
       readonly screenshot?: string
+      /** Client-side capture failure reason when no screenshot could be taken.
+       *  Mutually exclusive with `screenshot` — only present when capture failed. */
+      readonly screenshotCaptureError?: string
     }) => import("effect").Effect.Effect<{ readonly ok: boolean; readonly message?: string }>
   } | null
   /**
@@ -2622,11 +2625,34 @@ export const startUIWebSocketServer = (
                     // instead (best-effort, never-blocking capture).
                     const rawScreenshot = (frame as { screenshot?: unknown })
                       .screenshot
+                    const screenshotIsOversize =
+                      typeof rawScreenshot === "string" &&
+                      rawScreenshot.length > SCREENSHOT_MAX_BASE64_CHARS
+                    if (screenshotIsOversize) {
+                      // Fail-loud: a dropped screenshot must not be silent.
+                      // The note still submits (non-blocking) but the drop
+                      // is observable in server logs.
+                      console.warn(
+                        `[luna/feedback] screenshot dropped: ${(rawScreenshot as string).length} chars exceeds ${SCREENSHOT_MAX_BASE64_CHARS} limit (requestId=${reqId})`,
+                      )
+                    }
                     const screenshotVal =
                       typeof rawScreenshot === "string" &&
                       rawScreenshot.length > 0 &&
                       rawScreenshot.length <= SCREENSHOT_MAX_BASE64_CHARS
                         ? rawScreenshot
+                        : undefined
+                    // Client reports why capture failed when no screenshot
+                    // was attached — pass it through so the server payload
+                    // records the reason rather than silently omitting both
+                    // the screenshot and any explanation.
+                    const SCREENSHOT_ERROR_MAX = 256
+                    const rawScreenshotErr = (frame as { screenshotCaptureError?: unknown })
+                      .screenshotCaptureError
+                    const screenshotCaptureError =
+                      typeof rawScreenshotErr === "string" &&
+                      rawScreenshotErr.length > 0
+                        ? rawScreenshotErr.slice(0, SCREENSHOT_ERROR_MAX)
                         : undefined
                     yield* sink
                       .submit({
@@ -2648,6 +2674,9 @@ export const startUIWebSocketServer = (
                           : {}),
                         ...(screenshotVal !== undefined
                           ? { screenshot: screenshotVal }
+                          : {}),
+                        ...(screenshotCaptureError !== undefined && screenshotVal === undefined
+                          ? { screenshotCaptureError }
                           : {}),
                       })
                       .pipe(
