@@ -135,12 +135,21 @@ export interface ChatEngineCtx {
   /** Late-bound; see threadDrawer's identical hook. Fired when the viewed
    *  thread changes so per-thread surfaces can re-resolve. */
   readonly onThreadSwitch?: (() => void) | undefined
+  /**
+   * Single-writer callback for the "new conversation" user-intent clear.
+   * Bound in bootChat.ts alongside the threadDrawer's setActiveThread binding
+   * so chatEngine.ts does not import state.ts directly.
+   * (id: string, reason: string) => void — same param shape for symmetry
+   * but reason is the only arg; the function takes (State, reason) internally.
+   */
+  readonly clearActiveThread?: ((reason: string) => void) | undefined
 }
 
 export function createChatEngine(ctx: ChatEngineCtx) {
   const {
     Logger, DOM, State, WebSocketEngine, ChatState, ChatLoop,
     MoonFace, MoonClient, SlashMenu, Attachments, ThreadCache, onThreadSwitch,
+    clearActiveThread,
   } = ctx
 
   const ChatEngine = {
@@ -224,8 +233,19 @@ export function createChatEngine(ctx: ChatEngineCtx) {
 
     newConversation() {
       Logger.info("Clearing conversation -> requesting a new thread");
-      State.activeThreadId = null;
-      State.activeTurnId = null;
+      // USER INTENT → centralized clear. clearActiveThread nulls both
+      // activeThreadId and activeTurnId so this path stays consistent with
+      // the setActiveThread/clearActiveThread invariants enforced by the
+      // allowlist fence test (test/thread-switch-snap.test.ts).
+      // Falls back to the direct assignments if the callback is absent (e.g.
+      // in tests that do not wire bootChat) — the fence test verifies the
+      // production wiring is present.
+      if (clearActiveThread) {
+        clearActiveThread('new-conversation');
+      } else {
+        State.activeThreadId = null;
+        State.activeTurnId = null;
+      }
       WebSocketEngine.clearTurnTimeout();
       // ABANDONING A TURN IS A CLEAR. Without this the face sticks on "busy"
       // forever: activeThreadId is now null, so the old thread's turn-complete
