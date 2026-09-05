@@ -148,6 +148,27 @@ const SCHEMA_V4 = `
   ALTER TABLE jobs ADD COLUMN heal_state TEXT NOT NULL DEFAULT 'ok';
 `
 
+/**
+ * ADR 0001 Phase 2 — Outcome-health predicates (SCHEMA_V5).
+ *
+ * Two additive columns record whether the job achieved a fresh result
+ * after its last successful dispatch. Jobs without a `health` predicate
+ * in their payload never write these; they remain NULL for the lifetime
+ * of the row. Predicate evaluation runs AFTER recordRunEnd (the run is
+ * already committed as "success") so a stale/unknown outcome NEVER
+ * changes the run's own terminal status.
+ *
+ *   last_outcome_success_at — epoch ms of the last FRESH evaluation
+ *   outcome_state           — 'fresh' | 'stale' | 'unknown' (last eval)
+ *
+ * Plain NULL defaults — no DEFAULT needed on a nullable column added via
+ * ALTER TABLE (SQLite fills existing rows with NULL automatically).
+ */
+const SCHEMA_V5 = `
+  ALTER TABLE jobs ADD COLUMN last_outcome_success_at INTEGER;
+  ALTER TABLE jobs ADD COLUMN outcome_state TEXT;
+`
+
 const parseHealState = (raw: unknown): JobHealState => {
   if (raw === "healing" || raw === "escalated" || raw === "ok") return raw
   return "ok"
@@ -199,6 +220,8 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
             orphanStreak: 0,
             healAttempts: 0,
             healState: "ok",
+            lastOutcomeSuccessAt: null,
+            outcomeState: null,
           }
           const existed = yield* Ref.get(store).pipe(
             Effect.map((m) => m.has(input.id)),
@@ -296,6 +319,14 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
                 patch.healState !== undefined
                   ? patch.healState
                   : existing.healState,
+              lastOutcomeSuccessAt:
+                patch.lastOutcomeSuccessAt !== undefined
+                  ? patch.lastOutcomeSuccessAt
+                  : existing.lastOutcomeSuccessAt,
+              outcomeState:
+                patch.outcomeState !== undefined
+                  ? patch.outcomeState
+                  : existing.outcomeState,
               updatedAt: ts,
             }
             const m2 = new Map(map)
@@ -681,6 +712,7 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
         applyMigration(db, "jobs", 2, SCHEMA_V2, nowMs)
         applyMigration(db, "jobs", 3, SCHEMA_V3, nowMs)
         applyMigration(db, "jobs", 4, SCHEMA_V4, nowMs)
+        applyMigration(db, "jobs", 5, SCHEMA_V5, nowMs)
 
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -698,7 +730,8 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
         const SELECT_COLS =
           "id, kind, spec, next_run, last_run, last_status, payload_json, " +
           "created_at, updated_at, schedule, enabled, next_run_at, retry_attempt, " +
-          "fail_streak, orphan_streak, heal_attempts, heal_state"
+          "fail_streak, orphan_streak, heal_attempts, heal_state, " +
+          "last_outcome_success_at, outcome_state"
         const listAllStmt = db.query(
           `SELECT ${SELECT_COLS} FROM jobs ORDER BY created_at ASC`,
         )
@@ -735,7 +768,9 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
                   fail_streak    = CASE WHEN ? = 1 THEN ? ELSE fail_streak END,
                   orphan_streak  = CASE WHEN ? = 1 THEN ? ELSE orphan_streak END,
                   heal_attempts  = CASE WHEN ? = 1 THEN ? ELSE heal_attempts END,
-                  heal_state     = CASE WHEN ? = 1 THEN ? ELSE heal_state END,
+                  heal_state              = CASE WHEN ? = 1 THEN ? ELSE heal_state END,
+                  last_outcome_success_at = CASE WHEN ? = 1 THEN ? ELSE last_outcome_success_at END,
+                  outcome_state           = CASE WHEN ? = 1 THEN ? ELSE outcome_state END,
                   updated_at     = ?
             WHERE id = ?`,
         )
@@ -845,6 +880,8 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
           orphan_streak: number
           heal_attempts: number
           heal_state: string
+          last_outcome_success_at: number | null
+          outcome_state: string | null
         }
         type RawRunRow = {
           id: number
@@ -892,6 +929,8 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
             orphanStreak: row.orphan_streak ?? 0,
             healAttempts: row.heal_attempts ?? 0,
             healState: parseHealState(row.heal_state),
+            lastOutcomeSuccessAt: row.last_outcome_success_at ?? null,
+            outcomeState: row.outcome_state ?? null,
           }
         }
         const rowToRun = (row: RawRunRow): JobRun => ({
@@ -966,6 +1005,8 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
               orphanStreak: 0,
               healAttempts: 0,
               healState: "ok",
+              lastOutcomeSuccessAt: null,
+              outcomeState: null,
             } satisfies PersistedJob
           })
 
@@ -1045,6 +1086,10 @@ export class JobsStoreService extends Context.Service<JobsStoreService, JobsStor
                   patch.healAttempts ?? null,
                   patch.healState !== undefined ? 1 : 0,
                   patch.healState ?? null,
+                  patch.lastOutcomeSuccessAt !== undefined ? 1 : 0,
+                  patch.lastOutcomeSuccessAt ?? null,
+                  patch.outcomeState !== undefined ? 1 : 0,
+                  patch.outcomeState ?? null,
                   ts,
                   id,
                 )

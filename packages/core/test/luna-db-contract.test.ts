@@ -173,6 +173,7 @@ const LUNA_DB_TABLES: readonly TableSpec[] = [
       "payload_json", "created_at", "updated_at", "schedule", "enabled",
       "next_run_at", "retry_attempt", "fail_streak", "orphan_streak",
       "heal_attempts", "heal_state",
+      "last_outcome_success_at", "outcome_state",
     ],
   },
   {

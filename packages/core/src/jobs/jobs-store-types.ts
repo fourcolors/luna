@@ -94,6 +94,18 @@ export interface PersistedJob {
   readonly orphanStreak: number
   readonly healAttempts: number
   readonly healState: JobHealState
+
+  /**
+   * Outcome-health tracking (ADR 0001 Phase 2 / SCHEMA_V5).
+   * Written by the executor after a successful dispatch when the job
+   * payload carries a `health` predicate.
+   *   lastOutcomeSuccessAt — epoch ms of the last FRESH evaluation
+   *                          (null until the first fresh result)
+   *   outcomeState         — 'fresh' | 'stale' | 'unknown' | null
+   *                          (null until the first evaluation)
+   */
+  readonly lastOutcomeSuccessAt: number | null
+  readonly outcomeState: string | null
 }
 
 /** Patient heal lifecycle for doctor auto-enqueue (SCHEMA_V4). */
@@ -219,6 +231,9 @@ export interface JobsStoreApi {
       readonly orphanStreak?: number
       readonly healAttempts?: number
       readonly healState?: JobHealState
+      /** Outcome-health fields (ADR 0001 Phase 2 / SCHEMA_V5). */
+      readonly lastOutcomeSuccessAt?: number | null
+      readonly outcomeState?: string | null
     },
   ) => Effect.Effect<boolean, JobsStoreError>
 
