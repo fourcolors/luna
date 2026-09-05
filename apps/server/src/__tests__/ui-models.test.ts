@@ -169,11 +169,12 @@ describe("buildAvailableModels", () => {
 
   it("returns the built-in base list when LUNA_UI_MODELS is absent", () => {
     const result = buildAvailableModels({})
-    // Order is: Sonnet 5 (default), Fable 5, Mythos 5, Opus 5, Opus 4.8,
+    // Order is: Sonnet 5 (default), Fable 5, Fable 5.1, Mythos 5, Opus 5, Opus 4.8,
     // Sonnet 4.6, Haiku 4.5. Mythos 5 and Haiku 4.5 take no effort param.
     expect(result).toEqual([
       { id: "claude-sonnet-5",   label: "Claude Sonnet 5 — balanced default",      efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-fable-5",    label: "Fable 5 (1M context, xhigh reasoning)",   efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
+      { id: "claude-fable-5-1",  label: "Fable 5.1 (1M context, xhigh reasoning)", efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-mythos-5",   label: "Mythos 5 (1M context, first-party only)", efforts: [] },
       { id: "claude-opus-5",     label: "Opus 5 (1M context, xhigh reasoning)",    efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",          efforts: ALL_LEVELS_PLUS_ULTRACODE },
@@ -238,11 +239,12 @@ describe("buildAvailableModels", () => {
 
   it("advertises defaultEffort 'high' for the xhigh-reasoning Claude 5 models", () => {
     const result = buildAvailableModels({})
-    // Per the SDK catalog, Fable 5 / Opus 5 / Sonnet 5 all carry
+    // Per the SDK catalog, Fable 5 / Fable 5.1 / Opus 5 / Sonnet 5 all carry
     // default_effort "high"; every other base model has no opinion.
     const withDefault = result.filter((m) => m.defaultEffort !== undefined)
     expect(withDefault.map((m) => m.id).sort()).toEqual([
       "claude-fable-5",
+      "claude-fable-5-1",
       "claude-opus-5",
       "claude-sonnet-5",
     ])

@@ -63,7 +63,7 @@ describe("the five lines bash actually prints", () => {
     }
     expect(guardVerdictLine(verdict, PORT)).toBe(
       bashLogLine({
-        line: 1488,
+        line: 1482,
         fn: "luna_warn",
         anchor: "SESSION GUARD OVERRIDDEN by operator",
         vars: { OPERATOR_OVERRIDE_REASON: reason },
@@ -74,7 +74,7 @@ describe("the five lines bash actually prints", () => {
   it("live-sessions (:1502) carries the count and the RAW port spelling", () => {
     expect(guardVerdictLine({ permitted: false, reason: "live-sessions", sessionCount: 3 }, PORT)).toBe(
       bashLogLine({
-        line: 1502,
+        line: 1496,
         fn: "luna_warn",
         anchor: "deferring restart",
         vars: { n: "3", READINESS_PORT: PORT },
@@ -86,7 +86,7 @@ describe("the five lines bash actually prints", () => {
     const verdict: GuardVerdict = { permitted: true, reason: "dead-server-exception", unitState: "inactive" }
     expect(guardVerdictLine(verdict, PORT)).toBe(
       bashLogLine({
-        line: 1518,
+        line: 1512,
         fn: "luna_warn",
         anchor: "no server process; restart permitted",
         vars: { state: "inactive" },
@@ -96,14 +96,14 @@ describe("the five lines bash actually prints", () => {
 
   it("transport-unreachable (:1521) interpolates nothing at all", () => {
     expect(guardVerdictLine({ permitted: false, reason: "transport-unreachable", unitState: "" }, PORT)).toBe(
-      bashLogLine({ line: 1521, fn: "luna_warn", anchor: "transport never reached systemd" }),
+      bashLogLine({ line: 1515, fn: "luna_warn", anchor: "transport never reached systemd" }),
     )
   })
 
   it("unit-state-uncertain (:1524) quotes the state that made it fail closed", () => {
     expect(guardVerdictLine({ permitted: false, reason: "unit-state-uncertain", unitState: "activating" }, PORT)).toBe(
       bashLogLine({
-        line: 1524,
+        line: 1518,
         fn: "luna_warn",
         anchor: "may be serving; deferring",
         vars: { state: "activating" },
@@ -147,7 +147,7 @@ describe("structural properties", () => {
     expect(uncertain).not.toContain("undefined")
     expect(live).toBe(
       bashLogLine({
-        line: 1502,
+        line: 1496,
         fn: "luna_warn",
         anchor: "deferring restart",
         vars: { n: "", READINESS_PORT: PORT },
