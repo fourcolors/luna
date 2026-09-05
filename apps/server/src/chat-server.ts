@@ -783,7 +783,7 @@ export const ThreadToolsProviderLayer = (
   // REFRESH loop lives outside this layer (bulletinRefresherL in main),
   // because it needs ChatService + SessionStore, which are not in this
   // layer's dependency graph. Default undefined: byte-identical to before.
-  bulletinHolder?: { readonly current: string },
+  bulletinHolder?: { readonly current: string; readonly generatedAtMs: number },
 ) => {
   const base = Layer.effect(
     ThreadToolsProviderTag,
@@ -2488,7 +2488,7 @@ export const buildBaseLayer = (
   // ChatService + SessionStore. Default OFF: everything is inert unless
   // LUNA_BULLETIN=1.
   const bulletinEnabled = process.env["LUNA_BULLETIN"]?.trim() === "1"
-  const bulletinHolder = { current: "" }
+  const bulletinHolder = { current: "", generatedAtMs: 0 }
   const bulletinFilePath = join(dirname(paths.lunaDbPath), "bulletin.md")
   const threadToolsL = ThreadToolsProviderLayer(
     BELIEF_REFRESH_INTERVAL_MS,
@@ -2742,7 +2742,8 @@ export const buildBaseLayer = (
             if (text.trim().length > 0) {
               lastDigest = text
               lastActivityMs = statSync(bulletinFilePath).mtimeMs
-              bulletinHolder.current = buildBulletinInjectionBlock(text)
+              bulletinHolder.current = buildBulletinInjectionBlock(text, lastActivityMs)
+              bulletinHolder.generatedAtMs = lastActivityMs
               console.log(`[luna/bulletin] warm-started from ${bulletinFilePath}`)
             }
           } catch {
@@ -2825,7 +2826,9 @@ export const buildBaseLayer = (
             })
             lastDigest = digest
             lastActivityMs = maxActivity
-            bulletinHolder.current = buildBulletinInjectionBlock(digest)
+            const refreshedAtMs = Date.now()
+            bulletinHolder.current = buildBulletinInjectionBlock(digest, refreshedAtMs)
+            bulletinHolder.generatedAtMs = refreshedAtMs
             try {
               // Atomic persist (temp + rename): a crash mid-write must not
               // leave a torn file that warm-start would inject on restart.

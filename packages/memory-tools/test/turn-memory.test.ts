@@ -115,7 +115,38 @@ describe("turn memory", () => {
     expect(packed).toBeNull()
   })
 
-  describe("recallForTurn reranking", () => {
+  it("packs with compact date label from updatedAt (fail-open on zero)", () => {
+    const known = makeRecord({
+      id: "mem-with-date",
+      namespace: "notes",
+      kind: "semantic",
+      content: { text: "operator uses dark mode" },
+      now: Date.parse("2026-06-14T12:00:00Z"),
+    })
+    const noDate = makeRecord({
+      id: "mem-no-date",
+      namespace: "notes",
+      kind: "semantic",
+      content: { text: "operator likes coffee" },
+      now: 0,
+    })
+    const packed = packRecallContext(
+      [
+        { record: known, score: 0.9 },
+        { record: noDate, score: 0.8 },
+      ],
+      { maxHits: 5, maxRecordChars: 200, maxTotalChars: 3_000 },
+    )
+    // Record with valid updatedAt gets a date label
+    expect(packed?.text).toContain("[mem-with-date · 2026-06-14]")
+    expect(packed?.text).toContain("operator uses dark mode")
+    // Record with updatedAt=0 gets NO date label (fail-open)
+    expect(packed?.text).toContain("[mem-no-date]")
+    expect(packed?.text).not.toContain("mem-no-date ·")
+    expect(packed?.text).toContain("operator likes coffee")
+  })
+
+    describe("recallForTurn reranking", () => {
     afterEach(() => {
       delete process.env["LUNA_RECALL_RERANK"]
       delete process.env["LUNA_RERANK_THRESHOLD"]
