@@ -737,10 +737,10 @@ describe("luna_env_value: golden parity", () => {
 })
 
 // ---------------------------------------------------------------------------
-// luna_configure_claude_executable (scripts/luna-update-server:1245, HOST arm)
+// luna_repin_claude_executable (scripts/luna-update-server:1262, HOST arm)
 // ---------------------------------------------------------------------------
 
-describe("luna_configure_claude_executable: golden parity (the host arm)", () => {
+describe("luna_repin_claude_executable: golden parity (the host arm)", () => {
   /**
    * The only function here that WRITES, so each drive needs its own root:
    * makeFixturePair gives two identically-built fixtures with independent
@@ -755,7 +755,7 @@ describe("luna_configure_claude_executable: golden parity (the host arm)", () =>
     const env = baseEnv(fx, { DRY_RUN: dryRun ? "true" : "false" })
     let run: Run
     if (kind === "oracle") {
-      run = runOracle("luna_configure_claude_executable", [fx.envFile, fx.work], env)
+      run = runOracle("luna_repin_claude_executable", [fx.envFile, fx.work], env)
     } else {
       const pin = makePin(fx.temp)
       const r = openPort(pin, env).configureClaudeExecutable({
@@ -808,27 +808,27 @@ describe("luna_configure_claude_executable: golden parity (the host arm)", () =>
   }
 
   parity(
-    "an already-executable pin is left alone (returns at luna-deploy.sh:134-136)",
+    "an already-up-to-date pin is left alone (detected == old_pin, luna-deploy.sh:200-201)",
     { readyAtTarget: true, readyAtPrev: true, claude: { stub: "present", envPin: "detected" } },
     { status: 0, envMatch: /^LUNA_CLAUDE_CODE_EXECUTABLE=<ROOT>\/bin\/claude\n$/ },
   )
 
   parity(
-    "a STALE pin is warned about, removed, and re-detected",
+    "a STALE pin is updated to the freshly-detected binary",
     { readyAtTarget: true, readyAtPrev: true, claude: { stub: "present", envPin: "stale" } },
     {
       status: 0,
-      stderrMatch: /^warning: removing stale LUNA_CLAUDE_CODE_EXECUTABLE \(.*stale-claude is not executable\)\n$/,
+      stderrMatch: /^warning: replacing stale claude pin: .*stale-claude -> .*\/claude\n$/,
       envMatch: /^LUNA_CLAUDE_CODE_EXECUTABLE=<ROOT>\/bin\/claude\n$/,
     },
   )
 
   parity(
-    "a stale pin with NOTHING to re-detect is removed and left absent (rc still 0)",
+    "a stale pin with NOTHING to re-detect is cleared and a degraded warning is emitted (rc still 0)",
     { readyAtTarget: true, readyAtPrev: true, claude: { stub: "absent", envPin: "stale" } },
     {
       status: 0,
-      stderrMatch: /removing stale LUNA_CLAUDE_CODE_EXECUTABLE/,
+      stderrMatch: /no usable claude binary found after bun install; clearing stale pin:/,
       envMatch: /^$/,
     },
   )
@@ -846,7 +846,7 @@ describe("luna_configure_claude_executable: golden parity (the host arm)", () =>
   )
 
   parity(
-    "DRY_RUN returns 0 before touching the .env (luna-deploy.sh:130-132)",
+    "DRY_RUN returns 0 immediately without touching the .env (luna-deploy.sh:192)",
     { readyAtTarget: true, readyAtPrev: true, claude: { stub: "present", envPin: "stale" } },
     {
       status: 0,
@@ -875,7 +875,7 @@ describe("luna_configure_claude_executable: golden parity (the host arm)", () =>
       dryRun: false,
     })
     expect(result.ok).toBe(true)
-    expect(result.stderr).toMatch(/removing stale LUNA_CLAUDE_CODE_EXECUTABLE/)
+    expect(result.stderr).toMatch(/replacing stale claude pin:/)
     expect(readFileSync(fx.envFile, "utf8")).toBe(`LUNA_CLAUDE_CODE_EXECUTABLE=${join(fx.bin, "claude")}\n`)
   })
 
@@ -897,7 +897,7 @@ describe("luna_configure_claude_executable: golden parity (the host arm)", () =>
     const envFile = join(badParent, "nested", ".env")
     const repoDir = join(fx.temp, "unused-repo")
     try {
-      const oracle = runOracle("luna_configure_claude_executable", [envFile, repoDir], env)
+      const oracle = runOracle("luna_repin_claude_executable", [envFile, repoDir], env)
       // Sanity: the scenario really does make the REAL lib fail; otherwise
       // this test would prove nothing about the port's fidelity to it.
       expect(oracle.status).not.toBe(0)

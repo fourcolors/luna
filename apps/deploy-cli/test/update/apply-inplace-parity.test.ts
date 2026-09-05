@@ -848,8 +848,8 @@ describe("apply_ref_inplace: the claude re-pin on a BARE HOST", () => {
     // forwards ConfigureClaudeResult.stderr verbatim. Byte-exact, including the
     // helper's own `warning: ` prefix, which the port must NOT re-apply.
     expect(p.bash.stderr).toBe(
-      "warning: removing stale LUNA_CLAUDE_CODE_EXECUTABLE (<ROOT>/stale-claude is not executable)\n" +
-        `warning: ${claudeDegradedLine}\n`,
+      "warning: no usable claude binary found after bun install; clearing stale pin: <ROOT>/stale-claude\n" +
+        "warning: POSTCONDITION degraded: no usable claude executable detected — server will boot but cannot spawn claude\n",
     )
   })
 
@@ -857,7 +857,7 @@ describe("apply_ref_inplace: the claude re-pin on a BARE HOST", () => {
     const p = drivePair({ readyAtTarget: true, readyAtPrev: true }, args)
     expectParity(p)
     expect(p.bash.rc).toBe(0)
-    expect(p.bash.stderr).toBe(`warning: ${claudeDegradedLine}\n`)
+    expect(p.bash.stderr).toBe("warning: POSTCONDITION degraded: no usable claude executable detected — server will boot but cannot spawn claude\n")
   })
 
   it("FAILS the apply when the re-pin helper itself fails", { timeout: 60_000 }, () => {

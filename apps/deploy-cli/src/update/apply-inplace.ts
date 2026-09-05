@@ -346,16 +346,11 @@ export const applyInplaceSync = (opts: ApplyInplaceOptions): ApplyInplaceOutcome
     opts.writeStderr(result.stderr)
     if (!result.ok) return { ok: false, step: "claude-repin" }
 
-    // A SEPARATE warn-only degrade check (:1247-1251), not an else-branch of
-    // the above: the helper returns 0 even when it found nothing to pin, which
-    // is the silent half of the same incident. `found` is not consulted -
-    // bash's `$(luna_env_value ... || true)` collapses "no such key" and "no
-    // such file" into the same empty string the `-z` test then sees.
-    const pin = opts.envValue(opts.envFile, CLAUDE_PIN_KEY)
-    const pinned = pin.value
-    if ((pinned === "" || !opts.isExecutable(pinned)) && !opts.commandExists("claude")) {
-      opts.warn(claudeDegradedLine)
-    }
+    // luna_repin_claude_executable (:1262) handles its own degradation warning
+    // internally — it emits "POSTCONDITION degraded: no usable claude executable
+    // detected" when it finds nothing, so no secondary check is needed here.
+    // The old luna_configure_claude_executable was silent on degrade; this is
+    // the key behavioural difference between the two functions.
   }
 
   return { ok: true }
