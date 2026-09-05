@@ -44,6 +44,8 @@ export interface RecallContextHit {
   readonly score: number
   readonly kind: string
   readonly namespace: string
+  /** Epoch ms of last update; used for the compact date stamp in packed context. */
+  readonly updatedAt: number
 }
 
 export interface PackedRecallContext {
@@ -78,6 +80,19 @@ function escapeMemoryText(text: string): string {
     .replaceAll(">", "&gt;")
 }
 
+/**
+ * Render a compact YYYY-MM-DD date label from an epoch timestamp.
+ * Returns empty string on invalid/missing input (fail-open).
+ */
+function compactDateLabel(epochMs: number | undefined): string {
+  if (!epochMs || !Number.isFinite(epochMs)) return ""
+  try {
+    return new Date(epochMs).toISOString().slice(0, 10)
+  } catch {
+    return ""
+  }
+}
+
 /** Pure, deterministic packing used by both runtime recall and offline evals. */
 export function packRecallContext(
   ranked: ReadonlyArray<{
@@ -110,7 +125,9 @@ export function packRecallContext(
 
     const clipped = raw.slice(0, options.maxRecordChars)
     const escaped = escapeMemoryText(clipped)
-    const line = `- [${hit.record.id}] ${escaped}`
+    const dateLabel = compactDateLabel(hit.record.updatedAt)
+    const idPart = dateLabel ? `${hit.record.id} · ${dateLabel}` : hit.record.id
+    const line = `- [${idPart}] ${escaped}`
     const addition = line.length + (hits.length > 0 ? 1 : 0)
     if (used + addition > options.maxTotalChars) {
       truncated = true
@@ -124,11 +141,16 @@ export function packRecallContext(
       score: hit.score,
       kind: hit.record.kind,
       namespace: hit.record.namespace,
+      updatedAt: hit.record.updatedAt,
     })
   }
 
   if (hits.length === 0) return null
-  const lines = hits.map((hit) => `- [${hit.id}] ${escapeMemoryText(hit.text)}`)
+  const lines = hits.map((hit) => {
+    const dl = compactDateLabel(hit.updatedAt)
+    const ip = dl ? `${hit.id} · ${dl}` : hit.id
+    return `- [${ip}] ${escapeMemoryText(hit.text)}`
+  })
   return {
     text: [
       ...header,

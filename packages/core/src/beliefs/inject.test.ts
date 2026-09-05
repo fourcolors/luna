@@ -38,3 +38,23 @@ describe("composeBeliefsSection", () => {
     expect(out).not.toContain("line one\nline two")
   })
 })
+
+describe("composeBeliefsSection date stamps", () => {
+  const activeAt = (statement: string, confidence: number, updatedAt: number) => ({
+    ...makeBeliefRecord({ statement, confidence, domain: "comms", status: "active" as const }),
+    updatedAt,
+  })
+
+  it("omits date label when updatedAt is 0 (fail-open)", () => {
+    const out = composeBeliefsSection([activeAt("prefers brevity", 0.9, 0)], 0)
+    expect(out).toContain("- (0.90, comms) prefers brevity")
+    expect(out).not.toMatch(/\[\d{4}-\d{2}-\d{2}\]/)
+  })
+
+  it("renders YYYY-MM-DD date label when updatedAt is a valid epoch", () => {
+    const updatedAt = Date.parse("2026-06-14T12:00:00Z")
+    const out = composeBeliefsSection([activeAt("likes dark mode", 0.8, updatedAt)], Date.now())
+    expect(out).toContain("[2026-06-14]")
+    expect(out).toContain("- (0.80, comms) [2026-06-14] likes dark mode")
+  })
+})

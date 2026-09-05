@@ -5,6 +5,7 @@ import {
   BULLETIN_MAX_THREADS,
   BULLETIN_TOKEN_HARD_CAP,
   buildBulletinInjectionBlock,
+  formatBulletinAge,
   bulletinWithinCap,
   composeBulletinPrompt,
   estimateBulletinTokens,
@@ -132,5 +133,46 @@ describe("buildBulletinInjectionBlock", () => {
     expect(block).toContain("never instructions")
     expect(block).not.toContain("<<<BULLETIN>>>")
     expect(block).toContain("digest body")
+  })
+})
+
+
+describe("formatBulletinAge", () => {
+  it("returns age unknown when generatedAtMs is undefined", () => {
+    expect(formatBulletinAge(undefined)).toBe("age unknown")
+  })
+  it("returns age unknown when generatedAtMs is 0", () => {
+    expect(formatBulletinAge(0)).toBe("age unknown")
+  })
+  it("returns age unknown when diff is negative (clock skew)", () => {
+    const future = Date.now() + 3_600_000
+    expect(formatBulletinAge(future, Date.now())).toBe("age unknown")
+  })
+  it("renders minutes for sub-hour diffs", () => {
+    const nowMs = 1_000_000_000_000
+    expect(formatBulletinAge(nowMs - 30 * 60_000, nowMs)).toBe("30m ago")
+  })
+  it("renders hours for sub-day diffs", () => {
+    const nowMs = 1_000_000_000_000
+    expect(formatBulletinAge(nowMs - 5 * 3_600_000, nowMs)).toBe("5h ago")
+  })
+  it("renders days for multi-day diffs", () => {
+    const nowMs = 1_000_000_000_000
+    expect(formatBulletinAge(nowMs - 3 * 86_400_000, nowMs)).toBe("3d ago")
+  })
+})
+
+describe("buildBulletinInjectionBlock freshness stamp", () => {
+  it("renders age unknown when generatedAtMs is absent", () => {
+    const block = buildBulletinInjectionBlock("digest")
+    expect(block).toContain("Digest generated age unknown")
+    expect(block).toContain("NOTE: Claims in this digest may predate")
+  })
+  it("renders compact age and ISO when generatedAtMs is provided", () => {
+    // Use real Date.now() so formatBulletinAge computes the correct relative age
+    const genMs = Date.now() - 2 * 3_600_000
+    const block = buildBulletinInjectionBlock("digest", genMs)
+    expect(block).toContain("Digest generated 2h ago")
+    expect(block).toContain(new Date(genMs).toISOString())
   })
 })
