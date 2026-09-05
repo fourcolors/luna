@@ -22,11 +22,27 @@
 import { Stream } from "effect"
 import type { StoredMessage } from "../messages.js"
 
+/**
+ * The outcome of a tool call, as replayed from history. Mirrors the live
+ * `tool-result` frame's fields exactly (`status`/`output`/`truncated`) so a
+ * restored transcript renders through the same code path as a streamed one.
+ * Absent when the run's `tool_result` envelope is outside the snapshot
+ * window, or when the tool never returned (interrupted turn).
+ */
+export interface ChatToolUseResult {
+  readonly ok: boolean
+  readonly output: string
+  readonly truncated: boolean
+}
+
 /** A flattened tool-use block as it appears inside an assistant turn. */
 export interface ChatToolUse {
   readonly id: string
   readonly name: string
   readonly input: unknown
+  /** Filled in by the history projector; never present on a live frame,
+   *  where the result arrives as its own `tool-result` frame instead. */
+  readonly result?: ChatToolUseResult
 }
 
 /**
@@ -151,6 +167,47 @@ function extractToolUses(payload: unknown): ReadonlyArray<ChatToolUse> {
     const name = typeof block["name"] === "string" ? block["name"] : ""
     if (!id || !name) continue
     out.push({ id, name, input: block["input"] })
+  }
+  return out
+}
+
+/** A `tool_result` block, still in its raw at-rest form. The caller
+ *  normalizes + truncates the content (chat-service owns those helpers, and
+ *  history must use the SAME ones the live path does or the two renders
+ *  disagree on where output gets clipped). */
+export interface StoredToolResult {
+  readonly toolUseId: string
+  readonly isError: boolean
+  readonly content: unknown
+}
+
+/**
+ * Pull `tool_result` blocks out of a USER payload's content array.
+ *
+ * The SDK reports a tool's outcome as a user-kind envelope whose content is
+ * only `tool_result` blocks. `extractText` finds no text blocks in it, so
+ * `projectOne` drops that envelope entirely - which is correct (it is not a
+ * chat turn) but means the outcome of every tool call was, until now,
+ * unreachable from history. This reads it back out so the snapshot projector
+ * can fold it onto the `tool_use` it answers.
+ */
+export function extractToolResults(payload: unknown): ReadonlyArray<StoredToolResult> {
+  if (!isObj(payload)) return []
+  const msg = payload["message"]
+  if (!isObj(msg)) return []
+  const content = msg["content"]
+  if (!Array.isArray(content)) return []
+  const out: StoredToolResult[] = []
+  for (const block of content) {
+    if (!isObj(block)) continue
+    if (block["type"] !== "tool_result") continue
+    const toolUseId = block["tool_use_id"]
+    if (typeof toolUseId !== "string" || toolUseId.length === 0) continue
+    out.push({
+      toolUseId,
+      isError: block["is_error"] === true,
+      content: block["content"],
+    })
   }
   return out
 }

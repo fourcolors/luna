@@ -3233,7 +3233,12 @@ export const writeFeedbackScreenshot = (
       bytes: buf.length,
       captureMethod: "native-window",
     }
-  } catch {
+  } catch (e) {
+    // Fail-loud: log decode/mkdir/write failures so they are visible in
+    // server output rather than silently returning null.
+    console.warn(
+      `[luna/feedback] writeFeedbackScreenshot failed (id=${id}): ${e instanceof Error ? e.message : String(e)}`,
+    )
     return null
   }
 }
@@ -4468,6 +4473,11 @@ const buildServerLayer = (
            *  agent_notes is append-only — there is no UPDATE, so the full
            *  payload including screenshot metadata must be complete up front. */
           readonly screenshot?: string
+          /** Client-reported capture error when _captureScreenshot failed and
+           *  no screenshot could be attached. Stored in payload so the triage
+           *  queue shows what went wrong rather than silently omitting the
+           *  screenshot field. Max 256 chars; truncated on the server. */
+          readonly screenshotCaptureError?: string
         }): Effect.Effect<{ readonly ok: boolean; readonly message?: string }> => {
           const id = crypto.randomUUID()
           // Screenshot is ALWAYS best-effort — writeFeedbackScreenshot never
@@ -4476,6 +4486,10 @@ const buildServerLayer = (
           const screenshotMeta = writeFeedbackScreenshot(
             input.screenshot,
             id,
+            // TODO(retention): ~/.luna/feedback-screenshots/ grows without bound.
+            // At ~512KB/note and no pruning or size cap, this needs a retention
+            // sweep (e.g. delete files older than 30 days, cap at 500MB total).
+            // Tracked as a follow-up in PR #619 audit finding #3.
             join(LUNA_HOME, "feedback-screenshots"),
           )
           return agentNotes
@@ -4497,6 +4511,11 @@ const buildServerLayer = (
                 // projection in ui-feedback-status-store.ts, which must
                 // treat this key as optional and never throw on its absence).
                 ...(screenshotMeta !== null ? { screenshot: screenshotMeta } : {}),
+                // Purely additive: only present when capture failed so the
+                // triage queue can show why no screenshot is attached.
+                ...(screenshotMeta === null && typeof input.screenshotCaptureError === 'string' && input.screenshotCaptureError.length > 0
+                  ? { screenshotCaptureError: input.screenshotCaptureError.slice(0, 256) }
+                  : {}),
               },
             })
             .pipe(

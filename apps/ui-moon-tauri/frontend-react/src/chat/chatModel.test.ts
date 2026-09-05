@@ -259,6 +259,127 @@ describe("chatModelReducer - turn lifecycle", () => {
   })
 })
 
+describe("chatModelReducer - restored history renders like live chat", () => {
+  // The bug these cover: `load-history` used to build every turn as a single
+  // text segment with `previews: null` and no `_settled`, throwing away the
+  // `toolUses` and `attachments` the server has always sent on a
+  // thread-snapshot. Clicking a thread tab therefore repainted the transcript
+  // as bare text bubbles - no tool timeline, no star map, no attachment chips
+  // - while the same conversation streamed live rendered all three.
+
+  it("rebuilds tool segments (with their results) from toolUses", () => {
+    const s = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [
+        {
+          role: "assistant",
+          text: "Looking that up. ",
+          toolUses: [
+            { id: "c1", name: "Read", input: { file: "a.ts" }, result: { ok: true, output: "3 lines", truncated: false } },
+          ],
+        },
+      ],
+    })
+    expect(s.turns[0]?.segments).toEqual([
+      { kind: "text", raw: "Looking that up. ", done: true },
+      { kind: "tool", id: "c1", name: "Read", input: { file: "a.ts" }, result: { ok: true, output: "3 lines", truncated: false } },
+    ])
+  })
+
+  it("keeps a tool-only assistant turn that the old text-only guard deleted", () => {
+    const s = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [{ role: "assistant", text: "", toolUses: [{ id: "c1", name: "Bash", input: {} }] }],
+    })
+    expect(s.turns).toHaveLength(1)
+    expect(s.turns[0]?.segments).toEqual([{ kind: "tool", id: "c1", name: "Bash", input: {}, result: null }])
+  })
+
+  it("keeps an attachment-only user turn and rebuilds its preview chip", () => {
+    const s = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [{ role: "user", text: "", attachments: [{ mediaType: "image/png", data: "AAAA" }] }],
+    })
+    expect(s.turns).toHaveLength(1)
+    expect(s.turns[0]?.previews).toEqual([
+      { kind: "image", name: "image.png", src: "data:image/png;base64,AAAA" },
+    ])
+  })
+
+  it("a missing result stays null (pending) rather than being invented as ok", () => {
+    const s = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [{ role: "assistant", text: "x", toolUses: [{ id: "c1", name: "Read", input: {} }] }],
+    })
+    expect((s.turns[0]?.segments[1] as { result: unknown }).result).toBeNull()
+    // ...but an explicit failure survives the round trip, so a failed tool
+    // still draws its red star after a reload.
+    const failed = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [
+        { role: "assistant", text: "x", toolUses: [{ id: "c1", name: "Read", input: {}, result: { ok: false, output: "boom", truncated: false } }] },
+      ],
+    })
+    expect((failed.turns[0]?.segments[1] as { result: { ok: boolean } }).result.ok).toBe(false)
+  })
+
+  it("plans the SAME items for a restored run as for the identical live run", () => {
+    // Live: user -> text -> tool -> result -> closing text -> settled.
+    let live = createInitialChatModelState()
+    live = reduce(
+      live,
+      { type: "append-user", text: "hi", ts: 1 },
+      { type: "apply-delta", turnId: "t1", text: "Looking that up. " },
+      { type: "apply-tool-call", turnId: "t1", toolCallId: "c1", name: "Read", input: {} },
+      { type: "apply-tool-result", toolCallId: "c1", ok: true, output: "3 lines", truncated: false },
+      { type: "apply-delta", turnId: "t1", text: "Found 3 lines." },
+      { type: "finish-turn", turnId: "t1" },
+      { type: "mark-run-settled" },
+    )
+    // History: the same run as the server stores it - one assistant envelope
+    // per SDK message, the closing answer in its own turn.
+    const restored = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [
+        { role: "user", text: "hi", ts: 1 },
+        {
+          role: "assistant",
+          text: "Looking that up. ",
+          toolUses: [{ id: "c1", name: "Read", input: {}, result: { ok: true, output: "3 lines", truncated: false } }],
+        },
+        { role: "assistant", text: "Found 3 lines." },
+      ],
+    })
+    const kinds = (st: ChatModelState) => planChatItems(st.turns, { grouped: true }).map((i) => i.kind)
+    // user bubble, collapsed activity timeline, then the answer BELOW it -
+    // the ordering that breaks if history segments are built tools-first.
+    expect(kinds(restored)).toEqual(["user", "timeline", "text"])
+    expect(kinds(restored)).toEqual(kinds(live))
+    const timeline = planChatItems(restored.turns, { grouped: true })[1]
+    expect(timeline?.kind === "timeline" && timeline.settled).toBe(true)
+    // Settled means collapsed, which is what a finished run looks like. An
+    // unsettled restored timeline would sit open saying "Working on it…"
+    // forever - the failure mode `_settled` on history turns exists to stop.
+    expect(isTimelineEffectivelyCollapsed(restored.turns[1] as Turn, true)).toBe(true)
+    expect(hasVisibleTypingIndicator(restored.turns, true)).toBe(false)
+  })
+
+  it("does not mark a run settled when a live turn follows the restored history", () => {
+    // A snapshot can land mid-turn (reconnect during an agentic run). The
+    // stored part is finished work, but the run as a whole is not - and
+    // planRun reads `_settled` off the run's LAST turn, so the live
+    // continuation still governs.
+    let s = chatModelReducer(createInitialChatModelState(), {
+      type: "load-history",
+      messages: [{ role: "assistant", text: "step one", toolUses: [{ id: "c1", name: "Read", input: {} }] }],
+    })
+    s = chatModelReducer(s, { type: "apply-delta", turnId: "t9", text: "still going" })
+    const items = planChatItems(s.turns, { grouped: true })
+    const timeline = items.find((i) => i.kind === "timeline")
+    expect(timeline?.kind === "timeline" && timeline.settled).toBe(false)
+  })
+})
+
 describe("chatModelReducer - S15c: tool-call/text interleaving parity (mirrors chat-window.test.ts's oracle scenarios)", () => {
   it("a delta after a tool call opens a FRESH text segment, not a continuation of the pre-tool cumulative text", () => {
     let s = createInitialChatModelState()

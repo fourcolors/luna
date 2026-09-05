@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest"
 import { Chunk, Effect, Stream } from "effect"
 import {
   extractTextPreview,
+  extractToolResults,
   projectChatMessages,
   projectOne,
   type ChatMessage,
@@ -392,5 +393,61 @@ describe("projectChatMessages (stream)", () => {
     const arr = out
     expect(arr.map((m) => m.id)).toEqual(["u1", "a1", "u2"])
     expect(arr.map((m) => m.role)).toEqual(["user", "assistant", "user"])
+  })
+})
+
+describe("extractToolResults", () => {
+  // The SDK reports a tool's OUTCOME as a user-kind envelope carrying nothing
+  // but tool_result blocks. projectOne drops it (rightly - it is not a chat
+  // turn), which is why every replayed transcript used to draw past tool calls
+  // as still-pending. This is the read-back that fixes that.
+  const toolResultPayload = (blocks: ReadonlyArray<unknown>) => ({
+    type: "user",
+    message: { role: "user", content: blocks },
+  })
+
+  it("pulls tool_result blocks with their tool_use_id and error flag", () => {
+    const out = extractToolResults(
+      toolResultPayload([
+        { type: "tool_result", tool_use_id: "c1", content: "3 lines" },
+        { type: "tool_result", tool_use_id: "c2", is_error: true, content: "boom" },
+      ]),
+    )
+    expect(out).toEqual([
+      { toolUseId: "c1", isError: false, content: "3 lines" },
+      { toolUseId: "c2", isError: true, content: "boom" },
+    ])
+  })
+
+  it("ignores text blocks (a subagent's seed prompt rides in the same envelope)", () => {
+    const out = extractToolResults(
+      toolResultPayload([
+        { type: "text", text: "you are a subagent" },
+        { type: "tool_result", tool_use_id: "c1", content: "ok" },
+      ]),
+    )
+    expect(out.map((r) => r.toolUseId)).toEqual(["c1"])
+  })
+
+  it("skips blocks with no usable tool_use_id, and malformed payloads", () => {
+    expect(extractToolResults(toolResultPayload([{ type: "tool_result", content: "x" }]))).toEqual([])
+    expect(extractToolResults(toolResultPayload([{ type: "tool_result", tool_use_id: "", content: "x" }]))).toEqual([])
+    expect(extractToolResults({ message: { content: "plain string" } })).toEqual([])
+    expect(extractToolResults(null)).toEqual([])
+    expect(extractToolResults({})).toEqual([])
+  })
+
+  it("does not change projectOne's own behavior: the envelope is still not a turn", () => {
+    const env = {
+      id: "u9",
+      sessionId: "s",
+      seq: 9,
+      ts: 9000,
+      parentId: null,
+      kind: "user" as const,
+      schemaVersion: MESSAGE_ENVELOPE_VERSION,
+      payload: toolResultPayload([{ type: "tool_result", tool_use_id: "c1", content: "ok" }]),
+    }
+    expect(projectOne(env)).toBeNull()
   })
 })

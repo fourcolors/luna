@@ -7,6 +7,7 @@
  *   AgentNotesService.makeLayer(dbPath) — SQLite-backed Layer.
  *     Mirrors telemetry-store-sqlite.ts patterns exactly.
  */
+import { createHash } from "node:crypto"
 import { Context, Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
@@ -15,10 +16,11 @@ import { ConfigError } from "../errors.js"
 import type {
   AgentNote,
   AgentNotesApi,
+  GatedNoteResult,
   NoteKind,
   UnparsedPayload,
 } from "./types.js"
-import { NoteError } from "./types.js"
+import { DEFAULT_HEARTBEAT_MS, NoteError } from "./types.js"
 
 /**
  * Upper bound on the `raw` text carried by an {@link UnparsedPayload}.
@@ -59,6 +61,97 @@ interface BunStmt {
   run: (...p: unknown[]) => { changes: number }
 }
 
+// ── Fingerprinting ────────────────────────────────────────────────────────────
+
+/**
+ * Produce a canonical JSON encoding of a value with keys sorted
+ * deterministically. Nested objects are also sorted. Arrays are preserved
+ * as-is (element order is meaningful).
+ *
+ * The reserved `_gate` key is excluded from the encoding so that a note
+ * written by `recordIfChanged` (which injects `_gate.fp` into the payload)
+ * can be fingerprinted consistently when used as the previous note baseline.
+ */
+const canonicalJson = (value: unknown): string => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return JSON.stringify(value)
+  }
+  const obj = value as Record<string, unknown>
+  const sorted = Object.keys(obj)
+    .filter((k) => k !== "_gate")
+    .sort()
+    .reduce<Record<string, unknown>>((acc, k) => {
+      acc[k] = obj[k]
+      return acc
+    }, {})
+  // Recursively encode each value canonically
+  const entries = Object.keys(sorted)
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson(sorted[k])}`)
+    .join(",")
+  return `{${entries}}`
+}
+
+/**
+ * Compute a content fingerprint from a note's summary and payload.
+ * The `_gate` key is excluded from the payload encoding.
+ *
+ * Uses a simple deterministic string — no crypto dependency — that is
+ * stable across identical inputs.
+ */
+const computeFingerprint = (summary: string, payload: unknown): string => {
+  const payloadPart = canonicalJson(payload)
+  // NUL separates the two parts so that a summary ending in the payload's
+  // leading characters cannot collide with a shorter summary.
+  const material = `summary:${summary}\x00payload:${payloadPart}`
+  // Hash rather than storing the material verbatim: the fingerprint is
+  // persisted into every gated note's payload, so an unhashed value would
+  // duplicate the whole note's content on every row it guards.
+  return createHash("sha256").update(material).digest("hex")
+}
+
+/**
+ * Derive the fingerprint from an existing {@link AgentNote}.
+ *
+ * If the note's payload contains `_gate.fp`, that stored fingerprint is
+ * returned directly (it was written by a previous `recordIfChanged` call).
+ * Otherwise the fingerprint is recomputed from the note's summary and
+ * payload, making the gate work against rows written before this feature.
+ */
+const derivePreviousFingerprint = (note: AgentNote): string => {
+  if (
+    note.payload !== null &&
+    typeof note.payload === "object" &&
+    !Array.isArray(note.payload)
+  ) {
+    const p = note.payload as Record<string, unknown>
+    if (
+      typeof p["_gate"] === "object" &&
+      p["_gate"] !== null &&
+      typeof (p["_gate"] as Record<string, unknown>)["fp"] === "string"
+    ) {
+      return (p["_gate"] as Record<string, unknown>)["fp"] as string
+    }
+  }
+  return computeFingerprint(note.summary, note.payload)
+}
+
+/**
+ * Merge `_gate: { fp }` into a caller-supplied payload.
+ * If payload is null/undefined, creates `{ _gate: { fp } }`.
+ * The caller's `_gate` key, if any, is replaced.
+ */
+const withGateMetadata = (payload: unknown, fp: string): Record<string, unknown> => {
+  const base: Record<string, unknown> =
+    payload !== null &&
+    payload !== undefined &&
+    typeof payload === "object" &&
+    !Array.isArray(payload)
+      ? { ...(payload as Record<string, unknown>) }
+      : {}
+  base["_gate"] = { fp }
+  return base
+}
+
 // ── Service Tag ──────────────────────────────────────────────────────────────
 
 export class AgentNotesService extends Context.Service<AgentNotesService, AgentNotesApi>()("luna/AgentNotesService") {
@@ -93,6 +186,52 @@ export class AgentNotesService extends Context.Service<AgentNotesService, AgentN
             return next
           })
           return note
+        })
+
+      const recordIfChanged: AgentNotesApi["recordIfChanged"] = (input, opts) =>
+        Effect.gen(function* () {
+          const heartbeatMs = opts?.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
+
+          // Reject negative heartbeat values
+          if (heartbeatMs < 0) {
+            return yield* Effect.fail(
+              new NoteError({
+                op: "record",
+                message: `heartbeatMs must be >= 0, got ${heartbeatMs}`,
+              }),
+            )
+          }
+
+          // Compute the candidate fingerprint
+          const fp =
+            opts?.fingerprint ??
+            computeFingerprint(input.summary, input.payload)
+
+          // Look up the most recent existing note of this kind
+          const recent = yield* getByKind(input.kind, 1)
+          const prev = recent[0] ?? null
+
+          if (prev !== null) {
+            const prevFp = derivePreviousFingerprint(prev)
+            const now = yield* clock.nowMs()
+            const age = now - prev.ts
+
+            // Suppress when fingerprint matches AND heartbeat has NOT elapsed
+            if (prevFp === fp && (heartbeatMs === 0 ? false : age < heartbeatMs)) {
+              const result: GatedNoteResult = {
+                suppressed: true,
+                lastTs: prev.ts,
+                lastId: prev.id,
+              }
+              return result
+            }
+          }
+
+          // Record — inject _gate metadata into payload
+          const mergedPayload = withGateMetadata(input.payload, fp)
+          const note = yield* record({ ...input, payload: mergedPayload })
+          const result: GatedNoteResult = { suppressed: false, note }
+          return result
         })
 
       const getRecent: AgentNotesApi["getRecent"] = (sessionId, limit = 20) =>
@@ -165,6 +304,7 @@ export class AgentNotesService extends Context.Service<AgentNotesService, AgentN
 
       return {
         record,
+        recordIfChanged,
         getRecent,
         getRecentAcrossSessions,
         getChain,
@@ -323,6 +463,38 @@ export class AgentNotesService extends Context.Service<AgentNotesService, AgentN
           ts: row.ts,
         })
 
+        /**
+         * Serialize payload to JSON string, returning NoteError for
+         * non-serializable values. Extracted to a helper so both `record` and
+         * `recordIfChanged` share the same guard.
+         */
+        const serializePayload = (
+          payload: unknown,
+        ): Effect.Effect<string | null, NoteError> =>
+          Effect.gen(function* () {
+            if (payload === undefined) return null
+            try {
+              const encoded = JSON.stringify(payload)
+              if (encoded === undefined) {
+                return yield* Effect.fail(
+                  new NoteError({
+                    op: "record",
+                    message: `payload is not JSON-serializable (${typeof payload})`,
+                  }),
+                )
+              }
+              return encoded
+            } catch (cause) {
+              return yield* Effect.fail(
+                new NoteError({
+                  op: "record",
+                  message: `failed to serialize payload: ${String(cause)}`,
+                  cause,
+                }),
+              )
+            }
+          })
+
         const record: AgentNotesApi["record"] = (input) =>
           Effect.gen(function* () {
             const ts = yield* clock.nowMs()
@@ -332,29 +504,7 @@ export class AgentNotesService extends Context.Service<AgentNotesService, AgentN
             // declared `NoteError` failure channel — the throw as an unhandled
             // defect, the `undefined` as a bad statement binding — because this
             // ran before BEGIN IMMEDIATE and outside the try/catch below.
-            let payloadJson: string | null = null
-            if (input.payload !== undefined) {
-              try {
-                const encoded = JSON.stringify(input.payload)
-                if (encoded === undefined) {
-                  return yield* Effect.fail(
-                    new NoteError({
-                      op: "record",
-                      message: `payload is not JSON-serializable (${typeof input.payload})`,
-                    }),
-                  )
-                }
-                payloadJson = encoded
-              } catch (cause) {
-                return yield* Effect.fail(
-                  new NoteError({
-                    op: "record",
-                    message: `failed to serialize payload: ${String(cause)}`,
-                    cause,
-                  }),
-                )
-              }
-            }
+            const payloadJson = yield* serializePayload(input.payload)
             db.run("BEGIN IMMEDIATE")
             try {
               insertStmt.run(
@@ -390,6 +540,65 @@ export class AgentNotesService extends Context.Service<AgentNotesService, AgentN
               payload: input.payload ?? null,
               ts,
             } satisfies AgentNote
+          })
+
+        const recordIfChanged: AgentNotesApi["recordIfChanged"] = (input, opts) =>
+          Effect.gen(function* () {
+            const heartbeatMs = opts?.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
+
+            // Reject negative heartbeat values
+            if (heartbeatMs < 0) {
+              return yield* Effect.fail(
+                new NoteError({
+                  op: "record",
+                  message: `heartbeatMs must be >= 0, got ${heartbeatMs}`,
+                }),
+              )
+            }
+
+            // Validate payload serializability BEFORE any DB read.
+            // This preserves the NoteError discipline: a non-serializable
+            // payload must fail with NoteError, not throw a defect, regardless
+            // of whether a previous note exists.
+            //
+            // We serialize the candidate payload (without _gate) first, just
+            // to catch the error early. The actual merged payload is serialized
+            // again inside `record` after we merge in `_gate`.
+            if (input.payload !== undefined) {
+              yield* serializePayload(input.payload)
+            }
+
+            // Compute the candidate fingerprint
+            const fp =
+              opts?.fingerprint ??
+              computeFingerprint(input.summary, input.payload)
+
+            // Look up the most recent existing note of this kind
+            const recent = yield* getByKind(input.kind, 1)
+            const prev = recent[0] ?? null
+
+            if (prev !== null) {
+              const prevFp = derivePreviousFingerprint(prev)
+              const now = yield* clock.nowMs()
+              const age = now - prev.ts
+
+              // Suppress when fingerprint matches AND heartbeat has NOT elapsed
+              // heartbeatMs === 0 means always record (no suppression)
+              if (prevFp === fp && heartbeatMs > 0 && age < heartbeatMs) {
+                const result: GatedNoteResult = {
+                  suppressed: true,
+                  lastTs: prev.ts,
+                  lastId: prev.id,
+                }
+                return result
+              }
+            }
+
+            // Record — inject _gate metadata into payload
+            const mergedPayload = withGateMetadata(input.payload, fp)
+            const note = yield* record({ ...input, payload: mergedPayload })
+            const result: GatedNoteResult = { suppressed: false, note }
+            return result
           })
 
         const getRecent: AgentNotesApi["getRecent"] = (sessionId, limit = 20) =>
@@ -461,6 +670,7 @@ export class AgentNotesService extends Context.Service<AgentNotesService, AgentN
 
         return {
           record,
+          recordIfChanged,
           getRecent,
           getRecentAcrossSessions,
           getChain,
